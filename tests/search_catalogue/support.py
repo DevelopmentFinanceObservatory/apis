@@ -178,7 +178,7 @@ def sample_catalogue(version: str = "20260930T000000Z-00000001") -> CatalogueArt
         key=build_key(_INPUTS),
         built_at=datetime(2026, 9, 30, tzinfo=UTC),
         inputs=_INPUTS,
-        counts=Counts(publishers=4, countries=2, aid=aid),
+        counts=Counts(indicators=9, datasets=5, publishers=4, countries=2, aid=aid),
         examples=[
             CatalogueExample(
                 id=0,

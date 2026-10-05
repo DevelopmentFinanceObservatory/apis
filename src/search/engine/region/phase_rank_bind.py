@@ -6,9 +6,10 @@ import asyncio
 import logging
 import re
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Literal, cast
 
+from code_index.members import is_opt_in
 from code_index.query import CodeIndex
 from code_index.shared import get_index, get_measure_index
 from code_index.types import CodeRow, MeasureAxis
@@ -76,8 +77,11 @@ from search.engine.retrieval.bound_values import (
     collapse_measure_families,
     elect_five_tuple_family,
     index_carries_shape,
+    part_datasets,
+    part_member_rows,
     price_basis_order,
-    shape_dataset,
+    shape_datasets,
+    shape_for_part,
 )
 from search.engine.retrieval.representative import _shape_disagreement_props
 from search.engine.shape import (
@@ -175,6 +179,23 @@ def _constraint_property_dcids(shape: ShapeDraft) -> set[str]:
     return {slot.property_dcid for slot in shape.slot_keys if slot.property_dcid is not None}
 
 
+def _part_codes(shape: ShapeDraft, index: CodeIndex) -> dict[str, frozenset[str]] | None:
+    """Each constraint property the rows of `shape`'s five-tuple that its part's datasets
+    publish carry (`part_member_rows`), mapped to the values they hold on it. `None` for a
+    shape no candidacy stamped or the index does not carry, whose slot keys state its code
+    systems and whose values the index does not record."""
+    if shape.datasets is None:
+        return None
+    rows = part_member_rows(shape, index)
+    if not rows:
+        return None
+    held: dict[str, set[str]] = defaultdict(set)
+    for row in rows:
+        for prop, value in row.constraint_properties.items():
+            held[prop].add(value)
+    return {prop: frozenset(values) for prop, values in held.items()}
+
+
 def _same_head_normalised_shapes(shapes: list[ShapeDraft], head: str) -> list[ShapeDraft]:
     """Return the non-raw shapes whose labels share a rate-request head."""
     return [
@@ -262,8 +283,8 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     check (`shape_measure_class`), the two-ended prune, availability and measure pruning,
     then reserves recalled shapes within the top-K menu. A part whose bound mention's
     dataset publishes none of the recalled shapes refuses ``qualifier_not_bound``, naming
-    the mention, and so does one whose variable names a code no candidate of that dataset
-    declares a code system for, naming the term (`_undeclared_qualifiers`). Both refusals
+    the mention, and so does one whose variable names a code no row of that dataset's
+    candidate shapes holds, naming the term (`_undeclared_qualifiers`). Both refusals
     come before any role check. Falling through leaves ``_phase_bind`` to call the model.
     """
     state.dataset_mention = _read_mention(state.qualifiers)
@@ -480,23 +501,31 @@ async def _record_shape_step(state: ResolveState) -> None:
 def _dataset_candidates(
     shapes: Sequence[ShapeDraft], mention: DatasetMention | None
 ) -> list[ShapeDraft]:
-    """The shapes a part may answer from, by the dataset that publishes each
-    (`shape_dataset`).
+    """The shapes a part may answer from, by the datasets that publish each
+    (`shape_datasets`), each stamped with the datasets the part may answer it from
+    (`shape_for_part`).
 
-    A part whose variable has a bound mention keeps only the mentioned dataset's shapes. A
-    part without one drops every shape of an opt-in dataset, which answers only a request
-    that names it (`DatasetDeclaration.opt_in`). Every door that reads a question elects
-    from what is left, so the default answer never holds an opt-in dataset's rows and a
-    named dataset's part never answers from another.
+    A part whose variable has a bound mention keeps the shapes whose five-tuple the
+    mentioned dataset publishes. A part without one keeps a shape the index does not
+    carry, and a shape whose five-tuple's eligible datasets
+    (`code_index.members.eligible_datasets`) include one that is not opt-in, since an
+    opt-in dataset answers only a request that names it (`DatasetDeclaration.opt_in`).
+    Every door that reads a question elects from what is left, so the default answer
+    never holds an opt-in dataset's rows and a named dataset's part never answers from
+    another.
     """
-    datasets = get_index().datasets
-    if mention is not None:
-        return [shape for shape in shapes if shape_dataset(shape) == mention.provenance]
-    return [
-        shape
-        for shape in shapes
-        if (dataset := shape_dataset(shape)) is None or not datasets[dataset].opt_in
-    ]
+    index = get_index()
+    source = mention.provenance if mention is not None else None
+    if source is not None:
+        kept = [shape for shape in shapes if source in shape_datasets(shape, index)]
+    else:
+        kept = [
+            shape
+            for shape in shapes
+            if not shape_datasets(shape, index)
+            or any(not is_opt_in(index, dataset) for dataset in part_datasets(shape, None, index))
+        ]
+    return [shape_for_part(shape, source, index) for shape in kept]
 
 
 def _unbound_mention(mention: DatasetMention) -> ResolvedQualifier:
@@ -512,20 +541,35 @@ def _unbound_mention(mention: DatasetMention) -> ResolvedQualifier:
 def _undeclared_qualifiers(
     spans: Sequence[QualifierSpan], shapes: Sequence[ShapeDraft]
 ) -> tuple[ResolvedQualifier, ...]:
-    """The variable's code terms that no shape in `shapes` declares a code system for,
-    each as an unbound record.
+    """The variable's code terms that no row of a shape in `shapes` can hold, each as an
+    unbound record.
 
-    A part bound to a named dataset elects from that dataset's shapes alone, so such a
-    term ("grants" on imputed multilateral aid, whose rows carry no type of finance) can
-    bind on none of them. A span holding a measure value is the measure's to read and is
+    A part bound to a named dataset elects from that dataset's rows alone, so a code counts
+    as held on a shape only when a row the dataset publishes of its five-tuple holds the
+    code or one of its descendants (`_part_codes`), whatever other publishers of the
+    five-tuple hold. Such a term can bind on none of them: "grants" on imputed multilateral
+    aid, whose rows carry no type of finance, or a sector only another publisher of the
+    five-tuple reports. A shape the index does not carry holds any code of a code system it
+    declares a slot for. A span holding a measure value is the measure's to read and is
     left alone, as is a term the dataset's mention spans, which `recognise_spans` never
     reads.
     """
-    declared = {prop for shape in shapes for prop in _constraint_property_dcids(shape)}
+    index = get_index()
+    readings = [(shape, _part_codes(shape, index)) for shape in shapes]
+
+    def held(row: CodeRow) -> bool:
+        descendants = frozenset(index.descendants(row.dcid))
+        return any(
+            row.code_system in _constraint_property_dcids(shape)
+            if codes is None
+            else bool(codes.get(row.code_system, frozenset()) & descendants)
+            for shape, codes in readings
+        )
+
     undeclared: list[ResolvedQualifier] = []
     for span in spans:
         code_rows = [row for row in span.rows if isinstance(row, CodeRow)]
-        if len(code_rows) < len(span.rows) or any(row.code_system in declared for row in code_rows):
+        if len(code_rows) < len(span.rows) or any(held(row) for row in code_rows):
             continue
         undeclared.append(
             ResolvedQualifier(
@@ -800,19 +844,15 @@ def _admitted_qualifier_phrases(matches: tuple[QualifierMatch, ...]) -> frozense
 
 def _qualifier_disposition(
     rows: Sequence[tuple[str, str]],
-    bindings_by_property: dict[str, SlotBindingDraft],
+    bound_values: Mapping[str, Sequence[str]],
     index: CodeIndex,
 ) -> tuple[Literal["bound", "unbound"], str | None]:
-    """Return bound when a final value/set binding names a descendant of a recorded code.
+    """Return bound when a final bound value names a descendant of a recorded code.
 
-    Parent codes and ``kind="absent"`` bindings remain unbound. Spans and ties share this
-    rule.
+    Parent codes remain unbound. Spans and ties share this rule.
     """
     for code_system, code_dcid in rows:
-        binding = bindings_by_property.get(code_system)
-        if binding is None or binding.kind not in ("value", "set"):
-            continue
-        if set(binding.value_dcids) & set(index.descendants(code_dcid)):
+        if set(bound_values.get(code_system, ())) & set(index.descendants(code_dcid)):
             return "bound", code_system
     return "unbound", None
 
@@ -872,8 +912,11 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
     """
     index = get_index()
     declared = _constraint_property_dcids(state.shape_draft)
-    bindings_by_property: dict[str, SlotBindingDraft] = {
-        b.property_dcid: b for b in state.bindings if b.property_dcid is not None
+    # Each property's final value or set binding.
+    bound_values: dict[str, Sequence[str]] = {
+        b.property_dcid: b.value_dcids
+        for b in state.bindings
+        if b.property_dcid is not None and b.kind in ("value", "set")
     }
     # Preserve source offsets by casefolding without stripping.
     normalized_variable = state.variable.casefold()
@@ -893,7 +936,7 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
             continue
         named = [GraphRef(dcid=row.dcid, label=row.label) for row in code_rows]
         disposition, slot = _qualifier_disposition(
-            [(row.code_system, row.dcid) for row in code_rows], bindings_by_property, index
+            [(row.code_system, row.dcid) for row in code_rows], bound_values, index
         )
         resolved.append(
             ResolvedQualifier(
@@ -909,7 +952,7 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
             continue
         named = [GraphRef(dcid=row.code_dcid, label=row.label) for row in tie.rows]
         disposition, slot = _qualifier_disposition(
-            [(row.code_system, row.code_dcid) for row in tie.rows], bindings_by_property, index
+            [(row.code_system, row.code_dcid) for row in tie.rows], bound_values, index
         )
         resolved.append(
             ResolvedQualifier(
@@ -929,7 +972,7 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
                 continue
             named = [GraphRef(dcid=row.dcid, label=row.label) for row in code_rows]
             disposition, slot = _qualifier_disposition(
-                [(row.code_system, row.dcid) for row in code_rows], bindings_by_property, index
+                [(row.code_system, row.dcid) for row in code_rows], bound_values, index
             )
             resolved.append(
                 ResolvedQualifier(

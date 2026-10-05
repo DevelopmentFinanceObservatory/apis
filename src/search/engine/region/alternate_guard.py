@@ -32,7 +32,7 @@ import dataclasses
 import functools
 import re
 import weakref
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
@@ -49,8 +49,9 @@ from search.engine.region.equivalent_series import CLUSTER_BY_MEMBER, Equivalent
 from search.engine.region.qualifier_readings import reading_for_shape
 from search.engine.retrieval.bound_values import (
     bound_values_from_bindings,
-    index_member_rows,
+    serving_member_rows,
     shape_five_tuple,
+    shape_query,
 )
 from search.engine.retrieval.facts import read_name
 from search.engine.retrieval.member_facts import ArcsMemberFacts, IndexMemberFacts
@@ -59,6 +60,7 @@ from search.engine.unit.lexicon import AMBIGUOUS_CURRENCY_NAMES, CURRENCY_ALIASE
 
 if TYPE_CHECKING:
     from code_index import CodeIndex
+    from code_index.members import FamilyQuery
     from code_index.types import MeasureIndex, StatVarRow
     from search.engine.bind import SlotBindingDraft
     from search.engine.retrieval.facts import FiveTuple
@@ -572,28 +574,34 @@ def _read_member(dcid: str, facts: MemberFacts, label: str) -> _Member:
     return _Member(dcid, constraints, unresolved, tokens, axis)
 
 
-# Index-sourced member readings by index object id and five-tuple. A weakref finalizer
-# removes an index's entry before Python can reuse its id.
-_index_members_cache: dict[int, dict[FiveTuple, tuple[_Member, ...]]] = {}
+# Index-sourced member readings by index object id, then by five-tuple and the datasets
+# that serve it (`serving_member_rows`). A weakref finalizer removes an index's entry
+# before Python can reuse its id.
+_index_members_cache: dict[
+    int, dict[tuple[FiveTuple, tuple[str, ...] | None], tuple[_Member, ...]]
+] = {}
 
 
 def _index_members(
-    shape: ShapeDraft, rows: Sequence[StatVarRow], index: CodeIndex
+    shape: ShapeDraft,
+    datasets: tuple[str, ...] | None,
+    rows: Sequence[StatVarRow],
+    index: CodeIndex,
 ) -> tuple[_Member, ...]:
-    """The readings of `rows`, the index rows of `shape`'s five-tuple
-    (`index_member_rows`), read once per five-tuple per index. A row with no constraint
-    reads its residence from no label here."""
+    """The readings of `rows`, the index rows of `shape`'s five-tuple that `datasets` serve
+    (`serving_member_rows`), read once per five-tuple and datasets per index. A row with no
+    constraint reads its residence from no label here."""
     key = id(index)
-    by_five_tuple = _index_members_cache.get(key)
-    if by_five_tuple is None:
-        by_five_tuple = _index_members_cache[key] = {}
+    by_rows = _index_members_cache.get(key)
+    if by_rows is None:
+        by_rows = _index_members_cache[key] = {}
         weakref.finalize(index, _index_members_cache.pop, key, None)
-    five_tuple = shape_five_tuple(shape)
-    if five_tuple not in by_five_tuple:
-        by_five_tuple[five_tuple] = tuple(
+    rows_key = (shape_five_tuple(shape), datasets)
+    if rows_key not in by_rows:
+        by_rows[rows_key] = tuple(
             _read_member(row.dcid, IndexMemberFacts(row=row), "") for row in rows
         )
-    return by_five_tuple[five_tuple]
+    return by_rows[rows_key]
 
 
 @dataclass(frozen=True)
@@ -609,14 +617,25 @@ class AlternateJudge:
     """One elected reading under one leg's pins, judged against any number of alternates.
 
     The elected reading is the elected shape's members that hold every bound value, or
-    every member when none does. Member readings and verdicts are memoised on object
-    identity, since distinct shapes can share one `shape_id`. Each memo entry holds its
+    every member when none does. A shape the index carries reads the rows of the dataset
+    that serves it (`serving_member_rows`), elected under the query the answer path builds
+    for it (`_serving_query`): the leg's bindings on the slots it declares, its named
+    source, and the role keys `role_keys` gives for it, the keys its identity binds the
+    query's places under, none by default. Member readings and verdicts are memoised on
+    object identity, since distinct shapes can share one `shape_id`. Each memo entry holds its
     shape, so no other shape takes the same identity while the judge lives.
     """
 
-    def __init__(self, pins: QueryPins, elected: ShapeDraft) -> None:
+    def __init__(
+        self,
+        pins: QueryPins,
+        elected: ShapeDraft,
+        *,
+        role_keys: Callable[[ShapeDraft], Collection[str]] = lambda _shape: (),
+    ) -> None:
         self.pins = pins
         self.elected = elected
+        self._role_keys = role_keys
         self._members: dict[int, tuple[ShapeDraft, tuple[_Member, ...], bool]] = {}
         self._verdicts: dict[int, tuple[ShapeDraft, _Verdict]] = {}
         self._reading_properties = frozenset(
@@ -667,9 +686,22 @@ class AlternateJudge:
             )
         )
 
+    def _serving_query(self, shape: ShapeDraft) -> FamilyQuery:
+        """The family query `shape` is served under (`shape_query`): the leg's bindings on
+        the slots `shape` declares, with the source binding, under `shape`'s role keys. For
+        the elected shape these are the answer's own bindings."""
+        declared = {slot.property_dcid for slot in shape.slot_keys if slot.property_dcid}
+        bindings = [
+            binding
+            for binding in self.pins.bindings
+            if binding.property_dcid is None or binding.property_dcid in declared
+        ]
+        return shape_query(shape, bindings, self._role_keys(shape))
+
     def members(self, shape: ShapeDraft) -> tuple[tuple[_Member, ...], bool]:
-        """The shape's members, from index rows when the index carries it, with whether
-        they came from the index. A shape with no member facts reads as one stand-in.
+        """The shape's members, from the index rows of the dataset that serves it
+        (`serving_member_rows`) when the index carries it, with whether they came from the
+        index. A shape with no member facts reads as one stand-in.
 
         A lone member reads its residence label from the shape's label. A member of a
         larger shape reads its own name, since the shape is labelled from whichever member
@@ -678,7 +710,7 @@ class AlternateJudge:
         key = id(shape)
         if key not in self._members:
             index = get_index()
-            rows = index_member_rows(shape, index)
+            datasets, rows = serving_member_rows(shape, index, self._serving_query(shape))
             arcs = shape.sv_arc_facts or {}
             count = len(rows) if rows else len(arcs)
 
@@ -694,7 +726,9 @@ class AlternateJudge:
                     member
                     if member.constraints
                     else _read_member(row.dcid, IndexMemberFacts(row=row), label(row.dcid))
-                    for row, member in zip(rows, _index_members(shape, rows, index), strict=True)
+                    for row, member in zip(
+                        rows, _index_members(shape, datasets, rows, index), strict=True
+                    )
                 )
             else:
                 members = tuple(

@@ -3,6 +3,7 @@ Async and inline mints return the same manifest shape, apart from fresh version 
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from datetime import timedelta
 
@@ -97,6 +98,7 @@ def api_and_worker(
         # The worker probes role-bearing facets from this index.
         coverage=_WorkerCoverageService(coverage().current()),
         version_writer=LiveVersionRecordWriter(store=version_store),
+        snapshot_reader=LiveSnapshotReader(store=version_store),
         head_recheck_interval=timedelta(seconds=DatasetsBuildSettings().head_recheck_seconds),
         head_max_age=timedelta(seconds=DatasetsBuildSettings().head_max_age_seconds),
     )
@@ -179,3 +181,49 @@ def test_local_end_to_end_over_budget_mint_completes_through_the_worker(
         headers={"x-dfo-principal": _PRINCIPAL},
     )
     assert pin_resp.status_code == 200, pin_resp.text
+
+
+def _rendered(manifest: dict) -> list[tuple[str, str]]:
+    return sorted(
+        (json.dumps(artifact["rendering"], sort_keys=True), artifact["artifact_digest"])
+        for artifact in manifest["artifacts"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("options", "other_options"),
+    [
+        pytest.param({"bundle": False}, {"bundle": False, "format": "parquet"}, id="bare"),
+        pytest.param({}, {"bundle": False}, id="bundle"),
+    ],
+)
+def test_worker_completed_poll_lists_the_artifacts_a_synchronous_mint_lists(
+    monkeypatch: pytest.MonkeyPatch, options: dict, other_options: dict
+):
+    """With another rendering stored under the same version, the done operation's poll and the
+    synchronous mint of the same request list the same `(rendering, artifact_digest)` pairs."""
+    api_client, _operation_store, _forwarded = api_and_worker(
+        graph=_graph(),
+        sdmx=lambda: SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport([])),
+        coverage=_coverage_service,
+    )
+    body = {**_HAPPY_PATH_BODY, "options": options}
+
+    other = api_client.post("/api/datasets", json={**_HAPPY_PATH_BODY, "options": other_options})
+    assert other.status_code == 200, other.text
+
+    with monkeypatch.context() as mp:
+        mp.setattr(kinds.statvar_set, "within_sync_budget", lambda estimate, **_: False)
+        submitted = api_client.post("/api/datasets", json=body)
+    assert submitted.status_code == 202, submitted.text
+    polled = api_client.get(submitted.headers["location"])
+    assert polled.status_code == 200, polled.text
+    async_manifest = polled.json()["manifest"]
+
+    synchronous = api_client.post("/api/datasets", json=body)
+    assert synchronous.status_code == 200, synchronous.text
+    sync_manifest = synchronous.json()
+
+    assert async_manifest["content_version"] == other.json()["content_version"]
+    assert sync_manifest["content_version"] == async_manifest["content_version"]
+    assert _rendered(async_manifest) == _rendered(sync_manifest)

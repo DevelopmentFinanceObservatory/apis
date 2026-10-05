@@ -1,10 +1,14 @@
 """Parse time phrases into the ``ExtractedDate`` form used by the parsed door.
 The caller passes results to ``extract.dates_to_request`` for window semantics.
 
-Input is stripped and casefolded. Four-digit years yield points; ordered ranges yield
-ranges. ``Since``, ``depuis``, and ``desde`` yield open-ended ranges. ``latest``,
-``current``, and ``now`` yield latest entries. ``last``/``past`` year spans and decades
-yield closed ranges ending at caller-supplied ``current_year``. Counts accept digits or
+Input is stripped and casefolded. Four-digit years yield points. A bounded phrase is an
+optional lead, a start year, a separator and an end, and the lead fixes the separator:
+``between`` takes ``and``, ``from`` takes ``to`` or ``until``, and no lead takes ``to``,
+``-`` or ``–``. A year end yields an ordered range; a latest end ("the latest", "most
+recent year available") yields an open-ended range, as ``since``, ``depuis``, and
+``desde`` do. The latest phrase alone yields a latest entry. ``last``/``past`` year spans
+and decades yield closed ranges ending at caller-supplied ``current_year``.
+``TIME_TEXT_FORMS`` lists every accepted form. Counts accept digits or
 number words through twenty. Relative spans include the current year, and the fixed
 vocabulary covers English, French, and Spanish.
 
@@ -22,13 +26,52 @@ from search.models import Warning
 
 TIME_TEXT_NOT_PARSED: str = "time_text_not_parsed"
 
-_YEAR = r"(\d{4})"
-_RANGE_SEP = r"\s*(?:to|-|–)\s*"
-_RANGE_RE = re.compile(rf"^{_YEAR}{_RANGE_SEP}{_YEAR}$")
-_SINCE_WORDS = r"(?:since|depuis|desde)"
-_SINCE_RE = re.compile(rf"^{_SINCE_WORDS}\s+{_YEAR}$")
-_POINT_RE = re.compile(rf"^{_YEAR}$")
-_LATEST_WORDS = frozenset({"latest", "current", "now"})
+# "latest" and "most recent" take "the" and a "year"/"available" suffix; "current" and
+# "now" stand alone.
+_LATEST = r"(?:(?:the\s+)?(?:latest|most\s+recent)(?:\s+year)?(?:\s+available)?|current|now)"
+_LATEST_RE = re.compile(rf"^{_LATEST}$")
+_BOUNDED_RE = re.compile(
+    r"^(?:(?P<lead>from|between|since|depuis|desde)\s+)?(?P<start>\d{4})"
+    rf"(?:\s*(?P<separator>to|until|and|-|–)\s*(?P<end>\d{{4}}|{_LATEST}))?$"
+)
+# The separators each lead takes; `None` is a phrase that ends at its start year, a bare
+# year without a lead and an open-ended range after a "since" lead.
+_SEPARATORS_BY_LEAD: dict[str | None, frozenset[str | None]] = {
+    None: frozenset({None, "to", "-", "–"}),
+    "from": frozenset({"to", "until"}),
+    "between": frozenset({"and"}),
+    "since": frozenset({None}),
+    "depuis": frozenset({None}),
+    "desde": frozenset({None}),
+}
+
+# Every form the grammar accepts, as the not-parsed warning lists them. `YYYY` stands
+# for a four-digit year and `N` for a count in digits or words up to twenty.
+TIME_TEXT_FORMS: tuple[str, ...] = (
+    "YYYY",
+    "YYYY to YYYY",
+    "YYYY-YYYY",
+    "from YYYY to YYYY",
+    "from YYYY until YYYY",
+    "between YYYY and YYYY",
+    "YYYY to latest",
+    "from YYYY to the latest",
+    "between YYYY and the latest",
+    "since YYYY",
+    "depuis YYYY",
+    "desde YYYY",
+    "latest",
+    "the latest",
+    "latest year available",
+    "most recent",
+    "current",
+    "now",
+    "last N years",
+    "past N years",
+    "last decade",
+    "past decade",
+    "over the last decade",
+)
 
 # Relative spans accept single number words through twenty. Larger counts use digits.
 _NUMBER_WORDS: dict[str, int] = {
@@ -71,25 +114,18 @@ def parse_time_text(text: str, *, current_year: int) -> tuple[list[ExtractedDate
     range ending at that year."""
     normalised = text.strip().casefold()
 
-    if normalised in _LATEST_WORDS:
+    if _LATEST_RE.match(normalised):
         return [ExtractedDate(kind="latest", start=None, end=None)], None
 
-    point_match = _POINT_RE.match(normalised)
-    if point_match:
-        year = point_match.group(1)
-        return [ExtractedDate(kind="point", start=year, end=None)], None
-
-    range_match = _RANGE_RE.match(normalised)
-    if range_match:
-        start, end = range_match.group(1), range_match.group(2)
-        if int(start) <= int(end):
-            return [ExtractedDate(kind="range", start=start, end=end)], None
-        return [], _not_parsed_warning(text)
-
-    since_match = _SINCE_RE.match(normalised)
-    if since_match:
-        start = since_match.group(1)
-        return [ExtractedDate(kind="range", start=start, end=None)], None
+    bounded_match = _BOUNDED_RE.match(normalised)
+    if bounded_match:
+        dates = _bounded_dates(
+            lead=bounded_match.group("lead"),
+            start=bounded_match.group("start"),
+            separator=bounded_match.group("separator"),
+            end=bounded_match.group("end"),
+        )
+        return (dates, None) if dates else ([], _not_parsed_warning(text))
 
     years_match = _RELATIVE_YEARS_RE.match(normalised)
     if years_match:
@@ -102,6 +138,23 @@ def parse_time_text(text: str, *, current_year: int) -> tuple[list[ExtractedDate
         return _relative_range(current_year, _DECADE_YEARS), None
 
     return [], _not_parsed_warning(text)
+
+
+def _bounded_dates(
+    *, lead: str | None, start: str, separator: str | None, end: str | None
+) -> list[ExtractedDate]:
+    """The dates a lead, start year, separator and end phrase yield, or an empty list when
+    the lead does not take the separator or a year end precedes the start."""
+    if separator not in _SEPARATORS_BY_LEAD[lead]:
+        return []
+    if separator is None and lead is None:
+        return [ExtractedDate(kind="point", start=start, end=None)]
+    # A "since" lead or a latest end leaves the range open.
+    if end is None or not end.isdigit():
+        return [ExtractedDate(kind="range", start=start, end=None)]
+    if int(start) > int(end):
+        return []
+    return [ExtractedDate(kind="range", start=start, end=end)]
 
 
 def _resolve_span_count(token: str) -> int | None:
@@ -126,9 +179,8 @@ def _not_parsed_warning(text: str) -> Warning:
         severity=_WARN_SEVERITY,
         message=(
             f"time_text {text!r} did not match any recognised date grammar "
-            "(a bare year; 'YYYY to YYYY'/'YYYY-YYYY'; 'since YYYY'/'depuis YYYY'/"
-            "'desde YYYY'; 'latest'/'current'/'now'; 'last N years'/'past N years'; "
-            "'last decade'/'past decade'/'over the last decade'); treated as dateless."
+            f"({'; '.join(repr(form) for form in TIME_TEXT_FORMS)}, where YYYY is a "
+            "four-digit year and N a count); treated as dateless."
         ),
     )
 

@@ -82,7 +82,7 @@ from search.engine.region.place_roles import (
     bind_alternate_place_roles,
     bind_place_roles,
     bound_after_election,
-    place_order,
+    capped_place_dcids,
     request_named_groups,
 )
 from search.engine.region.result import FacetAxisFilter, RegionResult
@@ -175,47 +175,25 @@ def _bind_standard_place_dcids(state: ResolveState) -> list[str]:
             )
         )
 
-    # Preserve query order and deduplicate by DCID, so synonyms for one place remain scalar.
-    #
-    # Exclude Group placeholders and append their already-capped members after ordinary
-    # places. The sets use separate limits, ``max_standard_places`` and ``max_child_places``.
-    group_member_dcids_by_name = state.group_member_dcids_by_name
-    ordinary_place_dcids: list[str] = list(
-        dict.fromkeys(
-            rcl.resolved_entity_names[name]
-            for name in state.entities
-            if name in rcl.resolved_entity_names and name not in group_member_dcids_by_name
-        )
-    )
-
-    if len(ordinary_place_dcids) > settings().max_standard_places:
-        _dropped = len(ordinary_place_dcids) - settings().max_standard_places
+    standard_place_dcids, named_count = capped_place_dcids(state)
+    cap = settings().max_standard_places
+    if named_count > cap:
         state.warnings.append(
             Warning(
                 code=MULTI_RECIPIENT_TRUNCATED,
                 severity="warn",
                 message=(
-                    f"{len(ordinary_place_dcids)} places detected; first "
-                    f"{settings().max_standard_places} used ({_dropped} dropped)."
+                    f"{named_count} places detected; first {cap} used "
+                    f"({named_count - cap} dropped)."
                 ),
             )
         )
-        ordinary_place_dcids = ordinary_place_dcids[: settings().max_standard_places]
-
-    group_place_dcids: list[str] = list(
-        dict.fromkeys(
-            dcid for name in state.entities for dcid in group_member_dcids_by_name.get(name, ())
-        )
-    )
-
-    # The places named, capped above in query order, are stated in the one place order
-    # (`place_roles.place_order`), as a resubmit of the answer states them.
-    standard_place_dcids = place_order(ordinary_place_dcids + group_place_dcids)
     state.standard_place_dcids = standard_place_dcids
 
     # Use the first query spelling for resolved places. Group members use graph names for
     # labels and expansion keys. Pins prove existence. Graph labels supply display text.
     accepted_place_dcids = set(standard_place_dcids)
+    group_member_dcids_by_name = state.group_member_dcids_by_name
     group_member_names_by_dcid = state.group_member_names_by_dcid
     state.query_entity_text_by_dcid = {}
     pinned_entity_dcids: set[str] = set()
@@ -463,7 +441,7 @@ def _shape_place_contexts(
         place_context(
             shape,
             roles,
-            stat_vars=served_stat_vars(shape, bindings)
+            stat_vars=served_stat_vars(shape, bindings, roles)
             if takes_default_scope(shape, roles)
             else (),
             children=children,
@@ -562,9 +540,25 @@ def _guard_judge(state: ResolveState, *, elected_has_data: bool) -> AlternateJud
     for judge in state.alternate_judges:
         if judge.elected is state.shape_draft and judge.pins == pins:
             return judge
-    judge = AlternateJudge(pins, state.shape_draft)
+    judge = AlternateJudge(pins, state.shape_draft, role_keys=_place_role_keys(state))
     state.alternate_judges.append(judge)
     return judge
+
+
+def _place_role_keys(state: ResolveState) -> Callable[[ShapeDraft], frozenset[str]]:
+    """The role keys each shape's identity binds the query's places under
+    (`entity_role_keys`), by shape id: the elected shape's as admitted and each bound
+    alternate's (`state.alternate_place_roles`). A shape with no binding reads none. The
+    guard elects the dataset that serves each shape under them."""
+    bound = [
+        (state.capped_shapes[index], roles) for index, roles in state.alternate_place_roles.items()
+    ]
+    if state.elected_place_roles is not None:
+        bound.append((state.shape_draft, state.elected_place_roles))
+    keys = {
+        shape.shape_id: entity_role_keys(shape, roles.resolved_entities) for shape, roles in bound
+    }
+    return lambda shape: keys.get(shape.shape_id, frozenset())
 
 
 def _offered_shapes(state: ResolveState, shapes: Mapping[int, ShapeDraft]) -> dict[int, ShapeDraft]:

@@ -1,4 +1,4 @@
-"""Tests the groupby door's axis checks, StatVar collision refusal, and full-collapse rules.
+"""Tests the groupby door's axis checks, StatVar collision refusal, and grammar-frame rules.
 A synthetic non-summable code system covers a declaration no live CRS system uses.
 """
 
@@ -11,10 +11,11 @@ from code_index.types import StatVarRow
 from datasets_api.groupby import (
     collapse_axes,
     contributing_dcids,
-    is_full_collapse,
+    kept_axes,
     refuse_decode_gaps,
     refuse_stat_var_collision,
     refuse_unknown_by_axes,
+    yields_grammar_frame,
 )
 from materialise.reshape import RollupNotSummableError, Table
 from materialise.roles import KNOWN_ROLE_NAMES
@@ -328,40 +329,36 @@ class TestRefuseDecodeGaps:
             raise AssertionError("expected RollupNotSummableError")
 
 
-class TestIsFullCollapse:
-    """Full collapse applies when `by` keeps none of the decoded, declared summable axes and
-    every decoded axis the sum leaves alone holds one value across the resolved members."""
+class TestYieldsGrammarFrame:
+    """The sum yields a grammar frame when the frame decodes a summable axis and every decoded
+    axis the sum leaves alone holds one value across the resolved members. A summable axis named
+    in `by` stays on that frame as a grain column (`kept_axes`)."""
 
-    def test_by_keeping_a_decoded_axis_is_not_a_full_collapse(self):
-        assert not is_full_collapse(
-            by=["crsPurpose"],
+    def test_by_keeping_a_decoded_axis_still_yields_a_frame_that_keeps_it(self):
+        declarations = {d.code_system: d for d in _DECLARATIONS}
+        assert yields_grammar_frame(
             decoded_code_systems=("crsPurpose", "crsTypeOfFinance"),
-            declarations={d.code_system: d for d in _DECLARATIONS},
+            declarations=declarations,
             lookup={},
         )
-
-    def test_by_keeping_only_a_role_or_never_decoded_axis_is_a_full_collapse(self):
-        assert is_full_collapse(
-            by=["financingProvider", "crsCooperationModality"],
+        assert kept_axes(
+            by=["time_period", "crsPurpose", "crsCooperationModality"],
             decoded_code_systems=("crsPurpose", "crsTypeOfFinance"),
-            declarations={d.code_system: d for d in _DECLARATIONS},
-            lookup={},
-        )
+            declarations=declarations,
+        ) == ("crsPurpose",)
 
-    def test_nothing_decoded_at_all_is_never_a_full_collapse(self):
+    def test_nothing_decoded_at_all_never_yields_a_frame(self):
         # `stat_var` joins a collapse only when at least one CRS axis is decoded.
-        assert not is_full_collapse(
-            by=["financingProvider"],
+        assert not yields_grammar_frame(
             decoded_code_systems=(),
             declarations={d.code_system: d for d in _DECLARATIONS},
             lookup={},
         )
 
-    def test_an_unsummed_axis_holding_one_value_leaves_a_full_collapse(self):
+    def test_an_unsummed_axis_holding_one_value_yields_a_frame(self):
         # Every member carries the same `futureCodeSystem` value, so the column the sum
         # leaves alone is constant and the rows are one series per entity tuple.
-        assert is_full_collapse(
-            by=["financingProvider"],
+        assert yields_grammar_frame(
             decoded_code_systems=("crsPurpose", "crsTypeOfFinance", "futureCodeSystem"),
             declarations={d.code_system: d for d in _DECLARATIONS},
             lookup={
@@ -370,11 +367,10 @@ class TestIsFullCollapse:
             },
         )
 
-    def test_an_unsummed_axis_holding_two_values_is_not_a_full_collapse(self):
+    def test_an_unsummed_axis_holding_two_values_yields_no_frame(self):
         # The sum groups by `futureCodeSystem`, so two values leave two series per entity
         # tuple and the rows are no grammar frame.
-        assert not is_full_collapse(
-            by=["financingProvider"],
+        assert not yields_grammar_frame(
             decoded_code_systems=("crsPurpose", "crsTypeOfFinance", "futureCodeSystem"),
             declarations={d.code_system: d for d in _DECLARATIONS},
             lookup={

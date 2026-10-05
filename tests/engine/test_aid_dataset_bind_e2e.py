@@ -3,7 +3,8 @@
 The packaged index holds two datasets, each on its own five-tuple: the CRS on `amount`,
 and the opt-in imputed multilateral sectors table on `attributedAmount`, whose every row
 carries `dac2aAidType=DAC2aAidType106` and `crsTypeOfFlow=CRSTypeOfFlow10`, the slots the
-five-tuple pins. The recall sample of every question here holds one member of each. The
+five-tuple pins. The election implies both, so an imputed part's identity leaves them
+unbound. The recall sample of every question here holds one member of each. The
 acceptance table replays the recorded extraction, mention reading and bind responses in
 `tests/fixtures/llm_responses.json`; the other tests script the model.
 """
@@ -17,6 +18,7 @@ from unittest.mock import patch
 
 import pytest
 
+from code_index.members import canonical_identity, elected_pins
 from code_index.shared import get_index
 from datasets_api.adapter import resolve_definition_members
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
@@ -27,7 +29,7 @@ from search.engine.events import DoneEvent, ResponseEvent
 from search.engine.extract import ExtractedEntity, Extraction
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.response_cache import ResponseCache
-from search.engine.retrieval.bound_values import identity_dataset
+from search.engine.retrieval.bound_values import identity_dataset, identity_query
 from search.engine.spec_id import mint_identity
 from search.models import (
     DatasetResubmitInput,
@@ -214,6 +216,14 @@ def _bound(spec: Spec) -> dict[str, str]:
     }
 
 
+def _pinned(spec: Spec) -> dict[str, str]:
+    """Each slot the spec binds to a pin of the dataset elected for its family
+    (`code_index.members.elected_pins`), mapped to the pinned value."""
+    bound = _bound(spec)
+    pins = elected_pins(get_index(), identity_query(spec.definition.identity))
+    return {prop: value for prop, value in pins.items() if bound.get(prop) == value}
+
+
 def _sources(spec: Spec) -> list[str]:
     return [source.dcid for source in spec.resolved.trace.resolved_sources]
 
@@ -278,7 +288,14 @@ _CRS_SOURCE = "crs-source"
 
 def _assert_part(spec: Spec, family: str) -> None:
     if family == _IMPUTED:
+        # The identity dev mints, and the canonical form of the same identity posted with
+        # the table's invariants unbound.
+        posted_unbound = imputed_education_aid_identity(source=IMPUTED_PROVENANCE)
+        for slot in posted_unbound["slots"]:
+            if slot["property"] in ("crsTypeOfFlow", AID_TYPE):
+                slot["binding"] = {"state": "unbound"}
         assert spec.spec_id == _spec_id(imputed_education_aid_identity(source=IMPUTED_PROVENANCE))
+        assert spec.spec_id == _spec_id(dict(canonical_identity(get_index(), posted_unbound)))
         assert _bound(spec)[AID_TYPE] == IMPUTED_MULTILATERAL
         assert _bound(spec)["source"] == IMPUTED_PROVENANCE
         assert spec.resolved.shape.member_count == IMPUTED_MEMBER_COUNT
@@ -768,9 +785,10 @@ _OPEN_AID_TYPE = (
 )
 def test_every_draft_of_a_pinned_slot_ends_as_its_pinned_value(drafted):
     """Every row of the imputed five-tuple holds one aid type and one flow, so the bind
-    menu offers neither slot, and whatever the model drafts on either, the part binds the
-    pinned value and mints one identity. The sentence states neither, because the measure
-    label already says imputed multilateral ODA, once."""
+    menu offers neither slot, and whatever the model drafts on either, the identity, which
+    names the table, binds the declared value, and the part mints one identity. The
+    sentence states neither, because the measure label already says imputed multilateral
+    ODA, once."""
     llm = _ScriptedLLM(_IM_E, dropped=("every aid type",), readings=(("only", 0),), drafted=drafted)
 
     response = _resolve_scripted(f"{_IM_E} to Kenya, every aid type", llm, _IM_E)
@@ -781,10 +799,33 @@ def test_every_draft_of_a_pinned_slot_ends_as_its_pinned_value(drafted):
     assert "property_dcid=crsTypeOfFlow" not in prompt
     (spec,) = _specs(response)
     _assert_part(spec, _IMPUTED)
-    assert _bound(spec)["crsTypeOfFlow"] == "CRSTypeOfFlow10"
+    assert _pinned(spec)["crsTypeOfFlow"] == "CRSTypeOfFlow10"
     sentence = spec.resolved.rendered_sentence
     assert sentence.casefold().count("imputed multilateral oda") == 1
     assert "official development assistance" not in sentence.casefold()
+
+
+def test_each_pinned_slot_offers_the_menu_around_its_pin():
+    """The imputed answer binds its two pinned slots to the table's invariants, and each
+    slot's menu is the one the code index scopes around the bound value
+    (`level_scoped_options`), less the options that serve no row. Every imputed row holds
+    the invariant's value, so it alone is offered."""
+    llm = _ScriptedLLM(_IM_E, dropped=(), readings=(("only", 0),))
+
+    response = _resolve_scripted(f"{_IM_E} to Kenya", llm, _IM_E)
+
+    (spec,) = _specs(response)
+    _assert_part(spec, _IMPUTED)
+    pinned = _pinned(spec)
+    assert set(pinned) == {AID_TYPE, "crsTypeOfFlow"}
+    menus = {
+        menu.key.property.dcid: [option.value.ref.dcid for option in menu.options]
+        for menu in spec.resolved.slot_options
+        if menu.key.property is not None and menu.key.property.dcid in pinned
+    }
+    assert menus == {prop: [value] for prop, value in pinned.items()}
+    for prop, value in pinned.items():
+        assert value in {option.dcid for option in get_index().level_scoped_options(prop, value)}
 
 
 @pytest.mark.parametrize("variable", ["imputed aid", "imputed ODA"])
@@ -799,7 +840,7 @@ def test_a_synonym_ending_in_a_measure_word_keeps_the_variable_and_answers_the_d
 
     assert _answers(response) == [(variable, IMPUTED_PROVENANCE, True)]
     (spec,) = _specs(response)
-    assert _bound(spec)[AID_TYPE] == IMPUTED_MULTILATERAL
+    assert _pinned(spec)[AID_TYPE] == IMPUTED_MULTILATERAL
     assert _bound(spec)["source"] == IMPUTED_PROVENANCE
     assert _query_qualifier_warnings(response) == []
 
@@ -868,7 +909,7 @@ def test_a_code_the_named_dataset_declares_binds_on_its_own_five_tuple(
 
     (spec,) = _specs(response)
     assert _bound(spec)["crsPurpose"] == "CRSPurposeCode510"
-    assert _bound(spec)[AID_TYPE] == IMPUTED_MULTILATERAL
+    assert _pinned(spec)[AID_TYPE] == IMPUTED_MULTILATERAL
     assert _sources(spec) == [IMPUTED_PROVENANCE]
 
 
@@ -901,7 +942,7 @@ def test_a_parsed_part_binds_the_dataset_its_reading_asks_for():
     response = _resolve_parsed(llm, _IM_E)
 
     (spec,) = _specs(response)
-    assert _bound(spec)[AID_TYPE] == IMPUTED_MULTILATERAL
+    assert _pinned(spec)[AID_TYPE] == IMPUTED_MULTILATERAL
     assert spec.resolved.shape.member_count == IMPUTED_MEMBER_COUNT
     assert llm.calls["MentionReadings"] == 1
 
@@ -929,7 +970,7 @@ def test_each_parsed_part_binds_its_own_mention():
 
     plain, imputed = _specs(response)
     assert AID_TYPE not in _bound(plain)
-    assert _bound(imputed)[AID_TYPE] == IMPUTED_MULTILATERAL
+    assert _pinned(imputed)[AID_TYPE] == IMPUTED_MULTILATERAL
     assert llm.calls["MentionReadings"] == 1
 
 
@@ -949,10 +990,10 @@ def test_a_parsed_part_naming_no_dataset_asks_no_reading():
 
 
 def _answers(response: ResolveResponse) -> list[tuple[str | None, str, bool]]:
-    """Each part's variable text, the dataset its family comes from, and whether the aid
-    type the imputed five-tuple pins is bound."""
+    """Each part's variable text, the dataset its family comes from, and whether the
+    identity binds the aid type the imputed five-tuple pins."""
     return [
-        (part.variable_text, _sources(spec)[0], AID_TYPE in _bound(spec))
+        (part.variable_text, _sources(spec)[0], AID_TYPE in _pinned(spec))
         for part, spec in zip(response.parts, _specs(response), strict=True)
     ]
 
@@ -1222,7 +1263,7 @@ def test_each_parsed_part_naming_the_dataset_binds_on_its_own_reading():
 
     response = _resolve_parsed(llm, f"{_IM} aid", _IM_E)
 
-    assert [AID_TYPE in _bound(spec) for spec in _specs(response)] == [True, True]
+    assert [AID_TYPE in _pinned(spec) for spec in _specs(response)] == [True, True]
     assert _part_warnings(response) == [[], []]
     assert llm.calls["MentionReadings"] == 1
 
@@ -1438,7 +1479,7 @@ def test_a_resubmitted_parsed_part_reads_its_mention_as_the_parsed_door_does(
         response, done = _response_and_done(ResolveRequest(input=door), llm, *variables)
         specs = _specs(response)
         if relation == "only":
-            assert _bound(specs[-1])[AID_TYPE] == IMPUTED_MULTILATERAL
+            assert _pinned(specs[-1])[AID_TYPE] == IMPUTED_MULTILATERAL
             assert specs[-1].resolved.shape.member_count == IMPUTED_MEMBER_COUNT
         else:
             assert all(AID_TYPE not in _bound(spec) for spec in specs)

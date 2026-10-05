@@ -70,4 +70,5 @@ def query_for(shape: ShapeDraft, bound_values: Mapping[str, list[str]]) -> Famil
             )
             for prop, values in bound_values.items()
         ],
+        (),
     )

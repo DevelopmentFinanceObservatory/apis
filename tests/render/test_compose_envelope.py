@@ -9,6 +9,7 @@ import pytest
 
 from search.models import (
     METHOD_REF,
+    UNIT_REF,
     BindingUnbound,
     BindingValue,
     BreadthDim,
@@ -390,8 +391,13 @@ def test_agree_hoists_shared_qualifiers_once():
     assert [(t.part_index, t.segment) for t in plan if t.axis == "source"] == [(None, "byline")]
 
 
-def _usd_part(what: str, *, qualifier: str, method: str | None = None) -> DefinitePart:
-    """A Kenya US-dollar part, its identity binding ``method`` when given."""
+def _usd_part(
+    what: str, *, qualifier: str, method: str | None = None, qualifier_slot: bool = False
+) -> DefinitePart:
+    """A Kenya US-dollar part, its identity binding ``method`` when given. Under
+    ``qualifier_slot`` the shape declares a measurementQualifier how slot, so the unit
+    token states that slot's ref in place of the bare axis ref."""
+    how_slots = [_crs_how("measurementQualifier", qualifier)] if qualifier_slot else []
     method_facets = (
         {"measurementMethod": ResolvedFacet(basis="bound", ref=method, label=f"{method} label")}
         if method is not None
@@ -399,7 +405,7 @@ def _usd_part(what: str, *, qualifier: str, method: str | None = None) -> Defini
     )
     return _definite(
         _spec(
-            slots=[_what_slot(what), _where_place_slot("country/KEN", "Kenya")],
+            slots=[_what_slot(what), _where_place_slot("country/KEN", "Kenya"), *how_slots],
             window=TimeWindow(start_year=1960, end_year=2024),
             measurement_qualifier=_ref(qualifier, qualifier),
             facets={
@@ -456,6 +462,23 @@ def test_bylines_that_differ_in_unit_compose_one_sentence_per_part():
         "Development Indicators."
     )
     assert [t.part_index for t in plan if t.axis == "unit"] == [0, 1]
+
+
+def test_bylines_whose_unit_states_differ_compose_one_sentence_per_part():
+    """Two parts read "Current US dollars", but one edits the price basis through its how
+    slot and the other through the bare axis. A shared unit token could state only one
+    of those refs, so each part keeps its own byline and unit token."""
+    _, plan = compose_envelope_sentence(
+        [
+            _usd_part("Total exports", qualifier="Nominal", qualifier_slot=True),
+            _usd_part("Total imports", qualifier="Nominal"),
+        ]
+    )
+    units = [t for t in plan if t.axis == "unit"]
+    assert [(t.part_index, t.text, t.states) for t in units] == [
+        (0, "Current US dollars", [UNIT_REF, "how:measurementQualifier"]),
+        (1, "Current US dollars", [UNIT_REF, "axis:measurementQualifier"]),
+    ]
 
 
 @pytest.mark.parametrize(

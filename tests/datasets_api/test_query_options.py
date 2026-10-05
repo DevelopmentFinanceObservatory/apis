@@ -79,6 +79,32 @@ GOLDEN_TABLE: list[tuple[str, dict[str, object], str | None]] = [
         {"groupby": {"by": [""], "op": "sum"}},
         "/options/groupby/by/0",
     ),
+    (
+        "groupby.by=time_period,crsPurpose&groupby.op=sum&groupby.levels=crsPurpose:0",
+        {
+            "groupby": {
+                "by": ["time_period", "crsPurpose"],
+                "op": "sum",
+                "levels": {"crsPurpose": 0},
+            }
+        },
+        None,
+    ),
+    (
+        "groupby.by=time_period&groupby.op=sum&groupby.levels=crsPurpose:0",
+        {"groupby": {"by": ["time_period"], "op": "sum", "levels": {"crsPurpose": 0}}},
+        "/options/groupby/levels",
+    ),
+    (
+        "groupby.by=crsPurpose&groupby.op=sum&groupby.levels=crsPurpose:-1",
+        {"groupby": {"by": ["crsPurpose"], "op": "sum", "levels": {"crsPurpose": -1}}},
+        "/options/groupby/levels/crsPurpose",
+    ),
+    (
+        "groupby.by=crsPurpose&groupby.op=sum&groupby.levels=crsPurpose:100",
+        {"groupby": {"by": ["crsPurpose"], "op": "sum", "levels": {"crsPurpose": 100}}},
+        "/options/groupby/levels/crsPurpose",
+    ),
     # Both validators report the same pointer for unknown keys.
     ("foo=bar", {"foo": "bar"}, "/options/foo"),
 ]
@@ -148,6 +174,44 @@ class TestRepeatedKeyRefuses:
         assert exc_info.value.pointer == expected_pointer
 
 
+class TestLevelsGrammar:
+    @pytest.mark.parametrize(
+        "value", ["crsPurpose", "crsPurpose:", "crsPurpose:one", "a:01", "a:1,a:2"]
+    )
+    def test_a_malformed_levels_entry_refuses_at_the_levels_pointer(self, value: str):
+        with pytest.raises(QueryOptionsInvalid) as exc_info:
+            parse_query_options(
+                [("groupby.by", "a"), ("groupby.op", "sum"), ("groupby.levels", value)]
+            )
+
+        assert exc_info.value.pointer == "/options/groupby/levels"
+
+    @pytest.mark.parametrize("sign", ["", "-"], ids=["positive", "negative"])
+    def test_a_depth_past_the_integer_conversion_limit_refuses_like_the_body(self, sign: str):
+        digits = "1" + "0" * 4300
+        with pytest.raises(QueryOptionsInvalid) as exc_info:
+            parse_query_options(
+                [
+                    ("groupby.by", "crsPurpose"),
+                    ("groupby.op", "sum"),
+                    ("groupby.levels", f"crsPurpose:{sign}{digits}"),
+                ]
+            )
+
+        depth = int(f"{sign}1") * 10**4300
+        body = {"groupby": {"by": ["crsPurpose"], "op": "sum", "levels": {"crsPurpose": depth}}}
+        assert exc_info.value.pointer == "/options/groupby/levels/crsPurpose"
+        assert _body_fault_pointer(body) == exc_info.value.pointer
+
+    def test_a_boolean_depth_in_the_body_refuses(self):
+        assert (
+            _body_fault_pointer(
+                {"groupby": {"by": ["crsPurpose"], "op": "sum", "levels": {"crsPurpose": True}}}
+            )
+            == "/options/groupby/levels/crsPurpose"
+        )
+
+
 class TestDefaults:
     def test_no_items_parses_to_mint_options_defaults(self):
         assert parse_query_options([]) == MintOptions()
@@ -161,6 +225,13 @@ _ROUND_TRIP_OPTIONS: list[MintOptions] = [
     MintOptions(groupby={"by": ["stat_var"], "op": "sum"}),
     MintOptions(groupby={"by": ["stat_var", "time_period"], "op": "sum"}),
     MintOptions(pivot={"index": "year", "columns": "recipient"}),
+    MintOptions(
+        groupby={
+            "by": ["time_period", "crsPurpose", "crsTypeOfFinance"],
+            "op": "sum",
+            "levels": {"crsTypeOfFinance": 1, "crsPurpose": 0},
+        }
+    ),
     MintOptions(columns=["year", "recipient", "value", "unit"]),
     MintOptions(
         format="parquet",

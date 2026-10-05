@@ -36,6 +36,7 @@ from series_coverage.coverage_types import (
     Role,
     ServedExtent,
     VariableCoverage,
+    YearCount,
 )
 from series_coverage.schema import (
     ABSENT_ENTITY,
@@ -56,6 +57,8 @@ _NO_BINDING: BoundRoles = MappingProxyType({})
 _NO_FACET_METADATA: Mapping[str, FacetMetadata] = MappingProxyType({})
 # CurrencyUnit dcids are `Currency` plus an upper-case ISO 4217 code (`CurrencyUSD`).
 _CURRENCY_UNIT = re.compile(r"Currency([A-Z]{3})")
+# The calendar years `Headline.recent_years` counts, the latest year with data included.
+_HEADLINE_YEARS = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -998,7 +1001,11 @@ class CoverageIndex:
     ) -> Headline | None:
         """The latest year any row surviving `bound` has data inside `[first_year,
         last_year]` (unbounded by default, across a series' whole history), with the exact
-        observation, series and per-role distinct-dcid counts in that year alone. `None`
+        observation, series and per-role distinct-dcid counts in that year alone, and the
+        same counts for it and the two calendar years before it (`recent_years`, newest
+        first, a year with no data kept at zero). The window picks the latest year; the
+        earlier years count whether or not the window reaches them. `recent_years` stops
+        at the horizon's `epoch_year`, since the artifact holds no year before it. `None`
         when nothing survives `bound` and the window.
 
         `served` keeps only the rows a preview serves, as `(variable,
@@ -1020,26 +1027,42 @@ class CoverageIndex:
         `role_counts` omits a role no active row carries, such as `donor`
         when every active row belongs to a one-role variable.
         """
-        filtered = self._filtered(
-            variables=variables, bound=bound, first_year=first_year, last_year=last_year
-        )
-        if served is not None and filtered.num_rows:
-            filtered = filtered.filter(pa.array(self._served_row_mask(filtered, served)))
-        if filtered.num_rows and (dropped := self._excluded_row_mask(filtered, excluded)).any():
-            filtered = filtered.filter(pa.array(~dropped))
-        if filtered.num_rows == 0:
+        rows = self._member_rows(variables=variables, bound=bound)
+        if served is not None and rows.num_rows:
+            rows = rows.filter(pa.array(self._served_row_mask(rows, served)))
+        if rows.num_rows and (dropped := self._excluded_row_mask(rows, excluded)).any():
+            rows = rows.filter(pa.array(~dropped))
+        if rows.num_rows == 0:
             return None
-        masks = _mask_matrix(filtered, self._horizon)
-        combined = np.bitwise_or.reduce(masks, axis=0)
+        masks = _mask_matrix(rows, self._horizon)
+        window = _window_words(self._horizon, first_year=first_year, last_year=last_year)
+        combined = np.bitwise_or.reduce(masks, axis=0) & window
         occupied = np.flatnonzero(combined)
         if occupied.size == 0:
             return None
         word = int(occupied[-1])
         latest_offset = int(bit_length64(combined[word : word + 1])[0]) - 1
         latest_year = self._horizon.epoch_year + MASK_WORD_BITS * word + latest_offset
-        year_bit = np.uint64(1) << np.uint64(latest_offset)
-        active = (masks[:, word] & year_bit) != 0
-        active_rows = filtered.filter(pa.array(active))
+        earliest = max(latest_year - _HEADLINE_YEARS + 1, self._horizon.epoch_year)
+        recent_years = tuple(
+            self._year_count(rows, masks, year) for year in range(latest_year, earliest - 1, -1)
+        )
+        latest = recent_years[0]
+        return Headline(
+            year=latest_year,
+            observations=latest.observations,
+            series=latest.series,
+            role_counts=latest.role_counts,
+            recent_years=recent_years,
+        )
+
+    def _year_count(self, rows: pa.Table, masks: np.ndarray, year: int) -> YearCount:
+        """`rows`' series, and their distinct donor and recipient dcids, holding an
+        observation in `year`, a year inside the horizon. `masks` is `rows`'
+        `(rows, mask_words)` year-mask matrix."""
+        word, bit = divmod(year - self._horizon.epoch_year, MASK_WORD_BITS)
+        active = (masks[:, word] & (np.uint64(1) << np.uint64(bit))) != 0
+        active_rows = rows.filter(pa.array(active))
         series = (
             active_rows.select([VARIABLE_COLUMN, RECIPIENT_COLUMN, DONOR_COLUMN])
             .group_by([VARIABLE_COLUMN, RECIPIENT_COLUMN, DONOR_COLUMN])
@@ -1051,9 +1074,7 @@ class CoverageIndex:
             found = set(cast("list[str]", pc.unique(active_rows[column]).to_pylist()))
             if count := len(found - {ABSENT_ENTITY}):
                 role_counts[role] = count
-        return Headline(
-            year=latest_year, observations=series, series=series, role_counts=role_counts
-        )
+        return YearCount(year=year, observations=series, series=series, role_counts=role_counts)
 
     def covers(self, variable: str) -> bool:
         """Whether the artifact holds any row of `variable`."""
@@ -1750,6 +1771,7 @@ __all__ = [
     "Role",
     "SeriesKey",
     "VariableCoverage",
+    "YearCount",
 ]
 
 # Not re-exported: `FacetMetadata` (imported for the `facet_metadata`

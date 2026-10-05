@@ -16,7 +16,7 @@ from dfo_frame_grammar import STAT_VAR_COLUMN
 
 from assembler.bind import BoundSeries, role_columns
 from assembler.errors import BindingInvalid, ConstraintViolation
-from assembler.frame_view import dimension_columns
+from assembler.frame_view import dimension_columns, facet_dimension_names
 from assembler.ports import ResolvedFrame
 from assembler.resolve import ResolvedSeries
 from assembler.select import has_arrayed_dimension
@@ -56,19 +56,30 @@ def _build_line_chart(
     bound_series: Sequence[BoundSeries],
     source_id_by_raw_ref: Mapping[str | None, str],
 ) -> tuple[dict[str, object], frozenset[str]]:
-    y_label = _axis_label(resolved_frame=resolved_frame, series=series)
+    stat_var_labels = _stat_var_labels(resolved_frame=resolved_frame, series=series)
+    y_label = _axis_label(stat_var_labels=stat_var_labels)
     window = complete_window(
         window=cast(Mapping[str, object] | None, merged_intent.get("window")),
         resolved_frame=resolved_frame,
     )
     title_text = cast(str | None, merged_intent.get("title")) or _default_title(
-        bound_series=bound_series, y_label=y_label
+        bound_series=bound_series, y_label=y_label, stat_var_labels=stat_var_labels
     )
 
     payload_series = [
         _series_payload(bound=one, source_id_by_raw_ref=source_id_by_raw_ref)
         for one in bound_series
     ]
+    if len(stat_var_labels) > 1:
+        # `BoundSeries.label` names entity roles alone, so lines that differ only on stat_var
+        # would share a label. Each line leads with its own stat-var label.
+        for payload, resolved, bound in zip(payload_series, series, bound_series, strict=True):
+            stat_var_label = _coordinate_label(
+                labels=resolved_frame.labels,
+                value=dict(resolved.coordinates).get(STAT_VAR_COLUMN),
+            )
+            if bound.label != stat_var_label:
+                payload["label"] = f"{stat_var_label} / {bound.label}"[:_LABEL_MAX]
     observed_periods = frozenset(
         cast(str, point["period"])
         for one in bound_series
@@ -98,22 +109,55 @@ def _build_bar_chart(
     bound_series: Sequence[BoundSeries],
     source_id_by_raw_ref: Mapping[str | None, str],
 ) -> tuple[dict[str, object], frozenset[str]]:
-    y_label = _axis_label(resolved_frame=resolved_frame, series=series)
+    """Builds a bar chart in entity or period mode.
+
+    A select that lists values on one dimension draws one bar per value, in list order. A
+    select that resolves to one series draws it across the window. Otherwise, when the
+    series vary on exactly one dimension and each holds a value in the one period with data,
+    the chart draws one bar per value of that dimension, largest first; `assembler.reply`
+    states this default in the fact summary. Any other selection refuses `binding_invalid`."""
+    stat_var_labels = _stat_var_labels(resolved_frame=resolved_frame, series=series)
+    y_label = _axis_label(stat_var_labels=stat_var_labels)
     title_text = cast(str | None, merged_intent.get("title")) or _default_title(
-        bound_series=bound_series, y_label=y_label
+        bound_series=bound_series, y_label=y_label, stat_var_labels=stat_var_labels
     )
     select = cast(Mapping[str, object], merged_intent["select"])
     if has_arrayed_dimension(select=select):
-        series_and_axis = _bar_chart_entity_mode(
-            select=select, bound_series=bound_series, source_id_by_raw_ref=source_id_by_raw_ref
-        )
-    else:
-        series_and_axis = _bar_chart_period_mode(
-            merged_intent=merged_intent,
+        category_dimension = next(name for name, value in select.items() if isinstance(value, list))
+        _require_no_other_varying_dimension(
+            category_dimension=category_dimension,
+            select=select,
             resolved_frame=resolved_frame,
+            series=series,
+        )
+        series_and_axis = _bar_chart_entity_mode(
+            category_dimension=category_dimension,
+            labels=resolved_frame.labels,
             series=series,
             bound_series=bound_series,
             source_id_by_raw_ref=source_id_by_raw_ref,
+            largest_first=False,
+        )
+    elif len(bound_series) == 1:
+        series_and_axis = _bar_chart_period_mode(
+            merged_intent=merged_intent,
+            resolved_frame=resolved_frame,
+            primary=bound_series[0],
+            source_id_by_raw_ref=source_id_by_raw_ref,
+        )
+    else:
+        series_and_axis = _bar_chart_entity_mode(
+            category_dimension=_default_category_dimension(
+                select=select,
+                resolved_frame=resolved_frame,
+                series=series,
+                bound_series=bound_series,
+            ),
+            labels=resolved_frame.labels,
+            series=series,
+            bound_series=bound_series,
+            source_id_by_raw_ref=source_id_by_raw_ref,
+            largest_first=True,
         )
     payload_series, category_axis, observed_periods = series_and_axis
     scale, range_ = _value_axis_scale_and_range(merged_intent=merged_intent)
@@ -133,23 +177,35 @@ def _build_bar_chart(
 
 def _bar_chart_entity_mode(
     *,
-    select: Mapping[str, object],
+    category_dimension: str,
+    labels: Mapping[str, str],
+    series: Sequence[ResolvedSeries],
     bound_series: Sequence[BoundSeries],
     source_id_by_raw_ref: Mapping[str | None, str],
+    largest_first: bool,
 ) -> tuple[list[dict[str, object]], dict[str, object], frozenset[str]]:
-    """Builds one bar per entity at the latest shared observed period."""
-    category_dimension = next(name for name, value in select.items() if isinstance(value, list))
+    """Builds one bar per value of `category_dimension` at the latest shared observed period,
+    in series order or, with `largest_first`, by value from largest to smallest. Each bar
+    carries its value's label on that dimension, which is what tells the bars apart."""
     shared_period = _shared_observed_period(bound_series=bound_series)
     payload_series: list[dict[str, object]] = [
         {
-            "id": one.id,
-            "label": one.label[:_LABEL_MAX],
-            "unit": one.unit,
-            "source_ref": source_id_by_raw_ref[one.source_ref],
-            "points": [dict(_point_at(points=one.points, period=shared_period))],
+            "id": bound.id,
+            "label": _coordinate_label(
+                labels=labels, value=dict(resolved.coordinates).get(category_dimension)
+            ),
+            "unit": bound.unit,
+            "source_ref": source_id_by_raw_ref[bound.source_ref],
+            "points": [dict(_point_at(points=bound.points, period=shared_period))],
         }
-        for one in bound_series
+        for resolved, bound in zip(series, bound_series, strict=True)
     ]
+    if largest_first:
+        # Every series is observed at the shared period, so each bar holds a value.
+        payload_series.sort(
+            key=lambda bar: cast(float, cast("list[dict[str, object]]", bar["points"])[0]["value"]),
+            reverse=True,
+        )
     category_axis: dict[str, object] = {
         "mode": "entity",
         "category_dimension": category_dimension,
@@ -162,16 +218,10 @@ def _bar_chart_period_mode(
     *,
     merged_intent: Mapping[str, object],
     resolved_frame: ResolvedFrame,
-    series: Sequence[ResolvedSeries],
-    bound_series: Sequence[BoundSeries],
+    primary: BoundSeries,
     source_id_by_raw_ref: Mapping[str | None, str],
 ) -> tuple[list[dict[str, object]], dict[str, object], frozenset[str]]:
     """Builds one series of bars across the selected window."""
-    if len(bound_series) != 1:
-        raise _period_mode_needs_one_series(
-            merged_intent=merged_intent, resolved_frame=resolved_frame, series=series
-        )
-    primary = bound_series[0]
     window = complete_window(
         window=cast(Mapping[str, object] | None, merged_intent.get("window")),
         resolved_frame=resolved_frame,
@@ -187,49 +237,174 @@ def _bar_chart_period_mode(
     return payload_series, category_axis, observed_periods
 
 
-def _period_mode_needs_one_series(
+def _default_category_dimension(
     *,
-    merged_intent: Mapping[str, object],
+    select: Mapping[str, object],
     resolved_frame: ResolvedFrame,
     series: Sequence[ResolvedSeries],
-) -> BindingInvalid:
-    """The refusal for a period-mode bar chart whose select left a dimension unbound.
+    bound_series: Sequence[BoundSeries],
+) -> str:
+    """The one dimension a bar chart can compare when select lists no values.
 
-    It names every varying dimension and offers the first one's values, with their
-    labels, as the list to compare. Retrying with that list draws an entity-mode chart;
-    each other varying dimension still needs one value."""
-    select = cast(Mapping[str, object], merged_intent["select"])
-    varying = _varying_unselected_dimensions(
-        resolved_frame=resolved_frame, series=series, selected_names=frozenset(select)
+    The series must vary on exactly one dimension other than a facet and hold data in one
+    period, and every series must hold a value in it. A facet that varies here pairs with
+    another dimension, since resolution refuses a facet that splits a series. Any other
+    selection is a choice the caller makes, so it refuses `binding_invalid` naming the values
+    and the next call."""
+    varying = tuple(
+        name
+        for name in _varying_unselected_dimensions(
+            resolved_frame=resolved_frame, series=series, selected_names=frozenset(select)
+        )
+        if name not in facet_dimension_names()
     )
+    observed = sorted(
+        {
+            cast(str, point["period"])
+            for one in bound_series
+            for point in one.points
+            if "value" in point
+        }
+    )
+    # With no observed period the entity-mode build refuses for want of a shared period.
+    if len(varying) == 1 and len(observed) <= 1:
+        if observed:
+            _require_every_value_at(
+                dimension=varying[0],
+                period=observed[0],
+                series=series,
+                bound_series=bound_series,
+                labels=resolved_frame.labels,
+            )
+        return varying[0]
+
+    # Resolution refuses a facet that splits a series, so several series vary on at least
+    # one dimension other than a facet.
+    assert varying
     listed, *others = varying
-    values = tuple(
-        dict.fromkeys(
-            value
-            for one in series
-            for name, value in one.coordinates
-            if name == listed and value is not None
+    values_by_name = {
+        name: tuple(
+            dict.fromkeys(value for one in series for key, value in one.coordinates if key == name)
         )
-    )
-    detail = (
-        f"a period-mode bar_chart names one series; this selection resolves to {len(series)} "
-        f"because select leaves {', '.join(repr(name) for name in varying)} unbound. "
-        f"To compare entities, list the values to compare on {listed!r} in select"
-    )
+        for name in varying
+    }
+    labels = resolved_frame.labels
+    unbound = ", ".join(f"{name!r} ({len(values_by_name[name])} values)" for name in varying)
     if others:
-        detail += (
-            "; bind each of "
-            f"{', '.join(repr(name) for name in others)} to one value, or the chart draws "
-            "one bar per combination"
+        bindable = "; ".join(
+            f"{name!r} holds "
+            + ", ".join(
+                _value_with_label(labels=labels, value=value) for value in values_by_name[name]
+            )
+            for name in others
         )
-    return BindingInvalid(
+        detail = (
+            f"a bar_chart compares one dimension; select leaves {unbound} unbound. List the "
+            f"values to compare on {listed!r} in select and bind each of "
+            f"{', '.join(repr(name) for name in others)} to one value. {bindable}"
+        )
+    else:
+        detail = (
+            f"a bar_chart draws one series across periods or one bar per value at one period; "
+            f"select leaves {unbound} unbound and the window holds data in {len(observed)} "
+            f"periods ({observed[0]}..{observed[-1]}). Bind {listed!r} to one value to draw its "
+            f"periods, or list the {listed!r} values to compare in select to draw them at the "
+            "latest period they share, or at the one period a window names"
+        )
+    raise BindingInvalid(
         pointer="/select",
         dimension=listed,
-        legal_values=values,
+        legal_values=tuple(value for value in values_by_name[listed] if value is not None),
         truncated=False,
         detail=detail,
-        labels=resolved_frame.labels,
+        labels=labels,
     )
+
+
+def _require_no_other_varying_dimension(
+    *,
+    category_dimension: str,
+    select: Mapping[str, object],
+    resolved_frame: ResolvedFrame,
+    series: Sequence[ResolvedSeries],
+) -> None:
+    """Refuses `binding_invalid` when two series share a value of `category_dimension`. A bar
+    names only that value, so those bars would carry one label; they differ on a dimension
+    select leaves unbound, which the refusal names."""
+    category_values = [dict(one.coordinates).get(category_dimension) for one in series]
+    if len(set(category_values)) == len(category_values):
+        return
+    others = tuple(
+        name
+        for name in _varying_unselected_dimensions(
+            resolved_frame=resolved_frame, series=series, selected_names=frozenset(select)
+        )
+        if name not in facet_dimension_names()
+    )
+    # Resolution refuses a facet that splits a series, so series sharing a category value
+    # differ on another unbound dimension.
+    assert others
+    first = others[0]
+    values = tuple(
+        dict.fromkeys(value for one in series for key, value in one.coordinates if key == first)
+    )
+    labels = resolved_frame.labels
+    raise BindingInvalid(
+        pointer="/select",
+        dimension=first,
+        legal_values=tuple(value for value in values if value is not None),
+        truncated=False,
+        detail=(
+            f"a bar_chart compares one dimension; select lists {category_dimension!r} values "
+            f"and leaves {', '.join(repr(name) for name in others)} unbound. Bind each to one "
+            f"value. {first!r} holds "
+            + ", ".join(_value_with_label(labels=labels, value=value) for value in values)
+        ),
+        labels=labels,
+    )
+
+
+def _require_every_value_at(
+    *,
+    dimension: str,
+    period: str,
+    series: Sequence[ResolvedSeries],
+    bound_series: Sequence[BoundSeries],
+    labels: Mapping[str, str],
+) -> None:
+    """Refuses `binding_invalid` when a value of the compared dimension has no observed
+    value at the one period the default draws, so the default never drops a value the
+    caller did not leave out. `legal_values` holds the values observed there."""
+    observed: list[str | None] = []
+    unobserved: list[str | None] = []
+    for resolved, bound in zip(series, bound_series, strict=True):
+        value = dict(resolved.coordinates)[dimension]
+        point = _point_at(points=bound.points, period=period)
+        (observed if "value" in point else unobserved).append(value)
+    if not unobserved:
+        return
+    lacking = ", ".join(_value_with_label(labels=labels, value=value) for value in unobserved)
+    raise BindingInvalid(
+        pointer="/select",
+        dimension=dimension,
+        legal_values=tuple(value for value in observed if value is not None),
+        truncated=False,
+        detail=(
+            f"select leaves {dimension!r} unbound, and {period} holds no observed value for "
+            f"{len(unobserved)} of its {len(series)} values: {lacking}. List the "
+            f"{dimension!r} values to draw in select; alternatives holds the "
+            f"{len(observed)} observed in {period}"
+        ),
+        labels=labels,
+    )
+
+
+def _value_with_label(*, labels: Mapping[str, str], value: str | None) -> str:
+    """A coordinate value as `label (ref)`, or the ref alone when it has no label."""
+    if value is None:
+        return _ABSENT_COORDINATE_LABEL
+    label = labels.get(value)
+    return f"{label} ({value})" if label and label != value else value
 
 
 def _point_at(*, points: Sequence[Mapping[str, object]], period: str) -> Mapping[str, object]:
@@ -367,9 +542,10 @@ def _build_stat_card(
 ) -> tuple[dict[str, object], frozenset[str]]:
     primary = bound_series[0]
     headline = _headline_point(points=primary.points)
-    y_label = _axis_label(resolved_frame=resolved_frame, series=series)
+    stat_var_labels = _stat_var_labels(resolved_frame=resolved_frame, series=series)
+    y_label = _axis_label(stat_var_labels=stat_var_labels)
     title_text = cast(str | None, merged_intent.get("title")) or _default_title(
-        bound_series=bound_series, y_label=y_label
+        bound_series=bound_series, y_label=y_label, stat_var_labels=stat_var_labels
     )
     component: dict[str, object] = {
         "type": "stat_card",
@@ -493,23 +669,35 @@ def _value_axis_scale_and_range(
     return scale, {"min": range_min, "max": range_max}
 
 
-def _axis_label(*, resolved_frame: ResolvedFrame, series: Sequence[ResolvedSeries]) -> str:
-    """Returns the stat-var label for the value axis, distinct from the series label."""
-    if not series:
-        return "Value"
-    stat_var = next(
-        (value for name, value in series[0].coordinates if name == STAT_VAR_COLUMN), None
+def _stat_var_labels(
+    *, resolved_frame: ResolvedFrame, series: Sequence[ResolvedSeries]
+) -> tuple[str, ...]:
+    """The distinct stat-var labels across `series`, in series order, raw refs when
+    unlabelled."""
+    refs = dict.fromkeys(
+        value
+        for one in series
+        for name, value in one.coordinates
+        if name == STAT_VAR_COLUMN and value is not None
     )
-    if stat_var is None:
-        return "Value"
-    return resolved_frame.labels.get(stat_var, stat_var)
+    return tuple(resolved_frame.labels.get(ref, ref) for ref in refs)
 
 
-def _default_title(*, bound_series: Sequence[BoundSeries], y_label: str) -> str:
-    """Fallback title: measured value plus the sole series label, or selected table dimensions."""
+def _axis_label(*, stat_var_labels: Sequence[str]) -> str:
+    """The value axis names the one stat-var the series share, distinct from the series
+    labels. Series over several stat-vars share only their unit, which the series carry, so
+    the axis reads `Value`."""
+    return stat_var_labels[0] if len(stat_var_labels) == 1 else "Value"
+
+
+def _default_title(
+    *, bound_series: Sequence[BoundSeries], y_label: str, stat_var_labels: Sequence[str]
+) -> str:
+    """Fallback title: the measure plus the sole series label, or every stat-var the series
+    show."""
     if len(bound_series) == 1:
         return f"{y_label} — {bound_series[0].label}"
-    return y_label
+    return ", ".join(stat_var_labels) or y_label
 
 
 def _headline_point(*, points: Sequence[Mapping[str, object]]) -> Mapping[str, object]:

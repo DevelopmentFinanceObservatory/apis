@@ -310,7 +310,11 @@ def _check_facet_splits(
             dimension=column,
             legal_values=capped,
             truncated=len(legal) > len(capped),
-            detail=f"facet dimension {column!r} holds several values for one series and must be bound",
+            detail=(
+                f"one series exists under {len(split)} {column!r} values, so select must bind "
+                f"{column!r}: bind one value to draw that series once, or list the values to "
+                "draw one series for each"
+            ),
             structural_view=structural_view,
             labels=labels,
         )

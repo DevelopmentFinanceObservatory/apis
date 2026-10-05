@@ -17,59 +17,35 @@
 # and whose observations preview has points.
 
 [[example]]
-template = "Humanitarian aid to {place}"
-stat_var = "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSPurposeCode72010_Nominal"
+template = "Net bilateral ODA for education to {place}"
+stat_var = "Amount_FinancialFlow_Net_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSPurposeCode11110_Nominal"
 role = "recipient"
-place = "country/ETH"
-
-[[example]]
-template = "Humanitarian aid from {place}"
-stat_var = "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSPurposeCode72010_Nominal"
-role = "donor"
-place = "country/DEU"
-
-[[example]]
-template = "Basic health care aid from {place}"
-stat_var = "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSPurposeCode12220_Nominal"
-role = "donor"
-place = "country/GBR"
-
-[[example]]
-template = "Debt service as a proportion of exports of goods and services in {place}"
-stat_var = "sdg/DT_TDS_DECT"
-place = "country/GHA"
-
-[[example]]
-template = "Population of {place}"
-stat_var = "Count_Person"
 place = "country/KEN"
 
 [[example]]
-template = "Under-five mortality rate in {place}"
-stat_var = "sdg/SH_DYN_MORT.AGE--Y0T4"
+template = "Latest imputed multilateral aid for health to {place}"
+stat_var = "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_CRSPurposeCode12110_Nominal"
+role = "recipient"
 place = "country/NGA"
 
 [[example]]
-template = "Life expectancy in {place}"
-stat_var = "LifeExpectancy_Person"
-place = "country/IND"
+template = "{place}'s total debt service since 2020"
+stat_var = "Amount_FinancialFlow_ServicingPayment_Nominal"
+role = "recipient"
+place = "country/GHA"
 
 [[example]]
-template = "Inflation in {place}"
-stat_var = "sdg/FP_CPI_TOTL_ZG"
-place = "country/PAK"
+template = "{place}'s interest payments on PPG external debt"
+stat_var = "Amount_FinancialFlow_InterestPayment_PublicOrPubliclyGuaranteed_Nominal"
+role = "recipient"
+place = "country/KEN"
 
 [[example]]
-template = "Access to electricity in {place}"
-stat_var = "worldBank/EG_ELC_ACCS_ZS"
-place = "country/TZA"
+template = "GDP growth in {place}"
+stat_var = "GrowthRate_Amount_EconomicActivity_GrossDomesticProduction"
+place = "country/NGA"
 
 [[example]]
-template = "Health spending per person in {place}"
-stat_var = "Amount_EconomicActivity_ExpenditureActivity_HealthcareExpenditure_AsFractionOf_Count_Person"
-place = "country/MWI"
-
-[[example]]
-template = "GDP per capita of {place}"
-stat_var = "Amount_EconomicActivity_GrossDomesticProduction_Nominal_PerCapita"
-place = "country/BRA"
+template = "Inward remittances to {place}"
+stat_var = "Amount_Remittance_InwardRemittance"
+place = "country/ZAF"

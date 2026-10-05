@@ -9,11 +9,14 @@ name: Eval gate
 # read as the eval reader service account), serves both trees with the eval
 # profile on two ports, and runs scripts/eval_paired.py --shard K/N over the
 # eligible cases in corpus/ whose id hashes to K, with at most
-# EVAL_CONCURRENCY posts in flight per app so a 2-core runner answers them
-# inside the engine's request deadline. Each shard uploads its JSON report,
-# every response body, both app logs and its exit code as the `eval-gate-<K>`
-# artifact, and writes its Markdown summary to its own job summary. Nothing
-# here writes to Langfuse.
+# EVAL_CONCURRENCY posts in flight per app. Each in-flight request holds one of
+# the 6 workers in a 2-core runner's default thread pool while the engine
+# materialises, and at 6 posts per app heavy CRS requests stalled together
+# into the engine's 45 s timeout (HTTP 504) on both apps. 3 posts per app keep
+# them clear of it. Four shards finish in about 6 to 11 minutes.
+# Each shard uploads its JSON report, every response body, both app logs and
+# its exit code as the `eval-gate-<K>` artifact, and writes its Markdown
+# summary to its own job summary. Nothing here writes to Langfuse.
 #
 # eval_paired.py exits 0 when nothing blocks, 1 on a blocking verdict and 3 on
 # infrastructure. Each shard writes that code to the `code` file in its
@@ -57,7 +60,7 @@ env:
   BASE_PORT: "8101"
   # The run job's shard count, and the posts each shard keeps in flight per app.
   EVAL_SHARDS: "4"
-  EVAL_CONCURRENCY: "6"
+  EVAL_CONCURRENCY: "3"
 
 jobs:
   # Removes the eval-override label so it releases only the commit it was applied

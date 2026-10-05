@@ -33,6 +33,7 @@ from search.engine.region.state import ResolveState
 from search.engine.retrieval.bound_values import (
     RoleClassWalks,
     bound_source,
+    canonical_pin_bindings,
     elected_role_class_shape,
     entity_role_keys,
     shape_member_facts,
@@ -144,7 +145,9 @@ def walk_alternate(
 
     The chosen shape alone receives model bindings. An alternate derives constraint bindings
     from its representative StatVar (`alternate_representative`), and names the dataset the
-    chosen shape's bindings name when that dataset publishes it.
+    chosen shape's bindings name when that dataset publishes it. Its bindings on the invariants
+    of the dataset its family elects take their canonical form as the chosen shape's do
+    (`canonical_pin_bindings`), so its slots state what its canonical identity binds.
 
     ``roles`` is the alternate's binding of the query's places. Its entities, keyed as the
     alternate's own identity binds them, elect one role class among its members
@@ -177,7 +180,11 @@ def walk_alternate(
         )
     except (RoleSignatureError, FamilyNotResolvableError):
         return None
-    return _Alternate(resolution.value, bindings, not resolution.authority.settled)
+    elected = resolution.value
+    canonical = canonical_pin_bindings(
+        elected, bindings, entity_role_keys(elected, roles.resolved_entities)
+    )
+    return _Alternate(elected, canonical, not resolution.authority.settled)
 
 
 def elect_alternate(
@@ -236,9 +243,10 @@ def _materialise_alt_shapes(
     Batched observation-facet requests warm the cache before the loop, avoiding up to
     ``max_candidates - 1`` sequential reads. Shapes probed over the same places share one
     batch, and every default-scoped shape joins one batch that reads each member at its own
-    scope (`_prewarm_places`, `facets_at_own_places`), in first-shape order. Each batch uses
-    full, unbound member sets, so later filtered resolves can hit the cache keyed by
-    StatVar, entity, and date need, and is capped at ``region_max_members``: index
+    scope (`_prewarm_places`, `facets_at_own_places`), in first-shape order. Each batch reads
+    the members its materialisation reads, those of the family the alternate's own query
+    elects (its bindings and role keys, `shape_query`), so its resolve hits the cache keyed
+    by StatVar, entity, and date need. Each batch is capped at ``region_max_members``: index
     populations may span the full CRS vocabulary, while recall is capped at
     ``SEARCH_MAX_CONFIRM_CANDIDATES`` per shape. Materialisation is uncapped.
     """
@@ -249,7 +257,9 @@ def _materialise_alt_shapes(
         shape = alternate.shape
         shape_members, _index_sourced = shape_member_facts(
             shape,
-            shape_query(shape, with_named_source([], shape, bound_source(alternate.bindings))),
+            shape_query(
+                shape, alternate.bindings, entity_role_keys(shape, place.roles.resolved_entities)
+            ),
         )
         places_of = _prewarm_places(shape, list(shape_members), place, presence, named_place_dcids)
         if not any(places_of.values()):

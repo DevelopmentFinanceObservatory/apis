@@ -20,6 +20,7 @@ from dc_graph import GraphDeadlineExceededError, GraphReadError
 from search.engine.region import resolve_spec_resubmit, resolve_variable
 from search.engine.region.codes import MEMBERSHIP_UNVERIFIED
 from search.engine.region.grounding import carrier_flag_warnings
+from search.engine.region.place_context import empty_place_context
 from search.engine.region.place_roles import PlaceRoles
 from search.engine.region.state import EngineOptions, served_stat_vars
 from search.engine.response_cache_keys import is_storable
@@ -437,7 +438,7 @@ def test_a_walk_that_finds_the_total_of_a_subject_only_part_replaces_the_part(po
     assert resolution.authority is MembershipAuthority.AUTHORITATIVE
     assert set(resolution.value.sv_arc_facts or {}) == {_POPULATION, _POPULATION_FEMALE}
     assert resolution.value.sv_arc_facts_complete is posted
-    assert served_stat_vars(resolution.value, []) == [_POPULATION]
+    assert served_stat_vars(resolution.value, [], empty_place_context().roles) == [_POPULATION]
 
 
 def test_a_walked_family_keeps_the_order_of_the_members_the_shape_held():
@@ -469,7 +470,7 @@ def test_a_shape_with_an_unresolved_denominator_is_walked_under_its_identitys_fi
         "measurement_denominator": {"unresolved": True},
     }
 
-    assert shape_query(shape, []).five_tuple == five_tuple_from_identity(identity)
+    assert shape_query(shape, [], ()).five_tuple == five_tuple_from_identity(identity)
 
 
 def test_a_posted_set_that_is_the_walked_family_is_kept():
@@ -577,7 +578,9 @@ def test_an_alternate_a_settled_walk_narrows_is_scoped_and_answered_over_the_wal
 
     (answered,), _ = _alternates(_walk_reader(_DEBT_NODES), shape)
 
-    assert served_stat_vars(answered.shape, answered.bindings) == [_TOTAL_GUARANTEED]
+    assert served_stat_vars(answered.shape, answered.bindings, answered.place.roles) == [
+        _TOTAL_GUARANTEED
+    ]
     assert answered.mat.sv_dcids == [_TOTAL_GUARANTEED]
     assert set(answered.shape.sv_arc_facts or {}) == {_TOTAL_GUARANTEED}
 
@@ -608,7 +611,9 @@ def test_an_alternate_whose_walk_settles_nothing_is_scoped_over_the_members_it_a
 
     assert answered.mat.membership_unverified is True
     assert answered.mat.sv_dcids == [_TOTAL_GUARANTEED]
-    assert served_stat_vars(answered.shape, answered.bindings) == [_TOTAL_GUARANTEED]
+    assert served_stat_vars(answered.shape, answered.bindings, answered.place.roles) == [
+        _TOTAL_GUARANTEED
+    ]
 
 
 # ---------------------------------------------------------------------------

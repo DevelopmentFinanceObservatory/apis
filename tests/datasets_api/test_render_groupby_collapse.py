@@ -5,6 +5,8 @@ The fixture has three members; their values sum to 22 under the family StatVar.
 
 from __future__ import annotations
 
+import csv
+import io
 from typing import cast
 
 import dfo_frame_grammar
@@ -384,7 +386,7 @@ class TestFullCollapseEmpty:
 
 class TestCollectionMemberFullCollapseRefusal:
     """Collection rendering records one collection version. Multi-member full collapses raise
-    `rollup_not_summable`.
+    `rollup_not_summable`; a sum that keeps a code axis returns the summed table.
     """
 
     def test_a_member_whose_full_collapse_merges_more_than_one_contributor_refuses(self):
@@ -418,6 +420,46 @@ class TestCollectionMemberFullCollapseRefusal:
         assert exc_info.value.axis == "stat_var"
         assert exc_info.value.precondition == "collection_member_family_collapse"
         assert "spec_family" in str(exc_info.value)
+
+    @pytest.mark.parametrize("levels", [None, {"crsPurpose": 0}], ids=["by", "levels"])
+    def test_a_member_whose_sum_keeps_a_code_axis_returns_the_summed_table(
+        self, levels: dict[str, int] | None
+    ):
+        member = CollectionMemberRendering(
+            spec_id="spec_family",
+            frame_chunks=lambda: iter((_TABLE,)),
+            provenance_refs=("p1",),
+            cited_refs=("p1",),
+            content_version="cv_member_raw",
+            prepared_at=PREPARED_AT,
+            entity_columns=_ENTITY_COLUMNS,
+            resolved_stat_var_refs=(),
+        )
+        artifact_store = FakeArtifactStore()
+        rendered = render_and_store_collection(
+            members=[member],
+            options=MintOptions(
+                bundle=False,
+                groupby=GroupbyOptions(by=["crsPurpose"], op="sum", levels=levels),
+            ),
+            spec={"schema_version": 1, "collection_id": "col_family"},
+            citations={},
+            reproducing_call=None,
+            content_version="cv_collection",
+            artifact_store=artifact_store,
+            enrichment=_enrichment(),
+            code_index=_INDEX,
+            pivot_max_output_cells=5_000_000,
+            prepared_at=PREPARED_AT,
+            site=SITE,
+        )
+        (artifact,) = rendered.artifacts
+        rows = list(csv.DictReader(io.StringIO(artifact_store.fetch(artifact.url).decode())))
+        assert {row["stat_var_crsPurpose"]: float(row["value"]) for row in rows} == {
+            "Basic health care": 15.0,
+            "Malaria control": 7.0,
+        }
+        assert "stat_var" not in rows[0]
 
     def test_a_sole_contributor_member_does_not_refuse(self):
         sole_table = Table(

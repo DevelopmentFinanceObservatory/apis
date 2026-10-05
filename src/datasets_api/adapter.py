@@ -27,10 +27,10 @@ from code_index.members import (
     FamilyQuery,
     SourceNotInFamily,
     antichain_minimal_rows,
+    canonical_identity,
     identity_family_query,
     index_covers_slot_keys,
     index_family,
-    unbound_pins,
 )
 from code_index.query import CodeIndex
 from datasets_api.admission import bounded_materialise_slot
@@ -554,13 +554,13 @@ def _resolve_index_members(
     `None` when the index does not decide its membership (`code_index.members.index_family`).
 
     The family is one role class of one dataset's rows, elected by
-    `code_index.members.elect_dataset`: the rows whose roles cover the query's role keys
-    and declare the fewest roles, in the dataset the query's five-tuple belongs to. Return
-    its antichain-minimal rows as shapes, each carrying the elected dataset, beside every
-    family row's dcid. Raise
-    `SpecNotExportable` when none match, `FacetNotAvailableError` when the query names
-    another dataset, `RoleSignatureIncompatible` when the election ties
-    between role sets, or
+    `code_index.members.elect_dataset`: the dataset the query names, else the one elected
+    among the five-tuple's publishers, and its rows whose roles cover the query's role keys
+    and declare the fewest roles. Return its antichain-minimal rows as shapes. Each shape
+    carries the elected dataset, every dataset the index records its row under, and the
+    dcids of every family row. Raise `SpecNotExportable` when none match,
+    `FacetNotAvailableError` when the query names a dataset that does not publish its
+    five-tuple, `RoleSignatureIncompatible` when the election ties between role sets, or
     `MemberNotResolvable` for `observationAbout`. The in-memory path has no page
     truncation or member-count ceiling.
     """
@@ -569,9 +569,8 @@ def _resolve_index_members(
         elected = index_family(code_index, query)
     except SourceNotInFamily as exc:
         raise FacetNotAvailableError(
-            f"spec {spec_id!r} binds provenance {exc.source!r}, which publishes no member "
-            f"series consistent with its five-tuple and slots; the matching series are "
-            f"published by {list(exc.candidates)!r}",
+            f"spec {spec_id!r} binds provenance {exc.source!r}, which does not publish "
+            f"this five-tuple; it is published by {list(exc.candidates)!r}",
             pointer=_PROVENANCE_POINTER,
         ) from exc
     if elected is None:
@@ -618,39 +617,23 @@ def _resolve_index_members(
 def member_resolution_key(identity: Mapping[str, object], *, code_index: CodeIndex) -> Hashable:
     """Return the inputs `resolve_definition_members` reads from `identity`, as one key.
 
-    A pinned arm's key is its StatVar. A described arm's key is its `FamilyQuery`: the
-    five-tuple, the widened slot bindings, the role keys its entities are bound under and
-    the dataset the identity names. Two identities with equal keys resolve the same members,
-    so a resolved shape serves another identity only under an equal key. The entities bound
-    under each role key, the window and every facet that names no dataset stay out of the
-    key."""
+    A pinned arm's key is its StatVar. A described arm's key is the `FamilyQuery` of its
+    canonical form (`code_index.members.canonical_identity`): the five-tuple, the widened
+    slot bindings, the role keys its entities are bound under and the dataset the identity
+    names. Two identities with equal keys resolve the same members, so a resolved shape
+    serves another identity only under an equal key, and identities that bind different pins
+    of one family share a key. The entities bound under each role key,
+    the window and every facet that names no dataset stay out of the key."""
     shape_member = cast("Mapping[str, object]", identity.get("shape", {}))
     if shape_member.get("kind") == "stat_var":
         return shape_member["id"]
-    query = identity_family_query(code_index, identity)
+    query = identity_family_query(code_index, canonical_identity(code_index, identity))
     return (
         query.five_tuple,
         tuple(sorted(query.slots.items())),
         query.source,
         tuple(sorted(query.role_keys)),
     )
-
-
-def _refuse_unbound_pins(query: FamilyQuery, *, spec_id: str, code_index: CodeIndex) -> None:
-    """Raise `SpecNotExportable` when the identity leaves unbound a slot its five-tuple pins
-    (`code_index.members.unbound_pins`). The mint recomputes a client-authored hash, so it
-    cannot rewrite the identity to the pinned one. An identity that omits a pinned slot
-    covers no index row of the five-tuple, so the graph walk decides it, and every index
-    row asserts the omitted property, so the walk confirms none of them."""
-    unbound = unbound_pins(code_index, query)
-    if unbound:
-        raise SpecNotExportable(
-            spec_id=spec_id,
-            detail=(
-                f"spec {spec_id!r} leaves {sorted(unbound)!r} unbound; every member series "
-                f"of its five-tuple holds {unbound!r}, so bind each slot to that value"
-            ),
-        )
 
 
 def resolve_definition_members(
@@ -729,8 +712,9 @@ def resolve_definition_members(
     An unresolved denominator (`{"unresolved": true}`) matches a target with
     no dcid or one typed exactly `ProvisionalNode`, as Search reads it.
 
-    A described identity that leaves unbound a slot its five-tuple pins
-    (`CodeIndex.five_tuple_pins`) refuses `SpecNotExportable` before either path.
+    An identity that binds a slot to an invariant of the dataset it names and one that
+    leaves it unbound resolve the same members, since their canonical forms agree
+    (`code_index.members.canonical_identity`).
     """
     validate_identity_core(identity)
     shape_member = cast("Mapping[str, object]", identity.get("shape", {}))
@@ -748,7 +732,6 @@ def resolve_definition_members(
     if role_keys is not None:
         query = dataclasses.replace(query, role_keys=frozenset(role_keys))
     five_tuple, slots = query.five_tuple, query.slots
-    _refuse_unbound_pins(query, spec_id=spec_id, code_index=code_index)
     resolved = _resolve_index_members(query, spec_id=spec_id, code_index=code_index)
     if resolved is not None:
         logger.debug(

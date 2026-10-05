@@ -20,7 +20,7 @@ from materialise import (
 from materialise.ceiling import DEFAULT_SYNC_CEILING_ROWS
 from materialise.convert import merged_record
 from materialise.enrichment import EnrichmentLookup
-from materialise.errors import MaterialisationUsageError
+from materialise.errors import MaterialisationUsageError, OverCeilingError
 from materialise.facets import FacetBinding, UnitRequest
 from materialise.frame_build import Frame
 from materialise.generation import _generate_group
@@ -291,6 +291,85 @@ def test_member_loads_both_tables_for_constant_prices():
     assert _unit_cells(only_chunk(result)) == [
         FrameUnitRequest(currency="USD", prices="constant", base_year=2024)
     ]
+
+
+def _constant_usd_member(
+    entry: str, *, years: tuple[str, ...], deflator_years: tuple[str, ...], ceiling: int
+) -> int:
+    """Materialises one constant-USD member with a row per year in `years` and a France
+    deflator for `deflator_years` only, through `entry`, and returns its served row count. A
+    row whose year has no deflator is left out in conversion."""
+    request = _request(
+        unit=FacetBinding(state="request", request=UnitRequest("USD", "constant", base_year=2024))
+    )
+    sdmx, _requests = _router_sdmx(
+        role_bodies={
+            _BARE_STAT_VAR: _ROLE_HEADER
+            + "".join(_role_row(year=year, value="100") for year in years)
+        },
+        subject_bodies={
+            _EXCHANGE_VAR: _SUBJECT_HEADER
+            + "".join(
+                _rate_row(stat_var=_EXCHANGE_VAR, entity="CurrencyUSD", year=year, value="1.0")
+                for year in years
+            ),
+            _DEFLATOR_VAR: _SUBJECT_HEADER
+            + "".join(
+                _rate_row(stat_var=_DEFLATOR_VAR, entity="country/FRA", year=year, value="100.0")
+                for year in deflator_years
+            ),
+        },
+    )
+    graph = _graph()
+    coverage = _coverage_for([(_BARE_STAT_VAR, "country/KEN")])
+    if entry == "preview":
+        preview = materialise_preview(
+            request,
+            sdmx=sdmx,
+            graph=graph,
+            coverage=coverage,
+            limit=10,
+            rate_cache=RateTableCache(),
+            ceiling=ceiling,
+            refuse_over_ceiling=True,
+        )
+        return preview.total_rows
+    mint_kwargs = {
+        "sdmx": sdmx,
+        "graph": graph,
+        "revision_reader": _reader(),
+        "materialiser_build": "test-build",
+        "capability_version": "v1",
+        "enrichment": EnrichmentLookup(graph),
+        "rate_cache": RateTableCache(),
+        "ceiling": ceiling,
+        "coverage": coverage,
+    }
+    if entry == "collection":
+        result = materialise_collection([(_SPEC_ID_A, request)], **mint_kwargs)
+        return only_chunk(dict(result.members)[_SPEC_ID_A]).table.num_rows
+    return only_chunk(materialise_spec(request, **mint_kwargs)).table.num_rows
+
+
+@pytest.mark.parametrize("entry", ["spec", "collection", "preview"])
+def test_the_ceiling_counts_rows_served_after_deflator_omissions(entry: str) -> None:
+    # Two rows arrive; 2023 has no deflator, so one row is served under a ceiling of one.
+    served = _constant_usd_member(
+        entry, years=("2023", "2024"), deflator_years=("2024",), ceiling=1
+    )
+
+    assert served == 1
+
+
+@pytest.mark.parametrize("entry", ["spec", "collection", "preview"])
+def test_served_rows_past_the_ceiling_after_deflator_omissions_still_refuse(entry: str) -> None:
+    # Three rows arrive and 2022 has no deflator, so two rows are served under a ceiling of one.
+    with pytest.raises(OverCeilingError) as exc_info:
+        _constant_usd_member(
+            entry, years=("2022", "2023", "2024"), deflator_years=("2023", "2024"), ceiling=1
+        )
+
+    assert (exc_info.value.count, exc_info.value.cap) == (2, 1)
 
 
 def test_native_current_passes_values_through():

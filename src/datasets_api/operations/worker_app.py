@@ -34,6 +34,7 @@ from artifact_store import ArtifactStore, LiveArtifactInventory, LiveArtifactSto
 from code_index.query import CodeIndex
 from code_index.shared import get_index
 from dataset_store import DatasetStore, LiveDatasetStore, close_shared_pool, shared_pool
+from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api.config import DatasetsBuildSettings, DatasetsConfigError, DatasetsSettings
 from datasets_api.doors.definition import DefinitionDeps
 from datasets_api.generation import enter_shared_generation, register_place_scope_memo
@@ -79,7 +80,10 @@ def _build_live_definition_deps(
     """Assembles dependencies without I/O.
 
     The ceiling and member concurrency match the mint and definition doors, keeping admission
-    estimates and execution limits aligned.
+    estimates and execution limits aligned. The snapshot reader reads the same store, so a worker
+    render serves as the synchronous path does: a version on record keeps its stored citation and
+    `prepared_at`, the response lists the artifact already linked under each rendering key, and
+    `run_operation` checks that the request's rendering is servable before completing.
     """
     _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
     return DefinitionDeps(
@@ -99,6 +103,7 @@ def _build_live_definition_deps(
         coverage=coverage,
         version_writer=LiveVersionRecordWriter(store=store),
         head_store=LiveHeadStore(store=store),
+        snapshot_reader=LiveSnapshotReader(store=store),
         materialise_semaphore=None,
         head_recheck_interval=timedelta(seconds=_settings.head_recheck_seconds),
         head_max_age=timedelta(seconds=_settings.head_max_age_seconds),

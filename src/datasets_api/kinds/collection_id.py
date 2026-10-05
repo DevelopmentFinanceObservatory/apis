@@ -7,8 +7,10 @@ for consistency. Hash mismatches raise `SpecIdMismatch`. Invalid identities rais
 `MalformedSidecarIdentity` with the member id. Missing collections raise `SpecNotFound`.
 Scope role failures raise `InvalidRoleRef` or `RoleIncompatible` with the affected member id.
 
-Scope surgery applies to each member independently. It may deduplicate members and emit
-`members_deduplicated`. Unchanged identities reuse the registered collection.
+Scope surgery applies to each member independently, and each member is then served in
+canonical form (`code_index.members.canonical_identity`), so a member naming its dataset
+posted with an invariant of it bound and one posted without serve one `spec_id`. Either may deduplicate members and
+emit `members_deduplicated`. Unchanged identities reuse the registered collection.
 
 A resolved shape is kept under `adapter.member_resolution_key`, the inputs member resolution
 reads from an identity. `scope.facets` can bind or drop the provenance that names a member's
@@ -22,6 +24,7 @@ from collections.abc import Hashable, Mapping, Sequence
 
 from dfo_spec_kit.identity import IdentityError
 
+from code_index.members import canonical_identity
 from code_index.query import CodeIndex
 from datasets_api.adapter import (
     build_identity_document,
@@ -121,7 +124,7 @@ def _surgered_member_shape(
     surgered: Mapping[str, object],
     *,
     spec_id: str,
-    scope: Scope,
+    scope: Scope | None,
     member_shapes: dict[Hashable, StatVarShape],
     deps: MintDeps,
 ) -> StatVarShape | None:
@@ -138,7 +141,7 @@ def _surgered_member_shape(
     shape = member_shapes.get(key)
     if shape is not None:
         return shape
-    if scope.entities is None and key == member_resolution_key(
+    if (scope is None or scope.entities is None) and key == member_resolution_key(
         identity, code_index=deps.code_index
     ):
         return None
@@ -152,6 +155,16 @@ def _surgered_member_shape(
     check_reproducible(identity, spec_id=spec_id, shape=shape)
     member_shapes[key] = shape
     return shape
+
+
+def _served_document(
+    identity: Mapping[str, object], *, scope: Scope | None, code_index: CodeIndex
+) -> Mapping[str, object]:
+    """The document a mint serves for a member `identity` under `scope`: surgered by `scope`
+    (`apply_scope_surgery`), then in canonical form (`code_index.members.canonical_identity`).
+    """
+    surgered = identity if scope is None else apply_scope_surgery(identity, scope=scope)
+    return canonical_identity(code_index, surgered)
 
 
 def _read_back_collection(collection_id: str, *, deps: MintDeps) -> StoredCollection:
@@ -244,55 +257,50 @@ def mint_collection_id(
         stored_members = deps.spec_reader.read_definitions(stored.member_spec_ids)
 
         extra_warnings: tuple[WarningModel, ...] = ()
-        if scope is not None:
-            surgered: list[tuple[str, dict[str, object], int]] = []
-            for spec_id in stored.member_spec_ids:
-                member_stored = stored_members[spec_id]
-                surgered_document = apply_scope_surgery(member_stored.identity, scope=scope)
-                shape = _surgered_member_shape(
-                    member_stored.identity,
-                    surgered_document,
-                    spec_id=spec_id,
-                    scope=scope,
-                    member_shapes=member_shapes,
-                    deps=deps,
-                )
-                if shape is not None and scope.entities is not None:
-                    try:
-                        build_identity_document(shape, scope=scope, graph=deps.graph)
-                    except (InvalidRoleRef, RoleIncompatible) as exc:
-                        exc.member_spec_id = spec_id
-                        raise
-                recomputed = recompute_identity(surgered_document)
-                surgered.append(
-                    (recomputed.spec_id, surgered_document, member_stored.schema_version)
-                )
+        served: list[tuple[str, Mapping[str, object], int]] = []
+        for spec_id in stored.member_spec_ids:
+            member_stored = stored_members[spec_id]
+            served_document = _served_document(
+                member_stored.identity, scope=scope, code_index=deps.code_index
+            )
+            shape = _surgered_member_shape(
+                member_stored.identity,
+                served_document,
+                spec_id=spec_id,
+                scope=scope,
+                member_shapes=member_shapes,
+                deps=deps,
+            )
+            if shape is not None and scope is not None and scope.entities is not None:
+                try:
+                    build_identity_document(shape, scope=scope, graph=deps.graph)
+                except (InvalidRoleRef, RoleIncompatible) as exc:
+                    exc.member_spec_id = spec_id
+                    raise
+            recomputed = recompute_identity(served_document)
+            served.append((recomputed.spec_id, served_document, member_stored.schema_version))
 
-            new_collection_id = compute_collection_id([spec_id for spec_id, _doc, _sv in surgered])
-            if new_collection_id != stored.collection_id:
-                distinct_ids = sorted_unique_member_ids(
-                    [spec_id for spec_id, _doc, _sv in surgered]
+        new_collection_id = compute_collection_id([spec_id for spec_id, _doc, _sv in served])
+        if new_collection_id != stored.collection_id:
+            distinct_ids = sorted_unique_member_ids([spec_id for spec_id, _doc, _sv in served])
+            if len(distinct_ids) < len(served):
+                _title, detail, severity = DATASETS_WARNING_CATALOGUE["members_deduplicated"]
+                extra_warnings = (
+                    WarningModel(code="members_deduplicated", severity=severity, message=detail),
                 )
-                if len(distinct_ids) < len(surgered):
-                    _title, detail, severity = DATASETS_WARNING_CATALOGUE["members_deduplicated"]
-                    extra_warnings = (
-                        WarningModel(
-                            code="members_deduplicated", severity=severity, message=detail
-                        ),
+            deps.registry.register_collection(
+                members=[
+                    MemberDefinition(
+                        identity_definition=document,
+                        schema_version=schema_version,
+                        supplied_spec_id=spec_id,
                     )
-                deps.registry.register_collection(
-                    members=[
-                        MemberDefinition(
-                            identity_definition=document,
-                            schema_version=schema_version,
-                            supplied_spec_id=spec_id,
-                        )
-                        for spec_id, document, schema_version in surgered
-                    ],
-                    trace_id=trace_id,
-                )
-                stored = _read_back_collection(new_collection_id, deps=deps)
-                stored_members = deps.spec_reader.read_definitions(stored.member_spec_ids)
+                    for spec_id, document, schema_version in served
+                ],
+                trace_id=trace_id,
+            )
+            stored = _read_back_collection(new_collection_id, deps=deps)
+            stored_members = deps.spec_reader.read_definitions(stored.member_spec_ids)
 
         # Keep this loop serial. Surgery can make a member depend on an earlier result.
         requests: list[tuple[StoredDefinition, MaterialisationRequest]] = []
@@ -432,30 +440,29 @@ def preview_collection_id(
 
         member_spec_ids = tuple(member_identities)
 
-        if scope is not None:
-            surgered_identities: dict[str, Mapping[str, object]] = {}
-            for spec_id in member_spec_ids:
-                identity = member_identities[spec_id]
-                surgered_document = apply_scope_surgery(identity, scope=scope)
-                shape = _surgered_member_shape(
-                    identity,
-                    surgered_document,
-                    spec_id=spec_id,
-                    scope=scope,
-                    member_shapes=member_shapes,
-                    deps=deps,
-                )
-                if shape is not None and scope.entities is not None:
-                    try:
-                        build_identity_document(shape, scope=scope, graph=deps.graph)
-                    except (InvalidRoleRef, RoleIncompatible) as exc:
-                        exc.member_spec_id = spec_id
-                        raise
-                # The canonical form is the document a mint registers for the surgered member.
-                recomputed = recompute_identity(surgered_document)
-                surgered_identities[recomputed.spec_id] = recomputed.identity
-            member_identities = surgered_identities
-            member_spec_ids = tuple(member_identities)
+        served_identities: dict[str, Mapping[str, object]] = {}
+        for spec_id in member_spec_ids:
+            identity = member_identities[spec_id]
+            served_document = _served_document(identity, scope=scope, code_index=deps.code_index)
+            shape = _surgered_member_shape(
+                identity,
+                served_document,
+                spec_id=spec_id,
+                scope=scope,
+                member_shapes=member_shapes,
+                deps=deps,
+            )
+            if shape is not None and scope is not None and scope.entities is not None:
+                try:
+                    build_identity_document(shape, scope=scope, graph=deps.graph)
+                except (InvalidRoleRef, RoleIncompatible) as exc:
+                    exc.member_spec_id = spec_id
+                    raise
+            # The kit's projection is the document a mint registers for the served member.
+            recomputed = recompute_identity(served_document)
+            served_identities[recomputed.spec_id] = recomputed.identity
+        member_identities = served_identities
+        member_spec_ids = tuple(member_identities)
 
         # Resolve serially each member no shape resolved in this request serves.
         requests: list[MaterialisationRequest] = []

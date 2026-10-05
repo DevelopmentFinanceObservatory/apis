@@ -47,6 +47,7 @@ from search.engine.region.state import ResolveState
 from search.engine.related import Related, read_related, related_measures
 from search.engine.retrieval.bound_values import (
     MeasurePartition,
+    entity_role_keys,
     observed_measure_family,
     shape_query,
 )
@@ -108,7 +109,11 @@ def start_elected_related_read(state: ResolveState, mat_result: Materialised) ->
         state.shape_draft,
         get_index(),
         get_measure_index().axes,
-        shape_query(state.shape_draft, state.bindings),
+        shape_query(
+            state.shape_draft,
+            state.bindings,
+            entity_role_keys(state.shape_draft, state.place.roles.resolved_entities),
+        ),
         # Every real resolve supplies member facts for each StatVar. A missing entry
         # violates the contract and raises.
         [served_member_facts[dcid] for dcid in mat_result.sv_dcids],

@@ -648,17 +648,33 @@ def _servable_rows(
     return table, currencies
 
 
+def _counts_after_conversion(conversion_plan: MemberConversionPlan | None) -> bool:
+    """Whether a member's served rows are counted only once converted (`_finish_member_table`).
+    A constant-price conversion leaves out the rows a deflator lacks
+    (`ConversionRecord.deflator_omitted`), which are known only when its terms are gathered,
+    so a count of its rows before conversion would refuse a file whose served rows fit."""
+    return (
+        conversion_plan is not None
+        and not conversion_plan.natively_satisfied
+        and conversion_plan.unit_request.prices == "constant"
+    )
+
+
 def _streaming_ceiling(conversion_plan: MemberConversionPlan | None, ceiling: int) -> int | None:
     """The survivor ceiling a member's rows are checked against as they stream: `ceiling`,
-    or None for a role-shaped conversion. That conversion omits the rows of entities no
-    single currency names (`_servable_rows`), which is known only once every row has
+    or None for a conversion that omits rows. A role-shaped conversion omits the rows of
+    entities no single currency names (`_servable_rows`), known only once every row has
     arrived, so its survivors are counted after omission and before conversion
-    (`_check_servable_ceiling`). `over_ceiling` therefore precedes every conversion refusal
-    on a filtered window: a rate or recipe gap, which conversion raises, and a failed
-    currency read, before which the rows are counted as they arrived. A `latest` window
-    converts before it counts, so a failed currency read precedes its `over_ceiling`. The
+    (`_check_servable_ceiling`). A constant-price conversion omits rows a deflator lacks, so
+    its rows are counted after conversion (`_counts_after_conversion`). `over_ceiling`
+    therefore precedes every conversion refusal on a filtered window of a current-price
+    member: a rate or recipe gap, which conversion raises, and a failed currency read, before
+    which the rows are counted as they arrived. A constant-price member, and a `latest` window,
+    convert before they count, so their conversion refusals precede `over_ceiling`. The
     raw-fetch guard still bounds what the read holds."""
-    if conversion_plan is not None and conversion_plan.spec_role is not None:
+    if conversion_plan is not None and (
+        conversion_plan.spec_role is not None or _counts_after_conversion(conversion_plan)
+    ):
         return None
     return ceiling
 
@@ -670,10 +686,16 @@ def _check_servable_ceiling(
     conversion_plan: MemberConversionPlan | None,
     ceiling: int,
 ) -> None:
-    """Raises `OverCeilingError` when a role-shaped member's servable rows (`_servable_rows`)
-    pass `ceiling`, before `apply_member_conversion` runs: the check its rows skipped as they
-    streamed (`_streaming_ceiling`). Every other plan was checked as its rows arrived."""
-    if _streaming_ceiling(conversion_plan, ceiling) is not None:
+    """Raises `OverCeilingError` when a role-shaped current-price member's servable rows
+    (`_servable_rows`) pass `ceiling`, before `apply_member_conversion` runs: the check its rows
+    skipped as they streamed (`_streaming_ceiling`). Every other current-price plan was checked
+    as its rows arrived, and a constant-price plan is checked on its converted rows
+    (`_counts_after_conversion`)."""
+    if (
+        conversion_plan is None
+        or conversion_plan.spec_role is None
+        or _counts_after_conversion(conversion_plan)
+    ):
         return
     applied_window = compute_applied_window(request.window, columnar.served_year_bounds(table))
     check_ceiling(
@@ -1040,8 +1062,8 @@ def _finish_member_table(
     Duplicate identity facets collapse before conversion because collapse
     reads `unit` as a string. A missing plan skips arithmetic. Coverage and
     the ceiling check use the converted rows; the grammar receives `unit`
-    unchanged, whether it is a native string or converted struct. A role-shaped member's
-    servable rows are checked against the ceiling before conversion
+    unchanged, whether it is a native string or converted struct. A role-shaped current-price
+    member's servable rows are checked against the ceiling before conversion
     (`_check_servable_ceiling`).
     """
     _check_servable_ceiling(request, table, conversion_plan=conversion_plan, ceiling=ceiling)
@@ -1274,8 +1296,8 @@ def _generate_chunk(
     a malformed one.
 
     Non-latest batches filter per member. Exceeding the member's `_streaming_ceiling`
-    raises `OverCeilingError`, with up to one batch of overshoot; a role-shaped
-    conversion's survivors are counted after omission instead. Latest chunks are
+    raises `OverCeilingError`, with up to one batch of overshoot; a conversion that omits
+    rows counts its rows after omission instead (`_streaming_ceiling`). Latest chunks are
     homogeneous. SDMX returns one row per series, then `_finish_member_fetch`
     reduces to the member's global latest period and checks its coverage.
 
@@ -2330,8 +2352,8 @@ def _prepare_preview_member(
     `limit` only ever bounds what's delivered (`frame`), never what's read
     or counted (`total_rows`). With `refuse_over_ceiling`, survivors past
     `ceiling` raise the mint's `OverCeilingError`: mid-stream, which stops
-    the read (`_streaming_ceiling`), and over the rows served after omission and the
-    `"latest"` reduction, as `_finish_member_table` checks. The preview then refuses where a mint of the same request
+    the read (`_streaming_ceiling`), and over the rows served after conversion omissions and
+    the `"latest"` reduction, as `_finish_member_table` checks. The preview then refuses where a mint of the same request
     refuses and holds no more survivors than the mint does. Without it,
     `_collect_surviving_batches` keeps every survivor and `ceiling` sizes
     only the raw-fetch guard. The `"latest"`-window carve-out

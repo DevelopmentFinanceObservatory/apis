@@ -446,22 +446,50 @@ def _imputed_member_graph(code_index: CodeIndex) -> FakeMintGraphReader:
     )
 
 
-@pytest.mark.parametrize("draft", ["unbound", "omitted"])
-def test_an_identity_that_leaves_a_pinned_slot_open_refuses(draft: str):
-    """Every imputed row holds one aid type, so Search binds it on every identity it mints.
-    The mint refuses the identity that leaves it unbound before reading the graph. The one
-    that omits it covers no index row, so the graph walks, and every imputed member asserts
-    the aid type the identity does not key, so the walk confirms none."""
+def _aid_type_unbound(identity: dict) -> dict:
+    """`identity` with its aid-type slot unbound."""
+    slot = next(slot for slot in identity["slots"] if slot["property"] == AID_TYPE)
+    slot["binding"] = {"state": "unbound"}
+    return identity
+
+
+def _purpose_no_row_holds(identity: dict) -> dict:
+    """`identity` with its purpose bound to a code no index row holds."""
+    slot = next(slot for slot in identity["slots"] if slot["property"] == "crsPurpose")
+    slot["binding"] = {"state": "value", "ref": "CRSPurposeCodeNoRowHolds"}
+    return identity
+
+
+def test_an_identity_that_leaves_a_pinned_slot_unbound_resolves_the_bound_identity_s_members():
+    """Every imputed row holds one aid type, so the election implies it. The identity that
+    leaves it unbound resolves, from the index and without a graph read, the members of the
+    identity that binds it."""
     code_index = load_index(default_index_path())
-    identity = imputed_education_aid_identity()
-    if draft == "unbound":
-        slot = next(slot for slot in identity["slots"] if slot["property"] == AID_TYPE)
-        slot["binding"] = {"state": "unbound"}
-    else:
-        identity["slots"] = [slot for slot in identity["slots"] if slot["property"] != AID_TYPE]
+    identity = _aid_type_unbound(imputed_education_aid_identity())
     graph = _imputed_member_graph(code_index)
 
-    with pytest.raises(SpecNotExportable) as refusal:
+    unbound = resolve_definition_members(
+        identity,
+        spec_id=_SPEC_ID,
+        graph=graph,
+        enumerator=MemberEnumerator(graph=graph),
+        code_index=code_index,
+    )
+
+    assert sum(graph.calls.values()) == 0
+    assert unbound == _education_aid_members(imputed_education_aid_identity(), code_index)
+
+
+def test_an_identity_that_omits_a_pinned_slot_refuses():
+    """The identity that omits the aid type covers no index row, so the graph walks, and
+    every imputed member asserts the aid type the identity does not key, so the walk
+    confirms none."""
+    code_index = load_index(default_index_path())
+    identity = imputed_education_aid_identity()
+    identity["slots"] = [slot for slot in identity["slots"] if slot["property"] != AID_TYPE]
+    graph = _imputed_member_graph(code_index)
+
+    with pytest.raises(SpecNotExportable):
         resolve_definition_members(
             identity,
             spec_id=_SPEC_ID,
@@ -470,11 +498,7 @@ def test_an_identity_that_leaves_a_pinned_slot_open_refuses(draft: str):
             code_index=code_index,
         )
 
-    if draft == "unbound":
-        assert AID_TYPE in refusal.value.detail
-        assert sum(graph.calls.values()) == 0
-    else:
-        assert graph.calls["node_subjects"] > 0
+    assert graph.calls["node_subjects"] > 0
 
 
 @pytest.mark.parametrize(
@@ -490,12 +514,30 @@ def test_an_identity_that_leaves_a_pinned_slot_open_refuses(draft: str):
             CRS_PROVENANCE,
             IMPUTED_PROVENANCE,
         ),
+        (
+            _aid_type_unbound(imputed_education_aid_identity(source=CRS_PROVENANCE)),
+            CRS_PROVENANCE,
+            IMPUTED_PROVENANCE,
+        ),
+        (
+            _purpose_no_row_holds(education_aid_identity(source=IMPUTED_PROVENANCE)),
+            IMPUTED_PROVENANCE,
+            CRS_PROVENANCE,
+        ),
     ],
-    ids=["imputed-on-amount", "crs-on-attributed-amount"],
+    ids=[
+        "imputed-on-amount",
+        "crs-on-attributed-amount",
+        "crs-leaving-the-imputed-pin-open",
+        "imputed-on-amount-with-a-purpose-no-row-holds",
+    ],
 )
 def test_a_provenance_that_publishes_no_member_refuses_facet_not_available(
     identity: dict, named: str, publisher: str
 ):
+    """A named dataset that does not publish the five-tuple pins nothing, so an identity
+    leaving open a slot the publisher pins refuses for its provenance, not the pin. The
+    refusal reads the five-tuple alone, so it holds when no row matches the slots either."""
     code_index = load_index(default_index_path())
 
     with pytest.raises(FacetNotAvailableError) as refusal:
@@ -693,6 +735,7 @@ def _dataset(provenance: str) -> DatasetDeclaration:
         synonyms=(),
         opt_in=False,
         absent_observation="zero",
+        rank=0,
     )
 
 

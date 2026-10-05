@@ -2,7 +2,8 @@
 absent-observation readings.
 
 The packaged index declares CRS and the opt-in imputed multilateral sectors table, each alone on
-its five-tuples. Both read an absent observation as zero, which the rows in
+its five-tuples, though the index admits several datasets on one five-tuple and on one row. Both
+read an absent observation as zero, which the rows in
 `fixtures/absent_observation_evidence.json` support: each is one (financingProvider,
 financingRecipient, year) cell read from the dev graph's observation table, where the source
 reports an explicit zero for one member of a five-tuple and no row for most others. An
@@ -17,7 +18,6 @@ import pytest
 from code_index import (
     CodeIndex,
     DatasetDeclaration,
-    DatasetsShareFiveTuple,
     IndexFormatError,
     IndexStamp,
     default_index_path,
@@ -46,7 +46,7 @@ def _fixture() -> dict:
 
 def _with_imputed_dataset() -> dict:
     """The fixture plus a second, opt-in dataset holding the last row, moved to a five-tuple of
-    its own."""
+    its own. The dataset declares the ODA flow type that row carries as an invariant."""
     payload = _fixture()
     payload["datasets"].append(
         {
@@ -55,6 +55,8 @@ def _with_imputed_dataset() -> dict:
             "synonyms": ["imputed multilateral"],
             "opt_in": True,
             "absent_observation": "zero",
+            "rank": 10,
+            "invariants": {"crsTypeOfFlow": "CRSTypeOfFlow10"},
         }
     )
     imputed = payload["statvars"][-1]
@@ -71,6 +73,7 @@ def test_loader_parses_a_dataset_declaration(code_index: CodeIndex):
             synonyms=("CRS", "creditor reporting system"),
             opt_in=False,
             absent_observation="zero",
+            rank=0,
         )
     }
 
@@ -105,6 +108,15 @@ def test_loader_rejects_an_opt_in_that_is_not_a_boolean():
         parse_index(payload)
 
 
+@pytest.mark.parametrize("rank", ["0", 1.5, True, None])
+def test_loader_rejects_a_rank_that_is_not_an_integer(rank: object):
+    payload = _fixture()
+    payload["datasets"][0]["rank"] = rank
+
+    with pytest.raises(IndexFormatError, match=rf"rank={rank!r}, which is not an integer"):
+        parse_index(payload)
+
+
 def test_loader_rejects_a_duplicate_provenance():
     payload = _fixture()
     payload["datasets"].append(dict(payload["datasets"][0]))
@@ -113,8 +125,17 @@ def test_loader_rejects_a_duplicate_provenance():
         parse_index(payload)
 
 
+def test_loader_rejects_two_datasets_of_one_rank():
+    payload = _with_imputed_dataset()
+    payload["datasets"][-1]["rank"] = payload["datasets"][0]["rank"]
+
+    with pytest.raises(IndexFormatError, match=rf"{_IMPUTED_PROVENANCE}.*share rank 0"):
+        parse_index(payload)
+
+
 @pytest.mark.parametrize(
-    "field", ["provenance", "label", "synonyms", "opt_in", "absent_observation"]
+    "field",
+    ["provenance", "label", "synonyms", "opt_in", "absent_observation", "rank", "invariants"],
 )
 def test_loader_rejects_a_dataset_missing_a_field(field: str):
     payload = _fixture()
@@ -162,16 +183,57 @@ def test_loader_maps_each_five_tuple_to_the_dataset_publishing_it():
 
     imputed = index.statvars[-1]
     assert index.datasets[_IMPUTED_PROVENANCE].opt_in is True
-    assert index.dataset_by_five_tuple[row_five_tuple(imputed)] == _IMPUTED_PROVENANCE
-    assert index.dataset_by_five_tuple[row_five_tuple(index.statvars[0])] == _CRS_PROVENANCE
+    assert index.datasets_by_five_tuple[row_five_tuple(imputed)] == (_IMPUTED_PROVENANCE,)
+    assert index.datasets_by_five_tuple[row_five_tuple(index.statvars[0])] == (_CRS_PROVENANCE,)
 
 
-def test_loader_rejects_two_datasets_on_one_five_tuple():
+# The fixture's education row with no modality, on the same five-tuple as the imputed row.
+_SHARED_ROW = 6
+
+
+def _sharing_one_five_tuple(*, crs_rank: int, imputed_rank: int) -> CodeIndex:
+    """The fixture with the imputed dataset on CRS's five-tuple: its own row, and an education
+    row both datasets publish."""
     payload = _with_imputed_dataset()
+    payload["datasets"][0]["rank"] = crs_rank
+    payload["datasets"][-1]["rank"] = imputed_rank
     payload["statvars"][-1]["measured_property"] = payload["statvars"][0]["measured_property"]
+    payload["statvars"][_SHARED_ROW]["provenances"] = [_CRS_PROVENANCE, _IMPUTED_PROVENANCE]
+    return parse_index(payload)
 
-    with pytest.raises(DatasetsShareFiveTuple, match=_IMPUTED_PROVENANCE):
-        parse_index(payload)
+
+@pytest.mark.parametrize(
+    ("crs_rank", "imputed_rank", "order"),
+    [
+        (0, 10, (_CRS_PROVENANCE, _IMPUTED_PROVENANCE)),
+        (10, 0, (_IMPUTED_PROVENANCE, _CRS_PROVENANCE)),
+    ],
+    ids=["crs-first", "imputed-first"],
+)
+def test_two_datasets_on_one_five_tuple_load_in_rank_order(
+    crs_rank: int, imputed_rank: int, order: tuple[str, ...]
+):
+    index = _sharing_one_five_tuple(crs_rank=crs_rank, imputed_rank=imputed_rank)
+
+    shared = index.statvars[_SHARED_ROW]
+    assert shared.provenances == (_CRS_PROVENANCE, _IMPUTED_PROVENANCE)
+    assert index.datasets_by_five_tuple[row_five_tuple(shared)] == order
+
+
+def test_each_dataset_pins_its_own_rows_of_a_shared_five_tuple():
+    """The imputed dataset's two education rows hold one purpose and one flow type, which
+    CRS's health rows on the same five-tuple do not."""
+    index = _sharing_one_five_tuple(crs_rank=0, imputed_rank=10)
+    five_tuple = row_five_tuple(index.statvars[_SHARED_ROW])
+
+    assert index.dataset_pins[_IMPUTED_PROVENANCE, five_tuple] == {
+        "crsPurpose": "CRSPurposeCode11110",
+        "crsTypeOfFinance": "CRSTypeOfFinance110",
+        "crsTypeOfFlow": "CRSTypeOfFlow10",
+    }
+    assert index.dataset_pins[_CRS_PROVENANCE, five_tuple] == {
+        "crsTypeOfFinance": "CRSTypeOfFinance110"
+    }
 
 
 def test_loader_rejects_a_provenance_no_dataset_declares():
@@ -187,6 +249,23 @@ def test_loader_rejects_a_declared_dataset_with_no_row():
     payload["statvars"][-1]["provenances"] = []
 
     with pytest.raises(IndexFormatError, match=rf"{_IMPUTED_PROVENANCE}.*no StatVar row"):
+        parse_index(payload)
+
+
+@pytest.mark.parametrize("held", [None, "CRSTypeOfFlow21"], ids=["absent", "other-code"])
+def test_loader_rejects_a_row_without_its_datasets_declared_invariant(held: str | None):
+    """An absent property fails the invariant whatever the code system's absent reading."""
+    payload = _with_imputed_dataset()
+    payload["statvars"][_SHARED_ROW]["provenances"] = [_CRS_PROVENANCE, _IMPUTED_PROVENANCE]
+    constraints = payload["statvars"][_SHARED_ROW]["constraint_properties"]
+    if held is None:
+        del constraints["crsTypeOfFlow"]
+    else:
+        constraints["crsTypeOfFlow"] = held
+
+    with pytest.raises(
+        IndexFormatError, match=rf"{_IMPUTED_PROVENANCE}.*crsTypeOfFlow=.*invariant"
+    ):
         parse_index(payload)
 
 
@@ -218,11 +297,16 @@ def test_the_packaged_index_declares_crs_and_the_opt_in_imputed_sectors_dataset(
     index = load_index(default_index_path())
 
     assert {
-        provenance: (dataset.opt_in, dataset.absent_observation)
+        provenance: (dataset.opt_in, dataset.absent_observation, dataset.rank)
         for provenance, dataset in index.datasets.items()
     } == {
-        _CRS_PROVENANCE: (False, "zero"),
-        _IMPUTED_PROVENANCE: (True, "zero"),
+        _CRS_PROVENANCE: (False, "zero", 0),
+        _IMPUTED_PROVENANCE: (True, "zero", 10),
+    }
+    assert index.datasets[_CRS_PROVENANCE].invariants == {}
+    assert index.datasets[_IMPUTED_PROVENANCE].invariants == {
+        "crsTypeOfFlow": "CRSTypeOfFlow10",
+        "dac2aAidType": "DAC2aAidType106",
     }
     assert index.datasets[_CRS_PROVENANCE].label == "OECD Creditor Reporting System (CRS)"
     assert set(index.datasets[_IMPUTED_PROVENANCE].synonyms) == {
@@ -243,18 +327,21 @@ def test_every_packaged_row_belongs_to_the_dataset_its_five_tuple_maps_to():
     for row in index.statvars:
         assert row.provenances == tuple(sorted(row.provenances))
         if row.provenances:
-            assert row.provenances == (index.dataset_by_five_tuple[row_five_tuple(row)],), row.dcid
+            assert row.provenances == index.datasets_by_five_tuple[row_five_tuple(row)], row.dcid
 
 
 def test_the_packaged_index_pins_the_constant_slots_of_the_imputed_five_tuple_only():
     index = load_index(default_index_path())
 
     assert {
-        five_tuple.measured_property: pins
-        for five_tuple, pins in index.five_tuple_pins.items()
+        (provenance, five_tuple.measured_property): pins
+        for (provenance, five_tuple), pins in index.dataset_pins.items()
         if pins
     } == {
-        "attributedAmount": {"crsTypeOfFlow": "CRSTypeOfFlow10", "dac2aAidType": "DAC2aAidType106"}
+        (_IMPUTED_PROVENANCE, "attributedAmount"): {
+            "crsTypeOfFlow": "CRSTypeOfFlow10",
+            "dac2aAidType": "DAC2aAidType106",
+        }
     }
 
 

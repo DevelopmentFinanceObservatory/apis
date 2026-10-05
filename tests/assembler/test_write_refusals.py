@@ -343,11 +343,12 @@ def test_comparable_units_required_is_still_reachable_from_the_write_path(
     assert excinfo.value.constraint_id == "comparable_units_required"
 
 
-def test_a_line_chart_over_series_with_a_set_and_a_null_unit_refuses_comparable_units(
-    frame_store, revision_store, release_registry
+@pytest.mark.parametrize("member", ["line_chart", "bar_chart"])
+def test_a_chart_over_series_with_a_set_and_a_null_unit_refuses_comparable_units(
+    member, frame_store, revision_store, release_registry
 ):
     """Issue #953: GDP in USDollar beside population with a null unit resolves as two series.
-    A line chart over them refuses on its units, after resolution lets them through."""
+    A chart over them refuses on its units, after resolution lets them through."""
     rf = build_resolved_frame(
         frame_ref=FrameRef(spec_id="spec_" + "6" * 32, content_version="cv_" + "7" * 32),
         role_keys=("recipient",),
@@ -369,7 +370,7 @@ def test_a_line_chart_over_series_with_a_set_and_a_null_unit_refuses_comparable_
     with pytest.raises(ConstraintViolation) as excinfo:
         write_component(
             intent={
-                "type": "line_chart",
+                "type": member,
                 "frame_ref": {
                     "spec_id": rf.frame_ref.spec_id,
                     "content_version": rf.frame_ref.content_version,

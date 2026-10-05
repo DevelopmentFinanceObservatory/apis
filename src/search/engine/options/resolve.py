@@ -96,6 +96,10 @@ from search.engine.options.population import OptionsPopulation, options_populati
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.region.refs import confirm_dcids_present
 from search.engine.region.resubmit_request import _requested_window_from_identity
+from search.engine.retrieval.bound_values import (
+    canonicalise_identity,
+    refuse_source_outside_family,
+)
 from search.models import (
     BaseIdentity,
     EntityRoleKey,
@@ -262,7 +266,10 @@ def resolve_options_target(
             (`check_described_arm`) or an identity that fails the
             authoritative identity core (`validate_edited_identity`) --
             duplicate slot properties chief among what this catches that
-            `BaseIdentity`'s own schema does not; every refusal
+            `BaseIdentity`'s own schema does not; `facet_not_available` (422) at
+            `/identity/facets/provenance` for an identity naming a dataset that does
+            not publish its five-tuple (`refuse_source_outside_family`), before any
+            read; every refusal
             `options.population.options_population` raises propagates
             unchanged (`population_empty`, `scope_too_broad`,
             `role_signature_incompatible`, 422 each); `invalid_role_ref`
@@ -291,6 +298,11 @@ def resolve_options_target(
     # /input/identity -- the same door-own-field reasoning.
     check_described_arm(identity.shape, pointer="/identity/shape")
     validate_edited_identity(identity, pointer="/identity")
+    # A pin posted bound and one posted unbound denote one population.
+    identity = canonicalise_identity(identity)
+    # A named dataset that does not publish the five-tuple refuses here as it does at the
+    # mint and the resubmit.
+    refuse_source_outside_family(identity, pointer="/identity/facets/provenance")
 
     # Anchors first: one batched node_types_batch call, cheap next to
     # options_population's own index read or graph enumeration (up to

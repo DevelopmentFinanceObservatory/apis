@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,6 +19,7 @@ from search.engine.clients.graph import Facet
 from search.engine.extract import DateRequest
 from search.engine.region import RegionResult, resolve_variable
 from search.engine.region.codes import (
+    DEFLATOR_MISSING_OMITTED,
     OBSERVATIONS_BULK_FETCH_FAILED,
     OBSERVATIONS_CLIENTS_UNAVAILABLE,
     OBSERVATIONS_NO_DISPATCHABLE_FACET,
@@ -30,6 +32,7 @@ from search.engine.region.codes import (
 from search.engine.region.facets import facet_admitted
 from search.engine.region.observations import bulk_role_series
 from search.engine.region.observations import fetch as region_fetch
+from search.engine.region.observations.bulk_conversion import ConvertedPairs
 from search.engine.region.observations.bulk_role_series import _preview_pairs
 from search.engine.region.result import FacetAxisFilter
 from search.engine.region.state import EngineOptions
@@ -40,6 +43,7 @@ from search.engine.retrieval.facet_election import (
 )
 from search.models import IdentityUnitRequest, TimeWindow
 from search.observations import (
+    OBSERVATIONS_CONVERTED_SCOPE_UNSUPPORTED,
     OBSERVATIONS_PREVIEW_TOO_LARGE,
     observation_settings,
 )
@@ -867,6 +871,50 @@ def test_a_converted_role_read_whose_conversion_read_fails_omits_the_preview(
     assert observations.omitted.reason == code
     assert warn is not None
     assert warn.code == code
+
+
+@pytest.mark.parametrize("omitted_count", [1, 3], ids=["one-pair", "every-pair"])
+def test_a_role_conversion_names_the_pairs_whose_deflator_it_lacks(monkeypatch, omitted_count: int):
+    """The conversion leaves out every row of the first `omitted_count` pairs for a missing
+    deflator (`ConvertedPairs.omitted`). Those pairs hold data: the conversion's warning, or
+    its omission when nothing converts, names them under `deflator_missing_omitted`, and the
+    preview never reports that the read returned no rows."""
+    recipients = [f"country/BRDefl_{i}" for i in range(1, 4)]
+    omitted = {(_SV, _role_tuple(r)) for r in recipients[:omitted_count]}
+    coverage = _patch_role_coverage(monkeypatch, [("F1", _DONOR, r, [2020]) for r in recipients])
+    sdmx = FakeSdmxClient(
+        observations={_SV: {_role_tuple(r): [_facet(dates=["2020"])] for r in recipients}}
+    )
+
+    def convert(pair_points, *, facet, conversion):
+        return ConvertedPairs(
+            points={pair: p for pair, p in pair_points.items() if pair not in omitted},
+            conversions={},
+            left_out={},
+            omitted=dict.fromkeys(omitted, DEFLATOR_MISSING_OMITTED),
+        )
+
+    monkeypatch.setattr(bulk_role_series, "convert_pairs", convert)
+    observations, warn = bulk_role_series_planned(
+        [_SV],
+        _obs_entities(recipients),
+        sdmx=sdmx,
+        graph=_GRAPH,
+        facet_filter=None,
+        coverage=coverage,
+        conversion=SimpleNamespace(target_unit_ref=None),
+    )
+
+    assert len(observations.series) == len(recipients) - omitted_count
+    if omitted_count == len(recipients):
+        assert observations.omitted is not None
+        assert observations.omitted.reason == OBSERVATIONS_CONVERTED_SCOPE_UNSUPPORTED
+    else:
+        assert observations.omitted is None
+    assert warn is not None
+    assert warn.code == OBSERVATIONS_CONVERTED_SCOPE_UNSUPPORTED
+    for _sv, role_tuple in omitted:
+        assert f"{_DONOR} / {role_tuple[1][1]} (deflator_missing_omitted)" in warn.message
 
 
 def test_no_coverage_rows_at_all_returns_no_dispatchable_facet(monkeypatch):

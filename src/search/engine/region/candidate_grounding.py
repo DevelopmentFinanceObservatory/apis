@@ -88,6 +88,7 @@ from search.engine.retrieval.bound_values import (
     apply_declaration_version,
     apply_slot_expansions,
     bound_values_from_bindings,
+    entity_role_keys,
     observed_measure_family,
     open_constraint_axes,
     shape_query,
@@ -679,7 +680,11 @@ def _finish_candidate(
         cand_shape,
         get_index(),
         get_measure_index().axes,
-        shape_query(cand_shape, cand_bindings),
+        shape_query(
+            cand_shape,
+            cand_bindings,
+            entity_role_keys(cand_shape, cand.place.roles.resolved_entities),
+        ),
         cand_served_members,
         cache=measure_family_cache,
     )

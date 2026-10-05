@@ -132,7 +132,10 @@ def _compose_joined(
 ) -> list[Owned] | None:
     """The definite parts' headings, then the byline they share, then their departures.
     Return None when the bylines differ, since one byline after the headings could not
-    say which part each item is for.
+    say which part each item is for. Bylines agree when their tokens with text are equal,
+    refs included: two units that read alike but state different refs (one
+    ``how:measurementQualifier``, the other ``axis:measurementQualifier``) differ, so
+    the one byline stated for every part states refs that are right for each.
 
     The headings join into one (`join_headings`) or, when they cannot, follow one another
     as sentences of their own, a heading two parts state alike stated once. Then comes the
@@ -144,20 +147,21 @@ def _compose_joined(
     after_heading = {
         index: any(token.text for token in tokens) for index, tokens in headings.items()
     }
-    if len({_shown_key(plans[index].byline, after_heading[index]) for index in headings}) > 1:
-        return None
     bylines = {
         index: byline_tokens(plans[index].byline, after_heading=after_heading[index])
         for index in headings
     }
+    first_index = contributing[0][0]
+    shown = [token for token in bylines[first_index] if token.text]
+    if any([token for token in tokens if token.text] != shown for tokens in bylines.values()):
+        return None
 
     composed = join_headings([(index, plans[index].heading) for index, _part in contributing])
     if composed is None:
         composed = _joined_sentences(
             _stated_once([owned(index, tokens) for index, tokens in headings.items()])
         )
-    first_index = contributing[0][0]
-    composed.extend(owned(None, [token for token in bylines[first_index] if token.text]))
+    composed.extend(owned(None, shown))
     placeholders = {
         index: [token for token in tokens if not token.text] for index, tokens in bylines.items()
     }
@@ -171,19 +175,6 @@ def _compose_joined(
         [_departure_sentence(text, index) for index, part in contributing for text in _texts(part)]
     )
     return _joined_sentences(departures, before=composed)
-
-
-def _shown_key(byline: Byline, after_heading: bool) -> Hashable:
-    """What a byline states. Two parts share one byline only when the latest-year label,
-    the unit, a stated source and the bound method agree, and both follow a heading with
-    text."""
-    source = byline.source
-    shown_source = (
-        (source.text, source.slot.key.as_ref() if source.slot else None)
-        if source is not None and source.text
-        else None
-    )
-    return (after_heading, byline.latest, byline.unit_text, shown_source, byline.method)
 
 
 def _placeholder_key(byline: Byline) -> Hashable:

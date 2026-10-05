@@ -11,10 +11,19 @@ refusal code in `cause.code`. A deterministic failure also stores the refusal th
 worker classified, and the body carries its detail, pointer, alternatives, issues,
 ceiling fields and cause entities, as `GET /api/datasets/{id}` renders them for
 the same failure.
-A done operation returns the mint manifest, with
-signed URLs refreshed at read time. Snapshot errors keep their
-`datasets.snapshot` wire codes, so this route maps an expired or revoked
-completed artifact to the platform's `internal_error` catch-all.
+A done operation returns the mint manifest narrowed to the rendering its request
+posted, with signed URLs refreshed at read time. The rendering key is
+`artifact_rendering_key` of the row's stored `options` under this service's site
+settings, the key the synchronous definition door narrows by, so the poll lists
+that rendering's artifact plus statistics artifacts, as the synchronous mint does.
+When the snapshot lists no artifact under that key (a bundle the worker could not
+link, a bundle of a superseded rendition, an expired working-tier artifact), the
+poll calls `OperationStore.fail_unservable_done` and answers retryable
+`operation_failed` with `cause.code` `internal_error`. A resubmit resets the row and
+re-runs it. Other snapshot errors keep their `datasets.snapshot` wire codes, so this
+route maps a revoked version, an unknown version and a signing failure to the
+platform's `internal_error` catch-all, as it does stored options that fail
+`MintOptions` validation.
 
 The fronting proxy authenticates operations-poll callers, as for public mint
 and snapshot reads.
@@ -50,7 +59,6 @@ from dataset_store.clock import Clock, utc_now
 from dataset_store.snapshot import LiveSnapshotReader, SnapshotReader, SnapshotRevoked
 from datasets_api.capabilities import Capabilities, build_capabilities
 from datasets_api.codes_snapshot import (
-    ArtifactExpired,
     SnapshotNotFound,
     SnapshotSigningFailed,
     SpecNotFound,
@@ -63,6 +71,8 @@ from datasets_api.config import (
 from datasets_api.door_executor import build_door_executor
 from datasets_api.doors.snapshot import read_snapshot_manifest
 from datasets_api.headers import no_store_headers
+from datasets_api.manifest_models import Manifest
+from datasets_api.mint_models import MintOptions
 from datasets_api.operation_store import (
     LiveOperationStore,
     Operation,
@@ -76,6 +86,7 @@ from datasets_api.operations.task_client import (
     TaskClientSettings,
     build_live_task_client,
 )
+from datasets_api.render import artifact_rendering_key, is_statistics_rendering, rendition_token
 from datasets_api.schema import (
     OperationEnvelope,
     OperationProgress,
@@ -192,10 +203,23 @@ def _load_done_manifest(
     artifact_store: ArtifactStore,
     now: Clock,
     settings: DatasetsBuildSettings,
-):
+) -> Manifest | None:
+    """The done operation's manifest, narrowed to the rendering its request posted.
+
+    The rendering key is `artifact_rendering_key` of the row's `options` under this service's
+    `settings.site`, the key the synchronous definition door narrows by. The read lists that
+    rendering's artifact plus statistics artifacts. Returns `None` when it lists no artifact
+    other than statistics, as for a bundle the worker could not link, a bundle of a superseded
+    rendition or an expired working-tier artifact.
+
+    Stored options that fail `MintOptions` validation raise `ValidationError`, and snapshot
+    failures raise `RuntimeError`. This route maps both to `internal_error`.
+    """
     assert operation.subject_id is not None and operation.content_version is not None
+    options = MintOptions.model_validate(operation.options)
+    key = artifact_rendering_key(options, site=settings.site)
     try:
-        return read_snapshot_manifest(
+        manifest = read_snapshot_manifest(
             id=operation.subject_id,
             content_version=operation.content_version,
             spec_reader=spec_reader,
@@ -203,12 +227,12 @@ def _load_done_manifest(
             artifact_store=artifact_store,
             now=now,
             settings=settings,
+            rendering_key=key,
         )
     except (
         SpecNotFound,
         SnapshotNotFound,
         SnapshotRevoked,
-        ArtifactExpired,
         SnapshotSigningFailed,
     ) as exc:
         # Snapshot failures map to this route's `internal_error` catch-all.
@@ -223,6 +247,42 @@ def _load_done_manifest(
         raise RuntimeError(
             f"operation {operation.id!r} completed but its own manifest is no longer servable"
         ) from exc
+    if not any(not is_statistics_rendering(artifact.rendering) for artifact in manifest.artifacts):
+        logger.warning(
+            "Datasets operations door: operation %r is done (subject_id=%r, "
+            "content_version=%r) but the snapshot lists no artifact under its rendering "
+            "key %r at rendition %r",
+            operation.id,
+            operation.subject_id,
+            operation.content_version,
+            key,
+            rendition_token(settings.site),
+        )
+        return None
+    return manifest
+
+
+def _failed(operation: Operation) -> OperationFailed:
+    return OperationFailed(
+        operation_id=operation.id,
+        refusal_code=operation.refusal_code,
+        retryable=operation.retryable,
+        refusal=operation.refusal,
+    )
+
+
+def _progress(operation: Operation) -> OperationResource:
+    return OperationResource(
+        operation=OperationEnvelope(
+            operation_id=operation.id,
+            status=operation.state,
+            poll=f"/api/datasets/operations/{operation.id}",
+            progress=OperationProgress(
+                rows_written=operation.rows_written,
+                estimate_rows=operation.estimate.rows,
+            ),
+        )
+    )
 
 
 def _resolve_operation(
@@ -250,25 +310,9 @@ def _resolve_operation(
         )
 
     if operation.state in ("pending", "running"):
-        return OperationResource(
-            operation=OperationEnvelope(
-                operation_id=operation.id,
-                status=operation.state,
-                poll=f"/api/datasets/operations/{operation.id}",
-                progress=OperationProgress(
-                    rows_written=operation.rows_written,
-                    estimate_rows=operation.estimate.rows,
-                ),
-            )
-        )
-
+        return _progress(operation)
     if operation.state == "failed":
-        raise OperationFailed(
-            operation_id=operation.id,
-            refusal_code=operation.refusal_code,
-            retryable=operation.retryable,
-            refusal=operation.refusal,
-        )
+        raise _failed(operation)
 
     if spec_reader is None or snapshot_reader is None or artifact_store is None:
         # Lifespan supplies the readers and artifact store used to re-sign manifests.
@@ -284,10 +328,26 @@ def _resolve_operation(
         now=now,
         settings=settings,
     )
-    return OperationResource(
-        operation=OperationEnvelope(operation_id=operation.id, status="done"),
-        manifest=manifest.model_dump(mode="json", exclude_none=True),
-    )
+    if manifest is not None:
+        return OperationResource(
+            operation=OperationEnvelope(operation_id=operation.id, status="done"),
+            manifest=manifest.model_dump(mode="json", exclude_none=True),
+        )
+
+    # The rendering is gone: fail the row retryable so a resubmit re-runs it.
+    failed = operation_store.fail_unservable_done(operation.id, attempt=operation.attempt_count)
+    if failed is not None:
+        raise _failed(failed)
+    # A concurrent poll or resubmit moved the row first. Answer from its current state.
+    current = operation_store.get(operation.id)
+    if current is None:
+        raise OperationNotFound(operation_id=operation.id)
+    if current.state in ("pending", "running"):
+        return _progress(current)
+    if current.state == "failed":
+        raise _failed(current)
+    # Done again after a resubmit re-ran it: the next poll reads the new completion.
+    raise OperationFailed(operation_id=operation.id, refusal_code="internal_error", retryable=True)
 
 
 def build_meta_door(

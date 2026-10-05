@@ -86,6 +86,7 @@ from search.engine.retrieval.bound_values import (
     apply_declaration_version,
     apply_slot_expansions,
     bound_values_from_bindings,
+    entity_role_keys,
     observed_measure_family,
     open_constraint_axes,
     shape_query,
@@ -753,7 +754,11 @@ def _start_related_read(state: _PromoteState) -> None:
         state.shape_draft,
         get_index(),
         get_measure_index().axes,
-        shape_query(state.shape_draft, state.bindings),
+        shape_query(
+            state.shape_draft,
+            state.bindings,
+            entity_role_keys(state.shape_draft, state.place.roles.resolved_entities),
+        ),
         _served_member_facts(state),
     )
     state.related_read = submit_related_read(

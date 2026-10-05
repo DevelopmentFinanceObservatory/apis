@@ -762,9 +762,9 @@ def _antichain_proven_complete(
     extra property reads `aggregate`. This covers unbound slots because their
     keys can only extend `B`.
 
-    The root must cover `role_keys` (`_covers`). The election reduces constraint keys among
-    the covering members only, so a root outside them dominates nothing, and an unread
-    member that covers would replace it.
+    The root must cover `role_keys` (`role_class_covers`). The election reduces constraint
+    keys among the covering members only, so a root outside them dominates nothing, and an
+    unread member that covers would replace it.
 
     The argument compares constraint keys. An unseen member of equal keys that declares
     fewer roles than the root would be elected over it, so a truncated page also needs
@@ -773,7 +773,9 @@ def _antichain_proven_complete(
     Returns `False` when `root_can_prove_complete` rules the argument out for these slots."""
     if not root_can_prove_complete(slots=slots, readings=readings):
         return False
-    return any(_covers(root.declared_roles, role_keys) for root in _roots(members, slots=slots))
+    return any(
+        role_class_covers(root.declared_roles, role_keys) for root in _roots(members, slots=slots)
+    )
 
 
 def _root_elects_role_class(
@@ -1285,11 +1287,11 @@ def _role_absence_suspects(
         by_dcid[dcid] for dcid in _elect(members, readings=readings, role_keys=role_keys).members
     ]
     subject_only = [member for member in members if member.declared_roles == (_OBSERVATION_ABOUT,)]
-    if _covers((_OBSERVATION_ABOUT,), role_keys):
+    if role_class_covers((_OBSERVATION_ABOUT,), role_keys):
         if len(subject_only) == len(members):
             return []
         suspects = [member for member in winners if member.declared_roles == (_OBSERVATION_ABOUT,)]
-    elif any(_covers(member.declared_roles, role_keys) for member in members):
+    elif any(role_class_covers(member.declared_roles, role_keys) for member in members):
         winner_keys = {frozenset(member.constraints) for member in winners}
         suspects = [
             member
@@ -1403,23 +1405,93 @@ def _collapse_role_twins(
 
     Role twins are ids with equal constraint maps, property and value, whose declared
     role sets nest. The id declaring the strict superset is a breakdown over the extra
-    roles, and the other is its total, so the breakdown is dropped. Ids group by
-    constraint map and each group compares its distinct role sets, so the work grows
-    with the number of distinct sets, not the number of ids. The result does not depend
-    on the order given."""
-    map_by_id = {dcid: frozenset(constraints_by_id[dcid].items()) for dcid in order}
-    role_sets_by_map: dict[frozenset[tuple[str, str]], set[frozenset[str]]] = {}
-    for dcid in order:
-        role_sets_by_map.setdefault(map_by_id[dcid], set()).add(frozenset(roles_by_id[dcid]))
-    displaced = {
-        (constraint_map, role_set)
-        for constraint_map, role_sets in role_sets_by_map.items()
-        for role_set in role_sets
-        if any(other < role_set for other in role_sets)
-    }
-    return tuple(
-        dcid for dcid in order if (map_by_id[dcid], frozenset(roles_by_id[dcid])) not in displaced
+    roles, and the other is its total, so the breakdown is dropped. The result does not
+    depend on the order given (`_undisplaced`)."""
+    facts = role_class_facts(
+        {dcid: constraints_by_id[dcid] for dcid in order},
+        {dcid: roles_by_id[dcid] for dcid in order},
     )
+    displaced = _displaced(facts, order)
+    return tuple(dcid for dcid in order if dcid not in displaced)
+
+
+@dataclass(frozen=True, eq=False)
+class RoleClass:
+    """What `elect_role_class` reads of the ids that declare one role tuple and one set of
+    constraint keys. `role_class_facts` builds one instance per pair, so instances compare
+    by identity."""
+
+    roles: tuple[str, ...]
+    role_set: frozenset[str]
+    keys: frozenset[str]
+
+
+@dataclass(frozen=True)
+class RoleClassFacts:
+    """The per-id facts `elect_role_class` reads, built once (`role_class_facts`) so that
+    elections over any subset of the ids read them."""
+
+    class_of: Mapping[str, RoleClass]
+    """Each id's role class."""
+    twin_of: Mapping[str, tuple[frozenset[tuple[str, str]], frozenset[str]]]
+    """Each id that may have a role twin, mapped to its constraint map and role set: the
+    ids whose constraint map other ids hold under another role set."""
+    smaller: Mapping[tuple[frozenset[tuple[str, str]], frozenset[str]], tuple[frozenset[str], ...]]
+    """For each such constraint map and role set, the role sets held under that map that
+    are strict subsets of it: the twins that displace it."""
+
+
+def role_class_facts(
+    constraints_by_id: Mapping[str, Mapping[str, str]],
+    roles_by_id: Mapping[str, tuple[str, ...]],
+) -> RoleClassFacts:
+    """Return the facts `elect_role_class_of` reads for the ids of `roles_by_id`.
+
+    Twin candidates group by constraint map, and each group compares its distinct role
+    sets, so the work grows with the number of distinct sets, not the number of ids."""
+    classes: dict[tuple[tuple[str, ...], frozenset[str]], RoleClass] = {}
+    class_of: dict[str, RoleClass] = {}
+    map_of: dict[str, frozenset[tuple[str, str]]] = {}
+    role_sets_by_map: dict[frozenset[tuple[str, str]], set[frozenset[str]]] = {}
+    for dcid, roles in roles_by_id.items():
+        constraints = constraints_by_id[dcid]
+        keys = frozenset(constraints)
+        role_class = classes.get((roles, keys))
+        if role_class is None:
+            role_class = classes[roles, keys] = RoleClass(
+                roles=roles, role_set=frozenset(roles), keys=keys
+            )
+        class_of[dcid] = role_class
+        constraint_map = map_of[dcid] = frozenset(constraints.items())
+        role_sets_by_map.setdefault(constraint_map, set()).add(role_class.role_set)
+    smaller = {
+        (constraint_map, role_set): nested
+        for constraint_map, role_sets in role_sets_by_map.items()
+        if len(role_sets) > 1
+        for role_set in role_sets
+        if (nested := tuple(other for other in role_sets if other < role_set))
+    }
+    twin_of = {
+        dcid: (constraint_map, class_of[dcid].role_set)
+        for dcid, constraint_map in map_of.items()
+        if len(role_sets_by_map[constraint_map]) > 1
+    }
+    return RoleClassFacts(class_of=class_of, twin_of=twin_of, smaller=smaller)
+
+
+def _displaced(facts: RoleClassFacts, order: Sequence[str]) -> set[str]:
+    """The ids of `order` a role twin among `order` displaces: one with the same constraint
+    map and a role set that is a strict subset of theirs."""
+    twins = [(dcid, facts.twin_of[dcid]) for dcid in order if dcid in facts.twin_of]
+    present = {twin for _dcid, twin in twins}
+    return {
+        dcid
+        for dcid, (constraint_map, role_set) in twins
+        if any(
+            (constraint_map, other) in present
+            for other in facts.smaller.get((constraint_map, role_set), ())
+        )
+    }
 
 
 def covers_role_keys(declared_roles: tuple[str, ...], role_keys: Collection[str]) -> bool:
@@ -1475,21 +1547,74 @@ def elect_role_class(
     survives beside the total. Members whose role sets do not nest, and members of
     different role sets with different constraint maps, all survive, and `tied` reports
     it."""
-    covering = tuple(dcid for dcid in order if _covers(roles_by_id[dcid], role_keys))
-    covered = covering or tuple(order)
-    least_constrained = antichain_minimal_ids(
-        {dcid: frozenset(constraints_by_id[dcid]) for dcid in covered}, covered, readings=readings
+    return elect_role_class_of(
+        role_class_facts(
+            {dcid: constraints_by_id[dcid] for dcid in order},
+            {dcid: roles_by_id[dcid] for dcid in order},
+        ),
+        order,
+        role_keys=role_keys,
+        readings=readings,
     )
-    members = _collapse_role_twins(constraints_by_id, roles_by_id, least_constrained)
-    role_sets = {frozenset(roles_by_id[dcid]) for dcid in members}
+
+
+def elect_role_class_of(
+    facts: RoleClassFacts,
+    order: Sequence[str],
+    *,
+    role_keys: Collection[str],
+    readings: Mapping[str, AbsentReading],
+) -> RoleClassElection:
+    """`elect_role_class` over ids whose facts `role_class_facts` built, for a caller that
+    elects over many subsets of one set of ids. Coverage, the antichain and the family
+    are decided once per role class, so an election reads each id a few times."""
+    class_of = facts.class_of
+    present = {class_of[dcid] for dcid in order}
+    covering = {
+        role_class for role_class in present if role_class_covers(role_class.roles, role_keys)
+    }
+    candidates = covering or present
+    covered = (
+        tuple(order)
+        if len(candidates) == len(present)
+        else tuple(dcid for dcid in order if class_of[dcid] in candidates)
+    )
+    key_sets = {role_class.keys for role_class in candidates}
+    minimal = {
+        role_class
+        for role_class in candidates
+        if not any(
+            dominates_constraint_keys(other, role_class.keys, readings=readings)
+            for other in key_sets
+        )
+    }
+    least_constrained = (
+        covered
+        if len(minimal) == len(candidates)
+        else tuple(dcid for dcid in covered if class_of[dcid] in minimal)
+    )
+    displaced = _displaced(facts, least_constrained)
+    members = (
+        tuple(dcid for dcid in least_constrained if dcid not in displaced)
+        if displaced
+        else least_constrained
+    )
+    member_classes = {class_of[dcid] for dcid in members} if displaced else minimal
+    role_sets = {role_class.role_set for role_class in member_classes}
     if len(role_sets) > 1:
         return RoleClassElection(family=covered, members=members, tied=True)
-    family = tuple(dcid for dcid in covered if frozenset(roles_by_id[dcid]) in role_sets)
+    family_classes = {role_class for role_class in candidates if role_class.role_set in role_sets}
+    family = (
+        covered
+        if len(family_classes) == len(candidates)
+        else tuple(dcid for dcid in covered if class_of[dcid] in family_classes)
+    )
     return RoleClassElection(family=family, members=members, tied=False)
 
 
-def _covers(declared_roles: tuple[str, ...], role_keys: Collection[str]) -> bool:
-    """`elect_role_class`'s coverage: `covers_role_keys`, or subject-only with no role key."""
+def role_class_covers(declared_roles: tuple[str, ...], role_keys: Collection[str]) -> bool:
+    """`elect_role_class`'s coverage: `declared_roles` place every role key
+    (`covers_role_keys`), or with no role key, they declare the subject alone."""
     if role_keys:
         return covers_role_keys(declared_roles, role_keys)
     return declared_roles == (_OBSERVATION_ABOUT,)

@@ -68,7 +68,11 @@ from search.render.heading import (
     heading_for,
     sibling_how_properties,
 )
-from search.render.no_data import alternate_preserves_bound_role, no_data_sentence_plan
+from search.render.no_data import (
+    alternate_preserves_bound_role,
+    no_data_message,
+    no_data_sentence_plan,
+)
 from search.render.plan import render_sentence_plan
 from search.render.tokens import plan_words, sentence_from_plan
 from skills_index import SkillsIndex
@@ -553,6 +557,8 @@ def build_no_data_part(
     ``entity_ambiguous``. ``qualifier_terms`` is used for ``qualifier_not_bound``.
     ``unit_alternatives`` and ``unit_alternatives_truncated`` carry a
     ``unit_not_resolved`` refusal's capped currencies. ``None`` omits both.
+    ``NoData.message`` is the bare no-data sentence with every term the part names, set
+    whether or not a sentence is requested.
 
     Sentence plans reuse each near-match's tokens under a gate-specific lead-in. A skills
     request adds ``skills_not_matchable`` for the answer and matches available near-matches
@@ -661,6 +667,15 @@ def build_no_data_part(
         timing_ms=timing_ms,
         no_data=NoData(  # type: ignore[arg-type]
             reason=reason,
+            message=no_data_message(
+                reason,
+                variable_term=variable_text,
+                entity_terms=entity_terms,
+                role_axis=role_axis,
+                ambiguous_candidates=ambiguous_candidates,
+                elected_stat_vars=elected_stat_vars,
+                qualifier_terms=qualifier_terms,
+            ),
             nearest_real=nearest_real,
             flagged_match=flagged_match,
             gate=gate,

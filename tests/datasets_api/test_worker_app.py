@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from artifact_store import ArtifactStore
 from code_index.query import CodeIndex
 from code_index.types import IndexStamp
+from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.operation_store import LiveOperationStore, Operation, OperationStore
 from datasets_api.operations.oidc import FakeOidcVerifier, OidcVerifier
@@ -673,3 +674,7 @@ class TestLiveDefinitionDepsConstruction:
         assert (
             self._deps().member_concurrency == DatasetsBuildSettings().mint_member_max_concurrency
         )
+
+    def test_snapshot_reader_is_live(self):
+        """`run_operation` reads artifact locations through it before completing a row."""
+        assert isinstance(self._deps().snapshot_reader, LiveSnapshotReader)

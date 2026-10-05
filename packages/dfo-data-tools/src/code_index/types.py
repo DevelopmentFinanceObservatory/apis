@@ -6,7 +6,7 @@ This module has no graph or file-I/O imports.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 
@@ -143,6 +143,21 @@ def summable_axes(declarations: Mapping[str, CodeSystemDeclaration]) -> frozense
     )
 
 
+def level_axes(declarations: Mapping[str, CodeSystemDeclaration]) -> frozenset[str]:
+    """Return declared code systems that are summable, hierarchical, and disjoint from children.
+
+    These are the axes a datasets `groupby` can roll up to one depth of their parent chain
+    (`groupby.levels`), since only a hierarchy has depths, only a summable axis can be summed
+    into its ancestors, and only a parent-coded record disjoint from its children's can be
+    added to them without counting them twice.
+    """
+    return frozenset(
+        code_system
+        for code_system, declaration in declarations.items()
+        if declaration.summable and declaration.hierarchical and declaration.disjoint_from_children
+    )
+
+
 AbsentObservation = Literal["zero", "unknown"]
 """Whether an observation absent from a provenance's loaded data, for a
 (roles, time, member) cell that provenance constrains, reads as zero.
@@ -168,8 +183,11 @@ class DatasetDeclaration:
     `label` and `synonyms` are the names a query or a sentence uses for the
     dataset. `opt_in` marks a table a question answers from only when it
     names the table (the imputed multilateral sectors table). Any other table
-    (CRS) answers any question its five-tuples fit. Each five-tuple
-    the index carries belongs to one dataset (`CodeIndex.dataset_by_five_tuple`).
+    (CRS) answers any question its five-tuples fit. Several datasets may
+    publish one five-tuple, and one StatVar row may belong to several.
+    `rank` orders them: of the datasets that can serve a family, the lowest
+    rank serves it (`code_index.members.elect_dataset`). Ranks are unique
+    across an index's declarations.
 
     `absent_observation` says whether an observation the table carries no row
     for reads as zero. This per-dataset reporting fact differs from
@@ -178,6 +196,14 @@ class DatasetDeclaration:
 
     A StatVar row belongs to the dataset when `StatVarRow.provenances` names
     its `provenance`.
+
+    `invariants` maps a constraint property to the code every row the dataset
+    publishes carries explicitly. The loader refuses an index with a row of the
+    dataset that does not (`code_index.loader._check_datasets`), whatever the
+    property's `absent_reading`. A canonical identity that names the dataset binds
+    each invariant (`code_index.members.invariant_bindings`), so an invariant is a
+    contract: dropping one changes what stored identities mean, and a table whose
+    invariant stops holding takes a new provenance.
     """
 
     provenance: str
@@ -185,6 +211,8 @@ class DatasetDeclaration:
     synonyms: tuple[str, ...]
     opt_in: bool
     absent_observation: AbsentObservation
+    rank: int
+    invariants: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

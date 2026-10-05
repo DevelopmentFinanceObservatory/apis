@@ -49,11 +49,6 @@ class InvalidDeclaredDefault(ValueError):
     missing or belongs to that system. Defaults scope over another system's slot."""
 
 
-class DatasetsShareFiveTuple(ValueError):
-    """Rows of two datasets share one five-tuple. The five-tuple is what separates one
-    table from another, so each five-tuple the index carries belongs to one dataset."""
-
-
 def row_five_tuple(row: StatVarRow) -> FiveTuple:
     """Returns the row's five fields as a resolved `FiveTuple`.
 
@@ -67,41 +62,46 @@ def row_five_tuple(row: StatVarRow) -> FiveTuple:
     )
 
 
-def _datasets_by_five_tuple(statvars: Iterable[StatVarRow]) -> dict[FiveTuple, str]:
-    """Maps each five-tuple to the one dataset publishing its rows. A row with no
-    provenance belongs to no dataset and maps nothing.
+def _datasets_by_five_tuple(
+    statvars: Iterable[StatVarRow], datasets: Mapping[str, DatasetDeclaration]
+) -> dict[FiveTuple, tuple[str, ...]]:
+    """Maps each five-tuple to the datasets publishing any of its rows, lowest
+    `DatasetDeclaration.rank` first. A provenance no dataset declares follows the declared
+    ones, and provenance breaks a tie. A row with no provenance belongs to no dataset."""
+    publishers: dict[FiveTuple, set[str]] = defaultdict(set)
+    for row in statvars:
+        publishers[row_five_tuple(row)].update(row.provenances)
 
-    Raises `DatasetsShareFiveTuple` when rows of one five-tuple name two provenances."""
-    datasets: dict[FiveTuple, str] = {}
+    def serving_order(provenance: str) -> tuple[bool, int, str]:
+        declaration = datasets.get(provenance)
+        return (declaration is None, declaration.rank if declaration else 0, provenance)
+
+    return {
+        five_tuple: tuple(sorted(provenances, key=serving_order))
+        for five_tuple, provenances in publishers.items()
+        if provenances
+    }
+
+
+def _dataset_pins(
+    statvars: Iterable[StatVarRow], code_systems: Iterable[str]
+) -> dict[tuple[str, FiveTuple], dict[str, str]]:
+    """Maps each dataset and five-tuple it publishes to the code-system properties that
+    every one of the dataset's rows of the five-tuple carries with one value, and that
+    value. Measure axes are not declared code systems, so no measure axis is pinned."""
+    rows_by_key: dict[tuple[str, FiveTuple], list[StatVarRow]] = defaultdict(list)
     for row in statvars:
         five_tuple = row_five_tuple(row)
         for provenance in row.provenances:
-            other = datasets.setdefault(five_tuple, provenance)
-            if other != provenance:
-                raise DatasetsShareFiveTuple(
-                    f"datasets {sorted((other, provenance))!r} share five-tuple {five_tuple!r} "
-                    f"(StatVar {row.dcid!r})"
-                )
-    return datasets
-
-
-def _five_tuple_pins(
-    statvars: Iterable[StatVarRow], code_systems: Iterable[str]
-) -> dict[FiveTuple, dict[str, str]]:
-    """Maps each five-tuple to the code-system properties that every one of its rows
-    carries with one value, and that value. Measure axes are not declared code systems,
-    so no measure axis is pinned."""
-    rows_by_five_tuple: dict[FiveTuple, list[StatVarRow]] = defaultdict(list)
-    for row in statvars:
-        rows_by_five_tuple[row_five_tuple(row)].append(row)
-    pins: dict[FiveTuple, dict[str, str]] = {}
-    for five_tuple, rows in rows_by_five_tuple.items():
+            rows_by_key[provenance, five_tuple].append(row)
+    pins: dict[tuple[str, FiveTuple], dict[str, str]] = {}
+    for key, rows in rows_by_key.items():
         pinned: dict[str, str] = {}
         for code_system in sorted(code_systems):
             held = {row.constraint_properties.get(code_system) for row in rows}
             if len(held) == 1 and (value := held.pop()) is not None:
                 pinned[code_system] = value
-        pins[five_tuple] = pinned
+        pins[key] = pinned
     return pins
 
 
@@ -201,10 +201,10 @@ class CodeIndex:
         "_codes_by_system_code",
         "_codes_by_text",
         "codes",
-        "dataset_by_five_tuple",
+        "dataset_pins",
         "datasets",
+        "datasets_by_five_tuple",
         "declarations",
-        "five_tuple_pins",
         "stamp",
         "statvars",
     )
@@ -263,13 +263,17 @@ class CodeIndex:
                 raise DuplicateDcid(f"StatVar dcid {row.dcid!r} appears more than once")
             seen_statvar_dcids.add(row.dcid)
 
-        self.dataset_by_five_tuple: dict[FiveTuple, str] = _datasets_by_five_tuple(self.statvars)
-        """The provenance of the one dataset publishing each five-tuple's rows."""
-        self.five_tuple_pins: dict[FiveTuple, dict[str, str]] = _five_tuple_pins(
+        self.datasets_by_five_tuple: dict[FiveTuple, tuple[str, ...]] = _datasets_by_five_tuple(
+            self.statvars, self.datasets
+        )
+        """The provenances of the datasets publishing each five-tuple's rows, in serving
+        order (`DatasetDeclaration.rank`)."""
+        self.dataset_pins: dict[tuple[str, FiveTuple], dict[str, str]] = _dataset_pins(
             self.statvars, self.declarations
         )
-        """For each five-tuple, every code-system property its rows all carry with one
-        value, mapped to that value. An identity minted on the five-tuple binds it."""
+        """For each dataset and five-tuple it publishes, every code-system property the
+        dataset's rows of the five-tuple all carry with one value, mapped to that value. An
+        identity whose family that dataset serves binds it."""
 
         self._codes_by_dcid = codes_by_dcid
         self._codes_by_system_code = codes_by_system_code
@@ -352,6 +356,22 @@ class CodeIndex:
             if root not in result:
                 result.append(root)
         return tuple(result)
+
+    def ancestor_at_depth(self, dcid: str, depth: int) -> str | None:
+        """Returns the ancestor of `dcid` at `depth` on its parent chain, or `None` when `dcid`
+        sits shallower than `depth`.
+
+        Depth 0 is the chain's root, and `dcid`'s own depth returns `dcid`. Depth counts parent
+        steps, so codes of one length can sit at different depths. Flat-system and unknown codes
+        are roots. A dangling parent is the root, as in `covering_roots`."""
+        chain = [dcid]
+        row = self._codes_by_dcid.get(dcid)
+        while row is not None and row.parent is not None:
+            chain.append(row.parent)
+            row = self._codes_by_dcid.get(row.parent)
+        if depth >= len(chain):
+            return None
+        return chain[-1 - depth]
 
     def _root_of(self, dcid: str) -> str:
         """Returns the topmost ancestor, or `dcid` when unknown. A dangling parent returns

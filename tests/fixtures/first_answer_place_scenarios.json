@@ -1009,6 +1009,35 @@
       "headline": {
        "named_window": null,
        "observations": 2,
+       "recent_years": [
+        {
+         "observations": 2,
+         "role_counts": {
+          "financingProvider": 1,
+          "financingRecipient": 2
+         },
+         "series": 2,
+         "year": 2022
+        },
+        {
+         "observations": 2,
+         "role_counts": {
+          "financingProvider": 1,
+          "financingRecipient": 2
+         },
+         "series": 2,
+         "year": 2021
+        },
+        {
+         "observations": 2,
+         "role_counts": {
+          "financingProvider": 1,
+          "financingRecipient": 2
+         },
+         "series": 2,
+         "year": 2020
+        }
+       ],
        "role_counts": {
         "financingProvider": 1,
         "financingRecipient": 2
@@ -1997,6 +2026,35 @@
       "headline": {
        "named_window": null,
        "observations": 2,
+       "recent_years": [
+        {
+         "observations": 2,
+         "role_counts": {
+          "financingProvider": 1,
+          "financingRecipient": 2
+         },
+         "series": 2,
+         "year": 2022
+        },
+        {
+         "observations": 2,
+         "role_counts": {
+          "financingProvider": 1,
+          "financingRecipient": 2
+         },
+         "series": 2,
+         "year": 2021
+        },
+        {
+         "observations": 2,
+         "role_counts": {
+          "financingProvider": 1,
+          "financingRecipient": 2
+         },
+         "series": 2,
+         "year": 2020
+        }
+       ],
        "role_counts": {
         "financingProvider": 1,
         "financingRecipient": 2
@@ -6691,6 +6749,32 @@
       "headline": {
        "named_window": null,
        "observations": 1,
+       "recent_years": [
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2022
+        },
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2021
+        },
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2020
+        }
+       ],
        "role_counts": {
         "financingRecipient": 1
        },
@@ -7709,6 +7793,35 @@
       "headline": {
        "named_window": null,
        "observations": 1,
+       "recent_years": [
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingProvider": 1,
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2022
+        },
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingProvider": 1,
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2021
+        },
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingProvider": 1,
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2020
+        }
+       ],
        "role_counts": {
         "financingProvider": 1,
         "financingRecipient": 1
@@ -9007,6 +9120,32 @@
       "headline": {
        "named_window": null,
        "observations": 1,
+       "recent_years": [
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2022
+        },
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2021
+        },
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2020
+        }
+       ],
        "role_counts": {
         "financingRecipient": 1
        },
@@ -35720,6 +35859,32 @@
      "headline": {
       "named_window": null,
       "observations": 1,
+      "recent_years": [
+       {
+        "observations": 1,
+        "role_counts": {
+         "financingRecipient": 1
+        },
+        "series": 1,
+        "year": 2022
+       },
+       {
+        "observations": 1,
+        "role_counts": {
+         "financingRecipient": 1
+        },
+        "series": 1,
+        "year": 2021
+       },
+       {
+        "observations": 1,
+        "role_counts": {
+         "financingRecipient": 1
+        },
+        "series": 1,
+        "year": 2020
+       }
+      ],
       "role_counts": {
        "financingRecipient": 1
       },
@@ -37014,6 +37179,32 @@
       "headline": {
        "named_window": null,
        "observations": 1,
+       "recent_years": [
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2022
+        },
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2021
+        },
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2020
+        }
+       ],
        "role_counts": {
         "financingRecipient": 1
        },
@@ -38042,6 +38233,32 @@
       "headline": {
        "named_window": null,
        "observations": 1,
+       "recent_years": [
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2022
+        },
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2021
+        },
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2020
+        }
+       ],
        "role_counts": {
         "financingRecipient": 1
        },
@@ -42098,6 +42315,32 @@
       "headline": {
        "named_window": null,
        "observations": 1,
+       "recent_years": [
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2022
+        },
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2021
+        },
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2020
+        }
+       ],
        "role_counts": {
         "financingRecipient": 1
        },
@@ -42734,6 +42977,32 @@
       "headline": {
        "named_window": null,
        "observations": 1,
+       "recent_years": [
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2022
+        },
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2021
+        },
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2020
+        }
+       ],
        "role_counts": {
         "financingRecipient": 1
        },
@@ -43650,6 +43919,32 @@
       "headline": {
        "named_window": null,
        "observations": 1,
+       "recent_years": [
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2022
+        },
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2021
+        },
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2020
+        }
+       ],
        "role_counts": {
         "financingRecipient": 1
        },
@@ -44763,6 +45058,32 @@
       "headline": {
        "named_window": null,
        "observations": 1,
+       "recent_years": [
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2022
+        },
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2021
+        },
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2020
+        }
+       ],
        "role_counts": {
         "financingRecipient": 1
        },
@@ -45653,6 +45974,32 @@
       "headline": {
        "named_window": null,
        "observations": 1,
+       "recent_years": [
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2022
+        },
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2021
+        },
+        {
+         "observations": 1,
+         "role_counts": {
+          "financingRecipient": 1
+         },
+         "series": 1,
+         "year": 2020
+        }
+       ],
        "role_counts": {
         "financingRecipient": 1
        },

@@ -81,8 +81,9 @@ def _electing(
                 synonyms=(),
                 opt_in=False,
                 absent_observation=absent,
+                rank=100 + rank,
             )
-            for declared in {ALT, IDS, provenance}
+            for rank, declared in enumerate(sorted({ALT, IDS, provenance}))
         },
     }
 
