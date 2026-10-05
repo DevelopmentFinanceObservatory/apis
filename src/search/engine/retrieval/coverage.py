@@ -45,6 +45,7 @@ from search.models import (
     CoverageBreadth,
     CoverageExact,
     Headline,
+    HeadlineYear,
     TimeWindow,
 )
 
@@ -334,11 +335,14 @@ def headline_from_coverage_index(
     )
     if result is None:
         return None
-    role_counts = {
-        role_dcid_by_coverage_role[coverage_role]: count
-        for coverage_role, count in result.role_counts.items()
-        if coverage_role in role_dcid_by_coverage_role
-    }
+
+    def role_dcid_counts(counts: Mapping[CoverageRole, int]) -> dict[str, int]:
+        return {
+            role_dcid_by_coverage_role[coverage_role]: count
+            for coverage_role, count in counts.items()
+            if coverage_role in role_dcid_by_coverage_role
+        }
+
     named_window = date_request.window if date_request is not None else None
     return Headline(
         year=result.year,
@@ -346,5 +350,14 @@ def headline_from_coverage_index(
         named_window=named_window,
         observations=result.observations,
         series=result.series,
-        role_counts=role_counts,
+        role_counts=role_dcid_counts(result.role_counts),
+        recent_years=[
+            HeadlineYear(
+                year=counted.year,
+                observations=counted.observations,
+                series=counted.series,
+                role_counts=role_dcid_counts(counted.role_counts),
+            )
+            for counted in result.recent_years
+        ],
     )

@@ -196,12 +196,13 @@ def _bulk_scope_series(
     StatVar at its entity; `total_obs` sums those pairs' probe counts. Under `latest` a place
     whose point is not at its variable's latest period across the served pairs
     (`materialise.window.latest_periods`) does not serve either. `conversion` converts the
-    served points to its unit (`bulk_conversion.convert_pairs`); a StatVar it leaves out is
-    named in an `OBSERVATIONS_CONVERTED_SCOPE_UNSUPPORTED` warning, or in an omission with
-    that reason when no StatVar converts. A read the conversion makes that fails or crosses
-    the deadline omits the preview (`bulk_conversion.conversion_failed_omission`). Uncovered entities are omitted, with
-    `OBSERVATIONS_SCOPE_PARTIAL` when some places serve no series for a reason other than
-    the conversion.
+    served points to its unit (`bulk_conversion.convert_pairs`); a StatVar it leaves out, and
+    a place whose point it leaves out for a missing deflator or currency, is named in an
+    `OBSERVATIONS_CONVERTED_SCOPE_UNSUPPORTED` warning, or in an omission with that reason
+    when nothing converts. A read the conversion makes that fails or crosses the deadline
+    omits the preview (`bulk_conversion.conversion_failed_omission`). Places with no data
+    are omitted, with `OBSERVATIONS_SCOPE_PARTIAL`; a place whose served point the conversion
+    left out holds data and is not counted there.
 
     `member_constraints` supplies row labels, falling back to the resolved StatVar label.
     Rows sort by latest value descending, missing values last, then `(stat_var, entity)`.
@@ -298,15 +299,13 @@ def _bulk_scope_series(
             short_of_latest,
         )
     converted = None
-    left_out: dict[str, str] = {}
     left_out_places: set[str] = set()
     if conversion is not None:
         try:
             converted = convert_pairs(served, facet=best, conversion=conversion)
         except (*UPSTREAM_READ_ERRORS, TimeoutError) as exc:
             return conversion_failed_omission(exc)
-        left_out = converted.left_out
-        left_out_places = {entity for sv, ((_role, entity),) in served if sv in left_out}
+        left_out_places = {entity for _sv, ((_role, entity),) in converted.left_out_pairs(served)}
         served = converted.points
     conversions = converted.conversions if converted is not None else {}
     reads = {
@@ -318,8 +317,8 @@ def _bulk_scope_series(
         )
         for pair, points in served.items()
     }
-    if not reads and left_out:
-        return left_out_omission(left_out)
+    if not reads and converted is not None and converted.leaves_out:
+        return left_out_omission(converted)
     if not reads:
         # Every entity the probe attributed this facet_id to disagreed with
         # the actual fetch (or the fetch returned nothing at all) -- a
@@ -361,4 +360,4 @@ def _bulk_scope_series(
                 + (" in its latest period." if latest is not None else ".")
             ),
         )
-    return observations, left_out_warning(left_out, also=warn)
+    return observations, left_out_warning(converted, also=warn)

@@ -1,24 +1,24 @@
-"""The slots an identity's five-tuple pins, which no sentence states.
+"""The slots an identity's elected dataset pins, which no sentence states.
 
-`CodeIndex.five_tuple_pins` maps a five-tuple to each property every index row of it
-carries with one value: `crsTypeOfFlow` and `dac2aAidType` on the ONE imputed
-multilateral five-tuple. A pinned slot tells no member of the five-tuple apart.
+`CodeIndex.dataset_pins` maps a dataset and a five-tuple to each property every index row
+the dataset publishes of it carries with one value: `crsTypeOfFlow` and `dac2aAidType` on
+the ONE imputed multilateral table. An identity reads the pins of the dataset elected for
+its family (`code_index.members.elected_pins`). A pinned slot tells no member of the
+family apart.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import cast
-
+from code_index.members import elected_pins, identity_family_query
 from code_index.shared import get_index
-from search.models import BaseIdentity
-from statvar_members import five_tuple_from_identity
+from search.models import BaseIdentity, IdentityShapeSchema
 
 
 def identity_pinned_properties(identity: BaseIdentity) -> frozenset[str]:
-    """The properties `identity`'s five-tuple pins. Empty for an identity that names its one
-    StatVar."""
-    shape = cast("Mapping[str, object]", identity.core_document(mode="json")["shape"])
-    if shape.get("kind") == "stat_var":
+    """The properties the dataset elected for `identity`'s family pins. Empty for an
+    identity that names its one StatVar."""
+    if not isinstance(identity.shape, IdentityShapeSchema):
         return frozenset()
-    return frozenset(get_index().five_tuple_pins.get(five_tuple_from_identity(shape), {}))
+    index = get_index()
+    query = identity_family_query(index, identity.core_document(mode="json"))
+    return frozenset(elected_pins(index, query))

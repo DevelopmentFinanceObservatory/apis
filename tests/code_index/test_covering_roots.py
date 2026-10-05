@@ -1,6 +1,8 @@
-"""Pin root coverage for hierarchical codes and passthrough for flat codes."""
+"""Pin root coverage and depth ancestors for hierarchical codes and passthrough for flat codes."""
 
 from __future__ import annotations
+
+import pytest
 
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 
@@ -127,3 +129,35 @@ def test_real_crs_type_of_flow_a_flat_system_is_never_rolled_up(code_index: Code
         "CRSTypeOfFlow10",
         "CRSTypeOfFlow21",
     )
+
+
+# The synthetic tree is ragged: branch A is three codes deep, branch B two.
+@pytest.mark.parametrize(
+    ("dcid", "depth", "expected"),
+    [
+        ("HierA1a", 0, "HierRootA"),
+        ("HierA1a", 1, "HierA1"),
+        ("HierA1a", 2, "HierA1a"),
+        ("HierA1a", 3, None),
+        ("HierB1", 0, "HierRootB"),
+        ("HierB1", 1, "HierB1"),
+        ("HierB1", 2, None),
+        ("HierRootA", 0, "HierRootA"),
+        ("HierRootA", 1, None),
+        ("FlatX", 0, "FlatX"),
+        ("FlatX", 1, None),
+        ("NoSuchValue", 0, "NoSuchValue"),
+    ],
+)
+def test_ancestor_at_depth_walks_the_parent_chain_from_the_root(
+    dcid: str, depth: int, expected: str | None
+):
+    assert _synthetic_index().ancestor_at_depth(dcid, depth) == expected
+
+
+def test_real_crs_purpose_codes_of_one_length_sit_at_different_depths(code_index: CodeIndex):
+    # 60010 (depth 1) and 12262 (depth 3) are both five-digit purposes.
+    assert code_index.ancestor_at_depth("CRSPurposeCode60010", 0) == "CRSPurposeCode600"
+    assert code_index.ancestor_at_depth("CRSPurposeCode60010", 2) is None
+    assert code_index.ancestor_at_depth("CRSPurposeCode12262", 0) == "CRSPurposeCode100"
+    assert code_index.ancestor_at_depth("CRSPurposeCode12262", 1) == "CRSPurposeCode120"

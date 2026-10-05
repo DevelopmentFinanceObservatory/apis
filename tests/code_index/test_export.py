@@ -142,6 +142,7 @@ _TEST_DATASETS = (
         synonyms=(),
         opt_in=False,
         absent_observation="zero",
+        rank=0,
     ),
 )
 
@@ -1981,6 +1982,7 @@ _OPT_IN = DatasetDeclaration(
     synonyms=("opt-in", "an opt-in table"),
     opt_in=True,
     absent_observation="unknown",
+    rank=10,
 )
 
 
@@ -2044,6 +2046,8 @@ def test_export_index_writes_dataset_declarations_and_they_round_trip(tmp_path: 
             "synonyms": ["an opt-in table", "opt-in"],
             "opt_in": True,
             "absent_observation": "unknown",
+            "rank": 10,
+            "invariants": {},
         }
     ]
     out = tmp_path / "with_datasets.json"
@@ -2053,6 +2057,14 @@ def test_export_index_writes_dataset_declarations_and_they_round_trip(tmp_path: 
         _OPT_IN, synonyms=("an opt-in table", "opt-in")
     )
     assert {row.provenances for row in index.statvars} == {(_OPT_IN_PROVENANCE,)}
+
+
+def test_export_index_refuses_a_row_without_its_datasets_declared_invariant():
+    graph = _two_system_graph()
+    declared = dataclasses.replace(_TEST_DATASETS[0], invariants={"sysHier": "SysHierRoot"})
+
+    with pytest.raises(SystemExit, match=r"sysHier=.*declares sysHier='SysHierRoot'"):
+        _export_two_system_graph(_covered(graph), datasets=(declared,))
 
 
 def test_content_hash_moves_with_a_dataset_declaration_and_with_a_rows_provenances():

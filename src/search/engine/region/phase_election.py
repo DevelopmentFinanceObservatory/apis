@@ -43,6 +43,7 @@ from search.engine.region.phase_rank_bind import (
     _validate_requested_all_bindings,
     _validate_sole_option_bindings,
 )
+from search.engine.region.place_roles import bind_place_roles, capped_place_dcids
 from search.engine.region.qualifier_readings import (
     bound_value_reads_measure,
     reading_for_shape,
@@ -52,7 +53,10 @@ from search.engine.region.result import RegionResult
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.bound_values import (
     bind_shared_values,
+    canonical_pin_bindings,
     elect_measure_family,
+    entity_role_keys,
+    shape_invariants,
     shape_query,
 )
 from search.engine.shape import ShapeDraft
@@ -272,11 +276,26 @@ def _qualifier_dropped_warning(phrase: str) -> Warning:
     )
 
 
+def _query_role_keys(state: ResolveState) -> frozenset[str]:
+    """The role keys an identity minted for the elected shape binds the query's places
+    under (`entity_role_keys`), read before place binding installs them: the binding
+    `bind_place_roles` gives over `capped_place_dcids`. Places that refuse to bind give
+    none, as the flagged identity of a role refusal binds no entity."""
+    bound = bind_place_roles(state, state.shape_draft, places=capped_place_dcids(state)[0])
+    if isinstance(bound, str):
+        return frozenset()
+    return entity_role_keys(state.shape_draft, bound.resolved_entities)
+
+
 async def _phase_repair_bindings(state: ResolveState) -> RegionResult | None:
     """Repair bindings, apply measure elections and defaults, and refuse degenerate drafts.
 
-    In order, detect degenerate values, repair drafts, restore starved axes, force open
-    measure axes, then apply declared defaults. Place binding reads the result.
+    In order, detect degenerate values, repair drafts, restore starved axes, bind the
+    values an unexported family shares, force open measure axes, apply declared defaults
+    (none on a slot an invariant of the dataset the part names fixes), apply the shape's slot
+    defaults, then put the bindings in canonical form: each invariant slot of the dataset
+    the part names that they leave open bound to its value (`canonical_pin_bindings`).
+    Place binding reads the result.
     """
     bindings: list[SlotBindingDraft] = list(state.bind_result.bindings)
     state.bindings = bindings
@@ -344,11 +363,17 @@ async def _phase_repair_bindings(state: ResolveState) -> RegionResult | None:
             )
         )
 
-    # A slot the five-tuple pins binds its one value, and a family the index does not
-    # export on a five-tuple it carries binds the values its members share, so its identity
-    # resolves apart from the exported family.
+    # A family the index does not export on a five-tuple it carries binds the values its
+    # members share, so its identity resolves apart from the exported family.
     bindings, _shared_bindings = bind_shared_values(state.shape_draft, bindings)
     state.bindings = bindings
+
+    # The role keys the minted identity binds its places under. With the bindings, they
+    # elect the dataset the measure vote reads. A slot an invariant of the named dataset
+    # fixes takes its value in canonical form, so no declared default binds it and no
+    # default warning names it.
+    role_keys = _query_role_keys(state)
+    pinned = frozenset(shape_invariants(state.shape_draft))
 
     # Force measure axes left open after query matches and starved-axis restoration.
     # Run after draft repair, which judges realizability against a capped recall sample.
@@ -358,7 +383,7 @@ async def _phase_repair_bindings(state: ResolveState) -> RegionResult | None:
         state.shape_draft,
         get_index(),
         get_measure_index().axes,
-        shape_query(state.shape_draft, bindings),
+        shape_query(state.shape_draft, bindings, role_keys),
     )
     forced_pairs = election.forced if election is not None else ()
     state.measure_dropped_axes = election.dropped if election is not None else ()
@@ -400,6 +425,7 @@ async def _phase_repair_bindings(state: ResolveState) -> RegionResult | None:
         query_qualifier_matches=state.query_qualifier_matches,
         query_qualifier_ties=state.query_qualifier_ties,
         engine_authored_properties=state.measure_elected_properties,
+        pinned_properties=pinned,
     )
     if _defaulted_bindings:
         state.bindings = bindings
@@ -443,14 +469,19 @@ async def _phase_repair_bindings(state: ResolveState) -> RegionResult | None:
         )
 
     # Bind each slot the elected shape's population type declares a default for and the
-    # query left open. This is the final binding mutation. Qualifier dispositions read the
-    # resulting list.
+    # query left open.
     bindings, _shape_defaulted_bindings = apply_shape_slot_defaults(bindings, state.shape_draft)
     if _shape_defaulted_bindings:
         state.bindings = bindings
         state.defaulted_properties |= frozenset(
             b.property_dcid for b in _shape_defaulted_bindings if b.property_dcid is not None
         )
+
+    # Bind each invariant slot of the dataset the part names that the bindings leave open.
+    # This is the final binding mutation, so every identity minted from here on, a
+    # refusal's flagged one included, is canonical, and qualifier dispositions read the
+    # invariants as bound.
+    state.bindings = canonical_pin_bindings(state.shape_draft, bindings, role_keys)
 
     # Resolve query qualifiers against the final bindings.
     state.query_qualifiers = _resolve_query_qualifiers(state)

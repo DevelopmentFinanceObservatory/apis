@@ -265,8 +265,17 @@ class TestNonPerturbationsDoNotMoveTheToken:
 
         assert token_a == token_b
 
-    def test_summable_axes_change_does_not_move_the_token(self):
-        # A fresh declaration can change this derived list without changing response behavior.
+    @pytest.mark.parametrize(
+        ("level_axis", "changed_fields"),
+        [
+            (False, ("summable_axes",)),
+            (True, ("summable_axes", "groupby_level_axes")),
+        ],
+    )
+    def test_summable_and_level_axes_changes_do_not_move_the_token(
+        self, level_axis: bool, changed_fields: tuple[str, ...]
+    ):
+        # A fresh declaration can change these derived lists without changing response behavior.
         document_a = build_capabilities(
             capability_version="dset_whatever",
             build=version._EXEMPLAR_BUILD,
@@ -281,8 +290,8 @@ class TestNonPerturbationsDoNotMoveTheToken:
             declarations={
                 "futureCodeSystem": CodeSystemDeclaration(
                     code_system="futureCodeSystem",
-                    hierarchical=False,
-                    disjoint_from_children=False,
+                    hierarchical=level_axis,
+                    disjoint_from_children=level_axis,
                     summable=True,
                     absent_reading="not_declared",
                     plain_name="axis",
@@ -290,7 +299,8 @@ class TestNonPerturbationsDoNotMoveTheToken:
             },
             settings=DatasetsBuildSettings(),
         ).model_dump(mode="json")
-        assert document_a["summable_axes"] != document_b["summable_axes"]
+        for field in changed_fields:
+            assert document_a[field] != document_b[field]
 
         token_a = version._compute_datasets_capability_version(capability_document=document_a)
         token_b = version._compute_datasets_capability_version(capability_document=document_b)

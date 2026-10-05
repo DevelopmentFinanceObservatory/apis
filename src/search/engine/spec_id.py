@@ -27,7 +27,14 @@ The facets member is omitted when empty.
 
 A missing requested window maps to ``{"kind": "all"}``, ``"latest"`` maps to that
 kind, and a ``TimeWindow`` maps to a range with its bounds. Empty ranges raise
-``ValueError``. The module is pure apart from the identity package call.
+``ValueError``.
+
+Every identity built here is canonical (`code_index.members.canonical_identity`): each
+slot an invariant of the dataset the identity names fixes binds the invariant's value, so an
+answer, an alternate candidate and a suggestion naming one dataset mint one spec_id whichever
+invariants their bindings hold. The module
+reads the packaged code index for that election and is otherwise pure apart from the
+identity package call.
 
 ``BaseIdentity.entity_groups`` joins the document after the identity core has
 normalised it and stays out of the hash: the id hashes
@@ -40,6 +47,8 @@ from collections.abc import Mapping
 
 from dfo_spec_kit import identity
 
+from code_index.members import canonical_identity
+from code_index.shared import get_index
 from search.models import (
     BaseIdentity,
     BindingSet,
@@ -211,11 +220,13 @@ def build_identity_projection(
     requested_window: RequestedWindow | None = None,
     explicit_facets: Mapping[str, IdentityFacetBinding] | None = None,
 ) -> dict:
-    """Build the spec1 identity document without minting a hash.
+    """Build the canonical spec1 identity document without minting a hash.
 
     ``shape`` is an identity-core wire member. ``explicit_facets`` adds posted
-    measurementMethod/unit bindings beside source-slot provenance. The caller
-    validates the completed projection when it becomes a document.
+    measurementMethod/unit bindings beside source-slot provenance. Each slot an invariant of
+    the dataset the identity names fixes, left unbound, binds the invariant's value
+    (`code_index.members.canonical_identity`). The
+    caller validates the completed projection when it becomes a document.
     """
     projection: dict = {
         # "spec1" is the only identity_version this adapter builds.
@@ -229,7 +240,7 @@ def build_identity_projection(
     facets = _facets_member(slots, explicit_facets)
     if facets:
         projection["facets"] = facets
-    return projection
+    return dict(canonical_identity(get_index(), projection))
 
 
 def compute_spec_id(

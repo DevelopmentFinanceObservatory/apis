@@ -236,7 +236,8 @@ def cannot_take_default_scope(shape: ShapeDraft) -> bool:
     """Whether `shape` is subject-only with a population the code index sources. Such a shape
     is probed over members its `sv_arc_facts` may not hold, which a default-scope presence
     read would not cover, so it takes no default scope."""
-    return not is_role_bearing(shape) and shape_member_facts(shape, shape_query(shape, ()))[1]
+    # Whether the index decides the population reads no binding and no role key.
+    return not is_role_bearing(shape) and shape_member_facts(shape, shape_query(shape, (), ()))[1]
 
 
 def default_scope_stat_vars(shapes: Iterable[ShapeDraft]) -> list[str]:

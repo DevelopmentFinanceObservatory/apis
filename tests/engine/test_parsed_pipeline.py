@@ -311,6 +311,42 @@ class TestTimeTextBinding:
             warnings = {w.code for w in result.parts[0].warnings}
             assert "time_text_not_parsed" not in warnings, phrase
 
+    @pytest.mark.parametrize(
+        ("phrase", "window"),
+        [
+            ("between 2010 and the latest", ("range", 2010, None)),
+            ("between 2010 and 2020", ("range", 2010, 2020)),
+            ("from 2010 to 2020", ("range", 2010, 2020)),
+            ("from 2010 until the most recent year available", ("range", 2010, None)),
+            ("2010 to latest", ("range", 2010, None)),
+            ("latest year available", ("latest", None, None)),
+            ("the latest", ("latest", None, None)),
+            ("between 2010 to 2020", None),
+            ("from 2010 and 2020", None),
+            ("2010 and 2020", None),
+            ("2010 until 2020", None),
+            ("since 2010 to 2020", None),
+            ("between 2020 and 2010", None),
+            ("2010 to present", None),
+            ("today", None),
+        ],
+    )
+    def test_lead_separator_and_end_grammar(self, phrase, window):
+        """A lead fixes its separator, a latest end leaves the range open, and a phrase
+        outside the grammar resolves dateless with `time_text_not_parsed`."""
+        result = _resolve_parsed([_fertility_kenya_part(time_text=phrase)])
+        assert result.status == "definite"
+        requested = result.parts[0].spec.definition.identity.requested_window
+        warnings = {w.code for w in result.parts[0].warnings}
+        if window is None:
+            assert requested.kind == "all"
+            assert "time_text_not_parsed" in warnings
+            return
+        # A latest window carries no years.
+        years = (getattr(requested, "start_year", None), getattr(requested, "end_year", None))
+        assert (requested.kind, *years) == window
+        assert "time_text_not_parsed" not in warnings
+
     def test_no_time_text_at_all_emits_time_window_defaulted(self):
         """Issue #577: missing `time_text` defaults the window and emits its warning."""
         result = _resolve_parsed([_fertility_kenya_part()])

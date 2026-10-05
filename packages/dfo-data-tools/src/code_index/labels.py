@@ -7,9 +7,9 @@ from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 from typing import Literal, cast
 
+from code_index.members import elected_pins, identity_family_query
 from code_index.query import CodeIndex
 from code_index.types import MeasureIndex, MeasureValueRow, PartitionLabelMatch, label_for_pairs
-from statvar_members.enumerate import five_tuple_from_identity
 
 PRICE_BASIS_AXIS = "measurementQualifier"
 """The measure axis holding a StatVar's native price basis (`Nominal`). Unit conversion reads
@@ -78,11 +78,11 @@ def family_label(
     The measure partition is read from the identity's shape and its value-bound measure-axis
     slots, and labelled with `compose_measure_label`. The other slots follow in slot order.
     `value` and `exact` bindings contribute their one ref, and a `set` binding joins its
-    refs' labels with `/`. Measure-axis slots, slots the identity's five-tuple pins
-    (`CodeIndex.five_tuple_pins`), unbound slots and refs the index holds no row for
-    contribute nothing. Returns `None` when neither part has a label. The presentation door
-    labels a collapsed family's `dcid:<spec_id>` ref with this, and the datasets door's
-    `stat_vars_summed` warning carries the same string as `stat_var_label`.
+    refs' labels with `/`. Measure-axis slots, slots pinned by the dataset the identity
+    elects (`code_index.members.elected_pins`), unbound slots and refs the index holds no
+    row for contribute nothing. Returns `None` when neither part has a label. The
+    presentation door labels a collapsed family's `dcid:<spec_id>` ref with this, and the
+    datasets door's `stat_vars_summed` warning carries the same string as `stat_var_label`.
     """
     shape = cast("Mapping[str, object]", identity.get("shape", {}))
     slots = cast("Sequence[Mapping[str, object]]", identity.get("slots", ()))
@@ -101,7 +101,7 @@ def family_label(
     match = label_for_pairs(pairs, measure_index.partition_labels)
     parts = [compose_measure_label(match, measure_index.values)] if match is not None else []
 
-    pinned = index.five_tuple_pins.get(five_tuple_from_identity(shape), {})
+    pinned = elected_pins(index, identity_family_query(index, identity))
     for prop, refs in bound.items():
         if prop in measure_axes or prop in pinned:
             continue

@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 from collections.abc import Sequence
 
 import httpx
 import openpyxl
 import pyarrow.parquet as pq
+import pytest
 
 import datasets_api.render as render_module
 from datasets_api.config import DatasetsBuildSettings
@@ -493,6 +495,78 @@ def test_a_duplicate_columns_entry_refuses_request_invalid_before_any_sdmx_call(
     problem = resp.json()
     assert problem["code"] == "request_invalid"
     assert problem["pointer"] == "/options/columns"
+
+
+@pytest.mark.parametrize(
+    ("groupby", "pointer"),
+    [
+        pytest.param(
+            {"by": ["time_period"], "op": "sum", "levels": {"crsPurpose": 0}},
+            "/options/groupby/levels",
+            id="level-axis-not-kept",
+        ),
+        pytest.param(
+            {"by": ["time_period", "crsTypeOfFlow"], "op": "sum", "levels": {"crsTypeOfFlow": 0}},
+            "/options/groupby/levels/crsTypeOfFlow",
+            id="flat-axis",
+        ),
+        pytest.param(
+            {"by": ["time_period", "recipient"], "op": "sum", "levels": {"recipient": 0}},
+            "/options/groupby/levels/recipient",
+            id="role-column",
+        ),
+        pytest.param(
+            {"by": ["crsPurpose"], "op": "sum", "levels": {"crsPurpose": -1}},
+            "/options/groupby/levels/crsPurpose",
+            id="negative-depth",
+        ),
+    ],
+)
+def test_a_groupby_level_the_deployment_cannot_roll_up_refuses_request_invalid(
+    groupby: dict, pointer: str
+):
+    client = _client()
+
+    resp = client.post("/api/datasets", json=_body(groupby=groupby))
+
+    assert resp.status_code == 400, resp.text
+    problem = resp.json()
+    assert problem["code"] == "request_invalid"
+    assert problem["pointer"] == pointer
+
+
+def test_a_groupby_depth_past_the_integer_conversion_limit_refuses_on_both_doors():
+    client = _client()
+    depth = "1" + "0" * 4300
+    groupby = {"by": ["crsPurpose"], "op": "sum", "levels": {"crsPurpose": 0}}
+    body = json.dumps(_body(groupby=groupby)).replace('"crsPurpose": 0', f'"crsPurpose": {depth}')
+
+    responses = [
+        client.post("/api/datasets", content=body, headers={"content-type": "application/json"}),
+        client.get(
+            "/api/datasets/spec_000000"
+            f"?groupby.by=crsPurpose&groupby.op=sum&groupby.levels=crsPurpose:{depth}"
+        ),
+    ]
+
+    for resp in responses:
+        assert resp.status_code == 400, resp.text
+        assert resp.json()["code"] == "request_invalid"
+    assert responses[1].json()["pointer"] == "/options/groupby/levels/crsPurpose"
+
+
+def test_a_groupby_level_on_a_flat_axis_refuses_on_the_definition_door_too():
+    client = _client()
+
+    resp = client.get(
+        "/api/datasets/spec_000000"
+        "?groupby.by=time_period,crsTypeOfFlow&groupby.op=sum&groupby.levels=crsTypeOfFlow:0"
+    )
+
+    assert resp.status_code == 400, resp.text
+    problem = resp.json()
+    assert problem["code"] == "request_invalid"
+    assert problem["pointer"] == "/options/groupby/levels/crsTypeOfFlow"
 
 
 def test_column_not_droppable_refuses_when_selection_drops_grain():

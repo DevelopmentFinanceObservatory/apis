@@ -145,16 +145,19 @@ class TestApplySlotSummability:
             _IMPUTED_CRS_AXES, True
         )
 
-    def test_an_identity_leaving_a_pinned_slot_unbound_reads_no_slot_summable(self):
-        """The mint refuses an identity that leaves the pinned aid type unbound, so it has
-        no family to sum over."""
+    def test_an_identity_leaving_a_pinned_slot_unbound_reads_the_bound_identity_s_flags(self):
+        """The aid type is implied by the election, so an identity leaving it unbound has the
+        family, and each slot the summability, of the identity binding it."""
+        bound = imputed_education_aid_identity()
         document = imputed_education_aid_identity()
         aid_type = next(slot for slot in document["slots"] if slot["property"] == AID_TYPE)
         aid_type["binding"] = {"state": "unbound"}
         flags = _summable_by_property(
             apply_slot_summability(_slots_of(document), _identity(document))
         )
-        assert set(flags.values()) == {False}
+        assert flags == _summable_by_property(
+            apply_slot_summability(_slots_of(bound), _identity(bound))
+        )
 
     def test_a_family_the_index_does_not_resolve_reads_not_summable(self):
         identity = _unindexed_identity()

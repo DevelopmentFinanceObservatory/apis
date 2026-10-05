@@ -199,10 +199,12 @@ class ParsedPart(StrictModel):
         min_length=1,
         max_length=_PARSED_MAX_TIME_TEXT_CHARS,
         description=(
-            "this part's time expression, when available; recognised forms are a "
-            "bare four-digit year, 'YYYY to YYYY' or 'YYYY-YYYY', 'since YYYY', and "
-            "'latest'/'current'/'now' -- anything else resolves dateless with a "
-            "time_text_not_parsed warning"
+            "this part's time expression, when available; recognised forms include a "
+            "bare four-digit year, 'YYYY to YYYY' or 'YYYY-YYYY', 'from YYYY to YYYY', "
+            "'between YYYY and YYYY', a latest end as in 'between YYYY and the latest' "
+            "or 'YYYY to latest', 'since YYYY', 'latest', 'latest year available', "
+            "'most recent', and 'last N years'. Anything else resolves dateless with a "
+            "time_text_not_parsed warning, whose message lists every form"
         ),
     )
     unit_text: str | None = Field(

@@ -8,14 +8,17 @@ from dataclasses import replace
 from typing import cast
 
 import httpx
+import pytest
 
 from artifact_store import LiveArtifactInventory
 from assembler.ports import FrameRef
 from code_index import CodeIndex
 from dataset_store.snapshot import LiveSnapshotReader
 from presentation_store.frame_store import LiveFrameStore
+from series_coverage.schema import FacetMetadata, RoleNames
 from spec_registry.identity import recompute_identity
 from spec_registry.reader import LiveSpecReader
+from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 
 from ._graph_doubles import FakeMintGraphReader
 from ._legacy_conversion_trace import MIGRATED_CONVERSION
@@ -25,12 +28,17 @@ from .test_definition_door import _client
 from .test_definition_door_currency import _FakeHeadStore, _RenderableArtifactStore
 from .test_pin_door import FakeArtifactReferenceWriter
 from .test_serve_groupby_collapse import (
+    _CSV_BODY,
     _CSV_HEADER,
+    _FACET_ID,
     _IDENTITY,
+    _MEASUREMENT_METHOD,
     _MEMBER_A,
     _MEMBER_ARCS,
     _MEMBER_B,
+    _PROVENANCE,
     _RECIPIENT,
+    _UNIT,
     _code_index,
     _coverage_service,
     _graph,
@@ -486,3 +494,107 @@ def test_a_head_hit_returns_a_stored_summed_warning_recorded_without_structured_
     assert served["trace"]["served_from"] == "head"
     assert served["content_version"] == content_version
     assert [w for w in served["warnings"] if w["code"] == "stat_vars_summed"] == [legacy]
+
+
+_LEVEL_OPTIONS = {
+    "bundle": False,
+    "groupby": {"by": ["recipient", "testAxis"], "op": "sum", "levels": {"testAxis": 0}},
+}
+_LEVEL_QUERY = "bundle=false&groupby.by=recipient,testAxis&groupby.op=sum&groupby.levels=testAxis:0"
+
+
+_TWO_YEAR_CSV_BODY = _CSV_BODY + "".join(
+    f"dataflow,DC:DF_OBS(1.0.0),I,{member},{_RECIPIENT},USD,GrantEquivalent,"
+    f"NotApplicable,OECD_DAC2A,2021,{value},,facet1\r\n"
+    for member, value in ((_MEMBER_A, 1100), (_MEMBER_B, 600))
+)
+
+
+def _two_year_sdmx_transport() -> httpx.MockTransport:
+    return httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            text=_TWO_YEAR_CSV_BODY,
+            headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
+        )
+    )
+
+
+def _two_year_coverage_service() -> FakeCoverageService:
+    stat_vars = (_MEMBER_A, _MEMBER_B)
+    return FakeCoverageService(
+        build_coverage_index(
+            [
+                (stat_var, _FACET_ID, "country/USA", _RECIPIENT, [2020, 2021])
+                for stat_var in stat_vars
+            ],
+            role_names={
+                stat_var: RoleNames(donor="provider", recipient="recipient")
+                for stat_var in stat_vars
+            },
+            facet_metadata={
+                _FACET_ID: FacetMetadata(
+                    provenance_id=_PROVENANCE, measurement_method=_MEASUREMENT_METHOD, unit=_UNIT
+                )
+            },
+        )
+    )
+
+
+def _hierarchical_code_index() -> CodeIndex:
+    """`_code_index` with `testAxis` declared a level axis. Both codes are roots, so level 0
+    keeps them apart."""
+    base = _code_index()
+    return CodeIndex(
+        stamp=base.stamp,
+        declarations=tuple(
+            replace(declaration, hierarchical=True, disjoint_from_children=True)
+            for declaration in base.declarations.values()
+        ),
+        codes=base.codes,
+        statvars=base.statvars,
+    )
+
+
+@pytest.mark.parametrize("door", ["spec", "definition", "head_hit"])
+def test_a_level_roll_up_frame_describes_its_own_columns_and_pivots(door: str):
+    version_store = FakeVersionRecordDatasetStore()
+    client = _client(
+        graph=_graph(),
+        sdmx_transport=_two_year_sdmx_transport(),
+        version_store=version_store,
+        # With no head, every definition GET materialises afresh.
+        head_writer=_FakeHeadStore() if door == "head_hit" else None,
+        artifact_store=_RenderableArtifactStore(
+            inventory=LiveArtifactInventory(store=version_store)
+        ),
+        code_index=_hierarchical_code_index(),
+        coverage=_two_year_coverage_service(),
+    )
+    spec_id, sidecar = _spec_id_and_sidecar()
+
+    if door == "spec":
+        served = _mint(client, spec_id=spec_id, sidecar=sidecar, options=_LEVEL_OPTIONS)
+    else:
+        # The spec door registers the definition and records its raw version.
+        _mint(client, spec_id=spec_id, sidecar=sidecar, options={"bundle": False})
+        got = client.get(f"/api/datasets/{spec_id}?{_LEVEL_QUERY}")
+        assert got.status_code == 200, got.text
+        served = got.json()
+        assert (served["trace"].get("served_from") == "head") == (door == "head_hit")
+    snapshot = client.get(f"/api/datasets/{spec_id}/{served['content_version']}")
+    assert snapshot.status_code == 200, snapshot.text
+
+    for manifest in (served, snapshot.json()):
+        options = manifest["output_options"]
+        assert options is not None
+        assert "stat_var_testAxis" in {column["name"] for column in options["columns"]}
+        # The kept axis is a role of the summed frame, so it pivots against the period.
+        pivot = next(
+            p
+            for p in options["pivots"]
+            if (p["index"], p["columns"]) == ("time_period", "stat_var_testAxis")
+        )
+        assert pivot["state"] == "available"
+        # The period column plus one column per code.
+        assert (pivot["width"], pivot["cells"]) == (3, 6)

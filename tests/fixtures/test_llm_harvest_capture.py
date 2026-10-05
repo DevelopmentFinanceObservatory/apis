@@ -7,13 +7,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 from pydantic import BaseModel
 
+from tests._harvest_outcome_plugin import OUTCOME_PATH_ENV, SCHEMA_VERSION
 from tests.fixtures import HARVEST_MISS_PATH_ENV, FakeLLM, MissingFixtureError
-from tests.fixtures._harvest_outcome_plugin import OUTCOME_PATH_ENV, SCHEMA_VERSION
 from tests.fixtures.keys import fixture_key
 
 pytest_plugins = ["pytester"]
@@ -142,7 +145,7 @@ def test_missing_fixture():
 def _run_generated_pass(pytester, *, outcome_path: Path | None) -> dict:
     """Run three generated tests and parse the plugin summary."""
     pytester.makepyfile(test_generated=_GENERATED_TESTS)
-    args = ["-q", "-p", "tests.fixtures._harvest_outcome_plugin"]
+    args = ["-q", "-p", "tests._harvest_outcome_plugin"]
     if outcome_path is not None:
         pytester._monkeypatch.setenv(OUTCOME_PATH_ENV, str(outcome_path))
     else:
@@ -204,7 +207,7 @@ def test_plugin_records_a_teardown_error_the_call_phase_never_saw(pytester):
     outcome_path = pytester.path / "out.json"
     pytester._monkeypatch.setenv(OUTCOME_PATH_ENV, str(outcome_path))
 
-    pytester.runpytest("-q", "-p", "tests.fixtures._harvest_outcome_plugin")
+    pytester.runpytest("-q", "-p", "tests._harvest_outcome_plugin")
     summary = json.loads(outcome_path.read_text())
 
     assert summary["counts"] == {
@@ -254,7 +257,7 @@ def test_plugin_counts_the_misses_logged_while_each_failing_test_ran(pytester):
     pytester._monkeypatch.setenv(OUTCOME_PATH_ENV, str(outcome_path))
     pytester._monkeypatch.setenv(HARVEST_MISS_PATH_ENV, str(pytester.path / "misses.jsonl"))
 
-    pytester.runpytest("-q", "-p", "tests.fixtures._harvest_outcome_plugin")
+    pytester.runpytest("-q", "-p", "tests._harvest_outcome_plugin")
     by_nodeid = {f["nodeid"]: f for f in json.loads(outcome_path.read_text())["failures"]}
 
     assert (
@@ -265,3 +268,40 @@ def test_plugin_counts_the_misses_logged_while_each_failing_test_ran(pytester):
         by_nodeid["test_generated.py::test_unrelated_assertion_after_a_clean_test"]["misses_during"]
         == 0
     )
+
+
+def test_plugin_loads_without_search_graph_base():
+    """The harvest child starts pytest with the plugin and no SEARCH_GRAPH_BASE.
+
+    Pytest imports `-p` plugins before `tests/conftest.py` sets its offline placeholder, so an
+    engine import in the plugin's chain fails at startup. A fresh interpreter is needed because
+    this process has already imported the engine settings. Collecting one small module keeps the
+    run to a few seconds.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k != "SEARCH_GRAPH_BASE" and not k.startswith("PYTEST_")
+    }
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-p",
+            "no:xdist",
+            "-p",
+            "tests._harvest_outcome_plugin",
+            "--collect-only",
+            "tests/test_llm_miss_guard.py",
+        ],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

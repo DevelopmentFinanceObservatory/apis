@@ -13,6 +13,11 @@ Deterministic failures are terminal. Transient failures release the row to `pend
 `lease_until` set to now, so the next Cloud Tasks retry can claim it at once. The final attempt
 records a retryable failure instead, so an identical resubmit can reset the row. Errors from
 parsing the stored request or `raw_fetch_guard` take the same failure path.
+
+A row completes only when a snapshot read of its version narrowed to the request's rendering
+key (`artifact_rendering_key` under `settings.site`) lists an artifact other than statistics
+(`rendering_servable`), the read the operations poll answers with. A render that leaves its
+bundle unlinked, after a failed graph label or documentation read, takes the transient path.
 """
 
 from __future__ import annotations
@@ -29,12 +34,14 @@ from datasets_api.doors.definition import (
     _serve_deps,
     classify_definition_exception,
 )
+from datasets_api.doors.snapshot import rendering_servable
 from datasets_api.mint_models import MintOptions
 from datasets_api.operation_store import Operation, OperationStore
 from datasets_api.operations.submit import (
     request_identity_member_dcids,
     request_identity_subject_id,
 )
+from datasets_api.render import artifact_rendering_key
 from datasets_api.serve import raw_fetch_guard, serve_collection, serve_definition
 from materialise import MaterialisationCancelled, RowProgress
 
@@ -51,6 +58,11 @@ class OperationSuperseded(Exception):
     A newer attempt owns the row, or the row is terminal. The worker app answers 2xx and writes
     nothing further for this attempt.
     """
+
+
+class _RenderingNotServable(RuntimeError):
+    """The completed render left no servable artifact under the request's rendering key.
+    It is unclassified, so it takes the transient path."""
 
 
 class OperationTransientFailure(Exception):
@@ -119,6 +131,9 @@ def run_operation(
     the execution stamp and estimate. The fresh estimate sizes `raw_fetch_guard` and checks async
     row and request limits before fetching. Pointer or build failures are transient.
     `over_ceiling` is terminal. The operation id includes the admission stamp.
+
+    The row completes only when the request's rendering is servable (`rendering_servable`).
+    Otherwise the run is a transient failure, so a final attempt fails it with `internal_error`.
 
     Deterministic failures set `retryable=False`. A final transient or unclassified failure sets
     `retryable=True`, using the classified code or `internal_error`. Raises `OperationSuperseded`
@@ -191,6 +206,25 @@ def run_operation(
                 coverage_index=coverage_snapshot.index,
                 progress=row_progress,
             )
+            if manifest.definition is not None:
+                completed_subject_id = manifest.definition.spec_id
+            else:
+                assert manifest.collection is not None
+                completed_subject_id = manifest.collection.collection_id
+            key = artifact_rendering_key(options, site=deps.settings.site)
+            if not rendering_servable(
+                subject_id=completed_subject_id,
+                content_version=manifest.content_version,
+                rendering_key=key,
+                snapshot_reader=deps.snapshot_reader,
+                now=deps.now,
+                settings=deps.settings,
+            ):
+                raise _RenderingNotServable(
+                    f"subject_id={completed_subject_id!r} content_version="
+                    f"{manifest.content_version!r} has no servable artifact under rendering "
+                    f"key {key!r}"
+                )
         except MaterialisationCancelled as exc:
             logger.warning(
                 "Datasets operation %r: attempt %d stopped without writing; the row "
@@ -245,11 +279,6 @@ def run_operation(
         stop_heartbeat.set()
         heartbeat_thread.join(timeout=lease_seconds)
 
-    if manifest.definition is not None:
-        completed_subject_id = manifest.definition.spec_id
-    else:
-        assert manifest.collection is not None
-        completed_subject_id = manifest.collection.collection_id
     completed = operation_store.complete(
         operation.id,
         attempt=operation.attempt_count,

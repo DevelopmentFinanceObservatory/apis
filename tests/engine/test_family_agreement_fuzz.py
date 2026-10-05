@@ -5,10 +5,11 @@ the opt-in dataset's five-tuple, name a dataset, bind values no row holds togeth
 slots than any row carries. A slot binds a value, a set, or a set of one ref. The provenance
 facet binds a value, a set of one ref, a set of two, or a provenance the index does not hold.
 Some identities pin one StatVar. For each, every Search reader of a family agrees with
-`datasets_api.adapter.resolve_definition_members`, or both refuse. An identity that leaves a
-slot its five-tuple pins unbound (`code_index.members.unbound_pins`) is not canonical. Every
-door that serves it as posted refuses, and the resubmit answers with the pinned identity. A
-sample goes through a resubmit as a client posts it.
+`datasets_api.adapter.resolve_definition_members`, or both refuse. An identity that leaves
+unbound an invariant its canonical form binds (`code_index.members.invariant_bindings`)
+resolves the family of its canonical form at the mint, and Search states that family for
+both, and the resubmit answers with a canonical identity. A sample goes through a resubmit as
+a client posts it.
 
 A second fuzz draws five-tuples whose members declare several role sets, with identities
 that bind entities under no role, the subject, the recipient, the provider, or both. Search's
@@ -26,7 +27,12 @@ import functools
 import random
 from collections import defaultdict
 
-from code_index.members import index_covers_slot_keys, named_dataset, unbound_pins
+from code_index.members import (
+    elected_pins,
+    index_covers_slot_keys,
+    invariant_bindings,
+    named_dataset,
+)
 from code_index.shared import get_index, get_measure_index
 from code_index.types import StatVarRow
 from datasets_api.adapter import resolve_definition_members
@@ -39,7 +45,7 @@ from search.engine.region import resolve_spec_resubmit
 from search.engine.region.state import EngineOptions
 from search.engine.retrieval.bound_values import (
     RoleClassWalks,
-    bind_identity_pins,
+    canonicalise_identity,
     elected_role_class_shape,
     identity_dataset,
     identity_family_digest,
@@ -80,8 +86,8 @@ _RECALL_SAMPLE = 6
 _PIN_EVERY = 16
 # The resubmit sample: identities whose family the mint resolves, of at most this many members.
 _RESUBMITS = 24
-# The resubmit sample of identities that leave a pinned slot unbound.
-_UNPINNED_RESUBMITS = 10
+# The resubmit sample of identities that leave unbound an invariant their canonical form binds.
+_RELEASING_RESUBMITS = 10
 _RESUBMIT_FAMILY_CAP = 300
 _ROLE_NAMES = RoleNames(donor=_ROLES[0], recipient=_ROLES[1])
 
@@ -187,7 +193,7 @@ def _draw(rng: random.Random) -> list[_Drawn]:
     opt_in = [
         five_tuple
         for five_tuple in rows_by_five_tuple
-        if index.datasets[index.dataset_by_five_tuple[five_tuple]].opt_in
+        if any(index.datasets[owner].opt_in for owner in index.datasets_by_five_tuple[five_tuple])
     ]
     assert opt_in, "the packaged index holds no five-tuple of an opt-in dataset"
     datasets = sorted(index.datasets)
@@ -365,21 +371,29 @@ def _check(drawn: _Drawn, rng: random.Random, kinds: dict[str, int], *, wide: bo
     synthetic = dataclasses.replace(
         synthetic_shape_for_identity(model.shape), sv_arc_facts_complete=False
     )
-    owner = index.dataset_by_five_tuple.get(query.five_tuple)
+    owners = index.datasets_by_five_tuple.get(query.five_tuple, ())
     kinds["names a dataset"] += query.source is not None
-    kinds["names a dataset another five-tuple belongs to"] += query.source not in (None, owner)
-    kinds["sits on an opt-in dataset's five-tuple"] += (
-        owner is not None and index.datasets[owner].opt_in
+    kinds["names a dataset another five-tuple belongs to"] += query.source not in (None, *owners)
+    kinds["sits on an opt-in dataset's five-tuple"] += any(
+        index.datasets[owner].opt_in for owner in owners
     )
     kinds["binds nothing and names no dataset"] += not query.bound and query.source is None
     kinds["index does not decide"] += not decided
-    if unbound_pins(index, query):
-        kinds["leaves a pinned slot unbound"] += 1
-        return _unpinned_disagreements(model)
+    pins = elected_pins(index, query)
+    kinds["leaves a pinned slot unbound"] += any(
+        query.slots.get(prop) == ("unbound",) for prop in pins
+    )
     found: list[str] = []
+    if invariant_bindings(index, query):
+        kinds["leaves unbound an invariant its canonical form binds"] += 1
+        found += _canonical_disagreements(model)
 
     facts, index_sourced = shape_member_facts(synthetic, query)
-    if not decided:
+    # A dataset named outside the five-tuple's publishers is refused whatever slots the
+    # identity declares, by the mint and by Search alike, so it is checked as an index
+    # election.
+    refused = query.source is not None and bool(owners) and query.source not in owners
+    if not decided and not refused:
         # The mint walks the graph for this identity, and Search reads its recall pool.
         if index_sourced:
             found.append("Search read the index for an identity the index does not decide")
@@ -426,34 +440,23 @@ def _check(drawn: _Drawn, rng: random.Random, kinds: dict[str, int], *, wide: bo
     return found + _first_pass_disagreements(drawn, rng, kinds, family)
 
 
-def _unpinned_disagreements(model: BaseIdentity) -> list[str]:
-    """Every door that serves an identity leaving a pinned slot unbound as posted refuses it.
-
-    The direct `shape_member_facts(identity_query)` read is a low-level read, not a door, and
-    the first pass never asks this query, since Search binds the pins before it reads a
-    family (`bind_shared_values`), so neither is compared."""
-    identity = model.model_dump(mode="json", exclude_none=True)
+def _canonical_disagreements(model: BaseIdentity) -> list[str]:
+    """Whether an identity that leaves unbound an invariant its canonical form binds
+    resolves, at the mint, another family than its canonical form, or Search states another
+    dataset or digest."""
+    canonical = canonicalise_identity(model)
     found: list[str] = []
-    graph = FakeMintGraphReader(arcs={})
-    try:
-        resolve_definition_members(
-            identity,
-            spec_id="spec_fuzz",
-            graph=graph,
-            enumerator=MemberEnumerator(graph=graph),
-            code_index=get_index(),
-        )
-        found.append("unpinned: the mint resolves the identity")
-    except SpecNotExportable:
-        pass
-    if identity_dataset(model) is not None or identity_family_digest(model) is not None:
-        found.append("unpinned: Search states an index family for the identity")
-    try:
-        options_population(model, graph=graph)
-        found.append("unpinned: the options population resolves the identity")
-    except EngineInputError as exc:
-        if exc.code != "population_empty":
-            found.append(f"unpinned: the options population refuses {exc.code!r}")
+    if canonical == model:
+        found.append("canonical: the canonical form binds nothing")
+    if _mint(model.model_dump(mode="json", exclude_none=True)) != _mint(
+        canonical.model_dump(mode="json", exclude_none=True)
+    ):
+        found.append("canonical: the mint resolves another family for the canonical form")
+    if (identity_dataset(model), identity_family_digest(model)) != (
+        identity_dataset(canonical),
+        identity_family_digest(canonical),
+    ):
+        found.append("canonical: Search states another family for the canonical form")
     return found
 
 
@@ -494,8 +497,8 @@ def _resubmit_disagreements(drawn: _Drawn, monkeypatch, kinds: dict[str, int], *
     members as `resolved_stat_var_dcids`.
     """
     identity = BaseIdentity.model_validate(drawn.identity)
-    pinned = bind_identity_pins(identity)
-    family, dataset = _mint(pinned.model_dump(mode="json", exclude_none=True))
+    canonical = canonicalise_identity(identity)
+    family, dataset = _mint(canonical.model_dump(mode="json", exclude_none=True))
     rows = [row for row in drawn.rows if row.dcid in family]
     graph = _family_graph(rows)
     # The family's facet carries its dataset's provenance, as the coverage build records it.
@@ -507,7 +510,9 @@ def _resubmit_disagreements(drawn: _Drawn, monkeypatch, kinds: dict[str, int], *
     )
     kinds["resubmits"] += 1
     kinds["resubmits with a posted seed"] += seed
-    kinds["resubmits leaving a pinned slot unbound"] += pinned is not identity
+    kinds["resubmits leaving unbound an invariant the canonical form binds"] += (
+        canonical is not identity
+    )
     try:
         region = resolve_spec_resubmit(
             inp=ResubmitIdentityPayload(
@@ -551,8 +556,8 @@ def _resubmit_disagreements(drawn: _Drawn, monkeypatch, kinds: dict[str, int], *
             drawn.identity.get("facets", {})
         ):
             found.append("resubmit: the returned identity names another dataset")
-        if unbound_pins(get_index(), identity_query(spec.definition.identity)):
-            found.append("resubmit: the returned identity leaves a pinned slot unbound")
+        if invariant_bindings(get_index(), identity_query(spec.definition.identity)):
+            found.append("resubmit: the returned identity is not canonical")
     return found
 
 
@@ -567,8 +572,9 @@ _KINDS = (
     "resubmits",
     "resubmits with a posted seed",
     "resubmits that state a digest",
-    "resubmits leaving a pinned slot unbound",
+    "resubmits leaving unbound an invariant the canonical form binds",
     "leaves a pinned slot unbound",
+    "leaves unbound an invariant its canonical form binds",
     "names a dataset",
     "names a dataset another five-tuple belongs to",
     "sits on an opt-in dataset's five-tuple",
@@ -582,26 +588,26 @@ _KINDS = (
 
 
 def _resubmit_sample(drawn: list[_Drawn]) -> list[int]:
-    """The first `_RESUBMITS` described identities that bind every pin, and the first
-    `_UNPINNED_RESUBMITS` that leave a pinned slot unbound, each declaring every slot key
-    and with a pinned identity whose family the mint resolves within
+    """The first `_RESUBMITS` canonical described identities, and the first
+    `_RELEASING_RESUBMITS` that leave unbound an invariant their canonical form binds, each
+    declaring every slot key and with a canonical form whose family the mint resolves within
     `_RESUBMIT_FAMILY_CAP` members."""
-    pinned_sample: list[int] = []
-    unpinned_sample: list[int] = []
+    canonical_sample: list[int] = []
+    releasing_sample: list[int] = []
     for position, item in enumerate(drawn):
         if item.pinned is not None or not item.all_keys:
             continue
         identity = BaseIdentity.model_validate(item.identity)
-        unpinned = bool(unbound_pins(get_index(), identity_query(identity)))
-        sample = unpinned_sample if unpinned else pinned_sample
-        if len(sample) == (_UNPINNED_RESUBMITS if unpinned else _RESUBMITS):
+        releasing = bool(invariant_bindings(get_index(), identity_query(identity)))
+        sample = releasing_sample if releasing else canonical_sample
+        if len(sample) == (_RELEASING_RESUBMITS if releasing else _RESUBMITS):
             continue
         family, _dataset = _mint(
-            bind_identity_pins(identity).model_dump(mode="json", exclude_none=True)
+            canonicalise_identity(identity).model_dump(mode="json", exclude_none=True)
         )
         if 0 < len(family) <= _RESUBMIT_FAMILY_CAP:
             sample.append(position)
-    return sorted(pinned_sample + unpinned_sample)
+    return sorted(canonical_sample + releasing_sample)
 
 
 def test_search_and_the_mint_resolve_the_same_family_for_every_drawn_identity(monkeypatch):

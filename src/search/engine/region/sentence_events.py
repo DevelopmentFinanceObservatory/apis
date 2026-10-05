@@ -17,6 +17,7 @@ import asyncio
 from collections.abc import Mapping, Sequence
 
 from code_index import LevelOption
+from code_index.members import datasets_carry
 from code_index.shared import get_index
 from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import EngineGraphClient
@@ -32,7 +33,9 @@ from search.engine.region.grounding import (
 from search.engine.retrieval.bound_values import (
     MeasurePartition,
     apply_slot_summability,
+    shape_part_datasets,
     shape_pins,
+    shape_query,
 )
 from search.engine.shape import ShapeDraft, identity_shape_for
 from search.engine.spec_build import (
@@ -80,21 +83,28 @@ async def _build_shape_event(
 
     Bind may elect another shape. Callers run this alongside bind, hiding the
     label batch call behind the LLM request. Index-sourced slots show
-    classification roots without their children, and the final Spec carries the full
-    menu. Recall-sourced slots show at most 15 sampled values.
+    classification roots without their children, for a slot whose property the index rows
+    of the datasets the part may answer from carry (`ShapeDraft.datasets`, else every
+    publisher of the five-tuple; `code_index.members.datasets_carry`). The final Spec
+    carries the full menu. Recall-sourced slots show at most 15 sampled values.
     """
     taxonomy = shape_draft.slot_taxonomy or {}
     index_sourced = shape_draft.slot_taxonomy_index_sourced
     level_options_by_key: dict[str, tuple[LevelOption, ...]] = {}
     option_dcids: set[str] = set()
     if index_sourced:
+        index = get_index()
+        five_tuple = shape_query(shape_draft, (), ()).five_tuple
+        datasets = shape_part_datasets(shape_draft, index)
         for skd in shape_draft.slot_keys:
             if skd.property_dcid is None:
                 continue
             key = f"{skd.axis}:{skd.property_dcid}"
+            if not datasets_carry(index, datasets, five_tuple, skd.property_dcid):
+                continue
             opts = tuple(
                 o
-                for o in get_index().level_scoped_options(skd.property_dcid, None)
+                for o in index.level_scoped_options(skd.property_dcid, None)
                 if o.relation == "root"
             )
             level_options_by_key[key] = opts

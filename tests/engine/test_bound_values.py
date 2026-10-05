@@ -10,11 +10,14 @@ from dataclasses import replace
 
 import pytest
 
-from code_index.members import FamilyQuery
+from code_index.members import FamilyQuery, family_query_digest
 from code_index.shared import get_index
 from search.engine.bind import DraftBindingEvidence, DraftBindingKind, SlotBindingDraft
 from search.engine.retrieval import bound_values
-from search.engine.retrieval.bound_values import _resolved_family, bound_values_from_bindings
+from search.engine.retrieval.bound_values import (
+    _resolved_family,
+    bound_values_from_bindings,
+)
 from statvar_members import FiveTuple, SlotBinding
 
 
@@ -202,3 +205,48 @@ def test_the_family_memo_holds_at_most_its_row_bound(monkeypatch, headroom, betw
         _resolved_family(index, between)
 
     assert (_resolved_family(index, _EDU_ODA) is first) is kept
+
+
+def test_a_memo_key_has_a_fixed_size_and_one_entry_per_query():
+    """A key is a digest, so a query that binds thousands of refs costs the same 32 bytes
+    as one that binds a single value, and different queries keep separate entries."""
+    index = get_index()
+    refs = tuple(f"CRSPurposeCode{n}" for n in range(10_000))
+    huge = replace(_EDU_ODA, slots={**_EDU_ODA.slots, "crsPurpose": ("set", refs)})
+
+    assert len(family_query_digest(huge)) == len(family_query_digest(_EDU_ODA)) == 32
+
+    first = _resolved_family(index, _EDU_ODA)
+    second = _resolved_family(index, _EDU_ODA_PROJECTS)
+    memo = bound_values._index_family_cache[id(index)]
+
+    assert first is not second
+    assert len(memo.families) == 2
+    assert {len(key) for key in memo.families} == {32}
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        pytest.param(replace(_EDU_ODA, source="OECD.CRS"), id="source"),
+        pytest.param(replace(_EDU_ODA, role_keys=frozenset({"origin"})), id="role-keys"),
+        pytest.param(
+            replace(_EDU_ODA, five_tuple=replace(_EDU_ODA.five_tuple, stat_type=None)),
+            id="five-tuple",
+        ),
+        pytest.param(
+            replace(_EDU_ODA, slots={**_EDU_ODA.slots, "nettingBasis": ("value", "Net")}),
+            id="slot-value",
+        ),
+        pytest.param(
+            replace(_EDU_ODA, slots={**_EDU_ODA.slots, "nettingBasis": ("set", ("Gross",))}),
+            id="slot-binding-kind",
+        ),
+        pytest.param(replace(_EDU_ODA, excluded=frozenset({"OECD.CRS"})), id="excluded"),
+    ],
+)
+def test_queries_that_differ_in_any_field_get_different_memo_keys(other):
+    reordered = replace(_EDU_ODA, slots=dict(reversed(_EDU_ODA.slots.items())))
+
+    assert family_query_digest(reordered) == family_query_digest(_EDU_ODA)
+    assert family_query_digest(other) != family_query_digest(_EDU_ODA)

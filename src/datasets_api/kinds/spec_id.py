@@ -15,7 +15,11 @@ antichain-minimal members, posted or omitted. Every mint and preview path resolv
 replaces supplied members, preserves the rest, and rehashes the document. `scope.facets` can bind
 the provenance that names a family's dataset, so members resolve under the facets the scope
 installs. Invalid roles refuse as
-`InvalidRoleRef` or `RoleIncompatible` before a write. An unchanged identity reuses its record.
+`InvalidRoleRef` or `RoleIncompatible` before a write. The mint and the preview then serve the
+identity in canonical form (`code_index.members.canonical_identity`): each slot an invariant
+of the dataset the identity names fixes binds the invariant's value, so definitions naming one
+dataset that differ only in whether they bind an invariant or leave it unbound serve and
+report one `spec_id`. An identity that names no dataset keeps the bindings it was posted with. An unchanged identity reuses its record.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ from typing import Protocol, cast
 
 from dfo_spec_kit.identity import IdentityError
 
+from code_index.members import canonical_identity
 from code_index.query import CodeIndex
 from datasets_api.adapter import (
     build_identity_document,
@@ -213,6 +218,17 @@ def admit_sidecar(
     return recomputed, shapes
 
 
+def _served_identity(
+    identity: Mapping[str, object], *, scope: Scope | None, code_index: CodeIndex
+) -> RecomputedIdentity | None:
+    """The identity a mint of `identity` under `scope` serves, recomputed: surgered by `scope`
+    (`apply_scope_surgery`), then in canonical form (`code_index.members.canonical_identity`).
+    `None` when that is `identity` itself."""
+    served = identity if scope is None else apply_scope_surgery(identity, scope=scope)
+    served = canonical_identity(code_index, served)
+    return None if served is identity else recompute_identity(served)
+
+
 def mint_spec_id(
     spec_id: str,
     *,
@@ -275,21 +291,19 @@ def mint_spec_id(
                 for shape in shapes:
                     build_identity_document(shape, scope=scope, graph=deps.graph)
 
-        if scope is not None:
-            surgered = apply_scope_surgery(stored.identity, scope=scope)
-            recomputed = recompute_identity(surgered)
-            if recomputed.spec_id != stored.spec_id:
-                deps.registry.register_definition(
-                    identity_definition=surgered,
-                    schema_version=stored.schema_version,
-                    supplied_spec_id=recomputed.spec_id,
-                    trace_id=trace_id,
-                )
-                # No manifest returns before the registry write is read back.
-                stored = deps.spec_reader.read_definition(recomputed.spec_id)
-                assert stored is not None, (
-                    "surgered definition missing immediately after its own registration"
-                )
+        served = _served_identity(stored.identity, scope=scope, code_index=deps.code_index)
+        if served is not None and served.spec_id != stored.spec_id:
+            deps.registry.register_definition(
+                identity_definition=served.identity,
+                schema_version=stored.schema_version,
+                supplied_spec_id=served.spec_id,
+                trace_id=trace_id,
+            )
+            # No manifest returns before the registry write is read back.
+            stored = deps.spec_reader.read_definition(served.spec_id)
+            assert stored is not None, (
+                "served definition missing immediately after its own registration"
+            )
 
         try:
             requests = tuple(
@@ -414,13 +428,13 @@ def preview_spec_id(
                 for shape in shapes:
                     build_identity_document(shape, scope=scope, graph=deps.graph)
 
-        if scope is not None:
-            # Surgery replaces `entities`, `requested_window`, and `facets`, leaving `slots` and
-            # `shape` intact. The shapes resolved under the scope's facets and entities are
-            # those of the surgered identity, whose id a mint of this request reports. The preview reads
-            # the surgered identity in the canonical form that mint registers.
-            recomputed = recompute_identity(apply_scope_surgery(identity, scope=scope))
-            identity, spec_id = recomputed.identity, recomputed.spec_id
+        # Surgery replaces `entities`, `requested_window`, and `facets`, leaving `slots` and
+        # `shape` intact. The shapes resolved under the scope's facets and entities are those
+        # of the surgered identity, and its canonical form resolves the same family. The
+        # preview reads the identity a mint of this request registers and reports.
+        served = _served_identity(identity, scope=scope, code_index=deps.code_index)
+        if served is not None:
+            identity, spec_id = served.identity, served.spec_id
 
         try:
             requests = tuple(

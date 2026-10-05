@@ -380,10 +380,43 @@ _DATASET_QUERIES = [
     "population and CRS in Kenya",
 ]
 
+# The corpus cases written to name a dataset. Each names the ONE Imputed Multilateral Sectors
+# dataset as "imputed aid" or "imputed multilateral".
+_DATASET_CASES = frozenset(
+    {
+        "imputed-aid-kenya",
+        "education-aid-kenya-excluding-imputed",
+        "dq-dac-023",
+        "dq-mls-001",
+        "dq-mls-002",
+        "dq-mls-003",
+        "dq-mls-004",
+        "dq-mls-005",
+        "dq-mls-006",
+        "dq-mls-007",
+        "dq-mls-008",
+        "dq-mls-009",
+        "dq-mls-010",
+        "dq-mls-011",
+        "dq-mls-012",
+        "dq-mls-013",
+        "dq-mls-015",
+        "dq-mls-019",
+        "dq-mls-020",
+        "dq-mls-024",
+        "dq-mls-025",
+        "dq-mls-026",
+    }
+)
+
 
 def test_the_gate_fires_for_no_recorded_extraction_but_those_of_the_dataset_questions():
     system = _system_instruction()
-    dataset_keys = {fixture_key(Extraction, system, query) for query in _DATASET_QUERIES}
+    dataset_queries = [
+        *_DATASET_QUERIES,
+        *(case.query for case in load_cases() if case.id in _DATASET_CASES),
+    ]
+    dataset_keys = {fixture_key(Extraction, system, query) for query in dataset_queries}
     recorded = _recorded_extractions()
     fired = {
         key
@@ -394,10 +427,6 @@ def test_the_gate_fires_for_no_recorded_extraction_but_those_of_the_dataset_ques
     assert fired
     assert fired <= dataset_keys
     assert len(recorded) - len(fired) >= 244
-
-
-# The cases written to name a dataset.
-_DATASET_CASES = frozenset({"imputed-aid-kenya", "education-aid-kenya-excluding-imputed"})
 
 
 def test_no_recorded_corpus_query_but_a_dataset_case_fires_the_gate_under_its_own_text():

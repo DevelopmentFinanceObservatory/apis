@@ -203,18 +203,17 @@ def _assemble_role_bulk_series(
     currency, as the per-series path's do.
 
     No returned pairs yields `OBSERVATIONS_NO_POINTS` without a warning, or, when `converted`
-    left out StatVars (`ConvertedPairs.left_out`), an `OBSERVATIONS_CONVERTED_SCOPE_UNSUPPORTED`
-    omission naming them. Otherwise each pair
+    left out StatVars or pairs (`ConvertedPairs.leaves_out`), an
+    `OBSERVATIONS_CONVERTED_SCOPE_UNSUPPORTED` omission naming them. Otherwise each pair
     is a series of `best`'s facet, assembled by `search.observations.assemble_role_bulk`,
     which shows at most `role_bulk_series_max` of them in identity order. A population larger
-    than the shown series warns, and StatVars the conversion left out warn under
+    than the shown series warns, and StatVars and pairs the conversion left out warn under
     `OBSERVATIONS_CONVERTED_SCOPE_UNSUPPORTED`, which carries the truncation's message when
     both apply. `total_obs` adds the population's unread in-window coverage
     counts to the points read, so no second SDMX read is needed.
     """
-    left_out = converted.left_out if converted is not None else {}
-    if not pair_points and left_out:
-        return left_out_omission(left_out)
+    if not pair_points and converted is not None and converted.leaves_out:
+        return left_out_omission(converted)
     if not pair_points:
         return (
             omitted_observations(
@@ -260,7 +259,7 @@ def _assemble_role_bulk_series(
             ),
             params={"shown": shown, "total": total_confirmed},
         )
-    return observations, left_out_warning(left_out, also=warn)
+    return observations, left_out_warning(converted, also=warn)
 
 
 def _bulk_role_series(

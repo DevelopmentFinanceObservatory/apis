@@ -31,7 +31,7 @@ from assembler.ports import (
     WriteSubjectKind,
     WriteTokenInUse,
 )
-from assembler.reply import WriteReply, build_changed_fields, build_reply
+from assembler.reply import WriteReply, applied_defaults, build_changed_fields, build_reply
 from assembler.resolve import ResolvedSeries
 from assembler.write_token import (
     COMPONENT_WRITE_TOKEN_PREFIX,
@@ -260,10 +260,16 @@ def write_component(
                 and _series_coordinates_equal(
                     candidate=series_coordinates, stored=current.series_coordinates
                 )
+                and _defaults_equal(
+                    component=cast("Mapping[str, object]", envelope["component"]),
+                    candidate_intent=candidate.stored_intent,
+                    stored_intent=current.stored_intent,
+                )
             ):
                 is_noop = True
                 noop_component_id = ctx.component_id
                 noop_composition_id = ctx.composition_id
+                noop_stored_intent = current.stored_intent
                 noop_resolved_payload = current.resolved_payload
                 noop_formatter_profile = current.formatter_profile
             else:
@@ -316,6 +322,7 @@ def write_component(
             composition_id=membership.composition_id if membership is not None else None,
             composition_revision=membership.revision if membership is not None else None,
             changed=(),
+            stored_intent=noop_stored_intent,
             resolved_payload=noop_resolved_payload,
             series_coordinates=series_coordinates,
             formatter_profile=noop_formatter_profile,
@@ -328,6 +335,7 @@ def write_component(
         composition_id=minted_composition_id,
         composition_revision=composition_revision,
         changed=changed,
+        stored_intent=candidate.stored_intent,
         resolved_payload=envelope,
         series_coordinates=series_coordinates,
         formatter_profile=release.formatter_profile,
@@ -421,6 +429,7 @@ def _replay_create(
         composition_id=membership.composition_id if membership is not None else None,
         composition_revision=membership.revision if membership is not None else None,
         changed=(),
+        stored_intent=record.stored_intent,
         resolved_payload=record.resolved_payload,
         series_coordinates=record.series_coordinates,
         formatter_profile=record.formatter_profile,
@@ -511,6 +520,20 @@ def _excluding_volatile(payload: Mapping[str, object]) -> dict[str, object]:
     provenance.pop("generated_at", None)
     stripped["provenance"] = provenance
     return stripped
+
+
+def _defaults_equal(
+    *,
+    component: Mapping[str, object],
+    candidate_intent: Mapping[str, object],
+    stored_intent: Mapping[str, object],
+) -> bool:
+    """Checks that the candidate intent states the same defaults as the stored head's, so a
+    no-op reply, which reports the head's stored intent, describes the intent just sent."""
+    member = cast(str, component["type"])
+    return applied_defaults(
+        component=component, member=member, stored_intent=candidate_intent
+    ) == applied_defaults(component=component, member=member, stored_intent=stored_intent)
 
 
 def _structurally_equal(a: Mapping[str, object], b: Mapping[str, object]) -> bool:

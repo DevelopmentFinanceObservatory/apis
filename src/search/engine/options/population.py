@@ -24,7 +24,6 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, cast
 
-from code_index.members import unbound_pins
 from code_index.query import dedupe_first_seen
 from code_index.shared import get_index
 from materialise.facets import ElectedDataset
@@ -210,22 +209,8 @@ def options_population(identity: BaseIdentity, graph: MemberArcReader) -> Option
             either source (`code="role_signature_incompatible"`,
             422, mirroring `options/resolve.py`'s own use of that code), or a
             non-index enumeration hits one of `enumerate_members`'s other
-            data-integrity refusals (`code="request_invalid"`, 400). An identity
-            that leaves a slot its five-tuple pins unbound
-            (`code_index.members.unbound_pins`) refuses `population_empty`, as the
-            Datasets mint refuses it.
+            data-integrity refusals (`code="request_invalid"`, 400).
     """
-    unbound = unbound_pins(get_index(), identity_query(identity))
-    if unbound:
-        # The mint refuses an identity that leaves a pinned slot unbound, so it denotes no
-        # population to enumerate options against.
-        raise EngineInputError(
-            f"the posted identity leaves {sorted(unbound)!r} unbound; every member series "
-            f"of its five-tuple holds {unbound!r}, so bind each slot to that value",
-            code="population_empty",
-            status=422,
-            pointer="/identity",
-        )
     shape = cast(IdentityShapeSchema, identity.shape)
     synthetic_shape = dataclasses.replace(
         synthetic_shape_for_identity(shape), sv_arc_facts_complete=False
@@ -236,8 +221,8 @@ def options_population(identity: BaseIdentity, graph: MemberArcReader) -> Option
     datasets: dict[str, ElectedDataset] = {}
     if index_decides_membership(identity):
         source = "index"
-        # The index decides this identity's membership, so the population is the family it
-        # resolves, empty when the bound values match no row or the election refuses.
+        # The index decides this identity's membership, so the population is the elected
+        # dataset's family, empty when the bound values match no row or the election refuses.
         member_facts, _ = shape_member_facts(synthetic_shape, identity_query(identity))
         try:
             declared_roles = declared_role_signature(member_facts)

@@ -14,6 +14,7 @@ from pydantic import (
     Discriminator,
     Field,
     Tag,
+    ValidationInfo,
     field_validator,
     model_validator,
 )
@@ -33,6 +34,10 @@ provenance, so a null provenance ref names nothing."""
 # Mirrors the SDMX client: `+` separates AND filters and `,` joins OR values.
 # The client hardcodes both characters, so invalid values are rejected at this boundary.
 _SDMX_RESERVED_VALUE_CHARS: tuple[str, ...] = ("+", ",")
+# The deepest `groupby.levels` depth. A depth past a code's parent chain leaves the code as
+# itself, so this refuses only depths no code hierarchy reaches, and it keeps a query depth
+# far inside Python's integer string conversion limit.
+MAX_GROUPBY_LEVEL_DEPTH = 99
 
 
 class WindowAll(BaseModel):
@@ -228,6 +233,12 @@ class GroupbyOptions(BaseModel):
     (`datasets_api.groupby.refuse_unknown_by_axes`). A declared axis this
     frame's StatVars do not decode is left out of the collapse set
     (`datasets_api.groupby.collapse_axes`).
+
+    `levels` rolls a kept hierarchical axis up to one depth of its parent
+    chain before the sum: each code becomes its ancestor at that depth, and
+    depth 0 is the root codes. Each key must also appear in `by`, and must
+    be one of the capabilities document's `groupby_level_axes`
+    (`datasets_api.render.check_options_supported`).
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -235,6 +246,17 @@ class GroupbyOptions(BaseModel):
         min_length=1, json_schema_extra={"uniqueItems": True}
     )
     op: Literal["sum"]
+    levels: (
+        dict[str, Annotated[int, Field(strict=True, ge=0, le=MAX_GROUPBY_LEVEL_DEPTH)]] | None
+    ) = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "code system -> depth: roll each kept code up to its ancestor at that depth "
+            "(0 = root codes); a code shallower than the depth stays as itself, under its "
+            "own label"
+        ),
+    )
 
     @field_validator("by")
     @classmethod
@@ -243,6 +265,18 @@ class GroupbyOptions(BaseModel):
         duplicates = {name for name in value if name in seen or seen.add(name)}
         if duplicates:
             raise ValueError(f"duplicate groupby axis name(s): {sorted(duplicates)!r}")
+        return value
+
+    @field_validator("levels")
+    @classmethod
+    def _levels_are_kept(
+        cls, value: dict[str, int] | None, info: ValidationInfo
+    ) -> dict[str, int] | None:
+        by = info.data.get("by")
+        if value is not None and by is not None:
+            outside = sorted(set(value) - set(by))
+            if outside:
+                raise ValueError(f"groupby.levels names axis(es) {outside!r} absent from by")
         return value
 
 

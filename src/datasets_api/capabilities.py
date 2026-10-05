@@ -16,7 +16,7 @@ from collections.abc import Mapping
 
 from pydantic import BaseModel, Field
 
-from code_index.types import CodeSystemDeclaration, IndexStamp, summable_axes
+from code_index.types import CodeSystemDeclaration, IndexStamp, level_axes, summable_axes
 from dataset_store.snapshot import WORKING_TIER_RETENTION
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.models import MAX_COLLECTION_MEMBERS
@@ -225,6 +225,14 @@ class Capabilities(BaseModel):
             "declared-summable axis this frame decoded collapsed into it"
         )
     )
+    groupby_level_axes: list[str] = Field(
+        description=(
+            "code systems the packaged code index declares summable, hierarchical, and "
+            "disjoint from children (a parent-coded record excludes its children's), sorted. "
+            "These are the axes groupby.levels accepts, each rolled up to one depth of its "
+            "parent chain (0 = root codes) before the sum"
+        )
+    )
     caps: CapabilityCaps = Field(description="published input limits and response caps")
     code_index: CodeIndexStamp = Field(description="provenance for the packaged code index")
 
@@ -240,8 +248,9 @@ def build_capabilities(
     """Assemble capabilities from caller-supplied settings and code-index data.
 
     The exported `code_counts` keys equal the declared code systems, including zero-count
-    systems, so `decode_code_systems` needs no separate input. `summable_axes` uses
-    `declarations`, since counts do not encode summability.
+    systems, so `decode_code_systems` needs no separate input. `summable_axes` and
+    `groupby_level_axes` use `declarations`, since counts encode neither summability nor
+    hierarchy.
     """
     return Capabilities(
         capability_version=capability_version,
@@ -268,6 +277,7 @@ def build_capabilities(
         ),
         summability_declarations_live=SUMMABILITY_DECLARATIONS_LIVE,
         summable_axes=sorted(summable_axes(declarations)),
+        groupby_level_axes=sorted(level_axes(declarations)),
         caps=CapabilityCaps(
             max_collection_members=MAX_COLLECTION_MEMBERS,
             definition_candidate_cap=CANDIDATE_CAP,

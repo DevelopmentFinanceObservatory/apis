@@ -304,10 +304,11 @@ def test_composition_two_rollups_passes_on_a_complete_frame():
         code_index=_TWO_AXIS_INDEX,
         resolved_stat_var_refs=(),
         provenance_refs=("p1",),
+        subject_id="spec_990800",
         pivot_max_output_cells=5_000_000,
     )
 
-    assert reshaped.warnings == ()
+    assert [warning["code"] for warning in reshaped.warnings] == ["stat_vars_summed"]
     purpose_pos = reshaped.table.columns.index("stat_var_crsPurpose")
     recipient_pos = reshaped.table.columns.index("financingRecipient")
     value_pos = reshaped.table.columns.index("value")

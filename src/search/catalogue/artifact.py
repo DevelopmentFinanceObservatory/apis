@@ -34,7 +34,7 @@ from artifact_publication.uri import (
 
 logger = logging.getLogger(__name__)
 
-FORMAT_VERSION: Final[int] = 1
+FORMAT_VERSION: Final[int] = 2
 """Bumped when a build's JSON changes shape, so an image reads only the
 builds it understands."""
 
@@ -76,6 +76,10 @@ class Counts(_Model):
     """What DFO holds, counted from one origin catalogue build and one
     coverage index build."""
 
+    indicators: int = Field(
+        description="distinct StatVars search can serve: base, DFO and coverage variables"
+    )
+    datasets: int = Field(description="distinct source-index entries of the admitted provenances")
     publishers: int = Field(description="distinct sources of the admitted provenances")
     countries: int = Field(
         description="countries with base data in the origin catalogue or coverage rows"

@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 from code_index import FamilyQuery
+from code_index.members import canonical_identity, elected_pins
 from code_index.shared import get_index
 from datasets_api.adapter import resolve_definition_members
 from materialise.errors import FacetNotAvailableError
@@ -18,7 +19,7 @@ from search.engine.errors import EngineInputError
 from search.engine.region import promote_ground, resolve_spec_resubmit
 from search.engine.region.result import RegionResult
 from search.engine.region.state import EngineOptions
-from search.engine.retrieval.bound_values import observed_measure_family
+from search.engine.retrieval.bound_values import identity_query, observed_measure_family
 from search.engine.spec_id import mint_identity
 from search.models import (
     BaseIdentity,
@@ -125,6 +126,12 @@ def _resubmit_education(
     )
 
 
+def _canonical_spec_id(document: dict) -> str:
+    """The spec_id of `document`'s canonical form (`code_index.members.canonical_identity`),
+    which binds the imputed table's invariants."""
+    return mint_identity(canonical_identity(get_index(), document))[0]
+
+
 def _where_dcid(spec: Spec) -> str | None:
     """The dcid the spec's where slot binds, or None when it binds no value."""
     where = next(slot for slot in spec.resolved.slots if slot.key.axis == "where")
@@ -149,7 +156,7 @@ def test_a_resubmit_naming_the_imputed_dataset_resolves_the_mints_family(monkeyp
 
     assert region.status == "definite", region.no_data_reason
     spec = region.specs[0]
-    assert spec.spec_id == spec_id
+    assert spec.spec_id == _canonical_spec_id(document) == spec_id
     assert spec.definition.identity.facets == {
         "provenance": IdentityBindingValue(ref=IMPUTED_PROVENANCE)
     }
@@ -171,9 +178,11 @@ def _aid_type_binding(spec: Spec) -> object:
 
 
 @pytest.mark.parametrize("seeded", [False, True], ids=["unseeded", "seeded"])
-def test_a_resubmit_leaving_a_pinned_slot_unbound_mints_the_pinned_spec_id(monkeypatch, seeded):
-    """Every imputed row holds one aid type, so the resubmit binds it as a first answer does
-    and mints the spec_id of the pinned identity, which the mint resolves."""
+def test_a_resubmit_leaving_a_pinned_slot_unbound_mints_the_canonical_spec_id(monkeypatch, seeded):
+    """The imputed table declares its one aid type as an invariant. The resubmit of an
+    identity naming the table that leaves the aid type unbound and of one binding it mint
+    one canonical spec_id, which binds the aid type as a first answer does, and serve the
+    family the mint resolves for the identity binding it."""
     pinned = imputed_education_aid_identity(source=IMPUTED_PROVENANCE)
     pinned_spec_id, _ = mint_identity(pinned)
     family = _mint_family(pinned)
@@ -190,10 +199,13 @@ def test_a_resubmit_leaving_a_pinned_slot_unbound_mints_the_pinned_spec_id(monke
 
     assert region.status == "definite", region.no_data_reason
     spec = region.specs[0]
+    assert spec.spec_id == _canonical_spec_id(pinned) == _canonical_spec_id(document)
     assert spec.spec_id == pinned_spec_id
-    assert isinstance(binding := _aid_type_binding(spec), BindingValue)
-    assert binding.value.ref is not None
+    binding = _aid_type_binding(spec)
+    assert isinstance(binding, BindingValue)
     assert binding.value.ref.dcid == IMPUTED_MULTILATERAL
+    pins = elected_pins(get_index(), identity_query(spec.definition.identity))
+    assert pins[AID_TYPE] == IMPUTED_MULTILATERAL
     assert {ref.dcid for ref in spec.resolved.trace.resolved_stat_vars} == family
 
 
@@ -214,7 +226,7 @@ def test_a_provenance_set_of_one_names_the_dataset_its_value_spelling_names(monk
 
     assert region.status == "definite", region.no_data_reason
     spec = region.specs[0]
-    assert spec.spec_id == spec_id
+    assert spec.spec_id == _canonical_spec_id(value_document)
     assert {ref.dcid for ref in spec.resolved.trace.resolved_stat_vars} == family
     assert spec.resolved.shape.member_digest == member_digest(family)
 
@@ -239,11 +251,23 @@ def test_a_provenance_set_of_two_names_no_dataset(monkeypatch):
     assert IMPUTED_PROVENANCE in str(exc_info.value)
 
 
-def test_a_posted_seed_does_not_stand_in_for_a_family_the_election_refuses(monkeypatch):
+@pytest.mark.parametrize("draft", ["aid-type-bound", "aid-type-unbound", "purpose-no-row-holds"])
+def test_a_posted_seed_does_not_stand_in_for_a_family_the_election_refuses(monkeypatch, draft):
     """The identity names the CRS dataset on the five-tuple only the imputed dataset
     publishes. The mint refuses it `facet_not_available`, and the resubmit refuses the same
-    way and names CRS, with the imputed members posted as a seed and with none."""
+    way and names CRS, with the imputed members posted as a seed and with none. CRS pins
+    nothing on that five-tuple, so an aid-type slot left unbound refuses the same way, and
+    the refusal reads the five-tuple alone, so a purpose no row holds refuses the same way."""
     document = imputed_education_aid_identity(source=CRS_PROVENANCE)
+    if draft == "aid-type-unbound":
+        next(slot for slot in document["slots"] if slot["property"] == AID_TYPE)["binding"] = {
+            "state": "unbound"
+        }
+    if draft == "purpose-no-row-holds":
+        next(slot for slot in document["slots"] if slot["property"] == "crsPurpose")["binding"] = {
+            "state": "value",
+            "ref": "CRSPurposeCodeNoRowHolds",
+        }
     spec_id, identity = mint_identity(document)
     with pytest.raises(FacetNotAvailableError):
         _mint_family(document)

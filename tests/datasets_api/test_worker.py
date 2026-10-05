@@ -14,8 +14,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from dataset_store.snapshot import StoredArtifactLocation
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.definition import DefinitionDeps, classify_definition_exception
+from datasets_api.mint_models import MintOptions
 from datasets_api.operation_store import LiveOperationStore, Operation
 from datasets_api.operations import worker as worker_module
 from datasets_api.operations.worker import (
@@ -23,7 +25,9 @@ from datasets_api.operations.worker import (
     OperationTransientFailure,
     run_operation,
 )
+from datasets_api.render import artifact_rendering
 from datasets_api.serve import raw_fetch_guard
+from datasets_api.version_store import rendering_key
 from series_coverage.index import Estimate
 from series_coverage.shared import CoverageService
 from tests.series_coverage.support import build_test_artifact, index_for, pointer_path
@@ -31,6 +35,7 @@ from tests.series_coverage.support import build_test_artifact, index_for, pointe
 from ._operation_store import FakeOperationDatasetStore
 
 _SUBJECT_ID = "spec_abc123"
+_COLLECTION_ID = "col_abc123"
 # `run_operation` requires `lease_seconds`. This matches the settings default used by callers
 # such as `build_worker_app` when they omit it.
 _DEFAULT_LEASE_SECONDS = DatasetsBuildSettings().operation_lease_seconds
@@ -50,7 +55,54 @@ class _StubCoverage:
         return _StubCoverageSnapshot()
 
 
-def _deps() -> DefinitionDeps:
+# The options `_claimed_operation` stores. They make a CSV bundle, since `MintOptions.bundle`
+# defaults to True.
+_OPTIONS: dict[str, object] = {"format": "csv"}
+
+
+def _location(options: dict[str, object]) -> StoredArtifactLocation:
+    """A working-tier location stored now under the rendering `options` map to."""
+    rendering = artifact_rendering(
+        MintOptions.model_validate(options), site=DatasetsBuildSettings().site
+    )
+    now = datetime.now(UTC)
+    return StoredArtifactLocation(
+        artifact_digest="sha256:stub",
+        rendering_key=rendering_key(rendering),
+        rendering=rendering,
+        media_type="application/zip" if rendering["bundle"] else "application/vnd.apache.parquet",
+        size_bytes=1,
+        created_at=now,
+        stored_at=now,
+        tier="working",
+        bucket="working",
+        object_name="stub",
+    )
+
+
+@dataclasses.dataclass(frozen=True)
+class _LocationsReader:
+    """Answers artifact locations stored under `(subject_id, content_version)`, and none for
+    any other subject or version."""
+
+    locations: dict[tuple[str, str], tuple[StoredArtifactLocation, ...]]
+
+    def read_artifact_locations(self, subject_id: str, content_version: str):
+        return list(self.locations.get((subject_id, content_version), ()))
+
+
+def _linked(subject_id: str, content_version: str, *options: dict[str, object]) -> _LocationsReader:
+    """A snapshot listing one artifact per `options` under `(subject_id, content_version)`."""
+    return _LocationsReader(
+        {(subject_id, content_version): tuple(_location(item) for item in options)}
+    )
+
+
+def _deps(snapshot_reader: _LocationsReader | None = None) -> DefinitionDeps:
+    """Stub deps whose snapshot lists the claimed operation's rendering under the version
+    `_stub_manifest` completes with, unless `snapshot_reader` says otherwise."""
+    if snapshot_reader is None:
+        snapshot_reader = _linked(_SUBJECT_ID, "cv_stub", _OPTIONS)
     return DefinitionDeps(
         spec_reader=None,  # type: ignore[arg-type]
         graph=None,  # type: ignore[arg-type]
@@ -66,6 +118,7 @@ def _deps() -> DefinitionDeps:
         code_index=None,  # type: ignore[arg-type]
         rate_cache=None,  # type: ignore[arg-type]
         coverage=_StubCoverage(),  # type: ignore[arg-type]
+        snapshot_reader=snapshot_reader,  # type: ignore[arg-type]
         head_recheck_interval=timedelta(seconds=DatasetsBuildSettings().head_recheck_seconds),
         head_max_age=timedelta(seconds=DatasetsBuildSettings().head_max_age_seconds),
     )
@@ -78,10 +131,15 @@ def _operation_store(now=None) -> LiveOperationStore:
     return LiveOperationStore(**kwargs)
 
 
-def _claimed_operation(operation_store: LiveOperationStore, *, lease_seconds: float = 1_700):
+def _claimed_operation(
+    operation_store: LiveOperationStore,
+    *,
+    lease_seconds: float = 1_700,
+    subject_id: str = _SUBJECT_ID,
+):
     operation = operation_store.create_or_get(
-        request_identity={"subject_id": _SUBJECT_ID},
-        options={"format": "csv"},
+        request_identity={"subject_id": subject_id},
+        options=_OPTIONS,
         coverage_stamp="cov_1",
         origin_catalogue_build_id="fake-catalogue",
         estimate=Estimate(rows=200_000, requests=5),
@@ -417,7 +475,7 @@ def test_complete_returning_none_logs_an_error_naming_the_operation(
         with caplog.at_level(logging.ERROR):
             run_operation(
                 operation=operation,
-                deps=_deps(),
+                deps=_deps(_linked(_SUBJECT_ID, "cv_stub_orphaned", _OPTIONS)),
                 operation_store=operation_store,
                 lease_seconds=_DEFAULT_LEASE_SECONDS,
             )
@@ -700,3 +758,99 @@ def test_execution_estimate_over_the_async_ceiling_fails_over_ceiling_without_fe
     assert stored.retryable is False
     assert stored.execution_coverage_stamp == _StubCoverageSnapshot.stamp
     assert stored.estimate == over
+
+
+def _stub_collection_manifest() -> SimpleNamespace:
+    return SimpleNamespace(
+        definition=None,
+        collection=SimpleNamespace(collection_id=_COLLECTION_ID),
+        content_version="cv_collection",
+    )
+
+
+@pytest.mark.parametrize(
+    ("subject_id", "linked", "is_final_attempt", "state", "refusal_code", "retryable"),
+    [
+        pytest.param(
+            _SUBJECT_ID,
+            _linked(_SUBJECT_ID, "cv_stub", _OPTIONS),
+            False,
+            "done",
+            None,
+            None,
+            id="linked-completes",
+        ),
+        pytest.param(
+            _COLLECTION_ID,
+            _linked(_COLLECTION_ID, "cv_collection", _OPTIONS),
+            False,
+            "done",
+            None,
+            None,
+            id="collection-linked-completes",
+        ),
+        pytest.param(
+            _SUBJECT_ID,
+            _linked(_SUBJECT_ID, "cv_stub"),
+            False,
+            "pending",
+            None,
+            None,
+            id="unlinked-releases",
+        ),
+        pytest.param(
+            _SUBJECT_ID,
+            _linked(_SUBJECT_ID, "cv_stub", {"format": "parquet", "bundle": False}),
+            False,
+            "pending",
+            None,
+            None,
+            id="other-rendering-only-releases",
+        ),
+        pytest.param(
+            _SUBJECT_ID,
+            _linked(_SUBJECT_ID, "cv_stub"),
+            True,
+            "failed",
+            "internal_error",
+            True,
+            id="unlinked-final-fails",
+        ),
+    ],
+)
+def test_run_completes_only_when_the_requests_rendering_is_servable(
+    subject_id, linked, is_final_attempt, state, refusal_code, retryable
+):
+    """The check reads the subject and content version the manifest completes with. A bundle
+    left unlinked after a failed graph label or documentation read is transient."""
+    operation_store = _operation_store()
+    operation = _claimed_operation(operation_store, subject_id=subject_id)
+    is_collection = subject_id == _COLLECTION_ID
+    completed = _stub_collection_manifest() if is_collection else _stub_manifest()
+
+    def _serve(
+        *, stored, requests, options, deps, ceiling, coverage_stamp, coverage_index, progress
+    ):
+        return completed
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(worker_module, "_resolve_spec_requests", _stub_resolve)
+        mp.setattr(worker_module, "_resolve_collection_requests", lambda **_: (object(), []))
+        mp.setattr(worker_module, "serve_definition", _serve)
+        mp.setattr(worker_module, "serve_collection", _serve)
+        released = state == "pending"
+        with pytest.raises(OperationTransientFailure) if released else contextlib.nullcontext():
+            run_operation(
+                operation=operation,
+                deps=_deps(linked),
+                operation_store=operation_store,
+                lease_seconds=30,
+                is_final_attempt=is_final_attempt,
+            )
+
+    row = operation_store.get(operation.id)
+    assert row is not None
+    assert row.state == state
+    assert row.refusal_code == refusal_code
+    assert row.retryable == retryable
+    assert row.content_version == (completed.content_version if state == "done" else None)
