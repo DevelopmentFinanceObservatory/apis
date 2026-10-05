@@ -1,8 +1,8 @@
-"""`elect_dataset` keeps the rows of the one dataset a five-tuple belongs to, and
-`index_covers_slot_keys` decides whether the index resolves an identity.
+"""`elect_dataset` keeps the rows of the one dataset elected among those publishing a
+five-tuple, and `index_covers_slot_keys` decides whether the index resolves an identity.
 
-A synthetic index puts each dataset on its own five-tuple, so no rule depends on a property
-name. The packaged index pins the education-aid families' counts.
+Synthetic indexes put datasets on their own five-tuples and on shared ones, so no rule
+depends on a property name. The packaged index pins the education-aid families' counts.
 """
 
 from __future__ import annotations
@@ -12,17 +12,24 @@ import dataclasses
 import pytest
 
 from code_index import default_index_path, load_index
+from code_index import members as members_module
 from code_index.members import (
     FamilyQuery,
     SourceNotInFamily,
     absent_member_reads_zero,
     antichain_minimal_rows,
+    bind_slot_value,
+    canonical_identity,
     elect_dataset,
+    elected_invariants,
+    elected_pins,
     family_for_five_tuple,
     identity_family_query,
     index_covers_slot_keys,
     index_family,
+    invariant_bindings,
     named_dataset,
+    option_families,
 )
 from code_index.query import CodeIndex
 from code_index.types import (
@@ -32,6 +39,7 @@ from code_index.types import (
     IndexStamp,
     StatVarRow,
 )
+from spec_registry import recompute_identity
 from statvar_members import FiveTuple, SlotBinding
 
 from .aid_identity import (
@@ -42,6 +50,8 @@ from .aid_identity import (
     IMPUTED_MEMBER_COUNT,
     IMPUTED_MULTILATERAL,
     IMPUTED_PROVENANCE,
+    education_aid_identity,
+    imputed_education_aid_identity,
 )
 
 _PLAIN = "provenance/Plain"
@@ -83,14 +93,21 @@ def _row(
 
 
 def _dataset(
-    provenance: str, *, absent_observation: AbsentObservation = "zero"
+    provenance: str,
+    *,
+    absent_observation: AbsentObservation = "zero",
+    rank: int = 0,
+    opt_in: bool = False,
+    invariants: dict[str, str] | None = None,
 ) -> DatasetDeclaration:
     return DatasetDeclaration(
         provenance=provenance,
         label=provenance,
         synonyms=(),
-        opt_in=False,
+        opt_in=opt_in,
         absent_observation=absent_observation,
+        rank=rank,
+        invariants=invariants or {},
     )
 
 
@@ -235,6 +252,33 @@ def test_a_named_source_another_dataset_publishes_the_five_tuple_of_refuses():
     assert refusal.value.candidates == (_LINES,)
 
 
+@pytest.mark.parametrize(
+    ("rows", "source"),
+    [
+        ((), _PLAIN),
+        (_LINE_ROWS, None),
+    ],
+    ids=["named-publisher-no-rows", "no-publisher-row"],
+)
+def test_no_published_row_gives_an_empty_family(rows: tuple[StatVarRow, ...], source: str | None):
+    """A named dataset that publishes the five-tuple but none of the rows, and rows no
+    candidate publishes, leave the family empty without a refusal."""
+    index = _index(*_PLAIN_ROWS, *_LINE_ROWS, datasets=_PLAIN_AND_LINES)
+
+    family = elect_dataset(index, rows, _asks(set(), source))
+
+    assert (family.provenance, family.rows) == (None, ())
+
+
+def test_a_named_source_on_a_five_tuple_no_dataset_publishes_gives_an_empty_family():
+    uncovered = _row("uncovered", {"sector": "C"})
+    index = _index(uncovered, datasets=_PLAIN_AND_LINES)
+
+    family = elect_dataset(index, (uncovered,), _asks(set(), _PLAIN))
+
+    assert (family.provenance, family.rows) == (None, ())
+
+
 def test_rows_of_another_five_tuple_stay_out_of_the_family():
     """A measure family hands the election rows of several five-tuples. The query's own
     five-tuple decides the dataset, and another dataset's rows stay out."""
@@ -325,6 +369,518 @@ def test_role_sets_the_election_cannot_order_stay_in_one_family():
     index = _index(*rows, datasets=(_dataset(_PLAIN),))
 
     assert _dcids(elect_dataset(index, rows, _asks_roles()).rows) == {"line", "total"}
+
+
+# ---------------------------------------------------------------------------
+# Several datasets on one five-tuple
+# ---------------------------------------------------------------------------
+
+_DONOR = ("financingProvider",)
+_DONOR_RECIPIENT = ("financingProvider", "financingRecipient")
+
+
+def _shared(*, plain_rank: int = 0, tables_rank: int = 1, tables_opt_in: bool = False) -> CodeIndex:
+    """`_PLAIN` and `_TABLES` on one five-tuple: each its own sector row and one row both
+    publish."""
+    return _index(
+        _row("plain_only", {"sector": "A"}, _PLAIN),
+        _row("both", {"sector": "B"}, _PLAIN, _TABLES),
+        _row("tables_only", {"sector": "C"}, _TABLES),
+        datasets=(
+            _dataset(_PLAIN, rank=plain_rank),
+            _dataset(_TABLES, rank=tables_rank, opt_in=tables_opt_in),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("plain_rank", "tables_rank", "elected", "dcids"),
+    [
+        (0, 1, _PLAIN, {"plain_only", "both"}),
+        (1, 0, _TABLES, {"both", "tables_only"}),
+    ],
+    ids=["plain-first", "tables-first"],
+)
+def test_the_lowest_ranked_publisher_serves_a_shared_five_tuple(
+    plain_rank: int, tables_rank: int, elected: str, dcids: set[str]
+):
+    index = _shared(plain_rank=plain_rank, tables_rank=tables_rank)
+
+    family = elect_dataset(index, index.statvars, _asks(set()))
+
+    assert (family.provenance, _dcids(family.rows)) == (elected, dcids)
+
+
+@pytest.mark.parametrize("source", [_PLAIN, _TABLES])
+def test_a_row_with_two_provenances_joins_the_family_of_either(source: str):
+    index = _shared()
+
+    family = elect_dataset(index, index.statvars, _asks(set(), source))
+
+    assert family.provenance == source
+    assert "both" in _dcids(family.rows)
+    assert {row.dcid for row in index.statvars if source in row.provenances} == _dcids(family.rows)
+
+
+@pytest.mark.parametrize(
+    ("source", "excluded", "elected"),
+    [
+        (None, frozenset(), _PLAIN),
+        (_TABLES, frozenset(), _TABLES),
+        (None, frozenset({_PLAIN}), None),
+    ],
+    ids=["unnamed", "named", "only-default-excluded"],
+)
+def test_an_opt_in_dataset_beside_another_serves_only_a_query_that_names_it(
+    source: str | None, excluded: frozenset[str], elected: str | None
+):
+    """`_TABLES` ranks first but opts in."""
+    index = _shared(plain_rank=1, tables_rank=0, tables_opt_in=True)
+    query = dataclasses.replace(_asks(set(), source), excluded=excluded)
+
+    assert elect_dataset(index, index.statvars, query).provenance == elected
+
+
+@pytest.mark.parametrize(
+    ("excluded", "elected"),
+    [(frozenset(), _TABLES), (frozenset({_TABLES}), None)],
+    ids=["unnamed", "excluded"],
+)
+def test_a_five_tuple_only_opt_in_datasets_publish_elects_one_unnamed(
+    excluded: frozenset[str], elected: str | None
+):
+    index = _index(
+        _row("tables_only", {"sector": "C"}, _TABLES),
+        datasets=(_dataset(_TABLES, opt_in=True),),
+    )
+    query = dataclasses.replace(_asks(set()), excluded=excluded)
+
+    assert elect_dataset(index, index.statvars, query).provenance == elected
+
+
+@pytest.mark.parametrize(
+    ("excluded", "elected"),
+    [
+        (frozenset(), _PLAIN),
+        (frozenset({_PLAIN}), _TABLES),
+        (frozenset({_PLAIN, _TABLES}), None),
+    ],
+    ids=["none", "first", "both"],
+)
+def test_an_excluded_dataset_leaves_the_election_to_the_next(
+    excluded: frozenset[str], elected: str | None
+):
+    index = _shared()
+    query = dataclasses.replace(_asks(set()), excluded=excluded)
+
+    assert elect_dataset(index, index.statvars, query).provenance == elected
+
+
+def test_a_named_source_publishing_another_five_tuple_lists_every_publisher():
+    index = _index(
+        *_LINE_ROWS,
+        *_shared(plain_rank=1, tables_rank=0).statvars,
+        datasets=(_dataset(_PLAIN, rank=1), _dataset(_TABLES, rank=0), _dataset(_LINES, rank=2)),
+    )
+
+    with pytest.raises(SourceNotInFamily) as refusal:
+        elect_dataset(index, index.statvars, _asks(set(), _LINES))
+
+    assert refusal.value.candidates == (_TABLES, _PLAIN)
+
+
+def _role_index(*, crs_rank: int, dac1_rank: int) -> CodeIndex:
+    """A CRS-like dataset of donor-and-recipient rows and a DAC 1-like dataset of donor-only
+    rows on one five-tuple."""
+    return _index(
+        _role_row("crs", {"sector": "A"}, _DONOR_RECIPIENT, _PLAIN),
+        _role_row("dac1", {"sector": "A"}, _DONOR, _TABLES),
+        datasets=(_dataset(_PLAIN, rank=crs_rank), _dataset(_TABLES, rank=dac1_rank)),
+    )
+
+
+@pytest.mark.parametrize(
+    ("crs_rank", "dac1_rank"), [(0, 1), (1, 0)], ids=["crs-first", "dac1-first"]
+)
+@pytest.mark.parametrize(
+    ("role_keys", "elected"),
+    [
+        (("origin",), _TABLES),
+        (("origin", "destination"), _PLAIN),
+        (("destination",), _PLAIN),
+    ],
+    ids=["donor", "donor-recipient", "recipient"],
+)
+def test_the_dataset_whose_rows_place_the_role_keys_exactly_serves_first(
+    crs_rank: int, dac1_rank: int, role_keys: tuple[str, ...], elected: str
+):
+    """A donor alone reads the donor-only table whatever the ranks. A recipient key drops the
+    donor-only table, whose rows cover no recipient, even where `elect_role_class` would keep
+    them for want of a covering row."""
+    index = _role_index(crs_rank=crs_rank, dac1_rank=dac1_rank)
+
+    family = elect_dataset(index, index.statvars, _asks_roles(*role_keys))
+
+    assert family.provenance == elected
+
+
+def test_without_an_exact_match_the_rank_decides_between_covering_datasets():
+    rows = (
+        _role_row("crs", {"sector": "A"}, _DONOR_RECIPIENT, _PLAIN),
+        _role_row("crs_twin", {"sector": "A"}, _DONOR_RECIPIENT, _TABLES),
+    )
+    index = _index(*rows, datasets=(_dataset(_PLAIN, rank=1), _dataset(_TABLES, rank=0)))
+
+    assert elect_dataset(index, rows, _asks_roles("origin")).provenance == _TABLES
+
+
+def _pinning_index() -> CodeIndex:
+    """`_PLAIN` declares one `tableLine` value as an invariant and holds it on every row of
+    the five-tuple, `_TABLES` holds two."""
+    return _index(
+        _row("plain_a", {"sector": "A", _LINE: "L1"}, _PLAIN),
+        _row("plain_b", {"sector": "B", _LINE: "L1"}, _PLAIN),
+        _row("tables_a", {"sector": "A", _LINE: "L1"}, _TABLES),
+        _row("tables_b", {"sector": "B", _LINE: "L2"}, _TABLES),
+        datasets=(_dataset(_PLAIN, rank=0, invariants={_LINE: "L1"}), _dataset(_TABLES, rank=1)),
+    )
+
+
+_PIN_CASES = {
+    "elected": (None, frozenset(), {_LINE: "L1"}),
+    "named-pinning": (_PLAIN, frozenset(), {_LINE: "L1"}),
+    "named-unpinned": (_TABLES, frozenset(), {}),
+    "excluded-pinning": (None, frozenset({_PLAIN}), {}),
+}
+
+
+def _pin_query(source: str | None, excluded: frozenset[str]) -> FamilyQuery:
+    return FamilyQuery(
+        _FIVE_TUPLE,
+        {"sector": ("unbound",), _LINE: ("unbound",)},
+        source,
+        excluded=excluded,
+    )
+
+
+@pytest.mark.parametrize(("source", "excluded", "pins"), _PIN_CASES.values(), ids=_PIN_CASES)
+def test_the_pins_are_those_of_the_dataset_serving_the_family(
+    source: str | None, excluded: frozenset[str], pins: dict[str, str]
+):
+    """A query that names no dataset is canonical whether or not it binds the pin, as is one
+    that names a dataset declaring nothing. One that names the elected dataset and leaves
+    its invariant unbound binds it; one that binds it already is canonical."""
+    index = _pinning_index()
+    query = _pin_query(source, excluded)
+    bound = dataclasses.replace(query, slots={**query.slots, _LINE: ("value", "L1")})
+
+    assert index.dataset_pins[_PLAIN, _FIVE_TUPLE] == {_LINE: "L1"}
+    assert index.dataset_pins[_TABLES, _FIVE_TUPLE] == {}
+    assert elected_pins(index, query) == pins
+    assert invariant_bindings(index, query) == (pins if source == _PLAIN else {})
+    assert invariant_bindings(index, bound) == {}
+
+
+def test_one_index_memoises_the_pins_of_each_query_apart():
+    """`elected_pins` memoises per index and query. Queries that differ only in the dataset
+    they name or exclude read their own pins from one index, and a caller that changes the
+    returned pins leaves the memo as it was."""
+    index = _pinning_index()
+
+    for source, excluded, pins in (*_PIN_CASES.values(), *_PIN_CASES.values()):
+        returned = elected_pins(index, _pin_query(source, excluded))
+        assert returned == pins
+        returned["sector"] = "changed"
+
+
+def _held_refs(options) -> int:
+    """The references one slot-options entry holds: its rows, its bucket positions, and
+    each elected family with its rows, plus one for the entry."""
+    return (
+        1
+        + len(options.rows)
+        + sum(len(found) for found in options.buckets.values())
+        + sum(1 + len(family.rows) for family in options.families.values())
+    )
+
+
+def test_the_slot_options_memo_holds_at_most_its_reference_budget(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Each menu binds `finance` to its own set of 40 refs and reads 800 rows over 20
+    sectors, about 2,400 references in all. With a budget of 6,000, reading 30 menus keeps
+    at most two at any time, counted from what the memo holds. A menu read before each of
+    the others stays, and an evicted menu elects the same families again."""
+    budget = 6_000
+    monkeypatch.setattr(members_module, "_SLOT_OPTIONS_REFS", budget)
+    sectors = [f"S{n:02d}" for n in range(20)]
+    finances = [f"F{n:02d}" for n in range(50)]
+    index = _index(
+        *(
+            _row(f"{sector}_{finance}", {"sector": sector, "finance": finance}, _PLAIN)
+            for sector in sectors
+            for finance in finances
+        ),
+        datasets=(_dataset(_PLAIN),),
+    )
+
+    def menu(n: int) -> FamilyQuery:
+        slots: dict[str, SlotBinding] = {
+            "sector": ("unbound",),
+            "finance": ("set", tuple((finances * 2)[n : n + 40])),
+        }
+        return FamilyQuery(_FIVE_TUPLE, slots, None)
+
+    hot = menu(0)
+    option_families(index, hot, "sector", sectors)
+    memo = members_module._slot_options_cache[id(index)]
+    (hot_options,) = memo.entries.values()
+    first = option_families(index, menu(1), "sector", sectors)
+
+    for n in range(2, 30):
+        option_families(index, hot, "sector", sectors)
+        option_families(index, menu(n), "sector", sectors)
+        held = sum(_held_refs(options) for options in memo.entries.values())
+        assert held == memo.weight <= budget
+        assert any(options is hot_options for options in memo.entries.values())
+
+    assert len(memo.entries) == 2
+    again = option_families(index, menu(1), "sector", sectors)
+    assert again == first
+    assert again == {
+        sector: family_for_five_tuple(index, bind_slot_value(index, menu(1), "sector", sector))
+        for sector in sectors
+    }
+    assert all(len(family.rows) == 40 for family in again.values())
+
+
+def test_binding_the_elected_pins_keeps_the_election():
+    index = _pinning_index()
+    open_query = FamilyQuery(_FIVE_TUPLE, {"sector": ("unbound",), _LINE: ("unbound",)}, _PLAIN)
+    pinned_query = FamilyQuery(
+        _FIVE_TUPLE, {"sector": ("unbound",), _LINE: ("value", "L1")}, _PLAIN
+    )
+
+    before = family_for_five_tuple(index, open_query)
+    after = family_for_five_tuple(index, pinned_query)
+
+    assert (after.provenance, _dcids(after.rows)) == (before.provenance, _dcids(before.rows))
+    assert invariant_bindings(index, open_query) == {_LINE: "L1"}
+    assert invariant_bindings(index, pinned_query) == {}
+
+
+def _competing_index() -> CodeIndex:
+    """`_TABLES` (rank 1) declares `alpha` A1 and `beta` B1 as invariants and holds them on
+    every row; `_PLAIN` (rank 0) publishes a row of sector A beside it with `beta` B2."""
+    return _index(
+        _row("tables_a", {"alpha": "A1", "beta": "B1", "sector": "A"}, _TABLES),
+        _row("tables_b", {"alpha": "A1", "beta": "B1", "sector": "B"}, _TABLES),
+        _row("plain_a", {"alpha": "A1", "beta": "B2", "sector": "A"}, _PLAIN),
+        datasets=(
+            _dataset(_PLAIN, rank=0),
+            _dataset(_TABLES, rank=1, invariants={"alpha": "A1", "beta": "B1"}),
+        ),
+        declarations=tuple(_not_declared(prop) for prop in ("alpha", "beta", "sector")),
+    )
+
+
+_OPEN: SlotBinding = ("unbound",)
+
+
+@pytest.mark.parametrize(
+    ("source", "sector", "alpha", "beta", "bound"),
+    [
+        (None, "A", ("value", "A1"), ("value", "B1"), {}),
+        (None, "A", _OPEN, ("value", "B1"), {}),
+        (_TABLES, "A", ("value", "A1"), ("value", "B1"), {}),
+        (_TABLES, "A", _OPEN, ("value", "B1"), {"alpha": "A1"}),
+        (_TABLES, "A", _OPEN, _OPEN, {"alpha": "A1", "beta": "B1"}),
+        (_TABLES, "A", ("value", "A2"), _OPEN, {"beta": "B1"}),
+        (_TABLES, "Z", _OPEN, _OPEN, {"alpha": "A1", "beta": "B1"}),
+    ],
+    ids=[
+        "unnamed-bound",
+        "unnamed-open",
+        "named-bound",
+        "named-alpha-open",
+        "named-open",
+        "named-other-value",
+        "named-empty-family-open",
+    ],
+)
+def test_the_canonical_query_binds_invariants_only_when_it_names_the_dataset(
+    source: str | None,
+    sector: str,
+    alpha: SlotBinding,
+    beta: SlotBinding,
+    bound: dict[str, str],
+):
+    """`_TABLES` declares `alpha` A1 and `beta` B1. Named, the canonical query binds each it
+    leaves unbound and keeps one bound to another value as posted; unnamed, it keeps the
+    bindings it was posted with, since a later export could let `_PLAIN` serve. The rule
+    reads the declaration alone, so a named question on sector Z, which no row holds today,
+    binds them too. Each canonical query elects the query's family and is its own canonical
+    form."""
+    index = _competing_index()
+    # `beta` before `alpha`, so the slots' order does not decide the result's order.
+    query = FamilyQuery(
+        _FIVE_TUPLE, {"beta": beta, "alpha": alpha, "sector": ("value", sector)}, source
+    )
+    canonical = dataclasses.replace(
+        query,
+        slots={**query.slots, **{prop: ("value", value) for prop, value in bound.items()}},
+    )
+
+    assert invariant_bindings(index, query) == bound
+    assert list(invariant_bindings(index, query)) == sorted(bound)
+    assert family_for_five_tuple(index, canonical) == family_for_five_tuple(index, query)
+    assert invariant_bindings(index, canonical) == {}
+
+
+@pytest.mark.parametrize("line", [("value", "L1"), ("unbound",)], ids=["bound", "open"])
+def test_slot_keys_that_leave_membership_to_the_graph_imply_no_invariant(line: SlotBinding):
+    """Every `_PLAIN` row carries `sector`, so a query naming `_PLAIN` that declares
+    `tableLine` alone leaves membership to the graph walk, whose rows the loader never
+    checked. Canonicalisation and every Search reader agree that it implies nothing."""
+    index = _sector_index("A")
+    query = FamilyQuery(_FIVE_TUPLE, {_LINE: line}, _PLAIN)
+
+    assert index_covers_slot_keys(index, _FIVE_TUPLE, query.slots.keys()) is False
+    assert elected_invariants(index, query) == {}
+    assert invariant_bindings(index, query) == {}
+    named = dataclasses.replace(query, slots={**query.slots, "sector": ("unbound",)})
+    assert elected_invariants(index, named) == {_LINE: "L1"}
+
+
+def test_an_invariant_keeps_its_rows_when_a_later_export_adds_a_lower_ranked_publisher():
+    """In the first export `_TABLES` alone publishes the five-tuple and declares `P` V. The
+    second adds `_PLAIN`, ranked first, with a row of `P` W. An identity posted with `P` V
+    and no dataset keeps `P` bound, so it reads `_TABLES`' rows on both; one that names
+    `_TABLES` binds `P` V whether posted with it bound or unbound, and reads them too. One
+    posted with `P` unbound and no dataset stays unbound, and the rank serves `_PLAIN` once
+    it publishes."""
+    tables_rows = (
+        _row("d_x", {"P": "V", "s": "X"}, _TABLES),
+        _row("d_y", {"P": "V", "s": "Y"}, _TABLES),
+    )
+    tables = _dataset(_TABLES, rank=1, invariants={"P": "V"})
+    declarations = (_not_declared("P"), _not_declared("s"))
+    versions = (
+        _index(*tables_rows, datasets=(tables,), declarations=declarations),
+        _index(
+            *tables_rows,
+            _row("f_x", {"P": "W", "s": "X"}, _PLAIN),
+            datasets=(_dataset(_PLAIN, rank=0), tables),
+            declarations=declarations,
+        ),
+    )
+    shape = {
+        "kind": "statvar_schema",
+        "population_type": _FIVE_TUPLE.population_type,
+        "measured_property": _FIVE_TUPLE.measured_property,
+        "stat_type": _FIVE_TUPLE.stat_type,
+    }
+    slots = [
+        {"property": "P", "binding": {"state": "value", "ref": "V"}},
+        {"property": "s", "binding": {"state": "unbound"}},
+    ]
+    unnamed = {"shape": shape, "slots": slots}
+    named = {**unnamed, "facets": {"provenance": {"state": "value", "ref": _TABLES}}}
+    open_unnamed = {
+        "shape": shape,
+        "slots": [{**slots[0], "binding": {"state": "unbound"}}, slots[1]],
+    }
+    open_named = {**open_unnamed, "facets": named["facets"]}
+    bound_v = {"state": "value", "ref": "V"}
+    tables_only = ({"d_x", "d_y"}, {"d_x", "d_y"})
+    cases = (
+        (unnamed, bound_v, tables_only),
+        (named, bound_v, tables_only),
+        (open_named, bound_v, tables_only),
+        (open_unnamed, {"state": "unbound"}, ({"d_x", "d_y"}, {"f_x"})),
+    )
+
+    for posted, p_binding, rows in cases:
+        for index, expected in zip(versions, rows, strict=True):
+            canonical = canonical_identity(index, posted)
+            family = family_for_five_tuple(index, identity_family_query(index, canonical))
+
+            assert (canonical is posted) is (posted is not open_named)
+            assert canonical["slots"][0]["binding"] == p_binding
+            assert _dcids(family.rows) == expected
+
+
+def _sector_index(*sectors: str) -> CodeIndex:
+    """`_PLAIN` declares `tableLine` L1 as an invariant, and holds one row per sector of
+    `sectors` without declaring the sector."""
+    return _index(
+        *(_row(f"plain_{sector}", {"sector": sector, _LINE: "L1"}, _PLAIN) for sector in sectors),
+        datasets=(_dataset(_PLAIN, invariants={_LINE: "L1"}),),
+    )
+
+
+def test_an_explicit_binding_of_an_undeclared_constant_keeps_its_rows_on_a_later_export():
+    """Every `_PLAIN` row holds sector A in the first export, but the sector is no invariant,
+    so the canonical identity keeps its binding and still selects only sector A once the
+    second export adds sector B. The declared invariant of the named dataset, posted
+    unbound, is bound on both."""
+    identity = {
+        "shape": {
+            "kind": "statvar_schema",
+            "population_type": _FIVE_TUPLE.population_type,
+            "measured_property": _FIVE_TUPLE.measured_property,
+            "stat_type": _FIVE_TUPLE.stat_type,
+        },
+        "slots": [
+            {"property": "sector", "binding": {"state": "value", "ref": "A"}},
+            {"property": _LINE, "binding": {"state": "unbound"}},
+        ],
+        "facets": {"provenance": {"state": "value", "ref": _PLAIN}},
+    }
+
+    for index in (_sector_index("A"), _sector_index("A", "B")):
+        canonical = canonical_identity(index, identity)
+        family = family_for_five_tuple(index, identity_family_query(index, canonical))
+
+        assert canonical["slots"] == [
+            {"property": "sector", "binding": {"state": "value", "ref": "A"}},
+            {"property": _LINE, "binding": {"state": "value", "ref": "L1"}},
+        ]
+        assert _dcids(family.rows) == {"plain_A"}
+
+
+def test_canonicalising_runs_no_election(monkeypatch: pytest.MonkeyPatch):
+    """`_TABLES` declares twelve invariants, and leaving any one unbound would let a `_PLAIN`
+    row in and the rank serve it were the query not to name `_TABLES`. Canonicalising the
+    named query that leaves all twelve unbound binds them from the declaration alone and
+    elects no family."""
+    props = [f"p{i:02d}" for i in range(12)]
+    index = _index(
+        _row("tables", dict.fromkeys(props, "V"), _TABLES),
+        *(
+            _row(f"plain_{prop}", {**dict.fromkeys(props, "V"), prop: "W"}, _PLAIN)
+            for prop in props
+        ),
+        datasets=(
+            _dataset(_PLAIN, rank=0),
+            _dataset(_TABLES, rank=1, invariants=dict.fromkeys(props, "V")),
+        ),
+        declarations=tuple(_not_declared(prop) for prop in props),
+    )
+    open_slots: dict[str, SlotBinding] = dict.fromkeys(props, ("unbound",))
+    query = FamilyQuery(_FIVE_TUPLE, open_slots, _TABLES)
+    elections = 0
+    elect = members_module.family_for_five_tuple
+
+    def counted(index: CodeIndex, query: FamilyQuery):
+        nonlocal elections
+        elections += 1
+        return elect(index, query)
+
+    monkeypatch.setattr(members_module, "family_for_five_tuple", counted)
+
+    assert invariant_bindings(index, query) == dict.fromkeys(props, "V")
+    assert elections == 0
 
 
 # ---------------------------------------------------------------------------
@@ -429,6 +985,86 @@ def test_the_crs_source_on_attributed_amount_refuses():
         _rows(index, _IMPUTED_FIVE_TUPLE, slots, CRS_PROVENANCE)
 
     assert refusal.value.candidates == (IMPUTED_PROVENANCE,)
+
+
+@pytest.mark.parametrize(
+    ("slots", "source", "bound"),
+    [
+        (
+            lambda index: _education_aid_slots(index, aid_type=("unbound",)),
+            IMPUTED_PROVENANCE,
+            {AID_TYPE: IMPUTED_MULTILATERAL},
+        ),
+        (lambda index: _education_aid_slots(index, aid_type=("unbound",)), None, {}),
+        (lambda _index: {AID_TYPE: ("unbound",)}, IMPUTED_PROVENANCE, {}),
+    ],
+    ids=["covered-named", "covered-unnamed", "not-covered"],
+)
+def test_the_imputed_pins_are_bound_only_where_the_index_decides(slots, source, bound):
+    """The imputed table declares the flow type and the aid type as invariants, so the
+    canonical identity of a query that names it binds the aid type it leaves unbound, and
+    one that names no dataset keeps it unbound. Slot keys no index row is covered by elect
+    no family, so nothing is bound and the graph walk reads the slot."""
+    index = load_index(default_index_path())
+    query = FamilyQuery(_IMPUTED_FIVE_TUPLE, slots(index), source)
+
+    assert invariant_bindings(index, query) == bound
+
+
+def test_an_imputed_identity_posted_with_or_without_its_pins_is_one_canonical_identity():
+    index = load_index(default_index_path())
+    posted = imputed_education_aid_identity(source=IMPUTED_PROVENANCE)
+    unbound = imputed_education_aid_identity(source=IMPUTED_PROVENANCE)
+    for slot in unbound["slots"]:
+        if slot["property"] in ("crsTypeOfFlow", AID_TYPE):
+            slot["binding"] = {"state": "unbound"}
+
+    canonical = canonical_identity(index, unbound)
+
+    assert canonical == posted
+    assert canonical_identity(index, posted) is posted
+
+
+@pytest.mark.parametrize(
+    "aid_type",
+    [
+        {"state": "value", "ref": IMPUTED_MULTILATERAL},
+        {"state": "unbound"},
+        {"state": "set", "refs": [IMPUTED_MULTILATERAL]},
+        {"state": "exact", "ref": IMPUTED_MULTILATERAL},
+    ],
+    ids=["value", "unbound", "set-of-one", "exact"],
+)
+def test_every_form_of_a_named_identitys_invariant_reaches_one_spec_id(aid_type: dict):
+    """The imputed table declares its aid type. An identity naming the table that binds it
+    by value, leaves it unbound, binds a set of the one code or binds it `exact` reaches the
+    spec_id of the value binding Search mints."""
+    index = load_index(default_index_path())
+    expected = imputed_education_aid_identity(source=IMPUTED_PROVENANCE)
+    posted = imputed_education_aid_identity(source=IMPUTED_PROVENANCE)
+    for slot in posted["slots"]:
+        if slot["property"] == AID_TYPE:
+            slot["binding"] = aid_type
+
+    canonical = canonical_identity(index, posted)
+
+    assert recompute_identity(canonical).spec_id == recompute_identity(expected).spec_id
+
+
+def test_canonicalising_identities_on_five_tuples_the_index_does_not_carry_stores_nothing():
+    """Every door canonicalises a posted identity, whatever five-tuple it names. The
+    role-class memo holds the five-tuples the index carries, so posting new ones leaves its
+    size as it was."""
+    index = load_index(default_index_path())
+    canonical_identity(index, imputed_education_aid_identity(source=IMPUTED_PROVENANCE))
+    size = len(members_module._five_tuple_facts_cache.get(id(index), {}))
+
+    for i in range(50):
+        posted = education_aid_identity(source=CRS_PROVENANCE)
+        posted["shape"]["measured_property"] = f"postedAmount{i}"
+        assert canonical_identity(index, posted) is posted
+
+    assert len(members_module._five_tuple_facts_cache.get(id(index), {})) == size
 
 
 # ---------------------------------------------------------------------------

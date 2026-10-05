@@ -5,8 +5,8 @@ it from an identity, as the Datasets mint does, and `shape_query` from a shape a
 its bound values. `shape_member_facts` resolves a query through
 `code_index.members.index_family`, the function the mint resolves through, and
 reads recall arcs only for a population the index does not decide.
-`five_tuple_member_facts` reads every index row of a shape's five-tuple, for slot
-keys and taxonomy values.
+`five_tuple_member_facts` reads the index rows of a shape's five-tuple that the datasets
+its part may answer from publish (`shape_for_part`), for slot keys and taxonomy values.
 `bound_values_from_bindings` expands hierarchical values for both resolvers
 and bind repair. The standard resolver refuses bound values no member holds
 together, which the region unbinds, while bind repair's filter fails open. The
@@ -36,12 +36,18 @@ from code_index.members import (
     SourceNotInFamily,
     absent_member_reads_zero,
     absent_readings,
+    canonical_identity,
+    carried_properties,
     deciding_query,
     elect_dataset,
+    elected_invariants,
+    eligible_datasets,
+    family_query_digest,
     identity_family_query,
     index_covers_slot_keys,
     index_family,
-    unbound_pins,
+    invariant_bindings,
+    shared_pins,
 )
 from code_index.shared import get_index
 from code_index.types import (
@@ -58,6 +64,7 @@ from dc_graph import GraphReadError
 from materialise.roles import DegenerateObservationProperties, axis_for_role, declared_role_for
 from search.engine.config import settings
 from search.engine.errors import (
+    EngineInputError,
     FamilyNotResolvableError,
     GraphInfraError,
     RoleSignatureError,
@@ -137,6 +144,8 @@ def _index_five_tuples(index: CodeIndex) -> frozenset[FiveTuple]:
 # counted, and finalised, and each resolution scans every index row. An election that
 # refuses raises each time, as its outcome is not kept. Oldest entries go first once the
 # memo holds `_FAMILY_CACHE_SIZE` entries or `_FAMILY_CACHE_ROWS` row references in all.
+# A key is a 32-byte digest of the deciding query (`family_query_digest`), so an entry costs its
+# rows plus a constant, whatever the query binds.
 # Each entry holds a tuple of references to rows the index owns, 8 bytes a row, so the row
 # bound caps the memo near 8 MiB: about 80 copies of the packaged index's largest family
 # (12,771 of its 22,208 rows), where the entry bound alone allowed 4,096 copies (400 MiB).
@@ -148,7 +157,7 @@ _FAMILY_CACHE_ROWS = 1 << 20
 class _FamilyMemo:
     """One index's resolved families, in insertion order, and the rows they hold."""
 
-    families: dict[Hashable, DatasetFamily | None] = field(default_factory=dict)
+    families: dict[bytes, DatasetFamily | None] = field(default_factory=dict)
     rows: int = 0
 
 
@@ -164,12 +173,7 @@ def _resolved_family(index: CodeIndex, query: FamilyQuery) -> DatasetFamily | No
     """`code_index.members.index_family` for `query`, read once per index."""
     key = id(index)
     deciding = deciding_query(index, query)
-    query_key = (
-        deciding.five_tuple,
-        tuple(sorted(deciding.slots.items())),
-        deciding.source,
-        deciding.role_keys,
-    )
+    query_key = family_query_digest(deciding)
     with _family_memo_lock:
         memo = _index_family_cache.get(key)
         if memo is None:
@@ -212,26 +216,6 @@ def _index_rows_by_five_tuple(index: CodeIndex) -> dict[FiveTuple, tuple[StatVar
         cached = {five_tuple: tuple(found) for five_tuple, found in rows.items()}
         _index_rows_cache[key] = cached
         weakref.finalize(index, _index_rows_cache.pop, key, None)
-    return cached
-
-
-# Cache the constraint properties each five-tuple's index rows carry, by index object id,
-# with the same finalizer.
-_index_vocabulary_cache: dict[int, dict[FiveTuple, frozenset[str]]] = {}
-
-
-def _index_vocabulary(index: CodeIndex) -> dict[FiveTuple, frozenset[str]]:
-    key = id(index)
-    cached = _index_vocabulary_cache.get(key)
-    if cached is None:
-        vocabulary: dict[FiveTuple, set[str]] = defaultdict(set)
-        for row in index.statvars:
-            vocabulary[IndexMemberFacts(row=row).read_five_tuple()].update(
-                row.constraint_properties
-            )
-        cached = {five_tuple: frozenset(props) for five_tuple, props in vocabulary.items()}
-        _index_vocabulary_cache[key] = cached
-        weakref.finalize(index, _index_vocabulary_cache.pop, key, None)
     return cached
 
 
@@ -790,6 +774,7 @@ MeasureFamilyCacheKey = tuple[
     tuple[tuple[str, tuple[str, ...]], ...],
     str | None,
     frozenset[str],
+    frozenset[str],
 ]
 
 
@@ -799,8 +784,8 @@ def measure_family_cache_key(
     """Key the exact inputs `_measure_family_rows` reads.
 
     A measure-axis bound stays out of the row filter, and keys and values are sorted, since
-    their input order is irrelevant. The election reads the dataset the query names and its
-    role keys, so both enter the key.
+    their input order is irrelevant. The election reads the dataset the query names, its
+    role keys and the datasets it excludes, so all three enter the key.
     """
     axis_names = {axis.axis for axis in axes}
     filtered = tuple(
@@ -817,6 +802,7 @@ def measure_family_cache_key(
         filtered,
         query.source,
         query.role_keys,
+        query.excluded,
     )
 
 
@@ -1577,7 +1563,7 @@ def bound_source(bindings: Sequence[SlotBindingDraft]) -> str | None:
 
 
 def shape_query(
-    shape: ShapeDraft, bindings: Sequence[SlotBindingDraft], role_keys: Collection[str] = ()
+    shape: ShapeDraft, bindings: Sequence[SlotBindingDraft], role_keys: Collection[str]
 ) -> FamilyQuery:
     """Return the `FamilyQuery` of `shape` under `bindings`, for a caller that resolves
     members before an identity exists.
@@ -1587,7 +1573,10 @@ def shape_query(
     slots are its what and how slot keys, and each property `bound_values_from_bindings`
     reads from `bindings` binds its widened values.
     `role_keys` holds the role keys the caller binds entities under, the keys the minted
-    identity's `entities` will carry (`entity_role_keys`).
+    identity's `entities` will carry (`entity_role_keys` over the shape's place binding).
+    Every caller states them, since they elect the dataset on a five-tuple several datasets
+    publish. A caller reading only the five-tuple, or a shape bound to no place, passes
+    none.
     The query names the dataset a source-axis binding binds to one value (`source_binding`),
     as an identity names the dataset its provenance facet binds to one ref. The identity
     minted from the same bindings must bind its source slot from that binding, so that
@@ -1643,18 +1632,34 @@ def _identity_family(identity: BaseIdentity) -> DatasetFamily | None:
 
     The resolution is the Datasets mint's, `code_index.members.index_family`, over the
     identity's `identity_query`. None for a pinned identity, when the index does not decide
-    the identity's membership, when the election refuses, and when the identity leaves a
-    pinned slot unbound (`code_index.members.unbound_pins`), which the mint refuses.
+    the identity's membership, and when the election refuses.
     """
     if not isinstance(identity.shape, IdentityShapeSchema):
         return None
     query = identity_query(identity)
-    if unbound_pins(get_index(), query):
-        return None
     try:
         return _resolved_family(get_index(), query)
     except SourceNotInFamily:
         return None
+
+
+def refuse_source_outside_family(identity: BaseIdentity, *, pointer: str) -> None:
+    """Refuse `facet_not_available` when `identity` names a dataset that does not publish
+    its five-tuple while another dataset does (`code_index.members.index_family`), whatever
+    slots it declares, as the Datasets mint refuses it. The resubmit and the options door
+    read a posted identity through it. `pointer` is the door's own path to the identity's
+    provenance facet. A posted seed cannot stand in for that family, so the refusal holds
+    with or without one."""
+    try:
+        index_family(get_index(), identity_query(identity))
+    except SourceNotInFamily as exc:
+        detail = (
+            f"the identity binds provenance {exc.source!r}, which does not publish this "
+            f"five-tuple; it is published by {list(exc.candidates)!r}"
+        )
+        raise EngineInputError(
+            detail, code="facet_not_available", status=422, pointer=pointer, detail=detail
+        ) from exc
 
 
 def identity_dataset(identity: BaseIdentity) -> str | None:
@@ -1666,15 +1671,55 @@ def identity_dataset(identity: BaseIdentity) -> str | None:
     return family.provenance if family is not None else None
 
 
-def shape_dataset(shape: ShapeDraft, index: CodeIndex | None = None) -> str | None:
-    """The provenance of the dataset that publishes `shape`'s family, the one dataset whose
-    index rows hold its five-tuple (`CodeIndex.dataset_by_five_tuple`). None for a shape
-    the index does not carry (`index_carries_shape`), a debt series beside CRS flows,
-    whose family no declared dataset publishes."""
+def shape_datasets(shape: ShapeDraft, index: CodeIndex | None = None) -> tuple[str, ...]:
+    """The provenances of the datasets whose index rows hold `shape`'s five-tuple, in
+    serving order (`CodeIndex.datasets_by_five_tuple`). Empty for a shape the index does
+    not carry (`index_carries_shape`), a debt series beside CRS flows, whose family no
+    declared dataset publishes."""
     index = index or get_index()
     if not index_carries_shape(shape, index):
-        return None
-    return index.dataset_by_five_tuple.get(_member_five_tuple(shape_five_tuple(shape)))
+        return ()
+    return index.datasets_by_five_tuple.get(_member_five_tuple(shape_five_tuple(shape)), ())
+
+
+def part_datasets(
+    shape: ShapeDraft, source: str | None, index: CodeIndex | None = None
+) -> tuple[str, ...]:
+    """The datasets a part that names `source`, or names none, may answer `shape`'s
+    five-tuple from, in serving order: the ones `code_index.members.eligible_datasets`
+    elects among. Shape candidacy stamps them on the shape (`ShapeDraft.datasets`)."""
+    query = FamilyQuery(
+        five_tuple=_member_five_tuple(shape_five_tuple(shape)), slots={}, source=source
+    )
+    return eligible_datasets(index or get_index(), query)
+
+
+def shape_for_part(
+    shape: ShapeDraft, source: str | None, index: CodeIndex | None = None
+) -> ShapeDraft:
+    """`shape` as a part that names `source`, or names none, answers from it: stamped with
+    the datasets the part may answer from (`part_datasets`), its index-sourced taxonomy
+    narrowed to those datasets' rows (`five_tuple_member_facts`). The slot keys stay the
+    whole five-tuple's. The taxonomy is kept as it is when the part may answer from every
+    dataset publishing the five-tuple."""
+    index = index or get_index()
+    datasets = part_datasets(shape, source, index)
+    stamped = replace(shape, datasets=datasets, named_dataset=source)
+    if not shape.slot_taxonomy_index_sourced or datasets == shape_datasets(shape, index):
+        return stamped
+    member_facts, _index_sourced = five_tuple_member_facts(stamped)
+    return replace(
+        stamped,
+        slot_taxonomy=read_slot_taxonomy(slot_keys=shape.slot_keys, member_facts=member_facts),
+    )
+
+
+def shape_part_datasets(shape: ShapeDraft, index: CodeIndex) -> tuple[str, ...]:
+    """The datasets stamped on `shape` (`ShapeDraft.datasets`), else every dataset
+    publishing its five-tuple."""
+    if shape.datasets is not None:
+        return shape.datasets
+    return index.datasets_by_five_tuple.get(_member_five_tuple(shape_five_tuple(shape)), ())
 
 
 def identity_family_digest(identity: BaseIdentity) -> str | None:
@@ -1800,24 +1845,67 @@ def apply_declaration_version(spec: Spec, bindings: Sequence[SlotBindingDraft]) 
 
 
 def index_member_rows(shape: ShapeDraft, index: CodeIndex) -> tuple[StatVarRow, ...]:
-    """Return every index row of `shape`'s five-tuple, whatever dataset publishes it, the
-    rows `five_tuple_member_facts` reads. An exact posted set (`shape.sv_arc_facts_complete`)
-    and a shape the index does not carry (`index_carries_shape`) both read no row."""
+    """Return every index row of `shape`'s five-tuple, whatever dataset publishes it. An
+    exact posted set (`shape.sv_arc_facts_complete`) and a shape the index does not carry
+    (`index_carries_shape`) both read no row."""
     if shape.sv_arc_facts_complete or not index_carries_shape(shape, index):
         return ()
     return _index_rows_by_five_tuple(index).get(shape_five_tuple(shape), ())
 
 
-def five_tuple_member_facts(shape: ShapeDraft) -> tuple[dict[str, MemberFacts], bool]:
-    """Every index row of `shape`'s five-tuple, across datasets, else the shape's own
-    recall-sourced ``sv_arc_facts``. Returns (member_facts_by_sv, index_sourced).
+def part_member_rows(shape: ShapeDraft, index: CodeIndex) -> tuple[StatVarRow, ...]:
+    """The rows of `index_member_rows` that `shape`'s stamped datasets publish
+    (`ShapeDraft.datasets`), or all of them for an unstamped shape: the members of the
+    datasets its part may answer from, which `five_tuple_member_facts` reads."""
+    return _published_by(index_member_rows(shape, index), shape.datasets)
 
-    The pre-bind readers use this: a shape's slot keys and its taxonomy values describe
-    the whole five-tuple, so a property only one dataset's rows carry stays a slot of
-    the identity and its values stay bindable. `shape_member_facts` is the post-bind
-    reader and keeps one dataset's members.
+
+def serving_member_rows(
+    shape: ShapeDraft, index: CodeIndex, query: FamilyQuery
+) -> tuple[tuple[str, ...] | None, tuple[StatVarRow, ...]]:
+    """The datasets that serve `shape` under `query` and their rows of its five-tuple:
+    the dataset of the family the index elects for `query` (`code_index.members
+    .index_family`, as `shape_member_facts` reads the answer's members), when it is one
+    stamped on the shape. A shape stamped with one dataset is served by it, and an
+    unstamped shape, or one whose query elects no stamped dataset, by every dataset its
+    rows belong to (`None` for an unstamped shape). The alternate guard judges a shape by
+    these rows."""
+    rows = part_member_rows(shape, index)
+    datasets = shape.datasets
+    if datasets is None or len(datasets) <= 1:
+        return datasets, rows
+    try:
+        family = index_family(index, query)
+    except SourceNotInFamily:
+        family = None
+    if family is None or family.provenance not in datasets:
+        return datasets, rows
+    return (family.provenance,), _published_by(rows, (family.provenance,))
+
+
+def _published_by(
+    rows: tuple[StatVarRow, ...], datasets: tuple[str, ...] | None
+) -> tuple[StatVarRow, ...]:
+    """The rows of `rows` one of `datasets` publishes, or all of them for `None`."""
+    if datasets is None:
+        return rows
+    return tuple(row for row in rows if any(dataset in row.provenances for dataset in datasets))
+
+
+def five_tuple_member_facts(shape: ShapeDraft) -> tuple[dict[str, MemberFacts], bool]:
+    """The index rows of `shape`'s five-tuple its part may answer from, across those
+    datasets, else the shape's own recall-sourced ``sv_arc_facts``. Returns
+    (member_facts_by_sv, index_sourced).
+
+    The pre-bind readers use this. A shape that shape candidacy keeps carries the datasets its
+    part may answer from (`ShapeDraft.datasets`): the dataset the part names, else every
+    eligible publisher of the five-tuple (`part_datasets`), so the bind model sees the codes
+    of every dataset the election may serve. `derive_shapes` reads the shape before
+    candidacy, with no datasets stamped, so the slot keys describe the whole five-tuple: a
+    property only one dataset's rows carry stays a slot of the identity whichever dataset
+    serves it. `shape_member_facts` is the post-bind reader and keeps one dataset's members.
     """
-    rows = index_member_rows(shape, get_index())
+    rows = part_member_rows(shape, get_index())
     if rows:
         return {row.dcid: IndexMemberFacts(row=row) for row in rows}, True
     return {sv: ArcsMemberFacts(arcs=a) for sv, a in (shape.sv_arc_facts or {}).items()}, False
@@ -2361,29 +2449,37 @@ def _recalled_role_class_shape(shape: ShapeDraft, query: FamilyQuery) -> ShapeDr
 
 
 def shape_pins(shape: ShapeDraft, index: CodeIndex | None = None) -> Mapping[str, str]:
-    """The code-system values `shape`'s five-tuple pins: each property every index row of
-    the five-tuple carries with one value (`CodeIndex.five_tuple_pins`), mapped to it."""
-    pins = (index or get_index()).five_tuple_pins
-    return pins.get(_member_five_tuple(shape_five_tuple(shape)), {})
+    """The code-system values every dataset `shape`'s part may answer from pins alike
+    (`shape_part_datasets`): each property every such dataset's index rows of the
+    five-tuple carry with the same one value (`CodeIndex.dataset_pins`), mapped to it. A
+    part that names a dataset reads that dataset's pins."""
+    index = index or get_index()
+    return shared_pins(
+        index, shape_part_datasets(shape, index), _member_five_tuple(shape_five_tuple(shape))
+    )
 
 
-def bind_identity_pins(identity: BaseIdentity) -> BaseIdentity:
-    """`identity` with each slot it leaves unbound that its five-tuple pins
-    (`code_index.members.unbound_pins`) bound to the pinned value, as `bind_shared_values`
-    binds it on a first answer, so a resubmit mints the spec_id a first answer mints for
-    the same family. A slot bound to a value stays as posted, and a slot the identity
-    omits stays omitted, as a first answer leaves a slot its shape does not declare.
-    Returns `identity` itself when nothing changes."""
-    if not isinstance(identity.shape, IdentityShapeSchema):
-        return identity
-    unbound = unbound_pins(get_index(), identity_query(identity))
-    if not unbound:
-        return identity
+def shape_invariants(shape: ShapeDraft, index: CodeIndex | None = None) -> Mapping[str, str]:
+    """The invariants the dataset `shape`'s part names declares (`ShapeDraft.named_dataset`),
+    mapped to their values, as `code_index.members.elected_invariants` reads them. A part
+    that names no dataset implies none. The query declares the shape's what and how slot
+    keys unbound, as `shape_query` does."""
+    query = replace(shape_query(shape, (), ()), source=shape.named_dataset)
+    return elected_invariants(index or get_index(), query)
+
+
+def canonicalise_identity(identity: BaseIdentity) -> BaseIdentity:
+    """`identity` in its canonical form (`code_index.members.canonical_identity`): each slot
+    an invariant of the dataset the identity names fixes binds the invariant's value, and an
+    identity that names no dataset keeps its bindings. Every Search door that reads a posted
+    identity reads it through this function, so an identity naming a dataset posted with an
+    invariant bound and one posted without mint one spec_id and elect one family. Returns
+    `identity` itself when nothing changes."""
     document = _identity_document(identity)
-    for slot in cast("list[dict[str, object]]", document["slots"]):
-        if (value := unbound.get(cast(str, slot["property"]))) is not None:
-            slot["binding"] = {"state": "value", "ref": value}
-    return mint_identity(document)[1]
+    canonical = canonical_identity(get_index(), document)
+    if canonical is document:
+        return identity
+    return mint_identity(canonical, entity_groups=identity.entity_groups)[1]
 
 
 def _unexported_shared_values(
@@ -2392,15 +2488,19 @@ def _unexported_shared_values(
     """Each open slot the exported family shares, mapped to the one value every member of
     `shape`'s unexported family holds on it (`bind_shared_values`)."""
     members = shape.sv_arc_facts
+    index = get_index()
+    five_tuple = shape_five_tuple(shape)
     if (
         not members
         or shape.sv_arc_facts_complete
-        or shape_five_tuple(shape) not in _index_five_tuples(get_index())
+        or five_tuple not in _index_five_tuples(index)
         or index_carries_shape(shape)
     ):
         return {}
     constraints = [ArcsMemberFacts(arcs=arcs).read_constraints() for arcs in members.values()]
-    exported = _index_vocabulary(get_index())[shape_five_tuple(shape)]
+    exported = carried_properties(
+        index, shape_part_datasets(shape, index), _member_five_tuple(five_tuple)
+    )
     closed = {
         binding.property_dcid
         for binding in bindings
@@ -2420,32 +2520,46 @@ def _unexported_shared_values(
 def bind_shared_values(
     shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]
 ) -> tuple[list[SlotBindingDraft], list[SlotBindingDraft]]:
-    """Bind each what or how slot that can hold one value only.
+    """Bind each open slot the exported family shares to the one value every member of an
+    unexported family holds on it.
 
-    Two rules decide such a slot.
-
-    - A slot `shape`'s five-tuple pins (`shape_pins`) binds the pinned value, whatever
-      the draft held: unbound, absent, `requested_all` or a value. The pin is measured
-      over every index row of the five-tuple, whatever family the other bindings leave,
-      so every identity minted from a question on the five-tuple binds it alike (the
-      imputed multilateral table's `dac2aAidType` and `crsTypeOfFlow`).
-    - An open slot the exported family shares binds the one value every member of an
-      unexported family holds on it. The rule applies to a shape whose five-tuple the
-      index carries and which the index does not (`index_carries_shape`): debt service
-      beside CRS flows. The mint walks the graph for its identity, and with every slot
-      open the walk reads the exported family's rows too and runs past its candidate
-      window. Only a property the index's rows of the five-tuple also carry
-      (`financialFlowType`) is bound: on it the two families hold different values, so
-      the shared value tells this family apart and filters the walk. A property of this
-      family alone (a guarantee status) stays open, since the recalled members can share
-      a value there that the family's total does not hold. A slot the query asked to see
-      in full (`requested_all`) stays open.
+    The rule applies to a shape whose five-tuple the index carries and which the index does
+    not (`index_carries_shape`): debt service beside CRS flows. The mint walks the graph for
+    its identity, and with every slot open the walk reads the exported family's rows too and
+    runs past its candidate window. Only a property the index's rows of the five-tuple also
+    carry (`financialFlowType`) is bound: on it the two families hold different values, so
+    the shared value tells this family apart and filters the walk. A property of this
+    family alone (a guarantee status) stays open, since the recalled members can share a
+    value there that the family's total does not hold. A slot the query asked to see in full
+    (`requested_all`) stays open.
 
     Returns the bindings with each such slot bound as a `sole_option` value, and the
     bindings added. Both follow slot-key order."""
+    return _bind_sole_options(shape, bindings, _unexported_shared_values(shape, bindings))
+
+
+def canonical_pin_bindings(
+    shape: ShapeDraft, bindings: Sequence[SlotBindingDraft], role_keys: Collection[str]
+) -> list[SlotBindingDraft]:
+    """`bindings` in the canonical form of the identity minted from them
+    (`code_index.members.invariant_bindings`): each invariant slot of the dataset the part
+    names that `bindings` leave unbound, or draw no draft for, bound to its value as a
+    `sole_option` draft. The query is the `shape_query` of `shape`, `bindings` and
+    `role_keys`, which names the dataset the source binding names, as the identity minted
+    from them names it in its provenance facet. The identity minted from the result is
+    canonical, and every reader of the bindings after it (option coverage, qualifier
+    dispositions, a refusal's flagged identity) reads the values it binds."""
+    query = shape_query(shape, bindings, role_keys)
+    return _bind_sole_options(shape, bindings, invariant_bindings(get_index(), query))[0]
+
+
+def _bind_sole_options(
+    shape: ShapeDraft, bindings: Sequence[SlotBindingDraft], values: Mapping[str, str]
+) -> tuple[list[SlotBindingDraft], list[SlotBindingDraft]]:
+    """`bindings` with each what or how slot of `shape` that `values` names bound to its
+    value as a `sole_option` draft, and the drafts added, in slot-key order."""
     from search.engine.bind import SlotBindingDraft
 
-    values = {**_unexported_shared_values(shape, bindings), **shape_pins(shape)}
     added = [
         SlotBindingDraft(
             axis=slot.axis,
@@ -2455,7 +2569,9 @@ def bind_shared_values(
             evidence="sole_option",
         )
         for slot in shape.slot_keys
-        if slot.property_dcid in values and slot.axis in ("what", "how")
+        if slot.property_dcid is not None
+        and slot.property_dcid in values
+        and slot.axis in ("what", "how")
     ]
     if not added:
         return list(bindings), []

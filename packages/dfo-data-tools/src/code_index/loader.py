@@ -55,8 +55,7 @@ def parse_index(payload: Mapping, *, source: object = "<document>") -> CodeIndex
 
     Raises `IndexFormatError` for missing or malformed fields, invalid
     dataset declarations, dataset declarations the StatVar rows contradict
-    (`_check_datasets`), or an invalid `default.when_named`. Rows of two
-    datasets on one five-tuple raise `DatasetsShareFiveTuple`. Duplicate
+    (`_check_datasets`), or an invalid `default.when_named`. Duplicate
     dcids or code pairs raise `DuplicateDcid`. Parent cycles raise
     `CyclicParent`. Cross-system parents raise `CrossSystemParent`.
     Invalid defaults raise `InvalidDeclaredDefault` when their code is
@@ -139,11 +138,12 @@ def _parse_declaration(payload: Mapping) -> CodeSystemDeclaration:
 def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
     """Parses `datasets` rows, failing closed on a row missing a field, an
     `absent_observation` value outside `{"zero", "unknown"}`, an `opt_in`
-    that is not a boolean, an empty `label`, or a `provenance` repeated
-    across rows. Each raises `IndexFormatError` naming the offending row (or
-    the repeated provenance)."""
+    that is not a boolean, a `rank` that is not an integer, an empty `label`,
+    or a `provenance` or `rank` repeated across rows. Each raises
+    `IndexFormatError` naming the offending row (or the repeated value)."""
     datasets: list[DatasetDeclaration] = []
     seen: set[str] = set()
+    ranks: dict[int, str] = {}
     for row in rows:
         try:
             dataset = DatasetDeclaration(
@@ -152,8 +152,10 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
                 synonyms=tuple(row["synonyms"]),
                 opt_in=row["opt_in"],
                 absent_observation=row["absent_observation"],
+                rank=row["rank"],
+                invariants=dict(row["invariants"]),
             )
-        except (KeyError, TypeError) as exc:
+        except (KeyError, TypeError, ValueError) as exc:
             raise IndexFormatError(f"malformed datasets row {row!r}: {exc}") from exc
         if dataset.absent_observation not in _ABSENT_OBSERVATION_VALUES:
             raise IndexFormatError(
@@ -166,6 +168,11 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
                 f"datasets row for {dataset.provenance!r} carries opt_in={dataset.opt_in!r}, "
                 "which is not a boolean"
             )
+        if not isinstance(dataset.rank, int) or isinstance(dataset.rank, bool):
+            raise IndexFormatError(
+                f"datasets row for {dataset.provenance!r} carries rank={dataset.rank!r}, "
+                "which is not an integer"
+            )
         if not dataset.label:
             raise IndexFormatError(f"datasets row for {dataset.provenance!r} carries no label")
         if dataset.provenance in seen:
@@ -173,6 +180,11 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
                 f"provenance {dataset.provenance!r} is declared more than once in datasets"
             )
         seen.add(dataset.provenance)
+        if (holder := ranks.setdefault(dataset.rank, dataset.provenance)) != dataset.provenance:
+            raise IndexFormatError(
+                f"datasets rows for {holder!r} and {dataset.provenance!r} share "
+                f"rank {dataset.rank!r}"
+            )
         datasets.append(dataset)
     return datasets
 
@@ -181,19 +193,28 @@ def _check_datasets(datasets: Sequence[DatasetDeclaration], statvars: Sequence[S
     """Checks the dataset declarations against the StatVar rows.
 
     Raises `IndexFormatError` when a row names a provenance no dataset
-    declares, or a declared dataset has no row. A row with no provenance
-    belongs to no dataset and passes."""
-    declared = {dataset.provenance for dataset in datasets}
+    declares, a row of a dataset does not carry one of its declared
+    `invariants` explicitly (an absent property fails whatever its
+    `absent_reading`), or a declared dataset has no row. A row with no
+    provenance belongs to no dataset and passes."""
+    invariants = {dataset.provenance: dataset.invariants for dataset in datasets}
     populated: set[str] = set()
     for row in statvars:
         for provenance in row.provenances:
-            if provenance not in declared:
+            if provenance not in invariants:
                 raise IndexFormatError(
                     f"StatVar {row.dcid!r} carries provenance {provenance!r}, which no "
-                    f"dataset declares (declared: {sorted(declared)!r})"
+                    f"dataset declares (declared: {sorted(invariants)!r})"
                 )
+            for prop, code in invariants[provenance].items():
+                if row.constraint_properties.get(prop) != code:
+                    raise IndexFormatError(
+                        f"StatVar {row.dcid!r} of dataset {provenance!r} carries "
+                        f"{prop}={row.constraint_properties.get(prop)!r}, but the dataset "
+                        f"declares {prop}={code!r} as an invariant"
+                    )
             populated.add(provenance)
-    empty = sorted(declared - populated)
+    empty = sorted(invariants.keys() - populated)
     if empty:
         raise IndexFormatError(f"declared dataset(s) {empty!r} have no StatVar row")
 

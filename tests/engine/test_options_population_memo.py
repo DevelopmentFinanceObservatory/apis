@@ -27,6 +27,12 @@ from search.models import (
     OptionsFor,
     OptionsRequest,
 )
+from tests.code_index.aid_identity import (
+    AID_TYPE,
+    IMPUTED_MEMBER_COUNT,
+    IMPUTED_PROVENANCE,
+    imputed_education_aid_identity,
+)
 from tests.fixtures import FakeGraph
 from tests.statvar_members.conftest import FakeMemberArcReader, kenya_reader
 
@@ -498,3 +504,36 @@ def test_clear_drops_every_stored_entry():
     memo.clear()
     memo.get_or_derive(identity, graph)
     assert _graph_calls(graph) > calls_after_first, "a cleared memo must re-derive on the next call"
+
+
+@pytest.mark.parametrize("first_bound", [True, False], ids=["bound-first", "unbound-first"])
+def test_an_identity_posted_with_or_without_its_pins_derives_one_population(first_bound: bool):
+    """The options door reads a posted identity in canonical form, so the imputed identity
+    naming its table and binding its invariants and the one leaving them unbound share one
+    memo entry and one population."""
+    bound = imputed_education_aid_identity(source=IMPUTED_PROVENANCE)
+    unbound = imputed_education_aid_identity(source=IMPUTED_PROVENANCE)
+    for slot in unbound["slots"]:
+        if slot["property"] in ("crsTypeOfFlow", AID_TYPE):
+            slot["binding"] = {"state": "unbound"}
+    unbound["entities"] = bound["entities"] = {}
+    posted = [bound, unbound] if first_bound else [unbound, bound]
+    memo = OptionsPopulationMemo(enabled=True, max_entries=10)
+
+    targets = [
+        resolve_options_target(
+            OptionsRequest(
+                identity=BaseIdentity.model_validate(document),
+                **{"for": OptionsFor(role="destination")},
+            ),
+            graph=FakeGraph(),
+            materialise_graph=FakeMemberArcReader(arcs={}),
+            population_memo=memo,
+        )
+        for document in posted
+    ]
+
+    first, second = (target.population for target in targets)
+    assert first is second
+    assert len(first.stat_var_dcids) == IMPUTED_MEMBER_COUNT
+    assert memo.stats()["misses"] == 1

@@ -57,6 +57,19 @@ class VariableCoverage:
 
 
 @dataclass(frozen=True, slots=True)
+class YearCount:
+    """Counts for one calendar year: the series holding an observation in it
+    and the distinct donor and recipient dcids those series carry. `observations`
+    equals `series`, because each row has at most one observation per year, and a
+    year with no data counts zero everywhere."""
+
+    year: int
+    observations: int
+    series: int
+    role_counts: Mapping[Role, int]
+
+
+@dataclass(frozen=True, slots=True)
 class Headline:
     """Counts for the latest year with data, or for a requested year window.
 
@@ -65,12 +78,20 @@ class Headline:
     observation per year; across a window `observations` can exceed
     `series`. `role_counts` counts distinct donor and recipient dcids. Use
     `CoverageIndex.role_names` for graph names.
+
+    `recent_years` holds the same counts for `year` and the two calendar years
+    before it, newest first, a year with no data kept with zero counts. It stops
+    at the artifact's epoch year, so it holds one or two entries when `year`
+    falls within two years of it. The first entry repeats `observations`,
+    `series` and `role_counts`. The earlier years are counted whether or not a
+    requested window reaches them.
     """
 
     year: int
     observations: int
     series: int
     role_counts: Mapping[Role, int]
+    recent_years: tuple[YearCount, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,4 +129,5 @@ __all__ = [
     "Role",
     "ServedExtent",
     "VariableCoverage",
+    "YearCount",
 ]

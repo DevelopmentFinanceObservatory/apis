@@ -2015,10 +2015,10 @@ def test_ppp_naming_a_crs_purpose_pins_no_price_basis():
 
 
 def _imputed_pins() -> tuple[ShapeDraft, Mapping[str, str], Mapping[str, str]]:
-    """The imputed multilateral shape the index carries, the slots its five-tuple pins,
+    """The imputed multilateral shape the index carries, the slots its dataset pins,
     and the constraints of one of its education rows."""
     index = get_index()
-    (five_tuple,) = (ft for ft, pins in index.five_tuple_pins.items() if pins)
+    ((dataset, five_tuple),) = (key for key, pins in index.dataset_pins.items() if pins)
     rows = [row for row in index.statvars if row_five_tuple(row) == five_tuple]
     elected = dataclasses.replace(
         _shape(
@@ -2037,7 +2037,7 @@ def _imputed_pins() -> tuple[ShapeDraft, Mapping[str, str], Mapping[str, str]]:
         for row in index_member_rows(elected, index)
         if row.constraint_properties["crsPurpose"].startswith("CRSPurposeCode11")
     )
-    return elected, index.five_tuple_pins[five_tuple], education
+    return elected, index.dataset_pins[dataset, five_tuple], education
 
 
 @pytest.mark.parametrize("pins_bound", [True, False], ids=["pins-bound", "before-settle"])

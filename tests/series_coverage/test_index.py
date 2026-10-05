@@ -540,6 +540,52 @@ def test_headline_finds_the_latest_year_in_the_second_word(boundary_index) -> No
     assert (headline.year, headline.observations, headline.series) == (2027, 1, 1)
 
 
+def _recent(headline) -> list[tuple[int, int, dict[str, int]]]:
+    return [(c.year, c.series, dict(c.role_counts)) for c in headline.recent_years]
+
+
+def test_headline_counts_the_two_years_before_the_latest_and_keeps_an_empty_one(
+    boundary_index,
+) -> None:
+    headline = boundary_index.headline(variables=[_WINDOW_SV])
+    assert headline is not None
+    assert _recent(headline) == [
+        (2027, 1, {"donor": 1, "recipient": 1}),
+        (2026, 0, {}),
+        (2025, 1, {"donor": 1, "recipient": 1}),
+    ]
+    assert all(c.observations == c.series for c in headline.recent_years)
+
+
+def test_headline_window_picks_the_latest_year_but_not_the_years_counted(boundary_index) -> None:
+    """2024 holds two series (France and Germany into Kenya). 2023 and 2022 lie outside the
+    window and still count what the rows hold."""
+    headline = boundary_index.headline(variables=[_WINDOW_SV], first_year=2024, last_year=2024)
+    assert headline is not None
+    assert headline.year == 2024
+    assert _recent(headline) == [
+        (2024, 2, {"donor": 2, "recipient": 1}),
+        (2023, 1, {"donor": 1, "recipient": 1}),
+        (2022, 1, {"donor": 1, "recipient": 1}),
+    ]
+    latest = headline.recent_years[0]
+    assert (headline.observations, headline.series, headline.role_counts) == (
+        latest.observations,
+        latest.series,
+        latest.role_counts,
+    )
+
+
+@pytest.mark.parametrize("offset", [0, 1])
+def test_headline_recent_years_stop_at_the_horizon(offset) -> None:
+    """The artifact holds no year before its epoch, so `recent_years` lists none."""
+    latest = BUILD_EPOCH_YEAR + offset
+    idx = _window_index([(_WINDOW_SV, _WINDOW_FACET, FRA, KEN, [latest])])
+    headline = idx.headline(variables=[_WINDOW_SV])
+    assert headline is not None
+    assert [c.year for c in headline.recent_years] == list(range(latest, BUILD_EPOCH_YEAR - 1, -1))
+
+
 def test_estimate_counts_rows_across_the_word_boundary(boundary_index) -> None:
     estimate = boundary_index.estimate(
         variables=[_WINDOW_SV],

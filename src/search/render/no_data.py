@@ -281,11 +281,40 @@ def _text(text: str) -> SentenceToken:
 _NO_OBSERVATIONS_BARE_GUIDANCE = "Try a different place, time period, or indicator."
 
 
-def _bare_no_data_plan(phrase: str, reason: NoDataReason) -> list[SentenceToken]:
+def _bare_no_data_text(phrase: str, reason: NoDataReason) -> str:
     """Return the bare no-data phrase, adding guidance only for no_observations."""
     if reason == "no_observations":
-        return [_text(f"{phrase} {_NO_OBSERVATIONS_BARE_GUIDANCE}")]
-    return [_text(phrase)]
+        return f"{phrase} {_NO_OBSERVATIONS_BARE_GUIDANCE}"
+    return phrase
+
+
+def _bare_no_data_plan(phrase: str, reason: NoDataReason) -> list[SentenceToken]:
+    return [_text(_bare_no_data_text(phrase, reason))]
+
+
+def no_data_message(
+    reason: NoDataReason,
+    *,
+    variable_term: str | None = None,
+    entity_terms: list[str] | None = None,
+    role_axis: EntityRoleKey | None = None,
+    ambiguous_candidates: list[str] | None = None,
+    elected_stat_vars: list[GraphRef] | None = None,
+    qualifier_terms: list[ResolvedQualifier] | None = None,
+) -> str:
+    """The bare no-data sentence: `no_data_phrase` with every term given, plus the guidance
+    a bare no_observations sentence adds, as `no_data_sentence_plan` renders it when it
+    names no near match."""
+    phrase = no_data_phrase(
+        reason,
+        variable_term=variable_term,
+        entity_terms=entity_terms,
+        role_axis=role_axis,
+        ambiguous_candidates=ambiguous_candidates,
+        elected_stat_vars=elected_stat_vars,
+        qualifier_terms=qualifier_terms,
+    )
+    return _bare_no_data_text(phrase, reason)
 
 
 def _join_separators(count: int) -> list[str]:

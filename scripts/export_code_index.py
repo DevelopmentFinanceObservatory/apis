@@ -46,7 +46,6 @@ from pathlib import Path
 
 from code_index.loader import IndexFormatError, parse_index, parse_measure_axes
 from code_index.members import key_sets_cover
-from code_index.query import DatasetsShareFiveTuple
 from code_index.types import (
     DatasetDeclaration,
     DeclaredDefault,
@@ -199,7 +198,9 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
 # One declaration per published table. CRS commitments and some disbursement purpose codes carry
 # explicit zero rows, so a missing row for those cells reads as zero, and the imputed sectors table
 # reads the same way. The imputed table sits alone on `attributedAmount`, and a question answers
-# from it only when it names the table.
+# from it only when it names the table. Of two tables that can serve one family, the lower rank
+# serves it. Every imputed row is an ODA flow of the imputed multilateral aid type, declared as
+# invariants the loader checks against every row.
 DATASETS: tuple[DatasetDeclaration, ...] = (
     DatasetDeclaration(
         provenance=_CRS,
@@ -207,6 +208,7 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         synonyms=("CRS", "creditor reporting system"),
         opt_in=False,
         absent_observation="zero",
+        rank=0,
     ),
     DatasetDeclaration(
         provenance=_IMPUTED_MULTILATERAL_SECTORS,
@@ -220,6 +222,8 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         ),
         opt_in=True,
         absent_observation="zero",
+        rank=10,
+        invariants={"crsTypeOfFlow": "CRSTypeOfFlow10", "dac2aAidType": "DAC2aAidType106"},
     ),
 )
 
@@ -1660,6 +1664,8 @@ def _dataset_to_dict(dataset: DatasetDeclaration) -> dict:
         "synonyms": sorted(dataset.synonyms),
         "opt_in": dataset.opt_in,
         "absent_observation": dataset.absent_observation,
+        "rank": dataset.rank,
+        "invariants": dict(sorted(dataset.invariants.items())),
     }
 
 
@@ -1802,7 +1808,7 @@ def export_index(
 
     Tests can pass smaller config tables for fixture graphs. Empty `measure_axes` yields an empty
     `measure_values` list. The finished document must load: a document `parse_index` refuses,
-    such as one whose declared dataset has no row or whose datasets share a five-tuple, raises
+    such as one whose declared dataset has no row or whose datasets share a rank, raises
     `SystemExit`.
     """
     blocks = export_graph_blocks(
@@ -1828,7 +1834,7 @@ def export_index(
     try:
         parse_index(document)
         parse_measure_axes(document)
-    except (IndexFormatError, DatasetsShareFiveTuple) as exc:
+    except IndexFormatError as exc:
         raise SystemExit(f"the export does not load as a code index: {exc}") from exc
     return document
 

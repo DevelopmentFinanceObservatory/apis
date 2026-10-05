@@ -538,7 +538,7 @@ async def _mint_real_response(
 
     Reject unsupported render options before resolution, writes, or SDMX reads.
     """
-    check_options_supported(body.options)
+    check_options_supported(body.options, code_index=request_deps.code_index)
     input_ = body.input
     submitted_resource: OperationResource | None = None
     with door_call("mint", logger=logger) as call:

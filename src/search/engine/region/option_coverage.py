@@ -10,11 +10,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import NamedTuple, get_args
+from typing import Literal, NamedTuple, get_args
 
-from code_index.members import FamilyQuery
+from code_index.members import (
+    FamilyQuery,
+    SourceNotInFamily,
+    eligible_datasets,
+    index_covers_slot_keys,
+    option_families,
+)
+from code_index.shared import get_index
 from materialise import GraphReader, facet_axis_value, role_bearing_facets
 from origin_catalogue import recording_un_blocked_places
 from search.engine.bind import SlotBindingDraft
@@ -59,7 +66,7 @@ from search.engine.retrieval.elected_dataset import (
     published,
     publishes,
 )
-from search.engine.retrieval.member_facts import MemberFacts
+from search.engine.retrieval.member_facts import IndexMemberFacts, MemberFacts
 from search.engine.retrieval.read_plan import (
     BulkPlan,
     PairPlan,
@@ -422,6 +429,50 @@ def _pick_population(
     )
 
 
+type _PickGroup = tuple[Literal["elected", "population"], str | None]
+"""The members a pick is counted over (`option_axis_facts`): those of the dataset its
+election serves, by provenance, or those of the population it is drawn from, by the bound
+property it leaves open, None for the answer's own."""
+
+
+class _IndexPick(NamedTuple):
+    """The members a pick of one option reads where the code index decides the picks, and
+    the dataset its election serves them from."""
+
+    dataset: str | None
+    members: dict[str, MemberFacts]
+    """The antichain-minimal members of the family the pick elects, in pick order."""
+
+
+def _index_option_picks(
+    query: FamilyQuery, prop: str, values: Sequence[str]
+) -> dict[str, _IndexPick] | None:
+    """For each of `values`, the members a pick of it on `prop` reads when the code index
+    decides the picks: the family the index elects for `query` with `prop` bound to the
+    value (`code_index.members.option_families`), reduced to its antichain-minimal members,
+    as a mint reduces the family that pick resolves. A pick another dataset serves reads
+    that dataset's rows. None when the index does not decide the picks, or `query` names a
+    dataset that does not publish its five-tuple."""
+    try:
+        families = option_families(get_index(), query, prop, values)
+    except SourceNotInFamily:
+        return None
+    if families is None:
+        return None
+    picks: dict[str, _IndexPick] = {}
+    for value, family in families.items():
+        rows = {row.dcid: row for row in family.rows}
+        constraints = {dcid: dict(row.constraint_properties) for dcid, row in rows.items()}
+        picks[value] = _IndexPick(
+            dataset=family.provenance,
+            members={
+                sv: IndexMemberFacts(row=rows[sv], dataset=family.provenance)
+                for sv in minimal_constraint_svs(list(constraints), constraints)
+            },
+        )
+    return picks
+
+
 def _family_rows(
     shape: ShapeDraft, query: FamilyQuery, served_filter: RoleServedFilter
 ) -> ServedRows | None:
@@ -453,7 +504,11 @@ def option_axis_facts(
     of each option would serve, with their rows.
 
     A role-bearing family counts in memory (`served_filter`), each option over the members
-    its pick reads from, reduced as that pick's family is (`_PickPopulation.picks`). An
+    its pick reads: the family the code index elects with the option bound where the index
+    decides the picks (`_index_option_picks`), so a pick another dataset serves counts that
+    dataset's rows, else those of the pick's population, reduced as that pick's family is
+    (`_PickPopulation.picks`). Each pick counts the facets of the dataset its own election
+    serves, though another pick elects another dataset for a row both publish. An
     unbound slot's pick reads the answer's own family, whether the code index or the mint's
     graph walk decides it, so an answer serving its family total still counts the parts a
     pick would serve. A bound slot's pick reads the family with that slot left unbound and
@@ -466,7 +521,10 @@ def option_axis_facts(
     A subject-place family's served test needs graph reads, so an unbound slot reads the
     series `plan` serves inside its years (`_plan_series`), unless none of their StatVars
     declares it: an answer serving its family total leaves the slot to the coverage probe
-    (`_maybe_enrich_slot_options`), as it does every bound slot. A subject-place plan is
+    (`_maybe_enrich_slot_options`), as it does every bound slot. A family the code index
+    decides with more than one eligible dataset gets no fact, since a pick may elect a
+    dataset the plan does not read (`_options_may_elect_elsewhere`); the probe counts its
+    menus, each option over the dataset its election serves. A subject-place plan is
     always per-series: only a role-bearing read plans in bulk (`read_plan.plan_role_read`),
     and every role-bearing answer has a served filter (`role_served_filter`). Without a
     plan no slot is counted. `facets_pinned` marks the plan's counts upper bounds, as
@@ -484,7 +542,7 @@ def option_axis_facts(
         and slot.axis in ("what", "how")
     )
     if served_filter is None:
-        if not isinstance(plan, PairPlan):
+        if not isinstance(plan, PairPlan) or _options_may_elect_elsewhere(shape, bindings):
             return ()
         return _plan_facts(
             [prop for prop in slot_properties if prop not in bound],
@@ -494,36 +552,67 @@ def option_axis_facts(
             facets_pinned=facets_pinned,
             conversion=conversion,
         )
-    populations: dict[str, _PickPopulation] = {}
+    role_keys = entity_role_keys(shape, served_filter.probe_entities)
+    # Each pick is counted over the members of the group it reads from: the dataset its
+    # election serves, or the population it is drawn from. A row two datasets publish thus
+    # counts the facets of each pick's own dataset. The picks of one group overlap, so the
+    # coverage index is read once per group.
+    groups: dict[_PickGroup, dict[str, MemberFacts]] = {}
+    prop_picks: dict[str, dict[str, tuple[_PickGroup, Sequence[str]]]] = {}
     answer_population: _PickPopulation | None = None
     for prop in slot_properties:
+        pick_bindings = without_values(bindings, {prop}) if prop in bound else bindings
+        index_picks = _index_option_picks(
+            shape_query(shape, pick_bindings, role_keys), prop, menus[prop]
+        )
+        if index_picks is not None:
+            prop_picks[prop] = {}
+            for value, pick in index_picks.items():
+                group = ("elected", pick.dataset)
+                groups.setdefault(group, {}).update(pick.members)
+                prop_picks[prop][value] = (group, list(pick.members))
+            continue
         if prop in bound:
-            population = _pick_population(
-                shape, without_values(bindings, {prop}), served_filter, index_only=True
-            )
+            population = _pick_population(shape, pick_bindings, served_filter, index_only=True)
+            group = ("population", prop)
         else:
             if answer_population is None:
                 answer_population = _pick_population(
                     shape, bindings, served_filter, index_only=False
                 )
             population = answer_population
+            group = ("population", None)
         if population is not None:
-            populations[prop] = population
-    # The populations overlap, a bound slot's holding the answer's, so the coverage index
-    # is read once over every member any of them holds.
-    served = served_filter.served(
-        {sv: m for population in populations.values() for sv, m in population.members.items()}
-    )
+            groups[group] = dict(population.members)
+            prop_picks[prop] = {
+                value: (group, svs) for value, svs in population.picks(prop, menus[prop]).items()
+            }
+    served = {group: served_filter.served(members) for group, members in groups.items()}
     facts: list[OptionServedFact] = []
-    for prop, population in populations.items():
-        picks = population.picks(prop, menus[prop])
+    for prop, grouped in prop_picks.items():
+        picks = {value: svs for value, (_group, svs) in grouped.items()}
         fact = OptionServedFact(
             property=prop,
-            served={value: _pick_series(served, svs) for value, svs in picks.items()},
+            served={
+                value: _pick_series(served[group], svs) for value, (group, svs) in grouped.items()
+            },
         )
         if not _drifted(fact, picks, shape_id=shape.shape_id):
             facts.append(fact)
     return tuple(facts)
+
+
+def _options_may_elect_elsewhere(shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]) -> bool:
+    """Whether a pick of an option of an answer over `shape` under `bindings` may elect a
+    dataset other than the answer's: the code index decides the family and more than one
+    dataset is eligible for it (`code_index.members.eligible_datasets`). The answer's plan
+    holds only its own dataset's series, so it cannot count such an option."""
+    query = shape_query(shape, bindings, ())
+    index = get_index()
+    return (
+        index_covers_slot_keys(index, query.five_tuple, query.slots.keys())
+        and len(eligible_datasets(index, query)) > 1
+    )
 
 
 def _pick_series(
@@ -733,13 +822,18 @@ def _uncounted(so: SlotOptions) -> bool:
 
 
 def _pick_members(
-    shape: ShapeDraft, bindings: Sequence[SlotBindingDraft], menus: Sequence[SlotOptions]
+    shape: ShapeDraft,
+    bindings: Sequence[SlotBindingDraft],
+    menus: Sequence[SlotOptions],
+    role_keys: Collection[str],
 ) -> dict[str, dict[str, list[str] | None]]:
     """For each menu's property and each of its options, the members a pick of that option
-    reads, as `_PickPopulation.picks` selects them: those of the pick's population carrying
-    the option or a descendant, reduced to their antichain-minimal members. An unbound
-    slot's pick reads the answer's own population, a bound slot's the population with that
-    slot left unbound (`query_members`).
+    reads. Where the code index decides the picks, each reads the family the index elects
+    with the option bound (`_index_option_picks`), so a pick another dataset serves reads
+    that dataset's rows. Otherwise each reads, as `_PickPopulation.picks` selects them, the
+    members of the pick's population carrying the option or a descendant, reduced to their
+    antichain-minimal members. An unbound slot's pick reads the answer's own population, a
+    bound slot's the population with that slot left unbound (`query_members`).
 
     An option no member carries maps to an empty list when the population is exact, so the
     pick serves nothing, and to None when it is not, so the option stays uncounted. A
@@ -754,13 +848,19 @@ def _pick_members(
             continue
         prop = so.key.property.dcid
         is_bound = prop in bound
-        query = shape_query(shape, without_values(bindings, {prop}) if is_bound else bindings)
+        query = shape_query(
+            shape, without_values(bindings, {prop}) if is_bound else bindings, role_keys
+        )
+        values = [o.value.ref.dcid for o in so.options if o.value.ref is not None]
+        index_picks = _index_option_picks(query, prop, values)
+        if index_picks is not None:
+            picks[prop] = {value: list(pick.members) for value, pick in index_picks.items()}
+            continue
         members, index_sourced = query_members(shape, query)
         exact = index_sourced or (not is_bound and shape.sv_arc_facts_complete)
         population = _PickPopulation(
             members=members, constraints={sv: m.read_constraints() for sv, m in members.items()}
         )
-        values = [o.value.ref.dcid for o in so.options if o.value.ref is not None]
         picks[prop] = {
             value: svs if svs or exact else None
             for value, svs in population.picks(prop, values).items()
@@ -807,17 +907,18 @@ def _maybe_enrich_slot_options(
     Disabled coverage, a missing `materialise_graph`, or nothing to probe returns inputs
     unchanged. A `GraphInfraError` also returns the original options with an
     `OPTION_COVERAGE_PROBE_FAILED` warning, distinguishing failure from an empty result.
-    A member of the family `bindings` elect counts only its elected dataset's facets.
-    `facets_pinned`, whether the answer's identity binds a facet, makes every probed
-    count an upper bound.
+    A member counts only the facets of the dataset elected once its option is bound to the
+    family query `bindings` and the role keys of `entities` state, else of the family they
+    elect (`standard_option_coverage`). `facets_pinned`, whether the answer's identity binds
+    a facet, makes every probed count an upper bound.
     """
     pending = [i for i, so in enumerate(slot_options) if _uncounted(so)]
     if not include_option_coverage or not pending:
         return slot_options, None
     try:
-        member_facts, _index_sourced = shape_member_facts(
-            shape_draft, shape_query(shape_draft, bindings)
-        )
+        role_keys = entity_role_keys(shape_draft, entities)
+        query = shape_query(shape_draft, bindings, role_keys)
+        member_facts, _index_sourced = shape_member_facts(shape_draft, query)
         menus = [slot_options[i] for i in pending]
         probed = standard_option_coverage(
             shape=shape_draft,
@@ -827,8 +928,9 @@ def _maybe_enrich_slot_options(
             date_request=date_request,
             place_dcids=place_dcids,
             datasets=elected_datasets(member_facts),
-            pick_members=_pick_members(shape_draft, bindings, menus),
+            pick_members=_pick_members(shape_draft, bindings, menus, role_keys),
             facets_pinned=facets_pinned,
+            query=query,
         )
     except GraphInfraError:
         logger.warning(

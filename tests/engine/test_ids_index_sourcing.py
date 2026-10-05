@@ -248,11 +248,11 @@ def test_the_index_shape_of_a_mixed_pool_elects_its_crs_family():
     index = get_index()
     axes = get_measure_index().axes
 
-    election = elect_measure_family(crs, index, axes, shape_query(crs, []))
+    election = elect_measure_family(crs, index, axes, shape_query(crs, [], ()))
 
     assert election is not None
     assert set(election.elected.members) <= {row.dcid for row in index.statvars}
-    assert elect_measure_family(ids, index, axes, shape_query(ids, [])) is None
+    assert elect_measure_family(ids, index, axes, shape_query(ids, [], ())) is None
 
 
 def test_the_recall_shape_of_a_mixed_pool_keeps_its_own_taxonomy():
@@ -357,8 +357,8 @@ def test_a_recall_sourced_shape_elects_no_index_family():
     axes = get_measure_index().axes
     ids, crs = _ids_shape(), _crs_shape()
 
-    assert elect_measure_family(ids, index, axes, shape_query(ids, [])) is None
-    assert elect_measure_family(crs, index, axes, shape_query(crs, [])) is not None
+    assert elect_measure_family(ids, index, axes, shape_query(ids, [], ())) is None
+    assert elect_measure_family(crs, index, axes, shape_query(crs, [], ())) is not None
 
 
 def test_a_recall_sourced_shape_passes_through_family_collapse():

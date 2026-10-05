@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -15,8 +16,8 @@ import scripts.harvest_llm_fixtures as m
 import search.engine.extract as extract_module
 from search.engine.bind import _UniversalBindOutput
 from search.engine.extract import Extraction
+from tests._harvest_outcome_plugin import OUTCOME_PATH_ENV, SCHEMA_VERSION
 from tests.fixtures import MissingFixtureError, _append_harvest_line
-from tests.fixtures._harvest_outcome_plugin import OUTCOME_PATH_ENV, SCHEMA_VERSION
 from tests.fixtures.keys import fixture_key
 
 
@@ -72,8 +73,8 @@ def _hit_line(path: Path, key: str) -> str:
 
 
 def test_parse_miss_lines_dedupes_same_key_from_two_sources(tmp_path):
-    """sweep_corpus.py and pytest both append the same golden's Extraction
-    miss to the same file in one pass; that is one Miss, not two."""
+    """Two collectors can append the same Extraction miss to the same file in
+    one pass; that is one Miss, not two."""
     miss = _miss(Extraction, "sys", "prompt")
     line = _miss_line(tmp_path / "misses.jsonl", miss)
 
@@ -316,9 +317,9 @@ def test_harvest_two_sources_reporting_same_key_produce_one_llm_call():
     miss = _miss(Extraction, "sys", "prompt")
 
     def collect_pass():
-        # Simulates sweep_corpus.py and pytest both writing the same miss to
-        # the harvest file in one pass; _parse_miss_lines already collapsed
-        # it to one entry by the time collect_pass returns.
+        # Simulates two collectors writing the same miss to the harvest file
+        # in one pass; _parse_miss_lines already collapsed it to one entry by
+        # the time collect_pass returns.
         return _obs({miss.key: miss})
 
     caller = _FakeCaller(results={miss.key: Extraction(kind="resolution", variables=["x"])})
@@ -437,7 +438,7 @@ def test_direction_corpus_collect_propagates_an_unrelated_keyerror(tmp_path, mon
 # failed on missing fixtures (the misses a pass exists to collect) and one
 # broken by an unrelated edit both exit 1. _check_pytest_outcome reads the
 # plugin's own summary and refuses anything but an unambiguously converged
-# pass -- see tests/fixtures/_harvest_outcome_plugin.py.
+# pass -- see tests/_harvest_outcome_plugin.py.
 # ---------------------------------------------------------------------------
 
 
@@ -447,28 +448,6 @@ def _write_outcome(path, failures: list[dict], *, counts: dict | None = None) ->
             {
                 "schema_version": SCHEMA_VERSION,
                 "counts": counts or {"passed": 0, "failed": len(failures), "errored": 0},
-                "failures": failures,
-            }
-        )
-    )
-
-
-def _empty_harvest(tmp_path) -> Path:
-    path = tmp_path / "misses.jsonl"
-    path.write_text("")
-    return path
-
-
-def _write_sweep_outcome(path, *, attempted: int, completed: int, failures: list[dict]) -> None:
-    """scripts/sweep_corpus.py's own outcome summary shape, written the way
-    its main() writes it (see m.SWEEP_OUTCOME_PATH_ENV/SWEEP_OUTCOME_SCHEMA_VERSION,
-    re-exported from scripts.sweep_corpus)."""
-    Path(path).write_text(
-        json.dumps(
-            {
-                "schema_version": m.SWEEP_OUTCOME_SCHEMA_VERSION,
-                "attempted": attempted,
-                "completed": completed,
                 "failures": failures,
             }
         )
@@ -549,19 +528,37 @@ def test_check_pytest_outcome_accepts_failures_that_are_all_captured_misses(tmp_
     )
 
 
-def test_check_pytest_outcome_refuses_an_assertion_failure(tmp_path):
-    """An assertion failure refuses collection before an LLM call or bank write."""
+def test_check_pytest_outcome_refuses_every_unrelated_failure_in_one_error(tmp_path):
+    """Unrelated failures refuse collection before an LLM call or bank write, and one error
+    names every such test so a single run shows all of them."""
     failures = [
         {
             "nodeid": "tests/x.py::test_a",
             "when": "call",
             "exception_type": "AssertionError",
             "fixture_key": None,
-        }
+        },
+        {
+            "nodeid": "tests/x.py::test_b",
+            "when": "call",
+            "exception_type": MissingFixtureError.__name__,
+            "fixture_key": "Extraction:aaa",
+        },
+        {
+            "nodeid": "tests/eval/test_corpus_offline.py::test_corpus_case_resolves_offline[dq-weo-015]",
+            "when": "call",
+            "exception_type": "EngineInfraError",
+            "fixture_key": None,
+        },
     ]
 
-    with pytest.raises(m.HarvestError, match="AssertionError"):
-        _check(tmp_path, returncode=1, failures=failures)
+    with pytest.raises(m.HarvestError) as raised:
+        _check(tmp_path, returncode=1, failures=failures, harvest_keys={"Extraction:aaa"})
+
+    message = str(raised.value)
+    assert "tests/x.py::test_a" in message
+    assert "test_corpus_case_resolves_offline[dq-weo-015]" in message
+    assert "tests/x.py::test_b" not in message
 
 
 def test_check_pytest_outcome_accepts_a_failure_that_followed_a_logged_miss(tmp_path):
@@ -763,185 +760,19 @@ def test_check_pytest_outcome_refuses_a_captured_miss_mixed_with_a_teardown_erro
         )
 
 
-# ---------------------------------------------------------------------------
-# _check_sweep_outcome
-#
-# scripts/sweep_corpus.py's own exit code is always 0, so it cannot signal
-# that a golden's run raised and was skipped -- that signal exists only in
-# the outcome summary main() writes to SWEEP_OUTCOME_PATH_ENV's path. A
-# golden's remaining FakeLLM calls -- the ones its exception preempted --
-# never reach the harvest file, so a `reached` set built from a pass that
-# skipped one is missing exactly the keys that golden would have requested.
-# ---------------------------------------------------------------------------
-
-
-def test_check_sweep_outcome_accepts_a_clean_run(tmp_path):
-    outcome_path = tmp_path / "sweep_outcome.json"
-    _write_sweep_outcome(outcome_path, attempted=5, completed=5, failures=[])
-
-    assert (
-        m._check_sweep_outcome(outcome_path=outcome_path, harvest_file=_empty_harvest(tmp_path))
-        is None
-    )
-
-
-def test_check_sweep_outcome_refuses_a_failed_golden(tmp_path):
-    """A skipped golden appears in the summary and blocks the pass."""
-    outcome_path = tmp_path / "sweep_outcome.json"
-    _write_sweep_outcome(
-        outcome_path,
-        attempted=5,
-        completed=4,
-        failures=[{"gid": "golden-b", "error_class": "ValueError", "message": "boom"}],
-    )
-
-    with pytest.raises(m.HarvestError, match="golden-b"):
-        m._check_sweep_outcome(outcome_path=outcome_path, harvest_file=_empty_harvest(tmp_path))
-
-
-def _missing_fixture_failure(gid: str) -> dict:
-    return {"gid": gid, "error_class": MissingFixtureError.__name__, "message": "missing"}
-
-
-def test_check_sweep_outcome_accepts_goldens_that_stopped_on_a_captured_miss(tmp_path):
-    """A golden that raised `MissingFixtureError` is a miss to collect, not a skipped golden."""
-    outcome_path = tmp_path / "sweep_outcome.json"
-    _write_sweep_outcome(
-        outcome_path,
-        attempted=3,
-        completed=1,
-        failures=[_missing_fixture_failure("a"), _missing_fixture_failure("b")],
-    )
-    harvest_path = tmp_path / "misses.jsonl"
-    harvest_path.write_text("")
-    _write_miss_line(harvest_path, "Extraction:aaa")
-
-    assert m._check_sweep_outcome(outcome_path=outcome_path, harvest_file=harvest_path) is None
-
-
-def test_check_sweep_outcome_refuses_a_missing_fixture_that_left_no_miss_line(tmp_path):
-    outcome_path = tmp_path / "sweep_outcome.json"
-    _write_sweep_outcome(
-        outcome_path, attempted=2, completed=1, failures=[_missing_fixture_failure("a")]
-    )
-
-    with pytest.raises(m.HarvestError, match="no miss line"):
-        m._check_sweep_outcome(outcome_path=outcome_path, harvest_file=_empty_harvest(tmp_path))
-
-
-def test_check_sweep_outcome_refuses_a_missing_fixture_mixed_with_another_failure(tmp_path):
-    outcome_path = tmp_path / "sweep_outcome.json"
-    _write_sweep_outcome(
-        outcome_path,
-        attempted=3,
-        completed=1,
-        failures=[
-            _missing_fixture_failure("a"),
-            {"gid": "golden-b", "error_class": "ValueError", "message": "boom"},
-        ],
-    )
-    harvest_path = tmp_path / "misses.jsonl"
-    harvest_path.write_text("")
-    _write_miss_line(harvest_path, "Extraction:aaa")
-
-    with pytest.raises(m.HarvestError, match="golden-b"):
-        m._check_sweep_outcome(outcome_path=outcome_path, harvest_file=harvest_path)
-
-
-def test_check_sweep_outcome_refuses_a_completed_count_short_of_attempted(tmp_path):
-    """A completed count below attempted refuses the pass, even without failures."""
-    outcome_path = tmp_path / "sweep_outcome.json"
-    _write_sweep_outcome(outcome_path, attempted=5, completed=3, failures=[])
-
-    with pytest.raises(m.HarvestError, match="3 of 5"):
-        m._check_sweep_outcome(outcome_path=outcome_path, harvest_file=_empty_harvest(tmp_path))
-
-
-def test_check_sweep_outcome_refuses_an_absent_summary(tmp_path):
-    """A missing sweep outcome summary refuses the pass."""
-    outcome_path = tmp_path / "sweep_outcome.json"
-
-    with pytest.raises(m.HarvestError, match="missing or unreadable"):
-        m._check_sweep_outcome(outcome_path=outcome_path, harvest_file=_empty_harvest(tmp_path))
-
-
-def test_check_sweep_outcome_refuses_a_summary_that_is_not_valid_json(tmp_path):
-    outcome_path = tmp_path / "sweep_outcome.json"
-    outcome_path.write_text('{"schema_version": 1, "attempted": 1, "completed": 1, "failures": [')
-
-    with pytest.raises(m.HarvestError, match="missing or unreadable"):
-        m._check_sweep_outcome(outcome_path=outcome_path, harvest_file=_empty_harvest(tmp_path))
-
-
-def test_check_sweep_outcome_refuses_a_summary_that_is_not_an_object(tmp_path):
-    outcome_path = tmp_path / "sweep_outcome.json"
-    outcome_path.write_text("[]")
-
-    with pytest.raises(m.HarvestError, match="not a JSON object"):
-        m._check_sweep_outcome(outcome_path=outcome_path, harvest_file=_empty_harvest(tmp_path))
-
-
-def test_check_sweep_outcome_refuses_a_summary_at_an_unknown_schema_version(tmp_path):
-    outcome_path = tmp_path / "sweep_outcome.json"
-    outcome_path.write_text(
-        json.dumps({"schema_version": 99, "attempted": 1, "completed": 1, "failures": []})
-    )
-
-    with pytest.raises(m.HarvestError, match="schema_version"):
-        m._check_sweep_outcome(outcome_path=outcome_path, harvest_file=_empty_harvest(tmp_path))
-
-
-def test_check_sweep_outcome_refuses_a_failures_field_that_is_not_a_list(tmp_path):
-    outcome_path = tmp_path / "sweep_outcome.json"
-    outcome_path.write_text(
-        json.dumps(
-            {
-                "schema_version": m.SWEEP_OUTCOME_SCHEMA_VERSION,
-                "attempted": 1,
-                "completed": 1,
-                "failures": {},
-            }
-        )
-    )
-
-    with pytest.raises(m.HarvestError, match="attempted/completed ints and failures list"):
-        m._check_sweep_outcome(outcome_path=outcome_path, harvest_file=_empty_harvest(tmp_path))
-
-
 class _FakePassRunner:
-    """Records commands and writes fake sweep and pytest outcomes.
-    An empty `sweep_failures` list means every golden succeeded."""
+    """Records commands and writes a fake pytest outcome."""
 
-    def __init__(
-        self,
-        *,
-        pytest_returncode: int,
-        miss_keys: list[str],
-        failure_type: str,
-        sweep_failures: list[dict] | None = None,
-        sweep_attempted: int = 1,
-    ):
+    def __init__(self, *, pytest_returncode: int, miss_keys: list[str], failure_type: str):
         self.pytest_returncode = pytest_returncode
         self.miss_keys = miss_keys
         self.failure_type = failure_type
-        self.sweep_failures = sweep_failures or []
-        self.sweep_attempted = sweep_attempted
         self.commands: list[list[str]] = []
         self.envs: list[dict] = []
 
     def __call__(self, *, cmd, env, ok_returncodes):
         self.commands.append(list(cmd))
         self.envs.append(dict(env))
-        if "pytest" not in cmd:
-            # The sweep_corpus.py collector, which always exits 0 -- its own
-            # completeness signal is the outcome summary, not the returncode.
-            _write_sweep_outcome(
-                env[m.SWEEP_OUTCOME_PATH_ENV],
-                attempted=self.sweep_attempted,
-                completed=self.sweep_attempted - len(self.sweep_failures),
-                failures=self.sweep_failures,
-            )
-            return subprocess.CompletedProcess(args=list(cmd), returncode=0)
         for key in self.miss_keys:
             _write_miss_line(env[m.HARVEST_MISS_PATH_ENV], key)
         # A green run records no failure, matching the exit code the caller
@@ -985,7 +816,7 @@ def test_live_collect_pass_reads_the_misses_off_a_converged_pytest_run(tmp_path,
     # Each `-p` flag is an adjacent pair, so this pins the plugin being
     # loaded and xdist being off rather than a list position.
     assert pytest_cmd[6:8] == ["-p", "no:xdist"]
-    assert pytest_cmd[8:10] == ["-p", "tests.fixtures._harvest_outcome_plugin"]
+    assert pytest_cmd[8:10] == ["-p", "tests._harvest_outcome_plugin"]
     assert pytest_cmd[10:] == ["-k", "engine"]
 
 
@@ -998,9 +829,9 @@ def test_live_collect_pass_strips_inherited_pytest_collection_env(
     """PYTEST_ADDOPTS and PYTEST_PLUGINS narrow or otherwise change pytest
     collection independent of any CLI argument, but main()'s decision to
     skip pruning trusts `--pytest-args` alone to know whether a run was
-    narrowed. An inherited value for either must not reach any collector
-    subprocess (sweep_corpus.py included, since the same env is shared), and
-    the caller is told it was dropped rather than losing effect silently."""
+    narrowed. An inherited value for either must not reach the collector
+    subprocess, and the caller is told it was dropped rather than losing
+    effect silently."""
     runner = _FakePassRunner(pytest_returncode=0, miss_keys=[], failure_type="")
     monkeypatch.setattr(m, "_run_pass_subprocess", runner)
     monkeypatch.setattr(m, "_direction_corpus_collect", lambda *, harvest_path: None)
@@ -1040,7 +871,7 @@ def test_live_collect_pass_allows_forwarded_args_that_are_not_xdist(tmp_path, mo
     obs = m._live_collect_pass(harvest_path=tmp_path / "misses.jsonl", pytest_args=["-k", "x"])
 
     assert obs.misses == {}
-    assert len(runner.commands) == 2
+    assert len(runner.commands) == 1
 
 
 def test_live_collect_pass_refuses_a_run_broken_by_an_unrelated_failure(tmp_path, monkeypatch):
@@ -1075,72 +906,6 @@ def test_live_collect_pass_refuses_a_pytest_exit_code_other_than_zero_or_one(tmp
         m._live_collect_pass(harvest_path=tmp_path / "misses.jsonl", pytest_args=[])
 
 
-def test_live_collect_pass_refuses_a_sweep_pass_that_skipped_a_golden(tmp_path, monkeypatch):
-    """The exact hole this fix closes: sweep_corpus.py's own per-golden loop
-    catches and skips any golden whose run raised, then the script still
-    exits 0 (see its module docstring). Before this fix nothing here read
-    that skip, so the pass's `reached` set silently omitted whatever that
-    golden's remaining FakeLLM calls would have requested, and a later prune
-    could drop those still-live fixtures. It must be refused here, before
-    pytest or the direction driver runs."""
-    runner = _FakePassRunner(
-        pytest_returncode=0,
-        miss_keys=[],
-        failure_type="",
-        sweep_failures=[{"gid": "golden-b", "error_class": "ValueError", "message": "boom"}],
-        sweep_attempted=2,
-    )
-    monkeypatch.setattr(m, "_run_pass_subprocess", runner)
-    direction_ran: list[bool] = []
-    monkeypatch.setattr(
-        m, "_direction_corpus_collect", lambda *, harvest_path: direction_ran.append(True)
-    )
-
-    with pytest.raises(m.HarvestError, match="golden-b"):
-        m._live_collect_pass(harvest_path=tmp_path / "misses.jsonl", pytest_args=[])
-
-    # Refused right after the sweep subprocess -- pytest never ran.
-    assert len(runner.commands) == 1
-    assert direction_ran == []
-
-
-def test_live_collect_pass_refuses_a_sweep_pass_with_no_outcome_file(tmp_path, monkeypatch):
-    """A sweep subprocess double that exits 0 without writing an outcome
-    file at all -- e.g. a sweep_corpus.py predating this fix -- must not be
-    read as a clean pass; a missing outcome fails closed exactly like a
-    missing pytest_outcome.json does."""
-
-    def _sweep_only_no_outcome(*, cmd, env, ok_returncodes):
-        if "pytest" not in cmd:
-            return subprocess.CompletedProcess(args=list(cmd), returncode=0)
-        pytest.fail("pytest ran despite a missing sweep outcome")
-
-    monkeypatch.setattr(m, "_run_pass_subprocess", _sweep_only_no_outcome)
-
-    with pytest.raises(m.HarvestError, match="missing or unreadable"):
-        m._live_collect_pass(harvest_path=tmp_path / "misses.jsonl", pytest_args=[])
-
-
-def test_live_collect_pass_prunes_normally_on_a_clean_sweep_outcome(tmp_path, monkeypatch):
-    """The non-regression: a sweep pass that completed every attempted
-    golden still lets the pass through to the pytest collector and back, the
-    same as before this fix."""
-    runner = _FakePassRunner(
-        pytest_returncode=1,
-        miss_keys=["Extraction:aaa"],
-        failure_type=MissingFixtureError.__name__,
-        sweep_failures=[],
-        sweep_attempted=5,
-    )
-    monkeypatch.setattr(m, "_run_pass_subprocess", runner)
-    monkeypatch.setattr(m, "_direction_corpus_collect", lambda *, harvest_path: None)
-
-    obs = m._live_collect_pass(harvest_path=tmp_path / "misses.jsonl", pytest_args=[])
-
-    assert set(obs.misses) == {"Extraction:aaa"}
-    assert len(runner.commands) == 2
-
-
 def test_harvest_runs_the_collector_off_the_event_loop():
     """The direction collector calls `asyncio.run`, which fails on a thread with a running loop."""
     miss = _miss(Extraction, "sys", "prompt")
@@ -1163,42 +928,70 @@ def test_harvest_runs_the_collector_off_the_event_loop():
     assert result.added_per_pass == [1, 0]
 
 
-def test_collector_env_removes_credentials_and_defaults_the_offline_surfaces(tmp_path, monkeypatch):
-    for var in ("COVERAGE_ARTIFACT_URI", "COVERAGE_RECHECK_SECONDS", "ORIGIN_CATALOGUE_URI"):
-        monkeypatch.delenv(var, raising=False)
-    monkeypatch.setenv("GEMINI_API_KEY", "secret")
-    monkeypatch.setenv("SEARCH_GRAPH_TOKEN", "secret")
-    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "secret")
+def test_collector_env_removes_credentials_and_sets_the_harvest_path(tmp_path, monkeypatch):
+    for var in ("GEMINI_API_KEY", "SEARCH_GRAPH_TOKEN", "SEARCH_GRAPH_BASE", "LANGFUSE_SECRET_KEY"):
+        monkeypatch.setenv(var, "secret")
 
     env = m._collector_env(harvest_path=tmp_path / "misses.jsonl")
 
-    assert not {"GEMINI_API_KEY", "SEARCH_GRAPH_TOKEN", "LANGFUSE_SECRET_KEY"} & set(env)
+    assert not {
+        "GEMINI_API_KEY",
+        "SEARCH_GRAPH_TOKEN",
+        "SEARCH_GRAPH_BASE",
+        "LANGFUSE_SECRET_KEY",
+    } & set(env)
     assert env[m.HARVEST_MISS_PATH_ENV] == str(tmp_path / "misses.jsonl")
-    assert env["COVERAGE_ARTIFACT_URI"] == f"file://{m._FIXTURES_DIR / 'coverage_slice'}"
-    assert env["COVERAGE_RECHECK_SECONDS"] == "0"
-    assert env["ORIGIN_CATALOGUE_URI"] == f"file://{tmp_path / 'origin-catalogue'}"
-    assert (tmp_path / "origin-catalogue").is_dir()
 
 
-def test_collector_env_can_be_built_again_for_the_next_pass(tmp_path, monkeypatch):
-    monkeypatch.delenv("ORIGIN_CATALOGUE_URI", raising=False)
-    harvest_path = tmp_path / "misses.jsonl"
+def test_script_imports_without_a_graph_base_or_dotenv(tmp_path):
+    """The parent reads no live graph, so a bare environment must reach `--help`."""
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in {"SEARCH_GRAPH_BASE", "GEMINI_API_KEY"} and not k.startswith("PYTEST_")
+    }
 
-    first = m._collector_env(harvest_path=harvest_path)
-    second = m._collector_env(harvest_path=harvest_path)
+    result = subprocess.run(
+        [sys.executable, str(Path(m.__file__)), "--help"],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
 
-    assert first["ORIGIN_CATALOGUE_URI"] == second["ORIGIN_CATALOGUE_URI"]
+    assert result.returncode == 0, result.stderr
 
 
-def test_collector_env_keeps_surfaces_the_environment_already_sets(tmp_path, monkeypatch):
-    monkeypatch.setenv("COVERAGE_ARTIFACT_URI", "file:///elsewhere")
-    monkeypatch.setenv("ORIGIN_CATALOGUE_URI", "file:///catalogue")
+def test_importing_the_script_leaves_the_graph_base_absent():
+    """A pytest process that collects the harvest tests must not enable the live graph tests.
 
-    env = m._collector_env(harvest_path=tmp_path / "misses.jsonl")
+    The child mirrors `tests/conftest.py`: import the engine config under a placeholder, remove
+    it, then import the script.
+    """
+    code = (
+        "import os, sys\n"
+        "os.environ['SEARCH_GRAPH_BASE'] = 'https://graph.offline.invalid'\n"
+        "import search.engine.config\n"
+        "del os.environ['SEARCH_GRAPH_BASE']\n"
+        "sys.path.insert(0, os.getcwd())\n"
+        "import scripts.harvest_llm_fixtures\n"
+        "assert 'SEARCH_GRAPH_BASE' not in os.environ\n"
+    )
+    env = {k: v for k, v in os.environ.items() if k != "SEARCH_GRAPH_BASE"}
 
-    assert env["COVERAGE_ARTIFACT_URI"] == "file:///elsewhere"
-    assert env["ORIGIN_CATALOGUE_URI"] == "file:///catalogue"
-    assert not (tmp_path / "origin-catalogue").exists()
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=Path(m.__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 # ---------------------------------------------------------------------------

@@ -147,6 +147,7 @@ def test_a_collapse_group_spanning_a_chunk_boundary_matches_the_whole_table_resu
         code_index=_INDEX,
         resolved_stat_var_refs=_RESOLVED_STAT_VAR_REFS,
         provenance_refs=("p1",),
+        subject_id="family-spec",
         pivot_max_output_cells=5_000_000,
     )
     streamed = _reshape(
@@ -157,6 +158,7 @@ def test_a_collapse_group_spanning_a_chunk_boundary_matches_the_whole_table_resu
         code_index=_INDEX,
         resolved_stat_var_refs=_RESOLVED_STAT_VAR_REFS,
         provenance_refs=("p1",),
+        subject_id="family-spec",
         frame_chunks=iter(_chunked([0, 1, 2, 3])),
         pivot_max_output_cells=5_000_000,
     )

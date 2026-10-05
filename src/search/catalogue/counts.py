@@ -1,6 +1,11 @@
 """Counts what DFO holds, globally and at each country, from one origin
 catalogue build and one coverage index build.
 
+- Indicators (global only): the StatVars search can serve, meaning the
+  origin catalogue's base variables, its DFO variables, and the coverage
+  variables it does not withhold.
+- Datasets (global only): distinct source-index entries (`entry_ref`) over
+  the admitted provenances.
 - Publishers: distinct `ProvenanceRow.source.ref` over the admitted
   provenances. At a country, the sources of the base provenances holding a
   variable there (`CatalogueTables.provenance_places`) and of the coverage
@@ -24,7 +29,7 @@ from typing import Final, cast
 import numpy as np
 import pyarrow as pa
 
-from origin_catalogue.catalogue import CatalogueSnapshot
+from origin_catalogue.catalogue import CatalogueSnapshot, entry_ref
 from search.catalogue.artifact import AidCounts, Counts, PlaceCounts, YearRange
 from series_coverage.coverage_types import Role
 from series_coverage.index import CoverageIndex
@@ -58,10 +63,12 @@ class _BaseByCountry:
 @dataclass(frozen=True, slots=True)
 class _CoverageByCountry:
     """What the coverage rows naming each country, as donor or recipient,
-    hold. `overlap` counts the variables that are also base variables with
-    data there. `aid_donors` counts the donors of aid to the country and
+    hold. `covered` holds every variable with a coverage row. `overlap`
+    counts the variables that are also base variables with data there.
+    `aid_donors` counts the donors of aid to the country and
     `aid_recipients` the recipients of its own aid."""
 
+    covered: frozenset[str]
     variables: Mapping[str, int]
     overlap: Mapping[str, int]
     sources: Mapping[str, frozenset[str]]
@@ -74,7 +81,8 @@ class _CoverageByCountry:
 def catalogue_counts(*, catalogue: CatalogueSnapshot, coverage: CoverageIndex) -> CatalogueCounts:
     """Counts over `catalogue`'s admitted provenances and base variable
     table and every row of `coverage`."""
-    source_of = {row.id: row.source.ref for row in catalogue.provenance_rows()}
+    provenances = catalogue.provenance_rows()
+    source_of = {row.id: row.source.ref for row in provenances}
     base = _base_by_country(catalogue, source_of)
     held = _coverage_by_country(coverage, catalogue=catalogue, base=base, source_of=source_of)
     countries = sorted(set(base.variables) | set(held.variables))
@@ -95,7 +103,19 @@ def catalogue_counts(*, catalogue: CatalogueSnapshot, coverage: CoverageIndex) -
         )
         for country in countries
     }
-    counts = Counts(publishers=len(set(source_of.values())), countries=len(countries), aid=held.aid)
+    tables = catalogue.tables
+    indicators = (
+        tables.base_variables.keys()
+        | tables.dfo_variables
+        | (held.covered - tables.withheld_variables)
+    )
+    counts = Counts(
+        indicators=len(indicators),
+        datasets=len({entry_ref(row) for row in provenances}),
+        publishers=len(set(source_of.values())),
+        countries=len(countries),
+        aid=held.aid,
+    )
     return CatalogueCounts(counts=counts, places=places)
 
 
@@ -139,22 +159,20 @@ def _coverage_by_country(
                 spans[place].append((first, last))
 
     by_variable_facet = coverage.grouped(by=("variable", "facet_id"))
-    aid = sorted(
-        {
-            variable
-            for variable, facet in zip(
-                _strings(by_variable_facet["variable"]),
-                _strings(by_variable_facet[FACET_COLUMN]),
-                strict=True,
-            )
-            if facet in crs_facets
-        }
+    variable_facets = list(
+        zip(
+            _strings(by_variable_facet["variable"]),
+            _strings(by_variable_facet[FACET_COLUMN]),
+            strict=True,
+        )
     )
+    aid = sorted({variable for variable, facet in variable_facets if facet in crs_facets})
     pairs = coverage.grouped(by=_ROLES, variables=aid)
     donors, recipients = _strings(pairs["donor"]), _strings(pairs["recipient"])
 
     variables, overlap = _variables_by_country(coverage, catalogue=catalogue, base=base)
     return _CoverageByCountry(
+        covered=frozenset(variable for variable, _ in variable_facets),
         variables=variables,
         overlap=overlap,
         sources={place: frozenset(named) for place, named in sources.items()},

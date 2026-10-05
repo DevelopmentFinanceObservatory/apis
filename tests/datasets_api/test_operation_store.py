@@ -843,6 +843,54 @@ def test_expire_if_dead_measures_a_never_claimed_row_from_its_last_dispatch() ->
         fake.close()
 
 
+def test_fail_unservable_done_fails_only_a_done_row_at_the_polled_attempt(
+    store: LiveOperationStore,
+) -> None:
+    """A poll that read an earlier attempt's completion leaves a re-run's completion done, even
+    when the re-run repeats the content version."""
+    submission = {
+        "request_identity": _IDENTITY,
+        "options": _OPTIONS,
+        "coverage_stamp": _STAMP,
+        "origin_catalogue_build_id": _BUILD,
+        "estimate": _ESTIMATE,
+    }
+    op = store.create_or_get(**submission)
+    assert store.fail_unservable_done(op.id, attempt=0) is None
+    assert store.claim_lease(op.id, submission_count=0, lease_seconds=60) is not None
+    assert store.fail_unservable_done(op.id, attempt=1) is None
+    running = store.get(op.id)
+    assert running is not None and running.state == "running"
+    assert store.complete(op.id, attempt=1, subject_id="spec_abc", content_version="cv_1")
+
+    first = store.fail_unservable_done(op.id, attempt=1)
+
+    assert first is not None
+    assert (first.state, first.refusal_code, first.retryable) == ("failed", "internal_error", True)
+
+    # The resubmit re-runs it under a higher attempt and completes with the same version.
+    resubmitted = store.create_or_get(**submission)
+    assert (resubmitted.state, resubmitted.submission_count) == ("pending", 1)
+    rerun = store.claim_lease(op.id, submission_count=1, lease_seconds=60)
+    assert rerun is not None and rerun.attempt_count == 2
+    assert store.complete(op.id, attempt=2, subject_id="spec_abc", content_version="cv_1")
+
+    assert store.fail_unservable_done(op.id, attempt=1) is None
+    done = store.get(op.id)
+    assert done is not None and done.state == "done"
+
+    second = store.fail_unservable_done(op.id, attempt=2)
+
+    assert second is not None
+    assert (second.state, second.refusal_code, second.retryable) == (
+        "failed",
+        "internal_error",
+        True,
+    )
+    assert store.fail_unservable_done(op.id, attempt=2) is None
+    assert store.fail_unservable_done("op_unknown", attempt=1) is None
+
+
 def test_a_resubmit_of_an_old_operation_survives_polls_and_sweeps_inside_its_new_window() -> None:
     """A retryable resubmission gets a fresh staleness window from its dispatch."""
     now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}

@@ -2,9 +2,11 @@
 
 `note_narration` skips frame resolution. `source_card` reads frame metadata
 without selecting series. A frame whose rows share one span has one period, so
-a line chart or a period-mode bar chart over it refuses `binding_invalid` at
-`/type` before its window is read, naming the kinds that show a span: an
-entity-mode bar chart, a table, and a stat card."""
+a line chart over it refuses `binding_invalid` at `/type` before its window is
+read, and a bar chart whose select resolves to one series refuses the same way
+after resolution. Both read the selected series and name the kinds that show a
+span: a table, a stat card, and an entity-mode bar chart with a select that
+resolves several series, which a frame with nothing to compare leaves out."""
 
 from __future__ import annotations
 
@@ -26,7 +28,13 @@ from assembler.errors import (
     SchemaInvalid,
     pointer_from_path,
 )
-from assembler.limits import MAX_ENVELOPE_BYTES, MAX_POINTS_PER_SERIES, MAX_TABLE_ROWS
+from assembler.frame_view import dimension_columns, facet_dimension_names, hashable_cell
+from assembler.limits import (
+    MAX_ENVELOPE_BYTES,
+    MAX_POINTS_PER_SERIES,
+    MAX_SERIES_PER_COMPONENT,
+    MAX_TABLE_ROWS,
+)
 from assembler.merge import merge_intent
 from assembler.mint import MintedComponent, complete_window, default_window, mint_component
 from assembler.ports import FrameRef, FrameStore, ResolvedFrame, RevisionRecord
@@ -133,12 +141,31 @@ def _build_candidate(
     if member in ("line_chart", "bar_chart"):
         # Tables use the cross-product of every arrayed dimension.
         check_single_arrayed_dimension(select=select)
-    _refuse_span_frame(resolved_frame=resolved_frame, member=member, select=select)
     selectors = normalize_select(select=select)
+    if member == "line_chart" and resolved_frame.structural_view.span is not None:
+        # The refusal reads the selected series, before the window, which a span frame's
+        # line chart never reaches.
+        _refuse_span_frame(
+            resolved_frame=resolved_frame,
+            drawn="line_chart",
+            select=select,
+            series=resolve_selectors(
+                resolved_frame=resolved_frame, selectors=selectors, window=None
+            ),
+        )
     window = cast("Mapping[str, object] | None", merged.get("window"))
     if window is not None:
         window = complete_window(window=window, resolved_frame=resolved_frame)
     series = resolve_selectors(resolved_frame=resolved_frame, selectors=selectors, window=window)
+    if member == "bar_chart" and not has_arrayed_dimension(select=select) and len(series) == 1:
+        # Several series draw one bar each by default (`assembler.mint.builders`); one
+        # series would draw its periods.
+        _refuse_span_frame(
+            resolved_frame=resolved_frame,
+            drawn="period-mode bar_chart",
+            select=select,
+            series=series,
+        )
 
     if member == "stat_card" and len(series) != 1:
         raise BindingInvalid(
@@ -211,31 +238,113 @@ def _build_candidate(
 
 
 def _refuse_span_frame(
-    *, resolved_frame: ResolvedFrame, member: str, select: Mapping[str, object]
+    *,
+    resolved_frame: ResolvedFrame,
+    drawn: str,
+    select: Mapping[str, object],
+    series: Sequence[ResolvedSeries],
 ) -> None:
-    """Refuses `binding_invalid` when a line chart or a period-mode bar chart, kinds that
-    plot periods along an axis, binds a frame whose rows share one span."""
+    """Refuses `binding_invalid` when `drawn`, a kind that plots periods along an axis,
+    binds a frame whose rows share one span.
+
+    The text names a bar chart only as a call that draws bars. When the selected `series`
+    vary on exactly one unselected dimension other than a facet, a bar chart with the same
+    select draws one bar per value of it. When select resolves to one series, the text
+    names the select that lists the values of one dimension the frame holds with the other
+    bindings (`_comparable_values`). With nothing to compare, it offers a table and a stat
+    card alone."""
     span = resolved_frame.structural_view.span
     if span is None:
         return
-    if member == "line_chart":
-        drawn = "line_chart"
-    elif member == "bar_chart" and not has_arrayed_dimension(select=select):
-        drawn = "period-mode bar_chart"
+    if len(series) > 1:
+        varying = _varying_dimensions(series=series, select=select)
+        bar_chart = (
+            f"a bar_chart, which with this select draws one bar per {varying[0]!r} value"
+            if len(varying) == 1
+            else "a bar_chart that lists the entities to compare in select"
+        )
+    elif (
+        comparable := _comparable_values(
+            resolved_frame=resolved_frame, select=select, one=series[0]
+        )
+    ) is not None:
+        dimension, values = comparable
+        listed = json.dumps({**select, dimension: list(values)}, ensure_ascii=False)
+        bar_chart = f"a bar_chart that lists the {dimension!r} values to compare, select {listed}"
     else:
-        return
+        bar_chart = None
+    labels = (
+        _SPAN_COMPONENT_LABELS
+        if bar_chart is not None
+        else {name: label for name, label in _SPAN_COMPONENT_LABELS.items() if name != "bar_chart"}
+    )
+    shown = f"{bar_chart}, a table, or a stat_card" if bar_chart else "a table or a stat_card"
     raise BindingInvalid(
         pointer="/type",
         dimension="type",
-        legal_values=tuple(_SPAN_COMPONENT_LABELS),
+        legal_values=tuple(labels),
         truncated=False,
         detail=(
             f"every row of this frame covers the one period {span!r}, and a {drawn} needs "
-            "a run of periods to draw; show it as a bar_chart that lists the entities to "
-            "compare in select, a table, or a stat_card"
+            f"a run of periods to draw; show it as {shown}"
         ),
-        labels=_SPAN_COMPONENT_LABELS,
+        labels=labels,
     )
+
+
+def _varying_dimensions(
+    *, series: Sequence[ResolvedSeries], select: Mapping[str, object]
+) -> tuple[str, ...]:
+    """Unselected dimensions other than a facet whose value differs across `series`, in
+    coordinate order."""
+    facets = facet_dimension_names()
+    values_by_name: dict[str, set[object]] = {}
+    for one in series:
+        for name, value in one.coordinates:
+            values_by_name.setdefault(name, set()).add(value)
+    return tuple(
+        name
+        for name, values in values_by_name.items()
+        if name not in select and name not in facets and len(values) > 1
+    )
+
+
+def _comparable_values(
+    *, resolved_frame: ResolvedFrame, select: Mapping[str, object], one: ResolvedSeries
+) -> tuple[str, tuple[str, ...]] | None:
+    """The first dimension, in frame order and other than a facet, with two or more values
+    that each hold exactly one series alongside the values `one` holds on the other
+    dimensions select binds, with those values up to `MAX_SERIES_PER_COMPONENT`. Select
+    with that dimension listing them resolves one series per value, so a bar chart draws one
+    bar each. A dimension is a candidate only when select binds no other dimension to a
+    list. `None` when no dimension qualifies."""
+    coordinates = dict(one.coordinates)
+    arrayed = [name for name, value in select.items() if isinstance(value, list)]
+    columns = tuple(cast("Sequence[str]", resolved_frame.frame["columns"]))
+    rows = cast("Sequence[Sequence[object]]", resolved_frame.frame["rows"])
+    positions = [columns.index(name) for name in dimension_columns(columns=columns)]
+    facets = facet_dimension_names()
+    for dimension in dimension_columns(columns=columns):
+        if dimension in facets or (arrayed and arrayed != [dimension]):
+            continue
+        held = {
+            columns.index(name): coordinates[name]
+            for name in select
+            if name != dimension and name in coordinates
+        }
+        position = columns.index(dimension)
+        series_by_value: dict[str, set[tuple[object, ...]]] = {}
+        for row in rows:
+            if row[position] is not None and all(
+                hashable_cell(row[index]) == value for index, value in held.items()
+            ):
+                series_by_value.setdefault(cast(str, row[position]), set()).add(
+                    tuple(hashable_cell(row[index]) for index in positions)
+                )
+        values = tuple(value for value, keys in series_by_value.items() if len(keys) == 1)
+        if len(values) > 1:
+            return dimension, values[:MAX_SERIES_PER_COMPONENT]
+    return None
 
 
 def _finish_candidate(

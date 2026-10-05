@@ -273,6 +273,7 @@ def _debt_index(*rows: StatVarRow) -> CodeIndex:
                 synonyms=(),
                 opt_in=False,
                 absent_observation="zero",
+                rank=0,
             ),
         ),
     )

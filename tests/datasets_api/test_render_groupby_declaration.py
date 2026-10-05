@@ -98,6 +98,7 @@ def _index(*, declares_crs_zero: bool) -> CodeIndex:
                     synonyms=(),
                     opt_in=False,
                     absent_observation="zero",
+                    rank=0,
                 ),
             )
             if declares_crs_zero

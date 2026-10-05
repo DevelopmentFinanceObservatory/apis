@@ -294,6 +294,54 @@ def _location_matches_rendering_key(loc: StoredArtifactLocation, rendering_key: 
     )
 
 
+def _narrow_to_rendering(
+    servable: Sequence[StoredArtifactLocation], *, rendering_key: str
+) -> list[StoredArtifactLocation]:
+    """The locations among `servable` matching `rendering_key`
+    (`_location_matches_rendering_key`), followed by every statistics artifact among them.
+    Each definition's or member's statistics artifact has its own fixed key, distinct from
+    every `MintOptions` rendering, so it is kept across renderings."""
+    narrowed = [loc for loc in servable if _location_matches_rendering_key(loc, rendering_key)]
+    narrowed_keys = {loc.rendering_key for loc in narrowed}
+    narrowed.extend(
+        loc
+        for loc in servable
+        if is_statistics_rendering(loc.rendering) and loc.rendering_key not in narrowed_keys
+    )
+    return narrowed
+
+
+def rendering_servable(
+    *,
+    subject_id: str,
+    content_version: str,
+    rendering_key: str,
+    snapshot_reader: SnapshotReader,
+    now: Clock,
+    settings: DatasetsBuildSettings,
+) -> bool:
+    """Whether a snapshot read of `(subject_id, content_version)` narrowed to `rendering_key`
+    lists an artifact other than statistics.
+
+    It applies the selection `read_snapshot_manifest(rendering_key=...)` lists from, under the
+    rendition `settings.site` gives (`servable_listable_locations`, then
+    `_narrow_to_rendering`), so the check and the read agree. It reads artifact locations only:
+    no spec or version lookup, no revocation check and no signing. An unlinked bundle, a bundle
+    of a superseded rendition and an expired working-tier artifact all answer `False`.
+
+    Derive `rendering_key` from the request's options with `render.artifact_rendering_key`.
+    """
+    servable = servable_listable_locations(
+        snapshot_reader.read_artifact_locations(subject_id, content_version),
+        now=now(),
+        rendition=rendition_token(settings.site),
+    )
+    return any(
+        not is_statistics_rendering(loc.rendering)
+        for loc in _narrow_to_rendering(servable, rendering_key=rendering_key)
+    )
+
+
 def read_snapshot_manifest(
     *,
     id: str,
@@ -313,9 +361,10 @@ def read_snapshot_manifest(
 
     The default read raises `ArtifactExpired` for an empty servable set. A
     rendering-specific read returns matching renderings and statistics
-    artifacts. An empty result tells the definition door to render that variant
-    fresh. A bundle under a superseded rendition is listed only when pinned, after
-    the current artifacts (`_listed_locations`).
+    artifacts (`_narrow_to_rendering`). An empty result tells the definition door to
+    render that variant fresh. `rendering_servable` answers whether this read lists
+    a non-statistics artifact without signing. A bundle under a superseded rendition is
+    listed only when pinned, after the current artifacts (`_listed_locations`).
     """
     stored_version = read_stored_version(
         id=id,
@@ -336,16 +385,7 @@ def read_snapshot_manifest(
         if not servable:
             raise ArtifactExpired(id=id, content_version=content_version)
     else:
-        narrowed = [loc for loc in servable if _location_matches_rendering_key(loc, rendering_key)]
-        # Keep each definition's or member's statistics artifact across
-        # renderings. Its fixed key is distinct from MintOptions.
-        narrowed_keys = {loc.rendering_key for loc in narrowed}
-        narrowed.extend(
-            loc
-            for loc in servable
-            if is_statistics_rendering(loc.rendering) and loc.rendering_key not in narrowed_keys
-        )
-        servable = narrowed
+        servable = _narrow_to_rendering(servable, rendering_key=rendering_key)
 
     # Recheck immediately before signing to catch revocation during artifact reads.
     _refuse_if_revoked(

@@ -773,6 +773,113 @@ def test_period_mode_bar_chart_create_reply_agrees_with_readback_on_window(
     assert got["fact_summary"]["window"] == intent["window"]
 
 
+@pytest.mark.parametrize(
+    ("recipient", "defaults"),
+    [(None, ["/select/recipient"]), (["country/ETH", "country/KEN"], [])],
+    ids=["recipient_unbound", "recipient_listed"],
+)
+def test_bar_chart_states_its_default_on_create_and_readback(
+    frame_store, revision_store, release_registry, recipient, defaults
+):
+    """A bar chart whose select lists no values, over a window of one period, compares every
+    recipient and says so at `/select/recipient`. A listed select states no default."""
+    frame = _multi_recipient_frame()
+    frame_store.put(resolved_frame=frame)
+    select: dict[str, object] = {"stat_var": "dcid:MalariaGrantDisbursements"}
+    if recipient is not None:
+        select["recipient"] = recipient
+    created = write_component(
+        intent={
+            "type": "bar_chart",
+            "frame_ref": {
+                "spec_id": frame.frame_ref.spec_id,
+                "content_version": frame.frame_ref.content_version,
+            },
+            "select": select,
+            "window": {"start": "2022", "end": "2022"},
+        },
+        component_id=None,
+        composition_id=None,
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+    got = get_component(component_id=created.component_id, revision_store=revision_store)
+
+    assert [one["pointer"] for one in created.fact_summary["defaults"]] == defaults
+    assert got["fact_summary"]["defaults"] == created.fact_summary["defaults"]
+
+
+@pytest.mark.parametrize(
+    ("created_recipient", "revised_recipient", "defaults"),
+    [
+        (None, ["country/ETH", "country/GHA", "country/KEN"], []),
+        (["country/ETH", "country/GHA", "country/KEN"], None, ["/select/recipient"]),
+    ],
+    ids=["list_added", "list_removed"],
+)
+def test_bar_chart_revise_that_toggles_the_default_states_the_revised_defaults(
+    frame_store, revision_store, release_registry, created_recipient, revised_recipient, defaults
+):
+    """The recipients fall in value from first to last in frame order, so listing them in
+    that order draws and resolves them exactly as the default does. The revise still stores
+    the new intent, so the reply and readback state the defaults of the select just sent."""
+    values = {"country/ETH": 320.0, "country/GHA": 220.0, "country/KEN": 120.0}
+    frame = build_resolved_frame(
+        frame_ref=FrameRef(spec_id="spec_" + "1" * 32, content_version="cv_" + "1" * 32),
+        role_keys=("recipient",),
+        rows=[
+            {
+                "stat_var": "dcid:MalariaGrantDisbursements",
+                "recipient": recipient,
+                "time_period": "2022",
+                "value": value,
+                "unit": None,
+                "measurementMethod": None,
+                "provenance": "src_oecd_dac",
+            }
+            for recipient, value in values.items()
+        ],
+    )
+    frame_store.put(resolved_frame=frame)
+
+    def select(recipient):
+        chosen: dict[str, object] = {"stat_var": "dcid:MalariaGrantDisbursements"}
+        if recipient is not None:
+            chosen["recipient"] = recipient
+        return chosen
+
+    created = write_component(
+        intent={
+            "type": "bar_chart",
+            "frame_ref": {
+                "spec_id": frame.frame_ref.spec_id,
+                "content_version": frame.frame_ref.content_version,
+            },
+            "select": select(created_recipient),
+        },
+        component_id=None,
+        composition_id=None,
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+    revised = write_component(
+        intent={"select": select(revised_recipient)},
+        component_id=created.component_id,
+        write_token=created.write_token,
+        composition_id=None,
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+    got = get_component(component_id=created.component_id, revision_store=revision_store)
+
+    assert revised.revision == 2
+    assert [one["pointer"] for one in revised.fact_summary["defaults"]] == defaults
+    assert got["fact_summary"]["defaults"] == revised.fact_summary["defaults"]
+
+
 def _replace_current_series_coordinates(*, revision_store, component_id, series_coordinates):
     """Replace stored series coordinates to test readback of absent or corrupted metadata."""
     revisions = revision_store._revisions[component_id]
@@ -1360,7 +1467,16 @@ def test_source_card_create_and_readback_both_carry_source_refs(
     )
     assert created.fact_summary["source_refs"] == ["src_oecd_dac"]
     assert got["fact_summary"]["source_refs"] == ["src_oecd_dac"]
-    expected_keys = {"changed", "series", "series_cut", "window", "unit", "change", "source_refs"}
+    expected_keys = {
+        "changed",
+        "series",
+        "series_cut",
+        "window",
+        "unit",
+        "change",
+        "source_refs",
+        "defaults",
+    }
     assert set(created.fact_summary) == expected_keys
     assert set(got["fact_summary"]) == expected_keys
 

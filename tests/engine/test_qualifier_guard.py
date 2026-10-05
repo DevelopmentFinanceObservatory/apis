@@ -19,6 +19,7 @@ from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.conjoin import _build_part
+from search.engine.interpret import Recall
 from search.engine.qualifier_match import recognise_spans
 from search.engine.region.phase_election import _phase_repair_bindings
 from search.engine.region.phase_rank_bind import _resolve_query_qualifiers
@@ -96,6 +97,8 @@ def _state(
         pipeline_steps=[],
         timing={},
         warnings=[],
+        # Recall resolved no place, so the minted identity binds no role key.
+        rcl=Recall(candidates=[], resolutions={}, resolved_entity_names={}),
         bind_result=_UniversalBindOutput(
             chosen_shape_index=0,
             bindings=bindings,

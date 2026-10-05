@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, NamedTuple
 
 from code_index import absent_readings
+from code_index.members import FamilyQuery, SourceNotInFamily, option_families
 from code_index.shared import get_index
 from materialise.place_scope import DefaultPlaceScope, DefaultPresence
 from search.engine.clients.materialise_bridge import _FACET_PROBE_MAX_PAIRS_PER_POST
@@ -17,6 +18,7 @@ from search.engine.retrieval.bound_values import (
     _collapse_bindings,
     _fully_bound_members_facts,
     bound_values_from_bindings,
+    entity_role_keys,
     shape_member_facts,
     shape_query,
 )
@@ -29,7 +31,7 @@ from search.engine.retrieval.elected_dataset import (
 )
 from search.engine.retrieval.facet_policy import refuse_declared_defaults
 from search.engine.retrieval.facts import read_constraints
-from search.engine.retrieval.member_facts import asserted_constraint_properties
+from search.engine.retrieval.member_facts import IndexMemberFacts, asserted_constraint_properties
 from search.engine.retrieval.read_plan import (
     PairPlan,
     PlanYears,
@@ -264,9 +266,10 @@ class _AdmittedStandardMembers:
 
 
 def _admit_standard_members(
-    shape: ShapeDraft, bindings: list[SlotBindingDraft]
+    shape: ShapeDraft, bindings: list[SlotBindingDraft], role_keys: Collection[str]
 ) -> NoDataDraft | _AdmittedStandardMembers:
-    """Source members and apply the bound-value filter.
+    """Source members, elected under the bindings and `role_keys`, and apply the bound-value
+    filter.
 
     An empty shape, absent source population, or degenerate value/set binding
     returns ``NoDataDraft(reason="variable_not_resolved")``. Missing constraint
@@ -297,7 +300,7 @@ def _admit_standard_members(
     # Use the full index population when available, otherwise the shape's arcs.
     # Downstream readers share this filtered population; ShapeDraft.sv_arc_facts
     # remains the recall-sourced pool when index members back the result.
-    member_facts, index_sourced = shape_member_facts(shape, shape_query(shape, bindings))
+    member_facts, index_sourced = shape_member_facts(shape, shape_query(shape, bindings, role_keys))
     if not member_facts:
         return NoDataDraft(reason="variable_not_resolved")
 
@@ -879,7 +882,7 @@ def standard_resolve(
 
     place_dcid = next(iter(entities.get("observationAbout", ())), None)
 
-    admitted = _admit_standard_members(shape, bindings)
+    admitted = _admit_standard_members(shape, bindings, entity_role_keys(shape, entities))
     if not isinstance(admitted, _AdmittedStandardMembers):
         return admitted
     bound_values = admitted.bound_values
@@ -1052,6 +1055,36 @@ def standard_resolve(
     )
 
 
+def _option_datasets(
+    query: FamilyQuery | None, prop: str, sv_by_option: Mapping[str, Sequence[str] | None]
+) -> dict[str, ElectedDatasets]:
+    """The elected dataset of each StatVar of `sv_by_option` that is a member of the family
+    the code index elects for `query` with `prop` bound to its option, by option. A StatVar
+    outside that family is absent from its option's map, which is empty when the family
+    holds none. An option the index does not decide is absent, as is every option without
+    `query` or when `prop` is not one of its slots."""
+    values = [value for value, svs in sv_by_option.items() if svs]
+    if query is None or prop not in query.slots or not values:
+        return {}
+    try:
+        families = option_families(get_index(), query, prop, values)
+    except SourceNotInFamily:
+        return {}
+    if families is None:
+        return {}
+    by_option: dict[str, ElectedDatasets] = {}
+    for value, family in families.items():
+        svs = set(sv_by_option[value] or ())
+        by_option[value] = elected_datasets(
+            {
+                row.dcid: IndexMemberFacts(row=row, dataset=family.provenance)
+                for row in family.rows
+                if row.dcid in svs
+            }
+        )
+    return by_option
+
+
 def standard_option_coverage(
     *,
     shape: ShapeDraft,
@@ -1063,6 +1096,7 @@ def standard_option_coverage(
     datasets: ElectedDatasets = NO_DATASETS,
     pick_members: Mapping[str, Mapping[str, Sequence[str] | None]] | None = None,
     facets_pinned: bool = False,
+    query: FamilyQuery | None = None,
 ) -> list[SlotOptions]:
     """Probe option values across the shape's sibling members.
 
@@ -1072,16 +1106,23 @@ def standard_option_coverage(
     yet known. A missing ``materialise_graph`` is a no-op. Each option's coverage is
     stated from a plan over its matching facets (`plan_standard`) under the request's
     years: the group the plan elects for each StatVar across the probed places, as an
-    answer would serve it. A member with an elected dataset in `datasets` counts only the
-    facets that dataset publishes.
+    answer would serve it.
+
+    A member counts only the facets its elected dataset publishes. With `query`, the
+    answer's family query, the dataset is the one the code index elects once the option is
+    bound (`code_index.members.option_families`), so an option reports the table that would
+    serve it, and a member outside that table's family counts nothing for it. Without
+    `query`, or for an option the index does not decide, it is the member's dataset in
+    `datasets`, the answer's own family.
 
     `pick_members`, keyed by slot property then option value, names the members a pick of
     each option reads (`option_coverage._pick_members`). With it each option is probed
-    over those members and carries `served_rows`, the rows its plan serves as the download
-    counts them (`download.pair_extent`). The count is an upper bound under `facets_pinned`,
-    when the answer's identity binds a facet. An option mapped to no member counts 0, and
-    one mapped to None is left unprobed and uncounted. Without `pick_members` an option is
-    probed over every member carrying its value, and carries coverage alone.
+    over those members of the family its election serves and carries `served_rows`, the
+    rows its plan serves as the download counts them (`download.pair_extent`). The count is
+    an upper bound under `facets_pinned`, when the answer's identity binds a facet. An
+    option mapped to no member counts 0, and one mapped to None is left unprobed and
+    uncounted. Without `pick_members` an option is probed over every member carrying its
+    value, and carries coverage alone.
     """
     from search.engine.clients.materialise_bridge import (
         observation_facets_via_materialise,
@@ -1106,7 +1147,7 @@ def standard_option_coverage(
 
     # Union matching StatVars so a member serving several slots is probed once.
     resolved: dict[int, SlotOptions] = {}
-    pending: list[tuple[int, SlotOptions, dict[str, list[str] | None]]] = []
+    pending: list[tuple[int, SlotOptions, str, dict[str, list[str] | None]]] = []
     union_svs: set[str] = set()
     for i, so in enumerate(slot_options):
         prop_dcid = so.key.property.dcid if so.key.property else None
@@ -1135,7 +1176,7 @@ def standard_option_coverage(
             resolved[i] = so
             continue
 
-        pending.append((i, so, sv_by_option))
+        pending.append((i, so, prop_dcid, sv_by_option))
         union_svs.update(all_svs)
 
     facets_batch: dict[str, dict[str, list[Facet]]] = {}
@@ -1146,11 +1187,16 @@ def standard_option_coverage(
             materialise_graph=materialise_graph,
         )
 
-    for i, so, sv_by_option in pending:
+    for i, so, prop_dcid, sv_by_option in pending:
+        by_option = _option_datasets(query, prop_dcid, sv_by_option)
         new_options: list[SlotOption] = []
         for opt in so.options:
             dcid = opt.value.ref.dcid if opt.value.ref else None
             svs = sv_by_option.get(dcid) if dcid else None
+            option_datasets = by_option.get(dcid, datasets) if dcid else datasets
+            if svs is not None and dcid in by_option:
+                # The option's election serves its own family alone.
+                svs = [sv for sv in svs if sv in option_datasets]
             if not svs:
                 # Preserve fields this wrapper does not own. A pick reading no member
                 # serves nothing. A pick whose members are unknown stays uncounted.
@@ -1167,7 +1213,7 @@ def standard_option_coverage(
                 for entity in probe_entities
                 if (
                     entity_facets := published(
-                        datasets, sv, facets_batch.get(sv, {}).get(entity, [])
+                        option_datasets, sv, facets_batch.get(sv, {}).get(entity, [])
                     )
                 )
             }

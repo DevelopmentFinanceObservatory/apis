@@ -415,7 +415,7 @@ def test_a_shape_query_names_the_dataset_a_source_binding_binds():
         if slot["binding"]["state"] == "value"
     ]
 
-    assert shape_query(shape, bindings).source is None
+    assert shape_query(shape, bindings, ()).source is None
     named = shape_query(
         shape, [*bindings, source_binding(IMPUTED_PROVENANCE)], identity["entities"]
     )
@@ -426,7 +426,7 @@ def test_a_shape_query_names_the_dataset_a_source_binding_binds():
         kind="set",
         value_dcids=[IMPUTED_PROVENANCE, CRS_PROVENANCE],
     )
-    assert shape_query(shape, [*bindings, two_sources]).source is None
+    assert shape_query(shape, [*bindings, two_sources], ()).source is None
 
 
 def test_the_resolver_reads_the_dataset_a_source_binding_names():
@@ -490,6 +490,7 @@ def test_the_resolver_reads_the_dataset_a_source_binding_names():
     admitted = _admit_standard_members(
         dataclasses.replace(shape, declared_roles=None),
         [*bindings, source_binding(IMPUTED_PROVENANCE)],
+        (),
     )
     assert isinstance(admitted, _AdmittedStandardMembers)
     assert set(admitted.member_facts) == family

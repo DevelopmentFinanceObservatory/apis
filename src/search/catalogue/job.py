@@ -113,7 +113,7 @@ FLOOR: Final[int] = 5
 
 _MAX_RUN_SECONDS: Final[float] = 1800.0
 """The lease's lifetime and the pruning grace period, well above the 80 to 95
-seconds a live build takes for its counts and about 30 engine calls."""
+seconds a live build takes for its counts and about 16 engine calls."""
 
 REFUSAL_RETRY_SECONDS: Final[float] = 6 * 3600.0
 """How long a refused key stays refused. A run with that key inside the

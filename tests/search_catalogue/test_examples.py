@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from search.catalogue.examples import PLACE_SLOT, ExamplesError, load_examples
+from search.catalogue.job import FLOOR
 
 
 def _line(**fields: str) -> str:
@@ -18,9 +19,10 @@ def _line(**fields: str) -> str:
     return f"[[example]]\n{body}\n"
 
 
-def test_packaged_file_loads_about_ten_lines_each_with_one_slot():
+def test_packaged_file_holds_more_lines_than_the_floor_each_with_one_slot():
     loaded = load_examples()
-    assert 8 <= len(loaded.examples) <= 12
+    # A build that drops one line still publishes.
+    assert len(loaded.examples) > FLOOR
     assert [example.id for example in loaded.examples] == list(range(len(loaded.examples)))
     for example in loaded.examples:
         assert example.template.count(PLACE_SLOT) == 1

@@ -2,8 +2,11 @@
 
 The collapse set is the decoded, declared-summable axes minus `by`. Unknown
 names refuse before per-frame checks. An undeclared axis absent from one frame
-is a no-op. `stat_var` joins the collapse only when a CRS axis collapses. A
-decoded axis not declared summable is never collapsed.
+is a no-op. `stat_var` joins the collapse only when a CRS axis collapses or a
+kept axis rolls up to a level. A decoded axis not declared summable stays out
+of the collapse. `groupby.levels` rewrites a kept hierarchical axis's decoded labels
+to their ancestors' labels at one depth (`roll_up_levels`), so the sum groups
+each code under its ancestor.
 
 The guards refuse ambiguous measures, unknown axes, decode gaps, and mixed
 provenance. They use code-index declarations and frame data. The reshape engine
@@ -78,26 +81,61 @@ def unsummed_axes(
     return tuple(sorted(frozenset(decoded_code_systems) - summable_axes(declarations)))
 
 
-def is_full_collapse(
+def levels_in_frame(
+    *, levels: Mapping[str, int] | None, decoded_code_systems: Sequence[str]
+) -> dict[str, int]:
+    """Return the `groupby.levels` entries whose axis this frame decodes. A level axis the
+    frame's StatVars do not carry rolls nothing up, as an absent `by` axis collapses nothing."""
+    decoded = frozenset(decoded_code_systems)
+    return {axis: depth for axis, depth in (levels or {}).items() if axis in decoded}
+
+
+def sums_stat_vars(
+    *,
+    by: Sequence[str],
+    levels: Mapping[str, int] | None,
+    decoded_code_systems: Sequence[str],
+    declarations: Mapping[str, CodeSystemDeclaration],
+) -> bool:
+    """Return true when the groupby sums this frame's StatVars: a decoded summable axis
+    collapses, or a kept axis rolls up to a level."""
+    return bool(
+        collapse_axes(by=by, decoded_code_systems=decoded_code_systems, declarations=declarations)
+    ) or bool(levels_in_frame(levels=levels, decoded_code_systems=decoded_code_systems))
+
+
+def kept_axes(
     *,
     by: Sequence[str],
     decoded_code_systems: Sequence[str],
     declarations: Mapping[str, CodeSystemDeclaration],
+) -> tuple[str, ...]:
+    """Return sorted decoded summable axes named in `by`, the code axes a sum keeps as grain."""
+    present = declared_axes_present(
+        decoded_code_systems=decoded_code_systems, declarations=declarations
+    )
+    return tuple(sorted(present & frozenset(by)))
+
+
+def yields_grammar_frame(
+    *,
+    decoded_code_systems: Sequence[str],
+    declarations: Mapping[str, CodeSystemDeclaration],
     lookup: Mapping[str, Mapping[str, str]],
 ) -> bool:
-    """Return true when the sum leaves one series per entity tuple: `by` keeps none of this
-    frame's decoded summable axes, and every unsummed axis holds one value across the
-    resolved members in `lookup`.
+    """Return true when the sum leaves a grammar frame: this frame decodes a summable axis,
+    and every unsummed axis holds one value across the resolved members in `lookup`.
 
-    Only a full collapse yields a grammar frame, which has no column for a decoded axis. An
-    unsummed axis holding one value describes the whole family, so its constant column is
-    left out of that frame. One holding several values keeps its column and the rows stay a
-    table grouped by it. An empty summable axis set is false.
+    The frame carries one `stat_var` on every row and keeps each summable axis named in `by`
+    (`kept_axes`) as a string grain column. An unsummed axis holding one value describes the
+    whole family, so its constant column is left out of that frame. One holding several values
+    keeps its column and the rows stay a table grouped by it. An empty summable axis set is
+    false.
     """
     present = declared_axes_present(
         decoded_code_systems=decoded_code_systems, declarations=declarations
     )
-    if not present or not frozenset(by).isdisjoint(present):
+    if not present:
         return False
     return all(
         len({cells.get(code_system) for cells in lookup.values()}) == 1
@@ -105,6 +143,41 @@ def is_full_collapse(
             decoded_code_systems=decoded_code_systems, declarations=declarations
         )
     )
+
+
+def roll_up_levels(
+    lookup: Mapping[str, Mapping[str, str]],
+    *,
+    index: CodeIndex,
+    levels: Mapping[str, int],
+) -> dict[str, dict[str, str]]:
+    """Return `lookup` with each level axis's label replaced by its depth ancestor's label.
+
+    A StatVar's code maps to `CodeIndex.ancestor_at_depth`. A code shallower than its depth has
+    no ancestor there and keeps its own label, so its row names it. A declared absence and a
+    missing cell stay as they are, and an ancestor with no code row drops the cell, which
+    `refuse_decode_gaps` then refuses.
+    """
+    bare_dcids = {_bare_dcid(ref) for ref in lookup}
+    statvar_by_dcid = {row.dcid: row for row in index.statvars if row.dcid in bare_dcids}
+    rolled: dict[str, dict[str, str]] = {}
+    for ref, cells in lookup.items():
+        new_cells = dict(cells)
+        statvar = statvar_by_dcid.get(_bare_dcid(ref))
+        for code_system, depth in levels.items():
+            code = statvar.constraint_properties.get(code_system) if statvar else None
+            if code is None or code_system not in cells:
+                continue
+            ancestor = index.ancestor_at_depth(code, depth)
+            if ancestor is None:
+                continue
+            ancestor_row = index.code_by_dcid(ancestor)
+            if ancestor_row is None:
+                del new_cells[code_system]
+            else:
+                new_cells[code_system] = ancestor_row.label
+        rolled[ref] = new_cells
+    return rolled
 
 
 def contributing_dcids(table: TableLike) -> frozenset[str]:

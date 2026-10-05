@@ -274,7 +274,7 @@
       "total_population": 27176,
       "unshipped_obs": 107891
     },
-    "sha256": "4429c188a2df1d3d9fab69ade87ff3764d1e7a4d7256aae4e763797bcafcfd18",
+    "sha256": "ccd5059bc1162fcdb7a6147085dbe20a7c6cce12e420f2ff32a00d4b3b188878",
     "summary": {
       "candidate_count": 3913,
       "coverage": {
@@ -305,6 +305,35 @@
       "headline": {
         "named_window": null,
         "observations": 6179,
+        "recent_years": [
+          {
+            "observations": 6179,
+            "role_counts": {
+              "financingProvider": 84,
+              "financingRecipient": 150
+            },
+            "series": 6179,
+            "year": 2024
+          },
+          {
+            "observations": 6000,
+            "role_counts": {
+              "financingProvider": 84,
+              "financingRecipient": 154
+            },
+            "series": 6000,
+            "year": 2023
+          },
+          {
+            "observations": 5991,
+            "role_counts": {
+              "financingProvider": 86,
+              "financingRecipient": 156
+            },
+            "series": 5991,
+            "year": 2022
+          }
+        ],
         "role_counts": {
           "financingProvider": 84,
           "financingRecipient": 150
@@ -593,7 +622,7 @@
       "total_population": 27176,
       "unshipped_obs": 107891
     },
-    "sha256": "59e379d8011109316892e978d13119dcb31136cb07895f7afb8ba656248fb539",
+    "sha256": "f704c968ca4d969dfbff9928fcb8b5b0c98370a8f7b9ace7165999a70006e56d",
     "summary": {
       "candidate_count": 3913,
       "coverage": {
@@ -624,6 +653,35 @@
       "headline": {
         "named_window": null,
         "observations": 6179,
+        "recent_years": [
+          {
+            "observations": 6179,
+            "role_counts": {
+              "financingProvider": 84,
+              "financingRecipient": 150
+            },
+            "series": 6179,
+            "year": 2024
+          },
+          {
+            "observations": 6000,
+            "role_counts": {
+              "financingProvider": 84,
+              "financingRecipient": 154
+            },
+            "series": 6000,
+            "year": 2023
+          },
+          {
+            "observations": 5991,
+            "role_counts": {
+              "financingProvider": 86,
+              "financingRecipient": 156
+            },
+            "series": 5991,
+            "year": 2022
+          }
+        ],
         "role_counts": {
           "financingProvider": 84,
           "financingRecipient": 150
@@ -912,7 +970,7 @@
       "total_population": 8952,
       "unshipped_obs": 8932
     },
-    "sha256": "d4af524423a967b206f95e00ebc92521373c686e207c153f4ba260cc264c403c",
+    "sha256": "e8deb99874a07c3f3226347e57ea84210c2e4afd00dcdf3d996049a6730f531e",
     "summary": {
       "candidate_count": 3913,
       "coverage": {
@@ -946,6 +1004,35 @@
       "headline": {
         "named_window": null,
         "observations": 6179,
+        "recent_years": [
+          {
+            "observations": 6179,
+            "role_counts": {
+              "financingProvider": 84,
+              "financingRecipient": 150
+            },
+            "series": 6179,
+            "year": 2024
+          },
+          {
+            "observations": 6000,
+            "role_counts": {
+              "financingProvider": 84,
+              "financingRecipient": 154
+            },
+            "series": 6000,
+            "year": 2023
+          },
+          {
+            "observations": 5991,
+            "role_counts": {
+              "financingProvider": 86,
+              "financingRecipient": 156
+            },
+            "series": 5991,
+            "year": 2022
+          }
+        ],
         "role_counts": {
           "financingProvider": 84,
           "financingRecipient": 150
@@ -1234,7 +1321,7 @@
       "total_population": 8952,
       "unshipped_obs": 8932
     },
-    "sha256": "4e3a3b5a30f60c30306492c5c9dc4584151e8625cd534c1b34a33d11ba0a6f25",
+    "sha256": "92ae9b686691fe49880e613af1971c755f4fc5e52e9a99b0fedd828ffe3a882a",
     "summary": {
       "candidate_count": 3913,
       "coverage": {
@@ -1268,6 +1355,35 @@
       "headline": {
         "named_window": null,
         "observations": 6179,
+        "recent_years": [
+          {
+            "observations": 6179,
+            "role_counts": {
+              "financingProvider": 84,
+              "financingRecipient": 150
+            },
+            "series": 6179,
+            "year": 2024
+          },
+          {
+            "observations": 6000,
+            "role_counts": {
+              "financingProvider": 84,
+              "financingRecipient": 154
+            },
+            "series": 6000,
+            "year": 2023
+          },
+          {
+            "observations": 5991,
+            "role_counts": {
+              "financingProvider": 86,
+              "financingRecipient": 156
+            },
+            "series": 5991,
+            "year": 2022
+          }
+        ],
         "role_counts": {
           "financingProvider": 84,
           "financingRecipient": 150
@@ -1563,7 +1679,7 @@
       "total_population": 12455,
       "unshipped_obs": 33943
     },
-    "sha256": "860f31a0627a0e7a125208c20b103ff775fa87b03cfc93f1f1732bdcfc68cc02",
+    "sha256": "1176e9cfb09a49dc621a5fbee9f8e391f7aeba4122ad2ec452e2486e502b0a13",
     "summary": {
       "candidate_count": 2536,
       "coverage": {
@@ -1600,6 +1716,35 @@
           "start_year": 2015
         },
         "observations": 5807,
+        "recent_years": [
+          {
+            "observations": 5807,
+            "role_counts": {
+              "financingProvider": 80,
+              "financingRecipient": 159
+            },
+            "series": 5807,
+            "year": 2020
+          },
+          {
+            "observations": 5990,
+            "role_counts": {
+              "financingProvider": 77,
+              "financingRecipient": 155
+            },
+            "series": 5990,
+            "year": 2019
+          },
+          {
+            "observations": 5485,
+            "role_counts": {
+              "financingProvider": 78,
+              "financingRecipient": 154
+            },
+            "series": 5485,
+            "year": 2018
+          }
+        ],
         "role_counts": {
           "financingProvider": 80,
           "financingRecipient": 159
@@ -1895,7 +2040,7 @@
       "total_population": 12455,
       "unshipped_obs": 33943
     },
-    "sha256": "898f838257c3a448fbd61be8a719bce59ec56d3b42fa7435aa12f71a40d759a2",
+    "sha256": "6bc729a0774bf06ef1c3fa8ade3ac8104ddaeba6a39111dc30a665259a1789f8",
     "summary": {
       "candidate_count": 2536,
       "coverage": {
@@ -1932,6 +2077,35 @@
           "start_year": 2015
         },
         "observations": 5807,
+        "recent_years": [
+          {
+            "observations": 5807,
+            "role_counts": {
+              "financingProvider": 80,
+              "financingRecipient": 159
+            },
+            "series": 5807,
+            "year": 2020
+          },
+          {
+            "observations": 5990,
+            "role_counts": {
+              "financingProvider": 77,
+              "financingRecipient": 155
+            },
+            "series": 5990,
+            "year": 2019
+          },
+          {
+            "observations": 5485,
+            "role_counts": {
+              "financingProvider": 78,
+              "financingRecipient": 154
+            },
+            "series": 5485,
+            "year": 2018
+          }
+        ],
         "role_counts": {
           "financingProvider": 80,
           "financingRecipient": 159

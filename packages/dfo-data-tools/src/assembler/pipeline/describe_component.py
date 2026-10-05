@@ -58,6 +58,7 @@ def get_component(
     fact_summary = build_fact_summary(
         component=component,
         member=member,
+        stored_intent=record.stored_intent,
         formatter_profile=record.formatter_profile,
         series_coordinates=record.series_coordinates,
         component_id=record.component_id,

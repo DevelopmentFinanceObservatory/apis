@@ -65,7 +65,9 @@
         "creditor reporting system"
       ],
       "opt_in": false,
-      "absent_observation": "zero"
+      "absent_observation": "zero",
+      "rank": 0,
+      "invariants": {}
     }
   ],
   "codes": [

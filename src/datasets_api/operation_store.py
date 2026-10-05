@@ -15,6 +15,12 @@ The sweep commits even if a later backlog check rolls back. PostgreSQL rechecks 
 against each row's latest committed version, preserving concurrent renewals and completions.
 `expire_if_dead` applies the same rule to one operation.
 
+`fail_unservable_done` fails a `done` row as retryable `internal_error` in one update guarded by
+`state = 'done'` and the `attempt_count` the poll read. The operations poll calls it when the
+snapshot lists no artifact for the row's rendering, so the next resubmit resets the row and re-runs it.
+A re-run claims a higher attempt, so a poll that stalls across one leaves the newer completion
+done, even when it repeats the content version.
+
 
 
 `create_or_get` returns an existing row unchanged unless it is a retryable failure. This
@@ -320,6 +326,13 @@ class OperationStore(Protocol):
         or unknown id."""
         ...
 
+    def fail_unservable_done(self, id: str, *, attempt: int) -> Operation | None:
+        """Fails a `done` row whose rendering the snapshot lists no artifact for as retryable
+        `internal_error`, so a resubmit resets and re-runs it. `attempt` is the `attempt_count`
+        the poll read. Returns `None` for any row not `done` at that attempt or an unknown
+        id."""
+        ...
+
     def get(self, id: str) -> Operation | None:
         """Returns any operation state, or `None` for an unknown id."""
         ...
@@ -386,6 +399,9 @@ class NullOperationStore:
         return None
 
     def expire_if_dead(self, id: str) -> Operation | None:
+        return None
+
+    def fail_unservable_done(self, id: str, *, attempt: int) -> Operation | None:
         return None
 
     def get(self, id: str) -> Operation | None:
@@ -749,6 +765,17 @@ class LiveOperationStore:
             "retryable = TRUE, lease_until = NULL, updated_at = %s "
             f"WHERE id = %s AND {_DEAD_PREDICATE}",
             (now, id, *self._dead_cutoffs(now)),
+        )
+
+    def fail_unservable_done(self, id: str, *, attempt: int) -> Operation | None:
+        now = self._now()
+        return self._update_one(
+            "failing an unservable completion of",
+            id,
+            "UPDATE datasets.operation SET state = 'failed', refusal_code = 'internal_error', "
+            "retryable = TRUE, updated_at = %s "
+            "WHERE id = %s AND state = 'done' AND attempt_count = %s",
+            (now, id, attempt),
         )
 
     def get(self, id: str) -> Operation | None:

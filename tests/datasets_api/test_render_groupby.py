@@ -143,11 +143,14 @@ _TABLE = Table(
 )
 
 
+_SUBJECT_ID = "spec_990700"
+
+
 def _enrichment() -> EnrichmentLookup:
     return EnrichmentLookup(FakeMintGraphReader())
 
 
-def test_naming_one_axis_to_keep_collapses_the_other_and_keeps_its_column():
+def test_naming_one_axis_to_keep_collapses_the_other_into_a_frame_keeping_its_column():
     options = MintOptions(groupby=GroupbyOptions(by=["crsPurpose"], op="sum"))
 
     reshaped = _reshape(
@@ -158,16 +161,30 @@ def test_naming_one_axis_to_keep_collapses_the_other_and_keeps_its_column():
         code_index=_INDEX,
         resolved_stat_var_refs=(),
         provenance_refs=("p1",),
+        subject_id=_SUBJECT_ID,
         pivot_max_output_cells=5_000_000,
     )
     table = reshaped.table
 
-    assert reshaped.warnings == ()
-    assert "stat_var" not in table.columns
+    assert [warning["code"] for warning in reshaped.warnings] == ["stat_vars_summed"]
+    assert reshaped.collapse is not None
+    assert reshaped.collapse.frame.columns == (
+        "stat_var",
+        "financingProvider",
+        "financingRecipient",
+        "stat_var_crsPurpose",
+        "time_period",
+        "value",
+        "unit",
+        "measurementMethod",
+        "provenance",
+        "status",
+    )
     assert "stat_var_crsTypeOfFinance" not in table.columns
-    assert "stat_var_crsPurpose" in table.columns
+    stat_var_pos = table.columns.index("stat_var")
     purpose_pos = table.columns.index("stat_var_crsPurpose")
     value_pos = table.columns.index("value")
+    assert {row[stat_var_pos] for row in table.rows} == {f"dcid:{_SUBJECT_ID}"}
     by_purpose = {row[purpose_pos]: row[value_pos] for row in table.rows}
     assert by_purpose == {"Basic health care": 15.0, "Malaria control": 7.0}
     assert len(table.rows) == 2
@@ -238,6 +255,7 @@ def test_a_frame_carrying_decoded_columns_collapses_without_double_counting():
         code_index=_INDEX,
         resolved_stat_var_refs=(),
         provenance_refs=("p1",),
+        subject_id=_SUBJECT_ID,
         pivot_max_output_cells=5_000_000,
     ).table
 
@@ -309,10 +327,10 @@ def test_a_by_entry_naming_an_axis_this_frame_never_declares_is_a_no_op():
         code_index=_INDEX,
         resolved_stat_var_refs=(),
         provenance_refs=("p1",),
+        subject_id=_SUBJECT_ID,
         pivot_max_output_cells=5_000_000,
     ).table
 
-    assert "stat_var" not in table.columns
     purpose_pos = table.columns.index("stat_var_crsPurpose")
     value_pos = table.columns.index("value")
     by_purpose = {row[purpose_pos]: row[value_pos] for row in table.rows}

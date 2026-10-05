@@ -80,7 +80,7 @@ from datasets_api.query_options import encode_query_options
 from datasets_api.render import (
     FRAME1_MAX_ROWS,
     CollectionMemberRendering,
-    artifact_rendering,
+    artifact_rendering_key,
     cited_source_names,
     metadata_deadline,
     render_and_store,
@@ -110,6 +110,7 @@ from materialise import (
     MaterialisationRequest,
     MaterialisationResult,
     RowProgress,
+    compute_output_profile,
     materialise_collection,
     materialise_group,
 )
@@ -437,7 +438,7 @@ def bundle_linked(
     rendering or without a `snapshot_reader`."""
     if snapshot_reader is None or not options.bundle:
         return False
-    key = rendering_key(artifact_rendering(options, site=site))
+    key = artifact_rendering_key(options, site=site)
     with phase("snapshot_read"):
         locations = snapshot_reader.read_artifact_locations(subject_id, content_version)
     return any(
@@ -985,6 +986,9 @@ def _write_definition_artifacts(
             content_version=collapse.content_version,
             coverage=replace(result.coverage, rows=len(collapse.frame.rows)),
             series_statistics=collapsed_statistics_sink.finish(),
+            output_profile=compute_output_profile(
+                collapse.frame, role_columns=collapse.role_columns, enrichment=deps.enrichment
+            ),
         )
         collapsed_frame1_record: ArtifactRecord | None = None
         if collapsed_result.coverage.rows <= FRAME1_MAX_ROWS:

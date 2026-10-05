@@ -119,6 +119,19 @@ def test_search_resolve_response_marks_status_and_every_part_status_as_required(
         assert "status" in components[part_name]["required"], part_name
 
 
+def test_search_headline_requires_its_recent_years(schema: dict[str, Any]):
+    components = schema["components"]["schemas"]
+    headline = components["Headline"]
+    assert "recent_years" in headline["required"]
+    assert headline["properties"]["recent_years"]["items"]["$ref"].endswith("/HeadlineYear")
+    assert set(components["HeadlineYear"]["required"]) == {
+        "year",
+        "observations",
+        "series",
+        "role_counts",
+    }
+
+
 def test_no_two_schemas_share_a_title(schema: dict[str, Any]):
     titles: dict[str, list[str]] = {}
     for name, schema_node in schema["components"]["schemas"].items():

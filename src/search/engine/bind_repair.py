@@ -314,6 +314,7 @@ def apply_declared_defaults(
     query_qualifier_matches: tuple[QualifierMatch, ...] = (),
     query_qualifier_ties: tuple[QualifierTie, ...] = (),
     engine_authored_properties: frozenset[str] = frozenset(),
+    pinned_properties: frozenset[str] = frozenset(),
 ) -> tuple[list[SlotBindingDraft], list[SlotBindingDraft]]:
     """Apply declared defaults to open slots when query evidence triggers them.
 
@@ -322,8 +323,10 @@ def apply_declared_defaults(
     extraction, when trigger words can be attributed to this variable. Both it and the
     extracted ``variable`` can trigger a default.
 
-    A slot must be open, have no ``requested_all`` evidence, and contain the default code in
-    its taxonomy. Any raw qualifier match or tie for that code system blocks the default,
+    A slot must be open, have no ``requested_all`` evidence, contain the default code in
+    its taxonomy, and hold no pin of the elected dataset. ``pinned_properties`` names the
+    pins, and every row of that dataset holds the pinned value, so the slot takes no
+    default. Any raw qualifier match or tie for that code system blocks the default,
     including unresolved ambiguity. Then either another query-derived ``value``/
     ``mentioned`` binding enters the declared scope on a non-engine-authored property, or
     the variable/query text names a ``when_named`` word outside negation or exclusion.
@@ -349,7 +352,7 @@ def apply_declared_defaults(
         target_index = next(
             (i for i, b in enumerate(bindings) if b.property_dcid == code_system), None
         )
-        if target_index is None:
+        if target_index is None or code_system in pinned_properties:
             continue
         if not _slot_open_to_default(
             bindings[target_index], shape_draft, code_system, default.code

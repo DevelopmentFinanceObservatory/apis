@@ -206,6 +206,16 @@ class NoData(StrictModel):
             'code is "absent" (the read request names a place holding nothing)'
         ),
     )
+    message: str | None = Field(
+        default=None,
+        description=(
+            "the plain-language sentence for reason, naming the query terms it concerns "
+            "where the reason has them (the indicator, place, or category wording), so a "
+            "client can show a person the reason beside its code. Every no_data part the "
+            "engine returns sets it, whatever response_options.include_sentence says. "
+            "Clients must not parse it"
+        ),
+    )
     nearest_real: list[NearestRealSpec] | None = Field(
         default=None,
         description=(

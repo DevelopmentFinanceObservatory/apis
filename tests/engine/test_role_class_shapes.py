@@ -1022,13 +1022,17 @@ def test_the_population_memo_keys_on_role_keys_and_not_on_the_entities_under_the
     assert recipient != _population_key(_debt_identity({}))
 
 
-def test_the_measure_family_cache_keys_on_role_keys():
+def test_the_measure_family_cache_keys_on_role_keys_and_exclusions():
     shape = _debt_shape()
     axes = get_measure_index().axes
+    query = shape_query(shape, [], ["destination"])
 
-    assert measure_family_cache_key(
-        shape, axes, shape_query(shape, [], ["destination"])
-    ) != measure_family_cache_key(shape, axes, shape_query(shape, [], ["origin", "destination"]))
+    assert measure_family_cache_key(shape, axes, query) != measure_family_cache_key(
+        shape, axes, shape_query(shape, [], ["origin", "destination"])
+    )
+    assert measure_family_cache_key(shape, axes, query) != measure_family_cache_key(
+        shape, axes, dataclasses.replace(query, excluded=frozenset({"provenance/Excluded"}))
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1333,8 +1337,8 @@ def test_an_unindexed_shape_has_no_measure_family_and_passes_the_collapse():
 
     assert index_carries_shape(crs) and not index_carries_shape(debt)
     assert debt.declared_roles == crs.declared_roles
-    assert measure_family_partitions(debt, index, axes, shape_query(debt, [])) == ()
-    assert measure_family_partitions(crs, index, axes, shape_query(crs, [])) != ()
+    assert measure_family_partitions(debt, index, axes, shape_query(debt, [], ())) == ()
+    assert measure_family_partitions(crs, index, axes, shape_query(crs, [], ())) != ()
     assert [s.shape_id for s in collapse_measure_families([debt, crs], index, axes)] == [
         debt.shape_id,
         crs.shape_id,

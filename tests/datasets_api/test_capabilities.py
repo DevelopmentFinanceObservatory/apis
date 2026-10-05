@@ -6,7 +6,7 @@ from dataclasses import replace
 
 import datasets_api.render as render_module
 from code_index.shared import get_index
-from code_index.types import CodeSystemDeclaration, summable_axes
+from code_index.types import CodeSystemDeclaration, level_axes, summable_axes
 from dataset_store.snapshot import WORKING_TIER_RETENTION
 from datasets_api.capabilities import (
     _LIVE_RENDERING_FORMATS,
@@ -137,11 +137,13 @@ class TestMintDoorLivenessMatchesWhatActuallyDispatches:
         assert policy.version == DEPLOYMENT_FACET_POLICY_VERSION
 
 
-def _declaration(code_system: str, *, summable: bool) -> CodeSystemDeclaration:
+def _declaration(
+    code_system: str, *, summable: bool, hierarchical: bool = False, disjoint: bool = True
+) -> CodeSystemDeclaration:
     return CodeSystemDeclaration(
         code_system=code_system,
-        hierarchical=False,
-        disjoint_from_children=True,
+        hierarchical=hierarchical,
+        disjoint_from_children=disjoint,
         summable=summable,
         absent_reading="not_declared",
         plain_name="axis",
@@ -178,3 +180,26 @@ class TestSummableAxes:
         # An undeclared axis is excluded like a declaration with `summable=False`.
         declarations = {"crsPurpose": _declaration("crsPurpose", summable=True)}
         assert "undeclaredAxis" not in summable_axes(declarations)
+
+
+class TestGroupbyLevelAxes:
+    """A level axis is declared summable, hierarchical, and disjoint from children."""
+
+    def test_the_published_level_axes_are_the_real_hierarchical_crs_systems(self):
+        assert _capabilities().groupby_level_axes == [
+            "crsCooperationModality",
+            "crsPurpose",
+            "crsTypeOfFinance",
+        ]
+
+    def test_a_flat_unsummable_or_overlapping_system_is_no_level_axis(self):
+        declarations = {
+            "crsPurpose": _declaration("crsPurpose", summable=True, hierarchical=True),
+            "flatSummable": _declaration("flatSummable", summable=True),
+            "treeNotSummable": _declaration("treeNotSummable", summable=False, hierarchical=True),
+            # A parent-coded record that includes its children would count them twice.
+            "treeOverlapping": _declaration(
+                "treeOverlapping", summable=True, hierarchical=True, disjoint=False
+            ),
+        }
+        assert level_axes(declarations) == frozenset({"crsPurpose"})

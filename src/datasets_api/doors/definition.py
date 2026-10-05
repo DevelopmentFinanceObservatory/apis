@@ -81,6 +81,7 @@ from datasets_api.admission import (
     sync_estimate,
     within_sync_budget,
 )
+from datasets_api.capabilities import build_capabilities
 from datasets_api.codes_materialise import (
     DefinitionNotReproducible,
     ExcludedByRegistry,
@@ -135,6 +136,7 @@ from datasets_api.operations.task_client import (
     TaskClientSettings,
     build_live_task_client,
 )
+from datasets_api.output_options import derive_output_options
 from datasets_api.query_options import (
     QueryOptionsInvalid,
     encode_query_options,
@@ -143,7 +145,7 @@ from datasets_api.query_options import (
 )
 from datasets_api.render import (
     GroupbyCollapseRendering,
-    artifact_rendering,
+    artifact_rendering_key,
     check_options_supported,
     cited_source_names,
     is_statistics_rendering,
@@ -172,7 +174,7 @@ from datasets_api.shape import resolve_shapes
 from datasets_api.shutdown import ShutdownBudget
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.timings import PhaseTimings, door_call, phase, run_with_timings
-from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter, rendering_key
+from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
 from datasets_api.versions import (
     ArtifactRecord,
     HeadStore,
@@ -190,6 +192,7 @@ from materialise import (
     CollectionFacetProbe,
     EnrichmentLookup,
     MaterialisationRequest,
+    compute_output_profile,
     probe_collection_facets,
 )
 from materialise.bundle import ReproducingCall
@@ -677,6 +680,16 @@ def _record_head_hit_collapse(
         artifact_store=deps.artifact_store,
     )
     call_warnings = reshape_warning_models(reshape_warnings)
+    output_profile = compute_output_profile(
+        collapse.frame, role_columns=collapse.role_columns, enrichment=deps.enrichment
+    )
+    capabilities = build_capabilities(
+        capability_version=deps.capability_version,
+        build=deps.materialiser_build,
+        code_index_stamp=deps.code_index.stamp,
+        declarations=deps.code_index.declarations,
+        settings=deps.settings,
+    )
     collapsed_manifest = collapsed_head_manifest(
         manifest=manifest,
         collapse_frame=collapse.frame,
@@ -684,6 +697,7 @@ def _record_head_hit_collapse(
         statistics_artifact=collapsed_statistics_artifact,
         series_count=collapsed_statistics_file.series_count,
         content_version=cast(str, collapse.content_version),
+        output_options=derive_output_options(output_profile, capabilities=capabilities),
         extra_warnings=call_warnings,
     )
     created = record_collapsed_head_version(
@@ -698,6 +712,7 @@ def _record_head_hit_collapse(
         subject_id=subject_id,
         schema_version=schema_version,
         base_content_version=base_content_version,
+        output_profile=output_profile,
         record_only_artifacts=(
             [collapsed_frame1_record] if collapsed_frame1_record is not None else []
         ),
@@ -995,7 +1010,7 @@ def _resolve_currency(
     head = deps.head_store.read_head(subject_id)
     now = deps.now()
     key = (
-        rendering_key(artifact_rendering(options, site=deps.settings.site))
+        artifact_rendering_key(options, site=deps.settings.site)
         if options is not None and write_confirmation
         else None
     )
@@ -1765,7 +1780,7 @@ async def _get_definition_impl(
 ) -> JSONResponse:
     """Build request-scoped graph and deadline state, then dispatch by subject-id prefix."""
     options = parse_query_options(request.query_params.multi_items())
-    check_options_supported(options)
+    check_options_supported(options, code_index=state.deps.code_index)
     trace_id = get_trace_id()
     request_deps = replace(
         state.deps,

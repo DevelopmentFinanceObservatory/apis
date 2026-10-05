@@ -5,7 +5,8 @@ The hash covers four inputs:
 
 1. The capability document, excluding `capability_version` (self-reference),
    `build` (redeploys can change it without changing behaviour), and the
-   content-derived `code_index`, `decode_code_systems`, and `summable_axes`.
+   content-derived `code_index`, `decode_code_systems`, `summable_axes`, and
+   `groupby_level_axes`.
    Every other field, including caps, liveness flags, and sync budgets,
    affects the token.
 2. Rendered refusal bodies for every code. The first exemplar fills every
@@ -61,6 +62,7 @@ _EXEMPLAR_CODE_INDEX: dict[str, object] = {
 }
 _EXEMPLAR_DECODE_CODE_SYSTEMS: list[str] = []
 _EXEMPLAR_SUMMABLE_AXES: list[str] = []
+_EXEMPLAR_GROUPBY_LEVEL_AXES: list[str] = []
 
 # Fix the trace id so refusal-body exemplars hash deterministically.
 _EXEMPLAR_TRACE_ID = "0" * 32
@@ -89,6 +91,7 @@ def _pin_deployment_identity_fields(document: Mapping[str, object]) -> dict[str,
     pinned["code_index"] = _EXEMPLAR_CODE_INDEX
     pinned["decode_code_systems"] = _EXEMPLAR_DECODE_CODE_SYSTEMS
     pinned["summable_axes"] = _EXEMPLAR_SUMMABLE_AXES
+    pinned["groupby_level_axes"] = _EXEMPLAR_GROUPBY_LEVEL_AXES
     return pinned
 
 

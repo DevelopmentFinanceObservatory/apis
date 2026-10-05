@@ -14,8 +14,10 @@ import pytest
 
 from dc_graph.client import SubjectPage
 from materialise.convert import require_conversion_coverage
+from materialise.errors import UpstreamResponseError
 from materialise.rate_tables import RATE_TABLE_SCHEMA, RateTable, RateTableCache
 from materialise.recipe_bodies import RECIPE_BODIES
+from materialise.recipes import CONVERSION_NODE_PROPERTIES, resolve_recipe
 from search.engine.clients.graph import Facet
 from search.engine.conjoin import assemble_region
 from search.engine.envelope import now_ms
@@ -550,14 +552,10 @@ def test_a_definite_dollar_part_carries_the_warning_while_no_catalogue_is_loaded
 
 
 class _Graph:
-    """A graph holding the recipe each provenance or Dataset names, the conversion tables'
-    refresh date and base year, and the currency units with the places they serve."""
+    """A graph holding the recipe each provenance or Dataset names, the Datasets each
+    provenance is part of, the conversion tables' refresh date and base year, and the
+    currency units with the places they serve. `extra` adds or replaces nodes."""
 
-    _NAMING: ClassVar[dict[str, tuple[str, ...]]] = {
-        "ConversionRecipeDAC": (_CRS, _DATASET),
-        "ConversionRecipeIDS": (_IDS,),
-        "ConversionRecipeIMF": (_WEO,),
-    }
     _CURRENCIES: ClassVar[dict[str, tuple[str, ...]]] = {
         "CurrencyEUR": ("country/DEU", "country/FRA", "country/MNE"),
         "CurrencyGTQ": ("country/GTM",),
@@ -565,20 +563,31 @@ class _Graph:
         "CurrencyXXX": ("country/MNE",),
     }
 
+    def __init__(self, extra: Mapping[str, Mapping[str, tuple[str, ...]]] | None = None) -> None:
+        self._nodes: dict[str, Mapping[str, tuple[str, ...]]] = {
+            _CRS: {"typeOf": ("Provenance",), "conversionRecipe": ("ConversionRecipeDAC",)},
+            _DATASET: {"typeOf": ("Dataset",), "conversionRecipe": ("ConversionRecipeDAC",)},
+            _IN_DATASET: {"typeOf": ("Provenance",), "isPartOf": (_DATASET,)},
+            _IDS: {"typeOf": ("Provenance",), "conversionRecipe": ("ConversionRecipeIDS",)},
+            _WEO: {"typeOf": ("Provenance",), "conversionRecipe": ("ConversionRecipeIMF",)},
+            **{
+                dcid: {"lastDataRefreshDate": (_REFRESH,), "deflatorBaseYear": ("2024",)}
+                for dcid in TABLE_PROVENANCES
+            },
+            **{
+                unit: {"typeOf": ("CurrencyUnit",), "nationalCurrencyOf": places}
+                for unit, places in self._CURRENCIES.items()
+            },
+            **(extra or {}),
+        }
+
     def node_arcs_many(
         self, dcids: Sequence[str], *, properties: Sequence[str], deadline: float | None = None
     ) -> dict[str, Mapping[str, tuple[str, ...]] | None]:
         arcs: dict[str, Mapping[str, tuple[str, ...]] | None] = {}
         for dcid in dcids:
-            if dcid in TABLE_PROVENANCES:
-                arcs[dcid] = {"lastDataRefreshDate": (_REFRESH,), "deflatorBaseYear": ("2024",)}
-            elif dcid in self._CURRENCIES:
-                arcs[dcid] = {
-                    "typeOf": ("CurrencyUnit",),
-                    "nationalCurrencyOf": self._CURRENCIES[dcid],
-                }
-            else:
-                arcs[dcid] = {"typeOf": ("Dataset",) if dcid == _DATASET else ("Provenance",)}
+            node = self._nodes.get(dcid, {"typeOf": ("Provenance",)})
+            arcs[dcid] = {prop: node[prop] for prop in properties if prop in node} or None
         return arcs
 
     def node_names_many(
@@ -596,12 +605,10 @@ class _Graph:
         max_results: int,
         deadline: float | None = None,
     ) -> SubjectPage:
-        subjects = {
-            **{(recipe, "conversionRecipe"): named for recipe, named in self._NAMING.items()},
-            ("CurrencyUnit", "typeOf"): tuple(self._CURRENCIES),
-            (_DATASET, "isPartOf"): (_IN_DATASET,),
-        }
-        return SubjectPage(dcids=subjects.get((dcid, property), ()), truncated=False)
+        subjects = tuple(
+            subject for subject, node in self._nodes.items() if dcid in node.get(property, ())
+        )
+        return SubjectPage(dcids=subjects, truncated=False)
 
 
 def _table(kind, stat_var: str, provenance: str, rows: list[tuple[str, int, str]]) -> RateTable:
@@ -635,8 +642,8 @@ def _cache() -> RateTableCache:
     return cache
 
 
-def _load() -> ConversionCatalogue:
-    graph = _Graph()
+def _load(graph: _Graph | None = None) -> ConversionCatalogue:
+    graph = graph if graph is not None else _Graph()
     return load_conversion_catalogue(graph=graph, reader=graph, sdmx=None, cache=_cache())
 
 
@@ -647,6 +654,58 @@ def test_the_catalogue_reads_each_provenances_recipe_from_it_or_its_dataset():
         _IDS: "ConversionRecipeIDS",
         _WEO: "ConversionRecipeIMF",
     }
+
+
+_IDS_DATASET = "dc/d/DebtStatistics"
+_IN_TWO = "provenance/InTwoDatasets"
+
+
+@pytest.mark.parametrize(
+    ("datasets", "first"),
+    [
+        ((_DATASET, _IDS_DATASET), "ConversionRecipeDAC"),
+        ((_IDS_DATASET, _DATASET), "ConversionRecipeIDS"),
+    ],
+)
+def test_a_provenance_in_two_datasets_takes_the_first_ones_recipe_as_the_materialiser_does(
+    datasets: tuple[str, str], first: str
+):
+    graph = _Graph(
+        {
+            _IDS_DATASET: {"typeOf": ("Dataset",), "conversionRecipe": ("ConversionRecipeIDS",)},
+            _IN_TWO: {"typeOf": ("Provenance",), "isPartOf": datasets},
+        }
+    )
+    arcs = graph.node_arcs_many([_IN_TWO], properties=CONVERSION_NODE_PROPERTIES)[_IN_TWO]
+    materialised = resolve_recipe(graph, provenance_id=_IN_TWO, provenance_arcs=arcs)
+    assert materialised.recipe_id == first
+    assert _load(graph).recipe(_IN_TWO) is materialised
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        # The provenance names two recipes: the materialiser refuses it, so the catalogue
+        # offers none rather than its Dataset's.
+        {
+            _IN_DATASET: {
+                "isPartOf": (_DATASET,),
+                "conversionRecipe": ("ConversionRecipeDAC", "ConversionRecipeIMF"),
+            }
+        },
+        # Its first Dataset names a recipe this deployment has no body for.
+        {
+            "dc/d/Ghost": {"typeOf": ("Dataset",), "conversionRecipe": ("recipe/Ghost",)},
+            _IN_DATASET: {"isPartOf": ("dc/d/Ghost", _DATASET)},
+        },
+    ],
+)
+def test_the_catalogue_offers_no_recipe_for_a_provenance_the_materialiser_refuses(extra):
+    graph = _Graph(extra)
+    arcs = graph.node_arcs_many([_IN_DATASET], properties=CONVERSION_NODE_PROPERTIES)[_IN_DATASET]
+    with pytest.raises(UpstreamResponseError):
+        resolve_recipe(graph, provenance_id=_IN_DATASET, provenance_arcs=arcs)
+    assert _IN_DATASET not in _load(graph).recipes
 
 
 def test_the_catalogue_holds_the_tables_accepted_currencies_and_actual_years():

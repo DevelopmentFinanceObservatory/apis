@@ -54,6 +54,7 @@ from datasets_api.manifest_models import (
     CoverageModel,
     DefinitionModel,
     Manifest,
+    OutputOptionsModel,
     ReleaseModel,
     TransformationStepModel,
     WarningModel,
@@ -641,11 +642,13 @@ def collapsed_head_manifest(
     statistics_artifact: ArtifactEntryModel,
     series_count: int,
     content_version: str,
+    output_options: OutputOptionsModel,
     extra_warnings: Sequence[WarningModel] = (),
 ) -> Manifest:
     """Patches a raw head manifest for a collapsed identity without a fresh materialisation.
 
-    Updates content version, row count, series count, artifacts, and warnings. Citation, trace,
+    Updates content version, row count, series count, artifacts, output options, and warnings.
+    Citation, trace,
     definition and `prepared_at` remain unchanged because collapse preserves provenance and scope
     and renders from the raw version's record.
     """
@@ -656,6 +659,7 @@ def collapsed_head_manifest(
             "series_count": series_count,
             "warnings": list(manifest.warnings) + list(extra_warnings),
             "artifacts": [artifact, statistics_artifact],
+            "output_options": output_options,
         }
     )
 
@@ -666,6 +670,7 @@ def record_collapsed_head_version(
     subject_id: str,
     schema_version: int,
     base_content_version: str,
+    output_profile: OutputProfile,
     record_only_artifacts: Sequence[ArtifactRecord] = (),
     version_writer: VersionRecordWriter = NULL_VERSION_RECORD_WRITER,
     trace_id: str | None = None,
@@ -673,9 +678,9 @@ def record_collapsed_head_version(
     """Records a head-hit collapse without a fresh materialisation result and returns `False` if
     the record already existed.
 
-    `manifest` is already patched. `base_content_version` names the raw materialisation. The
-    omitted profile makes direct reads return `output_options=None`. `ON CONFLICT DO NOTHING`
-    makes repeated writes idempotent.
+    `manifest` is already patched. `base_content_version` names the raw materialisation, and
+    `output_profile` is the collapsed frame's. `ON CONFLICT DO NOTHING` makes repeated writes
+    idempotent.
     """
     with phase("record"):
         return version_writer.record_version(
@@ -684,7 +689,7 @@ def record_collapsed_head_version(
                 subject_kind="spec",
                 content_version=manifest.content_version,
                 schema_version=schema_version,
-                immutable_body=encode_version_body(manifest),
+                immutable_body=encode_version_body(manifest, output_profile=output_profile),
                 artifacts=tuple(
                     ArtifactRecord(
                         artifact_digest=artifact.artifact_digest,

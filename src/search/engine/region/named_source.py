@@ -6,8 +6,9 @@ one source-axis value binding (`retrieval.bound_values.source_binding`), which
 `shape_query` reads into the family election and `spec_build.build_slot` binds into the
 source slot.
 The engine writes that binding here and nowhere else on a first resolve. Shape candidacy
-keeps only the mentioned dataset's shapes on a part with a bound mention
-(`phase_rank_bind._dataset_candidates`), so the elected shape is always one of its own.
+keeps only the shapes whose five-tuple the mentioned dataset publishes on a part with a
+bound mention (`phase_rank_bind._dataset_candidates`), so the elected shape is always one
+it publishes, whichever other datasets publish it too.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from collections.abc import Sequence
 
 from search.engine.bind import SlotBindingDraft
 from search.engine.dataset_mention import DatasetMention
-from search.engine.retrieval.bound_values import shape_dataset, source_binding
+from search.engine.retrieval.bound_values import shape_datasets, source_binding
 from search.engine.shape import ShapeDraft
 
 
@@ -32,14 +33,14 @@ def without_dataset_drafts(bindings: Sequence[SlotBindingDraft]) -> list[SlotBin
 def with_named_source(
     bindings: Sequence[SlotBindingDraft], shape: ShapeDraft, source: str | None
 ) -> list[SlotBindingDraft]:
-    """Return `bindings` naming the dataset `source` when it publishes `shape`'s family
-    (`shape_dataset`).
+    """Return `bindings` naming the dataset `source` when it is among the datasets publishing
+    `shape`'s five-tuple (`shape_datasets`).
 
     Every dataset draft in `bindings` is replaced, so the result holds one source binding
     or none.
     """
     kept = without_dataset_drafts(bindings)
-    if source is None or shape_dataset(shape) != source:
+    if source is None or source not in shape_datasets(shape):
         return kept
     return [*kept, source_binding(source)]
 
