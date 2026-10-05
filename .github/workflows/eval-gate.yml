@@ -18,6 +18,20 @@ name: Eval gate
 # its exit code as the `eval-gate-<K>` artifact, and writes its Markdown
 # summary to its own job summary. Nothing here writes to Langfuse.
 #
+# Every case calls Gemini, so the eval runs when a non-draft PR is opened or
+# reopened and when a draft is marked ready for review. A push runs nothing.
+# Every job requires a non-draft PR, so a draft's opened or reopened run skips
+# them all; a draft cannot merge, and marking it ready runs the eval on its
+# head. Adding the `run-eval` label asks for another run, draft or not:
+# eval-request.yml removes the label and dispatches this workflow on the PR's
+# head branch with the PR number as the `pr` input. A dispatched run reports
+# its checks on that branch's latest commit, the PR head, and checks out
+# refs/pull/<pr>/merge, the merge commit a pull_request run reads. The changes
+# job fails when that merge commit's second parent is not the commit the run
+# reports on, as happens when GitHub has not yet rebuilt the merge ref after a
+# push. A label event never starts this workflow, so no label can replace a
+# commit's `Eval gate` result.
+#
 # eval_paired.py exits 0 when nothing blocks, 1 on a blocking verdict and 3 on
 # infrastructure. Each shard writes that code to the `code` file in its
 # artifact and passes; any other code is a crash and fails the shard. The
@@ -37,19 +51,31 @@ name: Eval gate
 on:
   pull_request:
     branches: [dev, main]
-    # The `edited` type is omitted because a skipped check on a commit would
-    # replace the failed one (see the hazard recorded in ci.yml). A retargeted
-    # stacked PR runs again on its next push or reopen.
-    types: [opened, synchronize, reopened]
+    # `synchronize` is omitted so a push spends no Gemini calls. `edited` is
+    # omitted because a skipped check on a commit would replace the failed one
+    # (see the hazard recorded in ci.yml), and `labeled` for the same reason:
+    # eval-request.yml handles the `run-eval` label.
+    types: [opened, reopened, ready_for_review]
+  # Dispatched by eval-request.yml on the PR's head branch.
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Number of the pull request to evaluate
+        required: true
+        type: number
 
 permissions:
   contents: read
 
+# One group per PR across both triggers, so a newer eval cancels an older one.
+# The expression is PR_NUMBER's, since workflow concurrency cannot read env.
 concurrency:
-  group: eval-gate-${{ github.event.pull_request.number }}
+  group: eval-gate-${{ github.event.pull_request.number || inputs.pr }}
   cancel-in-progress: true
 
 env:
+  # The PR under evaluation, on either trigger.
+  PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr }}
   UV_SYNC_ARGS: --frozen --extra eval --extra api --extra engine --extra datasets --extra graph
   UV_NO_SYNC: "1"
   # The deployed artifact roots, owned by the dfo-infra `apis` stack. The eval
@@ -69,7 +95,8 @@ jobs:
     name: Reset the eval override
     # Mints a dfo-reader token and reads dev's deployed builds, so the eval runs
     # in ONEcampaign only. The identical tree ran it here before it was synced.
-    if: github.repository_owner == 'ONEcampaign'
+    # Every job skips on a draft; a dispatched run has no pull_request payload.
+    if: github.repository_owner == 'ONEcampaign' && github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -78,7 +105,7 @@ jobs:
       - name: Remove the eval-override label
         env:
           GH_TOKEN: ${{ github.token }}
-          LABELS: repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels
+          LABELS: repos/${{ github.repository }}/issues/${{ env.PR_NUMBER }}/labels
         run: |
           set -euo pipefail
           if gh api "$LABELS" --jq '.[].name' | grep -qx 'eval-override'; then
@@ -90,20 +117,41 @@ jobs:
   changes:
     name: Detect eval changes
     # The run job needs this one, so it skips with it outside ONEcampaign.
-    if: github.repository_owner == 'ONEcampaign'
+    if: github.repository_owner == 'ONEcampaign' && github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: read
     outputs:
       eval: ${{ steps.filter.outputs.eval }}
+      merge: ${{ steps.merge.outputs.sha }}
       shards: ${{ steps.shards.outputs.shards }}
     steps:
       - uses: actions/checkout@v7
         with:
-          # The merge commit and its parents: HEAD^1 is the base.
+          # The merge commit and its parents: HEAD^1 is the base. A
+          # pull_request run checks out the event's merge commit; a dispatched
+          # run reads the PR's merge ref as it stands.
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/pull/{0}/merge', env.PR_NUMBER) || '' }}
           fetch-depth: 2
           persist-credentials: false
+
+      # The run reports on HEAD_SHA, so it must evaluate a merge of that commit.
+      # A PR that conflicts with its base keeps a stale merge ref, or none, in
+      # which case the checkout above fails first.
+      # The run job checks out this same merge commit by its sha.
+      - name: Check the merge commit
+        id: merge
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          merged="$(git rev-parse HEAD^2)"
+          if [ "$merged" != "$HEAD_SHA" ]; then
+            echo "::error::refs/pull/$PR_NUMBER/merge merges $merged, not the head $HEAD_SHA. Either GitHub has not rebuilt the merge ref since the last push, so add the run-eval label again in a minute, or the PR conflicts with its base and GitHub cannot build one, so resolve the conflict first."
+            exit 1
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Detect eval-relevant changes
         id: filter
@@ -147,7 +195,7 @@ jobs:
   run:
     name: Eval run (shard ${{ matrix.shard.label }})
     needs: changes
-    if: needs.changes.outputs.eval == 'true'
+    if: needs.changes.outputs.eval == 'true' && github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -160,7 +208,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          # The merge commit and its parents: HEAD^1 is the base.
+          # The merge commit the changes job checked, and its parents: HEAD^1
+          # is the base.
+          ref: ${{ needs.changes.outputs.merge }}
           fetch-depth: 2
           # No step needs an authenticated git after checkout. The spec-kit
           # step writes its own credential rewrite.
@@ -348,7 +398,7 @@ jobs:
   verdict:
     name: Eval gate
     needs: [reset, changes, run]
-    if: always() && github.repository_owner == 'ONEcampaign'
+    if: always() && github.repository_owner == 'ONEcampaign' && github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -395,7 +445,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SHARDS_DIR: ${{ runner.temp }}/shards
-          LABELS: repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels
+          LABELS: repos/${{ github.repository }}/issues/${{ env.PR_NUMBER }}/labels
         run: |
           set -euo pipefail
           # 1 if any shard exited 1, else 3 if any exited 3, else 0. A shard

@@ -297,9 +297,11 @@ class RoleServedFilter:
         counted = conversion if isinstance(conversion, CountedConversion) else None
         served: dict[str, dict[ServedSeries, SeriesRows]] = {}
         for names, svs in by_roles.items():
-            role_names: dict[Role, str] = {"recipient": names.recipient}
-            if names.donor is not None:
-                role_names["donor"] = names.donor
+            role_names: dict[Role, str] = {
+                role: name
+                for role, name in (("recipient", names.recipient), ("donor", names.donor))
+                if name is not None
+            }
             found = self.coverage.series_years(
                 variables=svs,
                 bound=self._bound(names),

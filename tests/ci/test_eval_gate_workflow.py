@@ -1,9 +1,11 @@
 """Check the eval-gate triggers, jobs and verdict without running an evaluation.
 
-The gate runs on opened, synchronize and reopened only. An `edited` run that skipped
-its jobs would replace the failed check on a commit with a skipped one, which GitHub
-counts as satisfied; ci.yml records the same hazard. The verdict job's shell step that
-combines the shards' exit codes runs here under bash, with `gh` stubbed.
+The gate runs when a non-draft PR is opened or reopened, when a draft is marked ready,
+and when eval-request.yml dispatches it for the `run-eval` label. A push or a label
+event never starts it: a run that skipped its jobs would replace the failed check on a
+commit with a skipped one, which GitHub counts as satisfied; ci.yml records the same
+hazard. The verdict job's shell step that combines the shards' exit codes runs here
+under bash, with `gh` stubbed.
 """
 
 import json
@@ -19,35 +21,129 @@ _WORKFLOW_PATH = Path(__file__).resolve().parents[2] / ".github" / "workflows" /
 _WORKFLOW = yaml.safe_load(_WORKFLOW_PATH.read_text())
 # PyYAML reads the bare `on` key as boolean true.
 _TRIGGERS = _WORKFLOW[True]
+_REQUEST = yaml.safe_load((_WORKFLOW_PATH.parent / "eval-request.yml").read_text())
 # The eval reads dev's deployed builds, so every job runs in ONEcampaign only.
 _ONECAMPAIGN_ONLY = "github.repository_owner == 'ONEcampaign'"
+# Every job skips on a draft; a dispatched run has no pull_request payload.
+_NOT_DRAFT = "github.event.pull_request.draft != true"
+_PR_NUMBER = "github.event.pull_request.number || inputs.pr"
 
 
-def _group(pr_number: int) -> str:
-    """Render the concurrency group for a pull request event."""
-    context = {"github.event.pull_request.number": str(pr_number)}
-    return re.sub(
-        r"\$\{\{\s*([\w.]+)\s*\}\}",
-        lambda match: context[match.group(1)],
-        _WORKFLOW["concurrency"]["group"],
+def _clauses(condition: str) -> set[str]:
+    """Split a job's ``if`` into its top-level ``&&`` clauses."""
+    return {clause.strip() for clause in condition.split("&&")}
+
+
+def test_neither_a_push_nor_a_label_starts_the_gate():
+    pull_request = set(_TRIGGERS["pull_request"]["types"])
+
+    assert set(_TRIGGERS) == {"pull_request", "workflow_dispatch"}
+    assert {"synchronize", "labeled", "edited"}.isdisjoint(pull_request)
+    assert "ready_for_review" in pull_request
+    pr_input = _TRIGGERS["workflow_dispatch"]["inputs"]["pr"]
+    assert pr_input["required"] is True and pr_input["type"] == "number"
+
+
+def test_runs_for_one_pr_share_one_group_on_either_trigger():
+    assert _WORKFLOW["env"]["PR_NUMBER"] == f"${{{{ {_PR_NUMBER} }}}}"
+    assert _WORKFLOW["concurrency"]["group"] == f"eval-gate-${{{{ {_PR_NUMBER} }}}}"
+    assert _WORKFLOW["concurrency"]["cancel-in-progress"] is True
+    assert "github.event.pull_request.number" not in yaml.safe_dump(_WORKFLOW["jobs"])
+
+
+def test_every_job_skips_on_a_draft():
+    """A pull_request run on a draft skips every job, the verdict included."""
+    for name, job in _WORKFLOW["jobs"].items():
+        assert _NOT_DRAFT in _clauses(job["if"]), name
+
+
+def test_a_dispatched_run_evaluates_the_merge_of_the_head_it_reports_on():
+    changes_checkout = _steps("changes")[0]
+    run_checkout = _steps("run")[0]
+    check = next(step for step in _steps("changes") if step.get("id") == "merge")
+
+    assert "refs/pull/{0}/merge" in changes_checkout["with"]["ref"]
+    assert "workflow_dispatch" in changes_checkout["with"]["ref"]
+    assert run_checkout["with"]["ref"] == "${{ needs.changes.outputs.merge }}"
+    assert _WORKFLOW["jobs"]["changes"]["outputs"]["merge"] == "${{ steps.merge.outputs.sha }}"
+    assert check["env"]["HEAD_SHA"] == "${{ github.event.pull_request.head.sha || github.sha }}"
+    assert all(step["with"]["fetch-depth"] == 2 for step in (changes_checkout, run_checkout))
+
+
+def _merge_repo(tmp_path: Path) -> tuple[Path, str, str]:
+    """Build a repo whose HEAD merges a branch into its base; return it, the merged
+    branch tip, and the base tip."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args: str) -> str:
+        done = subprocess.run(
+            ["git", "-c", "user.name=t", "-c", "user.email=t@t", *args],
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return done.stdout.strip()
+
+    git("init", "-q", "-b", "base")
+    git("commit", "-q", "--allow-empty", "-m", "base")
+    # Not "head": on a case-insensitive filesystem that branch shadows HEAD.
+    git("checkout", "-q", "-b", "topic")
+    git("commit", "-q", "--allow-empty", "-m", "head")
+    head = git("rev-parse", "HEAD")
+    git("checkout", "-q", "base")
+    git("commit", "-q", "--allow-empty", "-m", "base 2")
+    base = git("rev-parse", "HEAD")
+    git("merge", "-q", "--no-ff", "-m", "merge", "topic")
+    return repo, head, base
+
+
+def _check_merge(repo: Path, head_sha: str, script: str) -> subprocess.CompletedProcess:
+    env = {
+        **os.environ,
+        "HEAD_SHA": head_sha,
+        "PR_NUMBER": "7",
+        "GITHUB_OUTPUT": str(repo.parent / "output"),
+    }
+    return subprocess.run(
+        ["bash", "-c", script], cwd=repo, env=env, capture_output=True, text=True, check=False
     )
 
 
-def test_only_pull_requests_open_synchronize_and_reopen_trigger_the_gate():
-    assert set(_TRIGGERS) == {"pull_request"}
-    assert set(_TRIGGERS["pull_request"]["types"]) == {"opened", "synchronize", "reopened"}
+def test_the_merge_check_refuses_a_merge_ref_that_does_not_merge_the_head(tmp_path):
+    script = next(step for step in _steps("changes") if step.get("id") == "merge")["run"]
+    repo, head, base = _merge_repo(tmp_path)
+
+    assert _check_merge(repo, head, script).returncode == 0
+    assert (tmp_path / "output").read_text().startswith("sha=")
+    stale = _check_merge(repo, base, script)
+    assert stale.returncode == 1
+    assert "::error::refs/pull/7/merge merges" in stale.stdout
 
 
-def test_runs_for_one_pr_share_one_group_and_cancel_in_progress():
-    assert _group(7) == _group(7)
-    assert _group(7) != _group(8)
-    assert _WORKFLOW["concurrency"]["cancel-in-progress"] is True
+def test_eval_request_dispatches_only_for_run_eval_on_an_open_same_repo_pr():
+    triggers = _REQUEST[True]
+    jobs = _REQUEST["jobs"]
+    (job,) = jobs.values()
 
-
-def test_no_job_is_skipped_by_an_event_condition():
-    """A job held back by an `if` on the event reports as skipped on the commit."""
-    conditions = [str(job.get("if", "")) for job in _WORKFLOW["jobs"].values()]
-    assert not any("github.event" in condition for condition in conditions)
+    assert triggers["pull_request"]["types"] == ["labeled"]
+    assert _clauses(job["if"]) == {
+        _ONECAMPAIGN_ONLY,
+        "github.event.label.name == 'run-eval'",
+        "github.event.pull_request.state == 'open'",
+        "github.event.pull_request.head.repo.full_name == github.repository",
+    }
+    assert job["name"] != _WORKFLOW["jobs"]["verdict"]["name"]
+    assert job["permissions"] == {"actions": "write", "pull-requests": "write"}
+    (step,) = job["steps"]
+    assert step["env"]["GH_TOKEN"] == "${{ github.token }}"
+    assert step["env"]["HEAD_REF"] == "${{ github.event.pull_request.head.ref }}"
+    assert (
+        'gh workflow run eval-gate.yml --repo "$GITHUB_REPOSITORY" --ref "$HEAD_REF" -f "pr=$PR_NUMBER"'
+        in step["run"]
+    )
+    assert '"repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/labels/run-eval"' in step["run"]
 
 
 def test_a_head_app_that_died_during_the_run_fails_the_run_job():
@@ -74,7 +170,7 @@ def test_the_reset_job_clears_the_override_without_running_pr_code():
 
     assert reset["permissions"] == {"pull-requests": "write"}
     assert not any("uses" in step for step in reset["steps"])
-    assert reset["if"] == _ONECAMPAIGN_ONLY
+    assert _clauses(reset["if"]) == {_ONECAMPAIGN_ONLY, _NOT_DRAFT}
     assert "reset" in _WORKFLOW["jobs"]["verdict"]["needs"]
 
 
@@ -103,7 +199,7 @@ def test_no_eval_workflow_persists_checkout_credentials():
         if str(step.get("uses", "")).startswith("actions/checkout")
     ]
 
-    assert len(workflows) == 3 and len(checkouts) == 4
+    assert len(workflows) == 4 and len(checkouts) == 4
     assert all(step["with"]["persist-credentials"] is False for step in checkouts)
 
 
@@ -126,10 +222,10 @@ def test_one_changes_job_gates_a_matrix_of_shards_that_do_not_cancel_each_other(
     jobs = _WORKFLOW["jobs"]
     run = jobs["run"]
 
-    assert jobs["changes"]["if"] == _ONECAMPAIGN_ONLY
-    assert set(jobs["changes"]["outputs"]) == {"eval", "shards"}
+    assert _clauses(jobs["changes"]["if"]) == {_ONECAMPAIGN_ONLY, _NOT_DRAFT}
+    assert set(jobs["changes"]["outputs"]) == {"eval", "merge", "shards"}
     assert run["needs"] == "changes"
-    assert run["if"] == "needs.changes.outputs.eval == 'true'"
+    assert _clauses(run["if"]) == {"needs.changes.outputs.eval == 'true'", _NOT_DRAFT}
     assert run["strategy"]["fail-fast"] is False
     assert run["strategy"]["matrix"]["shard"] == "${{ fromJSON(needs.changes.outputs.shards) }}"
     assert "matrix.shard" in run["name"]
@@ -168,7 +264,7 @@ def test_the_verdict_job_keeps_its_name_and_waits_for_every_job():
 
     assert verdict["name"] == "Eval gate"
     assert set(verdict["needs"]) == {"reset", "changes", "run"}
-    assert verdict["if"] == f"always() && {_ONECAMPAIGN_ONLY}"
+    assert _clauses(verdict["if"]) == {"always()", _ONECAMPAIGN_ONLY, _NOT_DRAFT}
     assert verdict["permissions"] == {"pull-requests": "read"}
     download = next(
         step

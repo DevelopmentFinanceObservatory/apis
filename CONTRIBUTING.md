@@ -88,14 +88,18 @@ fault, so a case that exposes an engine fault stays in the corpus with its corre
 expectation. The summary lists every case the PR deleted, made ineligible, or gave a new
 `known_failure`, so a reviewer sees each silenced check.
 
-The eval workflow (`.github/workflows/eval-gate.yml`) runs on PRs into `dev` and `main` that
-touch `src/`, `packages/`, `corpus/`, the eval scripts, `uv.lock` or `pyproject.toml`, and on
-demand via `workflow_dispatch`. It stages the deployed coverage and catalogue artifacts with
-`scripts/stage_eval_data.py`, serves both apps with the eval profile (`just eval-app`), runs
-`scripts/eval_paired.py`, uploads the report and every response as an artifact, and posts the
-summary. The driver exits 0 when nothing blocks, 1 on a blocking verdict, and 3 on
-infrastructure failure. The `eval-override` label turns a 1 or a 3 into a pass and the
-summary records the override. Making the job a required status check is a branch-protection
+The eval workflow (`.github/workflows/eval-gate.yml`) evaluates PRs into `dev` and `main` that
+touch `src/`, `packages/`, `corpus/`, the eval scripts, `uv.lock` or `pyproject.toml`. It runs
+when a non-draft PR is opened or reopened and when a draft is marked ready for review. A push
+does not run it. To evaluate a new head commit, or a draft, add the `run-eval` label:
+`.github/workflows/eval-request.yml` removes the label and dispatches the eval on the PR's head
+branch, and adding the label again asks for another run. It stages the deployed coverage and
+catalogue artifacts with `scripts/stage_eval_data.py`, serves both apps with the eval profile
+(`just eval-app`), runs `scripts/eval_paired.py`, uploads the report and every response as an
+artifact, and posts the summary. The driver exits 0 when nothing blocks, 1 on a blocking verdict, and 3 on
+infrastructure failure. The `eval-override` label turns a 1 or a 3 into a pass for one commit:
+add it and re-run the failed `Eval gate` job, and the next eval run removes it. The summary
+records the override. Making the job a required status check is a branch-protection
 setting, configured per branch in the repository settings.
 
 A push to `dev` that touches `corpus/` syncs the cases to Langfuse, one dataset per case
@@ -128,8 +132,9 @@ for `Count_Person` in `country/USA`. A failure on an empty result means the depl
 authenticated but served an empty graph; an `SdmxUnexpectedResponseShapeError` means the request
 was challenged before it reached the mixer, so the token is missing or wrong.
 
-`.github/workflows/sdmx-live.yml` runs the same suite on pushes and pull requests touching
-`packages/dfo-data-tools/src/dc_sdmx/` or `tests/dc_sdmx/`, and on a weekday schedule.
+`.github/workflows/sdmx-live.yml` runs the same suite on pull requests touching
+`packages/dfo-data-tools/src/dc_sdmx/` or `tests/dc_sdmx/` once they are out of draft, and on a
+weekday schedule.
 
 ## Releasing to production
 

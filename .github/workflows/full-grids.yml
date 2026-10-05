@@ -7,15 +7,14 @@
 # DFO_FULL_GRIDS=1 runs every cell, which catches a fault that needs five or
 # more factor values together.
 #
-# Pushes to dev and main check each merge. The nightly schedule catches a
-# grid that drifts with no push, and workflow_dispatch runs it on any branch.
+# The nightly schedule runs the full products against dev, which covers every
+# merge from the day before, so a push runs nothing. workflow_dispatch runs
+# them on any branch.
 #
 # Checkout, install and test environment copy ci.yml's test-shard job.
 name: Full grids
 
 on:
-  push:
-    branches: [dev, main]
   schedule:
     # 03:41 UTC daily. GitHub cron is always UTC, and a scheduled run can be
     # delayed or dropped under load.
@@ -25,7 +24,8 @@ on:
 permissions:
   contents: read
 
-# Runs queue rather than cancel, so every merge to dev and main is checked.
+# Runs queue rather than cancel, so a dispatch never cancels the nightly run
+# on the same branch.
 concurrency:
   group: full-grids-${{ github.ref }}
   cancel-in-progress: false
