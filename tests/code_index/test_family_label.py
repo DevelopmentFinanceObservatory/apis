@@ -11,9 +11,14 @@ import pytest
 
 from code_index import default_index_path, load_index
 from code_index.labels import family_label
+from code_index.members import canonical_identity
 from code_index.shared import get_measure_index
 from statvar_members.enumerate import five_tuple_from_identity
-from tests.code_index.aid_identity import education_aid_identity, imputed_education_aid_identity
+from tests.code_index.aid_identity import (
+    IMPUTED_PROVENANCE,
+    education_aid_identity,
+    imputed_education_aid_identity,
+)
 
 
 @pytest.fixture(scope="module")
@@ -38,7 +43,7 @@ def test_a_family_label_leads_with_the_measure_partition_label(index, identity, 
 
 def test_the_imputed_label_leaves_out_every_slot_its_five_tuple_pins(index):
     identity = imputed_education_aid_identity()
-    pinned = index.five_tuple_pins[five_tuple_from_identity(identity["shape"])]
+    pinned = index.dataset_pins[IMPUTED_PROVENANCE, five_tuple_from_identity(identity["shape"])]
     bound = {slot["property"] for slot in identity["slots"] if slot["binding"]["state"] == "value"}
     assert pinned.keys() <= bound
 
@@ -50,6 +55,19 @@ def test_the_imputed_label_leaves_out_every_slot_its_five_tuple_pins(index):
         row = index.code_by_dcid(value)
         assert row is not None
         assert row.label not in slots
+
+
+def test_the_imputed_label_is_one_whether_the_identity_binds_its_pins_or_not(index):
+    identity = imputed_education_aid_identity(source=IMPUTED_PROVENANCE)
+    for slot in identity["slots"]:
+        if slot["property"] in ("crsTypeOfFlow", "dac2aAidType"):
+            slot["binding"] = {"state": "unbound"}
+    canonical = canonical_identity(index, identity)
+    assert canonical != identity
+
+    assert family_label(canonical, index=index, measure_index=get_measure_index()) == (
+        family_label(identity, index=index, measure_index=get_measure_index())
+    )
 
 
 def test_a_family_with_no_labelled_partition_names_its_slots_alone(index):

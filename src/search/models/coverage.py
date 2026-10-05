@@ -88,6 +88,22 @@ Coverage = Annotated[
 ]
 
 
+class HeadlineYear(StrictModel):
+    """The exact counts for one calendar year of a role-bearing answer's served
+    population: observations and series with an observation in it, and how many
+    distinct dcids each role carries. A year with no data counts zero."""
+
+    year: int = Field(description="the calendar year these counts are for")
+    observations: int = Field(description="exact observation count across served series in year")
+    series: int = Field(description="exact series count with an observation in year")
+    role_counts: dict[str, int] = Field(
+        description=(
+            "distinct dcid count per role active in year, keyed by the graph's own role "
+            "property dcid; a role with no dcid in the year is absent"
+        )
+    )
+
+
 class Headline(StrictModel):
     """The exact, latest-year summary of a role-bearing answer's own served
     population: the year `CoverageIndex.headline` (series_coverage) found
@@ -139,6 +155,18 @@ class Headline(StrictModel):
             "property dcid (e.g. financingProvider, financingRecipient) -- never by a "
             "donor/recipient label, so the wire stays aligned with Data Commons' own names"
         )
+    )
+
+    recent_years: list[HeadlineYear] = Field(
+        min_length=1,
+        description=(
+            "the counts for `year` and the two calendar years before it, newest first, so a "
+            "latest year with far fewer observations than the years before it reads as "
+            "incomplete. A year with no data is kept with zero counts. The list stops at the "
+            "first year the coverage artifact represents, so it can hold fewer than three "
+            "entries. The first entry repeats `observations`, `series` and `role_counts`. The "
+            "earlier years count whether or not `named_window` reaches them"
+        ),
     )
 
     @model_validator(mode="after")

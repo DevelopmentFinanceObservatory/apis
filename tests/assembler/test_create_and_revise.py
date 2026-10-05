@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import copy
 import dataclasses
+import json
 
 import jsonschema
 import pytest
@@ -168,8 +169,10 @@ def _span_intent(frame, *, member="bar_chart", recipient=_SPAN_RECIPIENTS, windo
             "spec_id": frame.frame_ref.spec_id,
             "content_version": frame.frame_ref.content_version,
         },
-        "select": {"stat_var": "dcid:MalariaGrantDisbursements", "recipient": recipient},
+        "select": {"stat_var": "dcid:MalariaGrantDisbursements"},
     }
+    if recipient is not None:
+        intent["select"]["recipient"] = recipient
     if window is not None:
         intent["window"] = window
     return intent
@@ -190,6 +193,7 @@ def _shown_periods(component):
     ("member", "recipient", "stated"),
     [
         ("bar_chart", _SPAN_RECIPIENTS, 4),
+        ("bar_chart", None, 4),
         ("table", _SPAN_RECIPIENTS, 3),
         ("stat_card", "country/ETH", 1),
     ],
@@ -198,7 +202,8 @@ def test_a_span_frame_binds_the_span_as_its_one_period(
     frame_store, revision_store, release_registry, member, recipient, stated, window
 ):
     """An entity-mode bar chart, a table, and a stat card state the span wherever they
-    state a period: the category axis and each bar, each row, and the card."""
+    state a period: the category axis and each bar, each row, and the card. A bar chart
+    whose select leaves the recipient unbound draws every recipient."""
     frame = _span_frame()
     frame_store.put(resolved_frame=frame)
 
@@ -288,6 +293,116 @@ def test_a_span_frame_refuses_binding_invalid_where_it_cannot_bind(
     problem = binding_invalid_spec(excinfo.value)
     assert (problem.code, problem.pointer) == ("binding_invalid", pointer)
     assert [one.ref for one in problem.alternatives or ()] == alternatives
+
+
+def test_a_span_line_chart_refusal_names_the_dimension_a_bar_chart_compares(
+    frame_store, revision_store, release_registry
+):
+    """A line chart over a span frame whose select leaves one plural dimension unbound
+    names that dimension, and a bar chart with the same select draws one bar per value."""
+    frame = _span_frame()
+    frame_store.put(resolved_frame=frame)
+
+    with pytest.raises(BindingInvalid) as excinfo:
+        write_component(
+            intent=_span_intent(frame, member="line_chart", recipient=None),
+            component_id=None,
+            composition_id=None,
+            frame_store=frame_store,
+            revision_store=revision_store,
+            release_registry=release_registry,
+        )
+    assert "draws one bar per 'recipient' value" in excinfo.value.detail
+
+    reply = write_component(
+        intent=_span_intent(frame, member="bar_chart", recipient=None),
+        component_id=None,
+        composition_id=None,
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+    assert [one["label"] for one in reply.resolved_payload["component"]["series"]] == (
+        _SPAN_RECIPIENTS
+    )
+
+
+_GRANTS_BY_RECIPIENT = (("dcid:GrantsA", "country/ETH"), ("dcid:GrantsB", "country/KEN"))
+
+
+def _span_frame_by_stat_var(pairs=_GRANTS_BY_RECIPIENT):
+    """StatVars over one span, each observed for its own recipient."""
+    return build_resolved_frame(
+        frame_ref=malaria_ethiopia_frame_ref(),
+        role_keys=("recipient",),
+        rows=[
+            {
+                "stat_var": stat_var,
+                "recipient": recipient,
+                "time_period": "2018/2022",
+                "value": 100.0,
+                "unit": None,
+                "measurementMethod": None,
+                "provenance": "src_oecd_dac",
+            }
+            for stat_var, recipient in pairs
+        ],
+    )
+
+
+@pytest.mark.parametrize("member", ["line_chart", "bar_chart"])
+def test_a_span_refusal_names_a_bar_chart_select_that_resolves_several_series(
+    frame_store, revision_store, release_registry, member
+):
+    """A select that resolves to one series leaves a bar chart with the same select nothing
+    to compare, so the refusal names the select that lists one dimension's values, and that
+    call draws one bar per value."""
+    frame = _span_frame_by_stat_var()
+    frame_store.put(resolved_frame=frame)
+    intent = {**_span_intent(frame, member=member), "select": {"stat_var": "dcid:GrantsA"}}
+
+    with pytest.raises(BindingInvalid) as excinfo:
+        write_component(
+            intent=intent,
+            component_id=None,
+            composition_id=None,
+            frame_store=frame_store,
+            revision_store=revision_store,
+            release_registry=release_registry,
+        )
+    listed = {"stat_var": ["dcid:GrantsA", "dcid:GrantsB"]}
+    assert json.dumps(listed) in excinfo.value.detail
+
+    reply = write_component(
+        intent={**intent, "type": "bar_chart", "select": listed},
+        component_id=None,
+        composition_id=None,
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+    component = reply.resolved_payload["component"]
+    assert len(component["series"]) == 2
+
+
+def test_a_span_refusal_with_nothing_to_compare_offers_a_table_and_a_stat_card(
+    frame_store, revision_store, release_registry
+):
+    frame = _span_frame_by_stat_var(pairs=_GRANTS_BY_RECIPIENT[:1])
+    frame_store.put(resolved_frame=frame)
+    intent = {**_span_intent(frame, member="line_chart"), "select": {"stat_var": "dcid:GrantsA"}}
+
+    with pytest.raises(BindingInvalid) as excinfo:
+        write_component(
+            intent=intent,
+            component_id=None,
+            composition_id=None,
+            frame_store=frame_store,
+            revision_store=revision_store,
+            release_registry=release_registry,
+        )
+    problem = binding_invalid_spec(excinfo.value)
+    assert [one.ref for one in problem.alternatives or ()] == ["table", "stat_card"]
 
 
 def test_create_with_manifest_warnings_translates_into_envelope_provenance_warnings(

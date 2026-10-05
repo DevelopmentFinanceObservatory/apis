@@ -103,6 +103,13 @@ def test_ids_037_share_of_exports_names_its_base_through_the_denominator() -> No
     )
 
 
+def test_gni_as_primary_income_names_gni() -> None:
+    assert (
+        denominator_noun("PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal")
+        == "GNI"
+    )
+
+
 def test_a_measure_outside_the_table_has_no_noun() -> None:
     assert (
         measure_noun(

@@ -1,7 +1,9 @@
 """Resolve conversion recipes, validate convertibility, and map currencies and roles.
 
-A recipe id comes from a Provenance's `conversionRecipe` arc or its Dataset;
-`RECIPE_BODIES` supplies the deployment's body. Missing declarations raise
+A recipe id comes from a Provenance's `conversionRecipe` arc or, when it declares none,
+from the first of its Datasets that does, in `isPartOf` order (`elect_recipe`, which the
+search engine's conversion catalogue also calls); `RECIPE_BODIES` supplies the
+deployment's body. Missing declarations raise
 `RecipeNotDeclaredError`; multiple ids or an id without a body raise
 `UpstreamResponseError`.
 
@@ -51,7 +53,8 @@ carries on the wire, matching `materialise.facets`' own
 _CURRENCY_UNIT_TYPE = "CurrencyUnit"
 _NOMINAL_QUALIFIER = "Nominal"
 
-_DATASET_RECIPE_PROPERTIES: tuple[str, ...] = ("conversionRecipe",)
+DATASET_RECIPE_PROPERTIES: tuple[str, ...] = ("conversionRecipe",)
+"""The properties `resolve_recipe` reads from a Provenance's Datasets."""
 _CURRENCY_NODE_PROPERTIES: tuple[str, ...] = ("typeOf",)
 _OBSERVATION_PROPERTIES: tuple[str, ...] = ("observationProperties",)
 
@@ -156,17 +159,48 @@ def resolve_recipe(
     provenance_arcs: NodeArcs,
     deadline: float | None = None,
 ) -> ConversionRecipe:
-    """Resolve `conversionRecipe` from the Provenance's `provenance_arcs`, then, when it
-    declares none, from its `isPartOf` Dataset, the one case that reads `graph`.
-    No declaration raises `RecipeNotDeclaredError(cause="recipe_undeclared")`;
-    multiple ids or an id missing from `RECIPE_BODIES` raises
-    `UpstreamResponseError`.
+    """`elect_recipe` over the Provenance's `provenance_arcs` and, when it declares no
+    `conversionRecipe`, its `isPartOf` Datasets' arcs, the one case that reads `graph`.
     """
-    recipe_ids = _values(provenance_arcs, "conversionRecipe")
-    if not recipe_ids:
-        recipe_ids = _dataset_recipe_ids(
-            graph, _values(provenance_arcs, "isPartOf"), deadline=deadline
-        )
+    dataset_ids = recipe_datasets(provenance_arcs)
+    dataset_arcs = (
+        graph.node_arcs_many(dataset_ids, properties=DATASET_RECIPE_PROPERTIES, deadline=deadline)
+        if dataset_ids
+        else {}
+    )
+    return elect_recipe(
+        provenance_id=provenance_id, provenance_arcs=provenance_arcs, dataset_arcs=dataset_arcs
+    )
+
+
+def recipe_datasets(provenance_arcs: NodeArcs) -> tuple[str, ...]:
+    """The Datasets whose arcs `elect_recipe` reads for a Provenance: its `isPartOf`
+    Datasets in the graph's order, or none when it declares its own `conversionRecipe`."""
+    if _values(provenance_arcs, "conversionRecipe"):
+        return ()
+    return _values(provenance_arcs, "isPartOf")
+
+
+def elect_recipe(
+    *,
+    provenance_id: str,
+    provenance_arcs: NodeArcs,
+    dataset_arcs: Mapping[str, NodeArcs],
+) -> ConversionRecipe:
+    """The recipe a Provenance converts under: its own `conversionRecipe`, else that of the
+    first of its `recipe_datasets` that declares one, read from `dataset_arcs` (each read
+    with at least `DATASET_RECIPE_PROPERTIES`). No declaration raises
+    `RecipeNotDeclaredError(cause="recipe_undeclared")`; the chosen node naming several ids,
+    or an id missing from `RECIPE_BODIES`, raises `UpstreamResponseError`.
+    """
+    recipe_ids = _values(provenance_arcs, "conversionRecipe") or next(
+        (
+            found
+            for dataset_id in recipe_datasets(provenance_arcs)
+            if (found := _values(dataset_arcs.get(dataset_id), "conversionRecipe"))
+        ),
+        (),
+    )
     if not recipe_ids:
         raise RecipeNotDeclaredError(
             f"no conversionRecipe declared on provenance {provenance_id!r} or its dataset",
@@ -184,25 +218,6 @@ def resolve_recipe(
             f"conversionRecipe {recipe_id!r} is declared but this deployment carries no body for it"
         )
     return recipe
-
-
-def _dataset_recipe_ids(
-    graph: GraphReader, dataset_ids: Sequence[str], *, deadline: float | None
-) -> tuple[str, ...]:
-    """The first dataset in `dataset_ids` that declares its own
-    `conversionRecipe`, in the given order. `()` when none does, or
-    `dataset_ids` is empty.
-    """
-    if not dataset_ids:
-        return ()
-    arcs_by_id = graph.node_arcs_many(
-        dataset_ids, properties=_DATASET_RECIPE_PROPERTIES, deadline=deadline
-    )
-    for dataset_id in dataset_ids:
-        recipe_ids = _values(arcs_by_id.get(dataset_id), "conversionRecipe")
-        if recipe_ids:
-            return recipe_ids
-    return ()
 
 
 def resolve_convertible_recipe(

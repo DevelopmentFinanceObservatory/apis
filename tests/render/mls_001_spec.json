@@ -488,7 +488,18 @@
    "role_counts": {
     "financingProvider": 1,
     "financingRecipient": 162
-   }
+   },
+   "recent_years": [
+    {
+     "year": 2024,
+     "observations": 12843,
+     "series": 12843,
+     "role_counts": {
+      "financingProvider": 1,
+      "financingRecipient": 162
+     }
+    }
+   ]
   },
   "coverage_stamp": "7a081f21b36a988a91ddfa2d9a9df700",
   "scope": {

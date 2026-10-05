@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 
 import pytest
@@ -455,34 +456,59 @@ def test_bar_chart_period_mode_mints_one_series_across_the_window(release, resol
 _PROVIDERS = {f"org/P{index}": f"Provider {index}" for index in range(10)}
 
 
-def _provider_resolved_frame(*, extra_roles=()):
-    """One stat_var, ten providers, one shared period; `extra_roles` adds a second
-    varying dimension as `(role, values)` cycled across the providers."""
+def _provider_resolved_frame(*, extra_roles=(), periods=("2022",), gaps=None):
+    """One stat_var and ten providers, each observed in every one of `periods`.
+    `extra_roles` adds a second varying dimension as `(role, values)` cycled across the
+    providers. A provider's value rises with its index, so the last is the largest.
+
+    `gaps` maps a provider to the status its row in the last period carries, or to `None`
+    to drop that row."""
+    gaps = gaps or {}
     rows = []
     for index, provider in enumerate(_PROVIDERS):
-        row = {
-            "stat_var": "dcid:MalariaGrantDisbursements",
-            "financingProvider": provider,
-            "time_period": "2022",
-            "value": 100.0 + index,
-            "unit": None,
-            "measurementMethod": None,
-            "provenance": "src_oecd_dac",
-        }
-        for role, values in extra_roles:
-            row[role] = values[index % len(values)]
-        rows.append(row)
-    return build_resolved_frame(
+        for period in periods:
+            if period == periods[-1] and provider in gaps and gaps[provider] is None:
+                continue
+            row = {
+                "stat_var": "dcid:MalariaGrantDisbursements",
+                "financingProvider": provider,
+                "time_period": period,
+                "value": 100.0 + index,
+                "unit": None,
+                "measurementMethod": None,
+                "provenance": "src_oecd_dac",
+            }
+            for role, values in extra_roles:
+                row[role] = values[index % len(values)]
+            rows.append(row)
+    resolved_frame = build_resolved_frame(
         frame_ref=malaria_ethiopia_frame_ref(),
         role_keys=("financingProvider", *(role for role, _ in extra_roles)),
         rows=rows,
         labels=_PROVIDERS,
     )
+    statuses = {provider: status for provider, status in gaps.items() if status is not None}
+    if not statuses:
+        return resolved_frame
+    # `Frame.build` writes a null status, so a flagged row is set on the built document.
+    columns = resolved_frame.frame["columns"]
+    provider_at = columns.index("financingProvider")
+    period_at = columns.index("time_period")
+    status_at = columns.index("status")
+    value_at = columns.index("value")
+    frame_rows = [list(row) for row in resolved_frame.frame["rows"]]
+    for row in frame_rows:
+        if row[period_at] == periods[-1] and row[provider_at] in statuses:
+            row[status_at] = statuses[row[provider_at]]
+            row[value_at] = None
+    return dataclasses.replace(resolved_frame, frame={**resolved_frame.frame, "rows": frame_rows})
 
 
-def _mint_bar_chart(*, release, resolved_frame, select):
+def _mint_bar_chart(*, release, resolved_frame, select, window=None):
     selectors = normalize_select(select=select)
-    series, bound = _resolve_and_bind(resolved_frame=resolved_frame, selectors=selectors)
+    series, bound = _resolve_and_bind(
+        resolved_frame=resolved_frame, selectors=selectors, window=window
+    )
     intent = {
         "type": "bar_chart",
         "frame_ref": {
@@ -491,6 +517,8 @@ def _mint_bar_chart(*, release, resolved_frame, select):
         },
         "select": select,
     }
+    if window is not None:
+        intent["window"] = window
     return mint_component(
         member="bar_chart",
         merged_intent=intent,
@@ -502,31 +530,196 @@ def _mint_bar_chart(*, release, resolved_frame, select):
     )
 
 
-def test_bar_chart_period_mode_refusal_offers_the_providers_and_the_retry_draws_ten_bars(
-    release,
-):
+def test_bar_chart_draws_every_value_of_the_one_unbound_dimension_largest_first(release):
+    """Ten providers in one period and a select that binds only the stat_var leave the
+    provider as the one dimension to compare, so the chart draws all ten, largest first."""
     resolved_frame = _provider_resolved_frame()
-    select = {"stat_var": "dcid:MalariaGrantDisbursements"}
-    with pytest.raises(BindingInvalid) as excinfo:
-        _mint_bar_chart(release=release, resolved_frame=resolved_frame, select=select)
-
-    spec = binding_invalid_spec(excinfo.value)
-    assert spec.code == "binding_invalid"
-    assert spec.pointer == "/select"
-    assert [(one.ref, one.label) for one in spec.alternatives] == list(_PROVIDERS.items())
-    assert "'financingProvider'" in spec.detail
-
-    retry = {**select, "financingProvider": [one.ref for one in spec.alternatives]}
-    minted = _mint_bar_chart(release=release, resolved_frame=resolved_frame, select=retry)
+    minted = _mint_bar_chart(
+        release=release,
+        resolved_frame=resolved_frame,
+        select={"stat_var": "dcid:MalariaGrantDisbursements"},
+    )
     assert minted.component["category_axis"] == {
         "mode": "entity",
         "category_dimension": "financingProvider",
         "period": "2022",
     }
+    assert [one["label"] for one in minted.component["series"]] == list(
+        reversed(_PROVIDERS.values())
+    )
+
+
+def test_bar_chart_listing_values_keeps_the_list_order(release):
+    resolved_frame = _provider_resolved_frame()
+    providers = list(_PROVIDERS)
+    minted = _mint_bar_chart(
+        release=release,
+        resolved_frame=resolved_frame,
+        select={"stat_var": "dcid:MalariaGrantDisbursements", "financingProvider": providers},
+    )
     assert [one["label"] for one in minted.component["series"]] == list(_PROVIDERS.values())
 
 
-def test_bar_chart_period_mode_refusal_names_every_varying_dimension(release):
+def _kenya_aid_resolved_frame(*, recipients=("country/KEN",)):
+    """Health and education aid to each of `recipients` in 2021 and 2022, one series per
+    stat_var and recipient."""
+    return build_resolved_frame(
+        frame_ref=malaria_ethiopia_frame_ref(),
+        role_keys=("recipient",),
+        rows=[
+            {
+                "stat_var": stat_var,
+                "recipient": recipient,
+                "time_period": period,
+                "value": value,
+                "unit": None,
+                "measurementMethod": None,
+                "provenance": "src_oecd_dac",
+            }
+            for stat_var, base in (("dcid:HealthAid", 20.0), ("dcid:EducationAid", 10.0))
+            for recipient in recipients
+            for period, value in (("2021", base - 1), ("2022", base))
+        ],
+        labels={
+            "country/KEN": "Kenya",
+            "country/UGA": "Uganda",
+            "dcid:HealthAid": "Health aid",
+            "dcid:EducationAid": "Education aid",
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("select", "window"),
+    [
+        ({"recipient": "country/KEN"}, {"start": "2022", "end": "2022"}),
+        (
+            {"stat_var": ["dcid:HealthAid", "dcid:EducationAid"], "recipient": "country/KEN"},
+            None,
+        ),
+    ],
+    ids=["default", "listed"],
+)
+def test_bars_compared_on_stat_var_carry_the_stat_var_labels(release, select, window):
+    """Bars that differ only on stat_var are told apart by its labels, and the value axis
+    names no single stat_var."""
+    minted = _mint_bar_chart(
+        release=release, resolved_frame=_kenya_aid_resolved_frame(), select=select, window=window
+    )
+    component = minted.component
+    assert component["category_axis"]["category_dimension"] == "stat_var"
+    assert [one["label"] for one in component["series"]] == ["Health aid", "Education aid"]
+    assert component["value_axis"]["label"] == "Value"
+    assert set(component["title"]["text"].split(", ")) == {"Health aid", "Education aid"}
+
+
+def test_bar_chart_listing_values_refuses_when_two_bars_would_share_a_value(release):
+    """Listing the stat_vars while recipient stays unbound would draw two bars per stat_var
+    under one label, so the chart refuses naming the recipients to bind."""
+    with pytest.raises(BindingInvalid) as excinfo:
+        _mint_bar_chart(
+            release=release,
+            resolved_frame=_kenya_aid_resolved_frame(recipients=("country/KEN", "country/UGA")),
+            select={"stat_var": ["dcid:HealthAid", "dcid:EducationAid"]},
+        )
+
+    spec = binding_invalid_spec(excinfo.value)
+    assert spec.pointer == "/select"
+    assert excinfo.value.dimension == "recipient"
+    assert [one.ref for one in spec.alternatives] == ["country/KEN", "country/UGA"]
+
+
+def test_lines_that_differ_only_on_stat_var_lead_with_its_label(release):
+    resolved_frame = _kenya_aid_resolved_frame()
+    select = {"stat_var": ["dcid:HealthAid", "dcid:EducationAid"], "recipient": "country/KEN"}
+    series, bound = _resolve_and_bind(
+        resolved_frame=resolved_frame, selectors=normalize_select(select=select)
+    )
+    minted = mint_component(
+        member="line_chart",
+        merged_intent={
+            "type": "line_chart",
+            "frame_ref": {
+                "spec_id": resolved_frame.frame_ref.spec_id,
+                "content_version": resolved_frame.frame_ref.content_version,
+            },
+            "select": select,
+        },
+        resolved_frame=resolved_frame,
+        series=series,
+        bound_series=bound,
+        release=release,
+        clock=_fixed_clock(),
+    )
+    component = minted.component
+    assert [one["label"] for one in component["series"]] == [
+        "Health aid / Kenya",
+        "Education aid / Kenya",
+    ]
+    assert component["y_axis"]["label"] == "Value"
+
+
+def test_bar_chart_over_several_periods_refuses_naming_both_next_calls(release):
+    resolved_frame = _provider_resolved_frame(periods=("2021", "2022"))
+    with pytest.raises(BindingInvalid) as excinfo:
+        _mint_bar_chart(
+            release=release,
+            resolved_frame=resolved_frame,
+            select={"stat_var": "dcid:MalariaGrantDisbursements"},
+        )
+
+    spec = binding_invalid_spec(excinfo.value)
+    assert spec.pointer == "/select"
+    assert [(one.ref, one.label) for one in spec.alternatives] == list(_PROVIDERS.items())
+    assert "2 periods (2021..2022)" in spec.detail
+    assert "Bind 'financingProvider' to one value" in spec.detail
+
+    retry = {
+        "stat_var": "dcid:MalariaGrantDisbursements",
+        "financingProvider": [one.ref for one in spec.alternatives],
+    }
+    minted = _mint_bar_chart(release=release, resolved_frame=resolved_frame, select=retry)
+    assert minted.component["category_axis"]["period"] == "2022"
+
+
+@pytest.mark.parametrize(
+    ("periods", "gaps", "window"),
+    [
+        (("2022",), {"org/P3": "suppressed", "org/P7": "suppressed"}, None),
+        (("2021", "2022"), {"org/P3": None, "org/P7": None}, {"start": "2022", "end": "2022"}),
+    ],
+    ids=["status_flagged", "no_row_in_window"],
+)
+def test_bar_chart_refuses_the_default_when_a_value_lacks_the_one_period(
+    release, periods, gaps, window
+):
+    """Two providers hold no value in the one period with data, so the default refuses naming
+    them, offers the eight observed there, and listing those draws them."""
+    resolved_frame = _provider_resolved_frame(periods=periods, gaps=gaps)
+    with pytest.raises(BindingInvalid) as excinfo:
+        _mint_bar_chart(
+            release=release,
+            resolved_frame=resolved_frame,
+            select={"stat_var": "dcid:MalariaGrantDisbursements"},
+            window=window,
+        )
+
+    spec = binding_invalid_spec(excinfo.value)
+    observed = [provider for provider in _PROVIDERS if provider not in gaps]
+    assert spec.pointer == "/select"
+    assert excinfo.value.dimension == "financingProvider"
+    assert [one.ref for one in spec.alternatives] == observed
+    assert "Provider 3 (org/P3), Provider 7 (org/P7)" in spec.detail
+
+    retry = {"stat_var": "dcid:MalariaGrantDisbursements", "financingProvider": observed}
+    minted = _mint_bar_chart(
+        release=release, resolved_frame=resolved_frame, select=retry, window=window
+    )
+    assert minted.component["category_axis"]["period"] == "2022"
+    assert len(minted.component["series"]) == 8
+
+
+def test_bar_chart_with_two_unbound_dimensions_refuses_listing_the_one_to_bind(release):
     resolved_frame = _provider_resolved_frame(
         extra_roles=(("recipient", ["country/ETH", "country/GHA"]),)
     )
@@ -540,8 +733,9 @@ def test_bar_chart_period_mode_refusal_names_every_varying_dimension(release):
     refusal = excinfo.value
     assert refusal.dimension == "financingProvider"
     assert set(refusal.legal_values) == set(_PROVIDERS)
-    assert "'financingProvider', 'recipient'" in refusal.detail
+    assert "'financingProvider' (10 values), 'recipient' (2 values)" in refusal.detail
     assert "bind each of 'recipient' to one value" in refusal.detail
+    assert "'recipient' holds country/ETH, country/GHA" in refusal.detail
 
 
 # -- table -----------------------------------------------------------------

@@ -83,17 +83,18 @@ The graph supplies the code rows and StatVar rows. The coverage build supplies e
 
 `DATASETS` supplies one declaration per published table, written into the `datasets` block and read into `DatasetDeclaration`:
 
-| Field                | Meaning                                                                                                                              |
-| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `provenance`         | The provenance the table's observations carry. A StatVar row belongs to the dataset when its `provenances` names it.                 |
-| `label`              | The name a sentence uses for the dataset.                                                                                            |
-| `synonyms`           | Other names a query uses for it.                                                                                                     |
-| `opt_in`             | Whether a question answers from the table only when it names the table.                                                              |
-| `absent_observation` | Whether an observation the table holds no row for reads as `zero`, or `unknown`.                                                     |
+| Field                | Meaning                                                                                                                                                |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `provenance`         | The provenance the table's observations carry. A StatVar row belongs to the dataset when its `provenances` names it.                                   |
+| `label`              | The name a sentence uses for the dataset.                                                                                                              |
+| `synonyms`           | Other names a query uses for it.                                                                                                                       |
+| `opt_in`             | Whether a question answers from the table only when it names the table.                                                                                |
+| `absent_observation` | Whether an observation the table holds no row for reads as `zero`, or `unknown`.                                                                       |
+| `rank`               | The serving order among datasets that publish one five-tuple: of those that can serve a family, the lowest rank serves it. Unique across declarations. |
 
-ONE Imputed Multilateral Sectors is opt-in and CRS is not. Both read an absent observation as zero.
+ONE Imputed Multilateral Sectors is opt-in and CRS is not. Both read an absent observation as zero. CRS has rank 0 and ONE Imputed Multilateral Sectors rank 10.
 
-The export and the loader refuse a document in which a StatVar carries a provenance no dataset declares, a declared dataset has no StatVar, or StatVars of two datasets share one five-tuple. The second case means a stale or misjoined coverage build. The five-tuple is what separates one table from another, so a table that shares a five-tuple with another needs its own measured property first.
+The export and the loader refuse a document in which a StatVar carries a provenance no dataset declares, a declared dataset has no StatVar, or a dataset's `rank` is not an integer or repeats another's. The second case means a stale or misjoined coverage build. A StatVar may carry several provenances, and several datasets may publish one five-tuple. `code_index.members.elect_dataset` serves each family from the dataset the identity names. Without one, a dataset whose rows cover the identity's role keys serves before one whose rows do not, then one whose family declares exactly the roles those keys place, then the lowest rank.
 
 Two gates check the committed export, each against the source it can read:
 
@@ -134,6 +135,8 @@ Run by `.github/workflows/bundle-round-trip.yml`, same trigger as `bundle_round_
 ## `harvest_llm_fixtures.py`
 
 Extends `tests/fixtures/llm_responses.json` by replaying the engine offline against the frozen graph fixtures, calling the live LLM only for prompts the offline suite cannot answer yet.
+
+The offline suite includes `tests/eval/test_corpus_offline.py`, which runs every corpus case, so one harvest covers the corpus keys too. A test that fails for any reason other than a missing fixture stops the harvest before any LLM call.
 
 ```bash
 uv run python scripts/harvest_llm_fixtures.py
@@ -261,6 +264,7 @@ uv run python scripts/sentence_golden.py runs/sentence-panel
 No live credentials are needed. It reads the `raw-*.jsonl` files a sentence panel run wrote.
 
 Run by `just sentence-golden <run directory>`, by hand, after a change to the renderer's output. Record a panel run from the branch, trim it, and review the printed sentences.
+
 ## `sentence_panel/run.py`
 
 Sends the sentence panel (182 queries in `scripts/sentence_panel/queries/{crs,mls,ids,weo}.yaml`) to the deployed Search resolver and digests the sentences it returns. `scripts/sentence_panel/rubric.md` is the rubric for scoring a run.
@@ -312,18 +316,6 @@ uv run --env-file .env python scripts/survey_unresolved_arcs.py --skip-reverse
 Needs `SEARCH_GRAPH_BASE` (defaults to dfo-dev); no `GEMINI_API_KEY` needed.
 
 By hand, when auditing how representative the offline fixture snapshot's unresolved-arc rate is of the live graph.
-
-## `sweep_corpus.py`
-
-Runs every corpus case through the offline `FakeGraph`+`FakeLLM` harness so `harvest_llm_fixtures.py` can collect the LLM fixture keys the corpus reaches. It scores nothing and takes no flags.
-
-```bash
-uv run python scripts/sweep_corpus.py
-```
-
-No live credentials needed.
-
-Run by `just sweep`, and by `harvest_llm_fixtures.py` as one of its collectors.
 
 ## `warm_resolvekit_cache.py`
 

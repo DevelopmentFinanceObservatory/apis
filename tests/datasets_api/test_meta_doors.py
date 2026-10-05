@@ -12,13 +12,16 @@ from fastapi.responses import JSONResponse
 
 from artifact_store import Tier
 from code_index.shared import get_index
+from dataset_store.snapshot import StoredArtifactLocation, StoredVersion
 from datasets_api.capabilities import build_capabilities
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.meta import (
     OperationFailed,
+    OperationNotFound,
     _resolve_operation,
     build_meta_door,
 )
+from datasets_api.mint_models import GroupbyOptions, MintOptions
 from datasets_api.operation_store import (
     MAX_REDISPATCHES,
     REDISPATCH_GRACE_SECONDS,
@@ -28,6 +31,7 @@ from datasets_api.operation_store import (
     never_claimed_stale_after_seconds,
 )
 from datasets_api.operations.task_client import FakeTaskClient
+from datasets_api.render import MEMBER_RENDERING_KEY, artifact_rendering
 from datasets_api.schema import (
     Manifest,
     MintRequest,
@@ -37,9 +41,11 @@ from datasets_api.schema import (
     build_schema_document,
 )
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
+from datasets_api.version_store import rendering_key
 from datasets_api.versions import NullVersionRecordWriter
 from dfo_platform import Alternative, ProblemIssue, ProblemSpec
 from dfo_platform.build import build_commit
+from dfo_platform.config import PublicSiteSettings
 from dfo_platform.problem import Cause
 from series_coverage.index import Estimate
 from spec_registry import LiveSpecRegistry
@@ -66,6 +72,8 @@ _NEVER_CLAIMED_STALE_AFTER_SECONDS = never_claimed_stale_after_seconds(
     max_retry_duration_seconds=_DEFAULT_SETTINGS.operation_max_retry_duration_seconds,
 )
 _DEFAULT_ESTIMATE = Estimate(rows=1_000_000, requests=40)
+# `bundle` defaults to true, so a plain parquet mint is a bundle.
+_PARQUET_BUNDLE = MintOptions(format="parquet")
 
 
 class _FixedOperationStore:
@@ -103,6 +111,9 @@ class _FixedOperationStore:
     def expire_if_dead(self, id: str):
         return None
 
+    def fail_unservable_done(self, id: str, *, attempt: int):
+        return None
+
     def get(self, id: str) -> Operation | None:
         return self._operations.get(id)
 
@@ -119,11 +130,12 @@ def _operation(
     retryable: bool | None = None,
     refusal: ProblemSpec | None = None,
     created_at: datetime = _OP_NOW,
+    options: MintOptions = _PARQUET_BUNDLE,
 ) -> Operation:
     return Operation(
         id=id,
         request_identity={"input": {"spec_id": "spec_a"}},
-        options={"format": "parquet"},
+        options=options.model_dump(mode="json"),
         coverage_stamp="cov_stamp_1",
         state=state,
         estimate=estimate,
@@ -500,10 +512,10 @@ def test_failed_operation_poll_keeps_its_own_detail_when_the_stored_refusal_has_
 
 def test_done_operation_serves_the_manifest_with_a_freshly_signed_url_without_a_principal() -> None:
     artifact_store = FakeArtifactStore()
-    # Pinned artifacts skip the working-tier retention check against the real UTC clock.
-    location = _store_and_locate(artifact_store, b"a,b\n1,2\n", tier=Tier.pinned)
+    location = _stored_rendering(artifact_store, _PARQUET_BUNDLE, data=b"a,b\n1,2\n")
     client = make_client(
         registry=LiveSpecRegistry(store=FakeDatasetStore()),
+        settings=_SITE_SETTINGS,
         spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
         snapshot_reader=FakeSnapshotReader(
             versions={("spec_a", "cv1"): _version()},
@@ -527,6 +539,266 @@ def test_done_operation_serves_the_manifest_with_a_freshly_signed_url_without_a_
     assert len(body["manifest"]["artifacts"]) == 1
     assert body["manifest"]["artifacts"][0]["artifact_digest"] == location.artifact_digest
     assert "error" not in body
+
+
+# A site other than the test environment's, so a key derived under any other settings misses.
+_SITE_SETTINGS = DatasetsBuildSettings(
+    site=PublicSiteSettings(public_site_url="https://data.example.org")
+)
+_BARE_PARQUET = MintOptions(format="parquet", bundle=False)
+_BARE_CSV = MintOptions(format="csv", bundle=False)
+_GROUPBY = MintOptions(
+    format="parquet", bundle=False, groupby=GroupbyOptions(by=["stat_var"], op="sum")
+)
+_STATISTICS = {"statistics": "series"}
+_MEDIA_TYPES = {"csv": "text/csv", "parquet": "application/vnd.apache.parquet"}
+
+
+def _stored_rendering(
+    artifact_store: FakeArtifactStore,
+    options: MintOptions,
+    *,
+    data: bytes,
+    member: str | None = None,
+) -> StoredArtifactLocation:
+    """A pinned location (so retention against the real clock never applies) stored under the
+    rendering and key the mint links `options` under, with `member` for a bare collection's
+    member artifact."""
+    rendering = artifact_rendering(options, site=_SITE_SETTINGS.site)
+    if member is not None:
+        rendering = {**rendering, MEMBER_RENDERING_KEY: member}
+    return _store_and_locate(
+        artifact_store,
+        data,
+        tier=Tier.pinned,
+        rendering=rendering,
+        rendering_key=rendering_key(rendering),
+        media_type="application/zip" if options.bundle else _MEDIA_TYPES[options.format],
+    )
+
+
+def _stored_statistics(
+    artifact_store: FakeArtifactStore, *, data: bytes, member: str | None = None
+) -> StoredArtifactLocation:
+    rendering = _STATISTICS if member is None else {**_STATISTICS, MEMBER_RENDERING_KEY: member}
+    return _store_and_locate(
+        artifact_store,
+        data,
+        tier=Tier.pinned,
+        rendering=rendering,
+        rendering_key=rendering_key(rendering),
+        media_type="application/vnd.apache.parquet",
+    )
+
+
+def _collection_version() -> StoredVersion:
+    return StoredVersion(
+        subject_id="col_a",
+        subject_kind="collection",
+        content_version="cv1",
+        schema_version=1,
+        immutable_body={
+            "schema_version": 1,
+            "collection": {"collection_id": "col_a", "members": []},
+            "content_version": "cv1",
+            "prepared_at": "2026-01-01T00:00:00Z",
+            "coverage": {"rows": 0, "dimensions": []},
+            "citation": {"text": "", "sources": []},
+            "trace": {},
+            "warnings": [],
+        },
+    )
+
+
+@pytest.mark.parametrize(
+    ("subject_id", "renderings", "members"),
+    [
+        pytest.param("spec_a", (_BARE_PARQUET, _GROUPBY), (None,), id="bare-parquet-vs-groupby"),
+        pytest.param("spec_a", (MintOptions(), _GROUPBY), (None,), id="bundle-vs-groupby"),
+        pytest.param(
+            "col_a",
+            (_BARE_CSV, _BARE_PARQUET),
+            ("spec_m1", "spec_m2"),
+            id="bare-collection-members",
+        ),
+    ],
+)
+def test_a_done_operation_lists_only_its_own_rendering_and_statistics(
+    subject_id: str, renderings: tuple[MintOptions, ...], members: tuple[str | None, ...]
+) -> None:
+    """#1172: two renderings and statistics stored under one `(subject_id, content_version)`.
+    Each done operation's poll lists the artifacts of the rendering its request posted plus
+    statistics, the list the synchronous mint answers with."""
+    artifact_store = FakeArtifactStore()
+    own: dict[int, set[str]] = {}
+    locations: list[StoredArtifactLocation] = []
+    for index, options in enumerate(renderings):
+        stored = [
+            _stored_rendering(
+                artifact_store, options, data=f"{index}-{member}".encode(), member=member
+            )
+            for member in members
+        ]
+        own[index] = {location.artifact_digest for location in stored}
+        locations.extend(stored)
+    statistics = [
+        _stored_statistics(artifact_store, data=f"stats-{member}".encode(), member=member)
+        for member in members
+    ]
+    locations.extend(statistics)
+    version = _version() if subject_id == "spec_a" else _collection_version()
+    client = make_client(
+        registry=LiveSpecRegistry(store=FakeDatasetStore()),
+        settings=_SITE_SETTINGS,
+        spec_reader=FakeSpecReader(spec_ids=["spec_a"], collection_ids=["col_a"]),
+        snapshot_reader=FakeSnapshotReader(
+            versions={(subject_id, "cv1"): version}, locations={(subject_id, "cv1"): locations}
+        ),
+        artifact_store=artifact_store,
+        reference_writer=FakeArtifactReferenceWriter(),
+        version_writer=NullVersionRecordWriter(),
+        operation_store=_FixedOperationStore(
+            {
+                f"op_{index}": _operation(
+                    id=f"op_{index}",
+                    state="done",
+                    subject_id=subject_id,
+                    content_version="cv1",
+                    options=options,
+                )
+                for index, options in enumerate(renderings)
+            }
+        ),
+    )
+
+    for index in own:
+        resp = client.get(f"/api/datasets/operations/op_{index}")
+
+        assert resp.status_code == 200, resp.json()
+        listed = {artifact["artifact_digest"] for artifact in resp.json()["manifest"]["artifacts"]}
+        assert listed == own[index] | {location.artifact_digest for location in statistics}
+
+
+def test_a_done_operation_whose_rendering_is_gone_fails_retryable_and_a_resubmit_resets_it() -> (
+    None
+):
+    """Only another rendering is stored under the operation's version. The poll fails the row
+    retryable `internal_error` and answers `operation_failed`, and a resubmit resets the row."""
+    artifact_store = FakeArtifactStore()
+    locations = [
+        _stored_rendering(artifact_store, _GROUPBY, data=b"groupby"),
+        _stored_statistics(artifact_store, data=b"stats"),
+    ]
+    operation_store = LiveOperationStore(store=FakeOperationDatasetStore(), now=lambda: _OP_NOW)
+    submission = {
+        "request_identity": {"input": {"spec_id": "spec_a"}},
+        "options": _BARE_PARQUET.model_dump(mode="json"),
+        "coverage_stamp": "cov_stamp_1",
+        "origin_catalogue_build_id": "fake-catalogue",
+        "estimate": _DEFAULT_ESTIMATE,
+    }
+    op = operation_store.create_or_get(**submission)
+    assert operation_store.claim_lease(op.id, submission_count=0, lease_seconds=60) is not None
+    assert operation_store.complete(op.id, attempt=1, subject_id="spec_a", content_version="cv1")
+    client = make_client(
+        registry=LiveSpecRegistry(store=FakeDatasetStore()),
+        settings=_SITE_SETTINGS,
+        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+        snapshot_reader=FakeSnapshotReader(
+            versions={("spec_a", "cv1"): _version()}, locations={("spec_a", "cv1"): locations}
+        ),
+        artifact_store=artifact_store,
+        reference_writer=FakeArtifactReferenceWriter(),
+        version_writer=NullVersionRecordWriter(),
+        operation_store=operation_store,
+    )
+
+    resp = client.get(f"/api/datasets/operations/{op.id}")
+
+    assert resp.status_code == 500
+    body = resp.json()
+    assert body["code"] == "operation_failed"
+    assert body["retryable"] is True
+    assert body["cause"]["code"] == "internal_error"
+    failed = operation_store.get(op.id)
+    assert failed is not None
+    assert (failed.state, failed.refusal_code, failed.retryable) == (
+        "failed",
+        "internal_error",
+        True,
+    )
+
+    resubmitted = operation_store.create_or_get(**submission)
+
+    assert resubmitted.id == op.id
+    assert resubmitted.state == "pending"
+    assert resubmitted.submission_count == 1
+
+
+class _RacedOperationStore(_FixedOperationStore):
+    """Reads a done row first, then `current`, as when a concurrent poll or resubmit moves the
+    row before this poll's `fail_unservable_done`, which therefore returns `None`."""
+
+    def __init__(self, done: Operation, current: Operation | None) -> None:
+        super().__init__({})
+        self._reads = [done, current]
+
+    def get(self, id: str) -> Operation | None:
+        return self._reads.pop(0)
+
+
+@pytest.mark.parametrize(
+    ("current", "status", "refusal_code"),
+    [
+        pytest.param(
+            _operation(state="failed", refusal_code="upstream_unavailable", retryable=True),
+            None,
+            "upstream_unavailable",
+            id="failed",
+        ),
+        pytest.param(_operation(state="pending"), "pending", None, id="pending"),
+        pytest.param(_operation(state="running"), "running", None, id="running"),
+        pytest.param(None, None, None, id="missing"),
+        pytest.param(
+            _operation(state="done", subject_id="spec_a", content_version="cv2"),
+            None,
+            "internal_error",
+            id="done-again",
+        ),
+    ],
+)
+def test_a_poll_that_loses_the_demotion_race_answers_from_the_rows_current_state(
+    current: Operation | None, status: str | None, refusal_code: str | None
+) -> None:
+    artifact_store = FakeArtifactStore()
+    locations = [_stored_rendering(artifact_store, _GROUPBY, data=b"groupby")]
+    done = _operation(
+        state="done", subject_id="spec_a", content_version="cv1", options=_BARE_PARQUET
+    )
+
+    def _poll() -> OperationResource:
+        return _resolve_operation(
+            operation_id=done.id,
+            operation_store=_RacedOperationStore(done, current),
+            task_client=None,
+            spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+            snapshot_reader=FakeSnapshotReader(
+                versions={("spec_a", "cv1"): _version()}, locations={("spec_a", "cv1"): locations}
+            ),
+            artifact_store=artifact_store,
+            now=lambda: _OP_NOW,
+            settings=_SITE_SETTINGS,
+        )
+
+    if current is None:
+        with pytest.raises(OperationNotFound):
+            _poll()
+    elif status is not None:
+        assert _poll().operation.status == status
+    else:
+        with pytest.raises(OperationFailed) as excinfo:
+            _poll()
+        assert (excinfo.value.refusal_code, excinfo.value.retryable) == (refusal_code, True)
 
 
 def _stale_operation_store(now_box: dict[str, datetime]) -> LiveOperationStore:

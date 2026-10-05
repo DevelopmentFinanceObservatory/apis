@@ -139,6 +139,16 @@ class ShapeDraft:
     # confirm backfill. The bind menu reserves space for recalled shapes, and
     # family collapse carries this flag from any recalled sibling.
     recalled: bool = field(default=False, compare=False)
+    # The datasets the part may answer this shape's five-tuple from, in serving order,
+    # stamped by shape candidacy (`bound_values.shape_for_part`): the dataset the part
+    # names, else the five-tuple's eligible publishers. None before candidacy and on a
+    # shape no candidacy kept, whose pre-bind readers read every dataset. It enters
+    # equality and the hash, since a named and an unnamed part read different rows.
+    datasets: tuple[str, ...] | None = None
+    # The dataset the part names, stamped by shape candidacy beside `datasets`; None for a
+    # part that names none. Only a named part's identity implies its dataset's invariants
+    # (`bound_values.shape_invariants`).
+    named_dataset: str | None = None
     # False for shapes rebuilt from a posted identity, which have no retrieval
     # score. Their place confidence uses data availability alone. Expansion-only
     # Expansion-only shapes count as retrieved, so a missing score caps confidence.

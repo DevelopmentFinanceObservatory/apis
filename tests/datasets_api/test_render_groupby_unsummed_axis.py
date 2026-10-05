@@ -83,6 +83,7 @@ _INDEX = CodeIndex(
             synonyms=(),
             opt_in=False,
             absent_observation="zero",
+            rank=0,
         ),
     ),
 )

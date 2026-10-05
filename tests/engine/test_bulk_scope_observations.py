@@ -1542,6 +1542,76 @@ def test_a_scope_conversion_names_the_statvars_it_leaves_out(
         assert observations.omitted.reason == OBSERVATIONS_CONVERTED_SCOPE_UNSUPPORTED
 
 
+def test_a_scope_conversion_names_a_place_whose_deflator_it_lacks():
+    """At constant 2020 dollars the deflator table holds every place's 2020 value but
+    BLK3's, so the conversion leaves out BLK3's one point. BLK3 holds data: the conversion's
+    warning names it under `deflator_missing_omitted`, and no scope-partial note counts it as
+    a place without data."""
+    omitted_place = _COUNTRIES[2]
+    sdmx = FakeSdmxClient(
+        subject_observations={
+            _SV: {
+                c: [
+                    replace(
+                        _row(c, facet_id="F1", value=0.9, unit="CurrencyEUR"), time_period="2020"
+                    )
+                ]
+                for c in _COUNTRIES
+            }
+        }
+    )
+    scope = HarnessScope(
+        places=_SCOPE_PLACES,
+        sdmx=sdmx,
+        facets_by_sv_entity={
+            _SV: {c: [_eur_facet(earliest="2020", latest="2020")] for c in _COUNTRIES}
+        },
+    )
+    unit = _facet_selection(
+        axis="unit",
+        ref="CurrencyEUR",
+        selection_reason="most_observations",
+        request=UnitRequest(currency="USD", prices="constant", base_year=2020),
+    )
+    source = _facet_selection(axis="provenance", ref="dc/base/Src", selection_reason=None)
+    server = RateTableServer(
+        recipe_table_bodies(
+            "ConversionRecipeDAC",
+            rates={"CurrencyUSD": {2020: 1.0}, "CurrencyEUR": {2020: 0.9}},
+            deflators={c: {2019 if c == omitted_place else 2020: 100.0} for c in _COUNTRIES},
+        ),
+        fallback=lambda request: httpx.Response(404),
+    )
+    observations, warn = build_observations_planned(
+        [_SV],
+        {"observationAbout": _COUNTRIES},
+        graph=_GRAPH,
+        materialise_graph=FakeGraphReader(
+            arcs={
+                _SV: dict(CONVERTIBLE_STAT_VAR_ARCS),
+                **conversion_arcs(
+                    recipe_id="ConversionRecipeDAC",
+                    provenance_id="dc/base/Src",
+                    currencies=["CurrencyUSD", "CurrencyEUR"],
+                ),
+            }
+        ),
+        materialise_sdmx=server.client(base_url=MATERIALISE_BASE_URL),
+        rate_cache=RateTableCache(),
+        scope=scope,
+        unit_request=IdentityUnitRequest(currency="USD", prices="constant", base_year=2020),
+        elected={_SV: ({"unit": unit, "provenance": source},)},
+        coverage=empty_coverage_snapshot(),
+    )
+
+    assert observations.omitted is None
+    assert {s.entities[0].ref for s in observations.series} == set(_COUNTRIES) - {omitted_place}
+    assert warn is not None
+    assert warn.code == OBSERVATIONS_CONVERTED_SCOPE_UNSUPPORTED
+    assert f"{omitted_place} (deflator_missing_omitted)" in warn.message
+    assert "no data" not in warn.message
+
+
 def test_windowed_scope_defaulted_bound_unit_query_answers_definite_from_the_probe():
     """A dated scope preview is withheld, yet each probed facet's latest observation falls inside
     the window under the elected native unit, so the bound unit is confirmed."""

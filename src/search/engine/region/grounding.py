@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, cast
 
 from code_index import LevelOption
+from code_index.members import offers_slot
 from code_index.shared import get_index
 from dfo_platform.executor import submit_with_context
 from materialise import GraphReader
@@ -531,6 +532,10 @@ def _ground_answer_lookup(
     join the batch.
     Index-sourced taxonomies offer the bound value's parent and children. Unbound slots and
     bound sets offer each root and its children. Deeper levels are excluded from the lookup.
+    A slot gets an index-sourced menu only when a dataset that can serve the family
+    `bindings` and the roles' keys state publishes a row carrying its property
+    (`code_index.members.offers_slot`), so a table without the slot's code system offers no
+    menu when it is the one that serves.
     Sources are the citable provenance ids of the facets `plan` serves (`cited_facets`), and
     the methods and units `facets.answer_facets` reports join the batch
     (`facets.answer_facet_dcids`).
@@ -564,17 +569,19 @@ def _ground_answer_lookup(
     level_options_by_key: dict[str, tuple[LevelOption, ...]] = {}
     if shape_draft.slot_taxonomy_index_sourced:
         index = get_index()
+        query = shape_query(
+            shape_draft, bindings, frozenset(role for _dcid, role in resolved_role_bindings)
+        )
         for slot_draft, b_draft in slot_pairs:
             prop_dcid = slot_draft.property_dcid
-            if prop_dcid is None:
+            if prop_dcid is None or not offers_slot(index, query, prop_dcid):
                 continue
             # A bound *set* has no single node to scope a menu around. Read it
             # as unbound to use the classification's roots and their children.
-            bound_dcid = (
-                b_draft.value_dcids[0]
-                if b_draft and b_draft.kind == "value" and b_draft.value_dcids
-                else None
-            )
+            if b_draft and b_draft.kind == "value" and b_draft.value_dcids:
+                bound_dcid = b_draft.value_dcids[0]
+            else:
+                bound_dcid = None
             key = f"{slot_draft.axis}:{prop_dcid}"
             opts = index.level_scoped_options(prop_dcid, bound_dcid)
             level_options_by_key[key] = opts
@@ -1189,6 +1196,7 @@ def _relaxed_binding_suggestion(
                         date_request=ctx.date_request,
                         place_dcids=_probe_places,
                         datasets=elected_datasets(mat.member_facts),
+                        query=shape_query(shape, relaxed, entity_role_keys(shape, _probe_entities)),
                     )
                 except Exception:
                     logger.warning(

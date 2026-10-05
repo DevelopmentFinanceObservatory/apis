@@ -8,7 +8,7 @@ from typing import ClassVar
 import pytest
 
 from search.engine.extract import DateRequest, dates_to_request
-from search.engine.time_bind import TIME_TEXT_NOT_PARSED, parse_time_text
+from search.engine.time_bind import TIME_TEXT_FORMS, TIME_TEXT_NOT_PARSED, parse_time_text
 from search.models import Warning
 
 _CURRENT_YEAR = 2026
@@ -219,6 +219,9 @@ class TestUnparsed:
             "2015 until 2024",
             "next year",
             "Q1 2015",
+            "current year",
+            "the current year",
+            "now available",
         ],
     )
     def test_unrecognised_text_degrades(self, text: str) -> None:
@@ -246,6 +249,21 @@ class TestUnparsed:
                 assert warning is None
             else:
                 assert warning is None or isinstance(warning, Warning)
+
+
+class TestAcceptedForms:
+    @pytest.mark.parametrize("form", TIME_TEXT_FORMS)
+    def test_every_listed_form_parses(self, form: str) -> None:
+        text = form.replace("YYYY", "2010", 1).replace("YYYY", "2020").replace("N", "5")
+        dates, warning = parse_time_text(text, current_year=_CURRENT_YEAR)
+        assert warning is None, text
+        assert dates != []
+
+    def test_the_not_parsed_warning_lists_every_form(self) -> None:
+        _, warning = parse_time_text("garbled nonsense", current_year=_CURRENT_YEAR)
+        assert warning is not None
+        for form in TIME_TEXT_FORMS:
+            assert repr(form) in warning.message
 
 
 class TestPropertyFeedsDatesToRequest:

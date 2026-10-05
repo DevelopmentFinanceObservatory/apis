@@ -112,17 +112,18 @@ def test_window_field_cleared_to_null_carries_name_only():
 
 def test_fact_summary_series_shape_and_no_cut_below_cap(release):
     resolved_frame, series, bound = _resolve_and_bind(window={"start": "2015", "end": "2024"})
+    intent = {
+        "type": "line_chart",
+        "frame_ref": {
+            "spec_id": resolved_frame.frame_ref.spec_id,
+            "content_version": resolved_frame.frame_ref.content_version,
+        },
+        "select": _select(),
+        "window": {"start": "2015", "end": "2024"},
+    }
     minted = mint_component(
         member="line_chart",
-        merged_intent={
-            "type": "line_chart",
-            "frame_ref": {
-                "spec_id": resolved_frame.frame_ref.spec_id,
-                "content_version": resolved_frame.frame_ref.content_version,
-            },
-            "select": _select(),
-            "window": {"start": "2015", "end": "2024"},
-        },
+        merged_intent=intent,
         resolved_frame=resolved_frame,
         series=series,
         bound_series=bound,
@@ -132,6 +133,7 @@ def test_fact_summary_series_shape_and_no_cut_below_cap(release):
         composition_id=None,
         composition_revision=None,
         changed=(),
+        stored_intent=intent,
         resolved_payload=_envelope(minted, release=release),
         series_coordinates=_series_coordinates(series),
         formatter_profile=release.formatter_profile,
@@ -180,17 +182,18 @@ def test_table_and_line_chart_fact_summary_unit_agree_for_the_same_series(releas
     bound = bind_all(resolved_frame=resolved_frame, series=series, window=window)
 
     def _fact_summary(member):
+        intent = {
+            "type": member,
+            "frame_ref": {
+                "spec_id": resolved_frame.frame_ref.spec_id,
+                "content_version": resolved_frame.frame_ref.content_version,
+            },
+            "select": _select(),
+            "window": window,
+        }
         minted = mint_component(
             member=member,
-            merged_intent={
-                "type": member,
-                "frame_ref": {
-                    "spec_id": resolved_frame.frame_ref.spec_id,
-                    "content_version": resolved_frame.frame_ref.content_version,
-                },
-                "select": _select(),
-                "window": window,
-            },
+            merged_intent=intent,
             resolved_frame=resolved_frame,
             series=series,
             bound_series=bound,
@@ -200,6 +203,7 @@ def test_table_and_line_chart_fact_summary_unit_agree_for_the_same_series(releas
             composition_id=None,
             composition_revision=None,
             changed=(),
+            stored_intent=intent,
             resolved_payload=_envelope(minted, release=release),
             series_coordinates=_series_coordinates(series),
             formatter_profile=release.formatter_profile,
@@ -225,17 +229,18 @@ def test_stat_card_and_its_fact_summary_carry_the_unit_label(release, labels, ex
     window = {"start": "2020", "end": "2022"}
     series = resolve_selectors(resolved_frame=resolved_frame, selectors=_selectors(), window=window)
     bound = bind_all(resolved_frame=resolved_frame, series=series, window=window)
+    intent = {
+        "type": "stat_card",
+        "frame_ref": {
+            "spec_id": resolved_frame.frame_ref.spec_id,
+            "content_version": resolved_frame.frame_ref.content_version,
+        },
+        "select": _select(),
+        "window": window,
+    }
     minted = mint_component(
         member="stat_card",
-        merged_intent={
-            "type": "stat_card",
-            "frame_ref": {
-                "spec_id": resolved_frame.frame_ref.spec_id,
-                "content_version": resolved_frame.frame_ref.content_version,
-            },
-            "select": _select(),
-            "window": window,
-        },
+        merged_intent=intent,
         resolved_frame=resolved_frame,
         series=series,
         bound_series=bound,
@@ -245,6 +250,7 @@ def test_stat_card_and_its_fact_summary_carry_the_unit_label(release, labels, ex
         composition_id=None,
         composition_revision=None,
         changed=(),
+        stored_intent=intent,
         resolved_payload=_envelope(minted, release=release),
         series_coordinates=_series_coordinates(series),
         formatter_profile=release.formatter_profile,
@@ -304,6 +310,7 @@ def test_table_fact_summary_unit_matches_row_units(release, first_unit, second_u
     summary = build_fact_summary(
         component=component,
         member="table",
+        stored_intent={"type": "table", "select": {"stat_var": "dcid:MalariaGrantDisbursements"}},
         formatter_profile=release.formatter_profile,
         series_coordinates=None,
         component_id="cmp_x",
@@ -384,6 +391,7 @@ def test_entity_mode_bar_chart_fact_summary_agrees_with_a_readback_of_the_minted
         composition_id=None,
         composition_revision=None,
         changed=(),
+        stored_intent=intent,
         resolved_payload=_envelope(minted, release=release),
         series_coordinates=_series_coordinates(series),
         formatter_profile=release.formatter_profile,
@@ -422,16 +430,17 @@ def test_token_cap_truncates_series_before_fields(release, monkeypatch):
     import assembler.reply as reply_module
 
     resolved_frame, series, bound = _resolve_and_bind()
+    intent = {
+        "type": "line_chart",
+        "frame_ref": {
+            "spec_id": resolved_frame.frame_ref.spec_id,
+            "content_version": resolved_frame.frame_ref.content_version,
+        },
+        "select": _select(),
+    }
     minted = mint_component(
         member="line_chart",
-        merged_intent={
-            "type": "line_chart",
-            "frame_ref": {
-                "spec_id": resolved_frame.frame_ref.spec_id,
-                "content_version": resolved_frame.frame_ref.content_version,
-            },
-            "select": _select(),
-        },
+        merged_intent=intent,
         resolved_frame=resolved_frame,
         series=series,
         bound_series=bound,
@@ -442,6 +451,7 @@ def test_token_cap_truncates_series_before_fields(release, monkeypatch):
         composition_id=None,
         composition_revision=None,
         changed=(),
+        stored_intent=intent,
         resolved_payload=_envelope(minted, release=release),
         series_coordinates=_series_coordinates(series),
         formatter_profile=release.formatter_profile,

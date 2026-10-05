@@ -5,6 +5,7 @@ from __future__ import annotations
 from search.engine.region.observations.dispatch import _attach_observations
 from search.models import (
     Headline,
+    HeadlineYear,
     ObservationPoint,
     ObservationSeries,
     SeriesEntityRef,
@@ -27,6 +28,14 @@ def _headline_spec() -> Spec:
         observations=1,
         series=1,
         role_counts={"financingRecipient": 1, "financingProvider": 1},
+        recent_years=[
+            HeadlineYear(
+                year=2032,
+                observations=1,
+                series=1,
+                role_counts={"financingRecipient": 1, "financingProvider": 1},
+            )
+        ],
     )
     return spec.model_copy(
         update={"resolved": spec.resolved.model_copy(update={"headline": headline})}
@@ -66,6 +75,14 @@ def test_delivered_series_leave_the_headline_as_coverage_counted_it():
         observations=1,
         series=1,
         role_counts={"financingRecipient": 1, "financingProvider": 1},
+        recent_years=[
+            HeadlineYear(
+                year=2032,
+                observations=1,
+                series=1,
+                role_counts={"financingRecipient": 1, "financingProvider": 1},
+            )
+        ],
     )
 
 

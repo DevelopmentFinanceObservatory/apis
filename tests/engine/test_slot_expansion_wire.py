@@ -449,9 +449,9 @@ _TEST_PROVENANCE = FIXTURE_PROVENANCE
 def _index_carrying_the_fixture_family(*, member_crs_purpose: str) -> CodeIndex:
     """The packaged index plus the fixture StatVar, in a dataset that reads absence as zero.
 
-    The fixture family is one row, so its five-tuple would pin `crsPurpose` and a resubmit
-    would bind the unbound slot (`bind_identity_pins`). The pin is dropped, since a real
-    CRS family holds many purposes."""
+    The fixture family is one row, so its five-tuple would pin `crsPurpose` and the
+    canonical identity would unbind the bound slot (`canonical_identity`). The pin is
+    dropped, since a real CRS family holds many purposes."""
     index = get_index()
     row = StatVarRow(
         dcid=_CRS_SV,
@@ -477,10 +477,11 @@ def _index_carrying_the_fixture_family(*, member_crs_purpose: str) -> CodeIndex:
                 synonyms=(),
                 opt_in=False,
                 absent_observation="zero",
+                rank=1,
             ),
         ),
     )
-    del edited.five_tuple_pins[row_five_tuple(row)]
+    del edited.dataset_pins[_TEST_PROVENANCE, row_five_tuple(row)]
     return edited
 
 

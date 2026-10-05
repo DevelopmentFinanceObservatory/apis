@@ -17,6 +17,7 @@ from series_coverage.coverage_types import (
     Headline,
     Role,
     VariableCoverage,
+    YearCount,
 )
 from series_coverage.facets import FacetCandidate, FacetMetadata, facet_candidates, rank_candidates
 from series_coverage.schema import (
@@ -85,6 +86,7 @@ __all__ = [
     "Role",
     "RoleNames",
     "VariableCoverage",
+    "YearCount",
     "YearHorizon",
     "facet_candidates",
     "get_coverage_service",

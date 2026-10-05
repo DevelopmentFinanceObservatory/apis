@@ -59,6 +59,8 @@ def test_serves_the_global_counts_and_every_example(client: TestClient) -> None:
     assert resp.json() == {
         "catalogue_version": "20260930T000000Z-00000001",
         "counts": {
+            "indicators": 9,
+            "datasets": 5,
             "publishers": 4,
             "countries": 2,
             "aid": {"donors": 3, "recipients": 5, "years": {"first": 1990, "last": 2024}},

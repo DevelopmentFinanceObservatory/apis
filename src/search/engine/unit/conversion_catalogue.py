@@ -2,9 +2,9 @@
 a unit request shows (`unit.conversion`) read, loaded once.
 
 `ResolvedSpec.unit_conversion` needs four facts that live in the graph and the conversion
-tables: which recipe each provenance names (`conversionRecipe`, on the provenance or its
-Dataset, as `materialise.recipes.resolve_recipe` reads it), the years each currency's
-exchange rate, each entity's deflator, and the deflator's actual values cover in each
+tables: which recipe each provenance converts under (`conversionRecipe`, on the provenance
+or the first of its Datasets declaring one, as `materialise.recipes.elect_recipe` elects
+it), the years each currency's exchange rate, each entity's deflator, and the deflator's actual values cover in each
 recipe's tables, the base year the tables declare, and each place's one national currency
 (`nationalCurrencyOf`). Reading them per answer would add network reads to every answer,
 so the app loads them once at startup (`load_conversion_catalogue`) and each request reads
@@ -49,6 +49,13 @@ from materialise.rate_tables import (
     load_table,
 )
 from materialise.recipe_bodies import RECIPE_BODIES, ConversionRecipe
+from materialise.recipes import (
+    DATASET_RECIPE_PROPERTIES,
+    NodeArcs,
+    RecipeNotDeclaredError,
+    elect_recipe,
+    recipe_datasets,
+)
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.unit.base_year import declared_base_year
 from search.engine.unit.lexicon import ISO_4217_CODES
@@ -62,6 +69,9 @@ _RECIPE_PROPERTY = "conversionRecipe"
 _NATIONAL_CURRENCY_OF = "nationalCurrencyOf"
 _CURRENCY_UNIT = "CurrencyUnit"
 _DATASET = "Dataset"
+_RECIPE_NODE_PROPERTIES = (*DATASET_RECIPE_PROPERTIES, "isPartOf", "typeOf")
+"""What the catalogue reads of each node a recipe election consults. `typeOf` tells a
+Dataset from a provenance and keeps every live node from coming back with no arcs."""
 _MAX_SUBJECTS = 5000
 """The most subjects one reverse read lists: the provenances or Datasets naming a recipe,
 the provenances of one Dataset, or the currency units. A truncated read fails the load."""
@@ -163,7 +173,7 @@ def load_conversion_catalogue(
 ) -> ConversionCatalogue:
     """Read the catalogue, its independent reads at once on a pool under the caller's
     context: each distinct table through `cache`, one reverse read per recipe (and per
-    Dataset naming one), one reverse and one node read for the currency units, and the
+    Dataset naming one) with up to three node reads for the recipe election, one reverse and one node read for the currency units, and the
     declared base year (`declared_base_year`, read through `graph`), then one name read for
     every entity a deflator table holds and every place with a national currency. Every
     other read goes through `reader`. Raises the first failed read's error,
@@ -234,27 +244,54 @@ def _subjects(reader: GraphReader, dcid: str, prop: str, deadline: float | None)
 
 
 def _provenance_recipes(reader: GraphReader, deadline: float | None) -> dict[str, str]:
-    """Each provenance's recipe, as `resolve_recipe` reads it: its own `conversionRecipe`,
-    else its Dataset's. A provenance or Dataset naming two recipes names none."""
-    naming: dict[str, set[str]] = {}
-    for recipe_id in RECIPE_BODIES:
-        for subject in _subjects(reader, recipe_id, _RECIPE_PROPERTY, deadline):
-            naming.setdefault(subject, set()).add(recipe_id)
-    arcs = reader.node_arcs_many(list(naming), properties=("typeOf",), deadline=deadline)
-    own: dict[str, str] = {}
-    inherited: dict[str, str] = {}
-    for subject, recipe_ids in naming.items():
-        if len(recipe_ids) != 1:
-            logger.error("%s names several conversion recipes %s", subject, sorted(recipe_ids))
+    """Each provenance's recipe, as the materialiser elects it (`elect_recipe`) from the
+    same arcs `resolve_recipe` reads. A provenance can elect a recipe only when it or one
+    of its Datasets names one with a body, so the candidates are the nodes naming such a
+    recipe and the provenances of every Dataset among them. A candidate the materialiser
+    would refuse, such as one naming two recipes, has none."""
+    naming = sorted(
+        {
+            subject
+            for recipe_id in RECIPE_BODIES
+            for subject in _subjects(reader, recipe_id, _RECIPE_PROPERTY, deadline)
+        }
+    )
+    arcs = _read_missing(reader, {}, naming, deadline)
+    candidates = {subject for subject in naming if _DATASET not in _types(arcs[subject])}
+    for dataset in sorted(set(naming) - candidates):
+        candidates.update(_subjects(reader, dataset, "isPartOf", deadline))
+    arcs = _read_missing(reader, arcs, sorted(candidates), deadline)
+    datasets = {dataset for node in candidates for dataset in recipe_datasets(arcs[node])}
+    arcs = _read_missing(reader, arcs, sorted(datasets), deadline)
+    recipes: dict[str, str] = {}
+    for provenance in sorted(candidates):
+        try:
+            recipe = elect_recipe(
+                provenance_id=provenance, provenance_arcs=arcs[provenance], dataset_arcs=arcs
+            )
+        except (RecipeNotDeclaredError, UpstreamResponseError) as exc:
+            logger.error("%s elects no conversion recipe: %s", provenance, exc)
             continue
-        (recipe_id,) = recipe_ids
-        types = (arcs.get(subject) or {}).get("typeOf", ())
-        if _DATASET not in types:
-            own[subject] = recipe_id
-            continue
-        for provenance in _subjects(reader, subject, "isPartOf", deadline):
-            inherited[provenance] = recipe_id
-    return inherited | own
+        recipes[provenance] = recipe.recipe_id
+    return recipes
+
+
+def _read_missing(
+    reader: GraphReader,
+    arcs: dict[str, NodeArcs],
+    dcids: Sequence[str],
+    deadline: float | None,
+) -> dict[str, NodeArcs]:
+    """`arcs` with those of each of `dcids` it lacks, read in one node read."""
+    missing = [dcid for dcid in dcids if dcid not in arcs]
+    if not missing:
+        return arcs
+    read = reader.node_arcs_many(missing, properties=_RECIPE_NODE_PROPERTIES, deadline=deadline)
+    return arcs | {dcid: read.get(dcid) for dcid in missing}
+
+
+def _types(arcs: NodeArcs) -> tuple[str, ...]:
+    return arcs.get("typeOf", ()) if arcs is not None else ()
 
 
 def _recipe_tables(

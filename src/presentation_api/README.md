@@ -120,7 +120,8 @@ The reply carries the new component's id, its fact summary, its resolved payload
     "window": { "start": "2015", "end": "2024" },
     "unit": null,
     "change": null,
-    "source_refs": null
+    "source_refs": null,
+    "defaults": []
   },
   "affordance": "Revise this component with PATCH /api/presentation/components/cmp_01ARYZ6S41YYYYYYYYYYYYYYYY, sending only the fields to change and this reply's write_token as x-dfo-write-token, or read it back with GET /api/presentation/components/cmp_01ARYZ6S41YYYYYYYYYYYYYYYY.",
   "write_token": "cmw_Zm9vYmFyYmF6cXV4cXV1eA"
@@ -221,14 +222,15 @@ Responses to `POST` (201 Created) and `PATCH` (200 OK) return a structured write
     "window": { "start": "2015", "end": "2024" },
     "unit": null,
     "change": null,
-    "source_refs": null
+    "source_refs": null,
+    "defaults": []
   }
 }
 ```
 
 A revise response omits the `affordance` key. A create response carries the same shape with `changed` empty (`[]`), `revision` `1`, and an `affordance` string naming the routes that revise or read the component back. The Quickstart above shows one. In `changed`, scalar value transitions record explicit `prior` and `new` keys, while replaced or cleared objects and arrays record only `field`.
 
-`fact_summary` always carries seven keys: `changed`, `series`, `series_cut`, `window`, `unit`, `change`, and `source_refs`. `series_cut` counts series dropped for exceeding the per-summary series cap of 12, plus any further series dropped once the summary crosses its token budget. `window` and `unit` are null for a member the grammar defines neither for. A component's string `unit` holds the unit's graph name, or its dcid when the graph has no name; structured units are unchanged. `change` carries a stat_card's derived comparison and is null for every other member. `source_refs` carries a source_card's provenance list and is null for every other member. A create's `fact_summary` equals the `fact_summary` a later `GET` of the same revision returns.
+`fact_summary` always carries eight keys: `changed`, `series`, `series_cut`, `window`, `unit`, `change`, `source_refs`, and `defaults`. `series_cut` counts series dropped for exceeding the per-summary series cap of 12, plus any further series dropped once the summary crosses its token budget. `window` and `unit` are null for a member the grammar defines neither for. A component's string `unit` holds the unit's graph name, or its dcid when the graph has no name; structured units are unchanged. `change` carries a stat_card's derived comparison and is null for every other member. `source_refs` carries a source_card's provenance list and is null for every other member. `defaults` lists each choice the component made where its intent left one open, as `{pointer, detail}`, and is empty when it made none. A create's `fact_summary` equals the `fact_summary` a later `GET` of the same revision returns.
 
 `composition_id` and `composition_revision` name the real composition and its current head revision on a create, a substantive revise, a no-op revise, and a `GET`, for a component that belongs to a composition. Both are null on every operation for a component that belongs to no composition.
 
@@ -274,7 +276,8 @@ A revise response omits the `affordance` key. A create response carries the same
     "window": { "start": "2015", "end": "2024" },
     "unit": null,
     "change": null,
-    "source_refs": null
+    "source_refs": null,
+    "defaults": []
   },
   "resolved_payload": {
     "schema_version": 1,
@@ -346,6 +349,8 @@ A revise response omits the `affordance` key. A create response carries the same
 #### Intent grammar: scale, range, and change
 
 `line_chart` and `bar_chart` accept an authored `scale`, `linear` or `log`, and an authored `range`, `{min, max}`, each a number or null. Both `range` keys are required together. Absent means `linear` and an unbounded range that renders from the data. `line_chart` resolves these onto `y_axis`. `bar_chart` resolves them onto `value_axis`, alongside `category_axis`, which names either an entity comparison (one bar per selected entity at their shared observed period) or a period comparison (one series across a window).
+
+A `bar_chart` whose `select` lists values on one dimension draws one bar per value, in list order. A `select` that resolves to one series draws it across the window. A `select` that lists no values and resolves to several series draws one bar per value of the one dimension they vary on, other than a facet, largest first, when the window holds data in one period and every series holds a value in it; `fact_summary.defaults` states this at `/select/<dimension>`, and listing values on that dimension narrows the chart. Any other selection refuses `binding_invalid` at `/select`: series that vary on two dimensions name both with their value counts and list the values of the ones to bind to one value, series that hold data in several periods name the periods and the two calls that fit, one value to draw its periods or a list to compare at the latest shared period, and series of which some lack a value in the one period name the values that lack it and the call that lists the values to draw. `alternatives` carries the values of the first varying dimension, or for a period some series lack, the values observed in it.
 
 `stat_card` accepts an authored `change`. `basis` names two periods, `[from, to]`, both of which must be observed points of the primary series. `derivation` selects how the comparison is computed, `difference` or `percent_change`, absent meaning `difference`. `percent_change` needs a positive `from` value; a zero or negative basis has no defined ratio and refuses `binding_invalid` at `/change`. The resolved `change` carries `derivation`, `basis`, and the computed `value`.
 

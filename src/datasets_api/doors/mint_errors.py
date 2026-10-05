@@ -41,6 +41,7 @@ from datasets_api.codes_materialise import (
     signing_failure_is_permanent,
 )
 from datasets_api.doors.conversion_errors import classify_conversion_exception
+from datasets_api.query_options import QueryOptionsInvalid
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from dc_sdmx import (
     SdmxCapExceededError,
@@ -184,6 +185,12 @@ def _classify_capability_unavailable(exc: CapabilityUnavailable) -> ProblemSpec:
         detail=exc.detail,
         retryable=False,
         pointer=exc.pointer,
+    )
+
+
+def _classify_query_options_invalid(exc: QueryOptionsInvalid) -> ProblemSpec:
+    return ProblemSpec(
+        status=400, code="request_invalid", detail=str(exc), retryable=False, pointer=exc.pointer
     )
 
 
@@ -668,6 +675,7 @@ _MINT_CLASSIFIERS: tuple[_MintClassifier, ...] = (
     (CodeAmbiguous, _classify_code_ambiguous),
     (CodeNotFoundError, _classify_code_not_found),
     (CapabilityUnavailable, _classify_capability_unavailable),
+    (QueryOptionsInvalid, _classify_query_options_invalid),
     (SpecNotFound, _classify_spec_not_found),
     (MalformedSidecarIdentity, _classify_malformed_sidecar_identity),
     (InvalidRoleRef, _classify_invalid_role_ref),
@@ -735,6 +743,7 @@ MINT_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     CodeAmbiguous,
     CodeNotFoundError,
     CapabilityUnavailable,
+    QueryOptionsInvalid,
     SpecNotFound,
     MalformedSidecarIdentity,
     InvalidRoleRef,
@@ -799,6 +808,7 @@ MINT_EXCEPTION_EXEMPLARS: tuple[BaseException, ...] = (
     CodeAmbiguous(ambiguous=(("exemplar", (("dcid:a", "A"), ("dcid:b", "B"))),)),
     CodeNotFoundError(code="exemplar", source=None),
     CapabilityUnavailable(detail="exemplar"),
+    QueryOptionsInvalid(pointer="/options/groupby/levels", detail="exemplar"),
     SpecNotFound(subject_id="spec_exemplar", pointer="/input/spec_id"),
     MalformedSidecarIdentity(detail="exemplar", pointer="/input/spec_id"),
     InvalidRoleRef(stat_var="dcid:exemplar", role="exemplar"),

@@ -1,7 +1,8 @@
 """Builds `WriteReply` and its token-capped fact summary.
 
 The summary covers changed fields, capped series, window and unit where
-applicable, observed values, change, and source refs. Values use the formatter
+applicable, observed values, change, source refs, and the defaults the
+component applied where the intent left a choice open. Values use the formatter
 profile of the release that minted the revision. This module defines the summary
 shape outside catalogue schemas. `resolved_payload` is the stamped envelope
 stored by the revision, including the stored head on a no-op. Write and readback
@@ -18,15 +19,17 @@ from typing import cast
 
 from dfo_frame_grammar import STAT_VAR_COLUMN
 
-from assembler.errors import ReleaseMismatch
+from assembler.errors import ReleaseMismatch, escape_pointer_segment
 from assembler.frame_view import facet_dimension_names
 from assembler.limits import FACT_SUMMARY_SERIES_CAP, FACT_SUMMARY_TOKEN_CAP
+from assembler.select import has_arrayed_dimension
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
     "ChangedField",
     "WriteReply",
+    "applied_defaults",
     "build_changed_fields",
     "build_fact_summary",
     "build_reply",
@@ -99,6 +102,7 @@ def build_reply(
     composition_id: str | None,
     composition_revision: int | None,
     changed: tuple[ChangedField, ...],
+    stored_intent: Mapping[str, object],
     resolved_payload: Mapping[str, object],
     series_coordinates: Sequence[Mapping[str, object]] | None,
     formatter_profile: Mapping[str, object],
@@ -112,6 +116,7 @@ def build_reply(
     fact_summary = build_fact_summary(
         component=component,
         member=cast(str, component["type"]),
+        stored_intent=stored_intent,
         formatter_profile=formatter_profile,
         series_coordinates=series_coordinates,
         component_id=component_id,
@@ -233,6 +238,7 @@ def build_fact_summary(
     *,
     component: Mapping[str, object],
     member: str,
+    stored_intent: Mapping[str, object],
     formatter_profile: Mapping[str, object],
     series_coordinates: Sequence[Mapping[str, object]] | None,
     component_id: str,
@@ -325,8 +331,41 @@ def build_fact_summary(
         "unit": unit,
         "change": component.get("change"),
         "source_refs": source_refs,
+        "defaults": applied_defaults(
+            component=component, member=member, stored_intent=stored_intent
+        ),
     }
     return _cap_tokens(summary=summary, token_cap=FACT_SUMMARY_TOKEN_CAP)
+
+
+def applied_defaults(
+    *, component: Mapping[str, object], member: str, stored_intent: Mapping[str, object]
+) -> list[dict[str, str]]:
+    """The choices the component made where its intent left one open, each as the intent
+    pointer it fills and a sentence saying how to narrow it.
+
+    An entity-mode bar chart whose select lists no values compared every value of its
+    category dimension, largest first (`assembler.mint.builders`). The stored intent and
+    payload both carry what this reads, so a write and a later read agree, and
+    `assembler.pipeline.write` mints a new revision when a revise changes them."""
+    if member != "bar_chart":
+        return []
+    axis = cast("Mapping[str, object]", component["category_axis"])
+    select = cast("Mapping[str, object]", stored_intent["select"])
+    if axis["mode"] != "entity" or has_arrayed_dimension(select=select):
+        return []
+    dimension = cast(str, axis["category_dimension"])
+    count = len(cast("Sequence[object]", component["series"]))
+    return [
+        {
+            "pointer": f"/select/{escape_pointer_segment(dimension)}",
+            "detail": (
+                f"select leaves {dimension!r} unbound, so this bar_chart draws all {count} of "
+                f"its values at {axis['period']}, largest first; list the {dimension!r} "
+                "values to keep in select to narrow it"
+            ),
+        }
+    ]
 
 
 def _table_unit(*, component: Mapping[str, object]) -> object | None:

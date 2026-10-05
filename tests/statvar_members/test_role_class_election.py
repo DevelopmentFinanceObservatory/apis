@@ -22,10 +22,13 @@ import pytest
 import statvar_members.enumerate as enumerate_module
 from statvar_members import (
     CANDIDATE_CAP,
+    AbsentReading,
     MemberRoleDisagreement,
     covers_role_keys,
     elect_role_class,
+    elect_role_class_of,
     enumerate_members,
+    role_class_facts,
 )
 from statvar_members.enumerate import _ROLE_PROBE_BUDGET
 from statvar_members.types import FiveTuple
@@ -301,6 +304,35 @@ def test_the_twin_collapse_compares_distinct_role_sets_for_a_crs_sized_family(mo
 
     assert len(kept) < len(roles)
     assert _CountingRoleSet.comparisons <= 4 * 3 * 3
+
+
+@pytest.mark.parametrize(
+    "role_keys", [(), ("origin",), ("origin", "destination"), ("financingRecipient",)]
+)
+def test_facts_built_once_elect_any_subset_as_the_subset_alone(role_keys):
+    """`elect_role_class_of` over facts built for every id elects a subset as
+    `elect_role_class` elects it from the subset's own maps, twins whose partner is outside
+    the subset included."""
+    rng = random.Random(1)
+    roles = {f"m{i}": rng.choice([_PAIR, _PROVIDER, _RECIPIENT, _SUBJECT]) for i in range(400)}
+    constraints = {
+        item_id: {key: str(rng.randrange(3)) for key in ("a", "b", "c") if rng.random() < 0.7}
+        for item_id in roles
+    }
+    readings: Mapping[str, AbsentReading] = {"b": "not_declared", "c": "not_declared"}
+    facts = role_class_facts(constraints, roles)
+
+    for _ in range(50):
+        subset = [item_id for item_id in roles if rng.random() < 0.3]
+        alone = elect_role_class(
+            {item_id: constraints[item_id] for item_id in subset},
+            {item_id: roles[item_id] for item_id in subset},
+            subset,
+            role_keys=role_keys,
+            readings=readings,
+        )
+
+        assert elect_role_class_of(facts, subset, role_keys=role_keys, readings=readings) == alone
 
 
 def test_an_axis_two_declared_roles_share_covers_no_axis_key():

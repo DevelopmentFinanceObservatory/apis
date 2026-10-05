@@ -9732,5 +9732,5041 @@
     "also_plausible": null,
     "ask": null,
     "unplaced": []
+  },
+  "Extraction@5dd935b34a35:bfad86694a6fb805686e7f422ebcc1652c2ff4fb": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:ec478f779e8b3368ef1e99706922722e980ffbdf": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Bangladesh",
+        "span": "Bangladesh",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:998b0cd2d3e50c348eae5ff25d5645e3d34c49f2": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Japan",
+        "span": "Japan",
+        "flow_role": "origin",
+        "role_span": "from"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:349332edff6339eab568be401d2809948c080a69": {
+    "kind": "resolution",
+    "variables": [
+      "official development assistance"
+    ],
+    "entities": [],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:966b640ff833c19e835a95ea7cee5b4d2985db81": {
+    "kind": "resolution",
+    "variables": [
+      "ODA"
+    ],
+    "entities": [
+      {
+        "text": "DAC countries",
+        "span": "DAC countries",
+        "flow_role": "origin",
+        "role_span": "from"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:01f82546c6dddf7e648117748b166793182caee2": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "European Union",
+        "span": "EU institutions",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Ethiopia",
+        "span": "Ethiopia",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:42d59e01004bedb09bb605fd4e8af64ef2b6e6d0": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Global Fund",
+        "span": "Global Fund",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Malawi",
+        "span": "Malawi",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:73d64dbd1e1316028b1818f2f48cd92e59b43481": {
+    "kind": "resolution",
+    "variables": [
+      "IDA concessional flows"
+    ],
+    "entities": [
+      {
+        "text": "World Bank",
+        "span": "World Bank",
+        "flow_role": "origin",
+        "role_span": "World Bank"
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:2e9943c1f3a3974394e40d3250999047d52260fa": {
+    "kind": "resolution",
+    "variables": [
+      "private grants"
+    ],
+    "entities": [
+      {
+        "text": "Gates Foundation",
+        "span": "Gates Foundation",
+        "flow_role": "origin",
+        "role_span": "from"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:c723e7db42c8faf5543f0bec9ee009ab1ab654dc": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "France",
+        "span": "AFD",
+        "flow_role": "origin",
+        "role_span": "AFD"
+      },
+      {
+        "text": "Senegal",
+        "span": "Senegal",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:7e50c8ee7478a573e43a20e0de14f9ae0879ccdd": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "China",
+        "span": "China",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:8659e19a51bb448c74297a795f9a27f3f1d9196a": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Turkey",
+        "span": "Turkey",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Syria",
+        "span": "Syria",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:6f2b4448809508e12d9550c83a77854982a77327": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Turkey",
+        "span": "Turky",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Syria",
+        "span": "Syrya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:5c3e742b9ee63979cde4452c546a144f24dfe30c": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "India",
+        "span": "India",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Bhutan",
+        "span": "Bhutan",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:b3903850df0c27b4253b8146ffc6edd6394a0235": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Low Income Countries",
+        "span": "low income countries",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:fec74e9b5039fcf49e3000dc9fcd72c95375e33a": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Japan",
+        "span": "Japan",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Least Developed Countries",
+        "span": "least developed countries",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:fc89052e06e914ef75f4443650567ce63b94f827": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Sub-Saharan Africa",
+        "span": "Sub-Saharan Africa",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:4b0913e85cf645946b4261b5d878c78b64226ac7": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "France",
+        "span": "France",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Africa",
+        "span": "Africa",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:8b3e23f52cbe807d45b73a264f30722a851681d4": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Developing Countries",
+        "span": "developing countries",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:576594dbf328b1f7f095135df3ae6cbe53719138": {
+    "kind": "resolution",
+    "variables": [
+      "basic sanitation aid"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:068f40270a83881a56f0d91d9fa2ed175668693d": {
+    "kind": "resolution",
+    "variables": [
+      "malaria control aid"
+    ],
+    "entities": [
+      {
+        "text": "Uganda",
+        "span": "Uganda",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:3f8d53719aa7569112fb0879540c80fc53ea0452": {
+    "kind": "resolution",
+    "variables": [
+      "health ODA"
+    ],
+    "entities": [
+      {
+        "text": "France",
+        "span": "France",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Ghana",
+        "span": "Ghana",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "range",
+        "start": "2015",
+        "end": null
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:d781ee2c1f56d5d7642b6e44a0070ed14249f60a": {
+    "kind": "resolution",
+    "variables": [
+      "education aid"
+    ],
+    "entities": [
+      {
+        "text": "United Kingdom",
+        "span": "UK",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Pakistan",
+        "span": "Pakistan",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:9d1e9c5c87e9e928288d4dd8814b1ca63fe9f7f0": {
+    "kind": "resolution",
+    "variables": [
+      "CRS purpose 12220"
+    ],
+    "entities": [
+      {
+        "text": "United Kingdom",
+        "span": "UK",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Zambia",
+        "span": "Zambia",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:14e513b004e848e9fe4eafb88e0afdffd5bbb0e1": {
+    "kind": "resolution",
+    "variables": [
+      "humanitarian aid"
+    ],
+    "entities": [
+      {
+        "text": "Yemen",
+        "span": "Yemen",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2023",
+        "end": "2023"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:3b9ad179aec374b8f9eeea4908f697d3d0bba0a4": {
+    "kind": "resolution",
+    "variables": [
+      "climate finance"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Bangladesh",
+        "span": "Bangladesh",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:22930108f8f75a2ba9b67fd694af128c0e69b6cd": {
+    "kind": "resolution",
+    "variables": [
+      "other official flows"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Brazil",
+        "span": "Brazil",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:8ec4bf0d8c438933e16f3c03339d94aaa9fb3e62": {
+    "kind": "resolution",
+    "variables": [
+      "transport loans"
+    ],
+    "entities": [
+      {
+        "text": "Japan",
+        "span": "Japan",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Vietnam",
+        "span": "Vietnam",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:0f84d40ccc5838d88380cb3a405d553daef102f4": {
+    "kind": "resolution",
+    "variables": [
+      "budget support"
+    ],
+    "entities": [
+      {
+        "text": "European Union",
+        "span": "EU institutions",
+        "flow_role": "origin",
+        "role_span": "from"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:59ea1b1f34c9886263f47ac0df07e45b1b82862d": {
+    "kind": "resolution",
+    "variables": [
+      "commitments"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:dcd2f0f356c8ef7a5e79f4604f8a598ef93c4e73": {
+    "kind": "resolution",
+    "variables": [
+      "net ODA"
+    ],
+    "entities": [
+      {
+        "text": "United States",
+        "span": "United States",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Pakistan",
+        "span": "Pakistan",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2020",
+        "end": "2020"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:fc387eec7394579d3c6b9c389810100ac97a0b1b": {
+    "kind": "resolution",
+    "variables": [
+      "grant equivalent ODA"
+    ],
+    "entities": [
+      {
+        "text": "Sweden",
+        "span": "Sweden",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Mozambique",
+        "span": "Mozambique",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2019",
+        "end": "2019"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:f48a48cc20d409426f62df04382c52bc96171b43": {
+    "kind": "resolution",
+    "variables": [
+      "grant equivalent of aid"
+    ],
+    "entities": [
+      {
+        "text": "Sweden",
+        "span": "Swedish",
+        "flow_role": "origin",
+        "role_span": "Swedish"
+      },
+      {
+        "text": "Mozambique",
+        "span": "Mozambique",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2012",
+        "end": "2012"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:b2595af60ed53e0b722239bfc44ba2ddcfdc8c09": {
+    "kind": "resolution",
+    "variables": [
+      "gross disbursements",
+      "net disbursements"
+    ],
+    "entities": [
+      {
+        "text": "United Kingdom",
+        "span": "UK",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:2b4e234c851e27ae7f00081ef065c4b4b2655167": {
+    "kind": "resolution",
+    "variables": [
+      "ODA commitments"
+    ],
+    "entities": [
+      {
+        "text": "United Kingdom",
+        "span": "UK",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "India",
+        "span": "India",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "in constant 2022 dollars"
+    ],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:af82b67676cf74b930eb4c216283f6c217a9de01": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "in today's money"
+    ],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:568ed94e99fe54efc9b6f02abb7db4c437628f1c": {
+    "kind": "resolution",
+    "variables": [
+      "aid per capita"
+    ],
+    "entities": [
+      {
+        "text": "Norway",
+        "span": "Norway",
+        "flow_role": "origin",
+        "role_span": "from"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:0e924685ccc9b52b38911b480c805141ec74a5df": {
+    "kind": "resolution",
+    "variables": [
+      "ODA",
+      "German aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      },
+      {
+        "text": "Germany",
+        "span": "German",
+        "flow_role": "origin",
+        "role_span": "German"
+      }
+    ],
+    "operations": [
+      {
+        "verb": "share_of",
+        "variable": 0,
+        "phrase": "share of",
+        "over": "destination"
+      }
+    ],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "range",
+        "start": "2015",
+        "end": "2020"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:9a2eddd483cbb004c45ea53ca067ef0e7163c3e8": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "range",
+        "start": "2015",
+        "end": "2020"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:594e81b2bda3a0b86f9c1996f916334c25099ba3": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Sweden",
+        "span": "Sweden",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Tanzania",
+        "span": "Tanzania",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "range",
+        "start": "2016",
+        "end": "2026"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:22f58ee17d47354b964ccf8b9c7b29f859f03b3c": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "1975",
+        "end": "1975"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:c3b752399ae15ab690422b49e15646ce3486f915": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "USA",
+        "span": "US",
+        "flow_role": "origin",
+        "role_span": "US"
+      }
+    ],
+    "operations": [
+      {
+        "verb": "rank",
+        "variable": 0,
+        "phrase": "top recipients",
+        "over": "destination"
+      }
+    ],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:4fa383427b18803afc6a3ae3c2ae261f5f4b62f3": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "flow_role": "origin",
+        "role_span": "versus"
+      },
+      {
+        "text": "France",
+        "span": "France",
+        "flow_role": "origin",
+        "role_span": "versus"
+      },
+      {
+        "text": "Mali",
+        "span": "Mali",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:4808c68e032d5e9f7a65f5ea7af585a916faa30a": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Canada",
+        "span": "Canadian",
+        "flow_role": "origin",
+        "role_span": "Canadian"
+      },
+      {
+        "text": "Haiti",
+        "span": "Haiti",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [
+      {
+        "verb": "growth",
+        "variable": 0,
+        "phrase": "how fast has grown",
+        "over": null
+      }
+    ],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:5763794913c8bd093031670bb6a20010567a4d59": {
+    "kind": "resolution",
+    "variables": [
+      "health aid",
+      "education aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      },
+      {
+        "text": "Uganda",
+        "span": "Uganda",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:88a22488a6b8315bbf85ba2740c91fb4c3b56b4a": {
+    "kind": "resolution",
+    "variables": [
+      "core contributions"
+    ],
+    "entities": [
+      {
+        "text": "World Bank",
+        "span": "World Bank",
+        "flow_role": "destination",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:ee7a0c6e2b5bb1cf77c7526a74d06bd8e6a0e4ca": {
+    "kind": "resolution",
+    "variables": [
+      "covid vaccines aid"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:64ecd08b53e908bd1bf3c8870258034615fc2545": {
+    "kind": "resolution",
+    "variables": [
+      "ODA disbursements"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [
+      {
+        "verb": "rank",
+        "variable": 0,
+        "phrase": "by sector",
+        "over": "category"
+      }
+    ],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:b46f95bb2350d51277b726cd0fa8bc0f98395e45": {
+    "kind": "resolution",
+    "variables": [
+      "ODA gross disbursements"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "KEN",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2020",
+        "end": "2020"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:24986e46986bec9f4db135520b5cdf7fd68d232e": {
+    "kind": "resolution",
+    "variables": [
+      "gender equality aid"
+    ],
+    "entities": [
+      {
+        "text": "Afghanistan",
+        "span": "Afghanistan",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:946ba6b97c889474ba878c6b63aaa1d28916d8a6": {
+    "kind": "resolution",
+    "variables": [
+      "aid for government and civil society"
+    ],
+    "entities": [
+      {
+        "text": "Somalia",
+        "span": "Somalia",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "range",
+        "start": "2018",
+        "end": null
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:ab83deb1aed78c0d808e2ccb934a588cc0524580": {
+    "kind": "resolution",
+    "variables": [
+      "energy aid"
+    ],
+    "entities": [
+      {
+        "text": "Japan",
+        "span": "Japan",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Bangladesh",
+        "span": "Bangladesh",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:a90e9649983197c961de945bda1a4b294d411539": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "OAPEC",
+        "span": "OAPEC",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Sudan",
+        "span": "Sudan",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:923d2537ec24ecc528f2fd902fba6013bb451df9": {
+    "kind": "resolution",
+    "variables": [
+      "humanitarian aid"
+    ],
+    "entities": [
+      {
+        "text": "Gaza",
+        "span": "Gaza",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2024",
+        "end": "2024"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:b386be90f0899d2c27c4da44a5c3f75208ab042e": {
+    "kind": "resolution",
+    "variables": [
+      "aid",
+      "GDP"
+    ],
+    "entities": [
+      {
+        "text": "Norway",
+        "span": "Norway",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Ethiopia",
+        "span": "Ethiopia",
+        "flow_role": "destination",
+        "role_span": "to"
+      },
+      {
+        "text": "Ethiopia",
+        "span": "Ethiopia",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:ac3f9cfaaebb3f740818f9341975a9e58e826e96": {
+    "kind": "requires_analysis",
+    "variables": [],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "flow_role": "origin",
+        "role_span": "give"
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:9a9b482a46fb2738102f2c565e5ccfc958ec7f0e": {
+    "kind": "resolution",
+    "variables": [
+      "ODA"
+    ],
+    "entities": [
+      {
+        "text": "France",
+        "span": "France",
+        "flow_role": "origin",
+        "role_span": "from"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:f3421b7b0244b0aa0683fc5cd5b1ad197dce4156": {
+    "kind": "resolution",
+    "variables": [
+      "ODA as a share of GNI"
+    ],
+    "entities": [
+      {
+        "text": "Norway",
+        "span": "Norway",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:17f9e8ba7637c04f2af8dca3599ae3223aef97d2": {
+    "kind": "resolution",
+    "variables": [
+      "ODA as a percentage of GNI"
+    ],
+    "entities": [
+      {
+        "text": "DAC donors",
+        "span": "DAC donors",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "met the 0.7% target"
+    ],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2023",
+        "end": "2023"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:bb0dfed67efea8b9a4f5bfafc20b8d3a8bcb04b2": {
+    "kind": "resolution",
+    "variables": [
+      "grant-equivalent ODA"
+    ],
+    "entities": [
+      {
+        "text": "United Kingdom",
+        "span": "UK",
+        "flow_role": "origin",
+        "role_span": "from"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "range",
+        "start": "2018",
+        "end": null
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:ef9f198906cfab5fc9c57d89783ed504b6884d20": {
+    "kind": "resolution",
+    "variables": [
+      "net ODA"
+    ],
+    "entities": [
+      {
+        "text": "Japan",
+        "span": "Japan",
+        "flow_role": "origin",
+        "role_span": "from"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2017",
+        "end": "2017"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:d8d6df528538e76d8c544e5c8327615d4ecb1ac9": {
+    "kind": "resolution",
+    "variables": [
+      "total ODA"
+    ],
+    "entities": [
+      {
+        "text": "DAC countries",
+        "span": "DAC countries",
+        "flow_role": "origin",
+        "role_span": "from"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2023",
+        "end": "2023"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:c200b0a3f52f0f64ccf03e7f34baebf61fb98133": {
+    "kind": "resolution",
+    "variables": [
+      "official development assistance"
+    ],
+    "entities": [
+      {
+        "text": "G7",
+        "span": "G7",
+        "flow_role": "origin",
+        "role_span": "from"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:873103f363294409cf53a650b182d3ee3b07995e": {
+    "kind": "resolution",
+    "variables": [
+      "in-donor refugee costs"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "flow_role": "destination",
+        "role_span": "in-donor"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:942a4c50ea0ab1bc092324185a9d32321006262d": {
+    "kind": "resolution",
+    "variables": [
+      "debt relief"
+    ],
+    "entities": [
+      {
+        "text": "France",
+        "span": "France",
+        "flow_role": "origin",
+        "role_span": "by"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:ce8003915607d2752415f2c8d5adc04eb70f1478": {
+    "kind": "resolution",
+    "variables": [
+      "private finance mobilised"
+    ],
+    "entities": [
+      {
+        "text": "United Kingdom",
+        "span": "UK",
+        "flow_role": "origin",
+        "role_span": "by"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:bb5199c1e8e3a96119bc9f347ce7549642a2ae5c": {
+    "kind": "resolution",
+    "variables": [
+      "bilateral ODA",
+      "multilateral ODA"
+    ],
+    "entities": [
+      {
+        "text": "Sweden",
+        "span": "Sweden",
+        "flow_role": "origin",
+        "role_span": "'s"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:741f47b0eda7ee34cddeac643471b5306fc69598": {
+    "kind": "resolution",
+    "variables": [
+      "ODA commitments"
+    ],
+    "entities": [
+      {
+        "text": "Spain",
+        "span": "Spain",
+        "flow_role": "origin",
+        "role_span": "from"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2021",
+        "end": "2021"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:ec048086b874aaf1d6e423b6df29eefce30d1853": {
+    "kind": "resolution",
+    "variables": [
+      "ODA"
+    ],
+    "entities": [
+      {
+        "text": "Italy",
+        "span": "Italy",
+        "flow_role": "origin",
+        "role_span": "from"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "1965",
+        "end": "1965"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:2a50a688335d9afd006c946a1a34b11b44f08de8": {
+    "kind": "resolution",
+    "variables": [
+      "GNI"
+    ],
+    "entities": [
+      {
+        "text": "Denmark",
+        "span": "Denmark",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:510f7c1e0f6a06b0ac21e2a23745cc5020bdd964": {
+    "kind": "resolution",
+    "variables": [
+      "ODA to GNI ratio"
+    ],
+    "entities": [
+      {
+        "text": "Sweden",
+        "span": "swedan",
+        "flow_role": "origin",
+        "role_span": "swedan"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:620d7a21c29dd49e4edc2bf9f2692c5bb7ff439d": {
+    "kind": "resolution",
+    "variables": [
+      "net ODA received"
+    ],
+    "entities": [
+      {
+        "text": "Ethiopia",
+        "span": "Ethiopia",
+        "flow_role": "destination",
+        "role_span": "by"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "1965",
+        "end": "1965"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:2f44e3b558dd161bb425098bbda4fe3bca97e34c": {
+    "kind": "resolution",
+    "variables": [
+      "net ODA received"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "by"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:34c08a7627ea5c4bf5ee4bd600eda0199dfe8e73": {
+    "kind": "resolution",
+    "variables": [
+      "ODA commitments"
+    ],
+    "entities": [
+      {
+        "text": "Bangladesh",
+        "span": "Bangladesh",
+        "flow_role": "destination",
+        "role_span": "to"
+      },
+      {
+        "text": "Japan",
+        "span": "Japan",
+        "flow_role": "origin",
+        "role_span": "from"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "1990",
+        "end": "1990"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:ba79b9270c729d0af97690deab505ca1e2db9a7e": {
+    "kind": "resolution",
+    "variables": [
+      "net ODA received"
+    ],
+    "entities": [
+      {
+        "text": "Low Income Countries",
+        "span": "low income countries",
+        "flow_role": "destination",
+        "role_span": "received by"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2020",
+        "end": "2020"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:4b0cb49f29a74cc6d088b2c0196fd38c7228d430": {
+    "kind": "resolution",
+    "variables": [
+      "net ODA received"
+    ],
+    "entities": [
+      {
+        "text": "Sub-Saharan Africa",
+        "span": "Sub-Saharan Africa",
+        "flow_role": "destination",
+        "role_span": "received by"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:8d666f404342392617bfc474a3c7254e2ee0faf5": {
+    "kind": "resolution",
+    "variables": [
+      "imputed multilateral ODA"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "received by"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:ecd9cdb702f35285d1135417dc18b6f31494df93": {
+    "kind": "resolution",
+    "variables": [
+      "technical cooperation"
+    ],
+    "entities": [
+      {
+        "text": "Malawi",
+        "span": "Malawi",
+        "flow_role": "destination",
+        "role_span": "received by"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:f1e5f2c48674fbee7207df5ba9e44f422a03f663": {
+    "kind": "resolution",
+    "variables": [
+      "food aid"
+    ],
+    "entities": [
+      {
+        "text": "Haiti",
+        "span": "Haiti",
+        "flow_role": "destination",
+        "role_span": "by"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "1995",
+        "end": "1995"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:44186583121fe8fc85dd8f3f3556f63178f66134": {
+    "kind": "resolution",
+    "variables": [
+      "DTP3 immunisation coverage"
+    ],
+    "entities": [
+      {
+        "text": "Chad",
+        "span": "Chad",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:b3b292ce1cf07ff56b4be060f4856523762fe22e": {
+    "kind": "resolution",
+    "variables": [
+      "share of pregnant women with at least four antenatal care visits"
+    ],
+    "entities": [
+      {
+        "text": "Nigeria",
+        "span": "Nigeria",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:b8c5ee2719992bd4ef0c78cfe30f73c89954d430": {
+    "kind": "resolution",
+    "variables": [
+      "deaths from road injuries"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2019",
+        "end": "2019"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:2c8df3df96b38a75876d88e95178ee8efdb5f200": {
+    "kind": "resolution",
+    "variables": [
+      "under-five mortality"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "by wealth quintile"
+    ],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:334b8fe62496a4c472aac0b90a72011ebc9f4329": {
+    "kind": "resolution",
+    "variables": [
+      "HIV prevalence among young women aged 15 to 24"
+    ],
+    "entities": [
+      {
+        "text": "South Africa",
+        "span": "South Africa",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:a795ed88d3fab848d771f7cb6c314b3a6a077626": {
+    "kind": "resolution",
+    "variables": [
+      "deaths from air pollution"
+    ],
+    "entities": [
+      {
+        "text": "India",
+        "span": "India",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:b35d3920999c7443c4159dbe1dd4ce6e2197f1fb": {
+    "kind": "resolution",
+    "variables": [
+      "catastrophic out-of-pocket health spending"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:00c8115a7a73bfcdea349dbcee981d3af4815d83": {
+    "kind": "resolution",
+    "variables": [
+      "lower secondary completion rate"
+    ],
+    "entities": [
+      {
+        "text": "Nigeria",
+        "span": "Nigeria",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "for girls in rural"
+    ],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:66eb1998039d456a1981c99acb23bfd14c87f8d7": {
+    "kind": "resolution",
+    "variables": [
+      "gross enrolment ratio in tertiary education"
+    ],
+    "entities": [
+      {
+        "text": "Ghana",
+        "span": "Ghana",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:83e75b9511414eb79062f992d64d85b6d39ca25f": {
+    "kind": "resolution",
+    "variables": [
+      "average years of schooling"
+    ],
+    "entities": [
+      {
+        "text": "Pakistan",
+        "span": "Pakistan",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "of women over 25"
+    ],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:daee7968af1060e0012c336f16daea44cb6a482f": {
+    "kind": "resolution",
+    "variables": [
+      "gender pay gap"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:3bf5b1c7cc225941e6af281db1c2bfcbadc38aaf": {
+    "kind": "resolution",
+    "variables": [
+      "Gender Inequality Index"
+    ],
+    "entities": [
+      {
+        "text": "Bangladesh",
+        "span": "Bangladesh",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:deef0f6437b40061f4d9e9ef647e0cc986802786": {
+    "kind": "resolution",
+    "variables": [
+      "share of researchers who are women"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:c4e2a4afef229e8264aca678149fe696d8a562e9": {
+    "kind": "resolution",
+    "variables": [
+      "proportion of seats held by women in local government"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:e68669905072ad19cd269d46347f88a0fb9c1321": {
+    "kind": "resolution",
+    "variables": [
+      "extreme poverty rate"
+    ],
+    "entities": [
+      {
+        "text": "Colombia",
+        "span": "Colombia",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "rural"
+    ],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:4e9d4d3195b2efc5a58b014c81f4b438e962bb05": {
+    "kind": "resolution",
+    "variables": [
+      "multidimensional poverty index"
+    ],
+    "entities": [
+      {
+        "text": "Ethiopia",
+        "span": "Ethiopia",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:f1ed05ad2c6181f13339b31f8d2d616eb56cd39b": {
+    "kind": "resolution",
+    "variables": [
+      "coal consumption"
+    ],
+    "entities": [
+      {
+        "text": "South Africa",
+        "span": "South Africa",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:6457c997df8ada8dbca8c4dda10345c4e80eca6a": {
+    "kind": "resolution",
+    "variables": [
+      "CO2 emissions per capita"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "unspecified",
+        "role_span": null
+      },
+      {
+        "text": "Ethiopia",
+        "span": "Ethiopia",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:047d961c16833e8f3388209b0a73ffa3bd4bf2bf": {
+    "kind": "resolution",
+    "variables": [
+      "climate vulnerability index"
+    ],
+    "entities": [
+      {
+        "text": "Bangladesh",
+        "span": "Bangladesh",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:6e426075c8a84a2e358729cf68131adcc1e9f30b": {
+    "kind": "resolution",
+    "variables": [
+      "population"
+    ],
+    "entities": [
+      {
+        "text": "Nairobi",
+        "span": "Nairobi",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:f80b4d432a06a0d6ed411849baae15297b887570": {
+    "kind": "resolution",
+    "variables": [
+      "population by age group"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:bdbe3f345297dba6f2ec72db10a0c3772e9ba792": {
+    "kind": "resolution",
+    "variables": [
+      "homicide rate"
+    ],
+    "entities": [
+      {
+        "text": "Honduras",
+        "span": "Honduras",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:f087155348318e5d4b15fa7eb8108065fbdcd6cc": {
+    "kind": "resolution",
+    "variables": [
+      "share of people who paid a bribe to a public official"
+    ],
+    "entities": [
+      {
+        "text": "Nigeria",
+        "span": "Nigeria",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:fe36e59e79c32d688eb3dd6e16f99c5bf5eab292": {
+    "kind": "resolution",
+    "variables": [
+      "corruption perceptions index"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:e66ab984f88d4cd62e1cf9ca5bd2540262573c7f": {
+    "kind": "resolution",
+    "variables": [
+      "refugees"
+    ],
+    "entities": [
+      {
+        "text": "Sudan",
+        "span": "Sudan",
+        "flow_role": "origin",
+        "role_span": "from"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:9fb39f477f1bd47c8702e475a1e165ceb576dc86": {
+    "kind": "resolution",
+    "variables": [
+      "internally displaced people"
+    ],
+    "entities": [
+      {
+        "text": "Ethiopia",
+        "span": "Ethiopia",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:eefc71d7b8f2dbe602ae49a776d349b0ed9ca265": {
+    "kind": "resolution",
+    "variables": [
+      "humanitarian assistance need"
+    ],
+    "entities": [
+      {
+        "text": "Yemen",
+        "span": "Yemen",
+        "flow_role": "destination",
+        "role_span": "in"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:ee62ef788275aa7a7588924b1e719e534b9c1a2d": {
+    "kind": "resolution",
+    "variables": [
+      "women mobile phone ownership"
+    ],
+    "entities": [
+      {
+        "text": "Ghana",
+        "span": "Ghana",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:8ccd9372fb0719b2bd4f0d1d9c2209d453d60c20": {
+    "kind": "resolution",
+    "variables": [
+      "Human Development Index"
+    ],
+    "entities": [
+      {
+        "text": "Ghana",
+        "span": "Ghana",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:2564f0e205ceec22c0cf6eb87212d6ff997fa003": {
+    "kind": "resolution",
+    "variables": [
+      "Human Development Index"
+    ],
+    "entities": [
+      {
+        "text": "Greece",
+        "span": "Greece",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:f63b48443ac7e7528dc750aaef805b05a95b1657": {
+    "kind": "resolution",
+    "variables": [
+      "gender pay gap"
+    ],
+    "entities": [
+      {
+        "text": "Slovenia",
+        "span": "Slovenia",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:7688962debfa23298f2e4ea93107722d41fcae0a": {
+    "kind": "resolution",
+    "variables": [
+      "refugees"
+    ],
+    "entities": [
+      {
+        "text": "Western Sahara",
+        "span": "Western Sahara",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:c93d03a59bd2a7729f79620dc02bafadfebda67a": {
+    "kind": "resolution",
+    "variables": [
+      "under-five mortality"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2024",
+        "end": "2024"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:aad431784810591f926783a3dede23921c3a0633": {
+    "kind": "resolution",
+    "variables": [
+      "unemployment rate of persons with disabilities"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:45f53a9e8cc5f95c0796d817772868a0d0c1c872": {
+    "kind": "resolution",
+    "variables": [
+      "stunting"
+    ],
+    "entities": [
+      {
+        "text": "Nigeria",
+        "span": "Nigeria",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "among the poorest children"
+    ],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:9b2abf528a9b4d4c93925b83a58cbcfb20060066": {
+    "kind": "resolution",
+    "variables": [
+      "primary school attendance"
+    ],
+    "entities": [
+      {
+        "text": "Niger",
+        "span": "Niger",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "rural"
+    ],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:5d9462b8ef2c2d1355c83d8dd1e9b73676c882aa": {
+    "kind": "resolution",
+    "variables": [
+      "life expectancy"
+    ],
+    "entities": [
+      {
+        "text": "Low-income countries",
+        "span": "low-income countries",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:055bb0e52ebcd0d5fe92cefa31bf529aaaa7be56": {
+    "kind": "resolution",
+    "variables": [
+      "health aid",
+      "child mortality"
+    ],
+    "entities": [
+      {
+        "text": "Malawi",
+        "span": "Malawi",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:d982623929060a976165dbe063b57bbc56b6ef22": {
+    "kind": "resolution",
+    "variables": [
+      "education aid",
+      "primary completion rate"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:63012f92b51f27a8d764854cac49c2dc26792f90": {
+    "kind": "catalogue",
+    "variables": [],
+    "entities": [
+      {
+        "text": "Malawi",
+        "span": "Malawi",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:6a049d716b19d187e2f980f2287ba84e0bb7d295": {
+    "kind": "catalogue",
+    "variables": [],
+    "entities": [],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:33608287c1aa624a3b84582454dddb073f5f0c0b": {
+    "kind": "requires_analysis",
+    "variables": [],
+    "entities": [
+      {
+        "text": "Malawi",
+        "span": "Malawi",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2027",
+        "end": "2027"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:25f10f86dc40d00afa7b578574177f761b861d50": {
+    "kind": "resolution",
+    "variables": [
+      "total debt service"
+    ],
+    "entities": [
+      {
+        "text": "Ghana",
+        "span": "Ghana",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:246a0fa71bd26396a1ff0a3d8267baad501c11cf": {
+    "kind": "resolution",
+    "variables": [
+      "debt service"
+    ],
+    "entities": [
+      {
+        "text": "Ghana",
+        "span": "Ghana",
+        "flow_role": "destination",
+        "role_span": "'s"
+      },
+      {
+        "text": "China",
+        "span": "China",
+        "flow_role": "origin",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:29e9f31c0e781607bc05893e3ff13e1e0da8cd5b": {
+    "kind": "resolution",
+    "variables": [
+      "debt"
+    ],
+    "entities": [
+      {
+        "text": "China",
+        "span": "China",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:c27173c128a32ede627926a84012ac05b6de6467": {
+    "kind": "resolution",
+    "variables": [
+      "external debt stocks"
+    ],
+    "entities": [],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:d051fbe129308c2fecb86f121544717bc6056026": {
+    "kind": "resolution",
+    "variables": [
+      "debt"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "owes"
+      },
+      {
+        "text": "China",
+        "span": "China",
+        "flow_role": "origin",
+        "role_span": "owes"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:d4cfa3a304b076774185d4e1190482327667025a": {
+    "kind": "resolution",
+    "variables": [
+      "debt"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "'s"
+      }
+    ],
+    "operations": [
+      {
+        "verb": "rank",
+        "variable": 0,
+        "phrase": "by creditor",
+        "over": "origin"
+      }
+    ],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:78304c3ff34d1e0925275a92f26cea3c1bd5d469": {
+    "kind": "resolution",
+    "variables": [
+      "debt owed to bondholders"
+    ],
+    "entities": [
+      {
+        "text": "Zambia",
+        "span": "Zambia",
+        "flow_role": "destination",
+        "role_span": "Zambia"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:33422deb273efc28e5244a9fe0fa5fef8ede59ba": {
+    "kind": "resolution",
+    "variables": [
+      "debt service"
+    ],
+    "entities": [
+      {
+        "text": "Ghana",
+        "span": "Ghana",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:294a455bb1d811ceb47ebaa3f04179881f1c185a": {
+    "kind": "resolution",
+    "variables": [
+      "debt service to multilateral creditors"
+    ],
+    "entities": [
+      {
+        "text": "Ghana",
+        "span": "Ghana",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:08ddde4e771b0fb23a358fca3a30c4adbf3aab68": {
+    "kind": "resolution",
+    "variables": [
+      "debt service to IDA"
+    ],
+    "entities": [
+      {
+        "text": "Ghana",
+        "span": "Ghana",
+        "flow_role": "destination",
+        "role_span": "to"
+      },
+      {
+        "text": "IDA",
+        "span": "IDA",
+        "flow_role": "origin",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:d5ece6535f17ac4fdc56634413dcef9029506f30": {
+    "kind": "resolution",
+    "variables": [
+      "debt to IMF"
+    ],
+    "entities": [
+      {
+        "text": "Zambia",
+        "span": "Zambia",
+        "flow_role": "destination",
+        "role_span": "owes"
+      },
+      {
+        "text": "IMF",
+        "span": "IMF",
+        "flow_role": "origin",
+        "role_span": "owes"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:8fea6ead49cae0403595718284b731a6b1d1f75e": {
+    "kind": "resolution",
+    "variables": [
+      "debt service"
+    ],
+    "entities": [
+      {
+        "text": "Ghana",
+        "span": "Ghana",
+        "flow_role": "destination",
+        "role_span": null
+      },
+      {
+        "text": "World Bank",
+        "span": "World Bank",
+        "flow_role": "origin",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:894eb0b2512896a9c287444455b5b0bfced64540": {
+    "kind": "resolution",
+    "variables": [
+      "debt service"
+    ],
+    "entities": [
+      {
+        "text": "Ghana",
+        "span": "Ghana",
+        "flow_role": "destination",
+        "role_span": "to"
+      },
+      {
+        "text": "Paris Club",
+        "span": "Paris Club",
+        "flow_role": "origin",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:51e441de70ba4d187d3ff669710d2fe378e9d53a": {
+    "kind": "resolution",
+    "variables": [
+      "debt service"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "Kenya"
+      },
+      {
+        "text": "G20",
+        "span": "G20",
+        "flow_role": "origin",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:737600a6aa77122edf014b57560e272e267aa691": {
+    "kind": "resolution",
+    "variables": [
+      "debt service to commercial banks"
+    ],
+    "entities": [
+      {
+        "text": "Ghana",
+        "span": "Ghana",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:8863ed409c33e9b147a08376358aec140d354afc": {
+    "kind": "resolution",
+    "variables": [
+      "external debt stocks"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "latest",
+        "start": null,
+        "end": null
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:ac8ea2f44f7d584ec40c9c80ceb9422baac5b320": {
+    "kind": "resolution",
+    "variables": [
+      "debt service payments"
+    ],
+    "entities": [
+      {
+        "text": "Zambia",
+        "span": "Zambia",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [
+      {
+        "verb": "forecast",
+        "variable": 0,
+        "phrase": "projected",
+        "over": null
+      }
+    ],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2027",
+        "end": "2027"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:8e7abae3ab9f5b8b9f8fb4c61a56d54a2774b0c6": {
+    "kind": "resolution",
+    "variables": [
+      "debt service"
+    ],
+    "entities": [
+      {
+        "text": "Ghana",
+        "span": "Ghana",
+        "flow_role": "destination",
+        "role_span": "to"
+      },
+      {
+        "text": "China",
+        "span": "China",
+        "flow_role": "origin",
+        "role_span": "to"
+      }
+    ],
+    "operations": [
+      {
+        "verb": "forecast",
+        "variable": 0,
+        "phrase": "future",
+        "over": null
+      }
+    ],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:0d2f872d5160f726e66d6b9c46c4d302e985214f": {
+    "kind": "resolution",
+    "variables": [
+      "debt service to the IMF"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "'s"
+      },
+      {
+        "text": "IMF",
+        "span": "IMF",
+        "flow_role": "origin",
+        "role_span": "to"
+      }
+    ],
+    "operations": [
+      {
+        "verb": "forecast",
+        "variable": 0,
+        "phrase": "in 2030",
+        "over": null
+      }
+    ],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:aa47a5081800e19da349e8c2947b20b5cc38d159": {
+    "kind": "resolution",
+    "variables": [
+      "debt service"
+    ],
+    "entities": [
+      {
+        "text": "Zambia",
+        "span": "Zambia",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [
+      {
+        "verb": "forecast",
+        "variable": 0,
+        "phrase": "to 2030",
+        "over": null
+      }
+    ],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "range",
+        "start": "2020",
+        "end": "2030"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:43c5d1df93c277525f725c21150a065326a685fc": {
+    "kind": "resolution",
+    "variables": [
+      "debt service"
+    ],
+    "entities": [
+      {
+        "text": "Ghana",
+        "span": "Ghana",
+        "flow_role": "destination",
+        "role_span": "'s"
+      },
+      {
+        "text": "China",
+        "span": "China",
+        "flow_role": "origin",
+        "role_span": "to"
+      },
+      {
+        "text": "IDA",
+        "span": "IDA",
+        "flow_role": "origin",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:37fcbc5a1e7978e9957786f59af0cc1bd65f3ee0": {
+    "kind": "resolution",
+    "variables": [
+      "external debt stocks"
+    ],
+    "entities": [],
+    "operations": [
+      {
+        "verb": "rank",
+        "variable": 0,
+        "phrase": "which countries have the highest",
+        "over": "place"
+      }
+    ],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:f5e64498429422909145189a9c3e7512b850e926": {
+    "kind": "resolution",
+    "variables": [
+      "debt"
+    ],
+    "entities": [
+      {
+        "text": "China",
+        "span": "China",
+        "flow_role": "origin",
+        "role_span": "of"
+      }
+    ],
+    "operations": [
+      {
+        "verb": "rank",
+        "variable": 0,
+        "phrase": "top 10",
+        "over": "destination"
+      }
+    ],
+    "dropped_qualifiers": [
+      "top 10 debtors of China"
+    ],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:9e7261eb1c4e87076888f461d838896e96cd6fd6": {
+    "kind": "resolution",
+    "variables": [
+      "debt"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "'s"
+      },
+      {
+        "text": "China",
+        "span": "China",
+        "flow_role": "origin",
+        "role_span": "owed to"
+      }
+    ],
+    "operations": [
+      {
+        "verb": "share_of",
+        "variable": 0,
+        "phrase": "what share of",
+        "over": "origin"
+      }
+    ],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:b80aec62eef5fc71b42298c2b5d8fd99899c4733": {
+    "kind": "resolution",
+    "variables": [
+      "external debt"
+    ],
+    "entities": [
+      {
+        "text": "Zambia",
+        "span": "Zambia",
+        "flow_role": "destination",
+        "role_span": "'s"
+      }
+    ],
+    "operations": [
+      {
+        "verb": "growth",
+        "variable": 0,
+        "phrase": "growth in",
+        "over": null
+      }
+    ],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "range",
+        "start": "2000",
+        "end": null
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:92cb013a748ddf406e5bb141f6b6463bb71dbd52": {
+    "kind": "resolution",
+    "variables": [
+      "PPG external debt stocks, DOD"
+    ],
+    "entities": [
+      {
+        "text": "Ghana",
+        "span": "Ghana",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:2dff172519d192ccdc8ca3e7e742854213d6d45f": {
+    "kind": "resolution",
+    "variables": [
+      "short-term external debt"
+    ],
+    "entities": [
+      {
+        "text": "Ghana",
+        "span": "Ghana",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:67d2a9b5f12c8f3daf67290ac2fe85f918247d8c": {
+    "kind": "resolution",
+    "variables": [
+      "external debt arrears"
+    ],
+    "entities": [
+      {
+        "text": "Zambia",
+        "span": "Zambia",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:8f25f3e7995dc5cbd375828921f756192e30427c": {
+    "kind": "resolution",
+    "variables": [
+      "principal repayments"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:60176d2f71f61e870d84518a5539377cc5b91274": {
+    "kind": "resolution",
+    "variables": [
+      "net financial flows on external debt"
+    ],
+    "entities": [
+      {
+        "text": "Ghana",
+        "span": "Ghana",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:b9b0bf046953eeb622357b6d14ef45629a7436bc": {
+    "kind": "resolution",
+    "variables": [
+      "disbursements"
+    ],
+    "entities": [
+      {
+        "text": "Ghana",
+        "span": "Ghana",
+        "flow_role": "destination",
+        "role_span": "from"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "bilateral creditors"
+    ],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:e20eda66e781cefd378b35d48eb232d0b1d838be": {
+    "kind": "resolution",
+    "variables": [
+      "debt service as a share of exports"
+    ],
+    "entities": [
+      {
+        "text": "Ghana",
+        "span": "Ghana",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:c9a8572e15398c9944baea248944d70de3e906e4": {
+    "kind": "resolution",
+    "variables": [
+      "debt service",
+      "interest payments"
+    ],
+    "entities": [
+      {
+        "text": "Zambia",
+        "span": "Zambia",
+        "flow_role": "unspecified",
+        "role_span": null
+      },
+      {
+        "text": "Ghana",
+        "span": "Ghana",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:a00ab7e05b4777c2dbced371d8e060075f55d58e": {
+    "kind": "resolution",
+    "variables": [
+      "external debt"
+    ],
+    "entities": [
+      {
+        "text": "Sub-Saharan Africa",
+        "span": "sub-saharan africa",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:4a64888658505d355b742967388f5beb3dc0d260": {
+    "kind": "resolution",
+    "variables": [
+      "debt service"
+    ],
+    "entities": [
+      {
+        "text": "Low Income Countries",
+        "span": "low income countries",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:757eaadaafeb91b4d361efcdb5afab9620117c1e": {
+    "kind": "resolution",
+    "variables": [
+      "external debt"
+    ],
+    "entities": [
+      {
+        "text": "Heavily Indebted Poor Countries",
+        "span": "HIPCs",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:c3b96bd269b7678cb8c455bd001088ebf877d020": {
+    "kind": "resolution",
+    "variables": [
+      "debt"
+    ],
+    "entities": [],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:bfd1c0979c998e36ebc9a40e6f98f842246b3ed1": {
+    "kind": "resolution",
+    "variables": [
+      "government debt"
+    ],
+    "entities": [
+      {
+        "text": "Japan",
+        "span": "Japan",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:91f8688cfe69030adce052b6c3bd003d35510441": {
+    "kind": "resolution",
+    "variables": [
+      "external debt stocks"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:979e7819843e6fbed07ace8e5300f5f966f3bdf9": {
+    "kind": "resolution",
+    "variables": [
+      "debt"
+    ],
+    "entities": [
+      {
+        "text": "China",
+        "span": "China",
+        "flow_role": "origin",
+        "role_span": "owe"
+      },
+      {
+        "text": "India",
+        "span": "India",
+        "flow_role": "destination",
+        "role_span": "owe"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:bdfca56d5aef149802b5c9bfce346b8223e6b973": {
+    "kind": "resolution",
+    "variables": [
+      "external debt"
+    ],
+    "entities": [
+      {
+        "text": "China",
+        "span": "Chinas",
+        "flow_role": "origin",
+        "role_span": "'s"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:88969c27b226f5379d6eb6c043c9872899a74358": {
+    "kind": "resolution",
+    "variables": [
+      "debt service"
+    ],
+    "entities": [
+      {
+        "text": "Ghana",
+        "span": "Gahna",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:bf85c9232675948c5f0c41043457d93922d5a31d": {
+    "kind": "resolution",
+    "variables": [
+      "average interest rate on new external debt commitments"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:0af5260040d3500b79c821b5437b982a80df57db": {
+    "kind": "resolution",
+    "variables": [
+      "average maturity of new loans"
+    ],
+    "entities": [
+      {
+        "text": "Ethiopia",
+        "span": "Ethiopia",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:ed7473b860083d59cc47099f12e0aef873f192b6": {
+    "kind": "resolution",
+    "variables": [
+      "grant element of new commitments"
+    ],
+    "entities": [
+      {
+        "text": "Malawi",
+        "span": "Malawi",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2020",
+        "end": "2020"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:b29b061dfc9e32caf82a8c41647381c45f6c4a5d": {
+    "kind": "resolution",
+    "variables": [
+      "undisbursed external debt"
+    ],
+    "entities": [
+      {
+        "text": "Zambia",
+        "span": "Zambia",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:c6db4cd92089e93ca0b634c06910b49c1e10c72e": {
+    "kind": "resolution",
+    "variables": [
+      "net transfers on external debt"
+    ],
+    "entities": [
+      {
+        "text": "Ghana",
+        "span": "Ghana",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:8150c24a1e42f71e22d631689f38fc032506ae33": {
+    "kind": "resolution",
+    "variables": [
+      "public debt denominated in US dollars as share of total public debt"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "'s"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:e200cef88838be1b28ecc978512c74e4a50bf713": {
+    "kind": "resolution",
+    "variables": [
+      "debt",
+      "yuan"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "'s"
+      },
+      {
+        "text": "China",
+        "span": "China",
+        "flow_role": "origin",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:d09cb18446a24df1a8d1452d0ba293c81030f315": {
+    "kind": "resolution",
+    "variables": [
+      "debt service"
+    ],
+    "entities": [
+      {
+        "text": "African Development Bank",
+        "span": "African Development Bank",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:20230606c33a8be2eacd9407d6c4ec8db42d7169": {
+    "kind": "requires_analysis",
+    "variables": [],
+    "entities": [
+      {
+        "text": "Zambia",
+        "span": "Zambia",
+        "flow_role": "destination",
+        "role_span": "'s"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:b1bf6e6ea882fa43bfb9b8215a6df365b4ecf020": {
+    "kind": "resolution",
+    "variables": [
+      "debt data"
+    ],
+    "entities": [
+      {
+        "text": "Zambia",
+        "span": "Zambia",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:9bc8bcec97ef40686c9bfc33fb3ab4b902f71205": {
+    "kind": "resolution",
+    "variables": [
+      "imputed multilateral ODA"
+    ],
+    "entities": [
+      {
+        "text": "Norway",
+        "span": "Norway",
+        "flow_role": "origin",
+        "role_span": "from"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:e537944a0e0bf5e2e348e87a7659b08c67daafa7": {
+    "kind": "resolution",
+    "variables": [
+      "imputed multilateral ODA"
+    ],
+    "entities": [
+      {
+        "text": "Norway",
+        "span": "Norway",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:e2cca951d6f1cd8a53dd4dfecbe4ddef92b578d2": {
+    "kind": "resolution",
+    "variables": [
+      "imputed multilateral aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:9011ea76592e5bc85ca2d1b31ce0a2a162137598": {
+    "kind": "resolution",
+    "variables": [
+      "imputed multilateral ODA"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "basic education",
+        "span": "basic education",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2020",
+        "end": "2020"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:292e3d34e6114229faba7001f048b901681f7c27": {
+    "kind": "resolution",
+    "variables": [
+      "imputed multilateral ODA"
+    ],
+    "entities": [
+      {
+        "text": "Sweden",
+        "span": "Sweden",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "climate change adaptation",
+        "span": "climate change adaptation",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:e355688c6a7c8c3898530a7bf5f2aecabce58b3d": {
+    "kind": "resolution",
+    "variables": [
+      "imputed multilateral ODA"
+    ],
+    "entities": [
+      {
+        "text": "DAC donors",
+        "span": "DAC donors",
+        "flow_role": "origin",
+        "role_span": "from"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:ace31283a2096fecc94239548a397c6111fe774d": {
+    "kind": "resolution",
+    "variables": [
+      "imputed multilateral ODA"
+    ],
+    "entities": [
+      {
+        "text": "European Union",
+        "span": "EU",
+        "flow_role": "origin",
+        "role_span": "from"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "EU members"
+    ],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:8397b86181f3b5fea0e25cb466a7d6802f550a5b": {
+    "kind": "resolution",
+    "variables": [
+      "imputed multilateral ODA"
+    ],
+    "entities": [
+      {
+        "text": "United Arab Emirates",
+        "span": "UAE",
+        "flow_role": "origin",
+        "role_span": "from"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:55c36c0d60dd48aeffe8883774a6470366481bc8": {
+    "kind": "resolution",
+    "variables": [
+      "imputed multilateral ODA"
+    ],
+    "entities": [
+      {
+        "text": "Ethiopia",
+        "span": "Ethiopia",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [
+      {
+        "verb": "rank",
+        "variable": 0,
+        "phrase": "Which donors give the most",
+        "over": "origin"
+      }
+    ],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:717e3e8446ad303a1ffe26eb6e43dc9b8a34eeeb": {
+    "kind": "resolution",
+    "variables": [
+      "imputed multilateral ODA"
+    ],
+    "entities": [
+      {
+        "text": "United Kingdom",
+        "span": "UK",
+        "flow_role": "origin",
+        "role_span": "from"
+      }
+    ],
+    "operations": [
+      {
+        "verb": "rank",
+        "variable": 0,
+        "phrase": "Which sectors get the most",
+        "over": "category"
+      }
+    ],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:05f0237b49680da6d637064314fb8a8114188be0": {
+    "kind": "resolution",
+    "variables": [
+      "imputed multilateral ODA"
+    ],
+    "entities": [
+      {
+        "text": "Norway",
+        "span": "Norway",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "range",
+        "start": "2015",
+        "end": "2020"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:f06369e8a044dd88d10b5531c658d524c2ded55e": {
+    "kind": "resolution",
+    "variables": [
+      "multilateral ODA"
+    ],
+    "entities": [
+      {
+        "text": "Norway",
+        "span": "Norway",
+        "flow_role": "origin",
+        "role_span": "from"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "Imputed"
+    ],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2010",
+        "end": "2010"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:423a6c8048cfbb528ac1290c9138853f9c8e008d": {
+    "kind": "resolution",
+    "variables": [
+      "imputed multilateral ODA"
+    ],
+    "entities": [
+      {
+        "text": "Norway",
+        "span": "Norway",
+        "flow_role": "origin",
+        "role_span": "from"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "in constant 2022 dollars"
+    ],
+    "dates": []
+  },
+  "MentionReadings@bf01d55f8e47:ab30497da5eeffdbd004ba6bd488dc8f3d2c8fe4": {
+    "readings": [
+      {
+        "mention": 0,
+        "relation": "only",
+        "variable": 0
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:de95135339b2b7b518efa0ca80f85bae931d6d44": {
+    "kind": "resolution",
+    "variables": [
+      "imputed multilateral ODA"
+    ],
+    "entities": [
+      {
+        "text": "Ireland",
+        "span": "Ireland",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Low Income Countries",
+        "span": "low income countries",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:21506b0d8e27a39a18ee1f7d4c8718833598163c": {
+    "kind": "resolution",
+    "variables": [
+      "multilateral aid share"
+    ],
+    "entities": [
+      {
+        "text": "Norway",
+        "span": "Norway",
+        "flow_role": "origin",
+        "role_span": "'s"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:bae66ac884ed2f93fdcdc44cd03864f705d2d156": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Norway",
+        "span": "Norway",
+        "flow_role": "origin",
+        "role_span": "gives"
+      },
+      {
+        "text": "United Nations",
+        "span": "UN",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:1557bf490ad9e0ac12c8a04125ddfca715545833": {
+    "kind": "resolution",
+    "variables": [
+      "financial flows"
+    ],
+    "entities": [
+      {
+        "text": "World Bank",
+        "span": "World Bank",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:62579a4793e5c5801564b45bffc5c80a7f882dd9": {
+    "kind": "resolution",
+    "variables": [
+      "imputed multilateral ODA"
+    ],
+    "entities": [
+      {
+        "text": "Gavi",
+        "span": "Gavi",
+        "flow_role": "destination",
+        "role_span": "through"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:a602d4a1e001b6800522da2bc5a6a5536d0ce6a3": {
+    "kind": "resolution",
+    "variables": [
+      "imputed multilateral ODA"
+    ],
+    "entities": [
+      {
+        "text": "IDA",
+        "span": "IDA",
+        "flow_role": "origin",
+        "role_span": "from"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:add394c35f5882786f2d614b7a26fea401d21da8": {
+    "kind": "resolution",
+    "variables": [
+      "multilateral ODA"
+    ],
+    "entities": [
+      {
+        "text": "Norway",
+        "span": "Norway",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:127e228f51857b4404fe9c5ff268b2e84aa2d38b": {
+    "kind": "resolution",
+    "variables": [
+      "bilateral aid"
+    ],
+    "entities": [
+      {
+        "text": "Norway",
+        "span": "Norway",
+        "flow_role": "origin",
+        "role_span": "'s"
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "bilateral-only",
+      "not counting what goes through multilaterals"
+    ],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:601c4cc1fdfdc58694d2e9f4d75c8ee32bc91e40": {
+    "kind": "resolution",
+    "variables": [
+      "multilateral ODA"
+    ],
+    "entities": [
+      {
+        "text": "Norway",
+        "span": "Norway",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:f7728a9193c668ef9ac21d8b06551361d1ecab0c": {
+    "kind": "resolution",
+    "variables": [
+      "imputed multilateral ODA"
+    ],
+    "entities": [
+      {
+        "text": "Norway",
+        "span": "Norway",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "health",
+        "span": "health",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:586c7df812f81a8a2a18db75de77903949a9ac64": {
+    "kind": "resolution",
+    "variables": [
+      "imputed multilateral ODA"
+    ],
+    "entities": [
+      {
+        "text": "France",
+        "span": "France",
+        "flow_role": "unspecified",
+        "role_span": null
+      },
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:a797c29275452e0b71b8ea800f106ed0bf37ed2e": {
+    "kind": "resolution",
+    "variables": [
+      "bilateral and imputed multilateral aid"
+    ],
+    "entities": [
+      {
+        "text": "Norway",
+        "span": "Norway",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2022",
+        "end": "2022"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:b1af237f44317c2f91fc931d94af7838b40bf834": {
+    "kind": "resolution",
+    "variables": [
+      "GDP growth"
+    ],
+    "entities": [
+      {
+        "text": "Nigeria",
+        "span": "Nigeria",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:6c92e7a3f0fdcb5317b709ce3828d66ed0d84062": {
+    "kind": "resolution",
+    "variables": [
+      "GDP in current US dollars"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:f1731cf85a06a34af0d3c75d5b8cfb15ca08743a": {
+    "kind": "resolution",
+    "variables": [
+      "GDP"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "IMF GDP current prices"
+    ],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:fa406677d4c316909f1b3a9f62b65c6e92e24260": {
+    "kind": "resolution",
+    "variables": [
+      "GDP per capita PPP"
+    ],
+    "entities": [
+      {
+        "text": "Japan",
+        "span": "Japan",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:6c2a797e66ca746630e0161ba59d6dbbf648ef8d": {
+    "kind": "resolution",
+    "variables": [
+      "gross national savings percent of GDP"
+    ],
+    "entities": [
+      {
+        "text": "Zambia",
+        "span": "Zambia",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:5120278656f3cdd3f0274cd489531a797d151a09": {
+    "kind": "resolution",
+    "variables": [
+      "investment as share of GDP"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:7b3d7e6b452195450dc187aa1fbf9dbdadfdc7bc": {
+    "kind": "resolution",
+    "variables": [
+      "gross capital formation"
+    ],
+    "entities": [
+      {
+        "text": "Ghana",
+        "span": "Ghana",
+        "flow_role": "unspecified",
+        "role_span": null
+      },
+      {
+        "text": "Nigeria",
+        "span": "Nigeria",
+        "flow_role": "unspecified",
+        "role_span": null
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "range",
+        "start": "2000",
+        "end": null
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:043496d9a8a0b8b85a74d091cbfb44cdc0bfeb46": {
+    "kind": "resolution",
+    "variables": [
+      "output gap"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2025",
+        "end": "2025"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:0ebd7894a7edc7b24c7a42d30a183c120e1ce164": {
+    "kind": "resolution",
+    "variables": [
+      "GDP"
+    ],
+    "entities": [
+      {
+        "text": "Sub-Saharan Africa",
+        "span": "Sub-Saharan Africa",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:e6e3f1697efed730fb4c49119a5f5d5952ebc022": {
+    "kind": "resolution",
+    "variables": [
+      "GDP"
+    ],
+    "entities": [
+      {
+        "text": "advanced economies",
+        "span": "advanced economies",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:f0fb9b710a45dd19fb9d2173a31f06bc2f84263e": {
+    "kind": "resolution",
+    "variables": [
+      "GDP"
+    ],
+    "entities": [
+      {
+        "text": "Euro Area",
+        "span": "euro area",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:95127d8e62eba2447a88b72bc53af09436907952": {
+    "kind": "resolution",
+    "variables": [
+      "GDP"
+    ],
+    "entities": [],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:f434038ea5858d792e28459f4abf1b5a39dce0ef": {
+    "kind": "resolution",
+    "variables": [
+      "GDP"
+    ],
+    "entities": [
+      {
+        "text": "Lagos State",
+        "span": "Lagos State",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:d3c89f352c170bfa68d594766b2599ca64b5f2b0": {
+    "kind": "resolution",
+    "variables": [
+      "GDP"
+    ],
+    "entities": [
+      {
+        "text": "Japan",
+        "span": "Japan",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:12adbd725241d82bfa297e81b73df438ecc35bfe": {
+    "kind": "resolution",
+    "variables": [
+      "GDP"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenyan",
+        "flow_role": "destination",
+        "role_span": "Kenyan"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "in Kenyan shillings"
+    ],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:400cbf5e678274f66a77133046f3ca8e321de8a8": {
+    "kind": "resolution",
+    "variables": [
+      "gross capital formation"
+    ],
+    "entities": [
+      {
+        "text": "Zambia",
+        "span": "Zambia",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2026",
+        "end": "2026"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:776a96498d7cd83660683eb6a4c4724ca8f705e3": {
+    "kind": "resolution",
+    "variables": [
+      "GDP per capita PPP"
+    ],
+    "entities": [
+      {
+        "text": "Japan",
+        "span": "Japan",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [
+      {
+        "verb": "forecast",
+        "variable": 0,
+        "phrase": "in 2029",
+        "over": null
+      }
+    ],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:ff6bbe4a65d0845bbbea8643c773aeee72731488": {
+    "kind": "resolution",
+    "variables": [
+      "gross capital formation"
+    ],
+    "entities": [
+      {
+        "text": "Zambia",
+        "span": "Zambia",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [
+      {
+        "verb": "forecast",
+        "variable": 0,
+        "phrase": "in 2035",
+        "over": null
+      }
+    ],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:85f174c57c977c20db197a61d55b410b5e5c03e0": {
+    "kind": "resolution",
+    "variables": [
+      "GDP per capita PPP"
+    ],
+    "entities": [
+      {
+        "text": "Japan",
+        "span": "Japan",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "1975",
+        "end": "1975"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:9d4456025585eb11cb84bcb0bbdfee5e08ba2866": {
+    "kind": "resolution",
+    "variables": [
+      "gross national savings"
+    ],
+    "entities": [
+      {
+        "text": "Zambia",
+        "span": "Zambia",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "range",
+        "start": "2015",
+        "end": "2026"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:6f54fdd32dc513df5b4125a3eacff6122444c66f": {
+    "kind": "resolution",
+    "variables": [
+      "investment share of GDP"
+    ],
+    "entities": [
+      {
+        "text": "G20",
+        "span": "G20",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [
+      {
+        "verb": "rank",
+        "variable": 0,
+        "phrase": "rank",
+        "over": "place"
+      }
+    ],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2024",
+        "end": "2024"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:2313956236975e1d9c8bea0317e7b6888339709e": {
+    "kind": "resolution",
+    "variables": [
+      "cost of living"
+    ],
+    "entities": [
+      {
+        "text": "Egypt",
+        "span": "Egypt",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:91d954f967150eb9c56c91b1005770b14267e274": {
+    "kind": "resolution",
+    "variables": [
+      "GGXWDG_NGDP"
+    ],
+    "entities": [
+      {
+        "text": "Zambia",
+        "span": "Zambia",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:b063e3927a2f71626e403317110a1f0951f951f8": {
+    "kind": "resolution",
+    "variables": [
+      "government debt as a share of GDP"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:48c40c2e775501be27b2a353bc79d99e05fecd70": {
+    "kind": "resolution",
+    "variables": [
+      "inflation"
+    ],
+    "entities": [
+      {
+        "text": "Ghana",
+        "span": "Ghana",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2023",
+        "end": "2023"
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:71c1d87f63e11c017171d24c66eccae812289ee4": {
+    "kind": "resolution",
+    "variables": [
+      "GDP per capita, PPP"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:fd5e3de460a3e58a35bea245beef15092d115e51": {
+    "kind": "resolution",
+    "variables": [
+      "GDP growth",
+      "gross capital formation",
+      "savings"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "range",
+        "start": "2010",
+        "end": null
+      }
+    ]
+  },
+  "Extraction@5dd935b34a35:60a3326cbc412202bb2a79f55b567759eedb8567": {
+    "kind": "resolution",
+    "variables": [
+      "GDP per capita, current prices"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "from the April 2025 World Economic Outlook"
+    ],
+    "dates": [
+      {
+        "kind": "point",
+        "start": "2025",
+        "end": "2025"
+      }
+    ]
+  },
+  "_UniversalBindOutput@ede71de59275:afa175120fbf49a6f960219e7315f2d84dcc691d": {
+    "chosen_shape_index": 1,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "value",
+        "value_dcids": [
+          "GrossDomesticProduction"
+        ],
+        "evidence": "sole_option",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "economicSector",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": [
+      2,
+      3,
+      4
+    ],
+    "ask": null,
+    "unplaced": []
+  },
+  "Extraction@5dd935b34a35:d0a7d892224cf3258cdfb1a3af5ebe85aac9b711": {
+    "kind": "resolution",
+    "variables": [
+      "GDP per capita PPP"
+    ],
+    "entities": [
+      {
+        "text": "African Union",
+        "span": "African Union",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:b5ee6f656ad75cd4e79baa462928c179e9e3034b": {
+    "kind": "resolution",
+    "variables": [
+      "GDP per capita PPP"
+    ],
+    "entities": [
+      {
+        "text": "Nigeria",
+        "span": "Nigeria",
+        "flow_role": "unspecified",
+        "role_span": null
+      },
+      {
+        "text": "Egypt",
+        "span": "Egypt",
+        "flow_role": "unspecified",
+        "role_span": null
+      },
+      {
+        "text": "South Africa",
+        "span": "South Africa",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "latest",
+        "start": null,
+        "end": null
+      }
+    ]
+  },
+  "MentionReadings@bf01d55f8e47:d638ec513e866dab95e8a51cdc18bad9147f83c7": {
+    "readings": [
+      {
+        "mention": 0,
+        "relation": "only",
+        "variable": 0
+      }
+    ]
+  },
+  "MentionReadings@bf01d55f8e47:af39f10c9bf2856cdc5b8e05c5313dbfdae936b8": {
+    "readings": [
+      {
+        "mention": 0,
+        "relation": "only",
+        "variable": 0
+      }
+    ]
+  },
+  "MentionReadings@bf01d55f8e47:9f55c5e806d5f37ed1b6c67cf56a35d6ece25a00": {
+    "readings": [
+      {
+        "mention": 0,
+        "relation": "only",
+        "variable": 0
+      }
+    ]
+  },
+  "MentionReadings@bf01d55f8e47:01cb76e27b4ad325e7428cdecb4eb1c418e60507": {
+    "readings": [
+      {
+        "mention": 0,
+        "relation": "only",
+        "variable": 0
+      }
+    ]
+  },
+  "MentionReadings@bf01d55f8e47:debde1a350cc4cd450a9d11a4b7e42520e50a563": {
+    "readings": [
+      {
+        "mention": 0,
+        "relation": "only",
+        "variable": 0
+      }
+    ]
+  },
+  "MentionReadings@bf01d55f8e47:7b72b898cdcfc4192e500f74cb15cea4f55d809f": {
+    "readings": [
+      {
+        "mention": 0,
+        "relation": "only",
+        "variable": 0
+      }
+    ]
+  },
+  "MentionReadings@bf01d55f8e47:abf22f730cb3d62cbd2aa566c8398b69856ce3de": {
+    "readings": [
+      {
+        "mention": 0,
+        "relation": "only",
+        "variable": 0
+      }
+    ]
+  },
+  "MentionReadings@bf01d55f8e47:7166e7924e7460b78b5089ee7a2280ccf6099800": {
+    "readings": [
+      {
+        "mention": 0,
+        "relation": "only",
+        "variable": 0
+      }
+    ]
+  },
+  "MentionReadings@bf01d55f8e47:bdbaf07993b606611e8bc96113128b8c5631f8ab": {
+    "readings": [
+      {
+        "mention": 0,
+        "relation": "only",
+        "variable": 0
+      }
+    ]
+  },
+  "MentionReadings@bf01d55f8e47:aa7395279a479715c370bed495b19b6e8db1ea53": {
+    "readings": [
+      {
+        "mention": 0,
+        "relation": "only",
+        "variable": 0
+      }
+    ]
+  },
+  "MentionReadings@bf01d55f8e47:633a56cc11cc1ae41aa8477121ec7ed68869dc84": {
+    "readings": [
+      {
+        "mention": 0,
+        "relation": "only",
+        "variable": 0
+      }
+    ]
+  },
+  "MentionReadings@bf01d55f8e47:214214b37a4fb32fe76b3b5ae7604a173d64406b": {
+    "readings": [
+      {
+        "mention": 0,
+        "relation": "only",
+        "variable": 0
+      }
+    ]
+  },
+  "MentionReadings@bf01d55f8e47:7e649d4df1f872a26c762bfcdf6427370d3d6a57": {
+    "readings": [
+      {
+        "mention": 0,
+        "relation": "only",
+        "variable": 0
+      }
+    ]
+  },
+  "MentionReadings@bf01d55f8e47:f44ddcddd7c18329cd1e5a0bb21b094b3249c1a1": {
+    "readings": [
+      {
+        "mention": 0,
+        "relation": "only",
+        "variable": 0
+      }
+    ]
+  },
+  "MentionReadings@bf01d55f8e47:9127fc394fbeed70f068efa5c85c1edc0ac41f72": {
+    "readings": [
+      {
+        "mention": 0,
+        "relation": "only",
+        "variable": 0
+      }
+    ]
+  },
+  "MentionReadings@bf01d55f8e47:18635f91174a3c7efb1bd1fe060c30c3dc1101cb": {
+    "readings": [
+      {
+        "mention": 0,
+        "relation": "only",
+        "variable": 0
+      }
+    ]
+  },
+  "MentionReadings@bf01d55f8e47:3b1b70b7eb9037b54f9ef7c7796d4f5e1d0f5597": {
+    "readings": [
+      {
+        "mention": 0,
+        "relation": "only",
+        "variable": 0
+      }
+    ]
+  },
+  "MentionReadings@bf01d55f8e47:53717f4a07e92d4dcaa7b8d44c1656f1f1716c1d": {
+    "readings": [
+      {
+        "mention": 0,
+        "relation": "only",
+        "variable": 0
+      }
+    ]
+  },
+  "MentionReadings@bf01d55f8e47:af1df605d0c3550f8babd83eb2d0f258388439d4": {
+    "readings": [
+      {
+        "mention": 0,
+        "relation": "only",
+        "variable": 0
+      }
+    ]
+  },
+  "MentionReadings@bf01d55f8e47:3e99a63c9a2da56d2c8c5de4eb2b577364df605c": {
+    "readings": [
+      {
+        "mention": 0,
+        "relation": "only",
+        "variable": 0
+      }
+    ]
+  },
+  "_UniversalBindOutput@ede71de59275:d6f134f483925779840440cc3c584a57436d8cbe": {
+    "chosen_shape_index": 1,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "value",
+        "value_dcids": [
+          "GrossDomesticProduction"
+        ],
+        "evidence": "sole_option",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "economicSector",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": [
+      2,
+      3,
+      4
+    ],
+    "ask": null,
+    "unplaced": []
+  },
+  "_UniversalBindOutput@ede71de59275:b174d71b8fecbc07d870ffaa4262c30a7a22e155": {
+    "chosen_shape_index": 5,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "value",
+        "value_dcids": [
+          "GrossDomesticProduction"
+        ],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": [
+      3,
+      6
+    ],
+    "ask": null,
+    "unplaced": []
+  },
+  "_UniversalBindOutput@ede71de59275:80f405dca892bb2cbdc6b7b868e4f3d82eda5f3c": {
+    "chosen_shape_index": 5,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "activitySource",
+        "kind": "value",
+        "value_dcids": [
+          "GrossDomesticProduction"
+        ],
+        "evidence": "sole_option",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": [
+      6,
+      4,
+      3,
+      1,
+      2
+    ],
+    "ask": null,
+    "unplaced": []
   }
 }

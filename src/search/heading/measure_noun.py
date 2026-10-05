@@ -29,6 +29,7 @@ _DENOMINATOR_NOUNS: Final[Mapping[str, str]] = {
         "exports of goods, services and primary income"
     ),
     "Amount_EconomicActivity_GrossNationalIncome_Nominal": "GNI",
+    "PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal": "GNI",
     "ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_Nominal": (
         "GDP"
     ),

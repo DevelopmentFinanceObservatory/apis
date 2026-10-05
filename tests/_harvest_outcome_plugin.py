@@ -5,6 +5,9 @@ records its phase, exception type, MissingFixtureError key when present, and the
 misses logged to the harvest file while its test ran. A failure other than MissingFixtureError that
 follows a miss is collateral: an app test turns the miss into a 500, for example. An unset output
 path leaves ordinary pytest runs unchanged.
+
+Pytest imports this `-p` plugin before `tests/conftest.py` sets the offline `SEARCH_GRAPH_BASE`, so
+the module sits outside the `tests.fixtures` package and imports no engine code.
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.fixtures import HARVEST_MISS_PATH_ENV
+from tests.llm_miss_guard import HARVEST_MISS_PATH_ENV
 
 OUTCOME_PATH_ENV = "SEARCH_LLM_HARVEST_OUTCOME_PATH"
 """Output path for the summary; unset paths produce no file."""

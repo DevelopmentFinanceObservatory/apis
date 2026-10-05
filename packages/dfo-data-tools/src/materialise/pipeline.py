@@ -835,9 +835,9 @@ def materialise_preview(
     dispatch. The preview reads every row a mint reads and reports `truncated` and the full
     `total_rows`. `limit` bounds only the rows it delivers. `ceiling` sizes the raw-fetch guard
     as it does for a mint, 20 times `ceiling` raw rows, and a read past the guard raises
-    `SdmxCapExceededError`. With `refuse_over_ceiling`, survivors past `ceiling` raise the mint's
-    `OverCeilingError` and stop the read, so the preview refuses where a mint refuses and holds
-    no more rows. Without it, every survivor is counted, which a caller whose `ceiling` equals
+    `SdmxCapExceededError`. With `refuse_over_ceiling`, served rows past `ceiling` raise the
+    mint's `OverCeilingError` at the point the mint's check runs, mid-read where it can, so the
+    preview refuses where a mint refuses and holds no more rows. Without it, every survivor is counted, which a caller whose `ceiling` equals
     its `limit` needs to truncate. `materialise_group_preview` previews several members as one
     group.
 

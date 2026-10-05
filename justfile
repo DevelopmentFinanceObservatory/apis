@@ -181,9 +181,8 @@ dev:
     export GEMINI_API_KEY="$key"
     export SEARCH_GRAPH_BASE="{{SEARCH_GRAPH_BASE}}"
     # entity_resolution.shared.acquire_shared() raises RuntimeError on a cold
-    # environment without a cache dir (see scripts/sweep_corpus.py, which
-    # defaults this the same way); default it here too so a cold `just dev`
-    # and `just eval-app` can start.
+    # environment without a cache dir; default it so a cold `just dev` and
+    # `just eval-app` can start.
     if [ -z "${RESOLVEKIT_CACHE_DIR:-}" ]; then
         export RESOLVEKIT_CACHE_DIR="{{justfile_directory()}}/runs/dev_resolvekit"
         mkdir -p "$RESOLVEKIT_CACHE_DIR"
@@ -386,10 +385,6 @@ sentence-golden RUN:
 # Send the sentence panel to the deployed resolver and write raw and digest files (live, ~5 min; pass slice names such as `crs ids`)
 sentence-panel *ARGS:
     uv run {{SYNC_ARGS}} python scripts/sentence_panel/run.py {{ARGS}}
-
-# Run every corpus case through the offline fixture harness (no credentials, no network)
-sweep:
-    uv run {{SYNC_ARGS}} python scripts/sweep_corpus.py
 
 # Pass --nightly URL [--summary FILE] to also run the nightly experiment on the app at URL; it exits 0, 1 or 3.
 #

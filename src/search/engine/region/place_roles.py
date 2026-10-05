@@ -8,12 +8,13 @@ a refusal into its no-data outcome; an alternate that refuses is dropped from th
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, cast
 
 from materialise.roles import axis_for_role
 from search.engine.bind import SlotBindingDraft
+from search.engine.config import settings
 from search.engine.errors import RoleEntityUnplaced
 from search.engine.interpret import Recall
 from search.engine.role_text import DoorRole, contradicts
@@ -120,8 +121,38 @@ def subject_shapes_refused(state: ResolveState) -> bool:
     return {"origin", "destination"} <= query_directions
 
 
-def bind_place_roles(state: ResolveState, shape: ShapeDraft) -> PlaceRoles | PlaceRoleRefusal:
+def capped_place_dcids(state: ResolveState) -> tuple[list[str], int]:
+    """The query's places as an answer binds them, and the count of ordinary places named.
+
+    Ordinary places keep query order, deduplicated by dcid so synonyms for one place stay
+    scalar, and are capped at `max_standard_places`. Group placeholders are left out and
+    their already-capped members follow, under their own limit (`max_child_places`). The
+    result is in `place_order`, as a resubmit of the answer states its places."""
+    rcl = cast(Recall, state.rcl)
+    group_member_dcids_by_name = state.group_member_dcids_by_name
+    ordinary_place_dcids = list(
+        dict.fromkeys(
+            rcl.resolved_entity_names[name]
+            for name in state.entities
+            if name in rcl.resolved_entity_names and name not in group_member_dcids_by_name
+        )
+    )
+    group_place_dcids = list(
+        dict.fromkeys(
+            dcid for name in state.entities for dcid in group_member_dcids_by_name.get(name, ())
+        )
+    )
+    capped = ordinary_place_dcids[: settings().max_standard_places]
+    return place_order(capped + group_place_dcids), len(ordinary_place_dcids)
+
+
+def bind_place_roles(
+    state: ResolveState, shape: ShapeDraft, *, places: Sequence[str] | None = None
+) -> PlaceRoles | PlaceRoleRefusal:
     """Bind the query's capped places to `shape`'s roles, or name the refusal.
+
+    `places` defaults to the places place binding installs (`state.standard_place_dcids`).
+    A caller that runs before it passes `capped_place_dcids`.
 
     ``role_incompatible`` covers a subject-only shape when the query names both flow ends
     (`subject_shapes_refused`), and a place on an axis the shape declares no role on.
@@ -141,7 +172,7 @@ def bind_place_roles(state: ResolveState, shape: ShapeDraft) -> PlaceRoles | Pla
     """
     rcl = cast(Recall, state.rcl)
     group_member_dcids_by_name = state.group_member_dcids_by_name
-    standard_place_dcids = state.standard_place_dcids
+    standard_place_dcids = list(places if places is not None else state.standard_place_dcids)
     first_place = standard_place_dcids[0] if standard_place_dcids else None
 
     if not is_role_bearing(shape) and subject_shapes_refused(state):

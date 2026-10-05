@@ -43,7 +43,7 @@ from code_index.labels import family_label
 from code_index.members import absent_member_reads_zero
 from code_index.query import CodeIndex
 from code_index.shared import get_measure_index
-from code_index.types import summable_axes
+from code_index.types import level_axes, summable_axes
 from dataset_store.snapshot import StoredArtifactLocation
 from datasets_api.adapter import pinned_member_ref
 from datasets_api.artifact_delivery import (
@@ -58,20 +58,27 @@ from datasets_api.groupby import (
     collapse_axes,
     contributing_dcids,
     declared_axes_present,
-    is_full_collapse,
+    kept_axes,
+    levels_in_frame,
     refuse_decode_gaps,
     refuse_provenance_disagreement,
     refuse_stat_var_collision,
     refuse_unknown_by_axes,
+    roll_up_levels,
+    sums_stat_vars,
     unsummed_axes,
+    yields_grammar_frame,
 )
 from datasets_api.manifest_models import ArtifactEntryModel, CitationSource, Manifest
 from datasets_api.mint_models import MintOptions
+from datasets_api.query_options import QueryOptionsInvalid
 from datasets_api.timings import phase
+from datasets_api.version_store import rendering_key
 from datasets_api.versions import ArtifactRecord
 from datasets_api.warnings import DATASETS_WARNING_CATALOGUE
 from dfo_platform import Alternative
 from dfo_platform.config import PublicSiteSettings
+from dfo_platform.validation import pointer_segment
 from materialise.bundle import (
     ArtifactEntry as BundleArtifactEntry,
 )
@@ -150,7 +157,7 @@ _STAT_VAR_COLUMN = "stat_var"
 
 _STAT_VAR_REF_PREFIX = "dcid:"
 """Mirrors `datasets_api.groupby`'s own constant of the same name -- the
-family ref a full collapse mints when more than one member contributed
+family ref a collapse to a frame mints when more than one member contributed
 rows."""
 
 _STATUS_COLUMN = "status"
@@ -189,13 +196,15 @@ def _stat_vars_summed_warning(
 
 @dataclass(frozen=True)
 class GroupbyCollapseRendering:
-    """The canonical frame from a full collapse, with `stat_var` restored on every row. It is
-    independent of selected columns, pivot, and format. An absent mint preimage yields `None` for
-    `content_version`. `contributing_member_count` counts distinct StatVars with rows.
-    Callers use it
-    to warn about sums or refuse collection-member collapses."""
+    """The canonical frame from a collapse, with `stat_var` restored on every row and each kept
+    code axis as a string grain column. `role_columns` names the frame's roles, each kept code
+    axis's column included. It is independent of selected columns, pivot, and format. An absent
+    mint preimage yields `None` for `content_version`.
+    `contributing_member_count` counts distinct StatVars with rows. Callers use it to warn about
+    sums or refuse collection-member collapses."""
 
     frame: Frame
+    role_columns: tuple[str, ...]
     content_version: str | None
     stat_var_ref: str
     contributing_member_count: int
@@ -203,7 +212,7 @@ class GroupbyCollapseRendering:
 
 @dataclass(frozen=True)
 class ReshapeResult:
-    """Carries the reshaped table, warnings, and optional full-collapse result. `warning_order`
+    """Carries the reshaped table, warnings, and optional collapse frame. `warning_order`
     records decode-then-enrichment order for merging chunk warnings."""
 
     table: Table
@@ -212,9 +221,22 @@ class ReshapeResult:
     warning_order: tuple[str, ...]
 
 
-def check_options_supported(options: MintOptions) -> None:
-    """Frame-dependent refusals run in `_reshape`. Groupby, decode, and disabled-enrichment checks
-    need the materialised frame."""
+def check_options_supported(options: MintOptions, *, code_index: CodeIndex | None) -> None:
+    """Refuses a `groupby.levels` axis outside `code_index`'s level axes (`level_axes`) with
+    `QueryOptionsInvalid`, before any resolution or read. A `None` index decodes nothing, so it
+    checks nothing. Frame-dependent refusals run in `_reshape`. Groupby, decode, and
+    disabled-enrichment checks need the materialised frame."""
+    if code_index is None or options.groupby is None or options.groupby.levels is None:
+        return
+    allowed = level_axes(code_index.declarations)
+    for code_system in options.groupby.levels:
+        if code_system not in allowed:
+            raise QueryOptionsInvalid(
+                pointer=f"/options/groupby/levels/{pointer_segment(code_system)}",
+                detail=f"groupby.levels names {code_system!r}, which this deployment does not "
+                "declare a summable hierarchical code system disjoint from its children; GET "
+                f"/api/datasets/capabilities lists them as groupby_level_axes: {sorted(allowed)!r}",
+            )
 
 
 def _column_cap(format: str) -> int:
@@ -343,8 +365,8 @@ def _stream_first_axis_collapse(
 
 @dataclass(frozen=True)
 class _GroupbyOutcome:
-    """Carries the groupby table, pending decode plan, warnings, and optional full-collapse
-    rendering."""
+    """Carries the groupby table, pending decode plan, warnings, and optional collapse
+    frame."""
 
     table: Table
     decode_plan: DecodePlan | None
@@ -358,7 +380,8 @@ def _reshape_groupby_collapse(
     *,
     decode_plan: DecodePlan | None,
     axes_to_collapse: Sequence[str],
-    full_collapse: bool,
+    grammar_frame: bool,
+    kept: Sequence[str],
     decoded_code_systems: Sequence[str],
     code_index: CodeIndex,
     provenance_refs: Sequence[str],
@@ -369,13 +392,15 @@ def _reshape_groupby_collapse(
     frame_chunks: Iterable[Table] | None,
     warnings: list[MaterialisationWarning],
 ) -> tuple[Table, DecodePlan | None, GroupbyCollapseRendering | None]:
-    """Collapses `stat_var` then each requested axis, restoring `stat_var` to a frame on full
-    collapse. That frame leaves out the column of each decoded axis the sum does not collapse
-    (`groupby.unsummed_axes`), which a full collapse holds to one value. A member with no rows
-    counts as zero when the frame's dataset declares it (`absent_member_reads_zero`). Appends
-    decode and streaming warnings to `warnings` and returns any unconsumed decode plan. A full
-    collapse requires `subject_id` unless one member contributed. `subject_label` labels the
-    family ref on the `stat_vars_summed` warning."""
+    """Collapses `stat_var` then each requested axis. With `grammar_frame`, it restores
+    `stat_var` on every row and builds a frame whose roles are `entity_columns` plus the
+    `stat_var_{code_system}` column of each `kept` axis. That frame leaves out the column of each
+    decoded axis the sum does not collapse (`groupby.unsummed_axes`), which `grammar_frame`
+    holds to one value. A member with no rows counts as zero when the frame's dataset declares
+    it (`absent_member_reads_zero`). Appends decode and streaming warnings to `warnings` and
+    returns any unconsumed decode plan. A grammar frame requires `subject_id` unless one member
+    contributed and `kept` is empty. `subject_label` labels the family ref on the
+    `stat_vars_summed` warning."""
     refuse_provenance_disagreement(provenance_refs=provenance_refs)
     decode_lookup = decode_plan.lookup if decode_plan is not None else {}
     if frame_chunks is None:
@@ -480,18 +505,20 @@ def _reshape_groupby_collapse(
             current = cast(Table, current)
         remaining_columns = tuple(c for c in remaining_columns if c != axis)
 
-    if not full_collapse:
+    if not grammar_frame:
         return current, decode_plan, None
 
-    if len(contributors) == 1:
+    # A sole contributor's full collapse is the raw frame unchanged, so it keeps that member's
+    # dcid. A frame that keeps a code axis is new, so it names the family. Every level axis is
+    # in `kept`, so an empty `kept` also means no level applied.
+    if len(contributors) == 1 and not kept:
         stat_var_ref = next(iter(contributors))
     else:
         if subject_id is None:
             raise ValueError(
-                "a full groupby collapse that is not a sole-contributor no-op "
-                "requires subject_id (the family ref falls back to "
-                "f'dcid:{subject_id}'); the sole-contributor no-op case is the "
-                "only one that does not need it"
+                "a groupby collapse to a frame that is not a sole-contributor no-op "
+                "requires subject_id (the family ref is f'dcid:{subject_id}'); the "
+                "sole-contributor full collapse is the only one that does not need it"
             )
         stat_var_ref = f"{_STAT_VAR_REF_PREFIX}{subject_id}"
         # Empty collapses need a family ref. `stat_vars_summed` warnings require multiple contributors.
@@ -503,8 +530,8 @@ def _reshape_groupby_collapse(
                     stat_var_label=subject_label,
                 )
             )
-    # A full collapse leaves each unsummed axis with one value, so its column describes the
-    # family and the grammar frame leaves it out.
+    # A grammar frame holds each unsummed axis to one value, so its column describes the
+    # family and the frame leaves it out.
     left_out = {_STATUS_COLUMN} | {
         f"{_STAT_VAR_COLUMN}_{code_system}"
         for code_system in unsummed_axes(
@@ -523,7 +550,8 @@ def _reshape_groupby_collapse(
         }
         for row in current.rows
     ]
-    collapsed_frame = build_frame(role_keys=entity_columns, rows=rows_as_dicts)
+    role_columns = (*entity_columns, *(f"{_STAT_VAR_COLUMN}_{axis}" for axis in kept))
+    collapsed_frame = build_frame(role_keys=role_columns, rows=rows_as_dicts)
     current = cast(Table, collapsed_frame)
     new_content_version = (
         mint_version(
@@ -538,6 +566,7 @@ def _reshape_groupby_collapse(
     )
     collapse_info = GroupbyCollapseRendering(
         frame=collapsed_frame,
+        role_columns=role_columns,
         content_version=new_content_version,
         stat_var_ref=stat_var_ref,
         contributing_member_count=len(contributors),
@@ -557,29 +586,35 @@ def _reshape_groupby(
     subject_label: str | None,
     groupby_preimage: MintPreimage | None,
     frame_chunks: Iterable[Table] | None,
+    frame_keeps_axes: bool = True,
 ) -> _GroupbyOutcome:
     """Applies `groupby` when options and `code_index` are set. Otherwise inputs pass through.
     Unknown `by` axes fail before frame classification. The collapse set is the frame's decoded,
-    declared-summable axes absent from `by`.
+    declared-summable axes absent from `by`. `groupby.levels` first rewrites each level axis's
+    decoded labels to their depth ancestors' (`groupby.roll_up_levels`); a code above the depth
+    keeps its own label.
 
-    For a collapse, decode includes resolved StatVars with zero rows. It checks decode gaps, StatVar
-    collisions, and provenance agreement before summing each axis in order, with `stat_var` first.
-    Each sum uses its expected population and the source's absent-observation rule. Naming all
-    decoded axes in `by` is a no-op. With no summable axis, omitting `stat_var` with multiple
-    contributors
-    raises `RollupNotSummableError`.
+    For a collapse or a level roll-up, decode includes resolved StatVars with zero rows. It checks
+    decode gaps, StatVar collisions, and provenance agreement before summing each axis in order,
+    with `stat_var` first. Each sum uses its expected population and the source's
+    absent-observation rule. Naming all decoded axes in `by` with no level is a no-op. With no
+    summable axis, omitting `stat_var` with multiple contributors raises
+    `RollupNotSummableError`.
 
     `frame_chunks` streams the `stat_var` collapse over all input rows. Later axes use the reduced
-    output. The streamed path preserves whole-table refusal order. A full collapse restores
-    `stat_var` from the sole contributor or `dcid:{subject_id}`. Multiple contributors add a
-    `stat_vars_summed` warning labelled `subject_label`. A full collapse requires `subject_id`
-    unless one member contributed.
-    With `groupby_preimage`, the collapsed frame gets a version from the base revision, facets,
-    source revisions, and conversion. A sole-contributor collapse shares the base version. An absent
-    preimage yields `None`.
+    output. The streamed path preserves whole-table refusal order. When every unsummed axis holds
+    one value (`groupby.yields_grammar_frame`), the sum becomes a grammar frame: `stat_var` is
+    the sole contributor's dcid on a full collapse and `dcid:{subject_id}` otherwise, and each
+    kept code axis is a role column. With `frame_keeps_axes` false, a sum that keeps a code axis
+    stays the summed table and only a full collapse becomes a frame. Multiple contributors add a
+    `stat_vars_summed` warning labelled `subject_label`. A grammar frame requires `subject_id`
+    unless it is a sole contributor's full collapse.
+    With `groupby_preimage`, the frame gets a version from its own content, base revision, facets,
+    source revisions, and conversion. A sole-contributor full collapse leaves the frame unchanged
+    and so shares the base version. An absent preimage yields `None`.
 
     Raises `RollupNotSummableError` when a family has multiple contributors and no summable axis,
-    or `ValueError` when a full collapse lacks `subject_id`.
+    or `ValueError` when a grammar frame lacks `subject_id`.
     """
     current: Table = table
     warnings: list[MaterialisationWarning] = []
@@ -594,24 +629,37 @@ def _reshape_groupby(
         if decode_plan is not None
         else ()
     )
+    levels = levels_in_frame(
+        levels=options.groupby.levels, decoded_code_systems=decoded_code_systems
+    )
+    if decode_plan is not None and levels:
+        decode_plan = DecodePlan(
+            requests=decode_plan.requests,
+            lookup=roll_up_levels(decode_plan.lookup, index=code_index, levels=levels),
+        )
     axes_to_collapse = collapse_axes(
         by=options.groupby.by,
         decoded_code_systems=decoded_code_systems,
         declarations=code_index.declarations,
     )
-    full_collapse = is_full_collapse(
-        by=options.groupby.by,
-        decoded_code_systems=decoded_code_systems,
-        declarations=code_index.declarations,
-        lookup=decode_plan.lookup if decode_plan is not None else {},
-    )
-    if axes_to_collapse:
+    if axes_to_collapse or levels:
+        kept = kept_axes(
+            by=options.groupby.by,
+            decoded_code_systems=decoded_code_systems,
+            declarations=code_index.declarations,
+        )
         current, decode_plan, collapse_info = _reshape_groupby_collapse(
             table,
             current,
             decode_plan=decode_plan,
             axes_to_collapse=axes_to_collapse,
-            full_collapse=full_collapse,
+            grammar_frame=(frame_keeps_axes or not kept)
+            and yields_grammar_frame(
+                decoded_code_systems=decoded_code_systems,
+                declarations=code_index.declarations,
+                lookup=decode_plan.lookup if decode_plan is not None else {},
+            ),
+            kept=kept,
             decoded_code_systems=decoded_code_systems,
             code_index=code_index,
             provenance_refs=provenance_refs,
@@ -777,6 +825,7 @@ def _reshape(
     subject_label: str | None = None,
     groupby_preimage: MintPreimage | None = None,
     frame_chunks: Iterable[Table] | None = None,
+    frame_keeps_axes: bool = True,
 ) -> ReshapeResult:
     """Applies decode, groupby, selection, enrichment, and pivot before rendering. Inert transforms
     leave the input table unchanged.
@@ -785,13 +834,14 @@ def _reshape(
     `None` skips decoding.
     `resolved_stat_var_refs` supplies zero-row members to groupby population checks, and
     `provenance_refs` govern its source-wide missing-as-zero rule. `subject_id` and
-    `groupby_preimage` are used only for full-collapse identity, and `subject_label` only for the
+    `groupby_preimage` are used only for the collapse frame's identity, and `subject_label` only for the
     `stat_vars_summed` warning's family label. `frame_chunks` streams the first
-    collapse axis. `None` processes `table` in memory.
+    collapse axis. `None` processes `table` in memory. `frame_keeps_axes` false leaves a sum that
+    keeps a code axis as the summed table, with no collapse frame.
 
     Raises `ColumnUnknownError` for unknown columns, `CapabilityUnavailable` for disabled
     enrichment, `RollupNotSummableError` when a family has no summable axis, and `ValueError` when
-    a full collapse lacks `subject_id`.
+    a collapse to a frame lacks `subject_id`.
     """
     decode_plan = (
         build_decode_plan(table, index=code_index, extra_refs=resolved_stat_var_refs)
@@ -809,6 +859,7 @@ def _reshape(
         subject_label=subject_label,
         groupby_preimage=groupby_preimage,
         frame_chunks=frame_chunks,
+        frame_keeps_axes=frame_keeps_axes,
     )
     return _reshape_select_pivot_enrich(
         groupby_outcome.table,
@@ -1511,6 +1562,7 @@ def _reshape_stream(
     subject_id: str,
     subject_label: str | None,
     groupby_preimage: MintPreimage | None,
+    frame_keeps_axes: bool,
 ) -> _StreamedRender:
     """Reslices chunks, then dispatches every member through one of four paths:
 
@@ -1551,12 +1603,11 @@ def _reshape_stream(
             if probe_decode_plan is not None
             else ()
         )
-        will_stream_groupby_collapse = bool(
-            collapse_axes(
-                by=options.groupby.by,
-                decoded_code_systems=probe_decoded_code_systems,
-                declarations=code_index.declarations,
-            )
+        will_stream_groupby_collapse = sums_stat_vars(
+            by=options.groupby.by,
+            levels=options.groupby.levels,
+            decoded_code_systems=probe_decoded_code_systems,
+            declarations=code_index.declarations,
         )
 
     if will_stream_groupby_collapse and first_chunk is not None:
@@ -1575,6 +1626,7 @@ def _reshape_stream(
             subject_label=subject_label,
             groupby_preimage=groupby_preimage,
             frame_chunks=rest_of_frame_chunks,
+            frame_keeps_axes=frame_keeps_axes,
         )
         return _StreamedRender(
             chunks_for_writer=(result.table,),
@@ -1672,7 +1724,7 @@ def _reshape_stream(
 
 @dataclass(frozen=True)
 class RenderedDefinition:
-    """The `render_and_store` result. `collapse` is set for a full groupby collapse.
+    """The `render_and_store` result. `collapse` is set for a groupby collapse to a frame.
     `datasets_api.serve` uses it to write the collapsed version's frame1 and version record.
     `labels_complete` is `False` when a bundle's code label read failed
     (`BundleCodes.label_read_complete`), and the caller then leaves the artifact unlinked."""
@@ -1723,12 +1775,12 @@ def render_and_store(
     the coverage estimate.
 
     `code_index` controls decoding. `resolved_stat_var_refs` and `provenance_refs` support groupby
-    population and source checks. `groupby_preimage` can mint a full-collapse version. Its artifact
+    population and source checks. `groupby_preimage` can mint a collapse frame's version. Its artifact
     uses that version when present and `content_version` otherwise. `serve` writes version records.
-    A full collapse's `stat_vars_summed` warning labels the family with
+    A collapse frame's `stat_vars_summed` warning labels the family with
     `code_index.labels.family_label` over `spec`'s identity.
     """
-    check_options_supported(options)
+    check_options_supported(options, code_index=code_index)
     subject_id = str(spec.get("spec_id") or spec.get("collection_id"))
     identity = spec.get("identity")
     subject_label = (
@@ -1754,6 +1806,7 @@ def render_and_store(
             subject_id=subject_id,
             subject_label=subject_label,
             groupby_preimage=groupby_preimage,
+            frame_keeps_axes=True,
         )
         chunks_for_writer = streamed.chunks_for_writer
         collapse = streamed.collapse
@@ -1912,6 +1965,14 @@ def artifact_rendering(options: MintOptions, *, site: PublicSiteSettings) -> dic
     return rendering
 
 
+def artifact_rendering_key(options: MintOptions, *, site: PublicSiteSettings) -> str:
+    """The rendering key an artifact rendered under `options` is stored and linked under: the
+    hash (`version_store.rendering_key`) of `artifact_rendering(options, site=site)`. The
+    definition door's currency check, the bundle-link check and the operations poll all derive
+    a request's key here, so they narrow a version to the same rendering."""
+    return rendering_key(artifact_rendering(options, site=site))
+
+
 @dataclass(frozen=True)
 class CollectionMemberRendering:
     """Input for one collection member. `frame_chunks` is called once when that member renders.
@@ -1951,9 +2012,11 @@ def _reshape_collection_member(
     pivot_max_output_cells: int,
     code_index: CodeIndex | None,
 ) -> _StreamedRender:
-    """Streams one member's chunks through shared reshape dispatch. A full collapse with multiple
-    contributors raises `RollupNotSummableError` because each member uses its base content version.
-    The check runs before member bytes are written. Sole-contributor collapses succeed.
+    """Streams one member's chunks through shared reshape dispatch. Each member serves under its
+    base content version, so a sum that keeps a code axis (in `by` or through `groupby.levels`)
+    renders the summed table with no collapse frame, and a full collapse with multiple
+    contributors raises `RollupNotSummableError`.
+    The check runs before member bytes are written. Sole-contributor full collapses succeed.
     The member id supplies the family ref. The version preimage is absent."""
     streamed = _reshape_stream(
         member.frame_chunks(),
@@ -1968,10 +2031,11 @@ def _reshape_collection_member(
         # A collection member refuses a summed collapse below, so no warning needs the label.
         subject_label=None,
         groupby_preimage=None,
+        frame_keeps_axes=False,
     )
     if streamed.collapse is not None and streamed.collapse.contributing_member_count > 1:
         raise RollupNotSummableError(
-            f"groupby fully collapses collection member {member.spec_id!r} across "
+            f"groupby sums collection member {member.spec_id!r} into one frame across "
             f"{streamed.collapse.contributing_member_count} contributing "
             "StatVars; a collection has no per-member content_version to mint the "
             "collapsed identity under -- request this member individually through "
@@ -2055,7 +2119,7 @@ def render_and_store_collection(
     member's row count, and takes `prepared_at`, `site`, `deadline` and `metadata_read_seconds` as
     `render_and_store` does. A collection bundle gets no website link and no rebuild request.
     """
-    check_options_supported(options)
+    check_options_supported(options, code_index=code_index)
     rendering = Rendering()
     reshape_warnings: list[MaterialisationWarning] = []
     rendering_options = artifact_rendering(options, site=site)

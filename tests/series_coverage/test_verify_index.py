@@ -22,13 +22,15 @@ _OTHER = "provenance/SomeOtherDataset"
 _ROWS = 30
 
 
-def _dataset(provenance: str) -> dict:
+def _dataset(provenance: str, *, rank: int = 0) -> dict:
     return {
         "provenance": provenance,
         "label": provenance,
         "synonyms": [],
         "opt_in": False,
         "absent_observation": "unknown",
+        "rank": rank,
+        "invariants": {},
     }
 
 
@@ -114,9 +116,9 @@ def test_a_row_carrying_a_provenance_the_build_lacks_fails(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     document = _slice_document()
-    document["datasets"].append(_dataset(_OTHER))
+    document["datasets"].append(_dataset(_OTHER, rank=1))
     dcid = document["statvars"][5]["dcid"]
-    # A five-tuple belongs to one dataset, so the row moves to a measured property of its own.
+    # The row moves to a measured property only the other dataset publishes.
     document["statvars"][5]["measured_property"] = "otherAmount"
     document["statvars"][5]["provenances"] = [_OTHER]
 

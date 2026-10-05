@@ -28,6 +28,11 @@ def counted(tmp_path):
 
 def test_global_counts(counted):
     counts = counted.counts
+    # Two base and two DFO variables sharing Count_Person, and four coverage
+    # variables.
+    assert counts.indicators == 7
+    # The World Bank's provenance counts as its parent Dataset.
+    assert counts.datasets == 4
     # CRS's OECD source, the World Bank, Eurostat and WHO on the UN.
     assert counts.publishers == 4
     # KEN and USA from base bits; KEN, ETH, ZWE, FRA, DEU from coverage rows.
@@ -118,3 +123,24 @@ def test_the_aid_block_counts_only_variables_with_a_crs_facet(tmp_path):
     assert {"country/CHN", "country/ZMB"} <= set(counted.places)
     assert counted.places["country/ZMB"].aid == AidCounts(donors=0, recipients=0, years=None)
     assert counted.places["country/ZMB"].variables == 1
+
+
+def test_indicators_leave_out_a_withheld_coverage_variable(tmp_path):
+    snapshot = origin_snapshot(tmp_path)
+    tables = replace(snapshot.tables, withheld_variables=frozenset({V5}))
+    table, horizon = coverage_table(
+        [
+            (V1, FACET_ACTUALS, "country/FRA", "country/KEN", [2018]),
+            (V5, FACET_ACTUALS, "country/CHN", "country/ZMB", [2020]),
+        ]
+    )
+    roles = RoleNames(donor="financingProvider", recipient="financingRecipient")
+    coverage = CoverageIndex(
+        table,
+        {V1: roles, V5: roles},
+        {FACET_ACTUALS: FacetMetadata(provenance_id=CRS_PROVENANCE)},
+        horizon=horizon,
+    )
+    counted = catalogue_counts(catalogue=replace(snapshot, tables=tables), coverage=coverage)
+    # Three base and DFO variables, and V1.
+    assert counted.counts.indicators == 4

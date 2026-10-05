@@ -7,6 +7,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = [
+    "AppliedDefaultModel",
     "CapabilitiesResponse",
     "ChangedFieldModel",
     "ComponentReadResponse",
@@ -54,6 +55,19 @@ class WindowModel(BaseModel):
     end: str = Field(description="this window's own end period label")
 
 
+class AppliedDefaultModel(BaseModel):
+    """One `fact_summary.defaults[]` entry: a choice the component made where its intent
+    left one open. An entity-mode bar_chart whose select lists no values draws every value
+    of its one varying dimension, largest first."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    pointer: str = Field(description="a JSON Pointer to the intent field this default fills")
+    detail: str = Field(
+        description="what the component chose and how to narrow it, in plain language"
+    )
+
+
 class FactSummaryModel(BaseModel):
     """The closed, token-capped fact summary a revision reports."""
 
@@ -83,6 +97,10 @@ class FactSummaryModel(BaseModel):
     source_refs: list[str] | None = Field(
         description="every distinct raw provenance ref a source_card's frame carries. It is "
         "null for every other member."
+    )
+    defaults: list[AppliedDefaultModel] = Field(
+        description="the choices this component made where its intent left one open, empty "
+        "when it made none"
     )
 
 

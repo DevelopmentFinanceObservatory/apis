@@ -7,7 +7,8 @@ hooks for the whole suite. Tests marked `llm_misses_expected` miss on purpose.
 
 The report hook runs inside every other report wrapper, so the harvest outcome plugin records
 the converted failure beside the misses logged during it. This module imports only pytest, so
-the conftest still loads in installs without the engine extras.
+the conftest still loads in installs without the engine extras, and the outcome plugin, which
+pytest imports before `tests/conftest.py`, loads without engine settings.
 """
 
 from __future__ import annotations
@@ -15,6 +16,12 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
+
+HARVEST_MISS_PATH_ENV = "SEARCH_LLM_HARVEST_PATH"
+"""When set, FakeLLM appends one JSON record for every hit or miss.
+
+Misses include schema and prompt fields. Hits include only the key. Unset, misses write nothing.
+"""
 
 _MISSED_KEYS: list[str] = []
 

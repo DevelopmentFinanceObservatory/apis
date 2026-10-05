@@ -16,6 +16,7 @@ from .coverage import (
     CoverageBreadth,
     CoverageExact,
     Headline,
+    HeadlineYear,
     coverage_is_empty,
 )
 from .departure import (
@@ -287,6 +288,7 @@ __all__ = [
     "FacetOptions",
     "GraphRef",
     "Headline",
+    "HeadlineYear",
     "IdentityBinding",
     "IdentityBindingExact",
     "IdentityBindingSet",

@@ -34,7 +34,7 @@ from search.engine.retrieval.facts import _dcids_for
 from tests.engine._fake_sdmx import scope_availability_of
 from tests.fixtures.keys import fixture_key
 from tests.fixtures.provenance import facet_provenance
-from tests.llm_miss_guard import note_miss
+from tests.llm_miss_guard import HARVEST_MISS_PATH_ENV, note_miss
 from tests.materialise._scope_availability import ScopeAvailability
 
 _T = TypeVar("_T", bound=BaseModel)
@@ -185,13 +185,6 @@ class MissingFixtureError(KeyError):
     def __init__(self, message: str, *, fixture_key: str) -> None:
         super().__init__(message)
         self.fixture_key = fixture_key
-
-
-HARVEST_MISS_PATH_ENV = "SEARCH_LLM_HARVEST_PATH"
-"""When set, FakeLLM appends one JSON record for every hit or miss.
-
-Misses include schema and prompt fields. Hits include only the key. Unset, misses write nothing.
-"""
 
 
 def _append_harvest_line(

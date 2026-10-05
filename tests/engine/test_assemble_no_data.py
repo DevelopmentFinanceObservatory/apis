@@ -545,3 +545,25 @@ def test_a_window_answer_departs_as_year_unavailable_with_no_note(
         f"{departure}"
     )
     assert all(token.kind != "note" for token in part.sentence_plan or [])
+
+
+@pytest.mark.parametrize(
+    ("reason", "terms"),
+    [
+        ("entity_not_resolved", {"entity_terms": ["Atlantis"]}),
+        ("variable_not_resolved", {}),
+        ("no_observations", {}),
+    ],
+)
+def test_build_no_data_part_carries_its_message_without_a_sentence_request(reason, terms):
+    """`no_data.message` is set whether or not a sentence is requested, and equals the
+    bare sentence a request for one renders when no near match is named."""
+    without = build_no_data_part(reason, variable_text="atlantis gdp", warnings=[], **terms)
+    with_sentence = build_no_data_part(
+        reason, variable_text="atlantis gdp", warnings=[], include_sentence=True, **terms
+    )
+
+    assert without.rendered_sentence is None
+    assert without.no_data.message == with_sentence.rendered_sentence
+    for term in terms.get("entity_terms", ()):
+        assert term in without.no_data.message

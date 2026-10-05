@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from code_index.shared import get_index
 from search.engine.clients.llm import SupportsLLM, for_stage, generate_structured_async
-from search.engine.retrieval.bound_values import shape_pins
+from search.engine.retrieval.bound_values import shape_invariants
 from search.engine.shape import STANDARD_SHAPE_LABEL
 from search.models import Axis
 
@@ -345,9 +345,10 @@ def _build_universal_bind_prompt(
     rows. The model elects a tie row. Binding happens downstream. Fixed-context matches are
     supplied as preselected.
 
-    A slot the shape's five-tuple pins (`shape_pins`) is withheld from every shape. It
-    holds one value across the five-tuple, and `bind_shared_values` binds it whatever the
-    model drafts.
+    A slot an invariant of the dataset the shape's part names fixes (`shape_invariants`) is
+    withheld from every shape. It holds one value on every row of that dataset, so the
+    identity, which names the dataset, binds that value (`canonical_pin_bindings`). A part
+    that names no dataset is offered every slot, and a value the model binds stays bound.
 
     Empty qualifier, tie, withheld-axis, and dropped-phrase inputs leave recall-sourced
     prompts unchanged. Index-sourced slots show labels
@@ -439,9 +440,9 @@ def _build_universal_bind_prompt(
             lines.append(f"  retrieval_score: {shape.representative_score:.3f}")
 
         # Only an index-sourced shape has an election to settle a withheld axis; a
-        # recall-sourced shape binds it here like any other constraint slot. A pinned slot
-        # is withheld from every shape.
-        withheld_axes = shape_pins(shape).keys() | (
+        # recall-sourced shape binds it here like any other constraint slot. A slot an
+        # invariant fixes is withheld from every shape.
+        withheld_axes = shape_invariants(shape).keys() | (
             withheld_measure_axes if shape.slot_taxonomy_index_sourced else frozenset()
         )
         constraint_slots = [

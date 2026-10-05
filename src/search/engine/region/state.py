@@ -51,6 +51,7 @@ from search.engine.region.result import (
 from search.engine.retrieval.bound_values import (
     MeasurePartition,
     RoleClassWalks,
+    entity_role_keys,
     identity_query,
     index_decides_membership,
     query_bound_values,
@@ -212,10 +213,14 @@ def _elected_stat_vars(
     ]
 
 
-def served_stat_vars(shape: ShapeDraft, bindings: Sequence[SlotBindingDraft]) -> list[str]:
-    """The StatVars a Datasets mint serves for the Spec `shape` grounds under `bindings`, in
-    member order (`_served_members` over `shape_query(shape, bindings)`)."""
-    return _served_members(shape, shape_query(shape, bindings))
+def served_stat_vars(
+    shape: ShapeDraft, bindings: Sequence[SlotBindingDraft], roles: PlaceRoles
+) -> list[str]:
+    """The StatVars a Datasets mint serves for the Spec `shape` grounds under `bindings` with
+    its places bound as `roles`, in member order (`_served_members` over `shape_query`)."""
+    return _served_members(
+        shape, shape_query(shape, bindings, entity_role_keys(shape, roles.resolved_entities))
+    )
 
 
 def identity_served_stat_vars(identity: BaseIdentity, shape: ShapeDraft) -> list[str]:
