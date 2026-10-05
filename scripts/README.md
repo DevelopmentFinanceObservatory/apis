@@ -12,7 +12,7 @@ Rscript scripts/bundle_round_trip.R <path-to-bundle-directory>
 
 Needs the `frictionless` R package (`install.packages("frictionless")`).
 
-Run by `.github/workflows/bundle-round-trip.yml` on a PR touching `packages/dfo-data-tools/src/materialise/**`, this script, or `generate_sample_bundle.py`. Runnable by hand against any bundle `materialise.bundle.assemble_bundle` produces.
+Run by `.github/workflows/bundle-round-trip.yml` on a ready (non-draft) PR touching `packages/dfo-data-tools/src/materialise/**`, this script, or `generate_sample_bundle.py`. Runnable by hand against any bundle `materialise.bundle.assemble_bundle` produces.
 
 ## `eval_corpus.py`
 
@@ -100,7 +100,7 @@ Two gates check the committed export, each against the source it can read:
 
 | Gate                                                                                                    | Runs                                                                                   | Checks                                                                                                                                                                                                                                                                          |
 | ------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `code-index-drift` in `.github/workflows/code-index-live.yml` (`tests/code_index/test_export_drift.py`) | Weekday schedule, plus push and PR touching `code_index` paths; graph credentials only | Everything the graph and the authored config determine: declarations, datasets, codes, StatVar rows without `provenances`, measure blocks, the stamp's counts, and its content hash.                                                                                            |
+| `code-index-drift` in `.github/workflows/code-index-live.yml` (`tests/code_index/test_export_drift.py`) | Weekday schedule, plus ready PRs touching `code_index` paths; graph credentials only   | Everything the graph and the authored config determine: declarations, datasets, codes, StatVar rows without `provenances`, measure blocks, the stamp's counts, and its content hash.                                                                                            |
 | `python -m series_coverage.verify_index --record` in `.github/workflows/deploy-dev.yml`                 | Every deploy, on the coverage job, before traffic moves                                | Each StatVar row's `provenances` equals the published coverage build's for that variable, and every declared dataset has a row in the build. It prints the index's `coverage_build` beside the build it read, and on a pass records that build as the index's compatible build. |
 
 Run the export by hand when either gate reports a difference. The coverage check also runs locally: `COVERAGE_ARTIFACT_URI=gs://<coverage bucket>/ uv run python -m series_coverage.verify_index`, with `--index <path>` for an export not yet committed.

@@ -10,9 +10,11 @@
 #   index the graph determines and compares it against the committed export
 #   (each row's provenances come from the coverage build, which
 #   deploy-dev.yml checks). Exhaustive, so it runs far less often: the
-#   weekday schedule, plus every push, PR, and manual dispatch touching the
-#   paths below, so a graph-content regression is caught at review time
-#   too. See export_code_index.py's own docstring for what each check reads.
+#   weekday schedule, every pull request touching the paths below once it
+#   is out of draft, and manual dispatch, so a graph-content regression is
+#   caught at review time too. A push runs nothing, since the weekday
+#   schedule already catches drift on dev. See export_code_index.py's own
+#   docstring for what each check reads.
 #
 # Credentials are the pair eval-gate.yml and sdmx-live.yml already use: the
 # repo variable SEARCH_GRAPH_BASE (the service root) and the repo secret
@@ -29,15 +31,6 @@
 name: Code index live
 
 on:
-  push:
-    branches: [dev, main]
-    paths:
-      - packages/dfo-data-tools/src/code_index/**
-      - tests/code_index/**
-      - scripts/export_code_index.py
-      - .github/workflows/code-index-live.yml
-      - pyproject.toml
-      - uv.lock
   pull_request:
     branches: [dev, main]
     # `edited` covers a stacked PR whose base is retargeted automatically when
@@ -45,6 +38,8 @@ on:
     # matching note in ci.yml. `ready_for_review` covers a draft PR marked
     # ready without a new commit, which otherwise leaves this check with no
     # run at all.
+    # code-index-drift skips while the PR is a draft, and `ready_for_review`
+    # starts the run then.
     types: [opened, synchronize, reopened, edited, ready_for_review]
     paths:
       - packages/dfo-data-tools/src/code_index/**
@@ -71,7 +66,8 @@ permissions:
 concurrency:
   # Keyed on the PR number for pull_request events: a run on a closed PR
   # resolves `github.ref` to the base branch, which would otherwise share a
-  # group with that branch's push runs and cancel them mid-suite.
+  # group with that branch's scheduled and dispatched runs and cancel them
+  # mid-suite.
   group: code-index-live-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
@@ -81,8 +77,8 @@ env:
 
 jobs:
   code-index-canary:
-    # Only the six-hourly cron -- push, pull_request, workflow_dispatch, and
-    # the weekday cron all go to code-index-drift below. Runs against dev's
+    # Only the six-hourly cron -- pull_request, workflow_dispatch, and the
+    # weekday cron all go to code-index-drift below. Runs against dev's
     # live graph, so only in ONEcampaign.
     if: github.repository_owner == 'ONEcampaign' && github.event_name == 'schedule' && github.event.schedule == '23 */6 * * *'
     runs-on: ubuntu-latest
@@ -133,9 +129,9 @@ jobs:
     # Runs against dev's live graph, so only in ONEcampaign.
     if: >-
       github.repository_owner == 'ONEcampaign' &&
-      (github.event_name == 'push' ||
-       github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' ||
        (github.event_name == 'pull_request' &&
+        github.event.pull_request.draft != true &&
         github.event.pull_request.state == 'open' &&
         github.event.pull_request.head.repo.full_name == github.repository) ||
        (github.event_name == 'schedule' && github.event.schedule == '23 6 * * 1-5'))

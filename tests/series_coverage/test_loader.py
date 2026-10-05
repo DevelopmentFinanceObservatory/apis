@@ -26,6 +26,7 @@ from series_coverage.loader import (
     read_published_pointer,
 )
 from series_coverage.schema import (
+    ABSENT_ENTITY,
     BUILD_EPOCH_YEAR,
     COVERAGE_FORMAT_VERSION,
     CoverageManifest,
@@ -40,10 +41,12 @@ from tests.series_coverage.support import (
     build_dir,
     build_single_mask_artifact,
     build_test_artifact,
+    coverage_table,
     pointer_path,
 )
 
 _HORIZON = YearHorizon(epoch_year=BUILD_EPOCH_YEAR, mask_words=1)
+_TWO_ROLE = RoleNames(donor="financingProvider", recipient="financingRecipient")
 
 
 def _point_at(base: Path, *, stamp: str = "s1", build_id: str = "b1") -> Path:
@@ -153,16 +156,16 @@ def test_load_coverage_reads_only_its_own_format_root(tmp_path: Path) -> None:
     assert format_root(uri) == f"{uri}/format-{COVERAGE_FORMAT_VERSION}"
 
 
-def test_load_coverage_refuses_an_artifact_under_the_format_1_root(tmp_path: Path) -> None:
-    # Format 1 artifacts hold no one-role rows, and a reader at the current
-    # format never reads that root, even when it is the only one published.
+def test_load_coverage_refuses_an_artifact_under_the_format_2_root(tmp_path: Path) -> None:
+    # Format 2 artifacts hold no origin-axis one-role rows, and a reader at the
+    # current format never reads that root, even when it is the only one published.
     base = tmp_path / "coverage"
     build_test_artifact(base)
-    (base / f"format-{COVERAGE_FORMAT_VERSION}").rename(base / "format-1")
+    (base / f"format-{COVERAGE_FORMAT_VERSION}").rename(base / "format-2")
     uri = f"file://{base}"
 
-    assert COVERAGE_FORMAT_VERSION == 2
-    assert format_root(uri) == f"{uri}/format-2"
+    assert COVERAGE_FORMAT_VERSION == 3
+    assert format_root(uri) == f"{uri}/format-3"
     assert read_published_pointer(uri) is None
     with pytest.raises(CoverageArtifactError, match=re.escape("no current.json")):
         load_coverage(uri)
@@ -193,15 +196,17 @@ def _write_bad_invariant_artifact(base: Path) -> None:
     _write_single_variable_artifact(base, table)
 
 
-def _write_single_variable_artifact(base: Path, table: pa.Table) -> None:
+def _write_single_variable_artifact(
+    base: Path,
+    table: pa.Table,
+    *,
+    names: RoleNames = _TWO_ROLE,
+) -> None:
     """An artifact at `base` holding `table`, whose rows all name variable
-    `V1` under facet `f1`."""
+    `V1` under facet `f1`, with `names` as `V1`'s role names."""
     prefix = _point_at(base)
     write_coverage_table(table, prefix / "coverage.parquet", horizon=_HORIZON)
-    write_role_names(
-        {"V1": RoleNames(donor="financingProvider", recipient="financingRecipient")},
-        prefix / "role_names.json",
-    )
+    write_role_names({"V1": names}, prefix / "role_names.json")
     write_facet_metadata(
         {"f1": FacetMetadata(provenance_id="provenance/Test")}, prefix / "facets.json"
     )
@@ -251,6 +256,35 @@ def test_load_coverage_raises_on_a_repeated_series_key(tmp_path: Path) -> None:
     base = tmp_path / "coverage"
     _write_single_variable_artifact(base, table)
     with pytest.raises(CoverageArtifactError, match=r"1 row\(s\) repeating"):
+        load_coverage(f"file://{base}")
+
+
+@pytest.mark.parametrize(
+    ("names", "rows"),
+    [
+        (
+            RoleNames(donor="financingProvider", recipient=None),
+            [("country/FRA", ABSENT_ENTITY), ("country/DEU", KEN)],
+        ),
+        (
+            RoleNames(donor=None, recipient="financingRecipient"),
+            [(ABSENT_ENTITY, KEN), ("country/FRA", "country/UGA")],
+        ),
+    ],
+    ids=["provider-only-with-a-recipient-row", "recipient-only-with-a-donor-row"],
+)
+def test_load_coverage_refuses_a_one_role_variable_whose_rows_mix_an_empty_and_a_set_entity(
+    tmp_path: Path, names: RoleNames, rows: list[tuple[str, str]]
+) -> None:
+    # Every row of a variable lacking a role must leave that role's column empty; one
+    # empty row beside a populated one would let a bound lookup on the lacking role match.
+    table, horizon = coverage_table(
+        [("V1", "f1", donor, recipient, [2020]) for donor, recipient in rows]
+    )
+    assert horizon == _HORIZON
+    base = tmp_path / "coverage"
+    _write_single_variable_artifact(base, table, names=names)
+    with pytest.raises(CoverageArtifactError, match="V1"):
         load_coverage(f"file://{base}")
 
 

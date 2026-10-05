@@ -19,12 +19,13 @@ The build covers every variable whose Spanner `Edge` rows declare one or two
 `entity1` and `extra_entities_id`, which become the `donor` and `recipient`
 columns, and `resolve_role_names` matches SDMX role values against them to
 name each column's role. A one-role observation stores its entity in
-`entity1` with an empty `extra_entities_id`. Its row puts that entity in
-`recipient`, the column of its destination-axis role, and `ABSENT_ENTITY` in
-`donor`. The build refuses a row whose `extra_entities_id` disagrees with its
-variable's role count, a one-role variable whose role is not on the
-destination axis, and a row outside that population that still carries a
-role signal (a set `extra_entities_id`, or three or more declared roles).
+`entity1` with an empty `extra_entities_id`. Its row puts that entity in the
+column of its role's flow axis, `donor` for an origin-axis role and
+`recipient` for a destination-axis one, and `ABSENT_ENTITY` in the other. The
+build refuses a row whose `extra_entities_id` disagrees with its variable's
+role count, a one-role variable whose role is on neither axis, and a row
+outside that population that still carries a role signal (a set
+`extra_entities_id`, or three or more declared roles).
 
 After each publish the job loads the new build with the serving loader and
 checks it against the code index its image packages
@@ -109,6 +110,7 @@ from dc_sdmx.client import SdmxClient
 from dc_sdmx.errors import SdmxClientError, SdmxQueryError
 from dc_sdmx.results import VARIABLE_COLUMN as SDMX_VARIABLE_COLUMN
 from dc_sdmx.results import SdmxDataResult
+from dfo_platform.roles import ROLE_AXES
 from materialise.roles import axis_for_role
 from series_coverage._bits import popcount64
 from series_coverage.compatibility import read_serving_index, record_if_compatible
@@ -167,20 +169,31 @@ _OBSERVATION_PROPERTIES_INNER = (
 )
 
 
+_ORIGIN_ROLES_SQL = ", ".join(
+    f"'{role}'" for role, axis in sorted(ROLE_AXES.items()) if axis == "origin"
+)
+"""The role names `dfo_platform.roles.ROLE_AXES` places on the origin axis, as
+a SQL list."""
+
+
 def _with_role_bearing(connection: str) -> str:
-    """A `WITH` clause defining `declared_roles(variable, n_roles)`, every
-    variable whose `Edge` rows declare any `observationProperties` role, and
-    `role_bearing(variable, n_roles)`, the ones declaring one or two. Queries
-    join Spanner projections to them in BigQuery, so each `EXTERNAL_QUERY`
-    stays root-partitionable."""
+    """A `WITH` clause defining `declared_roles(variable, n_roles, lone_origin)`,
+    every variable whose `Edge` rows declare any `observationProperties` role,
+    and `role_bearing(variable, n_roles, lone_origin)`, the ones declaring one
+    or two. `lone_origin` holds for a variable whose one role is on the origin
+    axis. Queries join Spanner projections to them in BigQuery, so each
+    `EXTERNAL_QUERY` stays root-partitionable."""
     return (
         "WITH declared_roles AS (\n"
-        "  SELECT subject_id AS variable, COUNT(DISTINCT object_id) AS n_roles\n"
+        "  SELECT subject_id AS variable, COUNT(DISTINCT object_id) AS n_roles,\n"
+        "    COUNT(DISTINCT object_id) = 1\n"
+        f"      AND LOGICAL_AND(object_id IN ({_ORIGIN_ROLES_SQL})) AS lone_origin\n"
         f'  FROM EXTERNAL_QUERY("{connection}", "{_OBSERVATION_PROPERTIES_INNER}")\n'
         "  GROUP BY subject_id\n"
         "),\n"
         "role_bearing AS (\n"
-        "  SELECT variable, n_roles FROM declared_roles WHERE n_roles BETWEEN 1 AND 2\n"
+        "  SELECT variable, n_roles, lone_origin\n"
+        "  FROM declared_roles WHERE n_roles BETWEEN 1 AND 2\n"
         ")\n"
     )
 
@@ -442,7 +455,10 @@ def build_coverage_table(bq: BigQueryReader, *, connection: str) -> CoverageBuil
     Spanner receives a root-partitionable projection through
     `EXTERNAL_QUERY`, which BigQuery joins to `role_bearing`. A two-role
     row takes `entity1` as donor and `extra_entities_id` as recipient. A
-    one-role row takes `entity1` as recipient and `ABSENT_ENTITY` as donor.
+    one-role row takes `entity1` as donor when its role is on the origin axis
+    (`lone_origin`), else as recipient, and `ABSENT_ENTITY` in the other
+    column. `resolve_role_names` names the same column from the same
+    `ROLE_AXES`, and refuses a lone role on neither axis.
     BigQuery computes counts, bounds, and 64-year mask words. Since BigQuery
     `INT64` is signed, each word is masked to uint64 before writing. Dates
     outside the horizon, duplicate observations in a year, an
@@ -465,8 +481,9 @@ def build_coverage_table(bq: BigQueryReader, *, connection: str) -> CoverageBuil
         _with_role_bearing(connection) + "SELECT\n"
         "  o.variable_measured AS variable,\n"
         "  o.facet_id AS facet_id,\n"
-        f"  IF(r.n_roles = 1, '{ABSENT_ENTITY}', o.entity1) AS donor,\n"
-        "  IF(r.n_roles = 1, o.entity1, o.extra_entities_id) AS recipient,\n"
+        f"  IF(r.n_roles = 1 AND NOT r.lone_origin, '{ABSENT_ENTITY}', o.entity1) AS donor,\n"
+        "  CASE WHEN r.n_roles = 2 THEN o.extra_entities_id\n"
+        f"    WHEN r.lone_origin THEN '{ABSENT_ENTITY}' ELSE o.entity1 END AS recipient,\n"
         "  LOGICAL_AND((IFNULL(o.extra_entities_id, '') = '') = (r.n_roles = 1))"
         " AS entities_match_roles,\n"
         "  COUNT(*) AS n_obs,\n"
@@ -599,15 +616,20 @@ def _resolve_donor_recipient(
 
 
 def _lone_role_names(role: str, *, example: str) -> RoleNames:
-    """The `RoleNames` of a one-role variable, whose entity the build puts in
-    `recipient`. Refuses a role outside the destination axis, which that
-    column would misplace."""
-    if axis_for_role(role) != "destination":
-        raise CoverageRoleNameError(
-            f"variable {example!r} declares the single role {role!r}, which is not on the "
-            "destination axis; a one-role coverage row stores its entity as the recipient"
-        )
-    return RoleNames(donor=None, recipient=role)
+    """The `RoleNames` of a one-role variable: its role on the column of the
+    role's flow axis, `donor` for origin and `recipient` for destination, where
+    the build puts its entity. Refuses a role on neither axis, which no column
+    holds."""
+    match axis_for_role(role):
+        case "origin":
+            return RoleNames(donor=role, recipient=None)
+        case "destination":
+            return RoleNames(donor=None, recipient=role)
+        case None:
+            raise CoverageRoleNameError(
+                f"variable {example!r} declares the single role {role!r}, which is on no "
+                "flow axis; a one-role coverage row stores its entity on its role's axis"
+            )
 
 
 def resolve_role_names(
@@ -616,9 +638,9 @@ def resolve_role_names(
     """Resolves role names for each variable, grouping by its declared role set.
 
     Each two-role group gets one donor/recipient probe. A one-role group
-    needs none: its role is the recipient and it has no donor. Missing role
-    declarations, a count other than one or two, or a one-role variable
-    whose role is not on the destination axis raises `CoverageRoleNameError`.
+    needs none: its role's flow axis names its column (`_lone_role_names`).
+    Missing role declarations, a count other than one or two, or a one-role
+    variable whose role is on no flow axis raises `CoverageRoleNameError`.
     """
     variables = sorted(set(cast("list[str]", table[VARIABLE_COLUMN].to_pylist())))
     property_sets = _read_role_property_sets(bq, connection=connection)
@@ -758,8 +780,8 @@ def _plan_group_requests(
     `row_budget` rows and has a query string within `url_budget_bytes`.
 
     Variables within the row budget share one filter: every covered dcid
-    of the group's smaller role axis (its recipient axis when it has no
-    donor role), leaving the other axis open, so a row on a dcid another
+    of the group's smaller role axis (its one axis for a one-role group),
+    leaving the other axis open, so a row on a dcid another
     sampled variable covers still counts. `_plan_shared_filter` splits that
     filter into runs within the full URL budget. A dcid that does not fit
     beside the longest variable there raises `CoverageReconciliationError`.
@@ -778,9 +800,11 @@ def _plan_group_requests(
     selected = table.filter(
         pc.is_in(table[VARIABLE_COLUMN], value_set=pa.array(variables, type=pa.string()))
     )
-    axes = [(names.recipient, RECIPIENT_COLUMN)]
-    if names.donor is not None:
-        axes.insert(0, (names.donor, DONOR_COLUMN))
+    axes = [
+        (role, column)
+        for role, column in ((names.donor, DONOR_COLUMN), (names.recipient, RECIPIENT_COLUMN))
+        if role is not None
+    ]
     axis_dcids = {
         column: tuple(sorted(set(cast("list[str]", selected[column].to_pylist()))))
         for _role, column in axes
@@ -963,7 +987,7 @@ def reconcile(
     total_requests = 0
     start = time.monotonic()
     for names, group_variables in groups.items():
-        roles = (names.recipient,) if names.donor is None else (names.donor, names.recipient)
+        roles = names.declared
         requests = _plan_group_requests(
             table,
             names=names,

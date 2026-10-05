@@ -1,8 +1,14 @@
 name: CI
 
 on:
+  # A push runs on dev only. Branch protection lets a PR merge without
+  # updating to dev's latest tip, so the push run is the only test of the
+  # merged tree. It is also the run deploy-dev.yml waits on, and the run that
+  # records the test durations the shards split by. main moves either by
+  # fast-forward to a dev commit that already ran here or through a pull
+  # request whose own run tested the merge, so a push there runs nothing.
   push:
-    branches: [dev, main]
+    branches: [dev]
   pull_request:
     # The globs cover every branch-type prefix this repository uses, because
     # stacked PRs take sibling branches as bases and this filter matches the
@@ -22,11 +28,13 @@ on:
     # skipped, GitHub counts a skipped required check as satisfied, and the
     # concurrency group below cancels the real suite the edit interrupted. The
     # PR then reads mergeable with nothing tested on its head commit.
-    # `ready_for_review` is absent for a simpler reason: no job here is guarded
-    # on `draft`, so a draft PR runs the full suite on `opened` and
-    # `synchronize` like any other. Marking it ready changes no file, so the run
-    # it would start is a second full suite over an unchanged tree.
-    types: [opened, synchronize, reopened]
+    # A draft PR runs nothing: every job's `if` carries
+    # `github.event.pull_request.draft != true`, which push events (no
+    # pull_request payload) always pass. `ready_for_review` is listed because
+    # marking a draft ready emits only that type. Without it the head commit
+    # keeps the draft run's skipped checks, which GitHub counts as passing
+    # required checks, and nothing tests it.
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
@@ -58,6 +66,7 @@ jobs:
     # ran it here before it was synced.
     if: >-
       github.repository_owner == 'ONEcampaign' &&
+      github.event.pull_request.draft != true &&
       (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
     runs-on: ubuntu-latest
     steps:
@@ -105,6 +114,7 @@ jobs:
     # ran it here before it was synced.
     if: >-
       github.repository_owner == 'ONEcampaign' &&
+      github.event.pull_request.draft != true &&
       (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
     runs-on: ubuntu-latest
     strategy:
@@ -205,9 +215,12 @@ jobs:
   # this job skipped, and GitHub counts a skipped required check as satisfied.
   test:
     # Waits on test-shard, which runs in ONEcampaign only; a skipped shard would fail this job.
+    # `always()` runs this job even when the shards skipped on a draft, so it
+    # repeats their draft clause.
     if: >-
       always() &&
       github.repository_owner == 'ONEcampaign' &&
+      github.event.pull_request.draft != true &&
       (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
     needs: test-shard
     runs-on: ubuntu-latest
@@ -260,6 +273,7 @@ jobs:
     # ran it here before it was synced.
     if: >-
       github.repository_owner == 'ONEcampaign' &&
+      github.event.pull_request.draft != true &&
       (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
     runs-on: ubuntu-latest
     steps:
@@ -294,6 +308,7 @@ jobs:
     # ran it here before it was synced.
     if: >-
       github.repository_owner == 'ONEcampaign' &&
+      github.event.pull_request.draft != true &&
       (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
     runs-on: ubuntu-latest
     steps:
@@ -326,6 +341,7 @@ jobs:
     # ran it here before it was synced.
     if: >-
       github.repository_owner == 'ONEcampaign' &&
+      github.event.pull_request.draft != true &&
       (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
     runs-on: ubuntu-latest
     steps:
@@ -417,6 +433,7 @@ jobs:
     # ran it here before it was synced.
     if: >-
       github.repository_owner == 'ONEcampaign' &&
+      github.event.pull_request.draft != true &&
       (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
     runs-on: ubuntu-latest
     steps:

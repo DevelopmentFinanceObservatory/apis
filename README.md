@@ -361,8 +361,10 @@ ______________________________________________________________________
 
 ## CI Workflows
 
-GitHub Actions validate pull requests and branch pushes in ONEcampaign. The jobs that read
-`dfo-spec-kit` skip in DevelopmentFinanceObservatory, where `sync-guard` admits each sync PR:
+GitHub Actions validate pull requests and pushes to `dev` in ONEcampaign. A draft pull request
+runs nothing until it is marked ready for review. A push to `main` runs no CI, since `main` only
+moves to a commit `dev` has already tested. The jobs that read `dfo-spec-kit` skip in
+DevelopmentFinanceObservatory, where `sync-guard` admits each sync PR:
 
 - **`.github/workflows/ci.yml`**: Runs `ruff check`, `ruff format --check`, `ty check`, `pytest` with identity vectors, and verifies container builds.
 - **`.github/workflows/eval-gate.yml`**: Scores the eval cases on the head and base builds of a pull request, split by case id across parallel shard jobs, and blocks on a regression, a failing new case, or a structural failure in any shard.
