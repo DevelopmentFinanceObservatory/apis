@@ -1,0 +1,659 @@
+[
+  {
+    "has_description": false,
+    "method": "POST",
+    "name": "mint_endpoint",
+    "operation_id": "mint_endpoint_api_datasets_post",
+    "path": "/api/datasets",
+    "summary": "Mint Endpoint",
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "capabilities",
+    "operation_id": "capabilities_api_datasets_capabilities_get",
+    "path": "/api/datasets/capabilities",
+    "summary": "Capabilities",
+    "surface": "datasets"
+  },
+  {
+    "has_description": true,
+    "method": "POST",
+    "name": "post_publish",
+    "operation_id": "post_publish_api_datasets_frames_publish_post",
+    "path": "/api/datasets/frames/publish",
+    "summary": "Post Publish",
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "healthz",
+    "operation_id": "healthz_api_datasets_healthz_get",
+    "path": "/api/datasets/healthz",
+    "summary": "Healthz",
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "get_operation",
+    "operation_id": "get_operation_api_datasets_operations__operation_id__get",
+    "path": "/api/datasets/operations/{operation_id}",
+    "summary": "Get Operation",
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "POST",
+    "name": "register_endpoint",
+    "operation_id": "register_endpoint_api_datasets_register_post",
+    "path": "/api/datasets/register",
+    "summary": "Register Endpoint",
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "schema",
+    "operation_id": "schema_api_datasets_schema_get",
+    "path": "/api/datasets/schema",
+    "summary": "Schema",
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "DELETE",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "get_definition",
+    "operation_id": "get_definition_api_datasets__id__get",
+    "path": "/api/datasets/{id}",
+    "summary": "Get Definition",
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "HEAD",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "OPTIONS",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "PATCH",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "POST",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "PUT",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "DELETE",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/options",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": true,
+    "method": "GET",
+    "name": "get_definition_options",
+    "operation_id": "get_definition_options_api_datasets__id__options_get",
+    "path": "/api/datasets/{id}/options",
+    "summary": "Get Definition Options",
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/options",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "HEAD",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/options",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "OPTIONS",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/options",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "PATCH",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/options",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": true,
+    "method": "POST",
+    "name": "post_definition_options",
+    "operation_id": "post_definition_options_api_datasets__id__options_post",
+    "path": "/api/datasets/{id}/options",
+    "summary": "Post Definition Options",
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "POST",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/options",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "PUT",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/options",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "DELETE",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/{content_version}",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "get_snapshot",
+    "operation_id": "get_snapshot_api_datasets__id___content_version__get",
+    "path": "/api/datasets/{id}/{content_version}",
+    "summary": "Get Snapshot",
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/{content_version}",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "HEAD",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/{content_version}",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "OPTIONS",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/{content_version}",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "PATCH",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/{content_version}",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "POST",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/{content_version}",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "PUT",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/{content_version}",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "DELETE",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/{content_version}/observations",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "get_observations",
+    "operation_id": "get_observations_api_datasets__id___content_version__observations_get",
+    "path": "/api/datasets/{id}/{content_version}/observations",
+    "summary": "Get Observations",
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/{content_version}/observations",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "HEAD",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/{content_version}/observations",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "OPTIONS",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/{content_version}/observations",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "PATCH",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/{content_version}/observations",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "POST",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/{content_version}/observations",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "PUT",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/{content_version}/observations",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "DELETE",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/{content_version}/pin",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/{content_version}/pin",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "HEAD",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/{content_version}/pin",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "OPTIONS",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/{content_version}/pin",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "PATCH",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/{content_version}/pin",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "POST",
+    "name": "post_pin",
+    "operation_id": "post_pin_api_datasets__id___content_version__pin_post",
+    "path": "/api/datasets/{id}/{content_version}/pin",
+    "summary": "Post Pin",
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "POST",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/{content_version}/pin",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "PUT",
+    "name": "refuse_malformed_id",
+    "operation_id": null,
+    "path": "/api/datasets/{id}/{content_version}/pin",
+    "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "capabilities",
+    "operation_id": "capabilities_api_graph_capabilities_get",
+    "path": "/api/graph/capabilities",
+    "summary": "Capabilities",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "sources_endpoint",
+    "operation_id": "sources_endpoint_api_graph_documentation__dcid__get",
+    "path": "/api/graph/documentation/{dcid}",
+    "summary": "Sources Endpoint",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "healthz",
+    "operation_id": "healthz_api_graph_healthz_get",
+    "path": "/api/graph/healthz",
+    "summary": "Healthz",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "node_endpoint",
+    "operation_id": "node_endpoint_api_graph_node__dcid__get",
+    "path": "/api/graph/node/{dcid}",
+    "summary": "Node Endpoint",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
+    "method": "POST",
+    "name": "nodes_endpoint",
+    "operation_id": "nodes_endpoint_api_graph_nodes_post",
+    "path": "/api/graph/nodes",
+    "summary": "Nodes Endpoint",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
+    "method": "POST",
+    "name": "resolve_endpoint",
+    "operation_id": "resolve_endpoint_api_graph_resolve_post",
+    "path": "/api/graph/resolve",
+    "summary": "Resolve Endpoint",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "sources_catalogue_endpoint",
+    "operation_id": "sources_catalogue_endpoint_api_graph_sources_get",
+    "path": "/api/graph/sources",
+    "summary": "Sources Catalogue Endpoint",
+    "surface": "graph"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "capabilities",
+    "operation_id": "capabilities_api_presentation_capabilities_get",
+    "path": "/api/presentation/capabilities",
+    "summary": "Capabilities",
+    "surface": "presentation"
+  },
+  {
+    "has_description": false,
+    "method": "POST",
+    "name": "create_component",
+    "operation_id": "create_component_api_presentation_components_post",
+    "path": "/api/presentation/components",
+    "summary": "Create Component",
+    "surface": "presentation"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "read_component",
+    "operation_id": "read_component_api_presentation_components__component_id__get",
+    "path": "/api/presentation/components/{component_id}",
+    "summary": "Read Component",
+    "surface": "presentation"
+  },
+  {
+    "has_description": false,
+    "method": "PATCH",
+    "name": "revise_component",
+    "operation_id": "revise_component_api_presentation_components__component_id__patch",
+    "path": "/api/presentation/components/{component_id}",
+    "summary": "Revise Component",
+    "surface": "presentation"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "read_component_data",
+    "operation_id": "read_component_data_api_presentation_components__component_id__revisions__revision__data_get",
+    "path": "/api/presentation/components/{component_id}/revisions/{revision}/data",
+    "summary": "Read Component Data",
+    "surface": "presentation"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "get_frame",
+    "operation_id": "get_frame_api_presentation_frames__spec_id___content_version__get",
+    "path": "/api/presentation/frames/{spec_id}/{content_version}",
+    "summary": "Get Frame",
+    "surface": "presentation"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "healthz",
+    "operation_id": "healthz_api_presentation_healthz_get",
+    "path": "/api/presentation/healthz",
+    "summary": "Healthz",
+    "surface": "presentation"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "get_release",
+    "operation_id": "get_release_api_presentation_release_get",
+    "path": "/api/presentation/release",
+    "summary": "Get Release",
+    "surface": "presentation"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "capabilities",
+    "operation_id": "capabilities_api_search_capabilities_get",
+    "path": "/api/search/capabilities",
+    "summary": "Capabilities",
+    "surface": "search"
+  },
+  {
+    "has_description": true,
+    "method": "GET",
+    "name": "catalogue_endpoint",
+    "operation_id": "catalogue_endpoint_api_search_catalogue_get",
+    "path": "/api/search/catalogue",
+    "summary": "Catalogue Endpoint",
+    "surface": "search"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "healthz",
+    "operation_id": "healthz_api_search_healthz_get",
+    "path": "/api/search/healthz",
+    "summary": "Healthz",
+    "surface": "search"
+  },
+  {
+    "has_description": true,
+    "method": "POST",
+    "name": "options_endpoint",
+    "operation_id": "options_endpoint_api_search_options_post",
+    "path": "/api/search/options",
+    "summary": "Options Endpoint",
+    "surface": "search"
+  },
+  {
+    "has_description": false,
+    "method": "POST",
+    "name": "resolve_endpoint",
+    "operation_id": "resolve_endpoint_api_search_resolve_post",
+    "path": "/api/search/resolve",
+    "summary": "Resolve Endpoint",
+    "surface": "search"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "schema",
+    "operation_id": "schema_api_search_schema_get",
+    "path": "/api/search/schema",
+    "summary": "Schema",
+    "surface": "search"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "list_endpoint",
+    "operation_id": "list_endpoint_api_skills_get",
+    "path": "/api/skills",
+    "summary": "List Endpoint",
+    "surface": "skills"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "healthz",
+    "operation_id": "healthz_api_skills_healthz_get",
+    "path": "/api/skills/healthz",
+    "summary": "Healthz",
+    "surface": "skills"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "fetch_endpoint",
+    "operation_id": "fetch_endpoint_api_skills__skill_id__get",
+    "path": "/api/skills/{skill_id}",
+    "summary": "Fetch Endpoint",
+    "surface": "skills"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "resource_endpoint",
+    "operation_id": "resource_endpoint_api_skills__skill_id__resources__path__get",
+    "path": "/api/skills/{skill_id}/resources/{path}",
+    "summary": "Resource Endpoint",
+    "surface": "skills"
+  }
+]

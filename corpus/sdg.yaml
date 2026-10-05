@@ -1,0 +1,784 @@
+- id: sdg-01
+  query: maternal mortality ratio female SDG
+  why: Maternal mortality ratio for women under the SDG framing resolves to sdg/SH_STA_MORT.SEX--F; the raw-count shape has too little data to compete.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SH_STA_MORT
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        stat_vars: [sdg/SH_STA_MORT.SEX--F]
+      entities: []
+- id: sdg-03
+  query: tuberculosis incidence rate SDG 3.3.2 Ethiopia
+  why: Tuberculosis incidence rate SDG 3.3.2 in Ethiopia resolves to sdg/SH_TBS_INCD through the SDG taxonomy topic expansion.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SH_TBS_INCD
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        stat_vars: [sdg/SH_TBS_INCD]
+      entities:
+      - dcid: country/ETH
+        role: observationAbout
+- id: sdg-04
+  query: HIV incidence rate Kenya
+  why: HIV incidence rate in Kenya resolves to the bare aggregate sdg/SH_HIV_INCD, with the sex-disaggregated siblings inside that one reading.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SH_HIV_INCD
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        open: [sdg_sex]
+        stat_vars: [sdg/SH_HIV_INCD]
+      entities:
+      - dcid: country/KEN
+        role: observationAbout
+- id: sdg-05b
+  query: poverty headcount ratio below national poverty line in Ethiopia
+  why: Poverty headcount ratio below the national poverty line in Ethiopia resolves to sdg/SI_POV_NAHC, the national line.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SI_POV_NAHC
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        open: [sdg_urbanisation]
+        stat_vars: [sdg/SI_POV_NAHC]
+      entities:
+      - dcid: country/ETH
+        role: observationAbout
+- id: adolescent-birth-rate
+  query: adolescent birth rate
+  why: Adolescent birth rate with no place resolves to sdg/SP_DYN_ADKL.AGE--Y15T19__SEX--F, identified by its age and sex constraints.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SP_DYN_ADKL
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        bound:
+          age: SDG_AgeEnum_Y15T19
+          sdg_sex: SDG_SexEnum_F
+        stat_vars: [sdg/SP_DYN_ADKL.AGE--Y15T19__SEX--F]
+      entities: []
+- id: adolescent-birth-rate-bangladesh
+  query: adolescent birth rate in Bangladesh
+  why: Adolescent birth rate in Bangladesh resolves to sdg/SP_DYN_ADKL.AGE--Y15T19__SEX--F with no competing shape.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SP_DYN_ADKL
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        bound:
+          age: SDG_AgeEnum_Y15T19
+          sdg_sex: SDG_SexEnum_F
+        stat_vars: [sdg/SP_DYN_ADKL.AGE--Y15T19__SEX--F]
+      entities:
+      - dcid: country/BGD
+        role: observationAbout
+- id: child-stunting
+  query: prevalence of stunting in young children
+  why: Prevalence of stunting in young children resolves to sdg/SH_STA_STNT.AGE--Y0T4, the under-5 bucket.
+  tags:
+    directional_flow: na
+    conjunction: none
+  known_failure: {issue: 1156, checks: [measure]}
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SH_STA_STNT
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        bound:
+          age: SDG_AgeEnum_Y0T4
+        stat_vars: [sdg/SH_STA_STNT.AGE--Y0T4]
+      entities: []
+- id: children-stunting-global
+  query: global stunting prevalence in children under 5
+  why: Global stunting prevalence in children under 5 resolves to sdg/SH_STA_STNT.AGE--Y0T4 with no place bound.
+  tags:
+    directional_flow: na
+    conjunction: none
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SH_STA_STNT
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        bound:
+          age: SDG_AgeEnum_Y0T4
+        stat_vars: [sdg/SH_STA_STNT.AGE--Y0T4]
+      entities: []
+- id: clean-water-access-nigeria
+  query: access to safe drinking water in Nigeria
+  why: Access to safe drinking water in Nigeria resolves to sdg/SH_H2O_SAFE, matching the 'safely managed' framing.
+  tags:
+    directional_flow: na
+    conjunction: none
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SH_H2O_SAFE
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        stat_vars: [sdg/SH_H2O_SAFE]
+      entities:
+      - dcid: country/NGA
+        role: observationAbout
+- id: co2-emissions-sdg-kenya
+  query: CO2 emissions from fuel combustion in Kenya
+  why: The base SDG copy holds CO2 emissions from fuel combustion for Kenya (2000 to 2021), so sdg/EN_ATM_CO2 answers before any UN pass.
+  tags:
+    directional_flow: na
+    conjunction: none
+  known_failure: {issue: 1156, checks: [measure]}
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_EN_ATM_CO2
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        stat_vars: [sdg/EN_ATM_CO2]
+      entities:
+      - dcid: country/KEN
+        role: observationAbout
+- id: extreme-poverty-global
+  query: global rate of extreme poverty
+  why: Global rate of extreme poverty resolves to sdg/SI_POV_DAY1, the international line, with no place bound.
+  tags:
+    directional_flow: na
+    conjunction: none
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SI_POV_DAY1
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        stat_vars: [sdg/SI_POV_DAY1]
+      entities: []
+- id: forest-area-compare
+  query: compare forest cover in Kenya and Tanzania
+  why: Comparing forest cover in Kenya and Tanzania offers the forest area share sdg/AG_LND_FRST and the forest area sdg/AG_LND_FRSTN as candidates.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    candidates:
+      measure:
+        stat_vars: [sdg/AG_LND_FRST, sdg/AG_LND_FRSTN]
+      entities:
+      - dcid: country/KEN
+        role: observationAbout
+      - dcid: country/TZA
+        role: observationAbout
+      operations: []
+- id: forest-area-ethiopia
+  query: forest area in Ethiopia
+  why: Forest area in Ethiopia offers the forest area share sdg/AG_LND_FRST and the forest area sdg/AG_LND_FRSTN as candidates.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    candidates:
+      measure:
+        stat_vars: [sdg/AG_LND_FRST, sdg/AG_LND_FRSTN]
+      entities:
+      - dcid: country/ETH
+        role: observationAbout
+- id: kenya-external-debt
+  query: external debt of Kenya
+  why: External debt of Kenya resolves to Amount_FinancialPosition_AmountOutstanding_Nominal with Kenya as destination; the per-person series is refused as an alternate.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: FinancialPosition
+          measured_property: amount
+          stat_type: measuredValue
+          measurement_qualifier: Nominal
+          measurement_denominator: null
+        stat_vars: [Amount_FinancialPosition_AmountOutstanding_Nominal]
+      entities:
+      - dcid: country/KEN
+        role: destination
+- id: marine-protected-area
+  query: share of marine area protected
+  why: Share of marine area protected resolves to sdg/ER_MRN_MPA; the terrestrial indicator is a distinct scope.
+  tags:
+    directional_flow: na
+    conjunction: none
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_ER_MRN_MPA
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        stat_vars: [sdg/ER_MRN_MPA]
+      entities: []
+- id: maternal-mortality
+  query: maternal mortality ratio
+  why: Maternal mortality ratio with no place resolves to sdg/SH_STA_MORT.SEX--F; the word ratio pins the SDG rate over the raw count.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SH_STA_MORT
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        bound:
+          sdg_sex: SDG_SexEnum_F
+        stat_vars: [sdg/SH_STA_MORT.SEX--F]
+      entities: []
+- id: maternal-mortality-compare-nigeria-india
+  query: compare maternal mortality in Nigeria and India
+  why: Comparing maternal mortality in Nigeria and India resolves to sdg/SH_STA_MORT.SEX--F with both countries bound as one set.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SH_STA_MORT
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        bound:
+          sdg_sex: SDG_SexEnum_F
+        stat_vars: [sdg/SH_STA_MORT.SEX--F]
+      entities:
+      - dcid: country/NGA
+        role: observationAbout
+      - dcid: country/IND
+        role: observationAbout
+      operations: []
+- id: maternal-mortality-india
+  query: maternal mortality in India
+  why: Maternal mortality in India resolves to the single SDG ratio shape sdg/SH_STA_MORT.SEX--F.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SH_STA_MORT
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        bound:
+          sdg_sex: SDG_SexEnum_F
+        stat_vars: [sdg/SH_STA_MORT.SEX--F]
+      entities:
+      - dcid: country/IND
+        role: observationAbout
+- id: maternal-mortality-latest-rwanda
+  query: most recent maternal mortality ratio in Rwanda
+  why: Most recent maternal mortality ratio in Rwanda resolves to sdg/SH_STA_MORT.SEX--F; the raw-count shape has no Rwandan observations.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SH_STA_MORT
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        bound:
+          sdg_sex: SDG_SexEnum_F
+        stat_vars: [sdg/SH_STA_MORT.SEX--F]
+      entities:
+      - dcid: country/RWA
+        role: observationAbout
+- id: neonatal-mortality-bangladesh
+  query: neonatal mortality in Bangladesh
+  why: Neonatal mortality in Bangladesh resolves to sdg/SH_DYN_NMRT.AGE--M0, the SDG rate shape that carries data.
+  tags:
+    directional_flow: na
+    conjunction: none
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SH_DYN_NMRT
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        bound:
+          age: SDG_AgeEnum_M0
+        stat_vars: [sdg/SH_DYN_NMRT.AGE--M0]
+      entities:
+      - dcid: country/BGD
+        role: observationAbout
+- id: neonatal-mortality-rate
+  query: neonatal mortality rate
+  why: Neonatal mortality rate with no place resolves to sdg/SH_DYN_NMRT.AGE--M0, the one indicator with observations.
+  tags:
+    directional_flow: na
+    conjunction: none
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SH_DYN_NMRT
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        bound:
+          age: SDG_AgeEnum_M0
+        stat_vars: [sdg/SH_DYN_NMRT.AGE--M0]
+      entities: []
+- id: poverty-compare-kenya-ethiopia
+  query: extreme poverty rate in Kenya compared to Ethiopia
+  why: Extreme poverty rate in Kenya compared to Ethiopia resolves to sdg/SI_POV_DAY1 with both countries bound as one set.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SI_POV_DAY1
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        stat_vars: [sdg/SI_POV_DAY1]
+      entities:
+      - dcid: country/KEN
+        role: observationAbout
+      - dcid: country/ETH
+        role: observationAbout
+- id: poverty-headcount-nigeria
+  query: poverty headcount ratio at $2.15 per day in Nigeria
+  why: Poverty headcount ratio at $2.15 per day in Nigeria resolves to sdg/SI_POV_DAY1.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SI_POV_DAY1
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        stat_vars: [sdg/SI_POV_DAY1]
+      entities:
+      - dcid: country/NGA
+        role: observationAbout
+- id: pre-primary-enrollment
+  query: pre-primary school enrollment rate
+  why: When the DFO and base paths end no_data for pre-primary enrolment, the UN System Data Commons offers two indicators as candidates.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    candidates:
+      measure:
+        stat_vars:
+        - undata/unicef/FD_ANAR.EDUCATION_LEVEL--ISCED11_02__SCHOOL_AGE--L02
+        - undata/sdg/SE_PRE_PARTN
+- id: renewable-energy-india
+  query: renewable energy share in India
+  why: Renewable energy share in India resolves to sdg/EG_FEC_RNEW; the electricity-only share is narrower and does not compete.
+  tags:
+    directional_flow: na
+    conjunction: none
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_EG_FEC_RNEW
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        stat_vars: [sdg/EG_FEC_RNEW]
+      entities:
+      - dcid: country/IND
+        role: observationAbout
+      operations: []
+- id: renewable-energy-share
+  query: share of renewable energy in total energy
+  why: Share of renewable energy in total energy offers the SDG final-consumption share and the narrower electricity share as candidates.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    candidates:
+      measure:
+        shape:
+          population_type: SDG_EG_FEC_RNEW
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        stat_vars: [sdg/EG_FEC_RNEW, worldBank/4_1_SHARE_RE_IN_ELECTRICITY]
+- id: sanitation-access-bangladesh
+  query: basic sanitation coverage in Bangladesh
+  why: Basic sanitation coverage in Bangladesh resolves to sdg/SP_ACS_BSRVSAN.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SP_ACS_BSRVSAN
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        stat_vars: [sdg/SP_ACS_BSRVSAN]
+      entities:
+      - dcid: country/BGD
+        role: observationAbout
+- id: stunting-children-ghana
+  query: percentage of children under 5 who are stunted in Ghana
+  why: Percentage of children under 5 who are stunted in Ghana resolves to sdg/SH_STA_STNT.AGE--Y0T4.
+  tags:
+    directional_flow: na
+    conjunction: none
+  known_failure: {issue: 1156, checks: [measure]}
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SH_STA_STNT
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        bound:
+          age: SDG_AgeEnum_Y0T4
+        stat_vars: [sdg/SH_STA_STNT.AGE--Y0T4]
+      entities:
+      - dcid: country/GHA
+        role: observationAbout
+- id: synth-malaria-incidence-kenya
+  query: malaria incidence rate in Kenya
+  why: Malaria incidence rate in Kenya resolves to sdg/SH_STA_MALR, the SDG incidence-rate indicator.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SH_STA_MALR
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        stat_vars: [sdg/SH_STA_MALR]
+      entities:
+      - dcid: country/KEN
+        role: observationAbout
+- id: synth-poverty-bangladesh-what
+  query: poverty in Bangladesh
+  why: Poverty in Bangladesh names no measure, so it offers the international and national poverty lines as candidates.
+  tags:
+    directional_flow: na
+    conjunction: none
+  known_failure: {issue: 1156, checks: [measure]}
+  expect:
+    candidates:
+      measure:
+        stat_vars: [sdg/SI_POV_DAY1, sdg/SI_POV_NAHC]
+      entities:
+      - dcid: country/BGD
+        role: observationAbout
+- id: synth-poverty-rate-bangladesh
+  query: poverty headcount ratio in Bangladesh
+  why: Poverty headcount ratio in Bangladesh resolves to sdg/SI_POV_DAY1, the standard name for the international line.
+  tags:
+    directional_flow: na
+    conjunction: none
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SI_POV_DAY1
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        stat_vars: [sdg/SI_POV_DAY1]
+      entities:
+      - dcid: country/BGD
+        role: observationAbout
+- id: synth-tb-incidence-ethiopia
+  query: tuberculosis incidence rate in Ethiopia
+  why: Tuberculosis incidence rate in Ethiopia resolves to sdg/SH_TBS_INCD.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SH_TBS_INCD
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        stat_vars: [sdg/SH_TBS_INCD]
+      entities:
+      - dcid: country/ETH
+        role: observationAbout
+- id: synth-women-parliament-togo
+  query: women in parliament in Togo
+  why: Women in parliament in Togo resolves to sdg/SG_GEN_PARL.SEX--F, with no other shape competing.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SG_GEN_PARL
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        bound:
+          sdg_sex: SDG_SexEnum_F
+        stat_vars: [sdg/SG_GEN_PARL.SEX--F]
+      entities:
+      - dcid: country/TGO
+        role: observationAbout
+- id: tb-incidence-global
+  query: global tuberculosis incidence rate
+  why: Global tuberculosis incidence rate resolves to sdg/SH_TBS_INCD with no place bound.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SH_TBS_INCD
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        stat_vars: [sdg/SH_TBS_INCD]
+      entities: []
+- id: tb-incidence-kenya
+  query: tuberculosis incidence in Kenya
+  why: Tuberculosis incidence in Kenya resolves to sdg/SH_TBS_INCD.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SH_TBS_INCD
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        stat_vars: [sdg/SH_TBS_INCD]
+      entities:
+      - dcid: country/KEN
+        role: observationAbout
+- id: terrestrial-protected-area-ghana
+  query: terrestrial protected area in Ghana
+  why: Terrestrial protected area in Ghana resolves to sdg/ER_PTD_TERR; the marine indicator is a distinct scope.
+  tags:
+    directional_flow: na
+    conjunction: none
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_ER_PTD_TERR
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        stat_vars: [sdg/ER_PTD_TERR]
+      entities:
+      - dcid: country/GHA
+        role: observationAbout
+- id: women-in-parliament
+  query: share of women in parliament
+  why: Share of women in parliament with no place resolves to sdg/SG_GEN_PARL.SEX--F; the topic node is not a resolvable StatVar.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SG_GEN_PARL
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        bound:
+          sdg_sex: SDG_SexEnum_F
+        stat_vars: [sdg/SG_GEN_PARL.SEX--F]
+      entities: []
+- id: women-parliament-global-current
+  query: current global share of women in national parliaments
+  why: Current global share of women in national parliaments resolves to sdg/SG_GEN_PARL.SEX--F with no place bound.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SG_GEN_PARL
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        bound:
+          sdg_sex: SDG_SexEnum_F
+        stat_vars: [sdg/SG_GEN_PARL.SEX--F]
+      entities: []
+- id: women-parliament-kenya
+  query: proportion of women in parliament in Kenya in 2020
+  why: Proportion of women in parliament in Kenya in 2020 resolves to sdg/SG_GEN_PARL.SEX--F; the year is a date window.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SG_GEN_PARL
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        bound:
+          sdg_sex: SDG_SexEnum_F
+        stat_vars: [sdg/SG_GEN_PARL.SEX--F]
+      entities:
+      - dcid: country/KEN
+        role: observationAbout
+- id: sdg-02
+  query: SDG 3.3.1 HIV new infections per 1000 women
+  slice: holdout
+  why: SDG 3.3.1 HIV new infections per 1000 women resolves to the female series sdg/SH_HIV_INCD.SEX--F.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SH_HIV_INCD
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        bound:
+          sdg_sex: SDG_SexEnum_F
+        stat_vars: [sdg/SH_HIV_INCD.SEX--F]
+      entities: []
+- id: sdg-07
+  query: maternal mortality in Nauru
+  slice: holdout
+  why: When the DFO and base paths end no_data for maternal mortality in Nauru, the UN System Data Commons offers three indicators as candidates.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    candidates:
+      measure:
+        stat_vars:
+        - undata/unicef/MNCH_MATERNAL_DEATHS.SEX--F
+        - undata/unicef/MNCH_MMR.SEX--F
+        - undata/sdg/SH_STA_MORT.SEX--F
+      entities:
+      - dcid: country/NRU
+        role: observationAbout

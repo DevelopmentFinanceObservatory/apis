@@ -1,0 +1,232 @@
+{
+  "deadline_seconds": 45.0,
+  "engine_build": "search-engine-dev",
+  "goldens": {
+    "crs-aid-constant-2022-kenya": {
+      "max_seconds": 23.74645687500015,
+      "min_seconds": 20.722621832974255,
+      "runs": [
+        {
+          "seconds": 23.74645687500015,
+          "status": "definite",
+          "timed_out": false,
+          "warning_codes": [
+            "query_qualifier_dropped"
+          ]
+        },
+        {
+          "seconds": 22.368107582908124,
+          "status": "definite",
+          "timed_out": false,
+          "warning_codes": [
+            "query_qualifier_dropped"
+          ]
+        },
+        {
+          "seconds": 20.96521362499334,
+          "status": "definite",
+          "timed_out": false,
+          "warning_codes": [
+            "query_qualifier_dropped"
+          ]
+        },
+        {
+          "seconds": 20.722621832974255,
+          "status": "definite",
+          "timed_out": false,
+          "warning_codes": [
+            "query_qualifier_dropped"
+          ]
+        },
+        {
+          "seconds": 21.51564162503928,
+          "status": "definite",
+          "timed_out": false,
+          "warning_codes": [
+            "query_qualifier_dropped"
+          ]
+        }
+      ],
+      "seconds": [
+        23.74645687500015,
+        22.368107582908124,
+        20.96521362499334,
+        20.722621832974255,
+        21.51564162503928
+      ],
+      "status_flip": false,
+      "statuses": [
+        "definite",
+        "definite",
+        "definite",
+        "definite",
+        "definite"
+      ],
+      "timed_out": false,
+      "warning_codes": [
+        "query_qualifier_dropped"
+      ]
+    },
+    "crs-commitments-kenya": {
+      "max_seconds": 34.12451945897192,
+      "min_seconds": 20.300572833046317,
+      "runs": [
+        {
+          "seconds": 22.52929349988699,
+          "status": "definite",
+          "timed_out": false,
+          "warning_codes": []
+        },
+        {
+          "seconds": 34.12451945897192,
+          "status": "definite",
+          "timed_out": false,
+          "warning_codes": []
+        },
+        {
+          "seconds": 20.505848041037098,
+          "status": "definite",
+          "timed_out": false,
+          "warning_codes": []
+        },
+        {
+          "seconds": 22.436284458031878,
+          "status": "definite",
+          "timed_out": false,
+          "warning_codes": []
+        },
+        {
+          "seconds": 20.300572833046317,
+          "status": "definite",
+          "timed_out": false,
+          "warning_codes": []
+        }
+      ],
+      "seconds": [
+        22.52929349988699,
+        34.12451945897192,
+        20.505848041037098,
+        22.436284458031878,
+        20.300572833046317
+      ],
+      "status_flip": false,
+      "statuses": [
+        "definite",
+        "definite",
+        "definite",
+        "definite",
+        "definite"
+      ],
+      "timed_out": false,
+      "warning_codes": []
+    },
+    "crs-gross-disbursements-kenya": {
+      "max_seconds": 22.141531958943233,
+      "min_seconds": 19.195679165888578,
+      "runs": [
+        {
+          "seconds": 21.340537499869242,
+          "status": "definite",
+          "timed_out": false,
+          "warning_codes": []
+        },
+        {
+          "seconds": 22.141531958943233,
+          "status": "definite",
+          "timed_out": false,
+          "warning_codes": []
+        },
+        {
+          "seconds": 20.816288667032495,
+          "status": "definite",
+          "timed_out": false,
+          "warning_codes": []
+        },
+        {
+          "seconds": 19.195679165888578,
+          "status": "definite",
+          "timed_out": false,
+          "warning_codes": []
+        },
+        {
+          "seconds": 20.72947850008495,
+          "status": "definite",
+          "timed_out": false,
+          "warning_codes": []
+        }
+      ],
+      "seconds": [
+        21.340537499869242,
+        22.141531958943233,
+        20.816288667032495,
+        19.195679165888578,
+        20.72947850008495
+      ],
+      "status_flip": false,
+      "statuses": [
+        "definite",
+        "definite",
+        "definite",
+        "definite",
+        "definite"
+      ],
+      "timed_out": false,
+      "warning_codes": []
+    },
+    "crs-nominal-disbursements-kenya": {
+      "max_seconds": 22.588610125007108,
+      "min_seconds": 20.626010834006593,
+      "runs": [
+        {
+          "seconds": 21.085833833087236,
+          "status": "definite",
+          "timed_out": false,
+          "warning_codes": []
+        },
+        {
+          "seconds": 20.718462333083153,
+          "status": "definite",
+          "timed_out": false,
+          "warning_codes": []
+        },
+        {
+          "seconds": 22.588610125007108,
+          "status": "definite",
+          "timed_out": false,
+          "warning_codes": []
+        },
+        {
+          "seconds": 20.626010834006593,
+          "status": "definite",
+          "timed_out": false,
+          "warning_codes": []
+        },
+        {
+          "seconds": 21.531561750220135,
+          "status": "definite",
+          "timed_out": false,
+          "warning_codes": []
+        }
+      ],
+      "seconds": [
+        21.085833833087236,
+        20.718462333083153,
+        22.588610125007108,
+        20.626010834006593,
+        21.531561750220135
+      ],
+      "status_flip": false,
+      "statuses": [
+        "definite",
+        "definite",
+        "definite",
+        "definite",
+        "definite"
+      ],
+      "timed_out": false,
+      "warning_codes": []
+    }
+  },
+  "measurement": "corpus_latency_runs",
+  "runs_per_golden": 5
+}

@@ -1,0 +1,16 @@
+{
+  "data": {
+    "dc/s/WorldBank": {
+      "arcs": {
+        "name": {
+          "nodes": [
+            {
+              "provenanceId": "dc/base/Provenance",
+              "value": "World Bank"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

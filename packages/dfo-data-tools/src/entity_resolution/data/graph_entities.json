@@ -1,0 +1,1997 @@
+[
+  {
+    "dcid": "AdaptationFund",
+    "name": "Adaptation Fund",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1012"
+  },
+  {
+    "dcid": "Africa_Finance_Corporation",
+    "name": "Africa Finance Corporation",
+    "kind": "organisation",
+    "aliases": [
+      "AFC"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "AfricanDevelopmentBank",
+    "name": "African Development Bank",
+    "kind": "organisation",
+    "aliases": [
+      "AfDB",
+      "African Dev. Bank"
+    ],
+    "dac_code": "913"
+  },
+  {
+    "dcid": "AfricanDevelopmentFund",
+    "name": "African Development Fund",
+    "kind": "organisation",
+    "aliases": [
+      "AfDF"
+    ],
+    "dac_code": "914"
+  },
+  {
+    "dcid": "AfricanExportImportBank",
+    "name": "African Export-Import Bank",
+    "kind": "organisation",
+    "aliases": [
+      "Afreximbank",
+      "African Export–Import Bank"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "AndrewCarnegieFoundation",
+    "name": "Andrew Carnegie Foundation",
+    "kind": "organisation",
+    "aliases": [
+      "Carnegie Corporation of New York"
+    ],
+    "dac_code": "1620"
+  },
+  {
+    "dcid": "ArabAfricanInternationalBank",
+    "name": "Arab African International Bank",
+    "kind": "organisation",
+    "aliases": [
+      "AAIB"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "ArabBankForEconomicDevelopmentInAfrica",
+    "name": "Arab Bank for Economic Development in Africa",
+    "kind": "organisation",
+    "aliases": [
+      "Arab Bank for Economic Dev. in Africa",
+      "BADEA"
+    ],
+    "dac_code": "953"
+  },
+  {
+    "dcid": "ArabFundForEconomicAndSocialDevelopment",
+    "name": "Arab Fund for Economic and Social Development",
+    "kind": "organisation",
+    "aliases": [
+      "AFESD",
+      "Arab Fund",
+      "Arab Fund for Economic & Social Development",
+      "FADES"
+    ],
+    "dac_code": "921"
+  },
+  {
+    "dcid": "ArabFundForTechnicalAssistanceToAfricanCountries",
+    "name": "Arab Fund for Technical Assistance to African Countries",
+    "kind": "organisation",
+    "aliases": [
+      "AFTAAC",
+      "Arab Fund for Tech. Assist. to African Countries"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "ArabInternationalBank",
+    "name": "Arab International Bank",
+    "kind": "organisation",
+    "aliases": [
+      "AIB"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "ArabMonetaryFund",
+    "name": "Arab Monetary Fund",
+    "kind": "organisation",
+    "aliases": [
+      "AMF"
+    ],
+    "dac_code": "1059"
+  },
+  {
+    "dcid": "ArabTownsOrganization",
+    "name": "Arab Towns Organization",
+    "kind": "organisation",
+    "aliases": [
+      "ATO",
+      "Arab Towns Organisation"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "Arcadia",
+    "name": "Arcadia",
+    "kind": "organisation",
+    "aliases": [
+      "Arcadia Fund"
+    ],
+    "dac_code": "1637"
+  },
+  {
+    "dcid": "ArcusFoundation",
+    "name": "Arcus Foundation",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1625"
+  },
+  {
+    "dcid": "AsianDevelopmentBank",
+    "name": "Asian Development Bank",
+    "kind": "organisation",
+    "aliases": [
+      "ADB",
+      "AsDB",
+      "Asian Dev. Bank"
+    ],
+    "dac_code": "915"
+  },
+  {
+    "dcid": "AsianForestCooperationOrganization",
+    "name": "Asian Forest Cooperation Organization",
+    "kind": "organisation",
+    "aliases": [
+      "AFoCO",
+      "Asian Forest Cooperation Organisation"
+    ],
+    "dac_code": "1053"
+  },
+  {
+    "dcid": "AsianInfrastructureInvestmentBank",
+    "name": "Asian Infrastructure Investment Bank",
+    "kind": "organisation",
+    "aliases": [
+      "AIIB"
+    ],
+    "dac_code": "1024"
+  },
+  {
+    "dcid": "BancoLatinoamericanoDeComercioExterior",
+    "name": "Banco Latinoamericano de Comercio Exterior",
+    "kind": "organisation",
+    "aliases": [
+      "BLADEX",
+      "Banco Latinoamericano de Exportaciones",
+      "Bladex",
+      "Foreign Trade Bank of Latin America"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "BankForInternationalSettlements",
+    "name": "Bank for International Settlements",
+    "kind": "organisation",
+    "aliases": [
+      "BIS"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "BezosEarthFund",
+    "name": "Bezos Earth Fund",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1646"
+  },
+  {
+    "dcid": "BlackSeaTradeAndDevelopmentBank",
+    "name": "Black Sea Trade and Development Bank",
+    "kind": "organisation",
+    "aliases": [
+      "BSTDB",
+      "Black Sea Trade & Development Bank"
+    ],
+    "dac_code": "981"
+  },
+  {
+    "dcid": "BloombergPhilanthropies",
+    "name": "Bloomberg Philanthropies",
+    "kind": "organisation",
+    "aliases": [
+      "Bloomberg Family Foundation"
+    ],
+    "dac_code": "1640"
+  },
+  {
+    "dcid": "BolivarianAllianceForThePeoplesOfOurAmerica",
+    "name": "Bolivarian Alliance for the Peoples of Our America",
+    "kind": "organisation",
+    "aliases": [
+      "ALBA",
+      "ALBA-TCP",
+      "Bolivarian Alliance for the Americas"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "CGIAR",
+    "name": "CGIAR",
+    "kind": "organisation",
+    "aliases": [
+      "Consultative Group on International Agricultural Research"
+    ],
+    "dac_code": "1055"
+  },
+  {
+    "dcid": "CaribbeanCommunity",
+    "name": "Caribbean Community",
+    "kind": "organisation",
+    "aliases": [
+      "CARICOM"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "CaribbeanDevelopmentBank",
+    "name": "Caribbean Development Bank",
+    "kind": "organisation",
+    "aliases": [
+      "CDB",
+      "CarDB",
+      "Caribbean Dev. Bank"
+    ],
+    "dac_code": "906"
+  },
+  {
+    "dcid": "CenterForLatinAmericanMonetaryStudies",
+    "name": "Center for Latin American Monetary Studies",
+    "kind": "organisation",
+    "aliases": [
+      "CEMLA",
+      "Center for Latin American Monetary Studies (CEMLA)",
+      "Centro de Estudios Monetarios Latinoamericanos"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "CenterOfExcellenceInFinance",
+    "name": "Center of Excellence in Finance",
+    "kind": "organisation",
+    "aliases": [
+      "CEF"
+    ],
+    "dac_code": "1025"
+  },
+  {
+    "dcid": "CentralAmericanBankForEconomicIntegration",
+    "name": "Central American Bank for Economic Integration",
+    "kind": "organisation",
+    "aliases": [
+      "BCIE",
+      "CABEI",
+      "Central American Bank for Econ. Integration"
+    ],
+    "dac_code": "910"
+  },
+  {
+    "dcid": "CentralBankOfWestAfricanStates",
+    "name": "Central Bank of West African States",
+    "kind": "organisation",
+    "aliases": [
+      "BCEAO",
+      "Banque Centrale des États de l'Afrique de l'Ouest"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "CentralEmergencyResponseFund",
+    "name": "Central Emergency Response Fund",
+    "kind": "organisation",
+    "aliases": [
+      "CERF"
+    ],
+    "dac_code": "1020"
+  },
+  {
+    "dcid": "ChildrensInvestmentFundFoundation",
+    "name": "Children's Investment Fund Foundation",
+    "kind": "organisation",
+    "aliases": [
+      "CIFF"
+    ],
+    "dac_code": "1615"
+  },
+  {
+    "dcid": "CitiFoundation",
+    "name": "Citi Foundation",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1632"
+  },
+  {
+    "dcid": "ClimateInvestmentFunds",
+    "name": "Climate Investment Funds",
+    "kind": "organisation",
+    "aliases": [
+      "CIF"
+    ],
+    "dac_code": "1011"
+  },
+  {
+    "dcid": "ColomboPlan",
+    "name": "Colombo Plan",
+    "kind": "organisation",
+    "aliases": [
+      "Colombo Plan for Cooperative Economic and Social Development in Asia and the Pacific"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "ComicRelief",
+    "name": "Comic Relief",
+    "kind": "organisation",
+    "aliases": [
+      "Charity Projects",
+      "Charity Projects Ltd"
+    ],
+    "dac_code": "1614"
+  },
+  {
+    "dcid": "ConradNHiltonFoundation",
+    "name": "Conrad N. Hilton Foundation",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1617"
+  },
+  {
+    "dcid": "CouncilOfEurope",
+    "name": "Council of Europe",
+    "kind": "organisation",
+    "aliases": [
+      "CoE"
+    ],
+    "dac_code": "926"
+  },
+  {
+    "dcid": "CouncilOfEuropeDevelopmentBank",
+    "name": "Council of Europe Development Bank",
+    "kind": "organisation",
+    "aliases": [
+      "CEB"
+    ],
+    "dac_code": "1013"
+  },
+  {
+    "dcid": "CouncilOfTheEntente",
+    "name": "Council of the Entente",
+    "kind": "organisation",
+    "aliases": [
+      "Conseil de l'Entente",
+      "Entente Council"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "CreditGuaranteeAndInvestmentFacility",
+    "name": "Credit Guarantee and Investment Facility",
+    "kind": "organisation",
+    "aliases": [
+      "CGIF"
+    ],
+    "dac_code": "1017"
+  },
+  {
+    "dcid": "DACAfricaUnallocated",
+    "name": "Africa, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Africa unspecified",
+      "Africa, regional"
+    ],
+    "dac_code": "298"
+  },
+  {
+    "dcid": "DACAmericaUnallocated",
+    "name": "America, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "America unspecified",
+      "America, regional"
+    ],
+    "dac_code": "498"
+  },
+  {
+    "dcid": "DACAsiaUnallocated",
+    "name": "Asia, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Asia unspecified",
+      "Asia, regional"
+    ],
+    "dac_code": "798"
+  },
+  {
+    "dcid": "DACBilateralUnallocated",
+    "name": "Bilateral, unallocated (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Bilateral, unspecified",
+      "Developing countries unspecified"
+    ],
+    "dac_code": "9998"
+  },
+  {
+    "dcid": "DACCaribbeanAndCentralAmericaUnallocated",
+    "name": "Caribbean and Central America, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Caribbean & Central America, regional",
+      "Central America and the Caribbean unspecified"
+    ],
+    "dac_code": "389"
+  },
+  {
+    "dcid": "DACCaribbeanUnallocated",
+    "name": "Caribbean, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Caribbean unspecified",
+      "Caribbean, regional"
+    ],
+    "dac_code": "1031"
+  },
+  {
+    "dcid": "DACCentralAmericaUnallocated",
+    "name": "Central America, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Central America unspecified",
+      "Central America, regional"
+    ],
+    "dac_code": "1032"
+  },
+  {
+    "dcid": "DACCentralAsiaUnallocated",
+    "name": "Central Asia, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Central Asia unspecified",
+      "Central Asia, regional"
+    ],
+    "dac_code": "619"
+  },
+  {
+    "dcid": "DACEasternAfricaUnallocated",
+    "name": "Eastern Africa, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Eastern Africa unspecified",
+      "Eastern Africa, regional"
+    ],
+    "dac_code": "1027"
+  },
+  {
+    "dcid": "DACEuropeUnallocated",
+    "name": "Europe, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Europe unspecified",
+      "Europe, regional"
+    ],
+    "dac_code": "89"
+  },
+  {
+    "dcid": "DACExYugoslaviaUnallocated",
+    "name": "States of the former Yugoslavia, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "States Ex-Yugoslavia unspecified"
+    ],
+    "dac_code": "88"
+  },
+  {
+    "dcid": "DACFarEastAsiaUnallocated",
+    "name": "Far East Asia, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Far East Asia unspecified",
+      "Far East Asia, regional"
+    ],
+    "dac_code": "789"
+  },
+  {
+    "dcid": "DACMelanesiaUnallocated",
+    "name": "Melanesia, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Melanesia unspecified",
+      "Melanesia, regional"
+    ],
+    "dac_code": "1033"
+  },
+  {
+    "dcid": "DACMicronesiaUnallocated",
+    "name": "Micronesia, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Micronesia unspecified",
+      "Micronesia, regional"
+    ],
+    "dac_code": "1034"
+  },
+  {
+    "dcid": "DACMiddleAfricaUnallocated",
+    "name": "Middle Africa, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Middle Africa unspecified",
+      "Middle Africa, regional"
+    ],
+    "dac_code": "1028"
+  },
+  {
+    "dcid": "DACMiddleEastUnallocated",
+    "name": "Middle East, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Middle East unspecified",
+      "Middle East, regional"
+    ],
+    "dac_code": "589"
+  },
+  {
+    "dcid": "DACNorthOfSaharaUnallocated",
+    "name": "North of Sahara, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "North of Sahara, regional",
+      "Northern Africa unspecified"
+    ],
+    "dac_code": "189"
+  },
+  {
+    "dcid": "DACOceaniaUnallocated",
+    "name": "Oceania, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Oceania unspecified",
+      "Oceania, regional"
+    ],
+    "dac_code": "889"
+  },
+  {
+    "dcid": "DACPolynesiaUnallocated",
+    "name": "Polynesia, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Polynesia unspecified",
+      "Polynesia, regional"
+    ],
+    "dac_code": "1035"
+  },
+  {
+    "dcid": "DACSouthAmericaUnallocated",
+    "name": "South America, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "South America unspecified",
+      "South America, regional"
+    ],
+    "dac_code": "489"
+  },
+  {
+    "dcid": "DACSouthAndCentralAsiaUnallocated",
+    "name": "South and Central Asia, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "South & Central Asia, regional",
+      "Southern and Central Asia unspecified"
+    ],
+    "dac_code": "689"
+  },
+  {
+    "dcid": "DACSouthAsiaUnallocated",
+    "name": "South Asia, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "South Asia, regional",
+      "Southern Asia unspecified"
+    ],
+    "dac_code": "679"
+  },
+  {
+    "dcid": "DACSouthOfSaharaUnallocated",
+    "name": "South of Sahara, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "South of Sahara, regional",
+      "Sub-Saharan Africa unspecified"
+    ],
+    "dac_code": "289"
+  },
+  {
+    "dcid": "DACSouthernAfricaUnallocated",
+    "name": "Southern Africa, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Southern Africa unspecified",
+      "Southern Africa, regional"
+    ],
+    "dac_code": "1029"
+  },
+  {
+    "dcid": "DACWesternAfricaUnallocated",
+    "name": "Western Africa, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Western Africa unspecified",
+      "Western Africa, regional"
+    ],
+    "dac_code": "1030"
+  },
+  {
+    "dcid": "DavidAndLucilePackardFoundation",
+    "name": "David and Lucile Packard Foundation",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1618"
+  },
+  {
+    "dcid": "DevelopmentBankOfLatinAmericaAndTheCaribbean",
+    "name": "Development Bank of Latin America and the Caribbean",
+    "kind": "organisation",
+    "aliases": [
+      "CAF",
+      "Corporacion Andina de Fomento",
+      "Development Bank of Latin America"
+    ],
+    "dac_code": "1015"
+  },
+  {
+    "dcid": "DevelopmentBankOfTheCentralAfricanStates",
+    "name": "Development Bank of the Central African States",
+    "kind": "organisation",
+    "aliases": [
+      "BDEAC",
+      "Banque de Développement des États de l'Afrique Centrale",
+      "Dev. Bank of the Central African States"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "DutchPostcodeLottery",
+    "name": "Dutch Postcode Lottery",
+    "kind": "organisation",
+    "aliases": [
+      "Nationale Postcode Loterij"
+    ],
+    "dac_code": "1602"
+  },
+  {
+    "dcid": "ECOTradeAndDevelopmentBank",
+    "name": "ECO Trade and Development Bank",
+    "kind": "organisation",
+    "aliases": [
+      "ECO Trade and Dev. Bank",
+      "ETDB"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "EUROFIMA",
+    "name": "EUROFIMA",
+    "kind": "organisation",
+    "aliases": [
+      "European Company for the Financing of Railroad Rolling Stock"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "EastAfricanCommunity",
+    "name": "East African Community",
+    "kind": "organisation",
+    "aliases": [
+      "EAC"
+    ],
+    "dac_code": "237"
+  },
+  {
+    "dcid": "EasternAndSouthernAfricanTradeAndDevelopmentBank",
+    "name": "Eastern and Southern African Trade and Development Bank",
+    "kind": "organisation",
+    "aliases": [
+      "Eastern & Southern African Trade & Dev. Bank (TDB)",
+      "PTA Bank",
+      "TDB",
+      "TDB Group",
+      "Trade and Development Bank"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "EconomicCommunityOfTheGreatLakesCountries",
+    "name": "Economic Community of the Great Lakes Countries",
+    "kind": "organisation",
+    "aliases": [
+      "CEPGL",
+      "ECGLC",
+      "Econ. Comm. of the Great Lakes Countries"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "EconomicCommunityOfWestAfricanStates",
+    "name": "Economic Community of West African States",
+    "kind": "organisation",
+    "aliases": [
+      "CEDEAO",
+      "ECOWAS"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "EurasianDevelopmentBank",
+    "name": "Eurasian Development Bank",
+    "kind": "organisation",
+    "aliases": [
+      "EDB"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "EurasianFundForStabilizationAndDevelopment",
+    "name": "Eurasian Fund for Stabilization and Development",
+    "kind": "organisation",
+    "aliases": [
+      "EFSD"
+    ],
+    "dac_code": "1041"
+  },
+  {
+    "dcid": "EuropeanBankForReconstructionAndDevelopment",
+    "name": "European Bank for Reconstruction and Development",
+    "kind": "organisation",
+    "aliases": [
+      "EBRD",
+      "European Bank for Reconstruction and Dev."
+    ],
+    "dac_code": "990"
+  },
+  {
+    "dcid": "EuropeanCoalAndSteelCommunity",
+    "name": "European Coal and Steel Community",
+    "kind": "organisation",
+    "aliases": [
+      "ECSC"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "EuropeanDevelopmentFund",
+    "name": "European Development Fund",
+    "kind": "organisation",
+    "aliases": [
+      "EDF"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "EuropeanEconomicCommunity",
+    "name": "European Economic Community",
+    "kind": "organisation",
+    "aliases": [
+      "EEC",
+      "European Common Market"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "EuropeanFreeTradeAssociation",
+    "name": "European Free Trade Association",
+    "kind": "organisation",
+    "aliases": [
+      "EFTA"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "EuropeanInvestmentBank",
+    "name": "European Investment Bank",
+    "kind": "organisation",
+    "aliases": [
+      "EIB"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "EuropeanReliefFund",
+    "name": "European Relief Fund",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": null
+  },
+  {
+    "dcid": "EuropeanSocialFund",
+    "name": "European Social Fund",
+    "kind": "organisation",
+    "aliases": [
+      "ESF"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "EuropeanUnionInstitutions",
+    "name": "European Union institutions",
+    "kind": "organisation",
+    "aliases": [
+      "EU Institutions",
+      "European Union"
+    ],
+    "dac_code": "918"
+  },
+  {
+    "dcid": "FondationBotnar",
+    "name": "Fondation Botnar",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1644"
+  },
+  {
+    "dcid": "FoodAndAgricultureOrganization",
+    "name": "Food and Agriculture Organization of the United Nations",
+    "kind": "organisation",
+    "aliases": [
+      "FAO",
+      "Food and Agriculture Organisation",
+      "Food and Agriculture Organization"
+    ],
+    "dac_code": "932"
+  },
+  {
+    "dcid": "FordFoundation",
+    "name": "Ford Foundation",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1627"
+  },
+  {
+    "dcid": "GatesFoundation",
+    "name": "Gates Foundation",
+    "kind": "organisation",
+    "aliases": [
+      "BMGF",
+      "Bill & Melinda Gates Foundation"
+    ],
+    "dac_code": "1601"
+  },
+  {
+    "dcid": "GatsbyFoundation",
+    "name": "Gatsby Foundation",
+    "kind": "organisation",
+    "aliases": [
+      "Gatsby Charitable Foundation"
+    ],
+    "dac_code": "1616"
+  },
+  {
+    "dcid": "Gavi",
+    "name": "Gavi, the Vaccine Alliance",
+    "kind": "organisation",
+    "aliases": [
+      "GAVI",
+      "Global Alliance for Vaccines and Immunization"
+    ],
+    "dac_code": "1311"
+  },
+  {
+    "dcid": "GermanPostcodeLottery",
+    "name": "German Postcode Lottery",
+    "kind": "organisation",
+    "aliases": [
+      "Deutsche Postcode Lotterie"
+    ],
+    "dac_code": "1647"
+  },
+  {
+    "dcid": "GlobalEnvironmentFacility",
+    "name": "Global Environment Facility",
+    "kind": "organisation",
+    "aliases": [
+      "GEF"
+    ],
+    "dac_code": "811"
+  },
+  {
+    "dcid": "GlobalFund",
+    "name": "Global Fund",
+    "kind": "organisation",
+    "aliases": [
+      "GFATM",
+      "The Global Fund to Fight AIDS, Tuberculosis and Malaria"
+    ],
+    "dac_code": "1312"
+  },
+  {
+    "dcid": "GlobalGreenGrowthInstitute",
+    "name": "Global Green Growth Institute",
+    "kind": "organisation",
+    "aliases": [
+      "GGGI"
+    ],
+    "dac_code": "1313"
+  },
+  {
+    "dcid": "GlobalPartnershipForEducation",
+    "name": "Global Partnership for Education",
+    "kind": "organisation",
+    "aliases": [
+      "GPE"
+    ],
+    "dac_code": "997"
+  },
+  {
+    "dcid": "GoodVenturesFoundation",
+    "name": "Good Ventures Foundation",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1650"
+  },
+  {
+    "dcid": "GordonAndBettyMooreFoundation",
+    "name": "Gordon and Betty Moore Foundation",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1626"
+  },
+  {
+    "dcid": "GreenClimateFund",
+    "name": "Green Climate Fund",
+    "kind": "organisation",
+    "aliases": [
+      "GCF"
+    ],
+    "dac_code": "1016"
+  },
+  {
+    "dcid": "HAndMFoundation",
+    "name": "H&M Foundation",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1612"
+  },
+  {
+    "dcid": "HowardGBuffettFoundation",
+    "name": "Howard G. Buffett Foundation",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1642"
+  },
+  {
+    "dcid": "IDBInvest",
+    "name": "IDB Invest",
+    "kind": "organisation",
+    "aliases": [
+      "IIC",
+      "Inter-American Investment Corporation"
+    ],
+    "dac_code": "1019"
+  },
+  {
+    "dcid": "IKEAFoundation",
+    "name": "IKEA Foundation",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1608"
+  },
+  {
+    "dcid": "IMFConcessionalTrustFunds",
+    "name": "IMF Concessional Trust Funds",
+    "kind": "organisation",
+    "aliases": [
+      "IMF (Concessional Trust Funds)"
+    ],
+    "dac_code": "958"
+  },
+  {
+    "dcid": "IMFResilienceAndSustainabilityTrust",
+    "name": "IMF Resilience and Sustainability Trust",
+    "kind": "organisation",
+    "aliases": [
+      "IMF-RST"
+    ],
+    "dac_code": "1058"
+  },
+  {
+    "dcid": "InterAmericanDevelopmentBank",
+    "name": "Inter-American Development Bank",
+    "kind": "organisation",
+    "aliases": [
+      "IADB",
+      "IDB",
+      "Inter-American Dev. Bank"
+    ],
+    "dac_code": "909"
+  },
+  {
+    "dcid": "InternationalAtomicEnergyAgency",
+    "name": "International Atomic Energy Agency",
+    "kind": "organisation",
+    "aliases": [
+      "IAEA"
+    ],
+    "dac_code": "944"
+  },
+  {
+    "dcid": "InternationalBankForEconomicCooperation",
+    "name": "International Bank for Economic Cooperation",
+    "kind": "organisation",
+    "aliases": [
+      "IBEC",
+      "International Bank for Economic Co-operation"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "InternationalBankForReconstructionAndDevelopment",
+    "name": "International Bank for Reconstruction and Development",
+    "kind": "organisation",
+    "aliases": [
+      "IBRD",
+      "World Bank-IBRD"
+    ],
+    "dac_code": "901"
+  },
+  {
+    "dcid": "InternationalCentreForGeneticEngineeringAndBiotechnology",
+    "name": "International Centre for Genetic Engineering and Biotechnology",
+    "kind": "organisation",
+    "aliases": [
+      "ICGEB"
+    ],
+    "dac_code": "1052"
+  },
+  {
+    "dcid": "InternationalCoffeeOrganization",
+    "name": "International Coffee Organization",
+    "kind": "organisation",
+    "aliases": [
+      "ICO"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "InternationalCommissionOnMissingPersons",
+    "name": "International Commission on Missing Persons",
+    "kind": "organisation",
+    "aliases": [
+      "ICMP"
+    ],
+    "dac_code": "1049"
+  },
+  {
+    "dcid": "InternationalCriminalPoliceOrganization",
+    "name": "International Criminal Police Organization",
+    "kind": "organisation",
+    "aliases": [
+      "ICPO",
+      "INTERPOL"
+    ],
+    "dac_code": "1043"
+  },
+  {
+    "dcid": "InternationalDevelopmentAssociation",
+    "name": "International Development Association",
+    "kind": "organisation",
+    "aliases": [
+      "IDA",
+      "World Bank-IDA"
+    ],
+    "dac_code": "905"
+  },
+  {
+    "dcid": "InternationalFinanceCorporation",
+    "name": "International Finance Corporation",
+    "kind": "organisation",
+    "aliases": [
+      "IFC"
+    ],
+    "dac_code": "903"
+  },
+  {
+    "dcid": "InternationalFundForAgriculturalDevelopment",
+    "name": "International Fund for Agricultural Development",
+    "kind": "organisation",
+    "aliases": [
+      "IFAD",
+      "International Fund for Agricultural Dev."
+    ],
+    "dac_code": "988"
+  },
+  {
+    "dcid": "InternationalInvestmentBank",
+    "name": "International Investment Bank",
+    "kind": "organisation",
+    "aliases": [
+      "IIB"
+    ],
+    "dac_code": "1037"
+  },
+  {
+    "dcid": "InternationalLabourOrganization",
+    "name": "International Labour Organization",
+    "kind": "organisation",
+    "aliases": [
+      "ILO",
+      "International Labour Organisation"
+    ],
+    "dac_code": "940"
+  },
+  {
+    "dcid": "InternationalMonetaryFund",
+    "name": "International Monetary Fund",
+    "kind": "organisation",
+    "aliases": [
+      "IMF"
+    ],
+    "dac_code": "907"
+  },
+  {
+    "dcid": "InternationalTradeCentre",
+    "name": "International Trade Centre",
+    "kind": "organisation",
+    "aliases": [
+      "ITC",
+      "WTO - International Trade Centre"
+    ],
+    "dac_code": "1401"
+  },
+  {
+    "dcid": "IslamicDevelopmentBank",
+    "name": "Islamic Development Bank",
+    "kind": "organisation",
+    "aliases": [
+      "IsDB",
+      "Islamic Dev. Bank"
+    ],
+    "dac_code": "976"
+  },
+  {
+    "dcid": "IslamicSolidarityFundForDevelopment",
+    "name": "Islamic Solidarity Fund for Development",
+    "kind": "organisation",
+    "aliases": [
+      "ISFD",
+      "Islamic Solidarity Fund for Dev."
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "JacobsFoundation",
+    "name": "Jacobs Foundation",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1636"
+  },
+  {
+    "dcid": "JohnDAndCatherineTMacArthurFoundation",
+    "name": "John D. and Catherine T. MacArthur Foundation",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1619"
+  },
+  {
+    "dcid": "JointSDGFund",
+    "name": "Joint SDG Fund",
+    "kind": "organisation",
+    "aliases": [
+      "Joint Sustainable Development Goals Fund"
+    ],
+    "dac_code": "1048"
+  },
+  {
+    "dcid": "JointUnitedNationsProgrammeOnHIVAIDS",
+    "name": "Joint United Nations Programme on HIV/AIDS",
+    "kind": "organisation",
+    "aliases": [
+      "UNAIDS"
+    ],
+    "dac_code": "971"
+  },
+  {
+    "dcid": "LEGOFoundation",
+    "name": "LEGO Foundation",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1633"
+  },
+  {
+    "dcid": "LaCaixaFoundation",
+    "name": "la Caixa Foundation",
+    "kind": "organisation",
+    "aliases": [
+      "La Caixa Banking Foundation"
+    ],
+    "dac_code": "1639"
+  },
+  {
+    "dcid": "LatinAmericanAgribusinessDevelopmentCorporation",
+    "name": "Latin American Agribusiness Development Corporation",
+    "kind": "organisation",
+    "aliases": [
+      "LAAD",
+      "Latin American Agribusiness Dev. Corp."
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "LatinAmericanConfederationOfSavingsAndCreditCooperatives",
+    "name": "Latin American Confederation of Savings and Credit Cooperatives",
+    "kind": "organisation",
+    "aliases": [
+      "COLAC",
+      "Confederación Latinoamericana de Cooperativas de Ahorro y Crédito",
+      "Latin Amer. Conf. of Saving & Credit Coop."
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "LatinAmericanReserveFund",
+    "name": "Latin American Reserve Fund",
+    "kind": "organisation",
+    "aliases": [
+      "Andean Reserve Fund",
+      "FLAR",
+      "Fondo Latinoamericano de Reservas"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "LaudesFoundation",
+    "name": "Laudes Foundation",
+    "kind": "organisation",
+    "aliases": [
+      "C&A Foundation"
+    ],
+    "dac_code": "1613"
+  },
+  {
+    "dcid": "LeagueOfArabStates",
+    "name": "League of Arab States",
+    "kind": "organisation",
+    "aliases": [
+      "Arab League",
+      "LAS"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "LeonaMAndHarryBHelmsleyCharitableTrust",
+    "name": "Leona M. and Harry B. Helmsley Charitable Trust",
+    "kind": "organisation",
+    "aliases": [
+      "Helmsley Charitable Trust"
+    ],
+    "dac_code": "1648"
+  },
+  {
+    "dcid": "MAVAFoundation",
+    "name": "MAVA Foundation",
+    "kind": "organisation",
+    "aliases": [
+      "Fondation MAVA"
+    ],
+    "dac_code": "1610"
+  },
+  {
+    "dcid": "MargaretACargillFoundation",
+    "name": "Margaret A. Cargill Foundation",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1638"
+  },
+  {
+    "dcid": "MastercardFoundation",
+    "name": "Mastercard Foundation",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1606"
+  },
+  {
+    "dcid": "McKnightFoundation",
+    "name": "McKnight Foundation",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1631"
+  },
+  {
+    "dcid": "MetLifeFoundation",
+    "name": "MetLife Foundation",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1605"
+  },
+  {
+    "dcid": "MichaelAndSusanDellFoundation",
+    "name": "Michael & Susan Dell Foundation",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1621"
+  },
+  {
+    "dcid": "MultilateralFundMontrealProtocol",
+    "name": "Multilateral Fund for the Implementation of the Montreal Protocol",
+    "kind": "organisation",
+    "aliases": [
+      "MLF",
+      "Montreal Protocol Fund",
+      "Multilateral Fund"
+    ],
+    "dac_code": "812"
+  },
+  {
+    "dcid": "MultilateralInvestmentGuaranteeAgency",
+    "name": "Multilateral Investment Guarantee Agency",
+    "kind": "organisation",
+    "aliases": [
+      "MIGA",
+      "World Bank-MIGA"
+    ],
+    "dac_code": "902"
+  },
+  {
+    "dcid": "NewDevelopmentBank",
+    "name": "New Development Bank",
+    "kind": "organisation",
+    "aliases": [
+      "NDB"
+    ],
+    "dac_code": "1044"
+  },
+  {
+    "dcid": "NordicDevelopmentFund",
+    "name": "Nordic Development Fund",
+    "kind": "organisation",
+    "aliases": [
+      "NDF"
+    ],
+    "dac_code": "104"
+  },
+  {
+    "dcid": "NordicEnvironmentFinanceCorporation",
+    "name": "Nordic Environment Finance Corporation",
+    "kind": "organisation",
+    "aliases": [
+      "NEFCO",
+      "Nefco",
+      "Nordic Green Bank"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "NordicInvestmentBank",
+    "name": "Nordic Investment Bank",
+    "kind": "organisation",
+    "aliases": [
+      "NIB"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "NorthAmericanDevelopmentBank",
+    "name": "North American Development Bank",
+    "kind": "organisation",
+    "aliases": [
+      "NADB",
+      "NADBank"
+    ],
+    "dac_code": "1045"
+  },
+  {
+    "dcid": "NorwegianPostcodeLottery",
+    "name": "Norwegian Postcode Lottery",
+    "kind": "organisation",
+    "aliases": [
+      "Norsk Postkodelotteri"
+    ],
+    "dac_code": "1634"
+  },
+  {
+    "dcid": "NovoNordiskFoundation",
+    "name": "Novo Nordisk Foundation",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1649"
+  },
+  {
+    "dcid": "OPECFundForInternationalDevelopment",
+    "name": "The OPEC Fund for International Development",
+    "kind": "organisation",
+    "aliases": [
+      "OFID",
+      "OPEC Fund",
+      "OPEC Fund for International Dev."
+    ],
+    "dac_code": "951"
+  },
+  {
+    "dcid": "OakFoundation",
+    "name": "Oak Foundation",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1611"
+  },
+  {
+    "dcid": "OmidyarNetwork",
+    "name": "Omidyar Network",
+    "kind": "organisation",
+    "aliases": [
+      "Omidyar Network Fund, Inc."
+    ],
+    "dac_code": "1622"
+  },
+  {
+    "dcid": "OpenSocietyFoundations",
+    "name": "Open Society Foundations",
+    "kind": "organisation",
+    "aliases": [
+      "OSF"
+    ],
+    "dac_code": "1643"
+  },
+  {
+    "dcid": "OrganizationForSecurityAndCoOperationInEurope",
+    "name": "Organization for Security and Co-operation in Europe",
+    "kind": "organisation",
+    "aliases": [
+      "OSCE"
+    ],
+    "dac_code": "978"
+  },
+  {
+    "dcid": "OrganizationOfAmericanStates",
+    "name": "Organization of American States",
+    "kind": "organisation",
+    "aliases": [
+      "OAS",
+      "OEA"
+    ],
+    "dac_code": "1056"
+  },
+  {
+    "dcid": "OrganizationOfArabPetroleumExportingCountries",
+    "name": "Organization of Arab Petroleum Exporting Countries",
+    "kind": "organisation",
+    "aliases": [
+      "OAPEC",
+      "Org. of Arab Petroleum Exporting Countries"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "PeoplesPostcodeLottery",
+    "name": "People's Postcode Lottery",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1604"
+  },
+  {
+    "dcid": "PlataBasinFinancialDevelopmentFund",
+    "name": "Plata Basin Financial Development Fund",
+    "kind": "organisation",
+    "aliases": [
+      "FONPLATA",
+      "FONPLATA Development Bank",
+      "Plata Basin Financial Dev. Fund",
+      "Río de la Plata Basin Financial Development Fund"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "PrivateInfrastructureDevelopmentGroup",
+    "name": "Private Infrastructure Development Group",
+    "kind": "organisation",
+    "aliases": [
+      "PIDG"
+    ],
+    "dac_code": "1014"
+  },
+  {
+    "dcid": "RockefellerFoundation",
+    "name": "Rockefeller Foundation",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1623"
+  },
+  {
+    "dcid": "SESRIC",
+    "name": "Statistical, Economic and Social Research and Training Centre for Islamic Countries",
+    "kind": "organisation",
+    "aliases": [
+      "SESRIC"
+    ],
+    "dac_code": "1026"
+  },
+  {
+    "dcid": "SouthAsianDevelopmentFund",
+    "name": "South Asian Development Fund",
+    "kind": "organisation",
+    "aliases": [
+      "SADF"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "SusanThompsonBuffettFoundation",
+    "name": "Susan Thompson Buffett Foundation",
+    "kind": "organisation",
+    "aliases": [
+      "Susan T. Buffett Foundation"
+    ],
+    "dac_code": "1641"
+  },
+  {
+    "dcid": "SwedishPostcodeLottery",
+    "name": "Swedish Postcode Lottery",
+    "kind": "organisation",
+    "aliases": [
+      "Svenska Postkodlotteriet"
+    ],
+    "dac_code": "1603"
+  },
+  {
+    "dcid": "UBSOptimusFoundation",
+    "name": "UBS Optimus Foundation",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1629"
+  },
+  {
+    "dcid": "UNInterAgencyPooledFunds",
+    "name": "UN inter-agency pooled funds",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1022"
+  },
+  {
+    "dcid": "UNRWA",
+    "name": "United Nations Relief and Works Agency for Palestine Refugees in the Near East",
+    "kind": "organisation",
+    "aliases": [
+      "UN-Relief and Works Agency",
+      "UNRWA"
+    ],
+    "dac_code": "964"
+  },
+  {
+    "dcid": "UNWomen",
+    "name": "United Nations Entity for Gender Equality and the Empowerment of Women",
+    "kind": "organisation",
+    "aliases": [
+      "UN Women",
+      "UN-Women"
+    ],
+    "dac_code": "1046"
+  },
+  {
+    "dcid": "UnitedNationsCOVID19ResponseAndRecoveryFund",
+    "name": "United Nations COVID-19 Response and Recovery Fund",
+    "kind": "organisation",
+    "aliases": [
+      "COVID-19 Response and Recovery Multi-Partner Trust Fund",
+      "UN COVID-19 MPTF"
+    ],
+    "dac_code": "1047"
+  },
+  {
+    "dcid": "UnitedNationsCapitalDevelopmentFund",
+    "name": "United Nations Capital Development Fund",
+    "kind": "organisation",
+    "aliases": [
+      "UNCDF"
+    ],
+    "dac_code": "1039"
+  },
+  {
+    "dcid": "UnitedNationsChildrensFund",
+    "name": "United Nations Children's Fund",
+    "kind": "organisation",
+    "aliases": [
+      "UN-Children's Fund",
+      "UNICEF"
+    ],
+    "dac_code": "963"
+  },
+  {
+    "dcid": "UnitedNationsConferenceOnTradeAndDevelopment",
+    "name": "United Nations Conference on Trade and Development",
+    "kind": "organisation",
+    "aliases": [
+      "UN Trade and Development",
+      "UNCTAD"
+    ],
+    "dac_code": "962"
+  },
+  {
+    "dcid": "UnitedNationsDevelopmentCoordinationOffice",
+    "name": "United Nations Development Coordination Office",
+    "kind": "organisation",
+    "aliases": [
+      "DCO",
+      "UN DCO"
+    ],
+    "dac_code": "1057"
+  },
+  {
+    "dcid": "UnitedNationsDevelopmentFundForWomen",
+    "name": "United Nations Development Fund for Women",
+    "kind": "organisation",
+    "aliases": [
+      "UN-Development Fund for Women",
+      "UNIFEM"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "UnitedNationsDevelopmentProgramme",
+    "name": "United Nations Development Programme",
+    "kind": "organisation",
+    "aliases": [
+      "UN-Development Programme",
+      "UNDP"
+    ],
+    "dac_code": "959"
+  },
+  {
+    "dcid": "UnitedNationsEconomicAndSocialCommissionForWesternAsia",
+    "name": "United Nations Economic and Social Commission for Western Asia",
+    "kind": "organisation",
+    "aliases": [
+      "ESCWA",
+      "UNESCWA"
+    ],
+    "dac_code": "1403"
+  },
+  {
+    "dcid": "UnitedNationsEconomicCommissionForEurope",
+    "name": "United Nations Economic Commission for Europe",
+    "kind": "organisation",
+    "aliases": [
+      "ECE",
+      "UNECE"
+    ],
+    "dac_code": "948"
+  },
+  {
+    "dcid": "UnitedNationsEducationalAndTrainingProgrammeForSouthernAfrica",
+    "name": "United Nations Educational and Training Programme for Southern Africa",
+    "kind": "organisation",
+    "aliases": [
+      "UN-UNETPSA",
+      "UNETPSA"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "UnitedNationsEducationalScientificAndCulturalOrganization",
+    "name": "United Nations Educational, Scientific and Cultural Organization",
+    "kind": "organisation",
+    "aliases": [
+      "UN-Educ., Scientific and Cultural Org.",
+      "UNESCO"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "UnitedNationsEnvironmentProgramme",
+    "name": "United Nations Environment Programme",
+    "kind": "organisation",
+    "aliases": [
+      "UN-Environment Programme",
+      "UNEP"
+    ],
+    "dac_code": "807"
+  },
+  {
+    "dcid": "UnitedNationsFundForDrugAbuseControl",
+    "name": "United Nations Fund for Drug Abuse Control",
+    "kind": "organisation",
+    "aliases": [
+      "UN-Fund for Drug Abuse Control",
+      "UNFDAC"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "UnitedNationsFundForHumanRights",
+    "name": "United Nations Fund for Human Rights",
+    "kind": "organisation",
+    "aliases": [
+      "UN-Fund for Human Rights"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "UnitedNationsGeneralAssembly",
+    "name": "United Nations General Assembly",
+    "kind": "organisation",
+    "aliases": [
+      "UN-General Assembly",
+      "UNGA"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "UnitedNationsHighCommissionerForRefugees",
+    "name": "Office of the United Nations High Commissioner for Refugees",
+    "kind": "organisation",
+    "aliases": [
+      "UN-High Commissioner for Refugees",
+      "UNHCR"
+    ],
+    "dac_code": "967"
+  },
+  {
+    "dcid": "UnitedNationsIndustrialDevelopmentOrganization",
+    "name": "United Nations Industrial Development Organization",
+    "kind": "organisation",
+    "aliases": [
+      "UN-Industrial Development Organization",
+      "UNIDO"
+    ],
+    "dac_code": "1406"
+  },
+  {
+    "dcid": "UnitedNationsInstituteForDisarmamentResearch",
+    "name": "United Nations Institute for Disarmament Research",
+    "kind": "organisation",
+    "aliases": [
+      "UNIDIR"
+    ],
+    "dac_code": "1038"
+  },
+  {
+    "dcid": "UnitedNationsInternationalResearchAndTrainingInstituteForTheAdvancementOfWomen",
+    "name": "United Nations International Research and Training Institute for the Advancement of Women",
+    "kind": "organisation",
+    "aliases": [
+      "INSTRAW",
+      "UN-INSTRAW"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "UnitedNationsOfficeForDisarmamentAffairs",
+    "name": "United Nations Office for Disarmament Affairs",
+    "kind": "organisation",
+    "aliases": [
+      "UNODA"
+    ],
+    "dac_code": "1051"
+  },
+  {
+    "dcid": "UnitedNationsOfficeOfCounterTerrorism",
+    "name": "United Nations Office of Counter-Terrorism",
+    "kind": "organisation",
+    "aliases": [
+      "UNOCT"
+    ],
+    "dac_code": "1042"
+  },
+  {
+    "dcid": "UnitedNationsOfficeOnDrugsAndCrime",
+    "name": "United Nations Office on Drugs and Crime",
+    "kind": "organisation",
+    "aliases": [
+      "UN-Office on Drugs and Crime",
+      "UNDCP",
+      "UNODC"
+    ],
+    "dac_code": "1040"
+  },
+  {
+    "dcid": "UnitedNationsPeacebuildingFund",
+    "name": "United Nations Peacebuilding Fund",
+    "kind": "organisation",
+    "aliases": [
+      "PBF",
+      "Peacebuilding Fund",
+      "UN Peacebuilding Fund",
+      "UNPBF"
+    ],
+    "dac_code": "923"
+  },
+  {
+    "dcid": "UnitedNationsPopulationFund",
+    "name": "United Nations Population Fund",
+    "kind": "organisation",
+    "aliases": [
+      "UN-Population Fund",
+      "UNFPA"
+    ],
+    "dac_code": "974"
+  },
+  {
+    "dcid": "UnitedNationsRegularProgrammeOfTechnicalAssistance",
+    "name": "United Nations Regular Programme of Technical Assistance",
+    "kind": "organisation",
+    "aliases": [
+      "UN-Regular Programme of Technical Assistance"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "UnitedNationsRegularProgrammeOfTechnicalCooperation",
+    "name": "United Nations Regular Programme of Technical Cooperation",
+    "kind": "organisation",
+    "aliases": [
+      "RPTC",
+      "UN-Regular Programme of Technical Coop."
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "UnitedNationsSecretariat",
+    "name": "Secretariat of the United Nations",
+    "kind": "organisation",
+    "aliases": [
+      "UN Secretariat"
+    ],
+    "dac_code": "1036"
+  },
+  {
+    "dcid": "VanLeerFoundation",
+    "name": "Van Leer Foundation",
+    "kind": "organisation",
+    "aliases": [
+      "Bernard van Leer Foundation"
+    ],
+    "dac_code": "1609"
+  },
+  {
+    "dcid": "WHOStrategicPreparednessAndResponsePlan",
+    "name": "WHO Strategic Preparedness and Response Plan",
+    "kind": "organisation",
+    "aliases": [
+      "SPRP",
+      "WHO-Strategic Preparedness and Response Plan"
+    ],
+    "dac_code": "1050"
+  },
+  {
+    "dcid": "WellcomeTrust",
+    "name": "Wellcome Trust",
+    "kind": "organisation",
+    "aliases": [
+      "Wellcome"
+    ],
+    "dac_code": "1628"
+  },
+  {
+    "dcid": "WestAfricanDevelopmentBank",
+    "name": "West African Development Bank",
+    "kind": "organisation",
+    "aliases": [
+      "BOAD",
+      "Banque Ouest Africaine de Développement",
+      "WADB",
+      "West African Development Bank - BOAD"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "WestAfricanMonetaryUnion",
+    "name": "West African Monetary Union",
+    "kind": "organisation",
+    "aliases": [
+      "UEMOA",
+      "UMOA",
+      "Union Monétaire Ouest Africaine",
+      "Union Économique et Monétaire Ouest Africaine",
+      "WAEMU",
+      "WAMU",
+      "West African Economic and Monetary Union"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "WilliamAndFloraHewlettFoundation",
+    "name": "William and Flora Hewlett Foundation",
+    "kind": "organisation",
+    "aliases": [],
+    "dac_code": "1624"
+  },
+  {
+    "dcid": "WorldDiabetesFoundation",
+    "name": "World Diabetes Foundation",
+    "kind": "organisation",
+    "aliases": [
+      "WDF"
+    ],
+    "dac_code": "1630"
+  },
+  {
+    "dcid": "WorldFoodProgramme",
+    "name": "World Food Programme",
+    "kind": "organisation",
+    "aliases": [
+      "UN-World Food Programme",
+      "WFP"
+    ],
+    "dac_code": "966"
+  },
+  {
+    "dcid": "WorldHealthOrganization",
+    "name": "World Health Organization",
+    "kind": "organisation",
+    "aliases": [
+      "WHO",
+      "World Health Organisation"
+    ],
+    "dac_code": "928"
+  },
+  {
+    "dcid": "WorldIntellectualPropertyOrganization",
+    "name": "World Intellectual Property Organization",
+    "kind": "organisation",
+    "aliases": [
+      "UN-World Intellectual Property Organization",
+      "WIPO"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "WorldMeteorologicalOrganization",
+    "name": "World Meteorological Organization",
+    "kind": "organisation",
+    "aliases": [
+      "UN-World Meteorological Organization",
+      "WMO",
+      "World Meteorological Organisation"
+    ],
+    "dac_code": null
+  },
+  {
+    "dcid": "WorldOrganisationForAnimalHealth",
+    "name": "World Organisation for Animal Health",
+    "kind": "organisation",
+    "aliases": [
+      "OIE",
+      "WOAH"
+    ],
+    "dac_code": "1054"
+  },
+  {
+    "dcid": "WorldTourismOrganization",
+    "name": "World Tourism Organization",
+    "kind": "organisation",
+    "aliases": [
+      "UN Tourism",
+      "UNWTO",
+      "World Tourism Organisation"
+    ],
+    "dac_code": "1023"
+  },
+  {
+    "dcid": "WorldTradeOrganization",
+    "name": "World Trade Organization",
+    "kind": "organisation",
+    "aliases": [
+      "WTO",
+      "World Trade Organisation"
+    ],
+    "dac_code": "1404"
+  }
+]

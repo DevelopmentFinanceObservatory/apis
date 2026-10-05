@@ -1,0 +1,14 @@
+{
+  "path": "data/data.csv",
+  "bytes": 102,
+  "digest": "sha256:91f099b2ef388f470b446ed3977a2f5007ac79d4bf848409f123ad79b787aa3b",
+  "media_type": "text/csv",
+  "table_schema": {
+    "fields": [
+      { "name": "provider", "type": "string" },
+      { "name": "recipient", "type": "string" },
+      { "name": "year", "type": "year" },
+      { "name": "value", "type": "number" }
+    ]
+  }
+}

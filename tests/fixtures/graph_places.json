@@ -1,0 +1,23 @@
+{
+  "_comment": "Region name -> {dcid, type_of}. 'Southern Africa'/'SouthernAfrica' and 'European Union' are sourced from live dfo-dev /v2/resolve probes; 'Empty Region' is synthetic, covering a mapped type whose membership query returns no members. Backs FakeGraph.resolve_by_arc for the {typeOf:Continent}/{typeOf:UNGeoRegion} rungs (filtered to a matching type_of) and the bare <-description->dcid rung.",
+  "Africa": {
+    "dcid": "africa",
+    "type_of": "Continent"
+  },
+  "Southern Africa": {
+    "dcid": "SouthernAfrica",
+    "type_of": "UNGeoRegion"
+  },
+  "SouthernAfrica": {
+    "dcid": "SouthernAfrica",
+    "type_of": "UNGeoRegion"
+  },
+  "European Union": {
+    "dcid": "EuropeanUnion",
+    "type_of": "ContinentalUnion"
+  },
+  "Empty Region": {
+    "dcid": "emptyungeoregion",
+    "type_of": "UNGeoRegion"
+  }
+}

@@ -1,0 +1,337 @@
+"""Tests routing from each shape's declared entity roles.
+
+Fixtures use a neutral namespace because live StatVars lack ``observationProperties``."""
+
+from __future__ import annotations
+
+import asyncio
+
+from search.engine.bind import _UniversalBindOutput
+from search.engine.extract import DateRequest
+from search.engine.region.pipeline import resolve_variable
+from search.models import TimeWindow
+from tests.engine._fake_coverage import empty_coverage_snapshot
+from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import door_roles_for_test_query
+from tests.fixtures import FakeGraph, make_resolver
+
+
+def _plain_arcs() -> dict:
+    return {
+        "populationType": {"nodes": [{"dcid": "Person"}]},
+        "measuredProperty": {"nodes": [{"dcid": "count"}]},
+        "statType": {"nodes": [{"dcid": "measuredValue"}]},
+    }
+
+
+def _declaring_arcs() -> dict:
+    return {
+        "populationType": {"nodes": [{"dcid": "EconomicActivity"}]},
+        "measuredProperty": {"nodes": [{"dcid": "amount"}]},
+        "statType": {"nodes": [{"dcid": "measuredValue"}]},
+        "observationProperties": {"nodes": [{"dcid": "creditor"}, {"dcid": "debtor"}]},
+    }
+
+
+def _unplaceable_arcs() -> dict:
+    arcs = _declaring_arcs()
+    arcs["observationProperties"] = {"nodes": [{"dcid": "contributor"}]}
+    return arcs
+
+
+class _FixedBindLLM:
+    """Elects shape index 0 unconditionally, with no constraint bindings."""
+
+    async def generate_structured(self, *, prompt, system, schema):
+        assert schema.__name__ == "_UniversalBindOutput"
+        return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
+
+
+_PLAIN_SV = "test/ns/PlainSubjectCount"
+_DECLARING_SV = "test/ns/CreditorDebtorFlow"
+_FRA = "country/FRA"
+_KEN = "country/KEN"
+
+
+def _run(
+    *,
+    detect_svs: list[str],
+    sv_scores: dict[str, float],
+    graph_nodes: dict,
+    obs: dict,
+    role_query: str,
+    date_request: DateRequest | None = None,
+    sdmx: FakeSdmxClient | None = None,
+    variable: str = "aid",
+):
+    graph = FakeGraph(
+        nodes=graph_nodes,
+        detect={
+            role_query: {"svs": detect_svs, "cosine_scores": [sv_scores[s] for s in detect_svs]}
+        },
+        resolve={"France": _FRA, "Kenya": _KEN},
+        obs=obs,
+    )
+    return asyncio.run(
+        resolve_variable(
+            variable,
+            entities=["France", "Kenya"],
+            date_request=date_request,
+            detect_query=role_query,
+            role_query=role_query,
+            entity_roles=door_roles_for_test_query(role_query, ["France", "Kenya"]),
+            pac=True,
+            graph=graph,
+            resolver=make_resolver(graph),
+            llm=_FixedBindLLM(),
+            sdmx=sdmx or FakeSdmxClient(),
+            base_steps=[],
+            base_timing={},
+            coverage=empty_coverage_snapshot(),
+        )
+    )
+
+
+def _assert_pre_materialise_role_refusal(result, *, sv_dcid: str, window: TimeWindow) -> None:
+    assert result.status == "no_data"
+    assert result.no_data_reason == "role_incompatible"
+    assert result.gate is None
+    assert result.flagged_match is not None
+    assert result.elected_stat_vars is not None
+    flagged = result.flagged_match[0]
+    assert [stat_var.ref for stat_var in flagged.resolved.stat_vars.items] == [sv_dcid]
+    assert [stat_var.dcid for stat_var in result.elected_stat_vars] == [sv_dcid]
+    assert flagged.resolved.coverage.kind == "bare"
+    assert flagged.resolved.coverage.has_data is False
+    assert flagged.resolved.coverage.window == window
+    assert flagged.resolved.available_at_place is None
+    assert flagged.resolved.confidence == "low"
+    assert flagged.resolved.entities == []
+    assert flagged.resolved.trace.resolved_entities == []
+    assert flagged.resolved.trace.resolved_sources == []
+    assert flagged.resolved.slot_options == []
+    assert flagged.resolved.entity_options == []
+    assert flagged.resolved.facet_options == []
+    assert flagged.resolved.facets == {}
+    assert flagged.resolved.observations is None
+    pipeline_steps = {step.step: step.ran for step in flagged.resolved.trace.pipeline_trace}
+    assert pipeline_steps["materialise"] is False
+    assert pipeline_steps["answer"] is False
+
+
+def test_directional_query_on_a_declaring_recall_below_the_floor_keeps_the_elected_shape(
+    monkeypatch,
+):
+    """A plain elected shape refuses directional roles when its declaring sibling, a
+    role-bearing shape the index does not carry, scores below the relevance floor. The
+    refusal flags the plain shape's identity."""
+    graph_nodes = {
+        _FRA: {"label": "France", "type": "Country"},
+        _KEN: {"label": "Kenya", "type": "Country"},
+        _PLAIN_SV: {"label": "Plain population count", "arcs": _plain_arcs()},
+        _DECLARING_SV: {"label": "Creditor/debtor flow", "arcs": _declaring_arcs()},
+    }
+
+    def _materialise_was_not_called(*args, **kwargs):
+        raise AssertionError("role_incompatible must not materialise or probe availability")
+
+    monkeypatch.setattr(
+        "search.engine.region.materialise_step.materialise", _materialise_was_not_called
+    )
+    window = TimeWindow(start_year=2015, end_year=2020)
+    result = _run(
+        detect_svs=[_PLAIN_SV, _DECLARING_SV],
+        sv_scores={_PLAIN_SV: 0.9, _DECLARING_SV: 0.5},
+        graph_nodes=graph_nodes,
+        obs={},
+        role_query="aid from France to Kenya",
+        date_request=DateRequest(window=window, latest=False),
+    )
+    _assert_pre_materialise_role_refusal(result, sv_dcid=_PLAIN_SV, window=window)
+
+
+def test_directional_query_on_a_declaring_recall_elects_the_declaring_shape():
+    """A plain shape cannot hold both flow ends, so the declaring sibling is elected although
+    the plain shape outranks it, and binds each place to its own role. The declaring shape
+    scores above the relevance floor, which holds a role-bearing shape the index does not
+    carry."""
+    graph_nodes = {
+        _FRA: {"label": "France", "type": "Country"},
+        _KEN: {"label": "Kenya", "type": "Country"},
+        _PLAIN_SV: {"label": "Plain population count", "arcs": _plain_arcs()},
+        _DECLARING_SV: {"label": "Creditor/debtor flow", "arcs": _declaring_arcs()},
+    }
+    window = TimeWindow(start_year=2015, end_year=2020)
+    result = _run(
+        detect_svs=[_PLAIN_SV, _DECLARING_SV],
+        sv_scores={_PLAIN_SV: 0.9, _DECLARING_SV: 0.7},
+        graph_nodes=graph_nodes,
+        obs={},
+        role_query="aid from France to Kenya",
+        date_request=DateRequest(window=window, latest=False),
+    )
+    assert result.status == "no_data"
+    assert result.no_data_reason == "no_observations"
+    assert result.elected_stat_vars is not None
+    assert [stat_var.dcid for stat_var in result.elected_stat_vars] == [_DECLARING_SV]
+    assert result.flagged_match is not None
+    assert result.flagged_match[0].definition.identity.entities == {
+        "origin": [_FRA],
+        "destination": [_KEN],
+    }
+
+
+def test_unplaceable_role_keeps_the_elected_no_data_shape(monkeypatch):
+    """A declaring shape refuses when its role cannot accept either entity."""
+    graph_nodes = {
+        _FRA: {"label": "France", "type": "Country"},
+        _KEN: {"label": "Kenya", "type": "Country"},
+        _DECLARING_SV: {"label": "Unplaceable flow", "arcs": _unplaceable_arcs()},
+    }
+
+    def _materialise_was_not_called(*args, **kwargs):
+        raise AssertionError("role_incompatible must not materialise or probe availability")
+
+    monkeypatch.setattr(
+        "search.engine.region.materialise_step.materialise", _materialise_was_not_called
+    )
+    window = TimeWindow(start_year=2015, end_year=2020)
+    result = _run(
+        detect_svs=[_DECLARING_SV],
+        sv_scores={_DECLARING_SV: 0.9},
+        graph_nodes=graph_nodes,
+        obs={},
+        role_query="aid from France to Kenya",
+        date_request=DateRequest(window=window, latest=False),
+    )
+    _assert_pre_materialise_role_refusal(result, sv_dcid=_DECLARING_SV, window=window)
+
+
+def test_directional_query_with_no_declaring_shape_answers_as_subjects():
+    """A standard shape answers when no recalled group declares flow roles."""
+    graph_nodes = {
+        _FRA: {"label": "France", "type": "Country"},
+        _KEN: {"label": "Kenya", "type": "Country"},
+        _PLAIN_SV: {"label": "Plain population count", "arcs": _plain_arcs()},
+    }
+    obs = {
+        f"{_PLAIN_SV}|{_FRA}": [{"earliestDate": "2015", "latestDate": "2020", "obsCount": 5}],
+    }
+    result = _run(
+        detect_svs=[_PLAIN_SV],
+        sv_scores={_PLAIN_SV: 0.9},
+        graph_nodes=graph_nodes,
+        obs=obs,
+        role_query="aid from France to Kenya",
+    )
+    assert result.no_data_reason != "role_incompatible"
+
+
+def test_single_anchor_destination_on_a_declaring_recall_answers_as_subject():
+    """The missing door role leaves Kenya as a subject under the plain shape."""
+    graph_nodes = {
+        _KEN: {"label": "Kenya", "type": "Country"},
+        _PLAIN_SV: {"label": "Plain population count", "arcs": _plain_arcs()},
+        _DECLARING_SV: {"label": "Creditor/debtor flow", "arcs": _declaring_arcs()},
+    }
+    obs = {
+        f"{_PLAIN_SV}|{_KEN}": [{"earliestDate": "2015", "latestDate": "2020", "obsCount": 5}],
+    }
+    role_query = "aid to Kenya"
+    graph = FakeGraph(
+        nodes=graph_nodes,
+        detect={role_query: {"svs": [_PLAIN_SV, _DECLARING_SV], "cosine_scores": [0.9, 0.5]}},
+        resolve={"Kenya": _KEN},
+        obs=obs,
+    )
+    result = asyncio.run(
+        resolve_variable(
+            "aid",
+            entities=["Kenya"],
+            date_request=None,
+            detect_query=role_query,
+            role_query=role_query,
+            pac=True,
+            graph=graph,
+            resolver=make_resolver(graph),
+            llm=_FixedBindLLM(),
+            sdmx=FakeSdmxClient(),
+            base_steps=[],
+            base_timing={},
+            coverage=empty_coverage_snapshot(),
+        )
+    )
+    assert result.status == "definite"
+    assert len(result.specs) == 1
+    assert {sv.ref for sv in result.specs[0].resolved.stat_vars.items} == {_PLAIN_SV}
+
+
+def test_single_anchor_source_on_a_declaring_recall_answers_as_subject():
+    """A single source anchor leaves Kenya as a subject under the plain shape.
+
+    This is a known residual of the opposing-anchors rule.
+    """
+    graph_nodes = {
+        _KEN: {"label": "Kenya", "type": "Country"},
+        _PLAIN_SV: {"label": "Plain population count", "arcs": _plain_arcs()},
+        _DECLARING_SV: {"label": "Creditor/debtor flow", "arcs": _declaring_arcs()},
+    }
+    obs = {
+        f"{_PLAIN_SV}|{_KEN}": [{"earliestDate": "2015", "latestDate": "2020", "obsCount": 5}],
+    }
+    role_query = "aid from Kenya"
+    graph = FakeGraph(
+        nodes=graph_nodes,
+        detect={role_query: {"svs": [_PLAIN_SV, _DECLARING_SV], "cosine_scores": [0.9, 0.5]}},
+        resolve={"Kenya": _KEN},
+        obs=obs,
+    )
+    result = asyncio.run(
+        resolve_variable(
+            "aid",
+            entities=["Kenya"],
+            date_request=None,
+            detect_query=role_query,
+            role_query=role_query,
+            pac=True,
+            graph=graph,
+            resolver=make_resolver(graph),
+            llm=_FixedBindLLM(),
+            sdmx=FakeSdmxClient(),
+            base_steps=[],
+            base_timing={},
+            coverage=empty_coverage_snapshot(),
+        )
+    )
+    assert result.status == "definite"
+    assert len(result.specs) == 1
+    assert {sv.ref for sv in result.specs[0].resolved.stat_vars.items} == {_PLAIN_SV}
+
+
+def test_no_confirmed_statvar_returns_variable_not_resolved():
+    """Missing candidate nodes produce ``variable_not_resolved`` despite flow wording."""
+    graph = FakeGraph(
+        nodes={},
+        detect={"aid flows": {"svs": ["test/ns/Unconfirmable"], "cosine_scores": [0.9]}},
+        resolve={},
+        obs={},
+    )
+    result = asyncio.run(
+        resolve_variable(
+            "aid",
+            entities=[],
+            date_request=None,
+            detect_query="aid flows",
+            role_query="aid flows",
+            pac=True,
+            graph=graph,
+            resolver=make_resolver(graph),
+            llm=_FixedBindLLM(),
+            sdmx=FakeSdmxClient(),
+            base_steps=[],
+            base_timing={},
+            coverage=empty_coverage_snapshot(),
+        )
+    )
+    assert result.status == "no_data"
+    assert result.no_data_reason == "variable_not_resolved"

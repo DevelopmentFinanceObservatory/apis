@@ -1,0 +1,199 @@
+"""Search engine refusal and infrastructure error types.
+
+Input errors map to 4xx. Infrastructure failures propagate as 502/503 and count as
+evaluation skips. A grounding miss means the graph returned 200 without a node.
+Role-compatibility errors are separate from graph errors. Semantic outcomes return
+`NoDataPart` or `UnsupportedPart`.
+
+HTTP error bodies use the shared RFC 9457 `ProblemDetails` type from
+`dfo_platform.problem`.
+"""
+
+from __future__ import annotations
+
+import dc_graph
+from dc_sdmx import SdmxClientError
+from dfo_platform import Alternative, Cause
+from materialise.errors import UpstreamResponseError, UpstreamVersionChangedError
+from materialise.rate_tables import RateTableInvalidError
+
+
+class EngineInputError(Exception):
+    """Deterministic input refusal, HTTP 400 by default, separate from infrastructure errors.
+
+    `code` selects the registry entry. An omitted code falls back to
+    `request_invalid`. Unknown-shape routing refusals omit it to prevent shape probing.
+    `status` sets the HTTP status. Optional `pointer`, `alternatives`, and `cause` map
+    to problem-detail extensions. `detail` overrides the registry sentence, then the
+    generic fallback. Code-less refusals suppress their message and explicit detail.
+    """
+
+    def __init__(
+        self,
+        *args: object,
+        code: str | None = None,
+        status: int = 400,
+        pointer: str | None = None,
+        alternatives: list[Alternative] | None = None,
+        cause: Cause | None = None,
+        detail: str | None = None,
+        **kwargs: object,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self.code = code
+        self.status = status
+        self.pointer = pointer
+        self.alternatives = alternatives
+        self.cause = cause
+        self.detail = detail
+
+
+class EngineInfraError(Exception):
+    """LLM transport/schema or graph transport/status/JSON/timeout failure.
+
+    Propagate these errors to avoid false no-data results.
+    """
+
+
+RATE_TABLE_REFUSALS = (
+    RateTableInvalidError,
+    UpstreamVersionChangedError,
+)
+"""Conversion-table failures that refuse the whole request on every door: an
+inadmissible table or base year (501 `capability_unavailable`) or a table version
+that moved mid-load (503, retryable). `classify_search_exception` maps them, and a
+degrading fan-out re-raises them as it does `EngineInfraError`."""
+
+UPSTREAM_READ_ERRORS = (
+    UpstreamResponseError,
+    dc_graph.GraphReadError,
+    SdmxClientError,
+)
+"""Upstream failures of a materialise read, graph or SDMX, past its own retries: a
+graph read, a deadline the graph read crossed among them (`GraphDeadlineExceededError`),
+an SDMX read, or an upstream answer materialise could not use. A preview read counts them
+as failed reads and omits what they leave unread, beside `TimeoutError` for the shared
+SDMX deadline (`observations.fetch`, `observations.bulk_conversion`)."""
+
+
+class LLMInfraError(EngineInfraError):
+    """LLM-specific infrastructure failure (transport, API error, schema validation)."""
+
+
+class GraphInfraError(EngineInfraError):
+    """Graph transport, status, JSON, or timeout failure.
+
+    `upstream_status` is `None` when unavailable. Upstream 4xx maps to 502.
+    Other failures map to 503.
+    """
+
+    def __init__(self, *args, upstream_status: int | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.upstream_status = upstream_status
+
+
+class GraphReadFailure(GraphInfraError, dc_graph.GraphReadError):
+    """Graph failure caught as both `GraphInfraError` and `GraphReadError`.
+
+    `upstream_status` is `None` for transport failures.
+    """
+
+    def __init__(self, *args: object, upstream_status: int | None = None) -> None:
+        Exception.__init__(self, *args)
+        self.upstream_status = upstream_status
+
+
+class GraphDeadlineFailure(GraphInfraError, dc_graph.GraphDeadlineExceededError):
+    """Deadline failure caught as both `GraphInfraError` and `GraphReadError`.
+
+    The timeout has no upstream response status.
+    """
+
+    def __init__(self, *args: object, upstream_status: int | None = None) -> None:
+        Exception.__init__(self, *args)
+        self.upstream_status = upstream_status
+
+
+class RoleNotDeclaredError(Exception):
+    """Requested role has no declared `observationProperties` edge.
+
+    Separate from `GraphInfraError` so callers can return `role_incompatible`.
+    Raised by SDMX client implementations.
+    """
+
+
+class RoleSignatureError(Exception):
+    """Role signatures conflict or exceed one mixer query's capacity.
+
+    Separate from `GraphInfraError`. Raised by SDMX clients and `group_roles`.
+    """
+
+
+class FamilyNotResolvableError(Exception):
+    """The mint's member walk refuses a family for a fault in one of its members: a
+    constraint with two values, a degenerate role arc, a member that is no StatVar.
+
+    Raised by `retrieval.bound_values.RoleClassWalks`. The mint refuses the identity
+    `member_not_resolvable`, so Search answers nothing for it.
+    """
+
+
+class DeclaredDefaultUnsupportedError(EngineInputError):
+    """The graph declares a default facet policy for a StatVar axis.
+
+    Search coverage, the headline and the preview route elect facets by ranking
+    (`retrieval.coverage`), which models no declared default, while materialise serves a
+    declared default before ranking. `retrieval.facet_policy.refuse_declared_defaults`
+    raises it at resolve time, before the shape's coverage is built and before any sentence
+    of the part is sent (the pipeline holds sentences until the answer stands), as the
+    registered `facet_binding_unsupported` refusal (501, not retryable): a facet axis this
+    deployment recognises but cannot honour. The fan-out and the UN gap-fill pass re-raise it rather
+    than degrade it to no data.
+    """
+
+    def __init__(self, detail: str) -> None:
+        super().__init__(detail, code="facet_binding_unsupported", status=501, detail=detail)
+
+
+class DefaultScopeIndexSourcedError(Exception):
+    """A subject-only shape whose population the code index sources would take a default
+    place scope.
+
+    The default-scope presence read covers a shape's `sv_arc_facts`, and an index-sourced
+    shape is probed over its index population, which can hold members the read never
+    covered. Raised where the read's StatVars are chosen
+    (`region.place_context.default_scope_stat_vars`) for the shape being answered, the
+    elected shape or the shape a resubmit posts, which refuses the request as the unhandled
+    default (500 `internal_error`) before any member meets an unread StatVar. An alternate
+    in that position is dropped from the offer, and the answer proceeds without it
+    (`region.phase_place_materialise._bind_alternates`).
+    """
+
+
+class RoleEntityUnplaced(Exception):
+    """Entity axes do not match the shape's declared roles.
+
+    Separate from `GraphInfraError` because this is a data compatibility refusal.
+    Raised by `engine.shape.entities_by_role`.
+    """
+
+
+class GraphCapExceededError(dc_graph.GraphCapExceededError):
+    """Decoded bytes exceeded `max_bytes` while reading, before facet parsing.
+
+    `cap_kind` is `bytes`. `cap` is the configured limit, and `observed` is the
+    consumed byte count at abort, a lower bound on response size. This caps the
+    wire fetch. Callers apply row limits after fetch. Separate from
+    `GraphInfraError`. Raised by `observation_facets_batch`.
+    """
+
+
+class GroundingMiss(Exception):
+    """Graph returned 200 but the proposed dcid has no node.
+
+    Grounding callers drop the dcid or return no-data. This is a semantic outcome.
+    """
+
+    def __init__(self, dcid: str, message: str = ""):
+        self.dcid = dcid
+        super().__init__(message or f"Node absent in graph: {dcid!r}")

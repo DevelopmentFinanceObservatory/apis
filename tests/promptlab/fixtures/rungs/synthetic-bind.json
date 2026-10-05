@@ -1,0 +1,16 @@
+{
+  "name": "synthetic",
+  "description": "A minimal two-block bind stage for compose and load_rung tests.",
+  "stage": "bind",
+  "blocks": [
+    { "id": "00-gamma", "core": true },
+    { "id": "01-delta", "unit": "delta-unit" }
+  ],
+  "run": {
+    "capture": "synthetic-capture",
+    "top_k": 3,
+    "seeds": [1, 2, 3],
+    "model": "test-model",
+    "thinking": { "extract": null, "bind": "minimal" }
+  }
+}

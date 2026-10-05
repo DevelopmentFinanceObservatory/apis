@@ -1,0 +1,353 @@
+"""Pins sentences returned by `resolve(..., include_sentence=True)`."""
+
+from __future__ import annotations
+
+from search.engine.bind import _UniversalBindOutput
+from search.models import (
+    CandidatesPart,
+    DatasetResubmitInput,
+    DefinitePart,
+    NoDataPart,
+    ParsedEntity,
+    ParsedInput,
+    ParsedPart,
+    Part,
+    RawTextInput,
+    ResolveOptions,
+    ResolveRequest,
+    ResubmitIdentityEntry,
+    SentenceToken,
+)
+from search.render.tokens import sentence_from_plan
+from tests.engine._base_identity import GDP_SHAPE, make_base, make_identity, subject_entity
+from tests.engine._builders import unbound_slot as _unbound_slot
+from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import offline_resolve
+from tests.fixtures import FakeGraph
+from tests.render._helpers import assert_round_trip
+
+
+def _resolve(query: str, *, pac: bool | None = None, sdmx: FakeSdmxClient | None = None) -> Part:
+    request = ResolveRequest(
+        input=RawTextInput(query=query),
+        response_options=ResolveOptions(include_sentence=True),
+    )
+    return offline_resolve(request, pac=pac, sdmx=sdmx or FakeSdmxClient()).parts[0]
+
+
+# ---------------------------------------------------------------------------
+# Case 5: standard place, no spurious directional voice
+# ---------------------------------------------------------------------------
+
+
+def test_standard_place_population_sentence():
+    """A standard count uses the StatVar label and voices its subject place.
+
+    Its open date window comes from the confirmed facet range, 1960 to 2026.
+    """
+    r = _resolve("total population India")
+    assert isinstance(r, DefinitePart)
+    rendered_sentence = r.spec.resolved.rendered_sentence
+    # The when-slot resolves from the resolved stat_var's own confirmed
+    # facet range (1960-2026, no explicit date named in the query).
+    assert rendered_sentence == "India's total population, 1960 to 2026."
+    # The interpretation clause itself (before the resolved-window suffix, which
+    # legitimately contains " to " as part of "1960 to 2026") carries no
+    # directional "from"/"to" phrase.
+    base_clause = rendered_sentence.split(",")[0]
+    assert " from " not in base_clause
+    assert " to " not in base_clause
+
+
+def test_definite_sentence_plan_round_trips():
+    """The definite response's sentence_plan joins to exactly its rendered_sentence."""
+    r = _resolve("total population India")
+    assert isinstance(r, DefinitePart)
+    spec = r.spec
+    assert spec.resolved.rendered_sentence is not None
+    assert spec.resolved.sentence_plan is not None
+    assert_round_trip(spec.resolved.sentence_plan, spec.resolved.rendered_sentence)
+
+
+# ---------------------------------------------------------------------------
+# Case 6: candidates — count summary with trailing period
+# ---------------------------------------------------------------------------
+
+
+def test_candidates_count_summary_sentence():
+    """Candidates: rendered_sentence counts the readings, then states each one's
+    heading and a byline led by its source and span.
+
+    The count tracks however many structurally distinct SVs the universal
+    choose+bind call's also_plausible list surfaces with real data, so it is read off
+    the response's own spec count rather than a literal.
+    """
+    r = _resolve("under-5 child mortality rate")
+    assert isinstance(r, CandidatesPart)
+    assert r.rendered_sentence == (
+        f"{len(r.candidates.specs)} readings. "
+        "Under-five deaths (under 5 years old). UN SDG · 2000 to 2022. "
+        "Under-five mortality rate (under 5 years old). UN SDG · 2000 to 2022."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Case 10: sentence_plan (structured sentence), present under the same
+# condition as rendered_sentence, and derives it exactly, for every status.
+# ---------------------------------------------------------------------------
+
+
+def test_sentence_plan_absent_when_opted_out():
+    """Opting out leaves both sentence fields null on the resolved spec."""
+    r = offline_resolve(
+        ResolveRequest(
+            input=RawTextInput(query="total population India"),
+            response_options=ResolveOptions(include_sentence=False),
+        )
+    ).parts[0]
+    assert isinstance(r, DefinitePart)
+    assert r.rendered_sentence is None
+    assert r.sentence_plan is None
+    spec = r.spec
+    assert spec.resolved.rendered_sentence is None
+    assert spec.resolved.sentence_plan is None
+
+
+def test_sentence_plan_present_by_default():
+    """Sentence fields default on for the resolved spec, not the envelope."""
+    r = offline_resolve(ResolveRequest(input=RawTextInput(query="total population India"))).parts[0]
+    assert isinstance(r, DefinitePart)
+    assert r.rendered_sentence is None
+    assert r.sentence_plan is None
+    spec = r.spec
+    assert spec.resolved.rendered_sentence is not None
+    assert spec.resolved.sentence_plan is not None
+
+
+def test_sentence_plan_wraps_candidates_summary():
+    """The part's plan states the readings as text tokens that join to its sentence;
+    each candidate keeps its own sentence plan."""
+    r = _resolve("under-5 child mortality rate")
+    assert isinstance(r, CandidatesPart)
+    assert r.rendered_sentence is not None
+    assert r.sentence_plan is not None
+    assert sentence_from_plan(r.sentence_plan) == r.rendered_sentence
+    assert all(token.kind == "text" for token in r.sentence_plan)
+    # And each candidate carries its own full sentence structure.
+    for spec in r.candidates.specs:
+        assert spec.resolved.rendered_sentence is not None
+        assert spec.resolved.sentence_plan is not None
+
+
+def test_sentence_plan_wraps_no_data_phrase():
+    """no_data: sentence_plan is a single text token wrapping rendered_sentence."""
+    r = _resolve("   ")
+    assert isinstance(r, NoDataPart)
+    assert r.rendered_sentence is not None
+    assert r.sentence_plan == [SentenceToken(kind="text", text=r.rendered_sentence)]
+
+
+# ---------------------------------------------------------------------------
+# no_data: the envelope sentence names the reader's own unresolved place term
+# ---------------------------------------------------------------------------
+
+
+def test_no_data_sentence_names_unresolved_entity():
+    """The refusal quotes an entity that the graph cannot resolve."""
+    r = _resolve("health ODA grants from USA to Atlantis")
+    assert isinstance(r, NoDataPart)
+    assert r.no_data.reason == "entity_not_resolved"
+    assert r.no_data.entity_terms == ["Atlantis"]
+    assert r.rendered_sentence == (
+        'Could not use "Atlantis" as a place for this query. Try a different place name.'
+    )
+
+
+class _FixedBindLLM:
+    """Elects shape index 0 unconditionally, with no constraint bindings."""
+
+    async def generate_structured(self, *, prompt, system, schema):
+        assert schema.__name__ == "_UniversalBindOutput"
+        return _UniversalBindOutput(chosen_shape_index=0, bindings=[]), None
+
+
+def test_place_other_kind_resolution_reaches_no_observations():
+    """A State resolves through the graph's place hierarchy and reaches materialisation.
+
+    With no observations, the request returns `no_observations` after resolution.
+    """
+    graph = FakeGraph(resolve_any={"California": "geoId/06"})
+    request = ResolveRequest(
+        input=ParsedInput(
+            parts=[
+                ParsedPart(variable_text="income", entities=[ParsedEntity(text="California")]),
+            ]
+        ),
+        response_options=ResolveOptions(include_sentence=True),
+    )
+    r = offline_resolve(
+        request,
+        graph=graph,
+        llm=_FixedBindLLM(),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    ).parts[0]
+    assert isinstance(r, NoDataPart)
+    assert r.no_data.reason == "no_observations"
+    # The checked series is stated in claim form. Its open_axis_facts state the
+    # age/income constraints it declares but this shape's grammar never modelled as
+    # how-slots: a constant axis speaks instead of staying silent. The packaged code
+    # index carries no label for either dcid (it packages only the four CRS code
+    # systems), so each value renders through _humanize_ref's dcid fallback
+    # ("Years15Onwards" -> "years 15 onwards", "WithIncome" -> "with income") rather
+    # than the raw dcid or silence: the served members really do agree on both
+    # constraints. The checked member is not its family's total, so the part departs
+    # with the measure it checked.
+    assert r.rendered_sentence == (
+        "No data for California's person for years 15 onwards with income. You asked for "
+        "income. This checked person, the closest measure the data holds."
+    )
+
+
+def test_no_data_sentence_names_role_not_admitted_entity():
+    """A subject-only population shape refuses an Organization as its place."""
+    graph = FakeGraph()
+    request = ResolveRequest(
+        input=ParsedInput(
+            parts=[
+                ParsedPart(
+                    variable_text="population",
+                    entities=[ParsedEntity(text="African Development Bank")],
+                ),
+            ]
+        ),
+        response_options=ResolveOptions(include_sentence=True),
+    )
+    r = offline_resolve(
+        request,
+        graph=graph,
+        llm=_FixedBindLLM(),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    ).parts[0]
+    assert isinstance(r, NoDataPart)
+    assert r.no_data.reason == "entity_role_not_admitted"
+    assert r.no_data.entity_terms == ["African Development Bank"]
+    assert r.rendered_sentence == (
+        '"population" data is not reported for "African Development Bank".'
+    )
+
+
+def test_no_data_sentence_names_ambiguous_entity_candidates():
+    """The refusal names both Congo matches and returns them as structured candidates.
+
+    No variable candidate is recalled, so ambiguity is resolved before role admission.
+    """
+    graph = FakeGraph()
+    request = ResolveRequest(
+        input=ParsedInput(
+            parts=[
+                ParsedPart(
+                    variable_text="zzz nonexistent indicator zzz",
+                    entities=[ParsedEntity(text="Congo")],
+                ),
+            ]
+        ),
+        response_options=ResolveOptions(include_sentence=True),
+    )
+    r = offline_resolve(
+        request,
+        graph=graph,
+        llm=_FixedBindLLM(),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    ).parts[0]
+    assert isinstance(r, NoDataPart)
+    assert r.no_data.reason == "entity_ambiguous"
+    assert r.no_data.entity_terms == ["Congo"]
+    assert r.rendered_sentence == (
+        '"Congo" matches more than one entity: "Congo [DRC]" and "Congo [Republic]". '
+        "Be more specific."
+    )
+
+    # Each candidate carries its dcid, label, and kind.
+    assert [g.text for g in r.no_data.ambiguous_entities] == ["Congo"]
+    group = r.no_data.ambiguous_entities[0]
+    assert {c.dcid for c in group.candidates} == {"country/COD", "country/COG"}
+    assert {c.label for c in group.candidates} == {"Congo [DRC]", "Congo [Republic]"}
+    assert all(c.kind == "country" for c in group.candidates)
+
+    # Ambiguous terms also appear in the restatement.
+    assert r.restatement is not None
+    assert r.restatement_reason is None
+    restated_texts = {e.text for e in (r.restatement.entities or [])}
+    assert all(g.text in restated_texts for g in r.no_data.ambiguous_entities)
+
+
+def test_no_data_restatement_for_directional_ambiguous_entity():
+    """An ambiguous directional entity keeps its role text and structured matches."""
+    graph = FakeGraph()
+    request = ResolveRequest(
+        input=ParsedInput(
+            parts=[
+                ParsedPart(
+                    variable_text="zzz nonexistent indicator zzz",
+                    entities=[ParsedEntity(text="Congo", role_text="to")],
+                ),
+            ]
+        ),
+        response_options=ResolveOptions(include_sentence=True),
+    )
+    r = offline_resolve(
+        request,
+        graph=graph,
+        llm=_FixedBindLLM(),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    ).parts[0]
+    assert isinstance(r, NoDataPart)
+    assert r.no_data.reason == "entity_ambiguous"
+    assert r.restatement is not None
+    assert r.restatement_reason is None
+    assert [e.text for e in r.restatement.entities] == ["Congo"]
+    assert r.restatement.entities[0].role_text == "to"
+    restated_texts = {e.text for e in r.restatement.entities}
+    assert all(g.text in restated_texts for g in r.no_data.ambiguous_entities)
+    assert {c.dcid for c in r.no_data.ambiguous_entities[0].candidates} == {
+        "country/COD",
+        "country/COG",
+    }
+
+
+# ---------------------------------------------------------------------------
+# no_data: a resubmit quotes its posted entry text, never a display slug
+# ---------------------------------------------------------------------------
+
+
+def test_no_data_sentence_from_a_resubmitted_identity_quotes_the_posted_text():
+    """A failed resubmit quotes its posted variable text, not the display slug."""
+    entities = [subject_entity("country/IND")]
+    base_spec_id, base_identity = make_base(GDP_SHAPE, entities=entities)
+    request = ResolveRequest(
+        input=DatasetResubmitInput(
+            entries=[
+                ResubmitIdentityEntry(
+                    variable_text="nominal GDP of India",
+                    identity=make_identity(
+                        GDP_SHAPE,
+                        [_unbound_slot("how", "activitySource", "activity source")],
+                        entities=entities,
+                    ),
+                    base_spec_id=base_spec_id,
+                    base_identity=base_identity,
+                    # The posted StatVar is deliberately absent from the graph.
+                    resolved_stat_var_dcids=["nonexistent/sv/does_not_exist"],
+                )
+            ]
+        ),
+        response_options=ResolveOptions(include_sentence=True),
+    )
+    r = offline_resolve(request, graph=FakeGraph(), sdmx=FakeSdmxClient()).parts[0]
+    assert isinstance(r, NoDataPart)
+    assert r.no_data.reason == "variable_not_resolved"
+    assert r.rendered_sentence == (
+        'Could not match "nominal GDP of India" to a supported indicator. '
+        "Try a different wording or a related indicator."
+    )
+    assert "economicactivity_amount_measuredvalue" not in r.rendered_sentence

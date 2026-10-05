@@ -1,0 +1,111 @@
+"""Output types and role bindings for `CoverageIndex` lookups.
+
+Keeping these types independent of numpy and pyarrow lets type-only consumers
+avoid importing `series_coverage.index` and its bit arithmetic.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from dataclasses import dataclass, field
+from typing import Literal
+
+Role = Literal["donor", "recipient"]
+# Missing role keys leave that axis open. An empty frozenset matches no rows.
+BoundRoles = Mapping[Role, frozenset[str]]
+
+
+@dataclass(frozen=True, slots=True)
+class FacetCoverage:
+    """Coverage for one `facet_id`, summed across surviving donor/recipient rows.
+
+    `year_counts` counts active rows per year, so two pairs in one year count
+    twice. Its values sum to `n_obs`, and keys fall within the year bounds.
+    Directly constructed test values may leave it empty.
+    """
+
+    facet_id: str
+    n_obs: int
+    first_year: int
+    last_year: int
+    year_counts: Mapping[int, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class FacetSpan:
+    """One `facet_id`'s observation count and first and last years with data, summed across
+    surviving donor/recipient rows: `FacetCoverage`'s `n_obs`, `first_year` and `last_year`
+    without its year counts."""
+
+    n_obs: int
+    first_year: int
+    last_year: int
+
+
+@dataclass(frozen=True, slots=True)
+class VariableCoverage:
+    """One variable's surviving coverage, with facets sorted by `facet_id`.
+
+    Variables with no surviving rows are omitted.
+    """
+
+    variable: str
+    facets: tuple[FacetCoverage, ...]
+    n_obs: int
+    first_year: int
+    last_year: int
+
+
+@dataclass(frozen=True, slots=True)
+class Headline:
+    """Counts for the latest year with data, or for a requested year window.
+
+    `year` is the latest counted year with data. In the latest-year form
+    `observations` equals `series`, because each row has at most one
+    observation per year; across a window `observations` can exceed
+    `series`. `role_counts` counts distinct donor and recipient dcids. Use
+    `CoverageIndex.role_names` for graph names.
+    """
+
+    year: int
+    observations: int
+    series: int
+    role_counts: Mapping[Role, int]
+
+
+@dataclass(frozen=True, slots=True)
+class ServedExtent:
+    """What a read serves across its whole window (`CoverageIndex.served_extent`):
+    `rows` counts one point per series and year, `series` the `(variable,
+    recipient, donor)` series holding one, and `first_year` and `last_year`
+    bound the years of those points."""
+
+    rows: int
+    series: int
+    first_year: int
+    last_year: int
+
+
+@dataclass(frozen=True, slots=True)
+class Estimate:
+    """Estimated fetch cost before network I/O. `rows` counts observations
+    and `requests` counts SDMX GETs for covered data. `CoverageIndex.estimate`
+    leaves `uncovered_requests` at zero. Admission code counts requests whose
+    StatVars have no coverage row.
+    """
+
+    rows: int
+    requests: int
+    uncovered_requests: int = 0
+
+
+__all__ = [
+    "BoundRoles",
+    "Estimate",
+    "FacetCoverage",
+    "FacetSpan",
+    "Headline",
+    "Role",
+    "ServedExtent",
+    "VariableCoverage",
+]

@@ -1,0 +1,100 @@
+{
+  "name": "production",
+  "description": "The binding stage of the production prompt.",
+  "stage": "bind",
+  "blocks": [
+    {
+      "id": "00-role",
+      "core": true
+    },
+    {
+      "id": "01-shape-definition"
+    },
+    {
+      "id": "02-part1-choose",
+      "core": true
+    },
+    {
+      "id": "03-part2-bind",
+      "core": true
+    },
+    {
+      "id": "04-shape-selection"
+    },
+    {
+      "id": "05a-alternate-definition",
+      "sep": "blank",
+      "unit": "also-plausible"
+    },
+    {
+      "id": "05b-list-every",
+      "sep": "line",
+      "unit": "also-plausible"
+    },
+    {
+      "id": "05c-not-alternates",
+      "sep": "line",
+      "unit": "also-plausible"
+    },
+    {
+      "id": "05d-both-directions",
+      "sep": "line",
+      "unit": "also-plausible"
+    },
+    {
+      "id": "06a-header",
+      "sep": "blank",
+      "unit": "binding-rules"
+    },
+    {
+      "id": "06b-lexical-overlap",
+      "sep": "line",
+      "unit": "binding-rules"
+    },
+    {
+      "id": "06c-false-friend-siblings",
+      "sep": "line",
+      "unit": "binding-rules"
+    },
+    {
+      "id": "06d-kind-value",
+      "sep": "line",
+      "unit": "binding-rules"
+    },
+    {
+      "id": "06e-kind-set-unbound-absent",
+      "sep": "line",
+      "unit": "binding-rules"
+    },
+    {
+      "id": "07-taxonomy-rule"
+    },
+    {
+      "id": "08-cannot-bind"
+    },
+    {
+      "id": "09-security",
+      "core": true
+    },
+    {
+      "id": "10-example-bound"
+    },
+    {
+      "id": "11-example-offtopic"
+    }
+  ],
+  "run": {
+    "capture": "k8-2026-08-31",
+    "top_k": 8,
+    "seeds": [
+      1,
+      2,
+      3
+    ],
+    "model": "gemini-3.5-flash-lite",
+    "thinking": {
+      "extract": null,
+      "bind": "minimal"
+    }
+  }
+}

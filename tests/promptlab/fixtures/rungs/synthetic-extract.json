@@ -1,0 +1,6 @@
+{
+  "name": "synthetic",
+  "description": "A minimal two-block extract stage for compose and load_rung tests.",
+  "stage": "extract",
+  "blocks": [{ "id": "00-alpha" }, { "id": "01-beta", "sep": "line" }]
+}

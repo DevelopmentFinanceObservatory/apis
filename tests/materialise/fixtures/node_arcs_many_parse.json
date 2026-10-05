@@ -1,0 +1,16 @@
+{
+  "data": {
+    "country/KEN": {
+      "arcs": {
+        "typeOf": { "nodes": [{ "dcid": "Country" }] },
+        "name": { "nodes": [{ "value": "Kenya" }] }
+      }
+    },
+    "country/ZZZ": {
+      "arcs": {
+        "typeOf": { "nodes": [{ "dcid": "Country" }] },
+        "name": { "nodes": [{ "value": "Someplace" }] }
+      }
+    }
+  }
+}

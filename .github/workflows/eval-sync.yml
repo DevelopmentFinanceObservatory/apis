@@ -1,0 +1,62 @@
+name: Eval sync
+
+# Mirrors corpus/ to Langfuse after a push to dev: one dataset per case file,
+# search-<stem>, with one item per case and the items of removed cases archived
+# (python -m search.eval.sync).
+
+on:
+  push:
+    branches: [dev]
+    paths: ["corpus/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eval-sync
+  cancel-in-progress: false
+
+env:
+  UV_SYNC_ARGS: --frozen --extra eval --extra api --extra engine --extra datasets --extra graph
+  UV_NO_SYNC: "1"
+
+jobs:
+  sync:
+    name: Eval sync
+    # Mints a dfo-reader token and writes to Langfuse against dev, so this runs
+    # in ONEcampaign only.
+    if: github.repository_owner == 'ONEcampaign'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # dfo-spec-kit is a private repo the default GITHUB_TOKEN cannot read, and
+      # the engine extra pulls it as a git dependency.
+      - name: Authenticate git for the dfo-spec-kit dependency
+        uses: ./.github/actions/spec-kit-auth
+        with:
+          client-id: ${{ vars.READER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.READER_APP_PRIVATE_KEY }}
+
+      - name: Install dependencies
+        run: uv sync ${{ env.UV_SYNC_ARGS }} --no-default-groups
+
+      # search.eval.sync loads the engine, whose settings require
+      # SEARCH_GRAPH_BASE.
+      - name: Sync the case files to Langfuse
+        env:
+          SEARCH_GRAPH_BASE: ${{ vars.SEARCH_GRAPH_BASE }}
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          LANGFUSE_BASE_URL: ${{ secrets.LANGFUSE_BASE_URL }}
+        run: uv run python -m search.eval.sync

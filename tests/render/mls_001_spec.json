@@ -1,0 +1,1726 @@
+{
+ "spec_id": "spec_ff2e5798e15c66942d226da8662786b3",
+ "definition": {
+  "schema_version": 1,
+  "spec_id": "spec_ff2e5798e15c66942d226da8662786b3",
+  "identity": {
+   "identity_version": "spec1",
+   "shape": {
+    "kind": "statvar_schema",
+    "population_type": "FinancialFlow",
+    "measured_property": "attributedAmount",
+    "stat_type": "measuredValue",
+    "measurement_qualifier": "Nominal"
+   },
+   "slots": [
+    {
+     "property": "crsPurpose",
+     "binding": {
+      "state": "unbound"
+     }
+    },
+    {
+     "property": "crsTypeOfFlow",
+     "binding": {
+      "state": "value",
+      "ref": "CRSTypeOfFlow10"
+     }
+    },
+    {
+     "property": "dac2aAidType",
+     "binding": {
+      "state": "value",
+      "ref": "DAC2aAidType106"
+     }
+    },
+    {
+     "property": "financialFlowType",
+     "binding": {
+      "state": "value",
+      "ref": "Disbursement"
+     }
+    },
+    {
+     "property": "nettingBasis",
+     "binding": {
+      "state": "value",
+      "ref": "Gross"
+     }
+    }
+   ],
+   "entities": {
+    "origin": [
+     "country/NOR"
+    ]
+   },
+   "requested_window": {
+    "kind": "all"
+   }
+  }
+ },
+ "resolved": {
+  "shape": {
+   "shape_id": "financialflow_attributedamount_measuredvalue_nominal",
+   "label": "gross disbursements (nominal, official development assistance, imputed multilateral ODA)",
+   "population_type": {
+    "dcid": "FinancialFlow",
+    "label": "financial flow"
+   },
+   "measured_property": {
+    "dcid": "attributedAmount",
+    "label": "attributed amount"
+   },
+   "stat_type": {
+    "dcid": "measuredValue",
+    "label": "measuredValue"
+   },
+   "measurement_qualifier": {
+    "dcid": "Nominal",
+    "label": "Nominal"
+   },
+   "measurement_denominator_unresolved": false,
+   "slot_keys": [
+    {
+     "axis": "how",
+     "property": {
+      "dcid": "crsPurpose",
+      "label": "CRS purpose"
+     },
+     "label": "sector"
+    },
+    {
+     "axis": "how",
+     "property": {
+      "dcid": "crsTypeOfFlow",
+      "label": "CRS type of flow"
+     },
+     "label": "flow"
+    },
+    {
+     "axis": "how",
+     "property": {
+      "dcid": "dac2aAidType",
+      "label": "DAC 2a aid type"
+     },
+     "label": "aid type"
+    },
+    {
+     "axis": "how",
+     "property": {
+      "dcid": "financialFlowType",
+      "label": "financial flow type"
+     },
+     "label": "financial flow type"
+    },
+    {
+     "axis": "how",
+     "property": {
+      "dcid": "nettingBasis",
+      "label": "netting basis"
+     },
+     "label": "netting basis"
+    },
+    {
+     "axis": "where",
+     "label": "place"
+    },
+    {
+     "axis": "when",
+     "label": "time window"
+    },
+    {
+     "axis": "source",
+     "label": "data source"
+    }
+   ],
+   "member_count": 255,
+   "member_digest": "82f8b59132471f13c53d4a08395e08c5de4a05065747fe1789874fa14550597d",
+   "refine_supported": true,
+   "data_commons": [
+    {
+     "id": "dfo",
+     "label": "Development Finance Observatory"
+    }
+   ]
+  },
+  "slots": [
+   {
+    "key": {
+     "axis": "how",
+     "property": {
+      "dcid": "crsPurpose",
+      "label": "CRS purpose"
+     },
+     "label": "sector"
+    },
+    "binding": {
+     "kind": "unbound"
+    },
+    "summable": true
+   },
+   {
+    "key": {
+     "axis": "how",
+     "property": {
+      "dcid": "crsTypeOfFlow",
+      "label": "CRS type of flow"
+     },
+     "label": "flow"
+    },
+    "binding": {
+     "kind": "value",
+     "value": {
+      "ref": {
+       "dcid": "CRSTypeOfFlow10",
+       "label": "official development assistance"
+      },
+      "value_kind": "enum_value"
+     }
+    },
+    "summable": true
+   },
+   {
+    "key": {
+     "axis": "how",
+     "property": {
+      "dcid": "dac2aAidType",
+      "label": "DAC 2a aid type"
+     },
+     "label": "aid type"
+    },
+    "binding": {
+     "kind": "value",
+     "value": {
+      "ref": {
+       "dcid": "DAC2aAidType106",
+       "label": "imputed multilateral ODA"
+      },
+      "value_kind": "enum_value"
+     }
+    },
+    "summable": false
+   },
+   {
+    "key": {
+     "axis": "how",
+     "property": {
+      "dcid": "financialFlowType",
+      "label": "financial flow type"
+     },
+     "label": "financial flow type"
+    },
+    "binding": {
+     "kind": "value",
+     "value": {
+      "ref": {
+       "dcid": "Disbursement",
+       "label": "disbursement"
+      },
+      "value_kind": "enum_value"
+     }
+    },
+    "summable": false
+   },
+   {
+    "key": {
+     "axis": "how",
+     "property": {
+      "dcid": "nettingBasis",
+      "label": "netting basis"
+     },
+     "label": "netting basis"
+    },
+    "binding": {
+     "kind": "value",
+     "value": {
+      "ref": {
+       "dcid": "Gross",
+       "label": "gross"
+      },
+      "value_kind": "enum_value"
+     }
+    },
+    "summable": false
+   },
+   {
+    "key": {
+     "axis": "where",
+     "label": "place"
+    },
+    "binding": {
+     "kind": "unbound"
+    },
+    "summable": false
+   },
+   {
+    "key": {
+     "axis": "when",
+     "label": "time window"
+    },
+    "binding": {
+     "kind": "unbound"
+    },
+    "summable": false
+   },
+   {
+    "key": {
+     "axis": "source",
+     "label": "data source"
+    },
+    "binding": {
+     "kind": "unbound"
+    },
+    "summable": false
+   }
+  ],
+  "inapplicable_slots": [
+   "financialObligationType"
+  ],
+  "unresolved_slots": [],
+  "stat_vars": {
+   "items": [
+    {
+     "ref": "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_CRSPurposeCode11110_Nominal",
+     "label": "Imputed multilateral ODA gross disbursements for education policy and administrative management",
+     "slot_values": [
+      {
+       "key": {
+        "axis": "how",
+        "property": {
+         "dcid": "crsTypeOfFlow",
+         "label": "CRS type of flow"
+        },
+        "label": "flow"
+       },
+       "value": {
+        "ref": {
+         "dcid": "CRSTypeOfFlow10",
+         "label": "official development assistance"
+        },
+        "value_kind": "enum_value"
+       }
+      },
+      {
+       "key": {
+        "axis": "how",
+        "property": {
+         "dcid": "dac2aAidType",
+         "label": "DAC 2a aid type"
+        },
+        "label": "aid type"
+       },
+       "value": {
+        "ref": {
+         "dcid": "DAC2aAidType106",
+         "label": "imputed multilateral ODA"
+        },
+        "value_kind": "enum_value"
+       }
+      },
+      {
+       "key": {
+        "axis": "how",
+        "property": {
+         "dcid": "financialFlowType",
+         "label": "financial flow type"
+        },
+        "label": "financial flow type"
+       },
+       "value": {
+        "ref": {
+         "dcid": "Disbursement",
+         "label": "disbursement"
+        },
+        "value_kind": "enum_value"
+       }
+      },
+      {
+       "key": {
+        "axis": "how",
+        "property": {
+         "dcid": "nettingBasis",
+         "label": "netting basis"
+        },
+        "label": "netting basis"
+       },
+       "value": {
+        "ref": {
+         "dcid": "Gross",
+         "label": "gross"
+        },
+        "value_kind": "enum_value"
+       }
+      }
+     ],
+     "constraint_properties": [
+      "crsPurpose",
+      "crsTypeOfFlow",
+      "dac2aAidType",
+      "financialFlowType",
+      "nettingBasis"
+     ],
+     "data_date_range": {
+      "start": "2011",
+      "end": "2024"
+     }
+    },
+    {
+     "ref": "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_CRSPurposeCode11120_Nominal",
+     "label": "Imputed multilateral ODA gross disbursements for education facility and training",
+     "slot_values": [
+      {
+       "key": {
+        "axis": "how",
+        "property": {
+         "dcid": "crsTypeOfFlow",
+         "label": "CRS type of flow"
+        },
+        "label": "flow"
+       },
+       "value": {
+        "ref": {
+         "dcid": "CRSTypeOfFlow10",
+         "label": "official development assistance"
+        },
+        "value_kind": "enum_value"
+       }
+      },
+      {
+       "key": {
+        "axis": "how",
+        "property": {
+         "dcid": "dac2aAidType",
+         "label": "DAC 2a aid type"
+        },
+        "label": "aid type"
+       },
+       "value": {
+        "ref": {
+         "dcid": "DAC2aAidType106",
+         "label": "imputed multilateral ODA"
+        },
+        "value_kind": "enum_value"
+       }
+      },
+      {
+       "key": {
+        "axis": "how",
+        "property": {
+         "dcid": "financialFlowType",
+         "label": "financial flow type"
+        },
+        "label": "financial flow type"
+       },
+       "value": {
+        "ref": {
+         "dcid": "Disbursement",
+         "label": "disbursement"
+        },
+        "value_kind": "enum_value"
+       }
+      },
+      {
+       "key": {
+        "axis": "how",
+        "property": {
+         "dcid": "nettingBasis",
+         "label": "netting basis"
+        },
+        "label": "netting basis"
+       },
+       "value": {
+        "ref": {
+         "dcid": "Gross",
+         "label": "gross"
+        },
+        "value_kind": "enum_value"
+       }
+      }
+     ],
+     "constraint_properties": [
+      "crsPurpose",
+      "crsTypeOfFlow",
+      "dac2aAidType",
+      "financialFlowType",
+      "nettingBasis"
+     ],
+     "data_date_range": {
+      "start": "2011",
+      "end": "2024"
+     }
+    }
+   ],
+   "member_count": 222,
+   "member_count_exact": true,
+   "truncated": true
+  },
+  "entities": [
+   {
+    "ref": "country/NOR",
+    "label": "Norway",
+    "entity_type": "Country",
+    "role": "origin"
+   }
+  ],
+  "coverage": {
+   "kind": "breadth",
+   "has_data": true,
+   "dimensions": [
+    {
+     "label": "recipients",
+     "count": 175
+    },
+    {
+     "label": "sources",
+     "count": 1
+    },
+    {
+     "label": "variables",
+     "count": 222
+    }
+   ]
+  },
+  "headline": {
+   "year": 2024,
+   "year_named": false,
+   "observations": 12843,
+   "series": 12843,
+   "role_counts": {
+    "financingProvider": 1,
+    "financingRecipient": 162
+   }
+  },
+  "coverage_stamp": "7a081f21b36a988a91ddfa2d9a9df700",
+  "scope": {
+   "axis": "destination",
+   "members": [
+    {
+     "ref": "DACAfricaUnallocated",
+     "label": "Africa, unallocated by country (DAC)",
+     "entity_type": "DACRecipientUnallocatedByCountry",
+     "role": "destination"
+    },
+    {
+     "ref": "DACAmericaUnallocated",
+     "label": "America, unallocated by country (DAC)",
+     "entity_type": "DACRecipientUnallocatedByCountry",
+     "role": "destination"
+    },
+    {
+     "ref": "DACAsiaUnallocated",
+     "label": "Asia, unallocated by country (DAC)",
+     "entity_type": "DACRecipientUnallocatedByCountry",
+     "role": "destination"
+    },
+    {
+     "ref": "DACBilateralUnallocated",
+     "label": "Bilateral, unallocated (DAC)",
+     "entity_type": "DACRecipientUnallocatedByCountry",
+     "role": "destination"
+    },
+    {
+     "ref": "DACCaribbeanAndCentralAmericaUnallocated",
+     "label": "Caribbean and Central America, unallocated by country (DAC)",
+     "entity_type": "DACRecipientUnallocatedByCountry",
+     "role": "destination"
+    },
+    {
+     "ref": "DACCaribbeanUnallocated",
+     "label": "Caribbean, unallocated by country (DAC)",
+     "entity_type": "DACRecipientUnallocatedByCountry",
+     "role": "destination"
+    },
+    {
+     "ref": "DACCentralAmericaUnallocated",
+     "label": "Central America, unallocated by country (DAC)",
+     "entity_type": "DACRecipientUnallocatedByCountry",
+     "role": "destination"
+    },
+    {
+     "ref": "DACCentralAsiaUnallocated",
+     "label": "Central Asia, unallocated by country (DAC)",
+     "entity_type": "DACRecipientUnallocatedByCountry",
+     "role": "destination"
+    },
+    {
+     "ref": "DACEasternAfricaUnallocated",
+     "label": "Eastern Africa, unallocated by country (DAC)",
+     "entity_type": "DACRecipientUnallocatedByCountry",
+     "role": "destination"
+    },
+    {
+     "ref": "DACEuropeUnallocated",
+     "label": "Europe, unallocated by country (DAC)",
+     "entity_type": "DACRecipientUnallocatedByCountry",
+     "role": "destination"
+    },
+    {
+     "ref": "DACExYugoslaviaUnallocated",
+     "label": "States of the former Yugoslavia, unallocated by country (DAC)",
+     "entity_type": "DACRecipientUnallocatedByCountry",
+     "role": "destination"
+    },
+    {
+     "ref": "DACFarEastAsiaUnallocated",
+     "label": "Far East Asia, unallocated by country (DAC)",
+     "entity_type": "DACRecipientUnallocatedByCountry",
+     "role": "destination"
+    },
+    {
+     "ref": "DACMelanesiaUnallocated",
+     "label": "Melanesia, unallocated by country (DAC)",
+     "entity_type": "DACRecipientUnallocatedByCountry",
+     "role": "destination"
+    },
+    {
+     "ref": "DACMicronesiaUnallocated",
+     "label": "Micronesia, unallocated by country (DAC)",
+     "entity_type": "DACRecipientUnallocatedByCountry",
+     "role": "destination"
+    },
+    {
+     "ref": "DACMiddleAfricaUnallocated",
+     "label": "Middle Africa, unallocated by country (DAC)",
+     "entity_type": "DACRecipientUnallocatedByCountry",
+     "role": "destination"
+    },
+    {
+     "ref": "DACMiddleEastUnallocated",
+     "label": "Middle East, unallocated by country (DAC)",
+     "entity_type": "DACRecipientUnallocatedByCountry",
+     "role": "destination"
+    },
+    {
+     "ref": "DACNorthOfSaharaUnallocated",
+     "label": "North of Sahara, unallocated by country (DAC)",
+     "entity_type": "DACRecipientUnallocatedByCountry",
+     "role": "destination"
+    },
+    {
+     "ref": "DACOceaniaUnallocated",
+     "label": "Oceania, unallocated by country (DAC)",
+     "entity_type": "DACRecipientUnallocatedByCountry",
+     "role": "destination"
+    },
+    {
+     "ref": "DACPolynesiaUnallocated",
+     "label": "Polynesia, unallocated by country (DAC)",
+     "entity_type": "DACRecipientUnallocatedByCountry",
+     "role": "destination"
+    },
+    {
+     "ref": "DACSouthAmericaUnallocated",
+     "label": "South America, unallocated by country (DAC)",
+     "entity_type": "DACRecipientUnallocatedByCountry",
+     "role": "destination"
+    },
+    {
+     "ref": "DACSouthAndCentralAsiaUnallocated",
+     "label": "South and Central Asia, unallocated by country (DAC)",
+     "entity_type": "DACRecipientUnallocatedByCountry",
+     "role": "destination"
+    },
+    {
+     "ref": "DACSouthAsiaUnallocated",
+     "label": "South Asia, unallocated by country (DAC)",
+     "entity_type": "DACRecipientUnallocatedByCountry",
+     "role": "destination"
+    },
+    {
+     "ref": "DACSouthOfSaharaUnallocated",
+     "label": "South of Sahara, unallocated by country (DAC)",
+     "entity_type": "DACRecipientUnallocatedByCountry",
+     "role": "destination"
+    },
+    {
+     "ref": "DACSouthernAfricaUnallocated",
+     "label": "Southern Africa, unallocated by country (DAC)",
+     "entity_type": "DACRecipientUnallocatedByCountry",
+     "role": "destination"
+    },
+    {
+     "ref": "DACWesternAfricaUnallocated",
+     "label": "Western Africa, unallocated by country (DAC)",
+     "entity_type": "DACRecipientUnallocatedByCountry",
+     "role": "destination"
+    },
+    {
+     "ref": "country/AFG",
+     "label": "Afghanistan",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/AGO",
+     "label": "Angola",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/ALB",
+     "label": "Albania",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/ARG",
+     "label": "Argentina",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/ARM",
+     "label": "Armenia",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/ATG",
+     "label": "Antigua and Barbuda",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/AZE",
+     "label": "Azerbaijan",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/BDI",
+     "label": "Burundi",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/BEN",
+     "label": "Benin",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/BFA",
+     "label": "Burkina Faso",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/BGD",
+     "label": "Bangladesh",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/BIH",
+     "label": "Bosnia and Herzegovina",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/BLR",
+     "label": "Belarus",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/BLZ",
+     "label": "Belize",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/BOL",
+     "label": "Bolivia",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/BRA",
+     "label": "Brazil",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/BRB",
+     "label": "Barbados",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/BTN",
+     "label": "Bhutan",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/BWA",
+     "label": "Botswana",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/CAF",
+     "label": "Central African Republic",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/CHL",
+     "label": "Chile",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/CHN",
+     "label": "People's Republic of China",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/CIV",
+     "label": "Ivory Coast",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/CMR",
+     "label": "Cameroon",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/COD",
+     "label": "Democratic Republic of the Congo",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/COG",
+     "label": "Republic of the Congo",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/COK",
+     "label": "Cook Islands",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/COL",
+     "label": "Colombia",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/COM",
+     "label": "Comoros",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/CPV",
+     "label": "Cape Verde",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/CRI",
+     "label": "Costa Rica",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/CUB",
+     "label": "Cuba",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/DJI",
+     "label": "Djibouti",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/DMA",
+     "label": "Dominica",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/DOM",
+     "label": "Dominican Republic",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/DZA",
+     "label": "Algeria",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/ECU",
+     "label": "Ecuador",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/EGY",
+     "label": "Egypt",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/ERI",
+     "label": "Eritrea",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/ETH",
+     "label": "Ethiopia",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/FJI",
+     "label": "Fiji",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/FSM",
+     "label": "Micronesia",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/GAB",
+     "label": "Gabon",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/GEO",
+     "label": "Georgia",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/GHA",
+     "label": "Ghana",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/GIN",
+     "label": "Guinea",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/GMB",
+     "label": "The Gambia",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/GNB",
+     "label": "Guinea-Bissau",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/GNQ",
+     "label": "Equatorial Guinea",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/GRD",
+     "label": "Grenada",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/GTM",
+     "label": "Guatemala",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/GUY",
+     "label": "Guyana",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/HND",
+     "label": "Honduras",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/HRV",
+     "label": "Croatia",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/HTI",
+     "label": "Haiti",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/IDN",
+     "label": "Indonesia",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/IND",
+     "label": "India",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/IRN",
+     "label": "Iran",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/IRQ",
+     "label": "Iraq",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/JAM",
+     "label": "Jamaica",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/JOR",
+     "label": "Jordan",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/KAZ",
+     "label": "Kazakhstan",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/KEN",
+     "label": "Kenya",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/KGZ",
+     "label": "Kyrgyzstan",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/KHM",
+     "label": "Cambodia",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/KIR",
+     "label": "Kiribati",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/KNA",
+     "label": "Saint Kitts and Nevis",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/LAO",
+     "label": "Laos",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/LBN",
+     "label": "Lebanon",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/LBR",
+     "label": "Liberia",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/LBY",
+     "label": "Libya",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/LCA",
+     "label": "Saint Lucia",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/LKA",
+     "label": "Sri Lanka",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/LSO",
+     "label": "Lesotho",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/MAR",
+     "label": "Morocco",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/MDA",
+     "label": "Moldova",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/MDG",
+     "label": "Madagascar",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/MDV",
+     "label": "Maldives",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/MEX",
+     "label": "Mexico",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/MHL",
+     "label": "Marshall Islands",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/MKD",
+     "label": "North Macedonia",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/MLI",
+     "label": "Mali",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/MMR",
+     "label": "Myanmar [Burma]",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/MNE",
+     "label": "Montenegro",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/MNG",
+     "label": "Mongolia",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/MOZ",
+     "label": "Mozambique",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/MRT",
+     "label": "Mauritania",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/MSR",
+     "label": "Montserrat",
+     "entity_type": "AdministrativeArea1",
+     "role": "destination"
+    },
+    {
+     "ref": "country/MUS",
+     "label": "Mauritius",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/MWI",
+     "label": "Malawi",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/MYS",
+     "label": "Malaysia",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/NAM",
+     "label": "Namibia",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/NER",
+     "label": "Niger",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/NGA",
+     "label": "Nigeria",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/NIC",
+     "label": "Nicaragua",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/NIU",
+     "label": "Niue",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/NPL",
+     "label": "Nepal",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/NRU",
+     "label": "Nauru",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/OMN",
+     "label": "Oman",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/PAK",
+     "label": "Pakistan",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/PAN",
+     "label": "Panama",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/PER",
+     "label": "Peru",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/PHL",
+     "label": "Philippines",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/PLW",
+     "label": "Palau",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/PNG",
+     "label": "Papua New Guinea",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/PRK",
+     "label": "North Korea",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/PRY",
+     "label": "Paraguay",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/PSE",
+     "label": "State of Palestine",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/RWA",
+     "label": "Rwanda",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/SDN",
+     "label": "Sudan",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/SEN",
+     "label": "Senegal",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/SHN",
+     "label": "Saint Helena, Ascension and Tristan da Cunha",
+     "entity_type": "AdministrativeArea1",
+     "role": "destination"
+    },
+    {
+     "ref": "country/SLB",
+     "label": "Solomon Islands",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/SLE",
+     "label": "Sierra Leone",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/SLV",
+     "label": "El Salvador",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/SOM",
+     "label": "Somalia",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/SRB",
+     "label": "Serbia",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/SSD",
+     "label": "South Sudan",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/STP",
+     "label": "S\u00e3o Tom\u00e9 and Pr\u00edncipe",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/SUR",
+     "label": "Suriname",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/SWZ",
+     "label": "Swaziland",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/SYC",
+     "label": "Seychelles",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/SYR",
+     "label": "Syria",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/TCD",
+     "label": "Chad",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/TGO",
+     "label": "Togo",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/THA",
+     "label": "Thailand",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/TJK",
+     "label": "Tajikistan",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/TKL",
+     "label": "Tokelau",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/TKM",
+     "label": "Turkmenistan",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/TLS",
+     "label": "Timor-Leste",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/TON",
+     "label": "Tonga",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/TTO",
+     "label": "Trinidad and Tobago",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/TUN",
+     "label": "Tunisia",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/TUR",
+     "label": "Turkey",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/TUV",
+     "label": "Tuvalu",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/TZA",
+     "label": "Tanzania",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/UGA",
+     "label": "Uganda",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/UKR",
+     "label": "Ukraine",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/URY",
+     "label": "Uruguay",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/UZB",
+     "label": "Uzbekistan",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/VCT",
+     "label": "Saint Vincent and the Grenadines",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/VEN",
+     "label": "Venezuela",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/VNM",
+     "label": "Vietnam",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/VUT",
+     "label": "Vanuatu",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/WSM",
+     "label": "Samoa",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/XKS",
+     "label": "Kosovo",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/YEM",
+     "label": "Yemen",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/ZAF",
+     "label": "South Africa",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/ZMB",
+     "label": "Zambia",
+     "entity_type": "Country",
+     "role": "destination"
+    },
+    {
+     "ref": "country/ZWE",
+     "label": "Zimbabwe",
+     "entity_type": "Country",
+     "role": "destination"
+    }
+   ]
+  },
+  "facets": {
+   "provenance": {
+    "basis": "fallback",
+    "ref": "provenance/ONEImputedMultilateralSectors",
+    "label": "ONE Imputed Multilateral Sectors",
+    "source": {
+     "ref": "source/ONEData",
+     "label": "ONE Data"
+    },
+    "data_commons": {
+     "id": "dfo",
+     "label": "Development Finance Observatory"
+    }
+   },
+   "measurementMethod": {
+    "basis": "fallback",
+    "ref": "Modelled",
+    "label": "modelled"
+   },
+   "unit": {
+    "basis": "fallback",
+    "ref": "CurrencyUSD",
+    "label": "US Dollar"
+   }
+  },
+  "slot_options": [],
+  "entity_options": [],
+  "facet_options": [],
+  "rendered_sentence": null,
+  "sentence_plan": null,
+  "trace": {
+   "resolved_stat_vars": [
+    {
+     "dcid": "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_CRSPurposeCode11110_Nominal",
+     "label": "Imputed multilateral ODA gross disbursements for education policy and administrative management"
+    },
+    {
+     "dcid": "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_CRSPurposeCode11120_Nominal",
+     "label": "Imputed multilateral ODA gross disbursements for education facility and training"
+    },
+    {
+     "dcid": "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_CRSPurposeCode11130_Nominal",
+     "label": "Imputed multilateral ODA gross disbursements for teacher training"
+    }
+   ],
+   "resolved_entities": [
+    {
+     "dcid": "country/NOR",
+     "label": "Norway"
+    }
+   ],
+   "resolved_sources": [
+    {
+     "dcid": "provenance/ONEImputedMultilateralSectors",
+     "label": "ONE Imputed Multilateral Sectors",
+     "source": {
+      "ref": "source/ONEData",
+      "label": "ONE Data"
+     },
+     "data_commons": {
+      "id": "dfo",
+      "label": "Development Finance Observatory"
+     }
+    }
+   ],
+   "slot_filters": [
+    {
+     "key": {
+      "axis": "how",
+      "property": {
+       "dcid": "crsPurpose",
+       "label": "CRS purpose"
+      },
+      "label": "sector"
+     },
+     "binding_kind": "unbound",
+     "refs": [],
+     "provenance": "binder"
+    },
+    {
+     "key": {
+      "axis": "how",
+      "property": {
+       "dcid": "crsTypeOfFlow",
+       "label": "CRS type of flow"
+      },
+      "label": "flow"
+     },
+     "binding_kind": "value",
+     "refs": [
+      {
+       "dcid": "CRSTypeOfFlow10",
+       "label": "official development assistance"
+      }
+     ],
+     "provenance": "binder"
+    },
+    {
+     "key": {
+      "axis": "how",
+      "property": {
+       "dcid": "dac2aAidType",
+       "label": "DAC 2a aid type"
+      },
+      "label": "aid type"
+     },
+     "binding_kind": "value",
+     "refs": [
+      {
+       "dcid": "DAC2aAidType106",
+       "label": "imputed multilateral ODA"
+      }
+     ],
+     "provenance": "text_recognized"
+    }
+   ],
+   "query_qualifiers": [
+    {
+     "text": "imputed multilateral",
+     "named": [
+      {
+       "dcid": "DAC2aAidType106",
+       "label": "imputed multilateral ODA"
+      }
+     ],
+     "slot": "dac2aAidType",
+     "disposition": "bound"
+    }
+   ],
+   "pipeline_trace": [
+    {
+     "step": "extract",
+     "ran": true,
+     "ms": 1421
+    },
+    {
+     "step": "recall",
+     "ran": true,
+     "ms": 504
+    },
+    {
+     "step": "shape",
+     "ran": true,
+     "ms": 1409
+    }
+   ],
+   "n_recalled": 53,
+   "capability_version": "cap_cf45531f3692526f",
+   "declaration_version": "cd58c9f98431d4bdcaecfeeb84f2675cd0fcb3d70c05c964a39511eaaf6b5aeb"
+  },
+  "confidence": "high",
+  "available_at_place": true,
+  "alternative_measures": [],
+  "measure_label": "gross disbursements (nominal)",
+  "measure_label_axes": [
+   "populationType",
+   "measuredProperty",
+   "measurementQualifier",
+   "financialFlowType",
+   "nettingBasis"
+  ],
+  "open_axis_facts": [
+   {
+    "property": "crsPurpose",
+    "varies": true,
+    "distinct_count": 222,
+    "undeclared_count": 0
+   }
+  ],
+  "role_axis_facts": [
+   {
+    "role": "destination",
+    "member_count": 175,
+    "members_available": true
+   }
+  ]
+ }
+}

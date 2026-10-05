@@ -1,0 +1,14 @@
+{
+  "path": "data/data.xlsx",
+  "bytes": 8214,
+  "digest": "sha256:c1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f80",
+  "media_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "table_schema": {
+    "fields": [
+      { "name": "provider", "type": "string" },
+      { "name": "recipient", "type": "string" },
+      { "name": "year", "type": "year" },
+      { "name": "value", "type": "number" }
+    ]
+  }
+}

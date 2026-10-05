@@ -1,0 +1,9 @@
+# SDMX-CSV wire fixtures are byte-exact recordings of the mixer's output,
+# which uses CRLF row endings; line-ending normalization would silently
+# make them unfaithful to the wire.
+tests/dc_sdmx/fixtures/*.csv -text
+
+# materialise's CSV golden is a byte-exact fixture of write_csv's own
+# \r\n-terminated output; line-ending normalization would break the
+# byte-exact comparison on a fresh clone.
+tests/materialise/fixtures/*.csv -text

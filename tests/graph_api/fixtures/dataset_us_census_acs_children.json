@@ -1,0 +1,500 @@
+{
+  "data": {
+    "dc/d/UsCensusBureau_AmericanCommunitySurveyAcs": {
+      "arcs": {
+        "isPartOf": {
+          "nodes": [
+            {
+              "dcid": "dc/base/CensusACS1YearSurvey",
+              "name": "CensusACS1YearSurvey",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey",
+              "name": "CensusACS5YearSurvey",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_AbilityToSpeakEnglish_StatVarAgg",
+              "name": "CensusACS5YearSurvey_AbilityToSpeakEnglish_StatVarAgg",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_AggCountry",
+              "name": "CensusACS5YearSurvey_AggCountry",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_AggCountry_SuperEnum",
+              "name": "CensusACS5YearSurvey_AggCountry_SuperEnum",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_Demographics_StatVarAgg",
+              "name": "CensusACS5YearSurvey_Demographics_StatVarAgg",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_Education_StatVarAgg",
+              "name": "CensusACS5YearSurvey_Education_StatVarAgg",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_Employment_StatVarAgg",
+              "name": "CensusACS5YearSurvey_Employment_StatVarAgg",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_HealthInsurance_StatVarAgg",
+              "name": "CensusACS5YearSurvey_HealthInsurance_StatVarAgg",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_HousingUnit_HomeValue_StatVarAgg",
+              "name": "CensusACS5YearSurvey_HousingUnit_HomeValue_StatVarAgg",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_InArmedForces_StatVarAgg",
+              "name": "CensusACS5YearSurvey_InArmedForces_StatVarAgg",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_Income_StatVarAgg",
+              "name": "CensusACS5YearSurvey_Income_StatVarAgg",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_Person_Age_StatVarAgg",
+              "name": "CensusACS5YearSurvey_Person_Age_StatVarAgg",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S0101",
+              "name": "CensusACS5YearSurvey_SubjectTables_S0101",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S0503",
+              "name": "CensusACS5YearSurvey_SubjectTables_S0503",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S0504",
+              "name": "CensusACS5YearSurvey_SubjectTables_S0504",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S0504_StatVarAgg",
+              "name": "CensusACS5YearSurvey_SubjectTables_S0504_StatVarAgg",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S0505",
+              "name": "CensusACS5YearSurvey_SubjectTables_S0505",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S0506",
+              "name": "CensusACS5YearSurvey_SubjectTables_S0506",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S0701",
+              "name": "CensusACS5YearSurvey_SubjectTables_S0701",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S0701PR",
+              "name": "CensusACS5YearSurvey_SubjectTables_S0701PR",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S0801",
+              "name": "CensusACS5YearSurvey_SubjectTables_S0801",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S0801_StatVarAgg",
+              "name": "CensusACS5YearSurvey_SubjectTables_S0801_StatVarAgg",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S0804",
+              "name": "CensusACS5YearSurvey_SubjectTables_S0804",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S0804_StatVarAgg",
+              "name": "CensusACS5YearSurvey_SubjectTables_S0804_StatVarAgg",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S0902",
+              "name": "CensusACS5YearSurvey_SubjectTables_S0902",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S1201",
+              "name": "CensusACS5YearSurvey_SubjectTables_S1201",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S1201_StatVarAgg",
+              "name": "CensusACS5YearSurvey_SubjectTables_S1201_StatVarAgg",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S1251",
+              "name": "CensusACS5YearSurvey_SubjectTables_S1251",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S1251_StatVarAgg",
+              "name": "CensusACS5YearSurvey_SubjectTables_S1251_StatVarAgg",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S1301",
+              "name": "CensusACS5YearSurvey_SubjectTables_S1301",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S1502",
+              "name": "CensusACS5YearSurvey_SubjectTables_S1502",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S1602",
+              "name": "CensusACS5YearSurvey_SubjectTables_S1602",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S1603",
+              "name": "CensusACS5YearSurvey_SubjectTables_S1603",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S1702",
+              "name": "CensusACS5YearSurvey_SubjectTables_S1702",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S1810",
+              "name": "CensusACS5YearSurvey_SubjectTables_S1810",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S1901",
+              "name": "CensusACS5YearSurvey_SubjectTables_S1901",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S1903",
+              "name": "CensusACS5YearSurvey_SubjectTables_S1903",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S2001",
+              "name": "CensusACS5YearSurvey_SubjectTables_S2001",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S2201",
+              "name": "CensusACS5YearSurvey_SubjectTables_S2201",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S2303",
+              "name": "CensusACS5YearSurvey_SubjectTables_S2303",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S2405",
+              "name": "CensusACS5YearSurvey_SubjectTables_S2405",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S2406",
+              "name": "CensusACS5YearSurvey_SubjectTables_S2406",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S2407",
+              "name": "CensusACS5YearSurvey_SubjectTables_S2407",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S2408",
+              "name": "CensusACS5YearSurvey_SubjectTables_S2408",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S2408_StatVarAgg",
+              "name": "CensusACS5YearSurvey_SubjectTables_S2408_StatVarAgg",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S2409",
+              "name": "CensusACS5YearSurvey_SubjectTables_S2409",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S2418",
+              "name": "CensusACS5YearSurvey_SubjectTables_S2418",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S2502",
+              "name": "CensusACS5YearSurvey_SubjectTables_S2502",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S2601A",
+              "name": "CensusACS5YearSurvey_SubjectTables_S2601A",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S2601APR",
+              "name": "CensusACS5YearSurvey_SubjectTables_S2601APR",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S2602",
+              "name": "CensusACS5YearSurvey_SubjectTables_S2602",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S2602PR",
+              "name": "CensusACS5YearSurvey_SubjectTables_S2602PR",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S2603",
+              "name": "CensusACS5YearSurvey_SubjectTables_S2603",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S2701",
+              "name": "CensusACS5YearSurvey_SubjectTables_S2701",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S2702",
+              "name": "CensusACS5YearSurvey_SubjectTables_S2702",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S2702PR",
+              "name": "CensusACS5YearSurvey_SubjectTables_S2702PR",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S2703",
+              "name": "CensusACS5YearSurvey_SubjectTables_S2703",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SubjectTables_S2704",
+              "name": "CensusACS5YearSurvey_SubjectTables_S2704",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACS5YearSurvey_SuperEnum",
+              "name": "CensusACS5YearSurvey_SuperEnum",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            },
+            {
+              "dcid": "dc/base/CensusACSBtable5YearSurvey_Btable_B25031",
+              "name": "CensusACSBtable5YearSurvey_Btable_B25031",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            }
+          ]
+        }
+      }
+    }
+  }
+}

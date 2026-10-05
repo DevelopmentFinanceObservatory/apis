@@ -1,0 +1,60 @@
+{
+  "data": {
+    "dc/d/UsCensusBureau_AmericanCommunitySurveyAcs": {
+      "arcs": {
+        "isPartOf": {
+          "nodes": [
+            {
+              "dcid": "dc/s/UsCensusBureau",
+              "name": "U.S. Census Bureau",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Source"
+              ]
+            }
+          ]
+        },
+        "name": {
+          "nodes": [
+            {
+              "provenanceId": "dc/base/Provenance",
+              "value": "American Community Survey (ACS)"
+            }
+          ]
+        },
+        "provenance": {
+          "nodes": [
+            {
+              "dcid": "dc/base/GeneratedGraphs",
+              "name": "GeneratedGraphs",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            }
+          ]
+        },
+        "typeOf": {
+          "nodes": [
+            {
+              "dcid": "Dataset",
+              "name": "Dataset",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Class"
+              ]
+            }
+          ]
+        },
+        "url": {
+          "nodes": [
+            {
+              "provenanceId": "dc/base/Provenance",
+              "value": "https://www.census.gov/programs-surveys/acs"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

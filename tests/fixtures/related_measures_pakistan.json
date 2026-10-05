@@ -1,0 +1,2574 @@
+{
+ "_comment": "dc/g/SDG_17.13.1 (Macroeconomic Dashboard), its 20 members and their population types, with each member's facets at country/PAK, read from the dfo-dev Data Commons mixer (/v2/node ->* and <-memberOf, /v2/observation select variable, entity, facet) on 2026-10-03. Backs tests/engine/test_related_measures.py.",
+ "nodes": {
+  "SDG_BN_CAB_XOKA_GD_ZS": {
+   "arcs": {
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Current account balance as a proportion of GDP"
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "SDG_Series",
+       "name": "SDG_Series",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Current account balance as a proportion of GDP",
+   "type": "SDG_Series"
+  },
+  "SDG_BN_KLT_PTXL_CD": {
+   "arcs": {
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Portfolio investment, net"
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "SDG_Series",
+       "name": "SDG_Series",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Portfolio investment, net",
+   "type": "SDG_Series"
+  },
+  "SDG_BX_KLT_DINV_WD_GD_ZS": {
+   "arcs": {
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Foreign direct investment, net inflows, as a proportion of GDP"
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "SDG_Series",
+       "name": "SDG_Series",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Foreign direct investment, net inflows, as a proportion of GDP",
+   "type": "SDG_Series"
+  },
+  "SDG_DP_DOD_DLD2_CR_CG_Z1": {
+   "arcs": {
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Gross public sector debt, Central Government, as a proportion of GDP"
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "SDG_Series",
+       "name": "SDG_Series",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Gross public sector debt, Central Government, as a proportion of GDP",
+   "type": "SDG_Series"
+  },
+  "SDG_DT_DOD_DECT_GN_ZS": {
+   "arcs": {
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "External debt stocks as a proportion of GNI"
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "SDG_Series",
+       "name": "SDG_Series",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "External debt stocks as a proportion of GNI",
+   "type": "SDG_Series"
+  },
+  "SDG_FB_BNK_CAPA_ZS": {
+   "arcs": {
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Bank capital to assets ratio"
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "SDG_Series",
+       "name": "SDG_Series",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Bank capital to assets ratio",
+   "type": "SDG_Series"
+  },
+  "SDG_FI_RES_TOTL_MO": {
+   "arcs": {
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Total reserves in months of imports"
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "SDG_Series",
+       "name": "SDG_Series",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Total reserves in months of imports",
+   "type": "SDG_Series"
+  },
+  "SDG_FM_LBL_BMNY_IR_ZS": {
+   "arcs": {
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Broad money to total reserves ratio"
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "SDG_Series",
+       "name": "SDG_Series",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Broad money to total reserves ratio",
+   "type": "SDG_Series"
+  },
+  "SDG_FM_LBL_BMNY_ZG": {
+   "arcs": {
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Annual broad money growth"
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "SDG_Series",
+       "name": "SDG_Series",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Annual broad money growth",
+   "type": "SDG_Series"
+  },
+  "SDG_FP_CPI_TOTL_ZG": {
+   "arcs": {
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Annual inflation, consumer prices"
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "SDG_Series",
+       "name": "SDG_Series",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Annual inflation, consumer prices",
+   "type": "SDG_Series"
+  },
+  "SDG_GC_BAL_CASH_GD_ZS": {
+   "arcs": {
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Cash surplus/deficit as a proportion of GDP"
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "SDG_Series",
+       "name": "SDG_Series",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Cash surplus/deficit as a proportion of GDP",
+   "type": "SDG_Series"
+  },
+  "SDG_GC_TAX_TOTL_GD_ZS": {
+   "arcs": {
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Tax revenue as a proportion of GDP"
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "SDG_Series",
+       "name": "SDG_Series",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Tax revenue as a proportion of GDP",
+   "type": "SDG_Series"
+  },
+  "SDG_NE_CON_GOVT_KD_ZG": {
+   "arcs": {
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Annual growth of the general government final consumption expenditure"
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "SDG_Series",
+       "name": "SDG_Series",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Annual growth of the general government final consumption expenditure",
+   "type": "SDG_Series"
+  },
+  "SDG_NE_CON_PRVT_KD_ZG": {
+   "arcs": {
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Annual growth of households and NPISHs final consumption expenditure"
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "SDG_Series",
+       "name": "SDG_Series",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Annual growth of households and NPISHs final consumption expenditure",
+   "type": "SDG_Series"
+  },
+  "SDG_NE_EXP_GNFS_KD_ZG": {
+   "arcs": {
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Annual growth of exports of goods and services"
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "SDG_Series",
+       "name": "SDG_Series",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Annual growth of exports of goods and services",
+   "type": "SDG_Series"
+  },
+  "SDG_NE_GDI_TOTL_KD_ZG": {
+   "arcs": {
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Annual growth of the gross capital formation"
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "SDG_Series",
+       "name": "SDG_Series",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Annual growth of the gross capital formation",
+   "type": "SDG_Series"
+  },
+  "SDG_NE_IMP_GNFS_KD_ZG": {
+   "arcs": {
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Annual growth of imports of goods and services"
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "SDG_Series",
+       "name": "SDG_Series",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Annual growth of imports of goods and services",
+   "type": "SDG_Series"
+  },
+  "SDG_NY_GDP_MKTP_KD_ZG": {
+   "arcs": {
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Annual GDP growth"
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "SDG_Series",
+       "name": "SDG_Series",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Annual GDP growth",
+   "type": "SDG_Series"
+  },
+  "SDG_PA_NUS_ATLS": {
+   "arcs": {
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "DEC alternative conversion factor"
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "SDG_Series",
+       "name": "SDG_Series",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "DEC alternative conversion factor",
+   "type": "SDG_Series"
+  },
+  "SDG_TG_VAL_TOTL_GD_ZS": {
+   "arcs": {
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Merchandise trade as a proportion of GDP"
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "SDG_Series",
+       "name": "SDG_Series",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Merchandise trade as a proportion of GDP",
+   "type": "SDG_Series"
+  },
+  "dc/g/SDG_17.13.1": {
+   "arcs": {
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "17.13.1: Macroeconomic Dashboard"
+      }
+     ]
+    },
+    "specializationOf": {
+     "nodes": [
+      {
+       "dcid": "dc/g/SDG_17.13",
+       "name": "17.13: Enhance global macroeconomic stability, including through policy coordination and policy coherence",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "StatVarGroup"
+       ]
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "StatVarGroup",
+       "name": "StatVarGroup",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "17.13.1: Macroeconomic Dashboard",
+   "type": "StatVarGroup"
+  },
+  "sdg/BN_CAB_XOKA_GD_ZS": {
+   "arcs": {
+    "definition": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "mp=value,pt=SDG_BN_CAB_XOKA_GD_ZS"
+      }
+     ]
+    },
+    "footnote": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Includes data from the following sources: International Monetary Fund, Balance of Payments Statistics Yearbook and data files, and World Bank and OECD GDP estimates"
+      }
+     ]
+    },
+    "measuredProperty": {
+     "nodes": [
+      {
+       "dcid": "value",
+       "name": "value",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "memberOf": {
+     "nodes": [
+      {
+       "dcid": "dc/g/SDG_17.13.1",
+       "name": "17.13.1: Macroeconomic Dashboard",
+       "provenanceId": "dc/base/generated/Schema",
+       "types": [
+        "StatVarGroup"
+       ]
+      }
+     ]
+    },
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Current account balance as a proportion of GDP"
+      }
+     ]
+    },
+    "populationType": {
+     "nodes": [
+      {
+       "dcid": "SDG_BN_CAB_XOKA_GD_ZS",
+       "name": "Current account balance as a proportion of GDP",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "SDG_Series"
+       ]
+      }
+     ]
+    },
+    "statType": {
+     "nodes": [
+      {
+       "dcid": "measuredValue",
+       "name": "measuredValue",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "StatisticalVariable",
+       "name": "StatisticalVariable",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Current account balance as a proportion of GDP",
+   "type": "StatisticalVariable"
+  },
+  "sdg/BN_KLT_PTXL_CD": {
+   "arcs": {
+    "definition": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "mp=value,pt=SDG_BN_KLT_PTXL_CD"
+      }
+     ]
+    },
+    "footnote": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Includes data from the following sources: International Monetary Fund, Balance of Payments Statistics Yearbook and data files"
+      }
+     ]
+    },
+    "measuredProperty": {
+     "nodes": [
+      {
+       "dcid": "value",
+       "name": "value",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "memberOf": {
+     "nodes": [
+      {
+       "dcid": "dc/g/SDG_17.13.1",
+       "name": "17.13.1: Macroeconomic Dashboard",
+       "provenanceId": "dc/base/generated/Schema",
+       "types": [
+        "StatVarGroup"
+       ]
+      }
+     ]
+    },
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Portfolio investment, net"
+      }
+     ]
+    },
+    "populationType": {
+     "nodes": [
+      {
+       "dcid": "SDG_BN_KLT_PTXL_CD",
+       "name": "Portfolio investment, net",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "SDG_Series"
+       ]
+      }
+     ]
+    },
+    "statType": {
+     "nodes": [
+      {
+       "dcid": "measuredValue",
+       "name": "measuredValue",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "StatisticalVariable",
+       "name": "StatisticalVariable",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Portfolio investment, net",
+   "type": "StatisticalVariable"
+  },
+  "sdg/BX_KLT_DINV_WD_GD_ZS": {
+   "arcs": {
+    "definition": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "mp=value,pt=SDG_BX_KLT_DINV_WD_GD_ZS"
+      }
+     ]
+    },
+    "footnote": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Includes data from the following sources: International Monetary Fund, International Financial Statistics and Balance of Payments databases, World Bank, International Debt Statistics, and World Bank and OECD GDP estimates"
+      }
+     ]
+    },
+    "measuredProperty": {
+     "nodes": [
+      {
+       "dcid": "value",
+       "name": "value",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "memberOf": {
+     "nodes": [
+      {
+       "dcid": "dc/g/SDG_17.13.1",
+       "name": "17.13.1: Macroeconomic Dashboard",
+       "provenanceId": "dc/base/generated/Schema",
+       "types": [
+        "StatVarGroup"
+       ]
+      }
+     ]
+    },
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Foreign direct investment, net inflows, as a proportion of GDP"
+      }
+     ]
+    },
+    "populationType": {
+     "nodes": [
+      {
+       "dcid": "SDG_BX_KLT_DINV_WD_GD_ZS",
+       "name": "Foreign direct investment, net inflows, as a proportion of GDP",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "SDG_Series"
+       ]
+      }
+     ]
+    },
+    "statType": {
+     "nodes": [
+      {
+       "dcid": "measuredValue",
+       "name": "measuredValue",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "StatisticalVariable",
+       "name": "StatisticalVariable",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Foreign direct investment, net inflows, as a proportion of GDP",
+   "type": "StatisticalVariable"
+  },
+  "sdg/DP_DOD_DLD2_CR_CG_Z1": {
+   "arcs": {
+    "definition": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "mp=value,pt=SDG_DP_DOD_DLD2_CR_CG_Z1"
+      }
+     ]
+    },
+    "footnote": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Includes data from the following sources: World Bank, Quarterly Public Sector Debt database"
+      }
+     ]
+    },
+    "measuredProperty": {
+     "nodes": [
+      {
+       "dcid": "value",
+       "name": "value",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "memberOf": {
+     "nodes": [
+      {
+       "dcid": "dc/g/SDG_17.13.1",
+       "name": "17.13.1: Macroeconomic Dashboard",
+       "provenanceId": "dc/base/generated/Schema",
+       "types": [
+        "StatVarGroup"
+       ]
+      }
+     ]
+    },
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Gross public sector debt, Central Government, as a proportion of GDP"
+      }
+     ]
+    },
+    "populationType": {
+     "nodes": [
+      {
+       "dcid": "SDG_DP_DOD_DLD2_CR_CG_Z1",
+       "name": "Gross public sector debt, Central Government, as a proportion of GDP",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "SDG_Series"
+       ]
+      }
+     ]
+    },
+    "statType": {
+     "nodes": [
+      {
+       "dcid": "measuredValue",
+       "name": "measuredValue",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "StatisticalVariable",
+       "name": "StatisticalVariable",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Gross public sector debt, Central Government, as a proportion of GDP",
+   "type": "StatisticalVariable"
+  },
+  "sdg/DT_DOD_DECT_GN_ZS": {
+   "arcs": {
+    "definition": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "mp=value,pt=SDG_DT_DOD_DECT_GN_ZS"
+      }
+     ]
+    },
+    "footnote": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Includes data from the following sources: World Bank, International Debt Statistics"
+      }
+     ]
+    },
+    "measuredProperty": {
+     "nodes": [
+      {
+       "dcid": "value",
+       "name": "value",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "memberOf": {
+     "nodes": [
+      {
+       "dcid": "dc/g/SDG_17.13.1",
+       "name": "17.13.1: Macroeconomic Dashboard",
+       "provenanceId": "dc/base/generated/Schema",
+       "types": [
+        "StatVarGroup"
+       ]
+      }
+     ]
+    },
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "External debt stocks as a proportion of GNI"
+      }
+     ]
+    },
+    "populationType": {
+     "nodes": [
+      {
+       "dcid": "SDG_DT_DOD_DECT_GN_ZS",
+       "name": "External debt stocks as a proportion of GNI",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "SDG_Series"
+       ]
+      }
+     ]
+    },
+    "statType": {
+     "nodes": [
+      {
+       "dcid": "measuredValue",
+       "name": "measuredValue",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "StatisticalVariable",
+       "name": "StatisticalVariable",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "External debt stocks as a proportion of GNI",
+   "type": "StatisticalVariable"
+  },
+  "sdg/FB_BNK_CAPA_ZS": {
+   "arcs": {
+    "definition": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "mp=value,pt=SDG_FB_BNK_CAPA_ZS"
+      }
+     ]
+    },
+    "footnote": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Includes data from the following sources: International Monetary Fund, Financial Soundness Indicators"
+      }
+     ]
+    },
+    "measuredProperty": {
+     "nodes": [
+      {
+       "dcid": "value",
+       "name": "value",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "memberOf": {
+     "nodes": [
+      {
+       "dcid": "dc/g/SDG_17.13.1",
+       "name": "17.13.1: Macroeconomic Dashboard",
+       "provenanceId": "dc/base/generated/Schema",
+       "types": [
+        "StatVarGroup"
+       ]
+      }
+     ]
+    },
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Bank capital to assets ratio"
+      }
+     ]
+    },
+    "populationType": {
+     "nodes": [
+      {
+       "dcid": "SDG_FB_BNK_CAPA_ZS",
+       "name": "Bank capital to assets ratio",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "SDG_Series"
+       ]
+      }
+     ]
+    },
+    "statType": {
+     "nodes": [
+      {
+       "dcid": "measuredValue",
+       "name": "measuredValue",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "StatisticalVariable",
+       "name": "StatisticalVariable",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Bank capital to assets ratio",
+   "type": "StatisticalVariable"
+  },
+  "sdg/FI_RES_TOTL_MO": {
+   "arcs": {
+    "definition": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "mp=value,pt=SDG_FI_RES_TOTL_MO"
+      }
+     ]
+    },
+    "footnote": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Includes data from the following sources: International Monetary Fund, International Financial Statistics and data files"
+      }
+     ]
+    },
+    "measuredProperty": {
+     "nodes": [
+      {
+       "dcid": "value",
+       "name": "value",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "memberOf": {
+     "nodes": [
+      {
+       "dcid": "dc/g/SDG_17.13.1",
+       "name": "17.13.1: Macroeconomic Dashboard",
+       "provenanceId": "dc/base/generated/Schema",
+       "types": [
+        "StatVarGroup"
+       ]
+      }
+     ]
+    },
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Total reserves in months of imports"
+      }
+     ]
+    },
+    "populationType": {
+     "nodes": [
+      {
+       "dcid": "SDG_FI_RES_TOTL_MO",
+       "name": "Total reserves in months of imports",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "SDG_Series"
+       ]
+      }
+     ]
+    },
+    "statType": {
+     "nodes": [
+      {
+       "dcid": "measuredValue",
+       "name": "measuredValue",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "StatisticalVariable",
+       "name": "StatisticalVariable",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Total reserves in months of imports",
+   "type": "StatisticalVariable"
+  },
+  "sdg/FM_LBL_BMNY_IR_ZS": {
+   "arcs": {
+    "definition": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "mp=value,pt=SDG_FM_LBL_BMNY_IR_ZS"
+      }
+     ]
+    },
+    "footnote": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Includes data from the following sources: International Monetary Fund, International Financial Statistics and data files"
+      }
+     ]
+    },
+    "measuredProperty": {
+     "nodes": [
+      {
+       "dcid": "value",
+       "name": "value",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "memberOf": {
+     "nodes": [
+      {
+       "dcid": "dc/g/SDG_17.13.1",
+       "name": "17.13.1: Macroeconomic Dashboard",
+       "provenanceId": "dc/base/generated/Schema",
+       "types": [
+        "StatVarGroup"
+       ]
+      }
+     ]
+    },
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Broad money to total reserves ratio"
+      }
+     ]
+    },
+    "populationType": {
+     "nodes": [
+      {
+       "dcid": "SDG_FM_LBL_BMNY_IR_ZS",
+       "name": "Broad money to total reserves ratio",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "SDG_Series"
+       ]
+      }
+     ]
+    },
+    "statType": {
+     "nodes": [
+      {
+       "dcid": "measuredValue",
+       "name": "measuredValue",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "StatisticalVariable",
+       "name": "StatisticalVariable",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Broad money to total reserves ratio",
+   "type": "StatisticalVariable"
+  },
+  "sdg/FM_LBL_BMNY_ZG": {
+   "arcs": {
+    "definition": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "mp=value,pt=SDG_FM_LBL_BMNY_ZG"
+      }
+     ]
+    },
+    "footnote": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Includes data from the following sources: International Monetary Fund, International Financial Statistics and data files"
+      }
+     ]
+    },
+    "measuredProperty": {
+     "nodes": [
+      {
+       "dcid": "value",
+       "name": "value",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "memberOf": {
+     "nodes": [
+      {
+       "dcid": "dc/g/SDG_17.13.1",
+       "name": "17.13.1: Macroeconomic Dashboard",
+       "provenanceId": "dc/base/generated/Schema",
+       "types": [
+        "StatVarGroup"
+       ]
+      }
+     ]
+    },
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Annual broad money growth"
+      }
+     ]
+    },
+    "populationType": {
+     "nodes": [
+      {
+       "dcid": "SDG_FM_LBL_BMNY_ZG",
+       "name": "Annual broad money growth",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "SDG_Series"
+       ]
+      }
+     ]
+    },
+    "statType": {
+     "nodes": [
+      {
+       "dcid": "measuredValue",
+       "name": "measuredValue",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "StatisticalVariable",
+       "name": "StatisticalVariable",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Annual broad money growth",
+   "type": "StatisticalVariable"
+  },
+  "sdg/FP_CPI_TOTL_ZG": {
+   "arcs": {
+    "definition": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "mp=value,pt=SDG_FP_CPI_TOTL_ZG"
+      }
+     ]
+    },
+    "footnote": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Includes data from the following sources: International Monetary Fund, International Financial Statistics and data files"
+      }
+     ]
+    },
+    "measuredProperty": {
+     "nodes": [
+      {
+       "dcid": "value",
+       "name": "value",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "memberOf": {
+     "nodes": [
+      {
+       "dcid": "dc/g/SDG_17.13.1",
+       "name": "17.13.1: Macroeconomic Dashboard",
+       "provenanceId": "dc/base/generated/Schema",
+       "types": [
+        "StatVarGroup"
+       ]
+      }
+     ]
+    },
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Annual inflation, consumer prices"
+      }
+     ]
+    },
+    "populationType": {
+     "nodes": [
+      {
+       "dcid": "SDG_FP_CPI_TOTL_ZG",
+       "name": "Annual inflation, consumer prices",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "SDG_Series"
+       ]
+      }
+     ]
+    },
+    "statType": {
+     "nodes": [
+      {
+       "dcid": "measuredValue",
+       "name": "measuredValue",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "StatisticalVariable",
+       "name": "StatisticalVariable",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Annual inflation, consumer prices",
+   "type": "StatisticalVariable"
+  },
+  "sdg/GC_BAL_CASH_GD_ZS": {
+   "arcs": {
+    "definition": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "mp=value,pt=SDG_GC_BAL_CASH_GD_ZS"
+      }
+     ]
+    },
+    "footnote": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Includes data from the following sources: International Monetary Fund, Government Finance Statistics Yearbook and data files, and World Bank and OECD GDP estimates"
+      }
+     ]
+    },
+    "measuredProperty": {
+     "nodes": [
+      {
+       "dcid": "value",
+       "name": "value",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "memberOf": {
+     "nodes": [
+      {
+       "dcid": "dc/g/SDG_17.13.1",
+       "name": "17.13.1: Macroeconomic Dashboard",
+       "provenanceId": "dc/base/generated/Schema",
+       "types": [
+        "StatVarGroup"
+       ]
+      }
+     ]
+    },
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Cash surplus/deficit as a proportion of GDP"
+      }
+     ]
+    },
+    "populationType": {
+     "nodes": [
+      {
+       "dcid": "SDG_GC_BAL_CASH_GD_ZS",
+       "name": "Cash surplus/deficit as a proportion of GDP",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "SDG_Series"
+       ]
+      }
+     ]
+    },
+    "statType": {
+     "nodes": [
+      {
+       "dcid": "measuredValue",
+       "name": "measuredValue",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "StatisticalVariable",
+       "name": "StatisticalVariable",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Cash surplus/deficit as a proportion of GDP",
+   "type": "StatisticalVariable"
+  },
+  "sdg/GC_TAX_TOTL_GD_ZS": {
+   "arcs": {
+    "definition": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "mp=value,pt=SDG_GC_TAX_TOTL_GD_ZS"
+      }
+     ]
+    },
+    "footnote": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Includes data from the following sources: International Monetary Fund, Government Finance Statistics Yearbook and data files, and World Bank and OECD GDP estimates"
+      }
+     ]
+    },
+    "measuredProperty": {
+     "nodes": [
+      {
+       "dcid": "value",
+       "name": "value",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "memberOf": {
+     "nodes": [
+      {
+       "dcid": "dc/g/SDG_17.13.1",
+       "name": "17.13.1: Macroeconomic Dashboard",
+       "provenanceId": "dc/base/generated/Schema",
+       "types": [
+        "StatVarGroup"
+       ]
+      }
+     ]
+    },
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Tax revenue as a proportion of GDP"
+      }
+     ]
+    },
+    "populationType": {
+     "nodes": [
+      {
+       "dcid": "SDG_GC_TAX_TOTL_GD_ZS",
+       "name": "Tax revenue as a proportion of GDP",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "SDG_Series"
+       ]
+      }
+     ]
+    },
+    "statType": {
+     "nodes": [
+      {
+       "dcid": "measuredValue",
+       "name": "measuredValue",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "StatisticalVariable",
+       "name": "StatisticalVariable",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Tax revenue as a proportion of GDP",
+   "type": "StatisticalVariable"
+  },
+  "sdg/NE_CON_GOVT_KD_ZG": {
+   "arcs": {
+    "definition": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "mp=value,pt=SDG_NE_CON_GOVT_KD_ZG"
+      }
+     ]
+    },
+    "footnote": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Includes data from the following sources: World Bank national accounts data, and OECD National Accounts data files"
+      }
+     ]
+    },
+    "measuredProperty": {
+     "nodes": [
+      {
+       "dcid": "value",
+       "name": "value",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "memberOf": {
+     "nodes": [
+      {
+       "dcid": "dc/g/SDG_17.13.1",
+       "name": "17.13.1: Macroeconomic Dashboard",
+       "provenanceId": "dc/base/generated/Schema",
+       "types": [
+        "StatVarGroup"
+       ]
+      }
+     ]
+    },
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Annual growth of the general government final consumption expenditure"
+      }
+     ]
+    },
+    "populationType": {
+     "nodes": [
+      {
+       "dcid": "SDG_NE_CON_GOVT_KD_ZG",
+       "name": "Annual growth of the general government final consumption expenditure",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "SDG_Series"
+       ]
+      }
+     ]
+    },
+    "statType": {
+     "nodes": [
+      {
+       "dcid": "measuredValue",
+       "name": "measuredValue",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "StatisticalVariable",
+       "name": "StatisticalVariable",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Annual growth of the general government final consumption expenditure",
+   "type": "StatisticalVariable"
+  },
+  "sdg/NE_CON_PRVT_KD_ZG": {
+   "arcs": {
+    "definition": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "mp=value,pt=SDG_NE_CON_PRVT_KD_ZG"
+      }
+     ]
+    },
+    "footnote": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Includes data from the following sources: World Bank national accounts data, and OECD National Accounts data files"
+      }
+     ]
+    },
+    "measuredProperty": {
+     "nodes": [
+      {
+       "dcid": "value",
+       "name": "value",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "memberOf": {
+     "nodes": [
+      {
+       "dcid": "dc/g/SDG_17.13.1",
+       "name": "17.13.1: Macroeconomic Dashboard",
+       "provenanceId": "dc/base/generated/Schema",
+       "types": [
+        "StatVarGroup"
+       ]
+      }
+     ]
+    },
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Annual growth of households and NPISHs final consumption expenditure"
+      }
+     ]
+    },
+    "populationType": {
+     "nodes": [
+      {
+       "dcid": "SDG_NE_CON_PRVT_KD_ZG",
+       "name": "Annual growth of households and NPISHs final consumption expenditure",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "SDG_Series"
+       ]
+      }
+     ]
+    },
+    "statType": {
+     "nodes": [
+      {
+       "dcid": "measuredValue",
+       "name": "measuredValue",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "StatisticalVariable",
+       "name": "StatisticalVariable",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Annual growth of households and NPISHs final consumption expenditure",
+   "type": "StatisticalVariable"
+  },
+  "sdg/NE_EXP_GNFS_KD_ZG": {
+   "arcs": {
+    "definition": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "mp=value,pt=SDG_NE_EXP_GNFS_KD_ZG"
+      }
+     ]
+    },
+    "footnote": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Includes data from the following sources: World Bank national accounts data, and OECD National Accounts data files"
+      }
+     ]
+    },
+    "measuredProperty": {
+     "nodes": [
+      {
+       "dcid": "value",
+       "name": "value",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "memberOf": {
+     "nodes": [
+      {
+       "dcid": "dc/g/SDG_17.13.1",
+       "name": "17.13.1: Macroeconomic Dashboard",
+       "provenanceId": "dc/base/generated/Schema",
+       "types": [
+        "StatVarGroup"
+       ]
+      }
+     ]
+    },
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Annual growth of exports of goods and services"
+      }
+     ]
+    },
+    "populationType": {
+     "nodes": [
+      {
+       "dcid": "SDG_NE_EXP_GNFS_KD_ZG",
+       "name": "Annual growth of exports of goods and services",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "SDG_Series"
+       ]
+      }
+     ]
+    },
+    "statType": {
+     "nodes": [
+      {
+       "dcid": "measuredValue",
+       "name": "measuredValue",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "StatisticalVariable",
+       "name": "StatisticalVariable",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Annual growth of exports of goods and services",
+   "type": "StatisticalVariable"
+  },
+  "sdg/NE_GDI_TOTL_KD_ZG": {
+   "arcs": {
+    "definition": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "mp=value,pt=SDG_NE_GDI_TOTL_KD_ZG"
+      }
+     ]
+    },
+    "footnote": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Includes data from the following sources: World Bank national accounts data, and OECD National Accounts data files"
+      }
+     ]
+    },
+    "measuredProperty": {
+     "nodes": [
+      {
+       "dcid": "value",
+       "name": "value",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "memberOf": {
+     "nodes": [
+      {
+       "dcid": "dc/g/SDG_17.13.1",
+       "name": "17.13.1: Macroeconomic Dashboard",
+       "provenanceId": "dc/base/generated/Schema",
+       "types": [
+        "StatVarGroup"
+       ]
+      }
+     ]
+    },
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Annual growth of the gross capital formation"
+      }
+     ]
+    },
+    "populationType": {
+     "nodes": [
+      {
+       "dcid": "SDG_NE_GDI_TOTL_KD_ZG",
+       "name": "Annual growth of the gross capital formation",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "SDG_Series"
+       ]
+      }
+     ]
+    },
+    "statType": {
+     "nodes": [
+      {
+       "dcid": "measuredValue",
+       "name": "measuredValue",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "StatisticalVariable",
+       "name": "StatisticalVariable",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Annual growth of the gross capital formation",
+   "type": "StatisticalVariable"
+  },
+  "sdg/NE_IMP_GNFS_KD_ZG": {
+   "arcs": {
+    "definition": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "mp=value,pt=SDG_NE_IMP_GNFS_KD_ZG"
+      }
+     ]
+    },
+    "footnote": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Includes data from the following sources: World Bank national accounts data, and OECD National Accounts data files"
+      }
+     ]
+    },
+    "measuredProperty": {
+     "nodes": [
+      {
+       "dcid": "value",
+       "name": "value",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "memberOf": {
+     "nodes": [
+      {
+       "dcid": "dc/g/SDG_17.13.1",
+       "name": "17.13.1: Macroeconomic Dashboard",
+       "provenanceId": "dc/base/generated/Schema",
+       "types": [
+        "StatVarGroup"
+       ]
+      }
+     ]
+    },
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Annual growth of imports of goods and services"
+      }
+     ]
+    },
+    "populationType": {
+     "nodes": [
+      {
+       "dcid": "SDG_NE_IMP_GNFS_KD_ZG",
+       "name": "Annual growth of imports of goods and services",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "SDG_Series"
+       ]
+      }
+     ]
+    },
+    "statType": {
+     "nodes": [
+      {
+       "dcid": "measuredValue",
+       "name": "measuredValue",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "StatisticalVariable",
+       "name": "StatisticalVariable",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Annual growth of imports of goods and services",
+   "type": "StatisticalVariable"
+  },
+  "sdg/NY_GDP_MKTP_KD_ZG": {
+   "arcs": {
+    "definition": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "mp=value,pt=SDG_NY_GDP_MKTP_KD_ZG"
+      }
+     ]
+    },
+    "footnote": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Includes data from the following sources: World Bank national accounts data, and OECD National Accounts data files"
+      }
+     ]
+    },
+    "measuredProperty": {
+     "nodes": [
+      {
+       "dcid": "value",
+       "name": "value",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "memberOf": {
+     "nodes": [
+      {
+       "dcid": "dc/g/SDG_17.13.1",
+       "name": "17.13.1: Macroeconomic Dashboard",
+       "provenanceId": "dc/base/generated/Schema",
+       "types": [
+        "StatVarGroup"
+       ]
+      }
+     ]
+    },
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Annual GDP growth"
+      }
+     ]
+    },
+    "populationType": {
+     "nodes": [
+      {
+       "dcid": "SDG_NY_GDP_MKTP_KD_ZG",
+       "name": "Annual GDP growth",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "SDG_Series"
+       ]
+      }
+     ]
+    },
+    "statType": {
+     "nodes": [
+      {
+       "dcid": "measuredValue",
+       "name": "measuredValue",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "StatisticalVariable",
+       "name": "StatisticalVariable",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Annual GDP growth",
+   "type": "StatisticalVariable"
+  },
+  "sdg/PA_NUS_ATLS": {
+   "arcs": {
+    "definition": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "mp=value,pt=SDG_PA_NUS_ATLS"
+      }
+     ]
+    },
+    "footnote": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Includes data from the following sources: International Monetary Fund, International Financial Statistics, supplemented by World Bank staff estimates"
+      }
+     ]
+    },
+    "measuredProperty": {
+     "nodes": [
+      {
+       "dcid": "value",
+       "name": "value",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "memberOf": {
+     "nodes": [
+      {
+       "dcid": "dc/g/SDG_17.13.1",
+       "name": "17.13.1: Macroeconomic Dashboard",
+       "provenanceId": "dc/base/generated/Schema",
+       "types": [
+        "StatVarGroup"
+       ]
+      }
+     ]
+    },
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "DEC alternative conversion factor"
+      }
+     ]
+    },
+    "populationType": {
+     "nodes": [
+      {
+       "dcid": "SDG_PA_NUS_ATLS",
+       "name": "DEC alternative conversion factor",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "SDG_Series"
+       ]
+      }
+     ]
+    },
+    "statType": {
+     "nodes": [
+      {
+       "dcid": "measuredValue",
+       "name": "measuredValue",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "StatisticalVariable",
+       "name": "StatisticalVariable",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "DEC alternative conversion factor",
+   "type": "StatisticalVariable"
+  },
+  "sdg/TG_VAL_TOTL_GD_ZS": {
+   "arcs": {
+    "definition": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "mp=value,pt=SDG_TG_VAL_TOTL_GD_ZS"
+      }
+     ]
+    },
+    "footnote": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Includes data from the following sources: World Trade Organization, and World Bank GDP estimates"
+      }
+     ]
+    },
+    "measuredProperty": {
+     "nodes": [
+      {
+       "dcid": "value",
+       "name": "value",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "memberOf": {
+     "nodes": [
+      {
+       "dcid": "dc/g/SDG_17.13.1",
+       "name": "17.13.1: Macroeconomic Dashboard",
+       "provenanceId": "dc/base/generated/Schema",
+       "types": [
+        "StatVarGroup"
+       ]
+      }
+     ]
+    },
+    "name": {
+     "nodes": [
+      {
+       "provenanceId": "dc/base/Schema",
+       "value": "Merchandise trade as a proportion of GDP"
+      }
+     ]
+    },
+    "populationType": {
+     "nodes": [
+      {
+       "dcid": "SDG_TG_VAL_TOTL_GD_ZS",
+       "name": "Merchandise trade as a proportion of GDP",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "SDG_Series"
+       ]
+      }
+     ]
+    },
+    "statType": {
+     "nodes": [
+      {
+       "dcid": "measuredValue",
+       "name": "measuredValue",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Property"
+       ]
+      }
+     ]
+    },
+    "typeOf": {
+     "nodes": [
+      {
+       "dcid": "StatisticalVariable",
+       "name": "StatisticalVariable",
+       "provenanceId": "dc/base/Schema",
+       "types": [
+        "Class"
+       ]
+      }
+     ]
+    }
+   },
+   "label": "Merchandise trade as a proportion of GDP",
+   "type": "StatisticalVariable"
+  }
+ },
+ "obs": {
+  "sdg/BN_CAB_XOKA_GD_ZS|country/PAK": [
+   {
+    "earliestDate": "2000",
+    "facetId": "10868335968854191536",
+    "latestDate": "2022",
+    "measurementMethod": "SDG_G_G",
+    "obsCount": 23,
+    "provenanceId": "dc/base/UN_SDG",
+    "unit": "SDG_PERCENT"
+   }
+  ],
+  "sdg/BN_KLT_PTXL_CD|country/PAK": [
+   {
+    "earliestDate": "2000",
+    "facetId": "9434699608065597718",
+    "latestDate": "2022",
+    "measurementMethod": "SDG_G_G",
+    "obsCount": 23,
+    "provenanceId": "dc/base/UN_SDG",
+    "unit": "SDG_CU_USD"
+   }
+  ],
+  "sdg/BX_KLT_DINV_WD_GD_ZS|country/PAK": [
+   {
+    "earliestDate": "2000",
+    "facetId": "10868335968854191536",
+    "latestDate": "2022",
+    "measurementMethod": "SDG_G_G",
+    "obsCount": 23,
+    "provenanceId": "dc/base/UN_SDG",
+    "unit": "SDG_PERCENT"
+   }
+  ],
+  "sdg/DT_DOD_DECT_GN_ZS|country/PAK": [
+   {
+    "earliestDate": "2000",
+    "facetId": "10868335968854191536",
+    "latestDate": "2022",
+    "measurementMethod": "SDG_G_G",
+    "obsCount": 23,
+    "provenanceId": "dc/base/UN_SDG",
+    "unit": "SDG_PERCENT"
+   }
+  ],
+  "sdg/FB_BNK_CAPA_ZS|country/PAK": [
+   {
+    "earliestDate": "2013",
+    "facetId": "10868335968854191536",
+    "latestDate": "2022",
+    "measurementMethod": "SDG_G_G",
+    "obsCount": 10,
+    "provenanceId": "dc/base/UN_SDG",
+    "unit": "SDG_PERCENT"
+   }
+  ],
+  "sdg/FI_RES_TOTL_MO|country/PAK": [
+   {
+    "earliestDate": "2000",
+    "facetId": "12877802302406238893",
+    "latestDate": "2022",
+    "measurementMethod": "SDG_G_G",
+    "obsCount": 23,
+    "provenanceId": "dc/base/UN_SDG",
+    "unit": "SDG_RATIO"
+   }
+  ],
+  "sdg/FM_LBL_BMNY_IR_ZS|country/PAK": [
+   {
+    "earliestDate": "2000",
+    "facetId": "12877802302406238893",
+    "latestDate": "2022",
+    "measurementMethod": "SDG_G_G",
+    "obsCount": 23,
+    "provenanceId": "dc/base/UN_SDG",
+    "unit": "SDG_RATIO"
+   }
+  ],
+  "sdg/FM_LBL_BMNY_ZG|country/PAK": [
+   {
+    "earliestDate": "2000",
+    "facetId": "10868335968854191536",
+    "latestDate": "2022",
+    "measurementMethod": "SDG_G_G",
+    "obsCount": 23,
+    "provenanceId": "dc/base/UN_SDG",
+    "unit": "SDG_PERCENT"
+   }
+  ],
+  "sdg/FP_CPI_TOTL_ZG|country/PAK": [
+   {
+    "earliestDate": "2000",
+    "facetId": "10868335968854191536",
+    "latestDate": "2022",
+    "measurementMethod": "SDG_G_G",
+    "obsCount": 23,
+    "provenanceId": "dc/base/UN_SDG",
+    "unit": "SDG_PERCENT"
+   }
+  ],
+  "sdg/GC_BAL_CASH_GD_ZS|country/PAK": [
+   {
+    "earliestDate": "2000",
+    "facetId": "10868335968854191536",
+    "latestDate": "2000",
+    "measurementMethod": "SDG_G_G",
+    "obsCount": 1,
+    "provenanceId": "dc/base/UN_SDG",
+    "unit": "SDG_PERCENT"
+   }
+  ],
+  "sdg/GC_TAX_TOTL_GD_ZS|country/PAK": [
+   {
+    "earliestDate": "2000",
+    "facetId": "10868335968854191536",
+    "latestDate": "2000",
+    "measurementMethod": "SDG_G_G",
+    "obsCount": 1,
+    "provenanceId": "dc/base/UN_SDG",
+    "unit": "SDG_PERCENT"
+   }
+  ],
+  "sdg/NE_CON_GOVT_KD_ZG|country/PAK": [
+   {
+    "earliestDate": "2000",
+    "facetId": "10868335968854191536",
+    "latestDate": "2022",
+    "measurementMethod": "SDG_G_G",
+    "obsCount": 23,
+    "provenanceId": "dc/base/UN_SDG",
+    "unit": "SDG_PERCENT"
+   }
+  ],
+  "sdg/NE_CON_PRVT_KD_ZG|country/PAK": [
+   {
+    "earliestDate": "2000",
+    "facetId": "10868335968854191536",
+    "latestDate": "2022",
+    "measurementMethod": "SDG_G_G",
+    "obsCount": 23,
+    "provenanceId": "dc/base/UN_SDG",
+    "unit": "SDG_PERCENT"
+   }
+  ],
+  "sdg/NE_EXP_GNFS_KD_ZG|country/PAK": [
+   {
+    "earliestDate": "2000",
+    "facetId": "10868335968854191536",
+    "latestDate": "2022",
+    "measurementMethod": "SDG_G_G",
+    "obsCount": 23,
+    "provenanceId": "dc/base/UN_SDG",
+    "unit": "SDG_PERCENT"
+   }
+  ],
+  "sdg/NE_GDI_TOTL_KD_ZG|country/PAK": [
+   {
+    "earliestDate": "2000",
+    "facetId": "10868335968854191536",
+    "latestDate": "2022",
+    "measurementMethod": "SDG_G_G",
+    "obsCount": 23,
+    "provenanceId": "dc/base/UN_SDG",
+    "unit": "SDG_PERCENT"
+   }
+  ],
+  "sdg/NE_IMP_GNFS_KD_ZG|country/PAK": [
+   {
+    "earliestDate": "2000",
+    "facetId": "10868335968854191536",
+    "latestDate": "2022",
+    "measurementMethod": "SDG_G_G",
+    "obsCount": 23,
+    "provenanceId": "dc/base/UN_SDG",
+    "unit": "SDG_PERCENT"
+   }
+  ],
+  "sdg/NY_GDP_MKTP_KD_ZG|country/PAK": [
+   {
+    "earliestDate": "2000",
+    "facetId": "10868335968854191536",
+    "latestDate": "2022",
+    "measurementMethod": "SDG_G_G",
+    "obsCount": 23,
+    "provenanceId": "dc/base/UN_SDG",
+    "unit": "SDG_PERCENT"
+   }
+  ],
+  "sdg/PA_NUS_ATLS|country/PAK": [
+   {
+    "earliestDate": "2000",
+    "facetId": "12877802302406238893",
+    "latestDate": "2022",
+    "measurementMethod": "SDG_G_G",
+    "obsCount": 23,
+    "provenanceId": "dc/base/UN_SDG",
+    "unit": "SDG_RATIO"
+   }
+  ],
+  "sdg/TG_VAL_TOTL_GD_ZS|country/PAK": [
+   {
+    "earliestDate": "2000",
+    "facetId": "10868335968854191536",
+    "latestDate": "2022",
+    "measurementMethod": "SDG_G_G",
+    "obsCount": 23,
+    "provenanceId": "dc/base/UN_SDG",
+    "unit": "SDG_PERCENT"
+   }
+  ]
+ }
+}

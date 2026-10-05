@@ -1,0 +1,136 @@
+ids.debt_service:
+  origin: dfo
+  dataset: provenance/WorldBankInternationalDebtStatistics
+  shape:
+    population_type: FinancialFlow
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {financialFlowType: ServicingPayment}
+ids.debt_stock:
+  origin: dfo
+  dataset: provenance/WorldBankInternationalDebtStatistics
+  shape:
+    population_type: FinancialPosition
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {}
+ids.interest:
+  origin: dfo
+  dataset: provenance/WorldBankInternationalDebtStatistics
+  shape:
+    population_type: FinancialFlow
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {financialFlowType: InterestPayment}
+ids.principal:
+  origin: dfo
+  dataset: provenance/WorldBankInternationalDebtStatistics
+  shape:
+    population_type: FinancialFlow
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {financialFlowType: PrincipalRepayment}
+ids.disbursement:
+  origin: dfo
+  dataset: provenance/WorldBankInternationalDebtStatistics
+  shape:
+    population_type: FinancialFlow
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {financialFlowType: Disbursement}
+ids.commitment:
+  origin: dfo
+  dataset: provenance/WorldBankInternationalDebtStatistics
+  shape:
+    population_type: FinancialObligation
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {financialObligationType: Commitment}
+ids.net_flows:
+  origin: dfo
+  dataset: provenance/WorldBankInternationalDebtStatistics
+  shape:
+    population_type: FinancialFlow
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+  fixed: {financialFlowType: Disbursement, netOf: PrincipalRepayment, nettingBasis: Net}
+ids.net_transfers:
+  origin: dfo
+  dataset: provenance/WorldBankInternationalDebtStatistics
+  shape:
+    population_type: FinancialFlow
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+  fixed: {financialFlowType: Disbursement, netOf: ServicingPayment, nettingBasis: Net}
+ids.principal_arrears:
+  origin: dfo
+  dataset: provenance/WorldBankInternationalDebtStatistics
+  shape:
+    population_type: FinancialPosition
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+  fixed: {financialPositionType: PrincipalArrears}
+ids.interest_arrears:
+  origin: dfo
+  dataset: provenance/WorldBankInternationalDebtStatistics
+  shape:
+    population_type: FinancialPosition
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+  fixed: {financialPositionType: InterestArrears}
+ids.undisbursed:
+  origin: dfo
+  dataset: provenance/WorldBankInternationalDebtStatistics
+  shape:
+    population_type: FinancialPosition
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+  fixed: {financialPositionType: AmountUndisbursed}
+ids.average_interest_rate:
+  origin: dfo
+  dataset: provenance/WorldBankInternationalDebtStatistics
+  shape: {population_type: FinancialObligation, measured_property: interestRate, stat_type: meanValue}
+  fixed: {financialObligationType: Commitment}
+ids.average_maturity:
+  origin: dfo
+  dataset: provenance/WorldBankInternationalDebtStatistics
+  shape: {population_type: FinancialObligation, measured_property: maturity, stat_type: meanValue}
+  fixed: {financialObligationType: Commitment}
+ids.average_grant_element:
+  origin: dfo
+  dataset: provenance/WorldBankInternationalDebtStatistics
+  shape: {population_type: FinancialObligation, measured_property: grantElement, stat_type: meanValue}
+  fixed: {financialObligationType: Commitment}
+ids.currency_composition:
+  origin: dfo
+  dataset: provenance/WorldBankInternationalDebtStatistics
+  shape:
+    population_type: FinancialPosition
+    measured_property: amount
+    measurement_denominator: Amount_FinancialPosition_AmountOutstanding_PublicOrPubliclyGuaranteed_Nominal
+  fixed: {financialPositionType: AmountOutstanding}
+ids.debt_service_ratio:
+  origin: dfo
+  dataset: provenance/WorldBankInternationalDebtStatistics
+  shape:
+    population_type: FinancialFlow
+    measured_property: amount
+    measurement_denominator: Amount_EconomicActivity_ExportsOfGoodsServicesAndPrimaryIncome_Nominal
+  fixed: {financialFlowType: ServicingPayment}

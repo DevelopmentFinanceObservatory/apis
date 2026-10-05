@@ -1,0 +1,1 @@
+{"levels": {"dc/s/EuropeanUnionEuEurostat": [{"place_type": "EurostatNUTS2", "within": null}], "dc/s/UsBureauOfLaborStatisticsBls": [{"place_type": "State", "within": "country/USA"}]}, "places": ["Earth", "country/KEN", "country/USA", "geoId/06", "nuts/DE11"]}

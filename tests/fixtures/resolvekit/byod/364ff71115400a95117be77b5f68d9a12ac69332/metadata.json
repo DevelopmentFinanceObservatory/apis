@@ -1,0 +1,31 @@
+{
+  "datapack_id": "dfo_graph-byod",
+  "module_id": "dfo_graph",
+  "domain_pack_id": "org",
+  "module_dependencies": [],
+  "entity_schema_version": "1.0",
+  "feature_schema_version": "org.features.v1",
+  "normalizer_version": "casefold.1",
+  "index_versions": {
+    "fts": "fts5",
+    "symspell": null
+  },
+  "build_timestamp": "2026-09-30T09:32:10.881418+00:00",
+  "source_datasets": [
+    "dfo_graph"
+  ],
+  "artifacts": null,
+  "description": null,
+  "checksums": null,
+  "distribution": "bundled",
+  "remote_artifacts": null,
+  "data_version": null,
+  "min_resolvekit_version": null,
+  "pack_type": "base",
+  "store_type": "sqlite",
+  "store_file": "entities.sqlite",
+  "link_keys": null,
+  "base_module_ids": null,
+  "allow_new_entities": false,
+  "quality_metrics": null
+}

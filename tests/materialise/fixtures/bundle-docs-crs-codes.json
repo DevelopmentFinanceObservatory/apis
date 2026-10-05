@@ -1,0 +1,82 @@
+[
+  {
+    "code": "dcid:Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB01_CRSPurposeCode11120_Nominal",
+    "label": "Official development assistance gross disbursements for education facility and training (standard grant)",
+    "kind": "variable"
+  },
+  {
+    "code": "dcid:Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB01_CRSPurposeCode11220_Nominal",
+    "label": "Official development assistance gross disbursements for primary education (standard grant)",
+    "kind": "variable"
+  },
+  {
+    "code": "dcid:Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB01_CRSPurposeCode11320_Nominal",
+    "label": "Official development assistance gross disbursements for upper secondary schooling (standard grant)",
+    "kind": "variable"
+  },
+  {
+    "code": "dcid:Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB01_CRSPurposeCode11330_Nominal",
+    "label": "Official development assistance gross disbursements for vocational training (standard grant)",
+    "kind": "variable"
+  },
+  {
+    "code": "dcid:Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB01_CRSPurposeCode12110_Nominal",
+    "label": "Official development assistance gross disbursements for health policy and administrative management (standard grant)",
+    "kind": "variable"
+  },
+  {
+    "code": "dcid:Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB01_CRSPurposeCode12191_Nominal",
+    "label": "Official development assistance gross disbursements for medical service (standard grant)",
+    "kind": "variable"
+  },
+  {
+    "code": "dcid:Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB01_CRSPurposeCode12220_Nominal",
+    "label": "Official development assistance gross disbursements for basic health care (standard grant)",
+    "kind": "variable"
+  },
+  {
+    "code": "dcid:Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB01_CRSPurposeCode12230_Nominal",
+    "label": "Official development assistance gross disbursements for basic health infrastructure (standard grant)",
+    "kind": "variable"
+  },
+  {
+    "code": "dcid:Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB01_CRSPurposeCode12240_Nominal",
+    "label": "Official development assistance gross disbursements for basic nutrition (standard grant)",
+    "kind": "variable"
+  },
+  {
+    "code": "dcid:Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB01_CRSPurposeCode12340_Nominal",
+    "label": "Official development assistance gross disbursements for mental health and well-being promotion (standard grant)",
+    "kind": "variable"
+  },
+  {
+    "code": "dcid:Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB01_CRSPurposeCode13020_Nominal",
+    "label": "Official development assistance gross disbursements for reproductive health care (standard grant)",
+    "kind": "variable"
+  },
+  {
+    "code": "dcid:Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityB01_CRSPurposeCode13030_Nominal",
+    "label": "Official development assistance gross disbursements for family planning (standard grant)",
+    "kind": "variable"
+  },
+  {
+    "code": "country/DEU",
+    "label": "Germany",
+    "kind": "place"
+  },
+  {
+    "code": "country/NGA",
+    "label": "Nigeria",
+    "kind": "place"
+  },
+  {
+    "code": "CurrencyUSD",
+    "label": "US dollar",
+    "kind": "unit"
+  },
+  {
+    "code": "provenance/OECDCreditorReportingSystem",
+    "label": "OECD Creditor Reporting System (CRS)",
+    "kind": "source"
+  }
+]

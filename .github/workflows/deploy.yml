@@ -1,0 +1,502 @@
+name: Deploy
+
+# The deploy steps every environment runs. deploy-dev.yml and deploy-prod.yml
+# call this workflow and choose only the triggers, the GitHub Environment, and
+# the owner guard. Every project, region, registry, service, and job name
+# comes from that environment's variables, so one variable name means the same
+# thing in `dev` and `production`. See deploy/README.md for the full list.
+#
+# The `deploy` job resolves its own target commit rather than trusting the
+# commit that triggered it. On a push or a workflow_dispatch the target is
+# `github.sha`. On workflow_run the target is the triggering branch's current
+# tip: if that tip is the run's own `head_sha`, this run's CI success already
+# proves the tip is green; otherwise the job asks the GitHub API for CI's
+# newest run against that tip and only proceeds when it is
+# `completed`/`success`. A tip whose CI is still running or failed deploys
+# nothing. A still-running tip triggers its own workflow_run once it
+# completes, and a failed tip has no green commit to deploy. This is what
+# keeps concurrent runs harmless: whichever run actually executes resolves the
+# same tip and reconciles the service to it, so an older commit's run never
+# ships an older commit over a newer one.
+#
+# Whether the target needs a deploy is decided against the live service:
+# after authenticating to GCP, the job reads the image Cloud Run is currently
+# serving with `gcloud run services describe`, takes its commit tag as the
+# live commit, and diffs that commit against the target over the paths
+# `.github/scripts/deploy_decide.sh` watches. A target identical to the live
+# commit, or one whose diff since the live commit touches none of those
+# paths, skips the build and the service update entirely. A live tag that
+# isn't a commit this checkout knows (a placeholder image, or a since-deleted
+# branch) can't be compared, so the job deploys rather than risk skipping a
+# real change.
+#
+# On workflow_dispatch the decide step still reads the live image, so an
+# unreadable service fails loudly, but skips the comparison and forces
+# deploy=true regardless of the diff. Dispatch exists to force a redeploy of
+# exactly the dispatched commit, for example to re-run the migration jobs or
+# roll back, and a dispatch of the commit already live, or of one differing
+# only outside the watched paths, still has to deploy.
+#
+# This workflow only swaps the image on Cloud Run services and jobs that
+# already exist. dfo-infra owns creating and configuring them; see
+# deploy/README.md for the full division of responsibility.
+#
+# The apis service moves to an image only after both migration jobs
+# (vars.JOB_DATASETS_MIGRATE, vars.JOB_PRESENTATION_MIGRATE), the coverage
+# job (vars.JOB_COVERAGE), the origin catalogue job
+# (vars.JOB_ORIGIN_CATALOGUE), the search catalogue job
+# (vars.JOB_SEARCH_CATALOGUE), and the datasets worker service
+# (vars.SERVICE_WORKER) have moved onto that same image: build and push the
+# SHA-tagged image, point each job at it, run both migration jobs, make sure a
+# compatible coverage artifact and a compatible origin catalogue are
+# published, then update the worker service, then the apis service, then
+# record the image's code index as the one both services run. Each job
+# is pointed at the new image before it executes, so a job still on the
+# `gcr.io/cloudrun/hello` placeholder a fresh project starts with never runs
+# as the placeholder. The two migration jobs are idempotent. Given an image
+# with nothing new to apply, each reports nothing to apply and exits 0, so
+# every deploy runs both rather than trying to detect whether any is needed.
+# The coverage and origin catalogue jobs are pointed at the new image on
+# every deploy but built only when no compatible artifact is published for
+# the image's format (see their steps below). The search catalogue job is
+# pointed at the new image and left to its Scheduler (see its step). A
+# failed step stops the job before any step after it runs, so a failed
+# migration or artifact build leaves both services on their current image.
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: GitHub Environment whose variables and secrets name the deploy target
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+      # Queries the GitHub API for CI's run against the branch tip, below.
+      actions: read
+    steps:
+      - name: Resolve the commit to deploy
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # The branch the triggering CI run ran on. The caller's
+          # workflow_run filter limits it to one branch.
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" != "workflow_run" ]; then
+            echo "sha=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          tip="$(gh api "repos/${{ github.repository }}/git/ref/heads/$BRANCH" --jq '.object.sha // empty')"
+          if [ -z "$tip" ]; then
+            echo "::error::gh api returned no sha for repos/${{ github.repository }}/git/ref/heads/$BRANCH."
+            exit 1
+          fi
+          head_sha="${{ github.event.workflow_run.head_sha }}"
+
+          if [ "$tip" = "$head_sha" ]; then
+            # This run's own CI success already proves the tip is green.
+            echo "sha=$tip" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          response="$(gh api "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?head_sha=$tip&branch=$BRANCH&event=push&per_page=1" \
+            --jq '(.workflow_runs[0] // {}) | "\(.status // "missing") \(.conclusion // "null")"')"
+          status="${response%% *}"
+          conclusion="${response#* }"
+
+          if [ "$status" = "completed" ] && [ "$conclusion" = "success" ]; then
+            echo "sha=$tip" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::$BRANCH's tip $tip has CI $status/$conclusion, not completed/success; deploying nothing. A still-running tip triggers its own run on completion, and a failed tip has no green commit to deploy."
+            echo "sha=" >> "$GITHUB_OUTPUT"
+          fi
+
+      # dfo-infra defines the Cloud Run service and job names; the deploy
+      # environment carries them as variables. See deploy/README.md. All of
+      # them are checked here, before the build and either migration job run,
+      # so a missing variable fails fast rather than after burning a full
+      # build plus two migrations.
+      - name: Resolve image ref
+        id: image
+        if: steps.target.outputs.sha != ''
+        env:
+          PROJECT_ID: ${{ vars.PROJECT_ID }}
+          REGION: ${{ vars.REGION }}
+          AR_REPO: ${{ vars.AR_REPO }}
+          SERVICE_APIS: ${{ vars.SERVICE_APIS }}
+          SERVICE_WORKER: ${{ vars.SERVICE_WORKER }}
+          JOB_DATASETS_MIGRATE: ${{ vars.JOB_DATASETS_MIGRATE }}
+          JOB_PRESENTATION_MIGRATE: ${{ vars.JOB_PRESENTATION_MIGRATE }}
+          JOB_COVERAGE: ${{ vars.JOB_COVERAGE }}
+          JOB_ORIGIN_CATALOGUE: ${{ vars.JOB_ORIGIN_CATALOGUE }}
+          JOB_SEARCH_CATALOGUE: ${{ vars.JOB_SEARCH_CATALOGUE }}
+        run: |
+          set -euo pipefail
+          missing=0
+          checked=0
+          for name in PROJECT_ID REGION AR_REPO SERVICE_APIS SERVICE_WORKER \
+            JOB_DATASETS_MIGRATE JOB_PRESENTATION_MIGRATE JOB_COVERAGE JOB_ORIGIN_CATALOGUE \
+            JOB_SEARCH_CATALOGUE; do
+            checked=$((checked + 1))
+            if [ -z "${!name}" ]; then
+              echo "::error::Missing vars.$name in the '${{ inputs.environment }}' GitHub Environment."
+              missing=1
+            fi
+          done
+          [ "$checked" -eq 10 ] || { echo "::error::checked $checked variables, expected 10."; exit 1; }
+          [ "$missing" -eq 0 ] || exit 1
+          image="$REGION-docker.pkg.dev/$PROJECT_ID/$AR_REPO/dfo-apis:${{ steps.target.outputs.sha }}"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7
+        if: steps.target.outputs.sha != ''
+        with:
+          ref: ${{ steps.target.outputs.sha }}
+          # Full history: the decide step below diffs the live commit against
+          # the target, and the live commit can be an arbitrary number of
+          # commits back.
+          fetch-depth: 0
+
+      - id: auth
+        if: steps.target.outputs.sha != ''
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.WIF_PROVIDER }}
+          service_account: ${{ secrets.WIF_SA }}
+          token_format: access_token
+
+      - uses: google-github-actions/setup-gcloud@v3
+        if: steps.target.outputs.sha != ''
+
+      # Reads the commit Cloud Run is currently serving and diffs it against
+      # the target over the image's inputs. See the script for the full
+      # decision: identical commits, or a diff confined to non-image paths,
+      # both skip the build; an unrecognised live tag deploys rather than risk
+      # skipping a real change it can't compare.
+      - name: Decide whether to deploy
+        id: decide
+        if: steps.target.outputs.sha != ''
+        env:
+          SERVICE: ${{ vars.SERVICE_APIS }}
+          REGION: ${{ vars.REGION }}
+          PROJECT_ID: ${{ vars.PROJECT_ID }}
+          TARGET: ${{ steps.target.outputs.sha }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' }}
+        run: .github/scripts/deploy_decide.sh
+
+      - uses: docker/setup-buildx-action@v4
+        if: steps.decide.outputs.deploy == 'true'
+
+      - uses: docker/login-action@v4
+        if: steps.decide.outputs.deploy == 'true'
+        with:
+          registry: ${{ vars.REGION }}-docker.pkg.dev
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      # The Dockerfile mounts this token as a BuildKit secret to resolve the
+      # private dfo-spec-kit dependency, and the build fails without it.
+      - name: Mint a dfo-spec-kit read token
+        id: spec-kit-auth
+        if: steps.decide.outputs.deploy == 'true'
+        uses: ./.github/actions/spec-kit-auth
+        with:
+          client-id: ${{ vars.READER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.READER_APP_PRIVATE_KEY }}
+
+      # The image every job below runs is the image this step just pushed.
+      # Pointing a job at anything else exits 0 without touching the database.
+      #
+      # The tag and DFO_BUILD_COMMIT both name the resolved target, so the
+      # x-dfo-commit header the service answers with identifies the code
+      # actually running.
+      - if: steps.decide.outputs.deploy == 'true'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.image.outputs.image }}
+          build-args: DFO_BUILD_COMMIT=${{ steps.target.outputs.sha }}
+          secrets: |
+            spec_kit_token=${{ steps.spec-kit-auth.outputs.token }}
+
+      # Both migration Cloud Run Jobs carry lifecycle.ignore_changes on their
+      # container image in Terraform, so the deploy pipeline is what moves
+      # them onto each new image. `dataset_store.migrate` and
+      # `presentation_store.migrate` (the jobs' entrypoints) apply only the
+      # migrations not already recorded and exit 0 reporting nothing to do
+      # when there are none, so running the job on every deploy is safe
+      # whether or not this image carries a new migration.
+      - name: Point the datasets migration job at the new image
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          gcloud run jobs update "${{ vars.JOB_DATASETS_MIGRATE }}" \
+            --image="${{ steps.image.outputs.image }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --quiet
+
+      - name: Run the datasets migration job
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          gcloud run jobs execute "${{ vars.JOB_DATASETS_MIGRATE }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --wait
+
+      - name: Point the presentation migration job at the new image
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          gcloud run jobs update "${{ vars.JOB_PRESENTATION_MIGRATE }}" \
+            --image="${{ steps.image.outputs.image }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --quiet
+
+      - name: Run the presentation migration job
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          gcloud run jobs execute "${{ vars.JOB_PRESENTATION_MIGRATE }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --wait
+
+      # The coverage job moves onto the new image on every deploy so its
+      # scheduled runs (every 15 minutes) use the new code. The deploy itself
+      # only needs the guarantee the service has at startup:
+      # `search_surface()`/`datasets_surface()` construction loads the
+      # coverage artifact (`series_coverage.shared.get_coverage_service()`)
+      # and fails readiness when none can be loaded. The scheduled job owns
+      # freshness, and a running service reloads a newer artifact within
+      # COVERAGE_RECHECK_SECONDS, so a deploy does not rebuild an artifact
+      # that is already published.
+      #
+      # The two checks below run as executions of this job, and an execution
+      # overrides the job's args and env but not its image, so the job moves
+      # before the checks and therefore before the services. A deploy that
+      # stops after this step leaves the job on a newer image than the
+      # services. The job's pointer expiry does not rely on the two moving
+      # together: it reads the serving index the last step of this workflow
+      # records.
+      - name: Point the coverage job at the new image
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          gcloud run jobs update "${{ vars.JOB_COVERAGE }}" \
+            --image="${{ steps.image.outputs.image }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --quiet
+
+      # `python -m series_coverage.verify` calls `series_coverage.loader
+      # .load_coverage` against COVERAGE_ARTIFACT_URI directly and exits
+      # non-zero unless a compatible artifact actually loads -- the same
+      # call `get_coverage_service()` makes at surface-construction time, so
+      # this can never drift from what startup itself would do. It runs as
+      # an execution of the coverage Job with its args overridden (`--args`;
+      # the job's own container `command` is already `python`), so it
+      # inherits that Job's Terraform-provisioned COVERAGE_ARTIFACT_URI
+      # rather than a second, workflow-level copy of it that could drift.
+      #
+      # Verify runs first. It passes whenever the new image's format root
+      # holds a compatible artifact, however old, and the deploy goes on. A
+      # format bump, or a fresh project, has no artifact in its format root,
+      # so verify fails, the build job (`python -m series_coverage.job`)
+      # runs, and a second verify confirms the build published one, all
+      # before traffic moves. A build failure, or a second verify failure,
+      # fails the step and stops the deploy. A build that fails on the data
+      # alone therefore blocks a release only when no artifact exists for the
+      # format to serve.
+      - name: Ensure a compatible coverage artifact is published
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          verify() {
+            gcloud run jobs execute "${{ vars.JOB_COVERAGE }}" \
+              --region="${{ vars.REGION }}" \
+              --project="${{ vars.PROJECT_ID }}" \
+              --wait \
+              --args=-m,series_coverage.verify
+          }
+          if ! verify; then
+            gcloud run jobs execute "${{ vars.JOB_COVERAGE }}" \
+              --region="${{ vars.REGION }}" \
+              --project="${{ vars.PROJECT_ID }}" \
+              --wait
+            verify
+          fi
+
+      # The packaged code index carries each StatVar's provenances, joined
+      # from a coverage build when the index was exported. `python -m
+      # series_coverage.verify_index` compares every index row with the
+      # published build and exits non-zero on a difference, naming the
+      # variables. It runs as an execution of the coverage job on the new
+      # image, like the step above, so it reads the index that image packages
+      # and that job's own COVERAGE_ARTIFACT_URI. A failure means the index
+      # needs re-exporting (scripts/export_code_index.py) against the current
+      # build, and it stops the deploy before traffic moves. `--record` writes
+      # the index's compatibility pointer (compatible/<content_hash>.json)
+      # naming the build it checked, so the new revision has a compatible
+      # build to load even after a later publish that its index does not
+      # match.
+      - name: Check the code index against the coverage build
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          gcloud run jobs execute "${{ vars.JOB_COVERAGE }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --wait \
+            --args=-m,series_coverage.verify_index,--record
+
+      # The origin catalogue job moves onto the new image on every deploy so
+      # its scheduled runs (Cloud Scheduler, every 15 minutes) use the new
+      # code. The deploy itself only needs the guarantee the services have at
+      # startup: the apis service and the datasets worker load the catalogue
+      # through ORIGIN_CATALOGUE_URI
+      # (`origin_catalogue.service.get_catalogue_service()`) and fail
+      # readiness when none can be loaded. The scheduled job owns freshness,
+      # and a running service reloads a newer build within
+      # ORIGIN_CATALOGUE_RECHECK_SECONDS, so a deploy does not rebuild a
+      # catalogue that is already published.
+      - name: Point the origin catalogue job at the new image
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          gcloud run jobs update "${{ vars.JOB_ORIGIN_CATALOGUE }}" \
+            --image="${{ steps.image.outputs.image }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --quiet
+
+      # `python -m origin_catalogue.verify` loads the catalogue from
+      # ORIGIN_CATALOGUE_URI with the loader the services call at startup and
+      # exits non-zero unless a compatible build loads from this image's
+      # format root. It runs as an execution of the origin catalogue Job with
+      # its args overridden, so it reads the Job's Terraform-provisioned
+      # ORIGIN_CATALOGUE_URI.
+      #
+      # Verify runs first. It passes whenever the new image's format root
+      # holds a compatible build, however old, and the deploy goes on. The
+      # first deploy and a format bump have no build in the new format root,
+      # so verify fails, the build job (`python -m origin_catalogue.job`)
+      # runs, and a second verify confirms the build published one, all
+      # before traffic moves. With no earlier build to carry forward, that
+      # build is a full one, bounded by the Job's 7200-second timeout. The
+      # job exits 1 on a refused or failed build, and 0 without publishing
+      # when it skips, discards its build or loses the publish race, so the
+      # second verify is what checks that a compatible catalogue exists. This
+      # path has no earlier build to carry the UN rows forward from, so a UN
+      # outage also fails the build (see deploy/origin-catalogue.md). A build
+      # failure, or a second verify failure, fails the step and stops the
+      # deploy with both services on their current image.
+      - name: Ensure a compatible origin catalogue is published
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          verify() {
+            gcloud run jobs execute "${{ vars.JOB_ORIGIN_CATALOGUE }}" \
+              --region="${{ vars.REGION }}" \
+              --project="${{ vars.PROJECT_ID }}" \
+              --wait \
+              --args=-m,origin_catalogue.verify
+          }
+          if ! verify; then
+            gcloud run jobs execute "${{ vars.JOB_ORIGIN_CATALOGUE }}" \
+              --region="${{ vars.REGION }}" \
+              --project="${{ vars.PROJECT_ID }}" \
+              --wait
+            verify
+          fi
+
+      # The search catalogue job (`python -m search.catalogue.job`) builds the
+      # example sentences GET /api/search/catalogue serves. It moves onto the
+      # new image here, after the coverage and origin catalogue steps, because
+      # it reads both artifacts in the new image's formats. The deploy does
+      # not execute it. The apis service starts without a catalogue, and only
+      # that route answers 503 until one loads. Its Cloud Scheduler tick runs
+      # every 15 minutes, and the build key includes the image's commit, so
+      # the first tick after a deploy rebuilds on the new image in about 90
+      # seconds. Executing it here would add that build, its Gemini calls, and
+      # a dependency on Gemini and the graph being up to every release.
+      - name: Point the search catalogue job at the new image
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          gcloud run jobs update "${{ vars.JOB_SEARCH_CATALOGUE }}" \
+            --image="${{ steps.image.outputs.image }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --quiet
+
+      # The async operations worker (dfo-infra's google_cloud_run_v2_service
+      # .datasets_worker) runs the same image as the apis service, and moves
+      # onto the new one before the apis step below does, because an
+      # in-flight or newly-enqueued operation must run against the schema and
+      # coverage artifact this deploy just brought current. Image-only
+      # update, same shape as the apis service step below. dfo-infra owns the
+      # service's own scaling/secrets/runtime-service-account config via
+      # lifecycle.ignore_changes on the container image.
+      - name: Point the datasets worker at the new image
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          gcloud run services update "${{ vars.SERVICE_WORKER }}" \
+            --image="${{ steps.image.outputs.image }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --quiet
+
+      # Image-only update against the service dfo-infra already defined. This
+      # step uses `gcloud run services update`, not `gcloud run services
+      # replace`, since replace takes a full manifest and would fight
+      # dfo-infra for ownership of scaling, secrets, and the runtime service
+      # account. dfo-infra keeps lifecycle.ignore_changes on the container
+      # image in Terraform for the same reason, and replacing the manifest
+      # here would fight that too. This step runs only once both migration
+      # jobs above have exited 0, so the service never serves an image ahead
+      # of the schema it expects.
+      - name: Point Cloud Run at the new image
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          gcloud run services update "${{ vars.SERVICE_APIS }}" \
+            --image="${{ steps.image.outputs.image }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --quiet
+
+      # Both services now run the new image's code index. `python -m
+      # series_coverage.record_serving_index` records that index's
+      # content_hash (serving/code_index.json under the coverage format
+      # root), running as an execution of the coverage job, which is on the
+      # new image. The job's prune expires another index's compatibility
+      # pointer only when it was last written before this record and seven
+      # days ago or more, so a pointer a serving revision still needs
+      # survives a deploy that failed part way. A failure here leaves the
+      # previous record, which expires fewer pointers, never more.
+      - name: Record the code index the services run
+        if: steps.decide.outputs.deploy == 'true'
+        run: |
+          set -euo pipefail
+          gcloud run jobs execute "${{ vars.JOB_COVERAGE }}" \
+            --region="${{ vars.REGION }}" \
+            --project="${{ vars.PROJECT_ID }}" \
+            --wait \
+            --args=-m,series_coverage.record_serving_index

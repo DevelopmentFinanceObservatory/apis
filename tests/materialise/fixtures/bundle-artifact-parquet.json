@@ -1,0 +1,14 @@
+{
+  "path": "data/data.parquet",
+  "bytes": 4096,
+  "digest": "sha256:0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0",
+  "media_type": "application/vnd.apache.parquet",
+  "table_schema": {
+    "fields": [
+      { "name": "provider", "type": "string" },
+      { "name": "recipient", "type": "string" },
+      { "name": "year", "type": "year" },
+      { "name": "value", "type": "number" }
+    ]
+  }
+}

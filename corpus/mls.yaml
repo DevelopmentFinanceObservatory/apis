@@ -1,0 +1,278 @@
+- id: dq-mls-001
+  query: Imputed multilateral ODA from Norway
+  why: Resolves to mls.imputed for country/NOR as origin.
+  reuse: panel/mls-001
+  tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: mls.imputed}
+      entities: [{dcid: country/NOR, role: origin}]
+      window: {kind: all}
+      operations: []
+
+- id: dq-mls-002
+  query: Imputed multilateral ODA from Norway to Kenya
+  why: Resolves to mls.imputed for country/NOR as origin and country/KEN as destination.
+  reuse: panel/mls-002
+  tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: mls.imputed}
+      entities: [{dcid: country/NOR, role: origin}, {dcid: country/KEN, role: destination}]
+      window: {kind: all}
+      operations: []
+
+- id: dq-mls-003
+  query: Imputed multilateral aid to Kenya
+  why: Imputed multilateral aid to Kenya resolves to the MLS family; the imputed-aid-kenya golden asserts operations only.
+  reuse: panel/mls-003
+  tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect: {definite: {measure: {family: mls.imputed}, entities: [{dcid: country/KEN, role: destination}]}}
+
+- id: dq-mls-004
+  query: Imputed multilateral ODA from Germany to basic education in 2020
+  why: Resolves to mls.imputed for country/DEU as origin in 2020.
+  reuse: panel/mls-006
+  tags: {theme: education, entity: country, direction: origin_only, unit: default, time: year, operation: none, breakdown: sector, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: mls.imputed, bound: {crsPurpose: CRSPurposeCode112}}
+      entities: [{dcid: country/DEU, role: origin}]
+      window: {kind: range, start: 2020, end: 2020}
+
+- id: dq-mls-005
+  query: Imputed multilateral ODA from Sweden to climate change adaptation
+  why: Adaptation is a Rio marker outside the purpose codes, so the answer is qualifier_not_bound; a definite answer must bind environmental policy (41010).
+  reuse: panel/mls-008
+  tags: {theme: climate_energy, entity: country, direction: origin_only, unit: default, time: none, operation: none, breakdown: sector, door: raw_text, phrasing: technical, probe: [missing_data]}
+  known_failure: {issue: 1156, checks: [measure]}
+  expect:
+    entities: [{dcid: country/SWE, role: origin}]
+    definite: {measure: {family: mls.imputed, bound: {crsPurpose: CRSPurposeCode41010}}}
+    no_data: {reason: qualifier_not_bound, category: absent}
+
+- id: dq-mls-006
+  query: Imputed multilateral ODA from DAC donors
+  why: MLS has no DAC countries total provider and no graph node holds DAC membership, so 'DAC donors' reads as its member countries.
+  reuse: panel/mls-009
+  tags: {theme: aid, entity: region_group, direction: origin_only, unit: default, time: none, operation: aggregate, breakdown: none, door: raw_text, phrasing: technical}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: mls.imputed}
+      entities: [{label: DAC donors, role: origin, expands: true}]
+
+- id: dq-mls-007
+  query: Imputed multilateral ODA from EU members
+  why: EU members are 27 countries and EU Institutions is a different provider; the two must not merge.
+  reuse: panel/mls-010
+  tags: {theme: aid, entity: region_group, direction: origin_only, unit: default, time: none, operation: aggregate, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: mls.imputed}
+      entities: [{dcid: EuropeanUnion, role: origin, expands: true}]
+
+- id: dq-mls-008
+  query: Imputed multilateral ODA from the UAE
+  why: The UAE is an MLS provider, so the answer is the MLS family; CRS gross disbursements answer a different question.
+  reuse: panel/mls-012
+  tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical, overlap: [crs]}
+  expect: {definite: {measure: {family: mls.imputed}, entities: [{dcid: country/ARE, role: origin}]}}
+
+- id: dq-mls-009
+  query: Which donors give the most imputed multilateral ODA to Ethiopia?
+  why: Resolves to mls.imputed for country/ETH as destination.
+  reuse: panel/mls-014
+  tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: none, operation: rank, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: mls.imputed}
+      entities: [{dcid: country/ETH, role: destination}]
+      operations: [{verb: rank, over: origin}]
+
+- id: dq-mls-010
+  query: Which sectors get the most imputed multilateral ODA from the UK?
+  why: Resolves to mls.imputed for country/GBR as origin.
+  reuse: panel/mls-015
+  tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: none, operation: rank, breakdown: sector, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: mls.imputed, open: [crsPurpose]}
+      entities: [{dcid: country/GBR, role: origin}]
+      operations: [{verb: rank, over: category}]
+
+- id: dq-mls-011
+  query: Imputed multilateral ODA from Norway to Kenya 2015 to 2020
+  why: Resolves to mls.imputed for country/NOR as origin and country/KEN as destination from 2015 to 2020.
+  reuse: panel/mls-019
+  tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: range, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: mls.imputed}
+      entities: [{dcid: country/NOR, role: origin}, {dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2015, end: 2020}
+
+- id: dq-mls-012
+  query: Imputed multilateral ODA from Norway in 2010
+  why: MLS starts in 2011; a single earlier year serves the held years with a window note.
+  reuse: panel/mls-020
+  tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: technical, probe: [missing_data]}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: mls.imputed}
+      entities: [{dcid: country/NOR, role: origin}]
+      window: {kind: range, start: 2010, end: 2010}
+
+- id: dq-mls-013
+  query: Imputed multilateral ODA from Norway in constant 2022 dollars
+  why: Constant 2022 dollars typed in raw text reach the unit binder as a USD constant-price request.
+  reuse: panel/mls-022
+  tags: {theme: aid, entity: country, direction: origin_only, unit: base_year, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  known_failure: {issue: 1156, checks: [request]}
+  expect:
+    definite:
+      measure: {family: mls.imputed}
+      entities: [{dcid: country/NOR, role: origin}]
+      unit: {currency: USD, prices: constant, base_year: 2022}
+
+- id: dq-mls-014
+  query: 'parsed: imputed multilateral ODA from Norway, constant 2022 US dollars'
+  door: parsed
+  parsed:
+    - variable_text: imputed multilateral ODA
+      entities: [{text: Norway, role_text: from}]
+      unit_text: constant 2022 US dollars
+  why: The DAC conversion table serves MLS; recipe_not_declared here is an engine gap, since no recipe is declared for attributedAmount.
+  tags: {theme: aid, entity: country, direction: origin_only, unit: base_year, time: none, operation: none, breakdown: none, door: parsed, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: mls.imputed}
+      entities: [{dcid: country/NOR, role: origin}]
+      unit: {currency: USD, prices: constant, base_year: 2022}
+      warnings: [role_scope_defaulted]
+
+- id: dq-mls-015
+  query: Imputed multilateral ODA from Ireland to low income countries
+  why: MLS has no low-income aggregate node, so the group is unresolved; dropping it would return Ireland's imputed aid to every recipient.
+  reuse: panel/mls-023
+  tags: {theme: aid, entity: region_group, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical, probe: [income_group]}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    no_data:
+      entities: [{dcid: country/IRL, role: origin}]
+      reason: entity_not_resolved
+      category: unresolved
+
+- id: dq-mls-016
+  query: How much of Norway's aid goes through multilateral organisations?
+  why: A provider's MLS total equals its core contributions to multilaterals; without 'imputed' the answer offers MLS among candidates.
+  reuse: panel/mls-025
+  tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: none, operation: share_of, breakdown: none, door: raw_text, phrasing: casual, probe: [mls_channel]}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect: {candidates: {entities: [{dcid: country/NOR, role: origin}], include_families: [mls.imputed]}}
+
+- id: dq-mls-017
+  query: How much does Norway give to the UN?
+  why: The UN is a channel and no dataset keeps the channel; returning Norway's total aid is wrong.
+  reuse: panel/mls-026
+  tags: {theme: aid, entity: organisation, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [mls_channel]}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    no_data: {reason: [entity_role_not_admitted, qualifier_not_bound, entity_not_resolved, entity_ambiguous]}
+
+- id: dq-mls-018
+  query: How much goes through the World Bank?
+  why: '''World Bank'' is ambiguous between IBRD and IDA, so the answer is entity_ambiguous.'
+  reuse: panel/mls-027
+  tags: {theme: aid, entity: organisation, direction: none, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [mls_channel]}
+  expect: {no_data: {reason: entity_ambiguous, category: unresolved}}
+
+- id: dq-mls-019
+  query: Imputed multilateral ODA through Gavi
+  why: Gavi is a channel and no dataset keeps the channel; returning an unfiltered total is wrong.
+  reuse: panel/mls-029
+  tags: {theme: health, entity: organisation, direction: none, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical, probe: [mls_channel]}
+  expect: {no_data: {reason: [qualifier_not_bound, no_observations, entity_role_not_admitted]}}
+
+- id: dq-mls-020
+  query: Imputed multilateral ODA from IDA
+  why: IDA spends and does not contribute to multilaterals; serving IDA's own CRS spending answers a different question.
+  reuse: panel/mls-031
+  tags: {theme: aid, entity: organisation, direction: origin_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical, probe: [mls_channel]}
+  expect:
+    no_data:
+      entities: [{dcid: InternationalDevelopmentAssociation, role: origin}]
+      reason: [no_observations, role_incompatible]
+      category: absent
+
+- id: dq-mls-021
+  query: Multilateral ODA from Norway to Kenya
+  why: '''Multilateral ODA'' does not opt into MLS; only ''imputed'' does, so the answer offers MLS among candidates.'
+  reuse: panel/mls-032
+  tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical, overlap: [crs]}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    candidates:
+      entities: [{dcid: country/NOR, role: origin}, {dcid: country/KEN, role: destination}]
+      include_families: [mls.imputed]
+
+- id: dq-mls-022
+  query: Norway's bilateral-only aid to Kenya, not counting what goes through multilaterals
+  why: CRS excludes core contributions, so the default family is the bilateral-only answer.
+  reuse: panel/mls-033
+  tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, overlap: [mls]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: country/NOR, role: origin}, {dcid: country/KEN, role: destination}]
+
+- id: dq-mls-023
+  query: inputed multilateral ODA from Norway to Kenya
+  why: Resolves to mls.imputed for country/NOR as origin and country/KEN as destination.
+  reuse: panel/mls-035
+  tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: misspelt}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: mls.imputed}
+      entities: [{dcid: country/NOR, role: origin}, {dcid: country/KEN, role: destination}]
+
+- id: dq-mls-024
+  query: Imputed multilateral ODA from Norway to health
+  why: Resolves to mls.imputed for country/NOR as origin.
+  reuse: panel/mls-036
+  tags: {theme: health, entity: country, direction: origin_only, unit: default, time: none, operation: none, breakdown: sector, door: raw_text, phrasing: technical}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: mls.imputed, bound: {crsPurpose: CRSPurposeCode120}}
+      entities: [{dcid: country/NOR, role: origin}]
+
+- id: dq-mls-025
+  query: Compare imputed multilateral ODA from France and Germany
+  why: Resolves to mls.imputed for country/FRA as origin and country/DEU as origin.
+  reuse: panel/mls-013
+  tags: {theme: aid, entity: two_countries, direction: origin_only, unit: default, time: none, operation: compare, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: mls.imputed}
+      entities: [{dcid: country/FRA, role: origin}, {dcid: country/DEU, role: origin}]
+      operations: []
+
+- id: dq-mls-026
+  query: bilateral and imputed multilateral aid from Norway to Kenya in 2022
+  why: CRS and MLS do not double count, so the caller may add the two parts.
+  tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: casual, overlap: [crs]}
+  expect:
+    parts:
+      - definite:
+          measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+          entities: [{dcid: country/NOR, role: origin}, {dcid: country/KEN, role: destination}]
+          window: {kind: range, start: 2022, end: 2022}
+      - definite:
+          measure: {family: mls.imputed}
+          entities: [{dcid: country/NOR, role: origin}, {dcid: country/KEN, role: destination}]
+          window: {kind: range, start: 2022, end: 2022}

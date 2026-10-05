@@ -1,0 +1,28 @@
+-- The classified refusal a deterministically failed async operation ended on,
+-- on the worker's job record (`0011_operation.sql`).
+--
+-- `refusal` holds `dfo_platform.problem.ProblemSpec.to_canonical_data()` for
+-- the refusal the worker classified: its status, code, detail, pointer,
+-- alternatives, issues, cause and ceiling fields, the body
+-- `GET /api/datasets/{id}` renders for the same failure.
+-- `LiveOperationStore.fail` writes it beside `refusal_code`, and the poll
+-- route copies it into its `operation_failed` body, so a caller polling a
+-- failed mint reads the remedy a synchronous caller reads.
+--
+-- NULL on every row that is not a deterministic failure: a transient failure
+-- exhausted on its last Cloud Tasks attempt and a dead-row expiry record
+-- `refusal_code` alone, and a retryable reset clears the column with
+-- `refusal_code`. Rows written before this migration, and failures recorded
+-- by an older worker image mid-rollout, also carry NULL, and their poll
+-- names the refusal code only.
+--
+-- Apply this migration before deploying an API or worker image that reads
+-- the column. Every `LiveOperationStore` statement in such an image selects
+-- `refusal`, so against a table without it each one fails with an
+-- undefined-column error, surfaced as `DatasetsStoreUnavailable`: every
+-- poll, every over-budget submit and every worker claim. A mint within the
+-- sync budget never reaches the operation store and is unaffected. An image
+-- older than the column runs unchanged against the migrated table: it
+-- selects no `refusal` and its failures leave the column NULL.
+ALTER TABLE datasets.operation
+    ADD COLUMN refusal jsonb;

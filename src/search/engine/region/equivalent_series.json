@@ -1,0 +1,36 @@
+{
+  "format_version": 1,
+  "entries": [
+    {
+      "members": [
+        "worldBank/EG_ELC_ACCS_ZS",
+        "sdg/EG_ACS_ELEC"
+      ],
+      "note": "The share of a population with access to electricity, as a percentage."
+    },
+    {
+      "members": [
+        "MortalityRate_Person_Upto4Years_AsFractionOf_Count_BirthEvent_LiveBirth",
+        "sdg/SH_DYN_MORT.AGE--Y0T4",
+        "worldBank/SH_DYN_MORT"
+      ],
+      "note": "The under-five mortality rate: the probability that a child born alive dies before reaching age five, expressed per live birth."
+    },
+    {
+      "members": [
+        "Amount_Remittance_InwardRemittance_AsFractionOf_Amount_EconomicActivity_GrossDomesticProduction_Nominal",
+        "sdg/BX_TRF_PWKR"
+      ],
+      "note": "Personal remittances received from abroad, as a share of gross domestic product."
+    },
+    {
+      "members": [
+        "Amount_EconomicActivity_GrossDomesticProduction_Nominal",
+        "ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_Nominal"
+      ],
+      "note": "Gross domestic product at current prices, in US dollars, as the World Bank series and the IMF World Economic Outlook series report it.",
+      "preferred": "Amount_EconomicActivity_GrossDomesticProduction_Nominal",
+      "currency": "USD"
+    }
+  ]
+}

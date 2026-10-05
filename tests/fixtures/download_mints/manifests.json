@@ -1,0 +1,313 @@
+{
+ "cases": [
+  {
+   "name": "pakistan",
+   "query": "inflation in Pakistan",
+   "entry": "raw_text",
+   "spec_id": "spec_3fd984db09a5175ff45ae756578d2525",
+   "requested_window": "all",
+   "converts": false,
+   "series": {
+    "stat_var": "sdg/FP_CPI_TOTL_ZG",
+    "place": "country/PAK",
+    "facets": [
+     {
+      "facet_id": "10868335968854191536",
+      "provenance_id": "dc/base/UN_SDG",
+      "measurement_method": "SDG_G_G",
+      "unit": "SDG_PERCENT",
+      "observation_period": null,
+      "obs_count": 23,
+      "earliest_date": "2000",
+      "latest_date": "2022"
+     }
+    ]
+   },
+   "mint": {
+    "rows": 23,
+    "series_count": 1,
+    "window": {
+     "start_year": 2000,
+     "end_year": 2022
+    },
+    "licence": "PublicDomain"
+   }
+  },
+  {
+   "name": "latest_pakistan",
+   "query": "latest inflation in Pakistan",
+   "entry": "raw_text",
+   "spec_id": "spec_1c24999da1a614253f22e292ff9b7ac1",
+   "requested_window": "latest",
+   "converts": false,
+   "series": {
+    "stat_var": "sdg/FP_CPI_TOTL_ZG",
+    "place": "country/PAK",
+    "facets": [
+     {
+      "facet_id": "10868335968854191536",
+      "provenance_id": "dc/base/UN_SDG",
+      "measurement_method": "SDG_G_G",
+      "unit": "SDG_PERCENT",
+      "observation_period": null,
+      "obs_count": 23,
+      "earliest_date": "2000",
+      "latest_date": "2022"
+     }
+    ]
+   },
+   "mint": {
+    "rows": 1,
+    "series_count": 1,
+    "window": {
+     "start_year": 2022,
+     "end_year": 2022
+    },
+    "licence": "PublicDomain"
+   }
+  },
+  {
+   "name": "ethiopia",
+   "query": "life expectancy in Ethiopia",
+   "entry": "raw_text",
+   "spec_id": "spec_e03791243978b4d0426b39c683c57be6",
+   "requested_window": "all",
+   "converts": false,
+   "series": {
+    "stat_var": "LifeExpectancy_Person",
+    "place": "country/ETH",
+    "facets": [
+     {
+      "facet_id": "8027911949465806975",
+      "provenance_id": "dc/base/WorldDevelopmentIndicators",
+      "measurement_method": null,
+      "unit": "Year",
+      "observation_period": null,
+      "obs_count": 64,
+      "earliest_date": "1960",
+      "latest_date": "2023"
+     }
+    ]
+   },
+   "mint": {
+    "rows": 64,
+    "series_count": null,
+    "window": {
+     "start_year": 1960,
+     "end_year": 2023
+    },
+    "licence": null
+   }
+  },
+  {
+   "name": "india_gdp",
+   "query": "GDP of India in current US dollars",
+   "entry": "candidates",
+   "spec_id": "spec_b2637f715e18472e64d1a037cfc0696a",
+   "requested_window": "all",
+   "converts": false,
+   "series": {
+    "stat_var": "Amount_EconomicActivity_GrossDomesticProduction_Nominal",
+    "place": "country/IND",
+    "facets": [
+     {
+      "facet_id": "8535402560764839853",
+      "provenance_id": "dc/base/WorldDevelopmentIndicators",
+      "measurement_method": null,
+      "unit": "USDollar",
+      "observation_period": "P1Y",
+      "obs_count": 65,
+      "earliest_date": "1960",
+      "latest_date": "2024"
+     },
+     {
+      "facet_id": "8868711847073010934",
+      "provenance_id": "dc/base/India_NationalAccountsStatistics",
+      "measurement_method": "MOSPIFirstAdvanceEstimates",
+      "unit": "INR",
+      "observation_period": "P1Y",
+      "obs_count": 12,
+      "earliest_date": "2015",
+      "latest_date": "2026"
+     },
+     {
+      "facet_id": "5403667530173178522",
+      "provenance_id": "dc/base/India_RBIStateDomesticProduct_AggCountry",
+      "measurement_method": "ConstantPrice_WithBaseYear2011_12",
+      "unit": "INR",
+      "observation_period": "P1Y",
+      "obs_count": 14,
+      "earliest_date": "2012-03",
+      "latest_date": "2025-03"
+     },
+     {
+      "facet_id": "2053048643515378054",
+      "provenance_id": "dc/base/India_NationalAccountsStatistics",
+      "measurement_method": "MOSPISecondRevisedEstimates",
+      "unit": "INR",
+      "observation_period": "P1Y",
+      "obs_count": 11,
+      "earliest_date": "2012",
+      "latest_date": "2022"
+     },
+     {
+      "facet_id": "10848316218324135028",
+      "provenance_id": "dc/base/India_RBIStateDomesticProduct_AggCountry",
+      "measurement_method": "ConstantPrice_WithBaseYear2004_05",
+      "unit": "INR",
+      "observation_period": "P1Y",
+      "obs_count": 7,
+      "earliest_date": "2005-03",
+      "latest_date": "2011-03"
+     }
+    ]
+   },
+   "mint": {
+    "rows": 65,
+    "series_count": 1,
+    "window": {
+     "start_year": 1960,
+     "end_year": 2024
+    },
+    "licence": "Creative Commons Attribution License"
+   }
+  },
+  {
+   "name": "germany",
+   "query": "ODA from Germany",
+   "entry": "raw_text",
+   "spec_id": "spec_bb8681a02d8339b39dbbd7b64b5e9244",
+   "requested_window": "all",
+   "converts": false,
+   "bulk": {
+    "bound": {
+     "donor": [
+      "country/DEU"
+     ]
+    },
+    "omitted_donors": []
+   },
+   "mint": {
+    "rows": 152601,
+    "series_count": 32490,
+    "window": {
+     "start_year": 1973,
+     "end_year": 2024
+    },
+    "licence": "OECD Terms and Conditions"
+   }
+  },
+  {
+   "name": "germany_to_kenya_eur",
+   "query": "ODA from Germany to Kenya, resubmitted with a unit request for euros at current prices",
+   "entry": "dataset_resubmit",
+   "spec_id": "spec_f1be7f4216bd773c978eceff729253e9",
+   "requested_window": "all",
+   "converts": true,
+   "bulk": {
+    "bound": {
+     "recipient": [
+      "country/KEN"
+     ],
+     "donor": [
+      "country/DEU"
+     ]
+    },
+    "omitted_donors": []
+   },
+   "mint": {
+    "rows": 2426,
+    "series_count": 486,
+    "window": {
+     "start_year": 1973,
+     "end_year": 2024
+    },
+    "licence": "OECD Terms and Conditions"
+   }
+  },
+  {
+   "name": "kenya_donor_currency",
+   "query": "ODA to Kenya, 2010 to 2016, resubmitted with a unit request for each donor's own currency at current prices",
+   "entry": "dataset_resubmit",
+   "spec_id": "spec_fdca4c87b84662e38bd221eef4e27875",
+   "requested_window": {
+    "start_year": 2010,
+    "end_year": 2016
+   },
+   "converts": true,
+   "bulk": {
+    "bound": {
+     "recipient": [
+      "country/KEN"
+     ]
+    },
+    "omitted_donors": [
+     "AdaptationFund",
+     "AfricanDevelopmentBank",
+     "AfricanDevelopmentFund",
+     "ArabBankForEconomicDevelopmentInAfrica",
+     "ClimateInvestmentFunds",
+     "EuropeanUnionInstitutions",
+     "FoodAndAgricultureOrganization",
+     "Gavi",
+     "GlobalEnvironmentFacility",
+     "GlobalFund",
+     "GreenClimateFund",
+     "IMFConcessionalTrustFunds",
+     "InternationalAtomicEnergyAgency",
+     "InternationalDevelopmentAssociation",
+     "InternationalFundForAgriculturalDevelopment",
+     "InternationalLabourOrganization",
+     "IslamicDevelopmentBank",
+     "JointUnitedNationsProgrammeOnHIVAIDS",
+     "NordicDevelopmentFund",
+     "OPECFundForInternationalDevelopment",
+     "UnitedNationsChildrensFund",
+     "UnitedNationsDevelopmentProgramme",
+     "UnitedNationsHighCommissionerForRefugees",
+     "UnitedNationsPeacebuildingFund",
+     "UnitedNationsPopulationFund",
+     "WorldFoodProgramme",
+     "WorldHealthOrganization"
+    ]
+   },
+   "mint": {
+    "rows": 7129,
+    "series_count": 2431,
+    "window": {
+     "start_year": 2010,
+     "end_year": 2016
+    },
+    "licence": "OECD Terms and Conditions"
+   }
+  },
+  {
+   "name": "latest_france_to_kenya",
+   "query": "latest ODA from France to Kenya",
+   "entry": "raw_text",
+   "spec_id": "spec_1105b685dcbe41a027905cccb243c843",
+   "requested_window": "latest",
+   "converts": false,
+   "bulk": {
+    "bound": {
+     "recipient": [
+      "country/KEN"
+     ],
+     "donor": [
+      "country/FRA"
+     ]
+    },
+    "omitted_donors": []
+   },
+   "mint": {
+    "rows": 308,
+    "series_count": 308,
+    "window": {
+     "start_year": 1991,
+     "end_year": 2024
+    },
+    "licence": "OECD Terms and Conditions"
+   }
+  }
+ ]
+}

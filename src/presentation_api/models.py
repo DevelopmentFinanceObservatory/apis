@@ -1,0 +1,345 @@
+"""Response models document Presentation routes in OpenAPI. Handlers build response bodies.
+`response_model` validates them, while `responses` documents already-built `Response` objects.
+"""
+
+from __future__ import annotations
+
+from pydantic import BaseModel, ConfigDict, Field
+
+__all__ = [
+    "CapabilitiesResponse",
+    "ChangedFieldModel",
+    "ComponentReadResponse",
+    "CreateReplyResponse",
+    "FactSummaryModel",
+    "FactSummarySeriesEntry",
+    "FrameDimensionMatch",
+    "FrameDimensionSummary",
+    "FrameDimensionValuesResponse",
+    "FrameFilteredViewResponse",
+    "FrameStructuralViewResponse",
+    "FrameViewResponse",
+    "ReleaseDocumentResponse",
+    "WindowModel",
+    "WriteReplyResponse",
+]
+
+# -- fact summary (assembler.reply) -----------------------------------------
+
+
+class FactSummarySeriesEntry(BaseModel):
+    """One `fact_summary.series[]` entry. It reports one visible series'
+    identity, point count and formatted boundary values."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str | None = Field(description="this series' own id, null when none could be assigned")
+    label: str = Field(description="this series' own display label")
+    coordinates: dict[str, object] = Field(description="this series' own dimension coordinates")
+    point_count: int = Field(description="how many of this series' points carry an observed value")
+    first_value: str | None = Field(
+        description="this series' earliest observed value, formatted, null when it has none"
+    )
+    last_value: str | None = Field(
+        description="this series' latest observed value, formatted, null when it has none"
+    )
+
+
+class WindowModel(BaseModel):
+    """A period window, its two boundary labels at the frame's grain."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    start: str = Field(description="this window's own start period label")
+    end: str = Field(description="this window's own end period label")
+
+
+class FactSummaryModel(BaseModel):
+    """The closed, token-capped fact summary a revision reports."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    changed: list[str] = Field(
+        description="the patch's own changed field names, empty for a create or a no-op write"
+    )
+    series: list[FactSummarySeriesEntry] = Field(
+        description="every visible series this revision resolves, capped"
+    )
+    series_cut: int = Field(
+        description="how many series the series cap and the token cap together dropped from "
+        "this summary"
+    )
+    window: WindowModel | None = Field(
+        description="this component's own [start, end] period window, null where its type "
+        "defines none"
+    )
+    unit: str | None = Field(
+        description="this component's own unit, null where its type defines none"
+    )
+    change: dict[str, object] | None = Field(
+        description="the stat_card's derived comparison between its two basis periods, null "
+        "for every other member and for a stat_card whose intent carries no change"
+    )
+    source_refs: list[str] | None = Field(
+        description="every distinct raw provenance ref a source_card's frame carries. It is "
+        "null for every other member."
+    )
+
+
+# -- write reply (presentation_api.doors.components) -----------------------
+
+_RESOLVED_PAYLOAD_DESCRIPTION = (
+    "the revision's stored resolved payload, verbatim: the catalogue envelope "
+    "{schema_version, catalog_version, component_id, revision, provenance, component}, "
+    "validated against the catalogue release's envelope schema (dfo-spec-kit "
+    "envelope.schema.json) when minted. GET /api/presentation/release serves the pinned "
+    "release's envelope_schema and the component_schemas its component field $refs by $id; "
+    "every payload this door serves carries that pinned catalog_version."
+)
+
+
+class ChangedFieldModel(BaseModel):
+    """One entry of `changed[]`. `prior` and `new` are present only for a
+    scalar field the write set changed. An array or object field carries
+    `field` alone."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    field: str = Field(description="the intent field this entry reports")
+    prior: object | None = Field(
+        default=None, description="the field's value before the write, for a disclosed scalar"
+    )
+    new: object | None = Field(
+        default=None, description="the field's value after the write, for a disclosed scalar"
+    )
+
+
+class WriteReplyResponse(BaseModel):
+    """`PATCH /api/presentation/components/{component_id}`'s 200 body. A
+    create reply carries this same shape plus `affordance`
+    (`CreateReplyResponse` below). A revise reply carries no `affordance`
+    key."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    component_id: str = Field(description="the revised component's own id")
+    revision: int = Field(description="the revision this write minted, or the head left unchanged")
+    catalog_version: str = Field(description="the catalogue release this revision minted under")
+    composition_id: str | None = Field(
+        description="the composition this component belongs to, null outside one"
+    )
+    composition_revision: int | None = Field(
+        description="the composition's current head revision, null outside one"
+    )
+    changed: list[ChangedFieldModel] = Field(
+        description="the patch's own fields, each paired with its prior and new value. This "
+        "array is empty when the write was a no-op."
+    )
+    fact_summary: FactSummaryModel = Field(
+        description="the closed, token-capped fact summary this revision reports"
+    )
+    resolved_payload: dict[str, object] = Field(description=_RESOLVED_PAYLOAD_DESCRIPTION)
+
+
+class CreateReplyResponse(WriteReplyResponse):
+    """`POST /api/presentation/components`'s 201 body. It carries
+    `WriteReplyResponse`'s fields plus this door's own `affordance` line
+    naming the freshly minted component's revise and read routes."""
+
+    component_id: str = Field(description="the newly minted component's own id")
+    revision: int = Field(description="the first revision a create mints, always 1")
+    changed: list[ChangedFieldModel] = Field(
+        description="always empty, since a create carries no prior intent to compare against"
+    )
+    affordance: str = Field(
+        description="this door's own line naming the revise and read routes for this component"
+    )
+    write_token: str = Field(
+        description="the cmw_ token that grants revising this component, sent back as the "
+        "x-dfo-write-token header. A server-minted token appears only in this reply; a token "
+        "the create sent as write_token is echoed, and a replayed create returns it again."
+    )
+    composition_write_token: str | None = Field(
+        default=None,
+        description="the cpw_ token that grants creating components into the composition "
+        'this create started with composition_id "new", sent back as the x-dfo-write-token '
+        "header. Present only on that create.",
+    )
+
+
+# -- component read (presentation_api.doors.components) --------------------
+
+
+class ComponentReadResponse(BaseModel):
+    """`GET /api/presentation/components/{component_id}`'s 200 body."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    component_id: str = Field(description="the read component's own id")
+    revision: int = Field(description="the revision this read reports")
+    catalog_version: str = Field(description="the catalogue release this revision minted under")
+    composition_id: str | None = Field(
+        description="the composition this component belongs to, null outside one"
+    )
+    composition_revision: int | None = Field(
+        description="the composition's current head revision, null outside one"
+    )
+    stored_intent: dict[str, object] = Field(
+        description="this revision's own stored intent, exactly as minted"
+    )
+    fact_summary: FactSummaryModel = Field(
+        description="the closed, token-capped fact summary this revision reports"
+    )
+    resolved_payload: dict[str, object] = Field(description=_RESOLVED_PAYLOAD_DESCRIPTION)
+
+
+# -- meta (presentation_api.doors.meta) -------------------------------------
+
+
+class CapabilitiesResponse(BaseModel):
+    """`GET /api/presentation/capabilities`'s body. It carries this
+    surface's own hashed `capability_version` beside the unhashed
+    `catalog_version`."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    capability_version: str = Field(
+        description="a content hash over every capability-bearing field of the release "
+        "this deployment serves"
+    )
+    catalog_version: str = Field(description="the catalogue release this deployment serves")
+    build: str = Field(
+        description="the commit sha the image was built from, the same value the "
+        "x-dfo-commit response header carries"
+    )
+
+
+# -- frame view (presentation_api.doors.frames) -----------------------------
+
+
+class FrameDimensionSummary(BaseModel):
+    """One dimension of a frame's structural view (`GET .../frames/{...}`
+    with neither `dimension` nor `query` given). Its values are capped to
+    the per-dimension listing cap."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(description="this dimension's own column name")
+    values: list[str] = Field(description="this dimension's own values, capped")
+    total_count: int = Field(description="this dimension's own value count before capping")
+    truncated: bool = Field(description="whether this dimension's values list was capped")
+    plural: bool = Field(description="whether this dimension carries more than one value")
+
+
+class FrameDimensionMatch(BaseModel):
+    """One dimension of a frame's query-filtered view (`?query=` given,
+    `dimension` absent). Its values are filtered to those matching the
+    query."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(description="this dimension's own column name")
+    values: list[str] = Field(description="this dimension's own values matching the query")
+    matched_count: int = Field(description="how many of this dimension's values matched the query")
+
+
+class FrameStructuralViewResponse(BaseModel):
+    """`GET /api/presentation/frames/{spec_id}/{content_version}`'s body
+    with neither `dimension` nor `query` given. It reports the frame's own
+    structural view, every dimension capped."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    dimensions: list[FrameDimensionSummary] = Field(
+        description="every dimension this frame declares"
+    )
+    period_grain: str = Field(description="this frame's own period grain")
+    coverage: tuple[str, str] | None = Field(
+        description="this frame's own [start, end] period coverage, null if it has none"
+    )
+    series_count: int = Field(description="how many distinct series this frame resolves")
+
+
+class FrameDimensionValuesResponse(BaseModel):
+    """`GET /api/presentation/frames/{spec_id}/{content_version}?dimension=`'s
+    body. It reports one dimension's full value list, read fresh and
+    uncapped. Given alongside `?query=`, `values` and `total_count`
+    describe only the values matching the query."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    dimension: str = Field(description="the dimension this response reports")
+    values: list[str] = Field(
+        description="every value this dimension carries, uncapped, or only the values "
+        "matching `query` when it is given"
+    )
+    total_count: int = Field(
+        description="how many values this dimension carries, or how many match `query` when "
+        "it is given"
+    )
+
+
+class FrameFilteredViewResponse(BaseModel):
+    """`GET /api/presentation/frames/{spec_id}/{content_version}?query=`'s
+    body (`dimension` absent). It reports every dimension this frame
+    declares, filtered to values matching the query, counts kept."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    dimensions: list[FrameDimensionMatch] = Field(
+        description="every dimension this frame declares, filtered"
+    )
+    period_grain: str = Field(description="this frame's own period grain")
+    coverage: tuple[str, str] | None = Field(
+        description="this frame's own [start, end] period coverage, null if it has none"
+    )
+
+
+FrameViewResponse = (
+    FrameStructuralViewResponse | FrameDimensionValuesResponse | FrameFilteredViewResponse
+)
+
+
+# -- release (presentation_api.doors.release) -------------------------------
+
+
+class ReleaseDocumentResponse(BaseModel):
+    """`GET /api/presentation/release`'s body. It carries the pinned
+    catalogue release's own identity and the vocabulary a client needs
+    to mount tools without a second, out-of-band fetch of the catalogue
+    bundle."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    catalog_version: str = Field(description="the catalogue release this deployment serves")
+    schema_version: int = Field(
+        description="the envelope schema version this release resolves against"
+    )
+    member_types: list[str] = Field(
+        description="every component type this release's catalogue defines"
+    )
+    constraint_ids: list[str] = Field(
+        description="every constraint id this release's registry enforces"
+    )
+    retry_modes: dict[str, str] = Field(
+        description="`retry_modes` is the headline mode per code, and the per-response "
+        "`retryable` boolean is the authoritative value for every code. `schema_invalid` and "
+        "`frame_unavailable` vary by cause, and `request_invalid` is always false although its "
+        "headline mode is `correct_and_retry`."
+    )
+    envelope_schema: dict[str, object] = Field(
+        description="the envelope JSON Schema this release's assembler validates a minted "
+        "envelope against; every create/revise/read body's `resolved_payload` conforms to it"
+    )
+    component_schemas: dict[str, dict[str, object]] = Field(
+        description="each member type's own component JSON Schema, keyed by member type. "
+        "`envelope_schema`'s `component` field `$ref`s these schemas by their own `$id`, which "
+        "otherwise resolves nowhere, so a client validating `resolved_payload` resolves those "
+        "`$ref`s against this map"
+    )
+    intent_schemas_tolerant: dict[str, dict[str, object]] = Field(
+        description="each member type's own tolerant intent schema"
+    )
+    minimal_intents: dict[str, dict[str, object]] = Field(
+        description="each member type's own minimal legal intent"
+    )

@@ -1,0 +1,125 @@
+# Pre-commit hooks.
+# Install dev deps:  uv sync
+# Enable hooks:      uv run pre-commit install
+# Run all files:     uv run pre-commit run --all-files
+# Update hooks:      uv run pre-commit autoupdate
+# Skip once:         git commit --no-verify
+
+# The two bundle fixtures are vendored upstream schemas (CFF 1.2.0, Data Package 2.0
+# profile), carried byte-authentic. tests/spec_registry/fixtures/collection_id_vectors.json
+# pins byte-exact canonical_bytes hex goldens, including an NFC-normalisation
+# vector whose two input members are only distinguishable by their exact
+# encoded form. tests/promptlab/fixtures/blocks/extract/00-alpha-blankline.md
+# pins a deliberate trailing blank line: the test compares its composed
+# output against a block with none, and end-of-file-fixer would strip the
+# very thing under test.
+exclude: |
+  (?x)^(
+    baselines/.*|
+    tests/fixtures/.*\.json|
+    tests/materialise/fixtures/bundle-citation-cff-1\.2\.0-schema\.json|
+    tests/materialise/fixtures/bundle-datapackage-2\.0-profile\.json|
+    tests/spec_registry/fixtures/collection_id_vectors\.json|
+    tests/promptlab/fixtures/blocks/extract/00-alpha-blankline\.md|
+    uv\.lock
+  )$
+
+repos:
+  # ---------------------------------------------------------------------------
+  # Ruff: linter + formatter
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.21
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  # ---------------------------------------------------------------------------
+  # Core hygiene, JSON/YAML/TOML, security
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      # Whitespace & endings
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+        # SDMX-CSV wire fixtures and the materialise CSV goldens are byte-exact
+        # CRLF recordings (see .gitattributes).
+        exclude: ^tests/(dc_sdmx|materialise)/fixtures/.*\.csv$
+
+      # Conflicts & platform quirks
+      - id: check-case-conflict
+      - id: check-merge-conflict
+
+      # Python sanity
+      - id: debug-statements
+      - id: check-ast
+      - id: check-shebang-scripts-are-executable
+      - id: check-builtin-literals
+
+      # Config/data formats — validate only, never rewrite
+      - id: check-json
+      - id: check-yaml
+        args: [--allow-multiple-documents]
+      - id: check-toml
+
+      # Basic secret hygiene
+      - id: detect-private-key
+
+      - id: check-added-large-files
+        args: [--maxkb=5000]
+
+  # ---------------------------------------------------------------------------
+  # Type checking (settings from pyproject.toml)
+  # ---------------------------------------------------------------------------
+  - repo: local
+    hooks:
+      - id: ty
+        name: ty type check
+        language: system
+        entry: uv run ty check
+        types: [python]
+        pass_filenames: false
+      - id: corpus-check
+        name: eval corpus check
+        language: system
+        entry: uv run --frozen --extra engine --extra eval python scripts/eval_corpus.py check
+        files: ^(corpus/(?!direction/).*\.yaml|src/search/eval/cases\.py)$
+        pass_filenames: false
+
+  # ---------------------------------------------------------------------------
+  # Spelling (source, comments, and the repo's Markdown docs)
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.3
+    hooks:
+      - id: codespell
+        files: ^(src/|tests/|scripts/|packages/|README\.md|corpus/README\.md|CONTRIBUTING\.md|deploy/README\.md|deploy/postgres\.md|docs/conformance-search-api-v1\.md)
+        # The sentence panel misspells some queries on purpose to test misspelt input.
+        exclude: ^scripts/sentence_panel/queries/
+
+  # ---------------------------------------------------------------------------
+  # GitHub Actions linting
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
+
+  # ---------------------------------------------------------------------------
+  # Markdown formatting
+  # ---------------------------------------------------------------------------
+  - repo: https://github.com/hukkin/mdformat
+    rev: 1.0.0
+    hooks:
+      - id: mdformat
+        additional_dependencies:
+          - mdformat-gfm>=1.0.0
+          - mdformat-frontmatter>=2.1.0
+        # The conformance matrix is excluded: its table cells are paragraph-sized,
+        # and mdformat's table normalisation would rewrite the whole file.
+        files: ^(README\.md|corpus/README\.md|CONTRIBUTING\.md|deploy/README\.md|deploy/postgres\.md|packages/dfo-data-tools/README\.md)$

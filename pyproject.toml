@@ -1,0 +1,273 @@
+[project]
+name = "search"
+version = "1.0.0"
+description = "ONE/DFO Search API: natural-language data requests resolved against a Data Commons graph"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # >=2.13 required for pydantic discriminator metadata with union-aliased fields
+    # under `from __future__ import annotations` (pydantic PR #12785).
+    "pydantic>=2.13",
+    "pydantic-settings>=2.10",
+    # search/models.py imports WarningSeverity from dfo_platform's pure core.
+    "dfo-data-tools",
+    # Every generation-keyed cache (search's response/options/SDMX caches,
+    # LiveGraphClient, EntityResolver, Admission) moves its no-expiry LRU to
+    # cachetools.TLRUCache, whose ttu derives an entry's lifetime from the
+    # captured GenerationStamp.
+    "cachetools>=7.2",
+]
+
+[project.optional-dependencies]
+eval = [
+    "langfuse>=4.6.1",
+    "httpx",
+    # search.eval.cases parses corpus/*.yaml and corpus/families/*.yaml;
+    # scripts/eval_corpus.py checks them.
+    "pyyaml",
+    "jsonschema",
+]
+# Shared ASGI stack for every door that mounts onto dfo_platform's app.
+# engine, datasets, and graph all pull this in rather than pinning fastapi
+# themselves, so the whole repo resolves to one fastapi version.
+api = ["fastapi>=0.138", "starlette", "uvicorn[standard]"]
+# dc_sdmx's and materialise's own dependency (httpx, pyarrow), with none of
+# engine's other dependencies -- code-index-live.yml and sdmx-live.yml sync
+# with this extra and `coverage` (no `api`/`engine`) so that dc_sdmx's and
+# materialise.graph's own imports work without pulling in FastAPI or the
+# Search engine, which tests/dc_sdmx/test_independence.py asserts stays
+# true.
+sdmx = ["dfo-data-tools[sdmx]"]
+# series_coverage's own dependencies (numpy, google-cloud-storage,
+# google-cloud-bigquery, and sdmx's), with no FastAPI. tests/conftest.py
+# installs the session coverage service through series_coverage.shared, so
+# every job that runs pytest under tests/ needs numpy; engine and datasets
+# carry it already, and code-index-live.yml and sdmx-live.yml sync this extra.
+coverage = ["dfo-data-tools[coverage]"]
+engine = [
+    "google-genai>=2.6.0",
+    "httpx>=0.28.1",
+    "search[api]",
+    "pydantic>=2.13",
+    # `resolve` pulls in entity_resolution's resolvekit dependency -- the
+    # engine builds the shared resolver alongside its other clients.
+    # `coverage` is the series_coverage package's own extra (numpy,
+    # google-cloud-storage) that the coverage artifact search_surface()
+    # loads at construction (series_coverage.shared.get_coverage_service)
+    # needs; same fail-at-startup discipline as code_index.shared.get_index().
+    # `sdmx` is materialise's and dc_sdmx's own dependency (httpx, pyarrow):
+    # search.engine imports both directly (dc_sdmx clients, materialise's
+    # bridge/entries).
+    "dfo-data-tools[surface,resolve,coverage,sdmx]",
+    # engine/spec_id.py's spec1 identity projection and minting -- the
+    # shared, spec-conformant implementation of the identity specification.
+    "dfo-spec-kit",
+]
+datasets = [
+    # datasets_api mounts a FastAPI door and imports dfo_platform.app
+    # unconditionally at module top level.
+    "search[api]",
+    # materialise.formats's spreadsheet/Parquet writers, and the coverage
+    # artifact datasets_surface() loads at construction, used by
+    # datasets_api. `sdmx` is materialise's and dc_sdmx's own dependency
+    # (httpx, pyarrow): datasets_api imports both directly.
+    "dfo-data-tools[formats,coverage,sdmx]",
+    # dataset_store's Postgres persistence layer: Cloud SQL Python Connector (PSC
+    # addressing, TLS, IAM/password auth) + pg8000, its pure-Python sync
+    # driver -- plain parameterized SQL, no ORM. >=1.15 is the floor for
+    # IPTypes.PSC support.
+    "cloud-sql-python-connector[pg8000]>=1.15",
+    "pg8000>=1.31",
+    # artifact_store's write-and-sign interface: blob upload with
+    # if_generation_match, and V4 signed URLs via the IAM signBlob API.
+    "google-cloud-storage>=2.18",
+    # datasets_api.operations.task_client.LiveTaskClient enqueues an
+    # over-budget mint/definition request onto the async worker's own
+    # Cloud Tasks queue.
+    "google-cloud-tasks>=2.16",
+    # datasets_api.operations.oidc.LiveOidcVerifier verifies the worker
+    # run route's own bearer OIDC token (audience + email + issuer).
+    # google-auth already ships transitively via google-cloud-storage;
+    # pinned here directly since this surface now imports it by name.
+    "google-auth>=2.34",
+]
+graph = [
+    # graph_api mounts a FastAPI door and imports dfo_platform.app
+    # unconditionally at module top level.
+    "search[api]",
+    # graph_api's resolve door: offline, deterministic entity matching, via
+    # entity_resolution's resolvekit dependency. The exact pin lives on
+    # dfo-data-tools's `resolve` extra, the one source of truth for it.
+    # `sdmx` is materialise's and dc_sdmx's own dependency (httpx, pyarrow):
+    # graph_api imports both directly.
+    "dfo-data-tools[resolve,sdmx]",
+]
+
+[dependency-groups]
+lint = [
+    "ruff>=0.15",
+    "pre-commit>=4.6",
+]
+typecheck = [
+    "ty>=0.0.60",
+    # ty resolves pyarrow.compute results against these stubs; without them
+    # a compute call's return type is Unknown.
+    "pyarrow-stubs>=20",
+]
+test = [
+    "pytest>=8",
+    # tests/materialise/test_bundle.py round-trips a Frictionless Data Package.
+    "frictionless>=5.19.0",
+    "pytest-xdist>=3.8.0",
+    "pytest-split>=0.10.0",
+    # A bare `just test` selects the tests affected by a change; CI never
+    # passes --testmon, so it stays inactive there.
+    "pytest-testmon>=2.2.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv]
+# A plain `uv sync` (the justfile, `just setup`/`just check`, local
+# development) installs all three groups; each CI job passes
+# `--no-default-groups --group <name>` for the one it runs.
+default-groups = ["lint", "typecheck", "test"]
+
+[tool.uv.build-backend]
+module-name = ["search", "dfo_apis", "dataset_store", "spec_registry", "datasets_api", "artifact_store", "graph_api", "presentation_store", "presentation_api", "skills_api"]
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+dfo-data-tools = { workspace = true }
+# dfo-data-tools's own pyproject.toml pins dfo-spec-kit-frame-grammar,
+# dfo-spec-kit-components, and dfo-spec-kit-provenance-docs to this same
+# commit; frame-grammar's pyproject.toml in turn declares its `dfo-spec-kit`
+# dependency as an intra-repo path source (`{ path = "../spec-kit" }`), which
+# uv resolves relative to frame-grammar's own pinned commit -- so this
+# project's own `dfo-spec-kit` source MUST resolve to that identical commit,
+# or `uv lock` refuses with "conflicting URLs for package dfo-spec-kit"
+# (confirmed live). All four pins move together as a single rev. This rev's
+# registry schema has no `spec_resubmit` door: a code with a raise site in
+# this repo maps to `dataset_resubmit` instead, and `resolution_ambiguous`,
+# `entity_set_too_large`, and `place_type_not_covered` carry no door mapping
+# at all, since none has a raise site on any door here.
+# `observations_omitted`'s registry row lists `dataset_resubmit` as one of its
+# doors, since assemble.py's candidates-part builder fires it identically on
+# every resolve door through the shared conjoin._build_part. This rev also
+# carries the `exact` slot binding state, the denotation rule for
+# `value`/`set`/`exact` (docs/identity-v1.md), the slot-ref dcid grammar
+# guard, and the `exact_binding_unsupported` registry entry this repo's own
+# SEARCH_REFUSAL_CODES and SEARCH_CODE_CATALOGUE serve. This rev also
+# registers `operation_failed` on `datasets.operations` (`http_status: 500`),
+# the code `datasets_api.doors.meta`'s operations route emits for a failed
+# operation, alongside `operation_not_found`. It registers the search.resolve
+# warnings `slot_defaulted` (a declared default fixed a slot the query names),
+# `family_total_absent` (an answer names a member that is not its family's
+# total), `alternates_unevaluated` (an answer left an alternate unread), and
+# `membership_unverified` (a role-bearing answer whose members the role-class
+# walk did not settle). It maps `capability_unavailable` (501) and
+# `upstream_version_changed` (503) onto search.resolve on the raw_text, parsed,
+# and dataset_resubmit doors, the two codes Search raises when a conversion
+# table fails to load or moves under a request. It also lets a
+# `measurementMethod` or `unit` facet binding take `"ref": null`, the facets
+# that declare no value on that axis.
+# The frame grammar derives a content version from a trace's one-entry
+# `conversion` array as well as from the bare record. It registers the
+# `skills.list` warning `skill_frontmatter_invalid`, and maps
+# `skill_content_absent`, `skill_content_too_large`,
+# `skill_content_undecodable` and `skills_corpus_budget_exhausted` onto
+# `skills.list` only. The frame grammar's `time_period` also takes a closed
+# same-grain interval (`2018/2022`), parsed by `parse_time_period`, and the
+# envelope's provenance source takes an optional graph `ref`. The registry
+# retires `constraint_filter_fell_back`, which Search no longer raises.
+# It also registers `observations_unavailable` (404) on the `datasets.observations`
+# endpoint, which `datasets_api.doors.observations` serves, and maps the snapshot
+# refusals and `service_unavailable` onto it.
+# Follow-up: move all four to a real spec-kit tag once one is cut, so a
+# future force-push or GC on spec-kit's main can't silently break this lock.
+dfo-spec-kit = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "f494e75de196b409e662c91c67600b0a8327c71a", subdirectory = "python/spec-kit" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::starlette.exceptions.StarletteDeprecationWarning"]
+markers = [
+  # Exempts a test from tests/conftest.py's outbound-HTTP guard, which
+  # otherwise refuses every real httpx transport for the whole suite.
+  "live: makes real network calls and needs credentials",
+  # Exempts a test from tests/conftest.py's check that fails a passing test
+  # whose run missed a FakeLLM fixture.
+  "llm_misses_expected: builds a FakeLLM bank that misses on purpose",
+  # tests/engine/_request_log.py: how the request_log fixture compares a test's graph and
+  # SDMX requests with the stored list.
+  "unordered_requests: resolves parts concurrently; compare the distinct requests only",
+  "unrecorded_requests: races a cancellation against its reads; leave its requests unchecked",
+  # tests/engine/conftest.py: keeps the related-measures reads on their own threads.
+  "related_read_threads: runs related-measures reads on their own threads and wall-clock deadline",
+]
+
+[tool.ty.src]
+# Type-check the shipped packages only. The suite leans on mocks, partially
+# populated fixtures, and deliberately ill-typed inputs, so checking it reports
+# noise rather than defects; pytest is what guards the tests. promptlab is a
+# development tool, not shipped (see [tool.uv.build-backend]), but it is
+# still real source worth checking.
+include = ["src", "packages/dfo-data-tools/src", "promptlab"]
+
+[tool.ty.environment]
+# Resolve imports against the project venv (python 3.12 + engine extras) rather
+# than whatever interpreter ty itself is running under.
+python = ".venv"
+
+[tool.codespell]
+# caf/nam/som/tha/fro are ISO 3166 country codes, zar is an ISO 4217 currency
+# code, nd is a no-data test fixture name, "retuned" is meant literally
+# (bands get re-tuned), fo is the FacetOptions loop variable, and
+# convertor/convertors is Starlette's own spelling (`starlette.convertors`,
+# `Convertor`), which the code and its prose follow.
+# disjointness is the set-theory term (disjoint ranges), not a typo for
+# "disjointedness". "meaned" is the verb form of "mean" (averaged), used
+# literally in a docstring about averaging three ratios. "dependant" is
+# FastAPI's own attribute name (`APIRoute.dependant`).
+# heading_words_specs.json holds graph labels verbatim ("Assitance" in a UNICEF series).
+skip = "tests/render/heading_words_specs.json"
+ignore-words-list = "caf,nam,som,tha,fro,zar,nd,retuned,unparseable,uncomplete,re-use,pre-empt,pre-empting,fo,convertor,convertors,disjointness,meaned,dependant"
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+# isort first-party classification: without this, ruff treats the workspace
+# member's packages as third-party and reclassifies their imports repo-wide.
+src = [".", "src", "packages/dfo-data-tools/src"]
+exclude = [
+    ".git",
+    ".venv",
+    "__pycache__",
+    "build",
+    "dist",
+    "*.egg-info",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "C4", "RUF", "PERF"]
+# The formatter owns line length; E501 only ever fires on strings it cannot split.
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# These modules recognize and normalize non-ASCII lookalike characters (unicode
+# dash variants, curly quotes, fullwidth digits, Cyrillic homoglyphs, the real
+# spelling of "Tongan paʻanga") as data, or match/produce them in prose and
+# regexes describing that same data. RUF001/002/003 would otherwise flag the
+# exact characters these modules and their tests exist to handle.
+"src/search/engine/entity_text.py" = ["RUF001"]
+"src/search/engine/time_bind.py" = ["RUF001", "RUF002"]
+"src/search/engine/unit/bind.py" = ["RUF001"]
+"src/search/engine/unit/lexicon.py" = ["RUF001"]
+"tests/engine/test_time_bind.py" = ["RUF001"]
+"tests/engine/test_unit_bind.py" = ["RUF001", "RUF003"]
+# FastAPI's own body-parameter marker, the same idiom as `Depends()`, evaluated
+# once at route-registration time by construction, not a mutable-default bug.
+"tests/platform/test_validation.py" = ["B008"]

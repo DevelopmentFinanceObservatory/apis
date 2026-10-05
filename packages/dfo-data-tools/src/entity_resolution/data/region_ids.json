@@ -1,0 +1,157 @@
+[
+  {
+    "resolvekit_id": "m49/001",
+    "name": "World",
+    "dcid": "Earth"
+  },
+  {
+    "resolvekit_id": "m49/011",
+    "name": "Western Africa",
+    "dcid": "WesternAfrica"
+  },
+  {
+    "resolvekit_id": "m49/013",
+    "name": "Central America",
+    "dcid": "CentralAmericaExceptMexico"
+  },
+  {
+    "resolvekit_id": "m49/014",
+    "name": "Eastern Africa",
+    "dcid": "EasternAfrica"
+  },
+  {
+    "resolvekit_id": "m49/015",
+    "name": "Northern Africa",
+    "dcid": "NorthernAfrica"
+  },
+  {
+    "resolvekit_id": "m49/017",
+    "name": "Middle Africa",
+    "dcid": "MiddleAfrica"
+  },
+  {
+    "resolvekit_id": "m49/018",
+    "name": "Southern Africa",
+    "dcid": "SouthernAfrica"
+  },
+  {
+    "resolvekit_id": "m49/029",
+    "name": "Caribbean",
+    "dcid": "Caribbean"
+  },
+  {
+    "resolvekit_id": "m49/030",
+    "name": "Eastern Asia",
+    "dcid": "EasternAsia"
+  },
+  {
+    "resolvekit_id": "m49/034",
+    "name": "Southern Asia",
+    "dcid": "SouthernAsia"
+  },
+  {
+    "resolvekit_id": "m49/035",
+    "name": "South-eastern Asia",
+    "dcid": "SouthEasternAsia"
+  },
+  {
+    "resolvekit_id": "m49/039",
+    "name": "Southern Europe",
+    "dcid": "SouthernEurope"
+  },
+  {
+    "resolvekit_id": "m49/053",
+    "name": "Australia and New Zealand",
+    "dcid": "AustraliaAndNewZealand"
+  },
+  {
+    "resolvekit_id": "m49/054",
+    "name": "Melanesia",
+    "dcid": "Melanesia"
+  },
+  {
+    "resolvekit_id": "m49/057",
+    "name": "Micronesia",
+    "dcid": "Micronesia"
+  },
+  {
+    "resolvekit_id": "m49/061",
+    "name": "Polynesia",
+    "dcid": "Polynesia"
+  },
+  {
+    "resolvekit_id": "m49/143",
+    "name": "Central Asia",
+    "dcid": "CentralAsia"
+  },
+  {
+    "resolvekit_id": "m49/145",
+    "name": "Western Asia",
+    "dcid": "WesternAsia"
+  },
+  {
+    "resolvekit_id": "m49/151",
+    "name": "Eastern Europe",
+    "dcid": "EasternEurope"
+  },
+  {
+    "resolvekit_id": "m49/154",
+    "name": "Northern Europe",
+    "dcid": "NorthernEurope"
+  },
+  {
+    "resolvekit_id": "m49/155",
+    "name": "Western Europe",
+    "dcid": "WesternEurope"
+  },
+  {
+    "resolvekit_id": "m49/202",
+    "name": "Sub-Saharan Africa",
+    "dcid": "SubSaharanAfrica"
+  },
+  {
+    "resolvekit_id": "m49/419",
+    "name": "Latin America and the Caribbean",
+    "dcid": "LatinAmericaAndCaribbean"
+  },
+  {
+    "resolvekit_id": "wikidataId/Q15",
+    "name": "Africa",
+    "dcid": "africa"
+  },
+  {
+    "resolvekit_id": "wikidataId/Q18",
+    "name": "South America",
+    "dcid": "southamerica"
+  },
+  {
+    "resolvekit_id": "wikidataId/Q46",
+    "name": "Europe",
+    "dcid": "europe"
+  },
+  {
+    "resolvekit_id": "wikidataId/Q48",
+    "name": "Asia",
+    "dcid": "asia"
+  },
+  {
+    "resolvekit_id": "wikidataId/Q49",
+    "name": "North America",
+    "dcid": "northamerica"
+  },
+  {
+    "resolvekit_id": "wikidataId/Q51",
+    "name": "Antarctica",
+    "dcid": "antarctica"
+  },
+  {
+    "resolvekit_id": "wikidataId/Q55643",
+    "name": "Oceania",
+    "dcid": "oceania"
+  },
+  {
+    "resolvekit_id": "wikidataId/Q828",
+    "name": "Americas",
+    "dcid": "undata-geo/G00134000"
+  }
+]

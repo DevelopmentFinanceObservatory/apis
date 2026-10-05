@@ -1,0 +1,435 @@
+name: Eval gate
+
+# Paired Search eval for a pull request. Head is the PR merge commit that
+# actions/checkout fetches; base is its first parent, the base branch as the
+# merge would land on it. The changes job decides whether the PR touches
+# anything the eval reads. The run job is a matrix of EVAL_SHARDS shards on
+# parallel runners. Each shard builds an environment in each tree, stages the
+# deployed coverage and origin catalogue builds (scripts/stage_eval_data.py,
+# read as the eval reader service account), serves both trees with the eval
+# profile on two ports, and runs scripts/eval_paired.py --shard K/N over the
+# eligible cases in corpus/ whose id hashes to K, with at most
+# EVAL_CONCURRENCY posts in flight per app so a 2-core runner answers them
+# inside the engine's request deadline. Each shard uploads its JSON report,
+# every response body, both app logs and its exit code as the `eval-gate-<K>`
+# artifact, and writes its Markdown summary to its own job summary. Nothing
+# here writes to Langfuse.
+#
+# eval_paired.py exits 0 when nothing blocks, 1 on a blocking verdict and 3 on
+# infrastructure. Each shard writes that code to the `code` file in its
+# artifact and passes; any other code is a crash and fails the shard. The
+# verdict job reads every shard's code and combines them: 1 if any shard
+# exited 1, else 3 if any exited 3, else 0. It fails on a combined 1 or 3
+# unless the PR carries the `eval-override` label. The verdict job reads the
+# labels when it runs, so adding the label and re-running the failed verdict
+# job releases the PR without repeating the eval.
+#
+# The `eval-override` label releases one commit. The reset job removes it at the
+# start of every run, before the verdict job reads it, so a label applied to
+# release a run stays for that run only. The reset job runs no PR code.
+#
+# The path check runs in a job the verdict job needs, so a PR that touches
+# nothing the eval reads still reports a passing check.
+
+on:
+  pull_request:
+    branches: [dev, main]
+    # The `edited` type is omitted because a skipped check on a commit would
+    # replace the failed one (see the hazard recorded in ci.yml). A retargeted
+    # stacked PR runs again on its next push or reopen.
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eval-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  UV_SYNC_ARGS: --frozen --extra eval --extra api --extra engine --extra datasets --extra graph
+  UV_NO_SYNC: "1"
+  # The deployed artifact roots, owned by the dfo-infra `apis` stack. The eval
+  # reader service account reads both buckets and nothing else.
+  DEPLOYED_COVERAGE_URI: gs://dfo-dev-coverage-dev-fin-observatory/
+  DEPLOYED_CATALOGUE_URI: gs://dfo-dev-origin-catalogue-dev-fin-observatory/
+  HEAD_PORT: "8100"
+  BASE_PORT: "8101"
+  # The run job's shard count, and the posts each shard keeps in flight per app.
+  EVAL_SHARDS: "4"
+  EVAL_CONCURRENCY: "6"
+
+jobs:
+  # Removes the eval-override label so it releases only the commit it was applied
+  # to. Runs no PR code and checks nothing out.
+  reset:
+    name: Reset the eval override
+    # Mints a dfo-reader token and reads dev's deployed builds, so the eval runs
+    # in ONEcampaign only. The identical tree ran it here before it was synced.
+    if: github.repository_owner == 'ONEcampaign'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Remove the eval-override label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LABELS: repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels
+        run: |
+          set -euo pipefail
+          if gh api "$LABELS" --jq '.[].name' | grep -qx 'eval-override'; then
+            gh api --method DELETE "$LABELS/eval-override" > /dev/null
+            echo "Removed the \`eval-override\` label; a new commit needs a new override." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  # Runs the path filter once for every shard and lists the shards.
+  changes:
+    name: Detect eval changes
+    # The run job needs this one, so it skips with it outside ONEcampaign.
+    if: github.repository_owner == 'ONEcampaign'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      eval: ${{ steps.filter.outputs.eval }}
+      shards: ${{ steps.shards.outputs.shards }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The merge commit and its parents: HEAD^1 is the base.
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Detect eval-relevant changes
+        id: filter
+        run: |
+          set -euo pipefail
+          pattern='^(src/|packages/|corpus/|scripts/eval_|scripts/stage_eval_data\.py$|uv\.lock$|pyproject\.toml$|\.github/workflows/eval-(gate|nightly|sync)\.yml$)'
+          changed="$(git diff --name-only HEAD^1 HEAD)"
+          echo "Changed paths:"
+          echo "$changed"
+          if grep -qE "$pattern" <<< "$changed"; then
+            echo "eval=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "eval=false" >> "$GITHUB_OUTPUT"
+            echo "Eval skipped: no eval-relevant changes." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Note changes to the eval itself
+        if: steps.filter.outputs.eval == 'true'
+        run: |
+          set -euo pipefail
+          pattern='^(src/search/eval/|scripts/eval_|scripts/stage_eval_data\.py$|corpus/families/|\.github/workflows/eval-(gate|nightly|sync)\.yml$)'
+          touched="$(git diff --name-only HEAD^1 HEAD | grep -E "$pattern" || true)"
+          if [ -n "$touched" ]; then
+            {
+              echo "This PR changes the eval itself; the gate ran the PR's own eval code."
+              echo
+              while IFS= read -r path; do echo "- \`$path\`"; done <<< "$touched"
+              echo
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # The run job's matrix: [{"index": 1, "label": "1/4"}, ...].
+      - name: List the shards
+        id: shards
+        run: |
+          set -euo pipefail
+          shards="$(jq -nc --argjson n "$EVAL_SHARDS" \
+            '[range(1; $n + 1) | {index: ., label: "\(.)/\($n)"}]')"
+          echo "shards=$shards" >> "$GITHUB_OUTPUT"
+
+  run:
+    name: Eval run (shard ${{ matrix.shard.label }})
+    needs: changes
+    if: needs.changes.outputs.eval == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.changes.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The merge commit and its parents: HEAD^1 is the base.
+          fetch-depth: 2
+          # No step needs an authenticated git after checkout. The spec-kit
+          # step writes its own credential rewrite.
+          persist-credentials: false
+
+      - name: Check out the base
+        id: base
+        run: |
+          set -euo pipefail
+          base_dir="$RUNNER_TEMP/base"
+          git worktree add --detach "$base_dir" HEAD^1
+          echo "dir=$base_dir" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD^1)" >> "$GITHUB_OUTPUT"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # dfo-spec-kit is a private repo the default GITHUB_TOKEN cannot read, and
+      # the engine extra pulls it as a git dependency.
+      - name: Authenticate git for the dfo-spec-kit dependency
+        uses: ./.github/actions/spec-kit-auth
+        with:
+          client-id: ${{ vars.READER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.READER_APP_PRIVATE_KEY }}
+
+      - name: Install dependencies in head and base
+        env:
+          BASE_DIR: ${{ steps.base.outputs.dir }}
+        run: |
+          set -euo pipefail
+          uv sync ${{ env.UV_SYNC_ARGS }} --no-default-groups
+          (cd "$BASE_DIR" && uv sync ${{ env.UV_SYNC_ARGS }} --no-default-groups)
+
+      - name: Authenticate to Google Cloud as the eval reader
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.EVAL_WIF_PROVIDER }}
+          service_account: ${{ secrets.EVAL_WIF_SA }}
+
+      # Both apps refuse to start without a resolvekit cache directory. Each side
+      # has its own, keyed by that tree's entity_resolution sources and lock file
+      # (git tree and blob ids), so a side serves only a pack its own tree built.
+      # A miss builds the pack afresh, since there is no fallback key.
+      - name: Key the resolvekit caches
+        id: keys
+        run: |
+          set -euo pipefail
+          entity_resolution=packages/dfo-data-tools/src/entity_resolution
+          for side in head base; do
+            rev=HEAD
+            if [ "$side" = base ]; then rev=HEAD^1; fi
+            hash="$(git rev-parse "$rev:$entity_resolution" "$rev:uv.lock" | sha256sum | cut -c1-16)"
+            echo "$side=resolvekit-$side-$hash" >> "$GITHUB_OUTPUT"
+          done
+
+      - name: Restore the head resolvekit cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/resolvekit-head
+          key: ${{ steps.keys.outputs.head }}
+
+      - name: Restore the base resolvekit cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.temp }}/resolvekit-base
+          key: ${{ steps.keys.outputs.base }}
+
+      - name: Run the paired eval
+        id: eval
+        env:
+          BASE_DIR: ${{ steps.base.outputs.dir }}
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SEARCH_GRAPH_BASE: ${{ vars.SEARCH_GRAPH_BASE }}
+          # WAF bypass for the graph: CI runner IPs are datacenter ranges the
+          # graph's bot protection challenges, and this header exempts them.
+          SEARCH_GRAPH_TOKEN: ${{ secrets.SEARCH_GRAPH_TOKEN }}
+          HEAD_RESOLVEKIT_DIR: ${{ runner.temp }}/resolvekit-head
+          BASE_RESOLVEKIT_DIR: ${{ runner.temp }}/resolvekit-base
+          # The eval profile: every request reaches the engine and the LLM, and
+          # the staged coverage serves without the code index check, since the
+          # base tree's code index can differ from the build both apps read.
+          SEARCH_RESPONSE_CACHE_ENABLED: "false"
+          SEARCH_LLM_MEMO_MAX_BYTES: "0"
+          COVERAGE_INDEX_CHECK: "off"
+          SHARD: ${{ matrix.shard.index }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/eval-gate"
+          mkdir -p "$out" "$HEAD_RESOLVEKIT_DIR" "$BASE_RESOLVEKIT_DIR"
+
+          rc=0
+          staged="$(uv run python scripts/stage_eval_data.py \
+            --checkout . --checkout "$BASE_DIR" --dest "$RUNNER_TEMP/eval-data" \
+            --coverage-uri "$DEPLOYED_COVERAGE_URI" \
+            --catalogue-uri "$DEPLOYED_CATALOGUE_URI")" || rc=$?
+          if [ "$rc" -eq 3 ]; then
+            echo "::error::A format root one of the trees reads has no deployed build; see the log above."
+            echo 3 > "$out/code"
+            exit 0
+          elif [ "$rc" -ne 0 ]; then
+            exit "$rc"
+          fi
+          # COVERAGE_ARTIFACT_URI and ORIGIN_CATALOGUE_URI, for both apps and the driver.
+          while IFS="=" read -r name uri; do export "$name=$uri"; done <<< "$staged"
+
+          RESOLVEKIT_CACHE_DIR="$HEAD_RESOLVEKIT_DIR" uv run uvicorn --factory \
+            dfo_apis.app:create_app --host 127.0.0.1 --port "$HEAD_PORT" \
+            > "$out/head-app.log" 2>&1 &
+          head_pid=$!
+          (cd "$BASE_DIR" && RESOLVEKIT_CACHE_DIR="$BASE_RESOLVEKIT_DIR" exec uv run uvicorn \
+            --factory dfo_apis.app:create_app --host 127.0.0.1 --port "$BASE_PORT") \
+            > "$out/base-app.log" 2>&1 &
+          base_pid=$!
+          trap 'kill "$head_pid" "$base_pid" 2>/dev/null || true' EXIT
+
+          wait_for_app() {
+            for _ in $(seq 1 120); do
+              if curl -fsS -o /dev/null "http://127.0.0.1:$1/api/search/schema"; then
+                return 0
+              fi
+              if ! kill -0 "$2" 2>/dev/null; then
+                break
+              fi
+              sleep 5
+            done
+            tail -n 50 "$3"
+            return 1
+          }
+          # A head that does not serve is the PR's fault and fails the run. A
+          # base that does not serve is infrastructure.
+          if ! wait_for_app "$HEAD_PORT" "$head_pid" "$out/head-app.log"; then
+            echo "::error::The head app did not serve /api/search/schema."
+            exit 1
+          fi
+          if ! wait_for_app "$BASE_PORT" "$base_pid" "$out/base-app.log"; then
+            echo "::error::The base app did not serve /api/search/schema."
+            echo 3 > "$out/code"
+            exit 0
+          fi
+
+          rc=0
+          uv run python scripts/eval_paired.py \
+            --head-url "http://127.0.0.1:$HEAD_PORT" \
+            --base-url "http://127.0.0.1:$BASE_PORT" \
+            --base-ref "$BASE_SHA" \
+            --shard "$SHARD/$EVAL_SHARDS" \
+            --concurrency "$EVAL_CONCURRENCY" \
+            --report "$out/report.json" \
+            --summary "$out/summary.md" \
+            --responses "$out/responses.jsonl" || rc=$?
+          if [ -f "$out/summary.md" ]; then
+            cat "$out/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # A head app that died during the run is the PR's crash, and every
+          # later case then read as infrastructure, which the override label
+          # would release. A base app that died keeps the driver's code.
+          if ! kill -0 "$head_pid" 2>/dev/null; then
+            tail -n 50 "$out/head-app.log"
+            echo "The head app exited during the run." >> "$GITHUB_STEP_SUMMARY"
+            echo "::error::The head app exited during the run; the PR's code crashed it."
+            exit 1
+          fi
+          if ! kill -0 "$base_pid" 2>/dev/null; then
+            tail -n 50 "$out/base-app.log"
+            echo "::warning::The base app exited during the run; the exit code stands."
+          fi
+          case "$rc" in
+            0|1|3) echo "$rc" > "$out/code" ;;
+            # 2 is a setup error or crash that no label releases.
+            *) echo "::error::eval_paired.py exited $rc: a setup error or crash."; exit "$rc" ;;
+          esac
+
+      - name: Upload the report and responses
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: eval-gate-${{ matrix.shard.index }}
+          path: ${{ runner.temp }}/eval-gate/
+          if-no-files-found: ignore
+
+  verdict:
+    name: Eval gate
+    needs: [reset, changes, run]
+    if: always() && github.repository_owner == 'ONEcampaign'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    steps:
+      - name: Check the jobs
+        id: jobs
+        env:
+          RESET: ${{ needs.reset.result }}
+          CHANGES: ${{ needs.changes.result }}
+          EVAL: ${{ needs.changes.outputs.eval }}
+          RUN: ${{ needs.run.result }}
+        run: |
+          set -euo pipefail
+          # A label the reset job could not clear may belong to an earlier commit.
+          if [ "$RESET" != "success" ]; then
+            echo "::error::The override reset job ended with $RESET."
+            exit 1
+          fi
+          if [ "$CHANGES" != "success" ]; then
+            echo "::error::The change detection job ended with $CHANGES."
+            exit 1
+          fi
+          if [ "$EVAL" != "true" ]; then
+            echo "eval=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A shard that crashed, or whose head app died, fails the run job.
+          if [ "$RUN" != "success" ]; then
+            echo "::error::An eval run shard ended with $RUN; see the Eval run jobs."
+            exit 1
+          fi
+          echo "eval=true" >> "$GITHUB_OUTPUT"
+
+      - name: Download every shard's artifact
+        if: steps.jobs.outputs.eval == 'true'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: eval-gate-*
+          path: ${{ runner.temp }}/shards
+
+      - name: Apply the combined exit code and the eval-override label
+        if: steps.jobs.outputs.eval == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHARDS_DIR: ${{ runner.temp }}/shards
+          LABELS: repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/labels
+        run: |
+          set -euo pipefail
+          # 1 if any shard exited 1, else 3 if any exited 3, else 0. A shard
+          # that wrote no code, or a code other than 0, 1 or 3, fails the gate.
+          CODE=0
+          read_codes=0
+          for k in $(seq 1 "$EVAL_SHARDS"); do
+            file="$SHARDS_DIR/eval-gate-$k/code"
+            if [ ! -f "$file" ]; then
+              echo "::error::Shard $k wrote no exit code."
+              exit 1
+            fi
+            code="$(cat "$file")"
+            read_codes=$((read_codes + 1))
+            echo "Shard $k exited $code."
+            case "$code" in
+              1) CODE=1 ;;
+              3) if [ "$CODE" = "0" ]; then CODE=3; fi ;;
+              0) ;;
+              *) echo "::error::Shard $k wrote the code '$code'."; exit 1 ;;
+            esac
+          done
+          if [ "$read_codes" -eq 0 ]; then
+            echo "::error::No shard code to combine; EVAL_SHARDS is '$EVAL_SHARDS'."
+            exit 1
+          fi
+          if [ "$CODE" = "0" ]; then
+            exit 0
+          fi
+          what="a blocking verdict"
+          if [ "$CODE" = "3" ]; then
+            what="an infrastructure failure"
+          fi
+          if gh api "$LABELS" --jq '.[].name' | grep -qx 'eval-override'; then
+            echo "Eval exited $CODE ($what); the \`eval-override\` label released it." >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning::Eval exited $CODE ($what); the eval-override label released it."
+            exit 0
+          fi
+          echo "::error::Eval exited $CODE ($what); see the Eval run summaries. The eval-override label releases it."
+          exit 1

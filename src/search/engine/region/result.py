@@ -1,0 +1,398 @@
+"""Per-variable resolution outcomes and leaf result types for region resolvers."""
+
+from __future__ import annotations
+
+import asyncio
+import dataclasses
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, cast
+
+from dfo_platform import Cause
+from materialise.roles import axis_for_role, axis_noun
+from search.engine.clients.graph import Facet
+from search.engine.departures import FactsByWarning, breakdown_not_applied, warning_key
+from search.engine.events import PlaceOptionsEvent
+from search.engine.region.codes import (
+    ALTERNATES_UNEVALUATED,
+    QUERY_QUALIFIER_DROPPED,
+    _ObsProbeResult,
+    _OptionProbeResult,
+)
+from search.engine.region.facet_probe import FacetProbe
+from search.engine.retrieval.bound_values import (
+    MeasurePartition,
+    OpenAxisFact,
+    OptionServedFact,
+)
+from search.engine.retrieval.member_facts import MemberFacts
+from search.engine.retrieval.retrieve import MemberPopulation
+from search.engine.shape import ShapeDraft
+from search.engine.spec_build import RoleAxisFactInput
+from search.heading.departure_fact import DepartureFact
+from search.models import (
+    EntityRoleKey,
+    GraphRef,
+    NearestRealSpec,
+    NoDataGate,
+    Operation,
+    Ordering,
+    ParsedPart,
+    PartRestatementReason,
+    ResolvedQualifier,
+    RoleAxis,
+    SlotOptions,
+    Spec,
+    StatusLiteral,
+    UnitAlternative,
+    Unsupported,
+    Warning,
+)
+
+if TYPE_CHECKING:
+    from search.engine.region.option_coverage import RoleServedFilter
+    from search.engine.retrieval.read_plan import ReadPlan
+
+FacetPredicate = Callable[[Facet], bool]
+"""Test whether a facet passes one axis's filter, including computed filters.
+
+Defined here so `RegionResult` can type it without importing filtering modules.
+"""
+
+
+@dataclass(frozen=True)
+class FacetAxisFilter:
+    """A facet-axis predicate: whether a facet's value on the axis satisfies the request's
+    binding (`region.facets.facet_admitted`)."""
+
+    predicate: FacetPredicate
+
+
+@dataclass(frozen=True)
+class AmbiguousEntityCandidate:
+    """One graph node that could match an ambiguous query wording."""
+
+    dcid: str
+    name: str
+    kind: str
+
+
+@dataclass(frozen=True)
+class AmbiguousEntity:
+    """Query wording with multiple graph candidates.
+
+    `role` is the flow axis the door gave the wording, or `None` when it gave none
+    or gave both.
+    """
+
+    text: str
+    candidates: tuple[AmbiguousEntityCandidate, ...]
+    role: RoleAxis | None = None
+
+
+@dataclass(frozen=True)
+class RoleNotAdmittedEntity:
+    """Resolved entity that no surviving shape can assign to a declared role."""
+
+    text: str
+    dcid: str
+    graph_type: str
+
+
+@dataclass(frozen=True)
+class RegionResult:
+    """Outcome for one variable, including its Specs and response diagnostics.
+
+    Specs carry pipeline traces. `timing_by_step` records per-step latency.
+    Same-shape merges combine regions and union their StatVars.
+    """
+
+    variable_text: str | None
+    status: StatusLiteral
+    specs: tuple[Spec, ...]  # definite: 1, candidates: 2+, no_data/unsupported: 0
+    no_data_reason: str | None
+    warnings: tuple[Warning, ...]
+    timing_by_step: dict[str, int]
+    earliest_index: int = 0
+    # Details for recognized qualifiers with unsupported application rules.
+    # Unsupported results return HTTP 200 without a Spec, no-data reason, or warning.
+    unsupported: Unsupported | None = None
+    # Specs found by relaxation, each with its own relaxation record.
+    nearest_real: tuple[NearestRealSpec, ...] | None = None
+    # (STANDARD-only) elected Spec with no observation at the resolved place.
+    # Contains one Spec and differs from `nearest_real`.
+    flagged_match: tuple[Spec, ...] | None = None
+    # Failed quality-gate code, independent of which near-match field is populated.
+    gate: NoDataGate | None = None
+    # Unelected data-bearing variable, present only for `only_alternate_has_data`.
+    alternate_match: Spec | None = None
+    # Confirmed StatVars for the elected shape on no-data outcomes.
+    # Matches `flagged_match` on no-member gates. Differs for `only_alternate_has_data`.
+    elected_stat_vars: list[GraphRef] | None = None
+    # Input entity names the answer could not place, in input order: those that did not
+    # resolve for `entity_not_resolved`, and those whose flow direction the query does not
+    # tell for `role_not_resolved` (`place_roles.untold_direction_names`). Empty otherwise.
+    unresolved_entity_names: tuple[str, ...] = ()
+    # Query qualifiers without a final binding, including terms absent from the
+    # index vocabulary. Populated only for `qualifier_not_bound`. Full records
+    # live on `flagged_match.resolved.trace.query_qualifiers`.
+    unbound_qualifiers: tuple[ResolvedQualifier, ...] = ()
+    # Ambiguous query wordings and their candidates, populated only for
+    # `entity_ambiguous`.
+    ambiguous_entities: tuple[AmbiguousEntity, ...] = ()
+    # Entity names that resolved to exactly one graph node, with that node's dcid,
+    # populated only for `entity_ambiguous`. The part's `data_query` pins them.
+    resolved_entity_dcids: Mapping[str, str] = field(default_factory=dict)
+    # Resolved entities without an admitted role in resolution order, populated
+    # only for `entity_role_not_admitted`.
+    role_not_admitted_entities: tuple[RoleNotAdmittedEntity, ...] = ()
+    # Open wire role (`origin` or `destination`) on `no_observations` outcomes
+    # from role-bearing shapes, even when scope discovery found no members.
+    # The renderer names this axis. Subject-only shapes and other outcomes use `None`.
+    no_data_role_axis: EntityRoleKey | None = None
+    # Bound role -> entity DCIDs, used to ensure an alternate preserves the
+    # query's directional binding when `only_alternate_has_data` fires.
+    # Computed from resolved entities after shape construction. `{}` for
+    # subject-only shapes or earlier no-data outcomes. This read makes no graph call.
+    no_data_bound_role_dcids: Mapping[EntityRoleKey, tuple[str, ...]] = field(default_factory=dict)
+    # Stripped, case-folded qualifier spans forced into bindings by this region, or
+    # answered by a slot default it warns about. Same-shape merges union the sets.
+    # The entry door uses them to retain or drop `QUERY_QUALIFIER_DROPPED` warnings
+    # across the request.
+    admitted_qualifier_phrases: frozenset[str] = frozenset()
+    # Why a no_data outcome fired (models.NoData's own `cause`), populated
+    # only for no_data_reason=="rate_coverage_gap".
+    cause: Cause | None = None
+    # Capped currencies a `unit_not_resolved` refusal offers, and whether the cap cut
+    # any. Empty for every other outcome and for a refusal with no candidates.
+    unit_alternatives: tuple[UnitAlternative, ...] = ()
+    unit_alternatives_truncated: bool = False
+    # The `year_unavailable` fact of an answer holding data at the place but none in the
+    # years asked (`departures.window_gap_fact`). It holds the years asked and the span the
+    # series runs. No warning discloses it, so it rides outside `departure_facts`.
+    window_gap_fact: DepartureFact | None = None
+    # This region's LLM token usage. A same-shape merge keeps the first
+    # member's value. Request-wide totals are aggregated separately.
+    llm_usage: dict | None = None
+    # Candidate scores by spec id. `None` marks candidates outside the loose group.
+    # Assembly uses scores for confidence and loose-last ordering.
+    candidate_scores: dict[str, float | None] | None = None
+    # Elected and nearby candidate ids from a fired near-neighbour gate.
+    # Includes candidates that survive final assembly, or is empty.
+    candidate_near_neighbor_spec_ids: frozenset[str] = frozenset()
+    # True when the candidate budget drops an eligible distinct shape before
+    # materialisation. Excludes retrieval top-K and score-floor filtering.
+    # Candidate assembly combines this with its own cap for `truncated`.
+    candidate_budget_truncated: bool = False
+    # True when the near-neighbour margin gate adds a close candidate to an
+    # otherwise definite result. Candidate assembly preserves the elected/fired
+    # pair's order before loose-last sorting. A same-shape merge keeps the first
+    # member's value. False for earlier ambiguity and non-candidate results.
+    near_neighbor_fired: bool = False
+    # Preserve the client's candidate order when a dataset resubmit reasserts
+    # a candidate set. Ranking state stays internal, so
+    # this override also prevents assembly from sorting that set again.
+    candidate_ordering_override: Ordering | None = None
+    # Unawaited coverage probe for streamed slot options, sent after `response`.
+    # It leaves `specs[].slot_options` and the buffered response unchanged.
+    # Its events and warnings feed the terminal `done` event.
+    slot_options_task: asyncio.Task[_OptionProbeResult] | None = None
+    # What this region's facet options are judged over: its StatVars, probe entities,
+    # preview window and facet pins. Set on every definite result. A same-shape merge
+    # builds the merged spec's probe from its members' and derives its options from it.
+    facet_probe: FacetProbe | None = None
+    # Relaunch a slot-options probe with a merged spec id and facet probe.
+    # It captures the same shape, bindings, and graph clients as the original.
+    # Only the event-loop thread may call it because it creates an asyncio task.
+    slot_options_relaunch: (
+        Callable[
+            [str, list[SlotOptions], FacetProbe | None],
+            asyncio.Task[_OptionProbeResult],
+        ]
+        | None
+    ) = None
+    # Unawaited observation fetch, streamed after the response with slot options.
+    # Scheduled only with `stream_observations` and `include_observations`. Its
+    # (events, warnings) result shares the slot-options await loop.
+    observations_task: asyncio.Task[_ObsProbeResult] | None = None
+    # Relaunch the fetch under a merged spec id. The observed StatVar/entity
+    # pair stays unchanged. Reconciliation detects stale tasks by object identity.
+    observations_relaunch: Callable[[str], asyncio.Task[_ObsProbeResult]] | None = None
+    # Unawaited peers/children prefetch, streamed after the response. It needs
+    # `stream_slot_options=True`, a materialise graph reader, and the finalized identity.
+    # It is independent of slot-option coverage.
+    # `[]` means the task ran without an observationAbout place. `None` marks
+    # an unscheduled task.
+    place_options_task: asyncio.Task[list[PlaceOptionsEvent]] | None = None
+    # Relaunch under a merged spec id. The eligibility gate preserves the
+    # identity. The closure captures the same graph and materialise clients.
+    place_options_relaunch: Callable[[str], asyncio.Task[list[PlaceOptionsEvent]]] | None = None
+    # Role-to-entity lists probed by resubmit resolution. Place-set values are
+    # expanded to members. Populated on definite resubmit results.
+    observation_entities: dict[str, list[str]] | None = None
+    # Resubmit filters for source, method, and unit facets, applied before
+    # facet selection. `None` means no bound axis or a non-resubmit result.
+    facet_filter: Mapping[str, FacetAxisFilter] | None = None
+    # Parsed inputs that would reproduce this region. `None` marks an unavailable
+    # echo. Resubmit regions have no phrase inputs. Same-shape merges preserve it,
+    # while part assembly reads restatement from each original region.
+    restatement: ParsedPart | None = None
+    # A resolved leg's inputs as one parsed part, set whether or not `restatement`
+    # echoes them. `NoData.data_query` pins into it. The parsed doors set it to the
+    # posted part. `None` when `ParsedPart` bounds reject the inputs, on soft-deadline
+    # placeholders, and on resubmit identity, candidate and placeholder regions.
+    parsed_form: ParsedPart | None = None
+    # Operations the question asks for over this region's data, echoed onto its
+    # part. Like restatement, part assembly reads them from each original region.
+    operations: tuple[Operation, ...] = ()
+    # The roles the shape that built the answering Spec declares, set where a definite or
+    # candidates result is assembled: the definite Spec's shape, and the first candidate's
+    # for a candidate set. `with_runnable_operations` reads it to tell which flow axes the
+    # answer's data carries. None on every other result.
+    answered_roles: tuple[str, ...] | None = None
+    # Reason part assembly omits restatement. The resolving leg sets it when
+    # known. Assembly uses `no_phrase_inputs` otherwise. It is `None` when a
+    # restatement is present.
+    restatement_reason: PartRestatementReason | None = None
+    # Served measure partition and sibling partitions. Same-shape merges need
+    # these to mint new identities after member materialisations are gone.
+    measure_partition: MeasurePartition | None = None
+    measure_siblings: tuple[MeasurePartition, ...] = ()
+    # Open constraint axes and values asserted by served StatVars. Same-shape
+    # merges combine all members' values and undeclared counts. Empty when no
+    # definite member declares an open constraint.
+    open_axis_facts: tuple[OpenAxisFact, ...] = ()
+    # What this region's slot menus were counted from: per counted slot, the series a
+    # binding of each option would serve (`option_coverage.option_axis_facts`).
+    # A same-shape merge counts the merged menus from the union of these. Empty when no
+    # menu was counted.
+    option_axis_facts: tuple[OptionServedFact, ...] = ()
+    # The in-memory served test this region's measure alternatives were counted with
+    # (`option_coverage.measure_served_counter`), and the members its Spec serves and the
+    # read plan whose rows it states, which its unit conversion offer reads
+    # (`unit.conversion.with_unit_conversion`). A same-shape merge recounts the merged
+    # alternatives over the union of the members' tests and offers conversions over the
+    # union of their members and plans. None and empty off the definite path. The test is
+    # also None for a subject-place family.
+    served_filter: RoleServedFilter | None = None
+    served_members: tuple[MemberFacts, ...] = ()
+    served_plans: tuple[ReadPlan, ...] = ()
+    # Each open directional role's member population behind this region's Spec, the
+    # input its `ResolvedSpec.role_axis_facts` were counted from. A same-shape merge
+    # counts the merged answer's members from the union of these, since the wire
+    # facts carry counts and overlapping populations cannot be summed. Empty when no
+    # role axis is open or the builder recorded none.
+    role_axis_facts: tuple[RoleAxisFactInput, ...] = ()
+    # Bindings-admitted population behind this region's StatVars. Same-shape
+    # merges recompute the merged Spec's member count and digest from all
+    # members because their materialisations are gone. `None` on non-definite
+    # results or when population measurement was skipped.
+    member_population: MemberPopulation | None = None
+    # Whether the pass's default-scope presence read left a StatVar's scope unsettled
+    # (`DefaultPresence.unsettled`): its countries fallback holds for this request only, and
+    # a later request may read it over every place with data. The fan-out reports such a leg
+    # as degraded (`_FanOutResult.degraded_leg`) so it is not cached.
+    scope_unsettled: bool = False
+    # The departure facts raised beside this region's warnings, each under its warning's
+    # key (`departures.FactsByWarning`). Part assembly keeps those whose warning the part
+    # still holds, so a fact here whose warning was dropped reaches no part.
+    departure_facts: FactsByWarning = field(default_factory=dict)
+    # The request's own words for each name the answer states. They cover each entity name
+    # extraction gave ("EU institutions" for "European Union"), where the raw-text door holds
+    # them (`with_entity_words`), and each group the answer labels as the graph does, under
+    # the name the request gave it (`place_roles.group_request_names`). The part's departures
+    # and no-data frame quote a name in these words. A name absent here is quoted as given.
+    # `None` on a door that holds no words for any entity (a resubmit), whose departures
+    # then quote none.
+    entity_words: Mapping[str, str] | None = field(default_factory=dict)
+
+    @property
+    def spec(self) -> Spec:
+        """Convenience for the definite path (status == 'definite')."""
+        return self.specs[0]
+
+    @property
+    def alternates_left_out(self) -> bool:
+        """Whether the answer states `alternates_unevaluated`: an alternate was left
+        unevaluated because its presence read did not complete. The fan-out reports such a
+        leg as degraded (`_FanOutResult.degraded_leg`) so it is not cached. Reading the
+        warning keeps the statement and the cache exclusion in step on every path, a
+        gap-fill or a same-shape merge included."""
+        return any(warning.code == ALTERNATES_UNEVALUATED for warning in self.warnings)
+
+
+def answered_roles(shape: ShapeDraft) -> tuple[str, ...]:
+    """Return the roles a Spec built from `shape` answers under
+    (`RegionResult.answered_roles`)."""
+    return shape.declared_roles or ("observationAbout",)
+
+
+def with_runnable_operations(region: RegionResult, operations: Sequence[Operation]) -> RegionResult:
+    """Return `region` carrying the `operations` its data can run, and a warning for each
+    one it cannot.
+
+    Every door stamps a part's operations through this function. An operation over a flow
+    axis is unrunnable on a role-bearing answer that declares no role on that axis
+    (`RegionResult.answered_roles`): a recipient-only total holds one series per recipient,
+    so a rank over creditors has nothing to rank. The identity carries no operation, so
+    the by-creditor rows answer only a named creditor, and the answer is the family the
+    mint resolves. The operation leaves the part, and the part warns
+    `query_qualifier_dropped`, recording a `breakdown_not_applied` departure under that
+    warning. A subject-only answer, and a result that answers nothing,
+    keep every operation.
+    """
+    roles = tuple(role for role in region.answered_roles or () if role != "observationAbout")
+    if not roles:
+        return dataclasses.replace(region, operations=tuple(operations))
+    axes = {axis_for_role(role) for role in roles}
+    unrunnable = [
+        operation
+        for operation in operations
+        if operation.over in ("origin", "destination") and operation.over not in axes
+    ]
+    warnings = list(region.warnings)
+    departure_facts = dict(region.departure_facts)
+    for operation in unrunnable:
+        warning = _unrunnable_warning(operation)
+        # A parsed entry of a resubmit is stamped by the fan-out and again by its door.
+        if warning not in warnings:
+            warnings.append(warning)
+        departure_facts[warning_key(warning)] = breakdown_not_applied(operation)
+    return dataclasses.replace(
+        region,
+        operations=tuple(operation for operation in operations if operation not in unrunnable),
+        warnings=tuple(warnings),
+        departure_facts=departure_facts,
+    )
+
+
+def with_departure_facts(region: RegionResult, facts: FactsByWarning) -> RegionResult:
+    """Return `region` also holding `facts`, the departures raised beside warnings that
+    reach its part from outside it, such as the envelope's. Where both raised a fact beside
+    one warning, the region's own fact wins, since it was raised beside the binding it names."""
+    if not facts:
+        return region
+    return dataclasses.replace(region, departure_facts={**facts, **region.departure_facts})
+
+
+def _unrunnable_warning(operation: Operation) -> Warning:
+    """The `query_qualifier_dropped` warning for an operation the answer cannot run."""
+    noun = axis_noun(cast(RoleAxis, operation.over))
+    return Warning(
+        code=QUERY_QUALIFIER_DROPPED,
+        severity="degraded",
+        message=(
+            f'The requested "{operation.phrase}" was not applied: the answer is the total '
+            f"over every {noun}, and a breakdown by {noun} needs a named {noun}."
+        ),
+    )
+
+
+def with_entity_words(region: RegionResult, words: Mapping[str, str]) -> RegionResult:
+    """Return `region` holding `words`, the request's own words for each entity name
+    (`RegionResult.entity_words`). A group label `region` already maps to the request's name
+    for the group maps on to that name's words."""
+    if not words:
+        return region
+    by_label = {label: words.get(name, name) for label, name in (region.entity_words or {}).items()}
+    return dataclasses.replace(region, entity_words={**words, **by_label})

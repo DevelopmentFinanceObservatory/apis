@@ -1,0 +1,136 @@
+{
+  "data": {
+    "provenance/OECDCreditorReportingSystem": {
+      "arcs": {
+        "dataTransformationChangelog": {
+          "nodes": [
+            {
+              "provenanceId": "provenance/OECDCreditorReportingSystem",
+              "value": "## 2026-09-22\\n\\n### Changed\\n\\n- Donor core contributions to multilateral organisations (`bi_multi = 2`) are\\n  excluded from bilateral flows, since they are also reported in Members' Total\\n  Use of the Multilateral System and would otherwise double count.\\n\\n## 2026-08-20\\n\\n### Added\\n\\n- Dataset added to the graph.\\n"
+            }
+          ]
+        },
+        "dataTransformationDescription": {
+          "nodes": [
+            {
+              "provenanceId": "provenance/OECDCreditorReportingSystem",
+              "value": "## Download the source data\\n\\nThe complete CRS file is downloaded from the OECD each time the pipeline runs, and\\nreplaces the previous copy, so the data reflects the OECD's latest release.\\n\\n## Exclude donor core contributions to multilaterals\\n\\nThe OECD instructs that donor core contributions to multilateral organisations,\\nreported as ordinary CRS rows flagged `bi_multi = 2`, are excluded to compute\\nbilateral flows. These contributions are already reported in Members' Total Use of\\nthe Multilateral System, so keeping them would double count.\\n\\n## Standardise providers and recipients\\n\\nProvider and recipient codes are standardised to Data Commons IDs used across the\\nplatform, so data can be compared across datasets.\\n\\n## Select dimensions\\n\\nEvery figure is reported against the year, the provider and the recipient, and four\\ndimensions from the CRS: type of flow, co-operation modality, type of finance and\\npurpose code. The CRS describes each activity in far more detail than this, including\\nproject titles, descriptions, channels and policy markers, none of which is carried\\nthrough.\\n\\n## Aggregate totals\\n\\nActivities sharing the same year, provider, recipient and dimensions are summed.\\nCommitments, disbursements, net disbursements and grant equivalents are each\\naggregated as separate measures. Every figure is reported in US dollars at current\\nprices.\\n"
+            }
+          ]
+        },
+        "earliestObservationDate": {
+          "nodes": [
+            {
+              "provenanceId": "provenance/OECDCreditorReportingSystem",
+              "value": "1973"
+            }
+          ]
+        },
+        "licenseAttribution": {
+          "nodes": [
+            {
+              "provenanceId": "provenance/OECDCreditorReportingSystem",
+              "value": "OECD (2026), Creditor Reporting System (CRS), OECD Data Explorer, https://webfs-dcd.oecd.org/files/dotStat/DSD_CRS/CRS.parquet (accessed on 2026-09-11)"
+            }
+          ]
+        },
+        "license": {
+          "nodes": [
+            {
+              "provenanceId": "provenance/OECDCreditorReportingSystem",
+              "value": "https://www.oecd.org/en/about/terms-conditions.html"
+            }
+          ]
+        },
+        "licenseType": {
+          "nodes": [
+            {
+              "name": "OECD Terms and Conditions",
+              "types": [
+                "LicenseTypeEnum"
+              ],
+              "dcid": "OECDTermsAndConditions",
+              "provenanceId": "provenance/OECDCreditorReportingSystem"
+            }
+          ]
+        },
+        "name": {
+          "nodes": [
+            {
+              "provenanceId": "provenance/OECDCreditorReportingSystem",
+              "value": "OECD Creditor Reporting System (CRS)"
+            },
+            {
+              "provenanceId": "provenance/OECDCreditorReportingSystem",
+              "value": "provenance/OECDCreditorReportingSystem"
+            }
+          ]
+        },
+        "source": {
+          "nodes": [
+            {
+              "name": "dc/s/OrganisationForEconomicCo-operationAndDevelopmentOecd",
+              "types": [
+                "Source"
+              ],
+              "dcid": "dc/s/OrganisationForEconomicCo-operationAndDevelopmentOecd",
+              "provenanceId": "provenance/OECDCreditorReportingSystem"
+            }
+          ]
+        },
+        "sourceDataUrl": {
+          "nodes": [
+            {
+              "provenanceId": "provenance/OECDCreditorReportingSystem",
+              "value": "https://webfs-dcd.oecd.org/files/dotStat/DSD_CRS/CRS.parquet"
+            }
+          ]
+        },
+        "sourceReleaseFrequency": {
+          "nodes": [
+            {
+              "provenanceId": "provenance/OECDCreditorReportingSystem",
+              "value": "P3M"
+            }
+          ]
+        },
+        "lastDataRefreshDate": {
+          "nodes": [
+            {
+              "provenanceId": "provenance/OECDCreditorReportingSystem",
+              "value": "2026-09-11"
+            }
+          ]
+        },
+        "latestObservationDate": {
+          "nodes": [
+            {
+              "provenanceId": "provenance/OECDCreditorReportingSystem",
+              "value": "2024"
+            }
+          ]
+        },
+        "typeOf": {
+          "nodes": [
+            {
+              "name": "Provenance",
+              "types": [
+                "Class"
+              ],
+              "dcid": "Provenance",
+              "provenanceId": "provenance/OECDCreditorReportingSystem"
+            }
+          ]
+        },
+        "url": {
+          "nodes": [
+            {
+              "provenanceId": "provenance/OECDCreditorReportingSystem",
+              "value": "https://data-explorer.oecd.org/vis?tm=crs&pg=0&snb=30&df[ds]=dsDisseminateFinalDMZ&df[id]=DSD_CRS%40DF_CRS&df[ag]=OECD.DCD.FSD&df[vs]=1.6&isAvailabilityDisabled=false&page=0"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

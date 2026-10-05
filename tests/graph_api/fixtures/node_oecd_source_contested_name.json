@@ -1,0 +1,20 @@
+{
+  "data": {
+    "dc/s/OrganisationForEconomicCo-operationAndDevelopmentOecd": {
+      "arcs": {
+        "name": {
+          "nodes": [
+            {
+              "provenanceId": "provenance/OECDCreditorReportingSystem",
+              "value": "dc/s/OrganisationForEconomicCo-operationAndDevelopmentOecd"
+            },
+            {
+              "provenanceId": "dc/base/Provenance",
+              "value": "Organisation for Economic Co-operation and Development (OECD)"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,492 @@
+- id: weo-001
+  query: GDP growth in Nigeria
+  source: weo
+  axes:
+    place: country
+    indicator: specific
+    time: none
+    operation: none
+    phrasing: casual
+  intent: See how fast Nigeria's economy grows each year.
+  edge: Real GDP growth is not in the WEO slice; WDI may match.
+- id: weo-002
+  query: GDP of Kenya in current US dollars
+  source: weo
+  axes:
+    place: country
+    indicator: unit_specific
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Kenya's nominal GDP in dollars.
+  edge: Wording matches WDI and WEO; candidates expected.
+- id: weo-003
+  query: the economy of Kenya
+  source: weo
+  axes:
+    place: country
+    indicator: broad
+    time: none
+    operation: none
+    phrasing: vague
+  intent: An overview of Kenya's economic size and trend.
+  edge: Broad indicator with no unit; many GDP siblings.
+- id: weo-004
+  query: IMF GDP current prices Kenya
+  source: weo
+  axes:
+    place: country
+    indicator: specific
+    time: none
+    operation: none
+    phrasing: expert
+  intent: Kenya's GDP from the IMF World Economic Outlook.
+  edge: A source named with a current-prices qualifier; the qualifier should steer the choice among candidates.
+- id: weo-005
+  query: GDP per capita PPP Japan
+  source: weo
+  axes:
+    place: country
+    indicator: unit_specific
+    time: none
+    operation: none
+    phrasing: expert
+  intent: Japan's income per person in PPP dollars.
+  edge: A per-capita WEO series, where the sentence must keep 'per capita'.
+- id: weo-006
+  query: GDP in PPP dollars per person for Brazil, India and Indonesia
+  source: weo
+  axes:
+    place: countries
+    indicator: unit_specific
+    time: none
+    operation: none
+    phrasing: multi_part
+  intent: PPP income per person across three emerging economies.
+- id: weo-007
+  query: gross national savings percent of GDP Zambia
+  source: weo
+  axes:
+    place: country
+    indicator: specific
+    time: none
+    operation: none
+    phrasing: expert
+  intent: Zambia's national saving rate.
+  edge: A WEO series with a long official label; the sentence must stay readable.
+- id: weo-008
+  query: investment as share of GDP Kenya
+  source: weo
+  axes:
+    place: country
+    indicator: specific
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Kenya's investment rate.
+  edge: A share-of-GDP wording that maps to WEO gross capital formation.
+- id: weo-009
+  query: gross capital formation for Ghana, Nigeria and Kenya since 2000
+  source: weo
+  axes:
+    place: countries
+    indicator: specific
+    time: since
+    operation: none
+    phrasing: expert
+  intent: Investment rate in three African economies since 2000.
+- id: weo-010
+  query: output gap in Brazil
+  source: weo
+  axes:
+    place: country
+    indicator: specific
+    time: none
+    operation: none
+    phrasing: expert
+  intent: Whether Brazil's economy runs above or below potential.
+  edge: Output gap for a country the series may not cover.
+- id: weo-011
+  query: output gap in Germany 2025
+  source: weo
+  axes:
+    place: country
+    indicator: specific
+    time: year
+    operation: none
+    phrasing: expert
+  intent: Germany's 2025 output gap.
+  edge: Output gap for one year and a country the series may not cover.
+- id: weo-012
+  query: GDP of Sub-Saharan Africa
+  source: weo
+  axes:
+    place: imf_group
+    indicator: specific
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Combined output of the region.
+  edge: An IMF group held on the graph; plain wording may match other sources.
+- id: weo-013
+  query: IMF GDP current prices Sub-Saharan Africa
+  source: weo
+  axes:
+    place: imf_group
+    indicator: specific
+    time: none
+    operation: none
+    phrasing: expert
+  intent: Regional GDP from the IMF.
+  edge: An IMF group that the pipeline excludes, with the source named.
+- id: weo-014
+  query: GDP per capita in Sub-Saharan Africa compared with Latin America
+  source: weo
+  axes:
+    place: region
+    indicator: specific
+    time: none
+    operation: compare
+    phrasing: multi_part
+  intent: Regional income gap.
+  edge: Two groups; one is an IMF group, the other may not be held.
+- id: weo-015
+  query: GDP of advanced economies
+  source: weo
+  axes:
+    place: imf_group
+    indicator: specific
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Combined output of rich economies.
+  edge: An IMF group that the graph may not accept as a place.
+- id: weo-016
+  query: GDP of emerging market and developing economies since 2000
+  source: weo
+  axes:
+    place: imf_group
+    indicator: specific
+    time: since
+    operation: none
+    phrasing: expert
+  intent: Combined output of the IMF's emerging group.
+  edge: An IMF aggregate that the graph may not hold, with a start year.
+- id: weo-017
+  query: GDP of the euro area
+  source: weo
+  axes:
+    place: imf_group
+    indicator: specific
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Euro area output.
+  edge: A euro-area group that expands to its members; some members may have gaps.
+- id: weo-018
+  query: GDP of East Africa
+  source: weo
+  axes:
+    place: region
+    indicator: specific
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Output of the East African region.
+  edge: Geographic region expansion; Sub-Saharan sub-regions may not be held.
+- id: weo-019
+  query: GDP of the G7 countries in dollars
+  source: weo
+  axes:
+    place: membership_group
+    indicator: unit_specific
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Output of each G7 member.
+  edge: Membership group expansion.
+- id: weo-020
+  query: GDP per capita PPP for African Union members
+  source: weo
+  axes:
+    place: membership_group
+    indicator: unit_specific
+    time: none
+    operation: rank
+    phrasing: expert
+  intent: Which AU members have the highest PPP income per person.
+  edge: An African Union group of 55 members; some members may have no data.
+- id: weo-021
+  query: compare the GDP of the G20 economies in 2025
+  source: weo
+  axes:
+    place: membership_group
+    indicator: specific
+    time: year
+    operation: compare
+    phrasing: casual
+  intent: G20 members' 2025 GDP.
+  edge: 2025 is an IMF estimate, not a reported year.
+- id: weo-022
+  query: global GDP
+  source: weo
+  axes:
+    place: none
+    indicator: broad
+    time: none
+    operation: none
+    phrasing: vague
+  intent: World output.
+  edge: No place named; 'world' may match series from several sources.
+- id: weo-023
+  query: GDP of Texas
+  source: weo
+  axes:
+    place: subnational
+    indicator: specific
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Texas's GDP.
+  edge: A subnational place that is ambiguous; WEO holds countries only.
+- id: weo-024
+  query: GDP of Lagos State
+  source: weo
+  axes:
+    place: subnational
+    indicator: specific
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Output of a Nigerian state.
+  edge: Subnational place WEO does not publish.
+- id: weo-025
+  query: GDP of Japan in dollars
+  source: weo
+  axes:
+    place: country
+    indicator: unit_specific
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Japan's GDP in US dollars rather than yen.
+  edge: A currency conversion ask; WEO publishes dollars and national currency as one variable in two units.
+- id: weo-026
+  query: GDP in Kenyan shillings
+  source: weo
+  axes:
+    place: country
+    indicator: unit_specific
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Kenya's GDP in local currency.
+  edge: A national currency unit request, a distinction the data may not record.
+- id: weo-027
+  query: Zambia gross capital formation in 2026
+  source: weo
+  axes:
+    place: country
+    indicator: specific
+    time: projection
+    operation: none
+    phrasing: expert
+  intent: The IMF's 2026 investment estimate for Zambia.
+  edge: A projection year that the graph may hold.
+- id: weo-028
+  query: 2027 forecast GDP Kenya
+  source: weo
+  axes:
+    place: country
+    indicator: specific
+    time: projection
+    operation: none
+    phrasing: casual
+  intent: The IMF's 2027 GDP forecast for Kenya.
+  edge: A forecast year for the dollar series, which may be absent.
+- id: weo-029
+  query: what will GDP per capita PPP in Japan be in 2029
+  source: weo
+  axes:
+    place: country
+    indicator: unit_specific
+    time: projection
+    operation: none
+    phrasing: casual
+  intent: The 2029 forecast of Japan's income per person.
+  edge: A projection year beyond the end of the PPP series.
+- id: weo-030
+  query: GDP outlook for Nigeria for the next five years
+  source: weo
+  axes:
+    place: country
+    indicator: specific
+    time: relative
+    operation: trend
+    phrasing: casual
+  intent: IMF projections to 2031 for Nigeria.
+  edge: Relative horizon; graph projections end 2026 or earlier.
+- id: weo-031
+  query: gross capital formation Zambia in 2035
+  source: weo
+  axes:
+    place: country
+    indicator: specific
+    time: beyond_horizon
+    operation: none
+    phrasing: expert
+  intent: Zambia's investment in 2035.
+  edge: A year beyond any WEO horizon; the sentence must say which years are shown.
+- id: weo-032
+  query: GDP per capita PPP Japan 1975
+  source: weo
+  axes:
+    place: country
+    indicator: unit_specific
+    time: year
+    operation: none
+    phrasing: expert
+  intent: Japan's income per person in 1975.
+  edge: A year before the 1980 start of the series.
+- id: weo-033
+  query: gross national savings Zambia from 2015 to 2026
+  source: weo
+  axes:
+    place: country
+    indicator: specific
+    time: range
+    operation: trend
+    phrasing: expert
+  intent: Zambia's saving rate across reported and projected years.
+  edge: Range straddles reported and estimated years.
+- id: weo-034
+  query: how has Kenya's GDP per capita changed between 2010 and 2024
+  source: weo
+  axes:
+    place: country
+    indicator: specific
+    time: range
+    operation: change
+    phrasing: casual
+  intent: Change in income per person over 14 years.
+  edge: Candidates across WDI and WEO likely.
+- id: weo-035
+  query: latest GDP per capita PPP for Nigeria, Egypt and South Africa
+  source: weo
+  axes:
+    place: countries
+    indicator: unit_specific
+    time: latest
+    operation: rank
+    phrasing: casual
+  intent: Ranking the three by PPP income per person.
+  edge: '''Latest'' may land on an estimated year.'
+- id: weo-036
+  query: rank the G20 by investment share of GDP in 2024
+  source: weo
+  axes:
+    place: membership_group
+    indicator: specific
+    time: year
+    operation: rank
+    phrasing: casual
+  intent: G20 members ordered by investment rate.
+- id: weo-037
+  query: is Ghana's economy growing
+  source: weo
+  axes:
+    place: country
+    indicator: specific
+    time: none
+    operation: growth
+    phrasing: casual
+  intent: Whether Ghana's output rises.
+  edge: Growth wording; no growth variable in the WEO slice.
+- id: weo-038
+  query: cost of living in Egypt
+  source: weo
+  axes:
+    place: country
+    indicator: broad
+    time: none
+    operation: none
+    phrasing: vague
+  intent: Prices and living standards in Egypt.
+  edge: Vague; no consumer price series in the WEO slice.
+- id: weo-039
+  query: GGXWDG_NGDP for Zambia
+  source: weo
+  axes:
+    place: country
+    indicator: specific
+    time: none
+    operation: none
+    phrasing: expert
+  intent: Zambia's gross government debt as percent of GDP.
+  edge: An IMF series code; debt is not in the WEO slice and IDS external debt could match.
+- id: weo-040
+  query: government debt as a share of GDP in Kenya
+  source: weo
+  axes:
+    place: country
+    indicator: unit_specific
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Kenya's public debt ratio.
+  edge: A debt share of GDP, where IDS external debt competes.
+- id: weo-041
+  query: gross vs net debt for Ghana
+  source: weo
+  axes:
+    place: country
+    indicator: sibling_ambiguous
+    time: none
+    operation: compare
+    phrasing: casual
+  intent: Compare gross and net public debt.
+  edge: Sibling pair absent from WEO slice; IDS debt could match.
+- id: weo-042
+  query: external debt of Zambia
+  source: weo
+  axes:
+    place: country
+    indicator: specific
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Zambia's foreign debt.
+  edge: Debt wording that belongs to IDS, not WEO.
+- id: weo-043
+  query: GDP per captia of Kenya in PPP dolars
+  source: weo
+  axes:
+    place: country
+    indicator: unit_specific
+    time: none
+    operation: none
+    phrasing: misspelling
+  intent: Kenya's PPP income per person.
+  edge: Misspelt twice.
+- id: weo-044
+  query: Kenya GDP growth, gross capital formation and savings since 2010
+  source: weo
+  axes:
+    place: country
+    indicator: specific
+    time: since
+    operation: trend
+    phrasing: multi_part
+  intent: Three macro series for Kenya.
+  edge: 'Multi-part: one WDI-bound part and two WEO-bound parts.'
+- id: weo-045
+  query: GDP per capita current prices in Kenya from the April 2025 World Economic Outlook
+  source: weo
+  axes:
+    place: country
+    indicator: unit_specific
+    time: none
+    operation: none
+    phrasing: expert
+  intent: The April 2025 vintage of Kenya's income per person.
+  edge: Vintage not distinguishable; graph keeps only the latest release.

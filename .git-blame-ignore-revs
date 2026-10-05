@@ -1,0 +1,6 @@
+# Revisions to skip in `git blame`, because they only moved whitespace.
+# Enable locally with:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# style: apply ruff format and clear dead imports
+5165c748aae33a94d8a04ef94251c83c2871b6b6

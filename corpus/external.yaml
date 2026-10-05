@@ -1,0 +1,439 @@
+- id: dq-ext-001
+  query: DTP3 immunisation coverage in Chad
+  why: Base holds three DTP3 coverage series for Chad (WHO WUENIC, WHO survey, SDG 3.b.1), so base answers before any UN pass.
+  tags: {theme: health, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  known_failure: {issue: 1156, checks: [measure, provenance]}
+  expect:
+    entities: [{dcid: country/TCD, role: observationAbout}]
+    measure: {family: [base.who_immunisation, base.sdg_dtp3, base.who_dtp3_survey]}
+    definite: {}
+    candidates: {}
+
+- id: dq-ext-002
+  query: share of pregnant women with at least four antenatal care visits in Nigeria
+  why: WHO base holds ANC4 coverage for Nigeria as a headline series and a survey series; either answers.
+  tags: {theme: health, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite: {measure: {family: [base.who_anc4, base.who_anc4_survey]}, entities: [{dcid: country/NGA, role: observationAbout}]}
+
+- id: dq-ext-003
+  query: deaths from road injuries in Kenya in 2019
+  why: Base holds no GHE death counts; road traffic mortality from the World Bank (to 2019) and SDG 3.6.1 answer.
+  tags: {theme: health, entity: country, direction: subject, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    entities: [{dcid: country/KEN, role: observationAbout}]
+    window: {kind: range, start: 2019, end: 2019}
+    measure: {family: [base.wb_road_traffic_mortality, base.sdg_road_traffic_death_rate, base.sdg_road_traffic_deaths]}
+    definite: {}
+    candidates: {}
+
+- id: dq-ext-004
+  query: under-five mortality by wealth quintile in Kenya
+  why: WHO base holds under-five mortality by wealth quintile for Kenya, so the WHO family answers with the quintile axis open.
+  tags: {theme: health, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: wealth, door: raw_text, phrasing: casual, overlap: [who_un, unicef]}
+  known_failure: {issue: 1156, checks: [measure, provenance]}
+  expect:
+    entities: [{dcid: country/KEN, role: observationAbout}]
+    measure: {family: base.who_u5mr_by_wealth, open: [who_wealthquintile]}
+    definite: {}
+    candidates: {}
+
+- id: dq-ext-005
+  query: HIV prevalence among young women aged 15 to 24 in South Africa
+  why: The World Bank series for HIV prevalence among women 15 to 24 holds South Africa, so base answers before UNAIDS.
+  tags: {theme: health, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: age, door: raw_text, phrasing: casual, overlap: [unaids]}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: base.wb_hiv_prevalence_young_women}
+      entities: [{dcid: country/ZAF, role: observationAbout}]
+
+- id: dq-ext-006
+  query: deaths from air pollution in India
+  why: WHO, SDG and World Bank base series split air-pollution deaths into ambient, household and combined; any one, or candidates over them, fits.
+  tags: {theme: climate_energy, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    entities: [{dcid: country/IND, role: observationAbout}]
+    measure:
+      family:
+        - base.who_air_deaths_household
+        - base.who_air_deaths_ambient
+        - base.sdg_air_mortality
+        - base.sdg_air_mortality_ambient
+        - base.sdg_air_mortality_household
+        - base.wb_air_mortality
+    definite: {}
+    candidates: {}
+
+- id: dq-ext-007
+  query: catastrophic out-of-pocket health spending in Kenya
+  why: WHO FINPROTECTION and SDG 3.8.2 hold the 10% and 25% thresholds for Kenya as siblings.
+  tags: {theme: health, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    entities: [{dcid: country/KEN, role: observationAbout}]
+    measure: {family: [base.who_finprotection_10, base.who_finprotection_25, base.sdg_health_spending_10, base.sdg_health_spending_25]}
+    definite: {}
+    candidates: {}
+
+- id: dq-ext-008
+  query: lower secondary completion rate for girls in rural Nigeria
+  why: The UN SDG series holds lower secondary completion for rural girls in Nigeria (2003 to 2024).
+  tags: {theme: education, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: residence, door: raw_text, phrasing: casual, overlap: [sdg_base]}
+  known_failure: {issue: 1156, checks: [measure]}
+  expect:
+    definite:
+      measure:
+        family: un.sdg_completion_rate
+        bound: {undataSex: undata/SEX-F, undataUrbanization: undata/URBANIZATION-DOU_R, undataEducationLevel: undata/EDUCATION_LEVEL-ISCED11_2}
+      entities: [{dcid: country/NGA, role: observationAbout}]
+
+- id: dq-ext-009
+  query: gross enrolment ratio in tertiary education in Ghana
+  why: The World Bank tertiary gross enrolment ratio holds Ghana from 1971 to 2023.
+  tags: {theme: education, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: base.uis_tertiary_ger}
+      entities: [{dcid: country/GHA, role: observationAbout}]
+
+- id: dq-ext-010
+  query: average years of schooling of women over 25 in Pakistan
+  why: Barro-Lee average schooling of women 25 and over holds Pakistan in base, so the UNDP-HDRO copy is not consulted.
+  tags: {theme: education, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: sex, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [measure, provenance]}
+  expect:
+    entities: [{dcid: country/PAK, role: observationAbout}]
+    definite: {measure: {family: base.barro_lee_years}}
+    candidates: {include_families: [base.barro_lee_years]}
+
+- id: dq-ext-011
+  query: gender pay gap in Kenya
+  why: Base holds no gender pay gap series, so the ILO series on the UN deployment answers for Kenya.
+  tags: {theme: gender, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: sex, door: raw_text, phrasing: casual}
+  expect:
+    entities: [{dcid: country/KEN, role: observationAbout}]
+    definite: {measure: {family: un.ilo_gender_pay_gap}}
+    candidates: {include_families: [un.ilo_gender_pay_gap]}
+
+- id: dq-ext-012
+  query: Gender Inequality Index for Bangladesh
+  why: Resolves to un.undp_gii for country/BGD as observationAbout.
+  tags: {theme: gender, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite: {measure: {family: un.undp_gii}, entities: [{dcid: country/BGD, role: observationAbout}]}
+
+- id: dq-ext-013
+  query: share of researchers who are women in Kenya
+  why: Base holds no female researcher share; UNESCO publishes it for Kenya on headcount and full-time-equivalent bases.
+  tags: {theme: gender, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: sex, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [measure, provenance]}
+  expect:
+    entities: [{dcid: country/KEN, role: observationAbout}]
+    measure: {family: [un.unesco_female_researchers, un.unesco_female_researchers_fte]}
+    definite: {}
+    candidates: {}
+
+- id: dq-ext-014
+  query: proportion of seats held by women in local government in Kenya
+  why: The SDG goldens cover national parliaments only (SG_GEN_PARL); this is SDG 5.5.1b, served from the UN System copy.
+  tags: {theme: gender, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: sex, door: raw_text, phrasing: technical, overlap: [sdg_base]}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: un.sdg_women_local_government}
+      entities: [{dcid: country/KEN, role: observationAbout}]
+
+- id: dq-ext-015
+  query: extreme poverty rate in rural Colombia
+  why: ECLAC and SDG both hold a rural extreme-poverty series on the UN deployment, on different poverty lines.
+  tags: {theme: poverty, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: residence, door: raw_text, phrasing: casual, overlap: [sdg_base, eclac]}
+  known_failure: {issue: 1156, checks: [measure, provenance]}
+  expect:
+    entities: [{dcid: country/COL, role: observationAbout}]
+    definite: {measure: {family: [un.sdg_extreme_poverty_rural, un.eclac_extreme_poverty_rural]}}
+    candidates: {include_families: [un.sdg_extreme_poverty, un.eclac_extreme_poverty]}
+
+- id: dq-ext-016
+  query: multidimensional poverty index for Ethiopia
+  why: UNDP-HDRO publishes the MPI value and headcount ratio for Ethiopia on the UN deployment; base holds no MPI.
+  tags: {theme: poverty, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    entities: [{dcid: country/ETH, role: observationAbout}]
+    measure: {family: [un.undp_mpi_value, un.undp_mpi_headcount]}
+    definite: {}
+    candidates: {}
+
+- id: dq-ext-017
+  query: coal consumption in South Africa
+  why: Coal consumption in South Africa resolves to the base.energy_coal family, as the definite reading or among candidates.
+  tags: {theme: climate_energy, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    entities: [{dcid: country/ZAF, role: observationAbout}]
+    definite: {measure: {family: base.energy_coal}}
+    candidates: {include_families: [base.energy_coal]}
+
+- id: dq-ext-018
+  query: CO2 emissions per capita in Kenya and Ethiopia
+  why: Resolves to base.co2_per_capita for country/KEN as observationAbout and country/ETH as observationAbout.
+  tags: {theme: climate_energy, entity: two_countries, direction: subject, unit: default, time: none, operation: compare, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: base.co2_per_capita}
+      entities: [{dcid: country/KEN, role: observationAbout}, {dcid: country/ETH, role: observationAbout}]
+      operations: []
+
+- id: dq-ext-019
+  query: climate vulnerability index for Bangladesh
+  why: Base holds no climate vulnerability series, and the nearest, FEMA social vulnerability, has no Bangladesh facet, so the answer is no_data.
+  tags: {theme: climate_energy, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical, probe: [missing_data]}
+  expect: {no_data: {reason: [variable_not_resolved, no_observations]}}
+
+- id: dq-ext-020
+  query: population of Nairobi county
+  why: Nairobi County is wikidataId/Q3335223, a Kenyan county with base population data; its population is the answer, not Kenya's.
+  tags: {theme: demography, entity: region_group, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: base.population}
+      provenance: {origin: base}
+      entities: [{dcid: wikidataId/Q3335223, role: observationAbout}]
+
+- id: dq-ext-021
+  query: population of Kenya by age group
+  why: Base holds Kenyan age bands only from the census; an open age slot or candidates over the bands fit, and the total alone is wrong.
+  tags: {theme: demography, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: age, door: raw_text, phrasing: casual}
+  expect:
+    entities: [{dcid: country/KEN, role: observationAbout}]
+    provenance: {origin: base}
+    definite: {measure: {family: base.population_by_age, open: [age]}}
+    candidates: {include_families: [base.population_by_age]}
+
+- id: dq-ext-022
+  query: homicide rate in Honduras
+  why: WDI and the base SDG copy hold the homicide rate for Honduras, so base answers before UNODC or the UN SDG copy.
+  tags: {theme: governance, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, overlap: [sdg_base, unodc]}
+  expect:
+    entities: [{dcid: country/HND, role: observationAbout}]
+    measure: {family: [base.homicide_rate, base.sdg_homicide_rate]}
+    definite: {}
+    candidates: {}
+
+- id: dq-ext-023
+  query: share of people who paid a bribe to a public official in Nigeria
+  why: SDG 16.5.1 answers from the UN System copy.
+  tags: {theme: governance, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, overlap: [sdg_base]}
+  known_failure: {issue: 1156, checks: [measure, provenance]}
+  expect:
+    definite: {measure: {family: un.sdg_bribery}, entities: [{dcid: country/NGA, role: observationAbout}]}
+
+- id: dq-ext-024
+  query: corruption perceptions index for Kenya
+  why: The World Bank control-of-corruption estimate, with Kenya observations from 1996 to 2023, answers; no_data with variable_not_resolved also fits.
+  tags: {theme: governance, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical, probe: [missing_data]}
+  known_failure: {issue: 1156, checks: [measure, provenance]}
+  expect:
+    definite: {measure: {family: base.wb_control_of_corruption}, entities: [{dcid: country/KEN, role: observationAbout}]}
+    no_data: {reason: variable_not_resolved, category: unresolved}
+
+- id: dq-ext-025
+  query: refugees from Sudan
+  why: The base SDG series counts refugees by country of origin, so 'from Sudan' reads Sudan as the subject of that series.
+  tags: {theme: humanitarian, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, overlap: [unhcr]}
+  expect:
+    definite:
+      measure: {family: base.sdg_refugees_by_origin}
+      entities: [{dcid: country/SDN, role: observationAbout}]
+
+- id: dq-ext-026
+  query: internally displaced people in Ethiopia
+  why: The World Bank conflict-displacement series holds Ethiopia (2009 to 2023), so base answers; IOM-DTM holds no Ethiopia data.
+  tags: {theme: humanitarian, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, overlap: [iom]}
+  known_failure: {issue: 1156, checks: [measure, provenance]}
+  expect:
+    definite:
+      measure: {family: base.wb_idps_conflict}
+      entities: [{dcid: country/ETH, role: observationAbout}]
+
+- id: dq-ext-027
+  query: people in need of humanitarian assistance in Yemen
+  why: Humanitarian need is absent (no OCHA needs data); humanitarian aid received is a different measure.
+  tags: {theme: humanitarian, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [missing_data]}
+  expect: {no_data: {reason: variable_not_resolved, category: unresolved}}
+
+- id: dq-ext-028
+  query: women who own a mobile phone in Ghana
+  why: ITU publishes mobile ownership by sex, but holds no Ghana data for women; Ghana has only the both-sexes total.
+  tags: {theme: gender, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: sex, door: raw_text, phrasing: casual, probe: [missing_data]}
+  expect:
+    no_data:
+      entities: [{dcid: country/GHA, role: observationAbout}]
+      reason: [no_observations, no_matching_slice]
+      category: absent
+
+- id: dq-ext-029
+  query: Human Development Index of Ghana
+  why: Control for ext-030; without it a WAF failure and a missing family look the same.
+  tags: {theme: governance, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite: {measure: {family: un.undp_hdi}, entities: [{dcid: country/GHA, role: observationAbout}]}
+
+- id: dq-ext-030
+  query: Human Development Index of Greece
+  why: The UN front door refuses Greece, Slovenia and Western Sahara, so HDI for Greece has no readable source and the answer is no_data.
+  tags: {theme: governance, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical, probe: [waf_blocked]}
+  expect:
+    no_data:
+      entities: [{dcid: country/GRC, role: observationAbout}]
+      reason: [variable_not_resolved, no_observations]
+
+- id: dq-ext-031
+  query: gender pay gap in Slovenia
+  why: Eurostat or base may hold a Slovenian earnings gap; if not, the UN front door refuses Slovenia and the answer is no_data.
+  tags: {theme: gender, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: sex, door: raw_text, phrasing: casual, probe: [waf_blocked]}
+  expect:
+    definite: {entities: [{dcid: country/SVN, role: observationAbout}]}
+    no_data: {reason: [variable_not_resolved, no_observations]}
+
+- id: dq-ext-032
+  query: refugees in Western Sahara
+  why: Base holds refugees by origin only, not by asylum country, and the UN front door refuses Western Sahara, so the answer is no_data.
+  tags: {theme: humanitarian, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [waf_blocked]}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    no_data:
+      entities: [{dcid: country/ESH, role: observationAbout}]
+      reason: [variable_not_resolved, no_observations]
+
+- id: dq-ext-033
+  query: under-five mortality in Kenya in 2024
+  why: Base WDI holds Kenya to 2023 and the UN copies to 2024; the base family answers, since a window gap does not trigger the UN pass.
+  tags:
+    theme: health
+    entity: country
+    direction: subject
+    unit: default
+    time: year
+    operation: none
+    breakdown: age
+    door: raw_text
+    phrasing: casual
+    probe: [source_election]
+    overlap: [wdi, sdg_un]
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: base.u5mr}
+      entities: [{dcid: country/KEN, role: observationAbout}]
+      window: {kind: range, start: 2024, end: 2024}
+
+- id: dq-ext-034
+  query: unemployment rate of persons with disabilities in Kenya
+  why: SDG 8.5.2 holds Kenya's unemployment rate for persons with disability (code PD) for 2019 only; the miss is no_matching_slice.
+  tags: {theme: poverty, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: disability, door: raw_text, phrasing: casual, overlap: [sdg_base]}
+  known_failure: {issue: 1156, checks: [measure, provenance]}
+  expect:
+    entities: [{dcid: country/KEN, role: observationAbout}]
+    definite:
+      measure: {family: un.sdg_disability_employment, bound: {undataDisabilityStatus: undata/DISABILITY_STATUS-PD}}
+    no_data: {reason: no_matching_slice, category: absent}
+
+- id: dq-ext-035
+  query: stunting among the poorest children in Nigeria
+  why: UNICEF stunting carries wealth-quintile variants for Nigeria; the lowest quintile bound, or candidates over the series, fit.
+  tags: {theme: health, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: wealth, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [measure, provenance]}
+  expect:
+    entities: [{dcid: country/NGA, role: observationAbout}]
+    definite: {measure: {family: un.unicef_stunting, bound: {undataWealthQuantile: undata/WEALTH_QUANTILE-Q1}}}
+    candidates: {include_families: [un.unicef_stunting]}
+
+- id: dq-ext-036
+  query: primary school attendance in rural Niger
+  why: Base holds no attendance series; UNICEF adjusted net attendance has a rural primary variant for Niger.
+  tags: {theme: education, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: residence, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [measure]}
+  expect:
+    entities: [{dcid: country/NER, role: observationAbout}]
+    definite:
+      measure:
+        family: un.unicef_attendance
+        bound: {undataUrbanization: undata/URBANIZATION-R, undataEducationLevel: undata/EDUCATION_LEVEL-ISCED11_1}
+    candidates: {include_families: [un.unicef_attendance]}
+
+- id: dq-ext-037
+  query: life expectancy in low-income countries
+  why: No dataset publishes a low-income aggregate place; WorldBankLowIncome is an income-group enum, so the group is unresolved.
+  tags: {theme: health, entity: region_group, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [income_group]}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    no_data: {reason: entity_not_resolved, category: unresolved}
+
+- id: dq-ext-038
+  query: health aid to Malawi and child mortality there
+  why: Health aid (CRS sector 120) and child mortality are two measures from two origins, so the query splits into one part each.
+  tags: {theme: health, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: sector, door: raw_text, phrasing: casual, overlap: [wdi, unicef]}
+  known_failure: {issue: 1156, checks: [measure, parts]}
+  expect:
+    parts:
+      - definite:
+          measure:
+            family: crs.disbursement_gross
+            bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode120}
+          entities: [{dcid: country/MWI, role: destination}]
+      - entities: [{dcid: country/MWI, role: observationAbout}]
+        definite: {measure: {family: [base.u5mr, un.unicef_child_mortality]}}
+        candidates: {}
+
+- id: dq-ext-039
+  query: education aid to Kenya and the primary completion rate
+  why: Education aid and the primary completion rate are two measures from two origins, so the query splits into one part each.
+  tags:
+    theme: education
+    entity: country
+    direction: destination_only
+    unit: default
+    time: none
+    operation: none
+    breakdown: sector
+    door: raw_text
+    phrasing: casual
+    overlap: [sdg_un, wb_datasets]
+  known_failure: {issue: 1156, checks: [measure, provenance, parts]}
+  expect:
+    parts:
+      - definite:
+          measure:
+            family: crs.disbursement_gross
+            bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode110}
+          entities: [{dcid: country/KEN, role: destination}]
+      - entities: [{dcid: country/KEN, role: observationAbout}]
+        definite: {measure: {family: un.sdg_completion_rate, bound: {undataEducationLevel: undata/EDUCATION_LEVEL-ISCED11_1}}}
+        candidates: {include_families: [un.sdg_completion_rate]}
+
+- id: dq-ext-040
+  query: What can I look up about Malawi?
+  why: '''What can I look up'' is a catalogue request scoped to Malawi.'
+  tags: {theme: none, entity: country, direction: none, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect: {kind: [catalogue], scope_place: country/MWI}
+
+- id: dq-ext-041
+  query: Which OECD datasets do you hold?
+  why: '''Which datasets do you hold'' is a catalogue request that names no place, so scope_place is null.'
+  tags: {theme: none, entity: none, direction: none, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect: {kind: [catalogue], scope_place: null}
+
+- id: dq-ext-042
+  query: Which donor should Malawi ask for health funding next year?
+  why: The question asks for advice; the data that informs it, health aid to Malawi by donor, is a fair resolution.
+  tags: {theme: health, entity: country, direction: none, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    kind: [declined, resolution]
+    definite: {measure: {family: crs.disbursement_gross}, entities: [{dcid: country/MWI, role: destination}]}
+    declined: {reason: requires_analysis}
+    scope_place: country/MWI

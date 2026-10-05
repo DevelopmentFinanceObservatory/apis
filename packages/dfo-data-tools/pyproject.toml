@@ -1,0 +1,104 @@
+[project]
+name = "dfo-data-tools"
+version = "0.1.0"
+description = "Materialisation pipeline, Data Commons SDMX client, and shared platform wire vocabulary"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.13",
+    "pydantic-settings>=2.10",
+    "dfo-spec-kit-frame-grammar[arrow]",
+    "dfo-spec-kit-components",
+    "dfo-spec-kit-provenance-docs",
+    # graph_generation's TLRU caches (wave 2) key their lifetime on the
+    # captured GenerationStamp; cachetools.TLRUCache is the shared
+    # implementation every generation-keyed cache in this repo builds on.
+    "cachetools>=7.2",
+    # assembler.catalogue validates every payload/intent against the baked
+    # bundle's JSON Schema files at runtime (draft 2020-12), not at test time
+    # only -- a base dependency, not an extra. assembler is the one module
+    # a bare install (no extras) needs to import: `presentation_api`/
+    # `presentation_store` pull in `assembler` directly, and nothing else
+    # this package ships is a core dependency of theirs.
+    "jsonschema>=4.20",
+    # assembler.write_token hashes a keyed create request as RFC 8785 canonical JSON.
+    "rfc8785>=0.1.4",
+    # skills_index.frontmatter parses a skill's front matter with YAML's base loader.
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# materialise's and dc_sdmx's own direct dependencies: dc_sdmx.client talks
+# SDMX over HTTP (httpx); dc_sdmx.results and several materialise modules
+# (columnar, generation, formats, ...) hold observation rows as pyarrow
+# tables/RecordBatches. Named for the wire protocol both packages read,
+# not either module -- one extra, since nothing imports dc_sdmx without
+# also needing materialise's own pyarrow usage or vice versa in this repo.
+sdmx = ["httpx>=0.28.1", "pyarrow>=18"]
+# materialise.formats's spreadsheet writer needs openpyxl on top of sdmx's
+# own pyarrow (every format writer reads the same pyarrow Table).
+formats = ["dfo-data-tools[sdmx]", "openpyxl>=3.1.5"]
+surface = ["fastapi>=0.138", "starlette", "uvicorn"]
+# entity_resolution's custom BYOD pack. Exact pin -- 0.1.x is pre-1.0 and its
+# API edges move; both the engine and graph extras pull this in through
+# dfo-data-tools, so the whole repo resolves to one version. `[parsing]`
+# pulls in `ahocorasick_rs`, which `resolvekit.parse()` needs to recover a
+# group span from inside a longer phrase (e.g. "G7 countries").
+# entity_resolution also imports graph_generation directly (its own shared
+# GenerationStamp), so `resolve` carries `generation`'s own dependencies too.
+resolve = ["resolvekit[parsing]==0.1.12", "dfo-data-tools[generation]"]
+# graph_generation.source.CloudRunGenerationSource authenticates its Cloud
+# Run Admin API read with Application Default Credentials --
+# google.auth.default() plus a bearer-token refresh, the same shape as
+# artifact_store.signing.sign_get_url (src/artifact_store/signing.py:93) --
+# and polls that API over httpx.
+generation = ["httpx>=0.28.1", "google-auth[requests]>=2.55"]
+# The series_coverage package's own in-memory index (series_coverage._bits)
+# needs vectorized, fixed-width uint64 popcount/bit-position arithmetic over
+# a year_mask column -- plain pyarrow compute has no popcount kernel, and a
+# float64 round trip (np.log2/np.frexp) silently mis-locates a bit near the
+# top of a 64-bit mask, so this is numpy, not an optional convenience.
+# artifact_publication.uri reads a gs:// artifact through google-cloud-storage,
+# imported lazily (never required for a file:// artifact, e.g. every
+# offline test). series_coverage.job (the building job, a Cloud Run Job
+# entrypoint, never imported by the serving path) reads Spanner through the
+# BigQuery federation connection via google-cloud-bigquery, also imported
+# lazily so no offline test or serving-path install needs it. Kept named
+# `coverage` (not `series_coverage`) as an extra -- only the importable
+# package name collides with coverage.py (pytest-cov). series_coverage also
+# reads observations through dc_sdmx directly, so `coverage` carries
+# `sdmx`'s own dependencies too.
+coverage = [
+    "numpy>=2.0",
+    "google-cloud-storage>=2.18",
+    "google-cloud-bigquery>=3.27",
+    "dfo-data-tools[sdmx]",
+]
+
+[tool.uv.sources]
+# See the root pyproject.toml's dfo-spec-kit source comment for the
+# pin-consistency invariant this rev must satisfy.
+dfo-spec-kit-frame-grammar = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "f494e75de196b409e662c91c67600b0a8327c71a", subdirectory = "python/frame-grammar" }
+dfo-spec-kit-components = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "f494e75de196b409e662c91c67600b0a8327c71a", subdirectory = "python/dfo-spec-kit-components" }
+dfo-spec-kit-provenance-docs = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "f494e75de196b409e662c91c67600b0a8327c71a", subdirectory = "python/provenance-docs" }
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = [
+    "materialise",
+    "dc_sdmx",
+    "dc_graph",
+    "dfo_platform",
+    "statvar_members",
+    "assembler",
+    "entity_resolution",
+    "code_index",
+    "skills_index",
+    "graph_generation",
+    "artifact_publication",
+    "series_coverage",
+    "origin_catalogue",
+]

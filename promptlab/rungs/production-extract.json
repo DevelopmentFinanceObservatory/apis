@@ -1,0 +1,60 @@
+{
+  "name": "production",
+  "description": "The extraction stage of the production prompt.",
+  "stage": "extract",
+  "blocks": [
+    {
+      "id": "00-task-and-schema",
+      "core": true
+    },
+    {
+      "id": "01-security",
+      "core": true
+    },
+    {
+      "id": "02-date-anchor",
+      "core": true
+    },
+    {
+      "id": "03-english-output"
+    },
+    {
+      "id": "04-scope-words"
+    },
+    {
+      "id": "05-example-health-oda",
+      "unit": "examples-oda"
+    },
+    {
+      "id": "06-example-hiv-oda",
+      "unit": "examples-oda"
+    },
+    {
+      "id": "07-example-oda-germany",
+      "unit": "examples-oda"
+    },
+    {
+      "id": "08-example-gdp-per-capita"
+    },
+    {
+      "id": "09-example-spanish"
+    },
+    {
+      "id": "10-example-global-tb"
+    },
+    {
+      "id": "11-kind"
+    },
+    {
+      "id": "12-operations"
+    },
+    {
+      "id": "13-example-catalogue",
+      "unit": "examples-kind"
+    },
+    {
+      "id": "14-example-subject",
+      "unit": "examples-kind"
+    }
+  ]
+}

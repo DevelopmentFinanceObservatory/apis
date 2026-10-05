@@ -1,0 +1,50 @@
+crs.disbursement_gross:
+  origin: dfo
+  dataset: provenance/OECDCreditorReportingSystem
+  shape:
+    population_type: FinancialFlow
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {financialFlowType: Disbursement, nettingBasis: Gross}
+crs.disbursement_net:
+  origin: dfo
+  dataset: provenance/OECDCreditorReportingSystem
+  shape:
+    population_type: FinancialFlow
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {financialFlowType: Disbursement, nettingBasis: Net}
+crs.disbursement_any:
+  origin: dfo
+  dataset: provenance/OECDCreditorReportingSystem
+  shape:
+    population_type: FinancialFlow
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {financialFlowType: Disbursement}
+crs.commitment:
+  origin: dfo
+  dataset: provenance/OECDCreditorReportingSystem
+  shape:
+    population_type: FinancialObligation
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {financialObligationType: Commitment}
+crs.grant_equivalent:
+  origin: dfo
+  dataset: provenance/OECDCreditorReportingSystem
+  shape:
+    population_type: FinancialFlow
+    measured_property: grantEquivalent
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {financialFlowType: Disbursement}

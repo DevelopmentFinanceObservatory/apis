@@ -1,0 +1,181 @@
+"""Runs the API and worker ASGI apps with a fake task queue and shared stores.
+Async and inline mints return the same manifest shape, apart from fresh version stamps."""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+from datetime import timedelta
+
+import httpx
+import pytest
+from fastapi.testclient import TestClient
+
+from artifact_store import LiveArtifactInventory
+from code_index.shared import get_index
+from dataset_store.snapshot import LiveSnapshotReader
+from datasets_api import kinds
+from datasets_api.config import DatasetsBuildSettings
+from datasets_api.doors.definition import DefinitionDeps
+from datasets_api.operation_store import LiveOperationStore
+from datasets_api.operations.oidc import FakeOidcVerifier
+from datasets_api.operations.task_client import FakeTaskClient
+from datasets_api.operations.worker_app import build_worker_app
+from datasets_api.revision import SentinelRevisionReader
+from datasets_api.version_store import LiveVersionRecordWriter
+from dc_sdmx import SdmxClient
+from materialise import EnrichmentLookup
+from materialise.rate_tables import RateTableCache
+from series_coverage.shared import CoverageSnapshot
+from spec_registry import LiveSpecRegistry
+from spec_registry.reader import LiveSpecReader
+from statvar_members import MemberEnumerator
+from tests.engine._fake_coverage import FakeCoverageService
+
+from ._app_factories import make_client
+from ._operation_store import FakeOperationDatasetStore
+from ._version_record_store import FakeVersionRecordDatasetStore
+from .conftest import FakeDatasetStore
+from .test_mint_statvar_set import _CSV_BODY, _HAPPY_PATH_BODY, _coverage_service, _graph
+from .test_pin_door import FakeArtifactReferenceWriter
+from .test_snapshot_lifecycle import _InventoryRecordingArtifactStore
+
+
+class _WorkerCoverageService(FakeCoverageService):
+    """Expose the worker's `snapshot_current()` read on the static fixture."""
+
+    def snapshot_current(self) -> CoverageSnapshot:
+        return self.snapshot()
+
+
+_BASE_URL = "https://datacommons.one.org/core/api"
+_WORKER_URL = "https://worker.example.org"
+_INVOKER = "worker-invoker@example.iam.gserviceaccount.com"
+_PRINCIPAL = "e2e-test-principal"
+
+
+def _sdmx_transport(requests: list[httpx.Request]):
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200,
+            text=_CSV_BODY,
+            headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
+        )
+
+    return httpx.MockTransport(handler)
+
+
+def api_and_worker(
+    *,
+    graph,
+    sdmx: Callable[[], SdmxClient],
+    coverage: Callable[[], FakeCoverageService],
+) -> tuple[TestClient, LiveOperationStore, list[tuple[str, int]]]:
+    """The API app and a worker app sharing stores and graph, as the two services do in
+    deployment. The fake queue runs each enqueued operation on the worker inline and records
+    it in the returned list."""
+    store = FakeDatasetStore()
+    version_store = FakeVersionRecordDatasetStore()
+    operation_store = LiveOperationStore(store=FakeOperationDatasetStore())
+    artifact_store = _InventoryRecordingArtifactStore(
+        inventory=LiveArtifactInventory(store=version_store)
+    )
+    worker_deps = DefinitionDeps(
+        spec_reader=LiveSpecReader(store=store),
+        graph=graph,
+        sdmx=sdmx(),
+        revision_reader=SentinelRevisionReader(),
+        artifact_store=artifact_store,
+        materialiser_build="test-build",
+        capability_version="dset_test",
+        ceiling=1_000_000,
+        member_concurrency=4,
+        enumerator=MemberEnumerator(graph=graph),
+        enrichment=EnrichmentLookup(graph),
+        code_index=get_index(),
+        rate_cache=RateTableCache(),
+        # The worker probes role-bearing facets from this index.
+        coverage=_WorkerCoverageService(coverage().current()),
+        version_writer=LiveVersionRecordWriter(store=version_store),
+        head_recheck_interval=timedelta(seconds=DatasetsBuildSettings().head_recheck_seconds),
+        head_max_age=timedelta(seconds=DatasetsBuildSettings().head_max_age_seconds),
+    )
+    worker_client = TestClient(
+        build_worker_app(
+            operation_store=operation_store,
+            deps=worker_deps,
+            oidc_verifier=FakeOidcVerifier(),
+            worker_url=_WORKER_URL,
+            worker_invoker_service_account=_INVOKER,
+        )
+    )
+
+    forwarded: list[tuple[str, int]] = []
+
+    def _forward_to_worker(operation_id: str, submission_count: int) -> None:
+        forwarded.append((operation_id, submission_count))
+        resp = worker_client.post(
+            f"/internal/datasets/operations/{operation_id}/run",
+            json={"operation_id": operation_id, "submission_count": submission_count},
+            headers={"Authorization": "Bearer t"},
+        )
+        assert resp.status_code == 200, resp.text
+
+    api_client = make_client(
+        registry=LiveSpecRegistry(store=store),
+        spec_reader=LiveSpecReader(store=store),
+        graph=graph,
+        sdmx=sdmx(),
+        revision_reader=SentinelRevisionReader(),
+        artifact_store=artifact_store,
+        snapshot_reader=LiveSnapshotReader(store=version_store),
+        version_writer=LiveVersionRecordWriter(store=version_store),
+        reference_writer=FakeArtifactReferenceWriter(),
+        operation_store=operation_store,
+        task_client=FakeTaskClient(on_enqueue=_forward_to_worker),
+        pin_allowed_principals=frozenset({_PRINCIPAL}),
+        coverage=coverage(),
+    )
+    return api_client, operation_store, forwarded
+
+
+def test_local_end_to_end_over_budget_mint_completes_through_the_worker(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    api_client, operation_store, forwarded = api_and_worker(
+        graph=_graph(),
+        sdmx=lambda: SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport([])),
+        coverage=_coverage_service,
+    )
+
+    # Force this mint over budget so it takes the worker path.
+    monkeypatch.setattr(kinds.statvar_set, "within_sync_budget", lambda estimate, **_: False)
+
+    submitted = api_client.post("/api/datasets", json=_HAPPY_PATH_BODY)
+    assert submitted.status_code == 202, submitted.text
+    operation_id = submitted.json()["operation"]["operation_id"]
+    assert submitted.headers["location"] == f"/api/datasets/operations/{operation_id}"
+
+    # The fake queue runs the worker inline. Poll the API route as a client would.
+    assert forwarded == [(operation_id, 0)]
+    stored = operation_store.get(operation_id)
+    assert stored is not None
+    assert stored.execution_coverage_stamp == stored.coverage_stamp
+
+    polled = api_client.get(f"/api/datasets/operations/{operation_id}")
+    assert polled.status_code == 200, polled.text
+    body = polled.json()
+    assert body["operation"]["status"] == "done"
+    assert "progress" not in body["operation"]
+    manifest = body["manifest"]
+    assert manifest["content_version"].startswith("cv_")
+    assert manifest["definition"]["spec_id"].startswith("spec_")
+    assert len(manifest["artifacts"]) >= 1
+
+    # Pin the completed operation's `(subject_id, content_version)` as for a sync mint.
+    pin_resp = api_client.post(
+        f"/api/datasets/{manifest['definition']['spec_id']}/{manifest['content_version']}/pin",
+        json={"schema_version": 1, "artifact_digest": manifest["artifacts"][0]["artifact_digest"]},
+        headers={"x-dfo-principal": _PRINCIPAL},
+    )
+    assert pin_resp.status_code == 200, pin_resp.text

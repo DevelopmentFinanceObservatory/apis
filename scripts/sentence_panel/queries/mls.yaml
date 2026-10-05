@@ -1,0 +1,502 @@
+- id: mls-001
+  query: Imputed multilateral ODA from Norway
+  source: mls
+  axes:
+    donor: country
+    channel: none
+    recipient: none
+    topic: none
+    measure: imputed
+    time: none
+    operation: none
+    phrasing: expert
+  intent: Norway's core multilateral contributions spread across recipients and sectors, latest year.
+- id: mls-002
+  query: Imputed multilateral ODA from Norway to Kenya
+  source: mls
+  axes:
+    donor: country
+    channel: none
+    recipient: country
+    topic: none
+    measure: imputed
+    time: none
+    operation: none
+    phrasing: expert
+  intent: What part of Norway's multilateral money reached Kenya.
+- id: mls-003
+  query: Imputed multilateral aid to Kenya
+  source: mls
+  axes:
+    donor: none
+    channel: none
+    recipient: country
+    topic: none
+    measure: imputed
+    time: none
+    operation: none
+    phrasing: expert
+  intent: All donors' imputed multilateral money reaching Kenya.
+- id: mls-004
+  query: Imputed multilateral ODA
+  source: mls
+  axes:
+    donor: none
+    channel: none
+    recipient: none
+    topic: none
+    measure: imputed
+    time: none
+    operation: none
+    phrasing: expert
+  intent: Total imputed multilateral ODA with no donor, recipient or sector.
+- id: mls-005
+  query: Imputed multilateral ODA from Norway to education
+  source: mls
+  axes:
+    donor: country
+    channel: none
+    recipient: none
+    topic: broad_sector
+    measure: imputed
+    time: none
+    operation: none
+    phrasing: expert
+  intent: Norway's imputed multilateral money in education.
+- id: mls-006
+  query: Imputed multilateral ODA from Germany to basic education in 2020
+  source: mls
+  axes:
+    donor: country
+    channel: none
+    recipient: none
+    topic: detailed_purpose
+    measure: imputed
+    time: year
+    operation: none
+    phrasing: expert
+  intent: German imputed multilateral money for basic education in one year.
+- id: mls-007
+  query: Imputed multilateral ODA from Norway to humanitarian aid
+  source: mls
+  axes:
+    donor: country
+    channel: none
+    recipient: none
+    topic: humanitarian
+    measure: imputed
+    time: none
+    operation: none
+    phrasing: expert
+  intent: Norway's imputed multilateral humanitarian money.
+- id: mls-008
+  query: Imputed multilateral ODA from Sweden to climate change adaptation
+  source: mls
+  axes:
+    donor: country
+    channel: none
+    recipient: none
+    topic: climate
+    measure: imputed
+    time: none
+    operation: none
+    phrasing: expert
+  intent: Imputed multilateral money Sweden attributed to climate adaptation purposes.
+  edge: Climate change adaptation may not be a CRS purpose; the engine must find a purpose or say so.
+- id: mls-009
+  query: Imputed multilateral ODA from DAC donors
+  source: mls
+  axes:
+    donor: country_group
+    channel: none
+    recipient: none
+    topic: none
+    measure: imputed
+    time: none
+    operation: total
+    phrasing: expert
+  intent: Total imputed multilateral ODA from all DAC members.
+- id: mls-010
+  query: Imputed multilateral ODA from EU members
+  source: mls
+  axes:
+    donor: country_group
+    channel: none
+    recipient: none
+    topic: none
+    measure: imputed
+    time: none
+    operation: none
+    phrasing: expert
+  intent: Imputed multilateral money from EU member states.
+- id: mls-011
+  query: Imputed multilateral ODA from G7 countries
+  source: mls
+  axes:
+    donor: country_group
+    channel: none
+    recipient: none
+    topic: none
+    measure: imputed
+    time: none
+    operation: none
+    phrasing: expert
+  intent: Imputed multilateral money from the G7.
+- id: mls-012
+  query: Imputed multilateral ODA from the UAE
+  source: mls
+  axes:
+    donor: country
+    channel: none
+    recipient: none
+    topic: none
+    measure: imputed
+    time: none
+    operation: none
+    phrasing: expert
+  intent: A non-DAC donor in the dataset.
+  edge: Non-DAC donor served by MLS; CRS also holds UAE rows.
+- id: mls-013
+  query: Compare imputed multilateral ODA from France and Germany
+  source: mls
+  axes:
+    donor: country
+    channel: none
+    recipient: none
+    topic: none
+    measure: imputed
+    time: none
+    operation: compare
+    phrasing: expert
+  intent: Side by side imputed multilateral money, two donors.
+- id: mls-014
+  query: Which donors give the most imputed multilateral ODA to Ethiopia?
+  source: mls
+  axes:
+    donor: none
+    channel: none
+    recipient: country
+    topic: none
+    measure: imputed
+    time: none
+    operation: rank
+    phrasing: casual
+  intent: Ranking of donors by imputed money reaching Ethiopia.
+- id: mls-015
+  query: Which sectors get the most imputed multilateral ODA from the UK?
+  source: mls
+  axes:
+    donor: country
+    channel: none
+    recipient: none
+    topic: broad_sector
+    measure: imputed
+    time: none
+    operation: rank
+    phrasing: casual
+  intent: Ranking of purposes for the UK.
+  edge: A ranking over the sector axis; the engine may not support ranking.
+- id: mls-016
+  query: Trend in imputed multilateral ODA from Japan
+  source: mls
+  axes:
+    donor: country
+    channel: none
+    recipient: none
+    topic: none
+    measure: imputed
+    time: range
+    operation: trend
+    phrasing: expert
+  intent: Japan's imputed multilateral money over all years.
+- id: mls-017
+  query: Imputed multilateral ODA from Canada in 2018
+  source: mls
+  axes:
+    donor: country
+    channel: none
+    recipient: none
+    topic: none
+    measure: imputed
+    time: year
+    operation: none
+    phrasing: expert
+  intent: Canada's value for one year.
+- id: mls-018
+  query: Imputed multilateral ODA from Norway since 2015
+  source: mls
+  axes:
+    donor: country
+    channel: none
+    recipient: none
+    topic: none
+    measure: imputed
+    time: since
+    operation: none
+    phrasing: expert
+  intent: Norway from 2015 to the latest year.
+- id: mls-019
+  query: Imputed multilateral ODA from Norway to Kenya 2015 to 2020
+  source: mls
+  axes:
+    donor: country
+    channel: none
+    recipient: country
+    topic: none
+    measure: imputed
+    time: range
+    operation: none
+    phrasing: expert
+  intent: Norway to Kenya over six years.
+- id: mls-020
+  query: Imputed multilateral ODA from Norway in 2010
+  source: mls
+  axes:
+    donor: country
+    channel: none
+    recipient: none
+    topic: none
+    measure: imputed
+    time: year
+    operation: none
+    phrasing: expert
+  intent: A year before the series starts.
+  edge: A year before the start of the series, which runs 2011 to 2024.
+- id: mls-021
+  query: Imputed multilateral ODA from Norway in 2030
+  source: mls
+  axes:
+    donor: country
+    channel: none
+    recipient: none
+    topic: none
+    measure: imputed
+    time: future
+    operation: none
+    phrasing: expert
+  intent: A future year.
+  edge: A future year outside the series; the sentence must say which year is shown.
+- id: mls-022
+  query: Imputed multilateral ODA from Norway in constant 2022 dollars
+  source: mls
+  axes:
+    donor: country
+    channel: none
+    recipient: none
+    topic: none
+    measure: constant_prices
+    time: none
+    operation: none
+    phrasing: expert
+  intent: Real-terms imputed amounts.
+  edge: A request for constant 2022 dollars, where the dataset is nominal only.
+- id: mls-023
+  query: Imputed multilateral ODA from Ireland to low income countries
+  source: mls
+  axes:
+    donor: country
+    channel: none
+    recipient: income_group
+    topic: none
+    measure: imputed
+    time: none
+    operation: none
+    phrasing: expert
+  intent: Ireland's imputed multilateral money reaching low income countries.
+- id: mls-024
+  query: Imputed multilateral ODA to Sub-Saharan Africa
+  source: mls
+  axes:
+    donor: none
+    channel: none
+    recipient: region
+    topic: none
+    measure: imputed
+    time: none
+    operation: none
+    phrasing: expert
+  intent: Imputed money reaching a region.
+  edge: A region as recipient, which this indicator may not accept.
+- id: mls-025
+  query: How much of Norway's aid goes through multilateral organisations?
+  source: mls
+  axes:
+    donor: country
+    channel: family
+    recipient: none
+    topic: none
+    measure: share
+    time: none
+    operation: share
+    phrasing: casual
+  intent: Multilateral share of Norway's total aid.
+  edge: A share of aid that goes through multilaterals, which the grain does not record.
+- id: mls-026
+  query: How much does Norway give to the UN?
+  source: mls
+  axes:
+    donor: country
+    channel: family
+    recipient: none
+    topic: none
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Norway's money to UN agencies.
+  edge: A channel named as 'the UN'; the channel cannot be named and the user means multilateral aid.
+- id: mls-027
+  query: How much goes through the World Bank?
+  source: mls
+  axes:
+    donor: none
+    channel: agency
+    recipient: none
+    topic: none
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Money passing through the World Bank.
+  edge: Channel not in MLS; World Bank is ambiguous between IBRD and IDA.
+- id: mls-028
+  query: World Bank aid to Ghana
+  source: mls
+  axes:
+    donor: none
+    channel: agency
+    recipient: country
+    topic: none
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Aid to Ghana from the World Bank.
+  edge: World Bank as donor is ambiguous between IBRD and IDA, and plain CRS also matches.
+- id: mls-029
+  query: Imputed multilateral ODA through Gavi
+  source: mls
+  axes:
+    donor: none
+    channel: agency
+    recipient: none
+    topic: none
+    measure: imputed
+    time: none
+    operation: none
+    phrasing: expert
+  intent: Money attributed to the vaccine alliance's channel.
+  edge: Channel dimension absent; tests refusal wording.
+- id: mls-030
+  query: Imputed multilateral ODA from Norway through regional development banks
+  source: mls
+  axes:
+    donor: country
+    channel: family
+    recipient: none
+    topic: none
+    measure: imputed
+    time: none
+    operation: none
+    phrasing: expert
+  intent: Norway's money routed to regional banks.
+  edge: A family of channels that the data does not record.
+- id: mls-031
+  query: Imputed multilateral ODA from IDA
+  source: mls
+  axes:
+    donor: none
+    channel: agency
+    recipient: none
+    topic: none
+    measure: imputed
+    time: none
+    operation: none
+    phrasing: expert
+  intent: A channel read as a donor.
+  edge: IDA is a CRS provider, not an MLS donor.
+- id: mls-032
+  query: Multilateral ODA from Norway to Kenya
+  source: mls
+  axes:
+    donor: country
+    channel: none
+    recipient: country
+    topic: none
+    measure: default
+    time: none
+    operation: none
+    phrasing: vague
+  intent: Norway's multilateral money to Kenya, without the word imputed.
+  edge: '''Multilateral ODA'' without ''imputed'' must still reach the MLS indicator.'
+- id: mls-033
+  query: Norway's bilateral-only aid to Kenya, not counting what goes through multilaterals
+  source: mls
+  axes:
+    donor: country
+    channel: none
+    recipient: country
+    topic: none
+    measure: default
+    time: none
+    operation: none
+    phrasing: multi_part
+  intent: Bilateral aid from Norway to Kenya.
+  edge: Plain CRS already excludes core contributions; the user's exclusion is built in.
+- id: mls-034
+  query: How much of Germany's aid to Ghana is really its share of what the multilaterals spend there?
+  source: mls
+  axes:
+    donor: country
+    channel: family
+    recipient: country
+    topic: none
+    measure: imputed
+    time: none
+    operation: share
+    phrasing: vague
+  intent: Germany's attributed multilateral amount in Ghana.
+  edge: Answer needs the imputation, which the user may not know exists.
+- id: mls-035
+  query: inputed multilateral ODA from Norway to Kenya
+  source: mls
+  axes:
+    donor: country
+    channel: none
+    recipient: country
+    topic: none
+    measure: imputed
+    time: none
+    operation: none
+    phrasing: misspelling
+  intent: Misspelt imputed; same intent as mls-002.
+  edge: A misspelt 'imputed', which must still match the indicator.
+- id: mls-036
+  query: Imputed multilateral ODA from Norway to health
+  source: mls
+  axes:
+    donor: country
+    channel: none
+    recipient: none
+    topic: broad_sector
+    measure: imputed
+    time: none
+    operation: none
+    phrasing: expert
+  intent: Norway's imputed multilateral money for health.
+  edge: A sector named after 'to', where the parser may read it as a recipient.
+- id: mls-037
+  query: What does Denmark's multilateral aid add up to in education and health, and how has it changed
+    since 2015?
+  source: mls
+  axes:
+    donor: country
+    channel: none
+    recipient: none
+    topic: broad_sector
+    measure: imputed
+    time: since
+    operation: trend
+    phrasing: multi_part
+  intent: Denmark's imputed multilateral money in two sectors over time.
+  edge: 'Multi-part: two sectors, trend and a start year.'

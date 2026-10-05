@@ -1,0 +1,637 @@
+- id: crs-001
+  query: aid from Germany to Kenya
+  source: crs
+  axes:
+    donor: country
+    recipient: country
+    topic: none
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Total German aid to Kenya.
+- id: crs-002
+  query: aid to Bangladesh
+  source: crs
+  axes:
+    donor: none
+    recipient: country
+    topic: none
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: All aid Bangladesh receives, from every donor.
+- id: crs-003
+  query: aid from Japan
+  source: crs
+  axes:
+    donor: country
+    recipient: none
+    topic: none
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: What Japan gives, across recipients.
+- id: crs-004
+  query: how much official development assistance was given worldwide in 2022
+  source: crs
+  axes:
+    donor: none
+    recipient: none
+    topic: none
+    measure: default
+    time: none
+    operation: total
+    phrasing: casual
+  intent: Global ODA total for one year.
+  edge: No donor or recipient; checks the sentence when nothing is bound.
+- id: crs-005
+  query: ODA from DAC countries
+  source: crs
+  axes:
+    donor: country_group
+    recipient: none
+    topic: none
+    measure: default
+    time: none
+    operation: none
+    phrasing: expert
+  intent: Total from the OECD DAC membership.
+  edge: '''DAC countries'' is a donor group, which the parser may read as a place.'
+- id: crs-006
+  query: aid from EU institutions to Ethiopia
+  source: crs
+  axes:
+    donor: country_group
+    recipient: country
+    topic: none
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: EU aid to Ethiopia.
+  edge: EU institutions as donor, which may expand to the 27 member states; some have no data.
+- id: crs-007
+  query: aid from the Global Fund to Malawi
+  source: crs
+  axes:
+    donor: multilateral
+    recipient: country
+    topic: none
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Global Fund money reaching Malawi.
+- id: crs-008
+  query: African Development Bank aid to Uganda
+  source: crs
+  axes:
+    donor: multilateral
+    recipient: country
+    topic: none
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: AfDB flows to Uganda.
+  edge: A multilateral donor whose latest year is 2023, one year behind most donors.
+- id: crs-009
+  query: World Bank IDA concessional flows to Kenya
+  source: crs
+  axes:
+    donor: multilateral
+    recipient: country
+    topic: none
+    measure: default
+    time: none
+    operation: none
+    phrasing: expert
+  intent: IDA flows to Kenya.
+  edge: '''World Bank IDA'' is a donor name that the parser may read as a place.'
+- id: crs-010
+  query: Gates Foundation grants to Nigeria
+  source: crs
+  axes:
+    donor: foundation
+    recipient: country
+    topic: none
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Gates philanthropy in Nigeria.
+  edge: A private foundation as donor; the series may hold no data for Nigeria.
+- id: crs-011
+  query: private grants from Gates Foundation
+  source: crs
+  axes:
+    donor: foundation
+    recipient: none
+    topic: flow_type
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Private development finance from the foundation.
+  edge: Flow type is private development finance, not ODA.
+- id: crs-012
+  query: AFD aid to Senegal
+  source: crs
+  axes:
+    donor: agency
+    recipient: country
+    topic: none
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: French development agency money to Senegal.
+  edge: An agency inside a donor country, which the graph does not hold as a donor.
+- id: crs-013
+  query: aid from China to Kenya
+  source: crs
+  axes:
+    donor: country
+    recipient: country
+    topic: none
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Chinese aid to Kenya.
+  edge: China is both donor and recipient; the series may hold no data for Kenya.
+- id: crs-014
+  query: aid from Turkey to Syria
+  source: crs
+  axes:
+    donor: country
+    recipient: country
+    topic: none
+    measure: default
+    time: latest
+    operation: none
+    phrasing: casual
+  intent: Turkish aid to Syria, latest data.
+  edge: Turkey is a donor and also a recipient.
+- id: crs-015
+  query: aid from Turky to Syrya
+  source: crs
+  axes:
+    donor: country
+    recipient: country
+    topic: none
+    measure: default
+    time: none
+    operation: none
+    phrasing: misspelling
+  intent: Same as Turkey to Syria, misspelt.
+  edge: Misspelt entity names.
+- id: crs-016
+  query: aid from India to Bhutan
+  source: crs
+  axes:
+    donor: country
+    recipient: country
+    topic: none
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Indian aid to Bhutan.
+  edge: India is both donor and recipient; the graph may not carry it as a donor.
+- id: crs-017
+  query: aid from South Korea to Vietnam in 2021
+  source: crs
+  axes:
+    donor: country
+    recipient: country
+    topic: none
+    measure: default
+    time: year
+    operation: none
+    phrasing: casual
+  intent: Korean aid to Vietnam in one year.
+- id: crs-018
+  query: aid to low income countries
+  source: crs
+  axes:
+    donor: none
+    recipient: income_group
+    topic: none
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Aid to the low-income group.
+  edge: An income group as recipient, which expands to 25 named countries.
+- id: crs-019
+  query: aid from Japan to least developed countries
+  source: crs
+  axes:
+    donor: country
+    recipient: country_group
+    topic: none
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Japanese aid to LDCs.
+  edge: Least developed countries as a recipient group of 44 named countries.
+- id: crs-020
+  query: aid to Sub-Saharan Africa
+  source: crs
+  axes:
+    donor: none
+    recipient: region
+    topic: none
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Aid to the Sub-Saharan region.
+  edge: A region as recipient, set against the 'Africa, regional' recipient line.
+- id: crs-021
+  query: how much does the UK give to Africa
+  source: crs
+  axes:
+    donor: country
+    recipient: region
+    topic: none
+    measure: default
+    time: none
+    operation: none
+    phrasing: vague
+  intent: UK aid to the continent.
+  edge: A continent as recipient with no indicator named, so several indicators and sources may match.
+- id: crs-022
+  query: aid from France to Africa
+  source: crs
+  axes:
+    donor: country
+    recipient: region
+    topic: none
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: French aid to Africa.
+  edge: A donor country with a continent as recipient; two readings are possible.
+- id: crs-023
+  query: aid to Sahel countries
+  source: crs
+  axes:
+    donor: none
+    recipient: country_group
+    topic: none
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Aid to the Sahel group.
+  edge: '''Sahel'' is a recipient region that the parser may not read as a place.'
+- id: crs-024
+  query: aid to developing countries unspecified
+  source: crs
+  axes:
+    donor: none
+    recipient: developing_unspecified
+    topic: none
+    measure: default
+    time: none
+    operation: none
+    phrasing: expert
+  intent: The 'unspecified recipient' bucket.
+  edge: '''Developing countries unspecified'' is a recipient bucket that may not be selectable.'
+- id: crs-025
+  query: basic sanitation aid from Germany to Kenya in 2022
+  source: crs
+  axes:
+    donor: country
+    recipient: country
+    topic: detailed_purpose
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: German water and sanitation aid to Kenya, one year.
+- id: crs-026
+  query: malaria control aid to Uganda
+  source: crs
+  axes:
+    donor: none
+    recipient: country
+    topic: detailed_purpose
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Money for malaria in Uganda.
+- id: crs-027
+  query: ODA from France to Ghana for health since 2015
+  source: crs
+  axes:
+    donor: country
+    recipient: country
+    topic: broad_sector
+    measure: default
+    time: since
+    operation: none
+    phrasing: casual
+  intent: French health aid to Ghana since 2015.
+  edge: A sector named 'health' with a start year; the sentence must keep both.
+- id: crs-028
+  query: education aid from the UK to Pakistan
+  source: crs
+  axes:
+    donor: country
+    recipient: country
+    topic: broad_sector
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: UK education aid to Pakistan.
+- id: crs-029
+  query: CRS purpose 12220 from the UK to Zambia
+  source: crs
+  axes:
+    donor: country
+    recipient: country
+    topic: detailed_purpose
+    measure: default
+    time: none
+    operation: none
+    phrasing: expert
+  intent: Basic health care aid by code.
+  edge: A CRS purpose given by number instead of by name.
+- id: crs-030
+  query: humanitarian aid to Yemen in 2023
+  source: crs
+  axes:
+    donor: none
+    recipient: country
+    topic: humanitarian
+    measure: default
+    time: year
+    operation: none
+    phrasing: casual
+  intent: Humanitarian funding to Yemen.
+- id: crs-031
+  query: climate finance from Germany to Bangladesh
+  source: crs
+  axes:
+    donor: country
+    recipient: country
+    topic: climate
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: German climate finance for Bangladesh.
+  edge: A climate qualifier, where the graph carries no policy markers and the sentence must not imply one.
+- id: crs-032
+  query: other official flows from Germany to Brazil
+  source: crs
+  axes:
+    donor: country
+    recipient: country
+    topic: flow_type
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Non-concessional official lending.
+  edge: Non-ODA flow type.
+- id: crs-033
+  query: loans from Japan to Vietnam for transport
+  source: crs
+  axes:
+    donor: country
+    recipient: country
+    topic: instrument
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Japanese lending for transport.
+- id: crs-034
+  query: budget support from EU institutions
+  source: crs
+  axes:
+    donor: country_group
+    recipient: none
+    topic: modality
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: EU budget support.
+  edge: EU institutions as donor with budget support as the aid type; the donor may expand to member states.
+- id: crs-035
+  query: technical assistance from Germany to Ghana
+  source: crs
+  axes:
+    donor: country
+    recipient: country
+    topic: modality
+    measure: default
+    time: none
+    operation: none
+    phrasing: expert
+  intent: German expert and technical cooperation.
+- id: crs-036
+  query: commitments from Germany to Kenya in 2022
+  source: crs
+  axes:
+    donor: country
+    recipient: country
+    topic: none
+    measure: commitment
+    time: year
+    operation: none
+    phrasing: expert
+  intent: Pledged rather than paid money.
+  edge: A flow type, commitments, with a donor, recipient and year.
+- id: crs-037
+  query: net ODA from the United States to Pakistan in 2020
+  source: crs
+  axes:
+    donor: country
+    recipient: country
+    topic: none
+    measure: net
+    time: year
+    operation: none
+    phrasing: expert
+  intent: Net disbursements.
+  edge: Net ODA with a donor, recipient and year; the sentence must say which flow measure applies.
+- id: crs-038
+  query: ODA commitments from the UK to India in constant 2022 dollars
+  source: crs
+  axes:
+    donor: country
+    recipient: country
+    topic: none
+    measure: constant_prices
+    time: none
+    operation: none
+    phrasing: expert
+  intent: Real-terms commitments.
+  edge: A request for constant 2022 prices, where the data is nominal only.
+- id: crs-039
+  query: aid per capita from Norway
+  source: crs
+  axes:
+    donor: country
+    recipient: none
+    topic: none
+    measure: per_capita
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Aid relative to Norway's population.
+  edge: A per-capita aid measure, which the data does not carry.
+- id: crs-040
+  query: share of ODA going to Kenya out of all German aid 2015 to 2020
+  source: crs
+  axes:
+    donor: country
+    recipient: country
+    topic: none
+    measure: share
+    time: range
+    operation: share
+    phrasing: casual
+  intent: Kenya's share of German ODA.
+  edge: A share of one donor's total aid, which the service does not compute.
+- id: crs-041
+  query: trend in aid from Germany to Kenya from 2015 to 2020
+  source: crs
+  axes:
+    donor: country
+    recipient: country
+    topic: none
+    measure: default
+    time: range
+    operation: trend
+    phrasing: casual
+  intent: Direction of the series.
+  edge: A trend over 2015 to 2020, where the sentence must cover the whole range.
+- id: crs-042
+  query: aid from Sweden to Tanzania over the last decade
+  source: crs
+  axes:
+    donor: country
+    recipient: country
+    topic: none
+    measure: default
+    time: relative
+    operation: trend
+    phrasing: casual
+  intent: Ten-year view.
+- id: crs-043
+  query: aid from Germany to Kenya in 2030
+  source: crs
+  axes:
+    donor: country
+    recipient: country
+    topic: none
+    measure: default
+    time: future
+    operation: none
+    phrasing: casual
+  intent: A projection nobody has.
+  edge: A future year outside the series.
+- id: crs-044
+  query: aid from Germany to Kenya in 1975
+  source: crs
+  axes:
+    donor: country
+    recipient: country
+    topic: none
+    measure: default
+    time: year
+    operation: none
+    phrasing: casual
+  intent: Early history.
+  edge: A year before the series starts in 1973.
+- id: crs-045
+  query: top recipients of US aid
+  source: crs
+  axes:
+    donor: country
+    recipient: none
+    topic: none
+    measure: default
+    time: none
+    operation: rank
+    phrasing: casual
+  intent: Ranking of recipients.
+  edge: A ranking request over recipients, which the service does not compute.
+- id: crs-046
+  query: Germany versus France aid to Mali
+  source: crs
+  axes:
+    donor: country
+    recipient: country
+    topic: none
+    measure: default
+    time: none
+    operation: compare
+    phrasing: casual
+  intent: Compare two donors.
+  edge: Two donors compared in one query, where the parser must assign each its role.
+- id: crs-047
+  query: how fast has Canadian aid to Haiti grown
+  source: crs
+  axes:
+    donor: country
+    recipient: country
+    topic: none
+    measure: default
+    time: latest
+    operation: growth
+    phrasing: casual
+  intent: Growth rate.
+- id: crs-048
+  query: aid to Kenya and Uganda for health and education
+  source: crs
+  axes:
+    donor: country
+    recipient: country
+    topic: broad_sector
+    measure: default
+    time: none
+    operation: none
+    phrasing: multi_part
+  intent: Two recipients, two sectors.
+  edge: Two recipients and two sectors in one query; the sentence must keep all four.
+- id: crs-049
+  query: World Bank core contributions
+  source: crs
+  axes:
+    donor: multilateral
+    recipient: none
+    topic: none
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: Core funding of the World Bank by donors.
+  edge: Core contributions of a multilateral, which belong to the multilateral-system dataset; CRS excludes them.
+- id: crs-050
+  query: aid from Germany to Kenya covid vaccines
+  source: crs
+  axes:
+    donor: country
+    recipient: country
+    topic: none
+    measure: default
+    time: none
+    operation: none
+    phrasing: casual
+  intent: A narrow topic with no CRS purpose.
+  edge: A topic that no CRS series covers.
