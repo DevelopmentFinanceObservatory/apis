@@ -1,0 +1,205 @@
+"""The paired regression rule: one gate verdict per (case, check) from per-sample verdicts.
+
+``judge`` reads a check's verdicts on the head samples and, when the rule needs them, the
+base samples and one confirm round (one head sample, then one base sample). It returns
+``NEEDS_BASE`` or ``NEEDS_CONFIRM`` while the verdict depends on a run that has not
+happened, and the driver calls it again once that run is scored. The head samples decide
+first, so a base or confirm run taken for one check cannot change another check's verdict.
+The rows, in the order they apply:
+
+- a head sample whose run or graph or coverage read failed (``Observation.infra``): infra,
+  except that a failed run (``"run"``) on a case whose ``known_failure.checks`` holds
+  ``task_outcome`` is a known failure, so a case that times out on every run does not stop
+  every change; a failed graph or coverage read (``"read"``) stays infra;
+- the check is in the case's ``known_failure.checks``: known failure, reported fixed when
+  every head sample passes and none is a failed run (``Observation.run_failed``);
+- any head sample passes: pass, reported unstable when another head sample fails;
+- no head sample passes and the case is new or changed: new-case failure, blocking;
+- no head pass on ``structural``: structural failure, blocking;
+- a base sample is infra: infra;
+- no head pass, any base sample fails: pre-existing;
+- no head pass, a base sample is unverifiable and none fails: unverifiable at base,
+  blocking until an override releases it;
+- no head pass, every base sample passes: the confirm round decides. Infra in it is infra
+  as above. A confirm head sample that fails or is unverifiable is a regression when the
+  confirm base sample passes and unverifiable at base when it is unverifiable; anything
+  else is unstable.
+
+``scripts/eval_paired.py`` hands in a head sample whose run failed as a failed
+``task_outcome`` sample with no infra flag, so a head-side ``"run"`` failure in the first row
+comes only from the nightly (``search.eval.sync``), which has no base to compare.
+
+n/a counts as a pass. A base sample the app refused as a malformed request
+(``request_rejected``) is unverifiable, since the head runner's request may carry fields
+the base app does not know. At head the checks score the refusal as the problem document
+it is.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from enum import StrEnum
+from typing import Literal
+
+from search.eval.checks import Verdict
+
+type Infra = Literal["run", "read"]
+
+
+class Outcome(StrEnum):
+    PASS = "pass"
+    KNOWN_FAILURE = "known_failure"
+    NEW_CASE_FAILURE = "new_case_failure"
+    STRUCTURAL_FAILURE = "structural_failure"
+    REGRESSION = "regression"
+    UNSTABLE = "unstable"
+    PRE_EXISTING = "pre_existing"
+    UNVERIFIABLE_AT_BASE = "unverifiable_at_base"
+    INFRA = "infra"
+    NEEDS_BASE = "needs_base"
+    NEEDS_CONFIRM = "needs_confirm"
+
+
+BLOCKING = frozenset(
+    {
+        Outcome.NEW_CASE_FAILURE,
+        Outcome.STRUCTURAL_FAILURE,
+        Outcome.REGRESSION,
+        Outcome.UNVERIFIABLE_AT_BASE,
+    }
+)
+"""Outcomes that fail the gate with exit 1. The ``eval-override`` label releases them."""
+
+PENDING = frozenset({Outcome.NEEDS_BASE, Outcome.NEEDS_CONFIRM})
+"""Outcomes waiting on a base run or a confirm round."""
+
+
+@dataclass(frozen=True)
+class Observation:
+    """One sample's result for one check."""
+
+    verdict: Verdict
+    infra: Infra | None = None
+    """``"run"`` when the runner got no answer after its retries, ``"read"`` when the
+    check could not read the graph or coverage it scores against."""
+    request_rejected: bool = False
+    degraded: bool = False
+    run_failed: bool = False
+    """A head sample whose run failed after its retries, scored rather than infra: it fails
+    ``task_outcome`` and is n/a elsewhere, and it never counts towards fixed."""
+
+
+@dataclass(frozen=True)
+class Judgement:
+    outcome: Outcome
+    unstable: bool = False
+    """A pass that failed on some head sample."""
+    fixed: bool = False
+    """A known failure that passed on every head sample."""
+    degraded: bool = False
+    """Some sample behind the verdict stayed degraded after its retries."""
+
+    @property
+    def blocks(self) -> bool:
+        return self.outcome in BLOCKING
+
+
+def judge(
+    *,
+    check: str,
+    head: Sequence[Observation],
+    base: Sequence[Observation] | None = None,
+    confirm: tuple[Observation, Observation] | None = None,
+    known_failure: bool = False,
+    known_task_failure: bool = False,
+    new_case: bool = False,
+) -> Judgement:
+    """The gate verdict for one check of one case.
+
+    ``base`` is None until the base side ran, and ``confirm`` is the (head, base) pair of
+    the confirm round, None until it ran. ``known_failure`` says the check is in the case's
+    ``known_failure.checks``, ``known_task_failure`` that those checks hold
+    ``task_outcome``, and ``new_case`` that the case is new or changed against base.
+    """
+    read: list[Observation] = list(head)
+
+    def verdict(outcome: Outcome, *, unstable: bool = False, fixed: bool = False) -> Judgement:
+        degraded = any(o.degraded for o in read)
+        return Judgement(outcome, unstable=unstable, fixed=fixed, degraded=degraded)
+
+    if (head_infra := _head_infra(head, known_task_failure=known_task_failure)) is not None:
+        return verdict(head_infra)
+    head_v = [_effective(o, "head") for o in head]
+    if known_failure:
+        fixed = all(v == Verdict.PASS for v in head_v) and not any(o.run_failed for o in head)
+        return verdict(Outcome.KNOWN_FAILURE, fixed=fixed)
+    if Verdict.PASS in head_v:
+        return verdict(Outcome.PASS, unstable=Verdict.FAIL in head_v)
+    if new_case:
+        return verdict(Outcome.NEW_CASE_FAILURE)
+    if check == "structural":
+        return verdict(Outcome.STRUCTURAL_FAILURE)
+    if base is None:
+        return verdict(Outcome.NEEDS_BASE)
+    read += base
+    if any(o.infra for o in base):
+        return verdict(Outcome.INFRA)
+    base_v = [_effective(o, "base") for o in base]
+    if Verdict.FAIL in base_v:
+        return verdict(Outcome.PRE_EXISTING)
+    if Verdict.UNVERIFIABLE in base_v:
+        return verdict(Outcome.UNVERIFIABLE_AT_BASE)
+    if confirm is None:
+        return verdict(Outcome.NEEDS_CONFIRM)
+    read += confirm
+    if (head_infra := _head_infra(confirm[:1], known_task_failure=known_task_failure)) is not None:
+        return verdict(head_infra)
+    if confirm[1].infra:
+        return verdict(Outcome.INFRA)
+    if _effective(confirm[0], "head") == Verdict.PASS:
+        return verdict(Outcome.UNSTABLE)
+    match _effective(confirm[1], "base"):
+        case Verdict.PASS:
+            return verdict(Outcome.REGRESSION)
+        case Verdict.UNVERIFIABLE:
+            return verdict(Outcome.UNVERIFIABLE_AT_BASE)
+    return verdict(Outcome.UNSTABLE)
+
+
+def _head_infra(head: Sequence[Observation], *, known_task_failure: bool) -> Outcome | None:
+    """Infra, a known failure for a known task failure's failed runs, or None."""
+    infra = {o.infra for o in head} - {None}
+    if not infra:
+        return None
+    return Outcome.KNOWN_FAILURE if known_task_failure and infra == {"run"} else Outcome.INFRA
+
+
+def _effective(observation: Observation, side: Literal["head", "base"]) -> Verdict:
+    """The sample's verdict on the pass, fail, unverifiable scale the rule reads."""
+    if observation.request_rejected and side == "base":
+        return Verdict.UNVERIFIABLE
+    return Verdict.PASS if observation.verdict == Verdict.NA else observation.verdict
+
+
+def is_new_case(case_id: str, head_hash: str, base_hashes: Mapping[str, str] | None) -> bool:
+    """Whether a case is new or changed against the base corpus.
+
+    ``base_hashes`` maps each base case id to its expectation hash. It is None when the
+    base corpus does not load under the head case model, which makes every case new.
+    """
+    return base_hashes is None or base_hashes.get(case_id) != head_hash
+
+
+def exit_code(outcomes: Iterable[Outcome]) -> int:
+    """1 when any verdict blocks, else 3 when any is infra, else 0.
+
+    A blocking verdict is a finding whatever else could not be judged, so it outranks
+    infra. Raises ``ValueError`` on a verdict still waiting for a run.
+    """
+    seen = set(outcomes)
+    if waiting := seen & PENDING:
+        raise ValueError(f"unresolved verdicts: {sorted(waiting)}")
+    if seen & BLOCKING:
+        return 1
+    return 3 if Outcome.INFRA in seen else 0

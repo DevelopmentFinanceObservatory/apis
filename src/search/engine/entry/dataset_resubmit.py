@@ -1,0 +1,433 @@
+"""Re-resolve dataset parts through the shared region combiner.
+
+Identity entries call `resolve_spec_resubmit` in worker threads. Candidate entries
+promote each candidate under the same request semaphore. Placeholders build a
+`RegionResult` without graph or LLM calls. Parsed entries use one shared fan-out.
+Only that entry kind calls the LLM: one mention reading for the request when a
+parsed entry names a dataset, as on the parsed door, and one bind per entry.
+
+The request semaphore caps identity/candidate promotes and parsed variable legs
+together. Entity pre-resolution is one `resolver.resolve()` call, outside that cap.
+
+Promote tasks start before parsed fan-out, so both tracks use the deadline in
+parallel. Candidate regions carry the posted ordering override so the combiner
+preserves candidate order.
+
+The door emits no interpretation or per-leg progress events. Parsed fan-out
+indices are local to its sub-list, so those events are drained to avoid labels
+that mismatch `inp.entries`.
+
+`EngineInputError` returns 4xx with pointers mapped to `/input/entries/{i}/...`.
+Static validation of placeholder codes and candidate counts runs before tasks.
+The lowest-index static error wins over resolution errors. Promote tasks all finish
+before selection. The lowest-index `EngineInputError` beats infrastructure errors.
+Otherwise the lowest-index exception propagates. Resolution outcomes remain 200 parts.
+
+Timeouts and infrastructure errors fail the request with 504 or 5xx. Timeouts never
+return placeholder no-data. On parsed-fan-out timeout, an already-completed promote
+`EngineInputError` takes precedence. Pending promotes are ignored so the deadline
+holds.
+
+Four task-creation sites register trailing handles with the request scope, whose
+`core.resolve_events` cleanup cancels and awaits unclaimed tasks on exit. Parsed
+fan-out also cleans up produced tasks on infrastructure errors and before raising
+its timeout. Successful handles are consumed by the trailing streamer.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import dataclasses
+from collections.abc import AsyncIterator
+from contextlib import aclosing
+
+from dc_sdmx import SdmxClient as MaterialiseSdmxClient
+from dfo_platform.build import build_commit
+from dfo_platform.trace import get_trace_id
+from entity_resolution import Admission, EntityResolver
+from materialise import GraphReader
+from materialise.rate_tables import RateTableCache
+from search.engine.clients.graph import EngineGraphClient
+from search.engine.clients.llm import SupportsLLM
+from search.engine.clients.sdmx import EngineSdmxClient
+from search.engine.codes import CODE_CATALOG
+from search.engine.concurrency import bounded_semaphore
+from search.engine.conjoin import assemble_region
+from search.engine.deadline import _await_bounded
+from search.engine.enrichment import _launch_trailing_tasks, _stream_slot_options
+from search.engine.entry.dataset_entries import (
+    check_candidates_ceiling,
+    resolve_candidates_entry,
+    resolve_parsed_entries,
+    spec_resubmit_input_for_identity,
+)
+from search.engine.entry.multi import _stream_combined_regions
+from search.engine.entry.params import EntryParams
+from search.engine.envelope import _sum_usage, _terminal_events, now_ms
+from search.engine.errors import EngineInputError
+from search.engine.events import DoneEvent, DoneTelemetry, Event, LateDepartures, ResponseEvent
+from search.engine.options.population_memo import OptionsPopulationMemo
+from search.engine.region import RegionResult, resolve_spec_resubmit
+from search.engine.region.place_options import PlaceOptionsPool
+from search.engine.region.result import with_runnable_operations
+from search.engine.region.state import EngineOptions
+from search.models import (
+    DatasetResubmitInput,
+    QueryEcho,
+    ResubmitCandidatesEntry,
+    ResubmitIdentityEntry,
+    ResubmitParsedEntry,
+    ResubmitPlaceholderEntry,
+    Unsupported,
+    Warning,
+)
+
+
+def _rewrite_pointer(exc: EngineInputError, index: int) -> EngineInputError:
+    """Map a promote refusal to this entry's `/input/entries/{index}/...` pointer.
+
+    Pointer-less or unrecognised pointers pass through unchanged.
+    """
+    pointer = exc.pointer
+    if pointer is None or not pointer.startswith("/input"):
+        return exc
+    new_pointer = f"/input/entries/{index}" + pointer.removeprefix("/input")
+    return EngineInputError(
+        *exc.args,
+        code=exc.code,
+        status=exc.status,
+        pointer=new_pointer,
+        alternatives=exc.alternatives,
+        detail=exc.detail,
+    )
+
+
+def _first_completed_refusal(
+    promote_tasks: dict[int, asyncio.Task[RegionResult]],
+) -> EngineInputError | None:
+    """Return the lowest-index completed input refusal, or `None`.
+
+    Used on parsed timeout. Only completed promotes are considered.
+    `Task.exception()` raises `CancelledError` for a cancelled task.
+    """
+    refusals = {
+        i: exc
+        for i, t in promote_tasks.items()
+        if t.done() and not t.cancelled() and isinstance(exc := t.exception(), EngineInputError)
+    }
+    if not refusals:
+        return None
+    return refusals[min(refusals)]
+
+
+def _select_promote_outcome(
+    promote_tasks: dict[int, asyncio.Task[RegionResult]],
+) -> list[RegionResult]:
+    """Select completed promote outcomes in entry order.
+
+    The lowest-index `EngineInputError` wins. Otherwise the lowest-index exception
+    propagates. With no failures, return results in entry order. Call after all
+    tasks finish so reading `Task.exception()` cannot block.
+    """
+    refusal = _first_completed_refusal(promote_tasks)
+    if refusal is not None:
+        raise refusal
+    for i in sorted(promote_tasks):
+        task = promote_tasks[i]
+        if task.cancelled():
+            continue
+        exc = task.exception()
+        if exc is not None:
+            raise exc
+    return [promote_tasks[i].result() for i in promote_tasks]
+
+
+def _unsupported_detail(code: str, *, index: int) -> str:
+    """Return registry detail for a posted code. Refuse unknown codes as `request_invalid`."""
+    entry = CODE_CATALOG.get(code)
+    if entry is None:
+        message = f"{code!r} is not a code this deployment's registry recognises"
+        raise EngineInputError(
+            message,
+            code="request_invalid",
+            pointer=f"/input/entries/{index}/code",
+            detail=message,
+        )
+    return entry[1]
+
+
+def _part_restated_warning(entry: ResubmitPlaceholderEntry) -> Warning:
+    return Warning(
+        code="part_restated",
+        severity="info",
+        message=(
+            f"'{entry.variable_text}' was restated from a posted {entry.status} "
+            "outcome; not re-resolved."
+        ),
+    )
+
+
+def _placeholder_region(entry: ResubmitPlaceholderEntry, index: int) -> RegionResult:
+    """Build a no-data or unsupported region inline with zero graph and LLM calls."""
+    warning = _part_restated_warning(entry)
+    if entry.status == "no_data":
+        assert entry.reason is not None, (
+            "ResubmitPlaceholderEntry's own validator requires reason when status is no_data"
+        )
+        return RegionResult(
+            variable_text=entry.variable_text,
+            status="no_data",
+            specs=(),
+            no_data_reason=entry.reason,
+            warnings=(warning,),
+            timing_by_step={},
+            earliest_index=index,
+        )
+    assert entry.code is not None, (
+        "ResubmitPlaceholderEntry's own validator requires code when status is unsupported"
+    )
+    return RegionResult(
+        variable_text=entry.variable_text,
+        status="unsupported",
+        specs=(),
+        no_data_reason=None,
+        warnings=(warning,),
+        timing_by_step={},
+        earliest_index=index,
+        unsupported=Unsupported(
+            code=entry.code,
+            pointer="",
+            detail=_unsupported_detail(entry.code, index=index),
+            definition={},
+        ),
+    )
+
+
+async def handle(
+    inp: DatasetResubmitInput,
+    *,
+    graph: EngineGraphClient,
+    resolver: EntityResolver,
+    admission: Admission,
+    llm: SupportsLLM,
+    sdmx: EngineSdmxClient,
+    materialise_graph: GraphReader | None,
+    materialise_sdmx: MaterialiseSdmxClient | None,
+    start_ms: int,
+    params: EntryParams,
+    rate_cache: RateTableCache | None = None,
+    population_memo: OptionsPopulationMemo | None = None,
+    place_options_pool: PlaceOptionsPool | None = None,
+) -> AsyncIterator[Event]:
+    # Validate placeholder codes and candidate counts before creating tasks.
+    # These static errors precede resolution failures and point to their entry.
+    for i, entry in enumerate(inp.entries):
+        if isinstance(entry, ResubmitPlaceholderEntry) and entry.status == "unsupported":
+            assert entry.code is not None, (
+                "ResubmitPlaceholderEntry's own validator requires code when status is unsupported"
+            )
+            _unsupported_detail(entry.code, index=i)
+        elif isinstance(entry, ResubmitCandidatesEntry):
+            check_candidates_ceiling(entry, index=i)
+
+    # One request-scoped semaphore bounds promotes and parsed fan-out together.
+    sem = bounded_semaphore()
+
+    async def _resolve_one(index: int, entry: ResubmitIdentityEntry) -> RegionResult:
+        async with sem:
+            try:
+                region = await asyncio.to_thread(
+                    resolve_spec_resubmit,
+                    inp=spec_resubmit_input_for_identity(entry),
+                    graph=graph,
+                    sdmx=sdmx,
+                    coverage=params.coverage,
+                    options=EngineOptions(
+                        include_option_coverage=params.include_option_coverage,
+                        stream_slot_options=params.stream_option_coverage,
+                        include_observations=params.include_observations,
+                        stream_observations=params.stream_observations,
+                        materialise_graph=materialise_graph,
+                        materialise_sdmx=materialise_sdmx,
+                        rate_cache=rate_cache,
+                        population_memo=population_memo,
+                        place_options_pool=place_options_pool,
+                        deadline=params.deadline,
+                    ),
+                )
+            except EngineInputError as exc:
+                raise _rewrite_pointer(exc, index) from exc
+        return dataclasses.replace(region, variable_text=entry.variable_text, earliest_index=index)
+
+    # Start identity and candidate promotes before parsed fan-out. Placeholders
+    # build regions inline and do not create promote tasks.
+    promote_tasks: dict[int, asyncio.Task[RegionResult]] = {}
+    for i, entry in enumerate(inp.entries):
+        if isinstance(entry, ResubmitIdentityEntry):
+            promote_tasks[i] = asyncio.create_task(_resolve_one(i, entry))
+        elif isinstance(entry, ResubmitCandidatesEntry):
+            promote_tasks[i] = asyncio.create_task(
+                resolve_candidates_entry(
+                    i,
+                    entry,
+                    graph=graph,
+                    sdmx=sdmx,
+                    materialise_graph=materialise_graph,
+                    materialise_sdmx=materialise_sdmx,
+                    rate_cache=rate_cache,
+                    population_memo=population_memo,
+                    place_options_pool=place_options_pool,
+                    deadline=params.deadline,
+                    sem=sem,
+                    coverage=params.coverage,
+                )
+            )
+
+    parsed_entries = [
+        (i, entry) for i, entry in enumerate(inp.entries) if isinstance(entry, ResubmitParsedEntry)
+    ]
+
+    async def _gather_all() -> list[RegionResult]:
+        """Wait for every promote before selecting an outcome by entry index."""
+        await asyncio.gather(*promote_tasks.values(), return_exceptions=True)
+        return _select_promote_outcome(promote_tasks)
+
+    parsed_regions_by_index: dict[int, RegionResult] = {}
+    mention_usage: dict | None = None
+    try:
+        try:
+            # Parsed entries share one fan-out. Promote tasks keep running.
+            if parsed_entries:
+                parsed_regions_by_index, mention_usage = await resolve_parsed_entries(
+                    parsed_entries,
+                    graph=graph,
+                    resolver=resolver,
+                    admission=admission,
+                    llm=llm,
+                    sdmx=sdmx,
+                    materialise_graph=materialise_graph,
+                    materialise_sdmx=materialise_sdmx,
+                    rate_cache=rate_cache,
+                    population_memo=population_memo,
+                    place_options_pool=place_options_pool,
+                    pac=params.pac,
+                    deadline=params.deadline,
+                    include_option_coverage=params.include_option_coverage,
+                    stream_slot_options=params.stream_option_coverage,
+                    include_observations=params.include_observations,
+                    stream_observations=params.stream_observations,
+                    coverage=params.coverage,
+                )
+        except TimeoutError:
+            # An already-completed promote refusal takes precedence. Pending
+            # promotes remain unconsulted so the parsed deadline holds.
+            refusal = _first_completed_refusal(promote_tasks)
+            if refusal is not None:
+                raise refusal from None
+            raise
+
+        # Timeout fails the request instead of replacing a resolved part with no-data.
+        resolved = (
+            await _await_bounded(_gather_all(), deadline=params.deadline) if promote_tasks else []
+        )
+    finally:
+        for t in promote_tasks.values():
+            if not t.done():
+                t.cancel()
+        if promote_tasks:
+            await asyncio.gather(*promote_tasks.values(), return_exceptions=True)
+
+    resolved_by_index = dict(zip(promote_tasks.keys(), resolved, strict=True))
+
+    regions: list[RegionResult] = []
+    for i, entry in enumerate(inp.entries):
+        if isinstance(entry, ResubmitPlaceholderEntry):
+            region = _placeholder_region(entry, i)
+        elif isinstance(entry, ResubmitParsedEntry):
+            region = parsed_regions_by_index[i]
+        else:
+            region = resolved_by_index[i]
+        # Every entry kind echoes onto the part it rebuilds the posted operations its data
+        # can run.
+        operations = (
+            entry.part.operations if isinstance(entry, ResubmitParsedEntry) else entry.operations
+        )
+        regions.append(with_runnable_operations(region, operations))
+
+    # Resubmit closures create tasks on the event loop. Placeholders have none.
+    regions = [
+        _launch_trailing_tasks(
+            region,
+            launch_slot_options=params.stream_option_coverage,
+            launch_observations=params.stream_observations,
+        )
+        for region in regions
+    ]
+
+    # Candidate regions carry the posted ordering override for the combiner.
+    echo = QueryEcho(
+        entry_path="dataset_resubmit",
+        raw_query=inp.raw_query,
+        normalized_query=None,
+        extract_skipped=True,
+    )
+
+    if len(regions) == 1:
+        region = regions[0]
+        total_usage = _sum_usage(mention_usage, region.llm_usage)
+        response = assemble_region(
+            region,
+            query="",
+            extra_warnings=[],
+            start_ms=start_ms,
+            engine_build=build_commit(),
+            include_sentence=params.include_sentence,
+            max_candidates=params.max_candidates,
+            include_observations=params.include_observations,
+            include_skills=params.include_skills,
+            skills_index=params.skills_index,
+            llm_usage=total_usage,
+            echo=echo,
+        )
+        if not params.stream_option_coverage and not params.stream_observations:
+            for ev in _terminal_events(response, start_ms=start_ms, llm_usage=total_usage):
+                yield ev
+            return
+        yield ResponseEvent(response=response)
+        slot_options_warnings: list[Warning] = []
+        late_departures: list[LateDepartures] = []
+        async for ev in _stream_slot_options(
+            [region],
+            deadline=params.deadline,
+            warnings_out=slot_options_warnings,
+            late_departures_out=late_departures,
+            response=response,
+            answered=[region],
+        ):
+            yield ev
+        yield DoneEvent(
+            elapsed_ms=now_ms() - start_ms,
+            timed_out=False,
+            trace_id=get_trace_id(),
+            telemetry=DoneTelemetry(llm_usage=total_usage),
+            warnings=slot_options_warnings,
+            late_departures=late_departures,
+        )
+        return
+
+    async with aclosing(
+        _stream_combined_regions(
+            regions,
+            initial_llm_usage=mention_usage,
+            query="",
+            extra_warnings=[],
+            echo=echo,
+            timed_out=False,
+            graph=graph,
+            start_ms=start_ms,
+            params=params,
+        )
+    ) as events:
+        async for event in events:
+            yield event
+    return

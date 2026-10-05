@@ -1,0 +1,815 @@
+- id: dq-crs-001
+  query: aid from Germany to Kenya
+  why: Resolves to crs.disbursement_gross for country/DEU as origin and country/KEN as destination.
+  reuse: panel/crs-001
+  tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
+      window: {kind: all}
+      operations: []
+
+- id: dq-crs-002
+  query: aid to Bangladesh
+  why: Resolves to crs.disbursement_gross for country/BGD as destination.
+  reuse: panel/crs-002
+  tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: country/BGD, role: destination}]
+      window: {kind: all}
+      operations: []
+
+- id: dq-crs-003
+  query: aid from Japan
+  why: Resolves to crs.disbursement_gross for country/JPN as origin.
+  reuse: panel/crs-003
+  tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: country/JPN, role: origin}]
+      window: {kind: all}
+      operations: []
+
+- id: dq-crs-004
+  query: how much official development assistance was given worldwide in 2022
+  why: Worldwide ODA in 2022 leaves origin and destination open and resolves to the CRS gross disbursement family.
+  reuse: panel/crs-004
+  tags: {theme: aid, entity: none, direction: none, unit: default, time: year, operation: aggregate, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: []
+      window: {kind: range, start: 2022, end: 2022}
+      operations: []
+
+- id: dq-crs-005
+  query: ODA from DAC countries
+  why: CRS holds no DAC-total provider, so DAC countries read as the DAC member group on the origin role.
+  reuse: panel/crs-005
+  tags: {theme: aid, entity: region_group, direction: origin_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical, overlap: [dac1]}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{label: DAC, role: origin, expands: true}]
+      window: {kind: all}
+      operations: []
+
+- id: dq-crs-006
+  query: aid from EU institutions to Ethiopia
+  why: EU Institutions is one multilateral CRS provider; expanding it to the member states answers a different question.
+  reuse: panel/crs-006
+  tags: {theme: aid, entity: organisation, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [crs_quirk]}
+  known_failure: {issue: 1156, checks: [entities]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities:
+        - {dcid: EuropeanUnionInstitutions, role: origin}
+        - {dcid: country/ETH, role: destination}
+      window: {kind: all}
+      operations: []
+
+- id: dq-crs-007
+  query: aid from the Global Fund to Malawi
+  why: Resolves to crs.disbursement_gross for Global Fund provider node as origin and country/MWI as destination.
+  reuse: panel/crs-007
+  tags: {theme: health, entity: organisation, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities:
+        - {dcid: GlobalFund, role: origin}
+        - {dcid: country/MWI, role: destination}
+      window: {kind: all}
+      operations: []
+
+- id: dq-crs-008
+  query: World Bank IDA concessional flows to Kenya
+  why: No CRS code carries concessionality, so the concessional qualifier is refused.
+  reuse: panel/crs-009
+  tags: {theme: aid, entity: organisation, direction: both, unit: default, time: none, operation: none, breakdown: instrument, door: raw_text, phrasing: technical, probe: [crs_quirk]}
+  known_failure: {issue: 1156, checks: [refusal]}
+  expect:
+    entities: [{dcid: InternationalDevelopmentAssociation, role: origin}, {dcid: country/KEN, role: destination}]
+    no_data: {reason: qualifier_not_bound, category: absent}
+
+- id: dq-crs-009
+  query: private grants from Gates Foundation
+  why: Private grants bind the private development finance flow type and the grant type of finance.
+  reuse: panel/crs-011
+  tags: {theme: aid, entity: organisation, direction: origin_only, unit: default, time: none, operation: none, breakdown: flow_type, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure:
+        family: crs.disbursement_any
+        bound:
+          crsTypeOfFlow: CRSTypeOfFlow30
+          crsTypeOfFinance: CRSTypeOfFinance100
+      entities: [{dcid: GatesFoundation, role: origin}]
+      window: {kind: all}
+
+- id: dq-crs-010
+  query: AFD aid to Senegal
+  why: CRS aggregates to the provider country and drops the agency; mapping AFD to France gives a different, larger total.
+  reuse: panel/crs-012
+  tags: {theme: aid, entity: organisation, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: misspelt, probe: [crs_quirk]}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect: {no_data: {reason: entity_not_resolved, category: unresolved}}
+
+- id: dq-crs-011
+  query: aid from China to Kenya
+  why: China does not report to the CRS, so the pair has no observations; the origin and destination roles hold regardless.
+  reuse: panel/crs-013
+  tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [missing_data]}
+  expect:
+    no_data:
+      entities: [{dcid: country/CHN, role: origin}, {dcid: country/KEN, role: destination}]
+      reason: no_observations
+      category: absent
+
+- id: dq-crs-012
+  query: aid from Turkey to Syria
+  why: Resolves to crs.disbursement_gross for country/TUR as origin and country/SYR as destination.
+  reuse: panel/crs-014
+  tags: {theme: humanitarian, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: country/TUR, role: origin}, {dcid: country/SYR, role: destination}]
+      window: {kind: all}
+
+- id: dq-crs-013
+  query: aid from Turky to Syrya
+  why: Resolves to crs.disbursement_gross for country/TUR as origin and country/SYR as destination.
+  reuse: panel/crs-015
+  tags: {theme: humanitarian, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: misspelt}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: country/TUR, role: origin}, {dcid: country/SYR, role: destination}]
+      window: {kind: all}
+
+- id: dq-crs-014
+  query: aid from India to Bhutan
+  why: Coverage holds no CRS rows for India to Bhutan, so the pair has no observations.
+  reuse: panel/crs-016
+  tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [missing_data]}
+  expect:
+    no_data:
+      entities: [{dcid: country/IND, role: origin}, {dcid: country/BTN, role: destination}]
+      reason: no_observations
+      category: absent
+
+- id: dq-crs-015
+  query: aid to low income countries
+  why: CRS has no low-income aggregate node and income groups have no entity type, so the group is unresolved; dropping it would return aid to every recipient.
+  reuse: panel/crs-018
+  tags: {theme: aid, entity: region_group, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [income_group]}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect: {no_data: {reason: entity_not_resolved, category: unresolved}}
+
+- id: dq-crs-016
+  query: aid from Japan to least developed countries
+  why: CRS has no least-developed-countries node and the UN list has no entity type, so the group is unresolved; dropping it would return aid to every recipient.
+  reuse: panel/crs-019
+  tags: {theme: aid, entity: region_group, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [income_group]}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    no_data:
+      entities: [{dcid: country/JPN, role: origin}]
+      reason: entity_not_resolved
+      category: unresolved
+
+- id: dq-crs-017
+  query: aid to Sub-Saharan Africa
+  why: The CRS 'South of Sahara, regional' recipient holds only unallocated aid, so Sub-Saharan Africa reads as its member countries.
+  reuse: panel/crs-020
+  tags: {theme: aid, entity: region_group, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: SubSaharanAfrica, role: destination, expands: true}]
+      window: {kind: all}
+      operations: []
+
+- id: dq-crs-018
+  query: aid from France to Africa
+  why: Africa is a group that expands to its member countries on the destination role.
+  reuse: panel/crs-022
+  tags: {theme: aid, entity: region_group, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: country/FRA, role: origin}, {dcid: africa, role: destination, expands: true}]
+      window: {kind: all}
+
+- id: dq-crs-019
+  query: 'parsed: aid, recipient ''Africa, regional'''
+  door: parsed
+  parsed: [{variable_text: aid, entities: [{text: 'Africa, regional', role_text: recipient}]}]
+  why: Raw text cannot reach the CRS regional residual 'Africa, regional'; the parsed door can.
+  reuse: corpus/ent-02
+  tags: {theme: aid, entity: region_group, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: parsed, phrasing: technical, probe: [crs_quirk]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: DACAfricaUnallocated, role: destination}]
+      warnings: [role_scope_defaulted]
+
+- id: dq-crs-020
+  query: aid to developing countries unspecified
+  why: The 9998 bucket is a CRS recipient node that raw text may or may not name; expanding to every developing country is wrong.
+  reuse: panel/crs-024
+  tags: {theme: aid, entity: region_group, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical, probe: [crs_quirk]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: DACBilateralUnallocated, role: destination}]
+    no_data: {reason: entity_not_resolved, category: unresolved}
+
+- id: dq-crs-021
+  query: basic sanitation aid from Germany to Kenya in 2022
+  why: Resolves to crs.disbursement_gross for country/DEU as origin and country/KEN as destination in 2022.
+  reuse: panel/crs-025
+  tags: {theme: health, entity: two_roles, direction: both, unit: default, time: year, operation: none, breakdown: sector, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure:
+        family: crs.disbursement_gross
+        bound:
+          crsTypeOfFlow: CRSTypeOfFlow10
+          crsPurpose: CRSPurposeCode14032
+      entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2022, end: 2022}
+
+- id: dq-crs-022
+  query: malaria control aid to Uganda
+  why: Resolves to crs.disbursement_gross for country/UGA as destination.
+  reuse: panel/crs-026
+  tags: {theme: health, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: sector, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure:
+        family: crs.disbursement_gross
+        bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode12262}
+      entities: [{dcid: country/UGA, role: destination}]
+
+- id: dq-crs-023
+  query: ODA from France to Ghana for health since 2015
+  why: Resolves to crs.disbursement_gross for country/FRA as origin and country/GHA as destination since 2015.
+  reuse: panel/crs-027
+  tags: {theme: health, entity: two_roles, direction: both, unit: default, time: range, operation: none, breakdown: sector, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure:
+        family: crs.disbursement_gross
+        bound:
+          crsTypeOfFlow: CRSTypeOfFlow10
+          crsPurpose: CRSPurposeCode120
+      entities: [{dcid: country/FRA, role: origin}, {dcid: country/GHA, role: destination}]
+      window: {kind: range, start: 2015}
+
+- id: dq-crs-024
+  query: education aid from the UK to Pakistan
+  why: Resolves to crs.disbursement_gross for country/GBR as origin and country/PAK as destination.
+  reuse: panel/crs-028
+  tags: {theme: education, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: sector, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure:
+        family: crs.disbursement_gross
+        bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode110}
+      entities: [{dcid: country/GBR, role: origin}, {dcid: country/PAK, role: destination}]
+
+- id: dq-crs-025
+  query: CRS purpose 12220 from the UK to Zambia
+  why: Resolves to crs.disbursement_any for country/GBR as origin and country/ZMB as destination.
+  reuse: panel/crs-029
+  tags: {theme: health, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: sector, door: raw_text, phrasing: technical}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_any, bound: {crsPurpose: CRSPurposeCode12220}}
+      entities: [{dcid: country/GBR, role: origin}, {dcid: country/ZMB, role: destination}]
+
+- id: dq-crs-026
+  query: humanitarian aid to Yemen in 2023
+  why: Resolves to crs.disbursement_gross for country/YEM as destination in 2023.
+  reuse: panel/crs-030
+  tags: {theme: humanitarian, entity: country, direction: destination_only, unit: default, time: year, operation: none, breakdown: sector, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure:
+        family: crs.disbursement_gross
+        bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode700}
+      entities: [{dcid: country/YEM, role: destination}]
+      window: {kind: range, start: 2023, end: 2023}
+
+- id: dq-crs-027
+  query: climate finance from Germany to Bangladesh
+  why: The pipeline drops Rio markers, so no series measures climate finance; returning all German aid to Bangladesh under that label is wrong.
+  reuse: panel/crs-031
+  tags: {theme: climate_energy, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [crs_quirk, missing_data]}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    no_data:
+      entities: [{dcid: country/DEU, role: origin}, {dcid: country/BGD, role: destination}]
+      reason: [qualifier_not_bound, variable_not_resolved]
+
+- id: dq-crs-028
+  query: other official flows from Germany to Brazil
+  why: Other official flows bind their own CRS flow type, not the ODA flow type.
+  reuse: panel/crs-032
+  tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: flow_type, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure:
+        family: crs.disbursement_any
+        bound: {crsTypeOfFlow: CRSTypeOfFlow21}
+      entities: [{dcid: country/DEU, role: origin}, {dcid: country/BRA, role: destination}]
+
+- id: dq-crs-029
+  query: loans from Japan to Vietnam for transport
+  why: Loans read as the CRS debt-instrument type of finance and transport as sector 210, so the refusal is qualifier_not_bound.
+  reuse: panel/crs-033
+  tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: instrument, door: raw_text, phrasing: casual, probe: [crs_quirk]}
+  known_failure: {issue: 1156, checks: [measure]}
+  expect:
+    entities: [{dcid: country/JPN, role: origin}, {dcid: country/VNM, role: destination}]
+    definite:
+      measure:
+        family: crs.disbursement_any
+        bound:
+          crsTypeOfFinance: CRSTypeOfFinance420
+          crsPurpose: CRSPurposeCode210
+    no_data: {reason: qualifier_not_bound, category: absent}
+
+- id: dq-crs-030
+  query: budget support from EU institutions
+  why: Budget support is CRS modality A and EU institutions is one multilateral CRS provider; expanding to member states answers another question.
+  reuse: panel/crs-034
+  tags: {theme: aid, entity: organisation, direction: origin_only, unit: default, time: none, operation: none, breakdown: modality, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [entities]}
+  expect:
+    definite:
+      measure:
+        family: crs.disbursement_any
+        bound: {crsCooperationModality: CRSCooperationModalityA}
+      entities: [{dcid: EuropeanUnionInstitutions, role: origin}]
+
+- id: dq-crs-031
+  query: commitments from Germany to Kenya in 2022
+  why: Resolves to crs.commitment for country/DEU as origin and country/KEN as destination in 2022.
+  reuse: panel/crs-036
+  tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: year, operation: none, breakdown: commitment_vs_disbursement, door: raw_text, phrasing: technical}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: crs.commitment}
+      entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2022, end: 2022}
+
+- id: dq-crs-032
+  query: net ODA from the United States to Pakistan in 2020
+  why: Resolves to crs.disbursement_net for country/USA as origin and country/PAK as destination in 2020.
+  reuse: panel/crs-037
+  tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: year, operation: none, breakdown: commitment_vs_disbursement, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_net, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: country/USA, role: origin}, {dcid: country/PAK, role: destination}]
+      window: {kind: range, start: 2020, end: 2020}
+
+- id: dq-crs-033
+  query: grant equivalent ODA from Sweden to Mozambique in 2019
+  why: Resolves to crs.grant_equivalent for country/SWE as origin and country/MOZ as destination in 2019.
+  tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: year, operation: none, breakdown: commitment_vs_disbursement, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: crs.grant_equivalent, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: country/SWE, role: origin}, {dcid: country/MOZ, role: destination}]
+      window: {kind: range, start: 2019, end: 2019}
+
+- id: dq-crs-034
+  query: grant equivalent of Swedish aid to Mozambique in 2012
+  why: Grant equivalents start with the 2018 ODA definition; a single earlier year serves the held years with a window note.
+  tags:
+    theme: aid
+    entity: two_roles
+    direction: both
+    unit: default
+    time: year
+    operation: none
+    breakdown: commitment_vs_disbursement
+    door: raw_text
+    phrasing: casual
+    probe: [crs_quirk, missing_data]
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: crs.grant_equivalent, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: country/SWE, role: origin}, {dcid: country/MOZ, role: destination}]
+      window: {kind: range, start: 2012, end: 2012}
+
+- id: dq-crs-035
+  query: gross and net disbursements from the UK to Kenya in 2022
+  why: Gross and net disbursements are separate measure partitions, so the query splits into one part each.
+  tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: year, operation: none, breakdown: commitment_vs_disbursement, door: raw_text, phrasing: technical}
+  known_failure: {issue: 1156, checks: [measure, parts]}
+  expect:
+    parts:
+      - definite:
+          measure: {family: crs.disbursement_gross}
+          entities: [{dcid: country/GBR, role: origin}, {dcid: country/KEN, role: destination}]
+          window: {kind: range, start: 2022, end: 2022}
+      - definite:
+          measure: {family: crs.disbursement_net}
+          entities: [{dcid: country/GBR, role: origin}, {dcid: country/KEN, role: destination}]
+          window: {kind: range, start: 2022, end: 2022}
+
+- id: dq-crs-036
+  query: ODA commitments from the UK to India in constant 2022 dollars
+  why: A currency and base year typed in raw text reach the unit binder, so constant 2022 dollars bind as a USD constant-price request.
+  reuse: panel/crs-038
+  tags: {theme: aid, entity: two_roles, direction: both, unit: base_year, time: none, operation: none, breakdown: commitment_vs_disbursement, door: raw_text, phrasing: technical}
+  known_failure: {issue: 1156, checks: [request]}
+  expect:
+    definite:
+      measure: {family: crs.commitment, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: country/GBR, role: origin}, {dcid: country/IND, role: destination}]
+      unit: {currency: USD, prices: constant, base_year: 2022}
+
+- id: dq-crs-037
+  query: 'parsed: ODA commitments, UK to India, constant 2022 US dollars'
+  door: parsed
+  parsed:
+    - variable_text: ODA commitments
+      entities: [{text: UK, role_text: from}, {text: India, role_text: to}]
+      unit_text: constant 2022 US dollars
+  why: Resolves to crs.commitment for country/GBR as origin and country/IND as destination.
+  tags: {theme: aid, entity: two_roles, direction: both, unit: base_year, time: none, operation: none, breakdown: commitment_vs_disbursement, door: parsed, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: crs.commitment, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: country/GBR, role: origin}, {dcid: country/IND, role: destination}]
+      unit: {currency: USD, prices: constant, base_year: 2022}
+
+- id: dq-crs-038
+  query: 'parsed: aid from France to Senegal, in euros'
+  door: parsed
+  parsed:
+    - variable_text: aid
+      entities: [{text: France, role_text: from}, {text: Senegal, role_text: to}]
+      unit_text: euros
+  why: Resolves to crs.disbursement_gross for country/FRA as origin and country/SEN as destination.
+  tags: {theme: aid, entity: two_roles, direction: both, unit: currency, time: none, operation: none, breakdown: none, door: parsed, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: country/FRA, role: origin}, {dcid: country/SEN, role: destination}]
+      unit: {currency: EUR, prices: current}
+
+- id: dq-crs-039
+  query: 'parsed: aid to Kenya in 2020, in the recipient''s currency'
+  door: parsed
+  parsed:
+    - variable_text: aid
+      entities: [{text: Kenya, role_text: recipient}]
+      time_text: '2020'
+      unit_text: in the recipient's currency
+  why: The recipient's currency is the destination's, KES; the DAC table holds KES rates from 1980, so 2020 converts.
+  tags: {theme: aid, entity: country, direction: destination_only, unit: currency, time: year, operation: none, breakdown: none, door: parsed, phrasing: casual}
+  known_failure: {issue: 1156, checks: [materialisation]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2020, end: 2020}
+      unit: {currency: {role: destination}, prices: current}
+      warnings: [role_scope_defaulted]
+
+- id: dq-crs-040
+  query: 'parsed: aid from Germany to Kenya, in local currency'
+  door: parsed
+  parsed:
+    - variable_text: aid
+      entities: [{text: Germany, role_text: from}, {text: Kenya, role_text: to}]
+      unit_text: local currency
+  why: Local currency is ambiguous when both roles are bound; the two role-shaped currencies are the alternatives.
+  tags: {theme: aid, entity: two_roles, direction: both, unit: currency, time: none, operation: none, breakdown: none, door: parsed, phrasing: casual, probe: [unsupported_unit]}
+  expect: {no_data: {reason: unit_not_resolved, category: unresolved}}
+
+- id: dq-crs-041
+  query: 'parsed: aid from Germany to Kenya, in francs'
+  door: parsed
+  parsed:
+    - variable_text: aid
+      entities: [{text: Germany, role_text: from}, {text: Kenya, role_text: to}]
+      unit_text: francs
+  why: A bare 'francs' is ambiguous across CHF, XOF and XAF, so the unit stays unresolved.
+  tags: {theme: aid, entity: two_roles, direction: both, unit: currency, time: none, operation: none, breakdown: none, door: parsed, phrasing: casual, probe: [unsupported_unit]}
+  expect: {no_data: {reason: unit_not_resolved, category: unresolved}}
+
+- id: dq-crs-042
+  query: 'parsed: aid from Germany to Kenya, in PPP dollars'
+  door: parsed
+  parsed:
+    - variable_text: aid
+      entities: [{text: Germany, role_text: from}, {text: Kenya, role_text: to}]
+      unit_text: PPP dollars
+  why: PPP is a measure, so a PPP-dollar unit request is unsupported.
+  tags: {theme: aid, entity: two_roles, direction: both, unit: unsupported, time: none, operation: none, breakdown: none, door: parsed, phrasing: technical, probe: [unsupported_unit]}
+  expect: {unsupported: {code: unit_request_unsupported}}
+
+- id: dq-crs-043
+  query: 'parsed: aid from Norway to Ethiopia, per capita'
+  door: parsed
+  parsed:
+    - variable_text: aid
+      entities: [{text: Norway, role_text: from}, {text: Ethiopia, role_text: to}]
+      unit_text: per capita
+  why: "'Per capita' is a denominator, so a per-capita unit request is unsupported."
+  tags: {theme: aid, entity: two_roles, direction: both, unit: unsupported, time: none, operation: none, breakdown: none, door: parsed, phrasing: casual, probe: [unsupported_unit]}
+  expect: {unsupported: {code: unit_request_unsupported}}
+
+- id: dq-crs-044
+  query: 'parsed: aid to Ethiopia in 2022, in millions of dollars'
+  door: parsed
+  parsed:
+    - variable_text: aid
+      entities: [{text: Ethiopia, role_text: to}]
+      time_text: '2022'
+      unit_text: millions of dollars
+  why: Millions is a display scale that a unit request cannot carry, so the answer is unit_request_unsupported.
+  tags: {theme: aid, entity: country, direction: destination_only, unit: unsupported, time: year, operation: none, breakdown: none, door: parsed, phrasing: casual, probe: [unsupported_unit]}
+  expect: {unsupported: {window: {kind: range, start: 2022, end: 2022}, code: unit_request_unsupported}}
+
+- id: dq-crs-045
+  query: 'parsed: aid from France to Azerbaijan in 2021, in Azerbaijani manat'
+  door: parsed
+  parsed:
+    - variable_text: aid
+      entities: [{text: France, role_text: from}, {text: Azerbaijan, role_text: to}]
+      time_text: '2021'
+      unit_text: Azerbaijani manat
+  why: The DAC conversion table has no AZN rate for 2021, so the answer is rate_coverage_gap until the rate lands.
+  tags: {theme: aid, entity: two_roles, direction: both, unit: currency, time: year, operation: none, breakdown: none, door: parsed, phrasing: casual, probe: [crs_quirk, missing_data]}
+  known_failure: {issue: 1156, checks: [refusal]}
+  expect: {no_data: {unit: {currency: AZN, prices: current}, reason: rate_coverage_gap, category: absent}}
+
+- id: dq-crs-046
+  query: 'parsed: aid from Germany to Kenya, in inflation-adjusted dollars'
+  door: parsed
+  parsed:
+    - variable_text: aid
+      entities: [{text: Germany, role_text: from}, {text: Kenya, role_text: to}]
+      unit_text: inflation-adjusted dollars
+  why: The phrase means constant prices with no year; a lexicon that knows it fills the base year from the deflator table, otherwise unit_not_resolved.
+  tags: {theme: aid, entity: two_roles, direction: both, unit: constant, time: none, operation: none, breakdown: none, door: parsed, phrasing: casual, probe: [constant_synonym_miss]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      unit: {currency: USD, prices: constant}
+    no_data: {reason: unit_not_resolved, category: unresolved}
+
+- id: dq-crs-047
+  query: aid to Kenya in today's money
+  why: '''Today''s money'' means constant prices and sits outside the price-basis synonyms; it reaches the unit binder, and a nominal answer is wrong.'
+  tags: {theme: aid, entity: country, direction: destination_only, unit: constant, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [constant_synonym_miss]}
+  known_failure: {issue: 1156, checks: [request]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: country/KEN, role: destination}]
+      unit: {currency: USD, prices: constant}
+
+- id: dq-crs-048
+  query: aid per capita from Norway
+  why: No CRS series carries a per-capita denominator for aid, so the answer is denominator_not_available.
+  reuse: panel/crs-039
+  tags: {theme: aid, entity: country, direction: origin_only, unit: unsupported, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [refusal]}
+  expect: {no_data: {reason: denominator_not_available, category: absent}}
+
+- id: dq-crs-049
+  query: share of ODA going to Kenya out of all German aid 2015 to 2020
+  why: The share needs Germany to every recipient, so the destination axis stays open with Kenya named in the operation.
+  reuse: panel/crs-040
+  tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: range, operation: share_of, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [entities, operations]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: country/DEU, role: origin}]
+      window: {kind: range, start: 2015, end: 2020}
+      operations: [{verb: share_of, over: destination}]
+
+- id: dq-crs-050
+  query: trend in aid from Germany to Kenya from 2015 to 2020
+  why: A trend asks for the series over the window and carries no operation.
+  reuse: panel/crs-041
+  tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: range, operation: growth, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2015, end: 2020}
+      operations: []
+
+- id: dq-crs-051
+  query: aid from Sweden to Tanzania over the last decade
+  why: '''The last decade'' is a relative window; the start lands between 2014 and 2016, so the case asserts no window.'
+  reuse: panel/crs-042
+  tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: range, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: country/SWE, role: origin}, {dcid: country/TZA, role: destination}]
+
+- id: dq-crs-052
+  query: aid from Germany to Kenya in 1975
+  why: CRS starts in 1973; a named year serves the held years with a window note.
+  reuse: panel/crs-044
+  tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [missing_data]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 1975, end: 1975}
+
+- id: dq-crs-053
+  query: top recipients of US aid
+  why: Resolves to crs.disbursement_gross for country/USA as origin.
+  reuse: panel/crs-045
+  tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: none, operation: rank, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: country/USA, role: origin}]
+      operations: [{verb: rank, over: destination}]
+
+- id: dq-crs-054
+  query: Germany versus France aid to Mali
+  why: Compare is two origins in one part with no operation.
+  reuse: panel/crs-046
+  tags: {theme: aid, entity: two_countries, direction: both, unit: default, time: none, operation: compare, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities:
+        - {dcid: country/DEU, role: origin}
+        - {dcid: country/FRA, role: origin}
+        - {dcid: country/MLI, role: destination}
+      operations: []
+
+- id: dq-crs-055
+  query: how fast has Canadian aid to Haiti grown
+  why: '''How fast has it grown'' asks for a growth operation over the year axis.'
+  reuse: panel/crs-047
+  tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: none, operation: growth, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: country/CAN, role: origin}, {dcid: country/HTI, role: destination}]
+      operations: [{verb: growth}]
+
+- id: dq-crs-056
+  query: aid to Kenya and Uganda for health and education
+  why: Health and education across both recipients resolve as one part with a purpose set; one part per sector also fits.
+  reuse: panel/crs-048
+  tags: {theme: health, entity: two_countries, direction: destination_only, unit: default, time: none, operation: compare, breakdown: sector, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure:
+        family: crs.disbursement_gross
+        bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: [CRSPurposeCode110, CRSPurposeCode120]}
+      entities: [{dcid: country/KEN, role: destination}, {dcid: country/UGA, role: destination}]
+
+- id: dq-crs-057
+  query: World Bank core contributions
+  why: '''World Bank'' is ambiguous between IBRD and IDA, so the answer is entity_ambiguous.'
+  reuse: panel/crs-049
+  tags: {theme: aid, entity: organisation, direction: origin_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [crs_quirk]}
+  known_failure: {issue: 1156, checks: [refusal]}
+  expect: {no_data: {reason: entity_ambiguous, category: unresolved}}
+
+- id: dq-crs-058
+  query: aid from Germany to Kenya for covid vaccines
+  why: CRS purpose 12264 (COVID-19 control) exists since 2020 and is bound; qualifier_not_bound is the fallback if the code index lacks it.
+  reuse: panel/crs-050
+  tags: {theme: health, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: sector, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [measure]}
+  expect:
+    entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
+    definite:
+      measure:
+        family: crs.disbursement_gross
+        bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode12264}
+    no_data: {reason: qualifier_not_bound, category: absent}
+
+- id: dq-crs-059
+  query: ODA disbursements to Kenya by sector in 2022
+  why: '''By sector'' leaves the purpose slot open on CRS disbursements.'
+  tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: year, operation: none, breakdown: sector, door: raw_text, phrasing: technical}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_any, bound: {crsTypeOfFlow: CRSTypeOfFlow10}, open: [crsPurpose]}
+      entities: [{dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2022, end: 2022}
+
+- id: dq-crs-060
+  query: ODA to KEN 2020 gross disb
+  why: Resolves to crs.disbursement_gross for country/KEN as destination in 2020.
+  tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: year, operation: none, breakdown: commitment_vs_disbursement, door: raw_text, phrasing: misspelt}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2020, end: 2020}
+
+- id: dq-crs-061
+  query: gender equality aid to Afghanistan
+  why: The gender marker is dropped, so only purpose codes 15170 and 15180 answer, so the refusal is qualifier_not_bound.
+  tags: {theme: gender, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: sector, door: raw_text, phrasing: casual, probe: [crs_quirk]}
+  expect:
+    entities: [{dcid: country/AFG, role: destination}]
+    definite:
+      measure:
+        family: crs.disbursement_gross
+        bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: [CRSPurposeCode15170, CRSPurposeCode15180]}
+    no_data: {reason: qualifier_not_bound, category: absent}
+
+- id: dq-crs-062
+  query: aid for government and civil society to Somalia since 2018
+  why: Government and civil society is CRS sector 150, bound for country/SOM as destination since 2018.
+  tags: {theme: governance, entity: country, direction: destination_only, unit: default, time: range, operation: none, breakdown: sector, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure:
+        family: crs.disbursement_gross
+        bound:
+          crsTypeOfFlow: CRSTypeOfFlow10
+          crsPurpose: CRSPurposeCode150
+      entities: [{dcid: country/SOM, role: destination}]
+      window: {kind: range, start: 2018}
+
+- id: dq-crs-063
+  query: energy aid from Japan to Bangladesh
+  why: Resolves to crs.disbursement_gross for country/JPN as origin and country/BGD as destination.
+  tags: {theme: climate_energy, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: sector, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure:
+        family: crs.disbursement_gross
+        bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode230}
+      entities: [{dcid: country/JPN, role: origin}, {dcid: country/BGD, role: destination}]
+
+- id: dq-crs-064
+  query: aid from OAPEC to Sudan
+  why: OAPEC is one of 15 CRS provider codes the ontology has not minted, so the origin stays unresolved.
+  tags: {theme: aid, entity: organisation, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical, probe: [crs_quirk]}
+  expect: {no_data: {reason: entity_not_resolved, category: unresolved}}
+
+- id: dq-crs-065
+  query: humanitarian aid to Gaza in 2024
+  why: Gaza is part of the CRS recipient West Bank and Gaza Strip, read as country/PSE, with humanitarian sector 700 in 2024.
+  tags: {theme: humanitarian, entity: country, direction: destination_only, unit: default, time: year, operation: none, breakdown: sector, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure:
+        family: crs.disbursement_gross
+        bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode700}
+      entities: [{dcid: country/PSE, role: destination}]
+      window: {kind: range, start: 2024, end: 2024}
+
+- id: dq-crs-066
+  query: aid from Norway to Ethiopia and GDP of Ethiopia
+  why: Two origins in one request; the GDP part follows the equivalent-series registry, which prefers the World Bank series.
+  tags: {theme: macro, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, overlap: [wdi, weo]}
+  known_failure: {issue: 1156, checks: [disposition, parts]}
+  expect:
+    parts:
+      - definite:
+          measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+          entities: [{dcid: country/NOR, role: origin}, {dcid: country/ETH, role: destination}]
+      - {definite: {measure: {family: base.gdp}, entities: [{dcid: country/ETH, role: observationAbout}]}}
+
+- id: dq-crs-067
+  query: Should Germany give more aid to Kenya?
+  why: A question that names a measure resolves; the policy judgement is the caller's, and declining would hide usable data.
+  tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]

@@ -1,0 +1,60 @@
+{
+  "data": {
+    "dc/d/WorldBank_WorldDevelopmentIndicators": {
+      "arcs": {
+        "isPartOf": {
+          "nodes": [
+            {
+              "dcid": "dc/s/WorldBank",
+              "name": "World Bank",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Source"
+              ]
+            }
+          ]
+        },
+        "name": {
+          "nodes": [
+            {
+              "provenanceId": "dc/base/Provenance",
+              "value": "World Development Indicators"
+            }
+          ]
+        },
+        "provenance": {
+          "nodes": [
+            {
+              "dcid": "dc/base/GeneratedGraphs",
+              "name": "GeneratedGraphs",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            }
+          ]
+        },
+        "typeOf": {
+          "nodes": [
+            {
+              "dcid": "Dataset",
+              "name": "Dataset",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Class"
+              ]
+            }
+          ]
+        },
+        "url": {
+          "nodes": [
+            {
+              "provenanceId": "dc/base/Provenance",
+              "value": "https://datacatalog.worldbank.org/search/dataset/003771"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

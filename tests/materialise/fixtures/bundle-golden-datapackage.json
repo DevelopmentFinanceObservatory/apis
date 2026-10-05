@@ -1,0 +1,438 @@
+{
+  "$schema": "https://datapackage.org/profiles/2.0/datapackage.json",
+  "name": "oecd-creditor-reporting-system-and-2-more",
+  "id": "https://site.example/api/datasets/col_7d41b2000000000000000000000000/cv_5c9dfd37e657d3a3c7000cc6acf49c43",
+  "title": "OECD Creditor Reporting System (CRS) and 2 more sources",
+  "description": "2 rows · 1 donor, 1 recipient · 2015–2024",
+  "version": "cv_5c9dfd37e657d3a3c7000cc6acf49c43",
+  "created": "2026-10-04T09:30:00Z",
+  "homepage": "https://site.example",
+  "keywords": [
+    "OECD Creditor Reporting System (CRS)",
+    "World Development Indicators",
+    "SDG Global Database"
+  ],
+  "licenses": [
+    {
+      "path": "https://www.oecd.org/en/about/terms-conditions.html",
+      "title": "OECD Terms and Conditions"
+    },
+    {
+      "name": "CC0-1.0",
+      "path": "https://creativecommons.org/publicdomain/zero/1.0/",
+      "title": "Creative Commons 0"
+    }
+  ],
+  "sources": [
+    {
+      "title": "OECD Creditor Reporting System (CRS)",
+      "path": "https://data-explorer.oecd.org/crs"
+    },
+    {
+      "title": "World Development Indicators",
+      "path": "https://datacatalog.worldbank.org/search/dataset/0037712"
+    },
+    {
+      "title": "SDG Global Database"
+    }
+  ],
+  "contributors": [
+    {
+      "title": "Development Finance Observatory",
+      "path": "https://site.example",
+      "email": "data@one.org",
+      "roles": [
+        "dataCurator",
+        "contact"
+      ]
+    },
+    {
+      "title": "Organisation for Economic Co-operation and Development (OECD)",
+      "roles": [
+        "creator"
+      ]
+    },
+    {
+      "title": "World Bank",
+      "roles": [
+        "creator"
+      ]
+    }
+  ],
+  "resources": [
+    {
+      "name": "spec_00000000000000000000000000000011-data",
+      "title": "OECD Creditor Reporting System (CRS), 2015–2024",
+      "description": "One row per observation.",
+      "type": "table",
+      "profile": "tabular-data-resource",
+      "path": "data/spec_00000000000000000000000000000011/data.csv",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "encoding": "utf-8",
+      "bytes": 102,
+      "hash": "sha256:91f099b2ef388f470b446ed3977a2f5007ac79d4bf848409f123ad79b787aa3b",
+      "sources": [
+        {
+          "title": "OECD Creditor Reporting System (CRS)",
+          "path": "https://data-explorer.oecd.org/crs"
+        }
+      ],
+      "licenses": [
+        {
+          "path": "https://www.oecd.org/en/about/terms-conditions.html",
+          "title": "OECD Terms and Conditions"
+        }
+      ],
+      "schema": {
+        "fields": [
+          {
+            "name": "provider",
+            "type": "string",
+            "title": "Provider",
+            "description": "The donor."
+          },
+          {
+            "name": "recipient",
+            "type": "string",
+            "title": "Recipient",
+            "description": "The recipient."
+          },
+          {
+            "name": "year",
+            "type": "year",
+            "title": "Year",
+            "description": "The year."
+          },
+          {
+            "name": "value",
+            "type": "number"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "fields": [
+              "provider"
+            ],
+            "reference": {
+              "resource": "codes",
+              "fields": [
+                "code"
+              ]
+            }
+          },
+          {
+            "fields": [
+              "recipient"
+            ],
+            "reference": {
+              "resource": "codes",
+              "fields": [
+                "code"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "spec_00000000000000000000000000000012-data",
+      "title": "OECD Creditor Reporting System (CRS), 2015–2024",
+      "description": "One row per observation.",
+      "type": "table",
+      "profile": "tabular-data-resource",
+      "path": "data/spec_00000000000000000000000000000012/data.csv",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "encoding": "utf-8",
+      "bytes": 102,
+      "hash": "sha256:91f099b2ef388f470b446ed3977a2f5007ac79d4bf848409f123ad79b787aa3b",
+      "sources": [
+        {
+          "title": "OECD Creditor Reporting System (CRS)",
+          "path": "https://data-explorer.oecd.org/crs"
+        },
+        {
+          "title": "World Development Indicators",
+          "path": "https://datacatalog.worldbank.org/search/dataset/0037712"
+        }
+      ],
+      "licenses": [
+        {
+          "path": "https://www.oecd.org/en/about/terms-conditions.html",
+          "title": "OECD Terms and Conditions"
+        },
+        {
+          "name": "CC0-1.0",
+          "path": "https://creativecommons.org/publicdomain/zero/1.0/",
+          "title": "Creative Commons 0"
+        }
+      ],
+      "schema": {
+        "fields": [
+          {
+            "name": "provider",
+            "type": "string",
+            "title": "Provider",
+            "description": "The donor."
+          },
+          {
+            "name": "recipient",
+            "type": "string",
+            "title": "Recipient",
+            "description": "The recipient."
+          },
+          {
+            "name": "year",
+            "type": "year",
+            "title": "Year",
+            "description": "The year."
+          },
+          {
+            "name": "value",
+            "type": "number"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "fields": [
+              "provider"
+            ],
+            "reference": {
+              "resource": "codes",
+              "fields": [
+                "code"
+              ]
+            }
+          },
+          {
+            "fields": [
+              "recipient"
+            ],
+            "reference": {
+              "resource": "codes",
+              "fields": [
+                "code"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "spec_00000000000000000000000000000013-data",
+      "title": "OECD Creditor Reporting System (CRS), 2015–2024",
+      "description": "One row per observation.",
+      "type": "table",
+      "profile": "tabular-data-resource",
+      "path": "data/spec_00000000000000000000000000000013/data.csv",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "encoding": "utf-8",
+      "bytes": 102,
+      "hash": "sha256:91f099b2ef388f470b446ed3977a2f5007ac79d4bf848409f123ad79b787aa3b",
+      "sources": [
+        {
+          "title": "World Development Indicators",
+          "path": "https://datacatalog.worldbank.org/search/dataset/0037712"
+        }
+      ],
+      "licenses": [
+        {
+          "name": "CC0-1.0",
+          "path": "https://creativecommons.org/publicdomain/zero/1.0/",
+          "title": "Creative Commons 0"
+        }
+      ],
+      "schema": {
+        "fields": [
+          {
+            "name": "provider",
+            "type": "string",
+            "title": "Provider",
+            "description": "The donor."
+          },
+          {
+            "name": "recipient",
+            "type": "string",
+            "title": "Recipient",
+            "description": "The recipient."
+          },
+          {
+            "name": "year",
+            "type": "year",
+            "title": "Year",
+            "description": "The year."
+          },
+          {
+            "name": "value",
+            "type": "number"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "fields": [
+              "provider"
+            ],
+            "reference": {
+              "resource": "codes",
+              "fields": [
+                "code"
+              ]
+            }
+          },
+          {
+            "fields": [
+              "recipient"
+            ],
+            "reference": {
+              "resource": "codes",
+              "fields": [
+                "code"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "spec_00000000000000000000000000000014-data",
+      "title": "OECD Creditor Reporting System (CRS), 2015–2024",
+      "description": "One row per observation.",
+      "type": "table",
+      "profile": "tabular-data-resource",
+      "path": "data/spec_00000000000000000000000000000014/data.csv",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "encoding": "utf-8",
+      "bytes": 102,
+      "hash": "sha256:91f099b2ef388f470b446ed3977a2f5007ac79d4bf848409f123ad79b787aa3b",
+      "sources": [
+        {
+          "title": "SDG Global Database"
+        }
+      ],
+      "schema": {
+        "fields": [
+          {
+            "name": "provider",
+            "type": "string",
+            "title": "Provider",
+            "description": "The donor."
+          },
+          {
+            "name": "recipient",
+            "type": "string",
+            "title": "Recipient",
+            "description": "The recipient."
+          },
+          {
+            "name": "year",
+            "type": "year",
+            "title": "Year",
+            "description": "The year."
+          },
+          {
+            "name": "value",
+            "type": "number"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "fields": [
+              "provider"
+            ],
+            "reference": {
+              "resource": "codes",
+              "fields": [
+                "code"
+              ]
+            }
+          },
+          {
+            "fields": [
+              "recipient"
+            ],
+            "reference": {
+              "resource": "codes",
+              "fields": [
+                "code"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "codes",
+      "title": "Codes",
+      "description": "The plain name of every code in the data.",
+      "type": "table",
+      "profile": "tabular-data-resource",
+      "path": "data/codes.csv",
+      "format": "csv",
+      "mediatype": "text/csv",
+      "encoding": "utf-8",
+      "bytes": 67,
+      "hash": "sha256:2d63f0f71c01586463302b3776baf01164b6246758fea0ef9954e29752551ab7",
+      "schema": {
+        "fields": [
+          {
+            "name": "code",
+            "type": "string",
+            "title": "Code"
+          },
+          {
+            "name": "label",
+            "type": "string",
+            "title": "Label"
+          },
+          {
+            "name": "kind",
+            "type": "string",
+            "title": "Kind"
+          }
+        ],
+        "primaryKey": [
+          "code"
+        ]
+      }
+    }
+  ],
+  "dfo": {
+    "spec": {
+      "schema_version": 1,
+      "collection_id": "col_7d41b2000000000000000000000000",
+      "members": [
+        "spec_00000000000000000000000000000011",
+        "spec_00000000000000000000000000000012",
+        "spec_00000000000000000000000000000013",
+        "spec_00000000000000000000000000000014"
+      ]
+    },
+    "content_version": "cv_5c9dfd37e657d3a3c7000cc6acf49c43",
+    "prepared_at": "2026-10-04T09:30:00Z",
+    "links": {
+      "version": "https://site.example/api/datasets/col_7d41b2000000000000000000000000/cv_5c9dfd37e657d3a3c7000cc6acf49c43",
+      "documentation": {
+        "provenance/OECDCreditorReportingSystem": "https://site.example/api/graph/documentation/provenance/OECDCreditorReportingSystem",
+        "dc/base/WorldDevelopmentIndicators": "https://site.example/api/graph/documentation/dc/base/WorldDevelopmentIndicators",
+        "undata/p/SDG": "https://site.example/api/graph/documentation/undata/p/SDG"
+      }
+    },
+    "reproducing_call": {
+      "method": "GET",
+      "url": "https://site.example/api/datasets/col_7d41b2000000000000000000000000",
+      "options": {
+        "format": "csv",
+        "bundle": true
+      }
+    },
+    "members": [
+      "spec_00000000000000000000000000000011",
+      "spec_00000000000000000000000000000012",
+      "spec_00000000000000000000000000000013",
+      "spec_00000000000000000000000000000014"
+    ]
+  }
+}

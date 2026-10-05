@@ -1,0 +1,36 @@
+{
+  "name": "rung0",
+  "description": "The near-empty bind starting point: role, the two parts of the binding task, the alternates line, and the security line.",
+  "stage": "bind",
+  "blocks": [
+    {
+      "id": "r0-role"
+    },
+    {
+      "id": "r0-part1"
+    },
+    {
+      "id": "r0-part2"
+    },
+    {
+      "id": "r0-alternates"
+    },
+    {
+      "id": "r0-security"
+    }
+  ],
+  "run": {
+    "capture": "k8-2026-08-31",
+    "top_k": 8,
+    "seeds": [
+      1,
+      2,
+      3
+    ],
+    "model": "gemini-3.5-flash-lite",
+    "thinking": {
+      "extract": null,
+      "bind": "minimal"
+    }
+  }
+}

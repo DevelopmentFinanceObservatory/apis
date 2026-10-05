@@ -1,0 +1,619 @@
+# Labelled directional eval set: for each query, the flow axis (origin,
+# destination, or unspecified) that the QUERY'S OWN WORDING states for each
+# named entity. See corpus/direction/README.md for the record format, the
+# labelling rule, and how to score a scanner against this file.
+#
+# This is not one of the corpus/*.yaml case files. It carries
+# no expected engine output and needs no model or graph call: it tests one
+# pure function's recovery of flow direction from (query, surface, dcid)
+# triples that are recorded here explicitly, never derived from a fixture.
+
+- id: dir-coordinated-donor-01
+  category: coordinated_donor_list
+  query: "aid to Kenya from Norway and Sweden"
+  entities:
+    - surface: "Norway"
+      dcid: "country/NOR"
+      expected_axis: origin
+    - surface: "Sweden"
+      dcid: "country/SWE"
+      expected_axis: origin
+    - surface: "Kenya"
+      dcid: "country/KEN"
+      expected_axis: destination
+  note: >
+    Two donors coordinated with "and" after the shared "from"; Sweden has no
+    preposition of its own and must inherit Norway's axis to be recovered.
+
+- id: dir-coordinated-donor-02
+  category: coordinated_donor_list
+  query: "aid to Ethiopia from Norway, Sweden and Denmark"
+  entities:
+    - surface: "Norway"
+      dcid: "country/NOR"
+      expected_axis: origin
+    - surface: "Sweden"
+      dcid: "country/SWE"
+      expected_axis: origin
+    - surface: "Denmark"
+      dcid: "country/DNK"
+      expected_axis: origin
+    - surface: "Ethiopia"
+      dcid: "country/ETH"
+      expected_axis: destination
+  note: >
+    Three-donor list mixing a comma gap (Norway -> Sweden) and an "and" gap
+    (Sweden -> Denmark); both must carry the inherited axis.
+
+- id: dir-coordinated-recipient-01
+  category: coordinated_recipient_list
+  query: "aid from Norway to Kenya and Uganda"
+  entities:
+    - surface: "Norway"
+      dcid: "country/NOR"
+      expected_axis: origin
+    - surface: "Kenya"
+      dcid: "country/KEN"
+      expected_axis: destination
+    - surface: "Uganda"
+      dcid: "country/UGA"
+      expected_axis: destination
+  note: "Two recipients coordinated with \"and\" after the shared \"to\"."
+
+- id: dir-coordinated-recipient-02
+  category: coordinated_recipient_list
+  query: "aid from Norway to Kenya, Uganda and Tanzania"
+  entities:
+    - surface: "Norway"
+      dcid: "country/NOR"
+      expected_axis: origin
+    - surface: "Kenya"
+      dcid: "country/KEN"
+      expected_axis: destination
+    - surface: "Uganda"
+      dcid: "country/UGA"
+      expected_axis: destination
+    - surface: "Tanzania"
+      dcid: "country/TZA"
+      expected_axis: destination
+  note: "Also exercises the 3+-name-list category."
+
+- id: dir-three-plus-list-01
+  category: three_plus_list
+  query: "aid from the United States to Kenya, Uganda, or Ethiopia"
+  entities:
+    - surface: "the United States"
+      dcid: "country/USA"
+      expected_axis: origin
+    - surface: "Kenya"
+      dcid: "country/KEN"
+      expected_axis: destination
+    - surface: "Uganda"
+      dcid: "country/UGA"
+      expected_axis: destination
+    - surface: "Ethiopia"
+      dcid: "country/ETH"
+      expected_axis: destination
+  note: "Three-way disjunction (\"or\") instead of conjunction, one donor."
+
+- id: dir-possessive-01
+  category: possessive
+  query: "Taiwan's ODA to the Marshall Islands"
+  entities:
+    - surface: "Taiwan"
+      dcid: "country/TWN"
+      expected_axis: origin
+    - surface: "the Marshall Islands"
+      dcid: "country/MHL"
+      expected_axis: destination
+  note: >
+    Canonical possessive example: Taiwan's role is stated by "Taiwan's ODA",
+    not by a preposition; the leading entity has no adjacency window to scan.
+
+- id: dir-possessive-02
+  category: possessive
+  query: "Norway's aid to Kenya"
+  entities:
+    - surface: "Norway"
+      dcid: "country/NOR"
+      expected_axis: origin
+    - surface: "Kenya"
+      dcid: "country/KEN"
+      expected_axis: destination
+  note: "Shorter possessive, same shape as dir-possessive-01."
+
+- id: dir-verb-no-prep-01
+  category: verb_no_preposition
+  query: "Norway funds Kenya"
+  entities:
+    - surface: "Norway"
+      dcid: "country/NOR"
+      expected_axis: origin
+    - surface: "Kenya"
+      dcid: "country/KEN"
+      expected_axis: destination
+  note: "Transitive verb states direction; no \"from\"/\"to\" token exists."
+
+- id: dir-verb-no-prep-02
+  category: verb_no_preposition
+  query: "Sweden supports Ethiopia's health sector"
+  entities:
+    - surface: "Sweden"
+      dcid: "country/SWE"
+      expected_axis: origin
+    - surface: "Ethiopia"
+      dcid: "country/ETH"
+      expected_axis: destination
+  note: >
+    Recipient named only through a nested possessive ("Ethiopia's health
+    sector"), one level further from the verb than dir-verb-no-prep-01.
+
+- id: dir-passive-01
+  category: passive
+  query: "Kenya was funded by Norway"
+  entities:
+    - surface: "Kenya"
+      dcid: "country/KEN"
+      expected_axis: destination
+    - surface: "Norway"
+      dcid: "country/NOR"
+      expected_axis: origin
+  note: >
+    Passive voice; "by" states the donor but is not in the scanner's
+    donor-preposition set (only "from" is), and the recipient again leads
+    the query with no adjacency window.
+
+- id: dir-passive-02
+  category: passive
+  query: "Uganda received support provided by Sweden"
+  entities:
+    - surface: "Uganda"
+      dcid: "country/UGA"
+      expected_axis: destination
+    - surface: "Sweden"
+      dcid: "country/SWE"
+      expected_axis: origin
+  note: "Passive with an intervening participle (\"provided by\")."
+
+- id: dir-leading-unevidenced-01
+  category: leading_unevidenced
+  query: "Kenya aid from Norway"
+  entities:
+    - surface: "Kenya"
+      dcid: "country/KEN"
+      expected_axis: destination
+    - surface: "Norway"
+      dcid: "country/NOR"
+      expected_axis: origin
+  note: >
+    "Kenya aid" states the recipient by juxtaposition; only "Norway" carries
+    an explicit preposition, so a scanner that requires an explicit
+    preposition for every entity misses the juxtaposed one.
+
+- id: dir-leading-unevidenced-02
+  category: leading_unevidenced
+  query: "Ethiopia support from the United States"
+  entities:
+    - surface: "Ethiopia"
+      dcid: "country/ETH"
+      expected_axis: destination
+    - surface: "the United States"
+      dcid: "country/USA"
+      expected_axis: origin
+  note: "Same shape as dir-leading-unevidenced-01 with a multi-word anchor."
+
+- id: dir-bare-comparison-01
+  category: bare_comparison
+  query: "ODA Kenya Uganda"
+  entities:
+    - surface: "Kenya"
+      dcid: "country/KEN"
+      expected_axis: unspecified
+    - surface: "Uganda"
+      dcid: "country/UGA"
+      expected_axis: unspecified
+  note: >
+    No preposition, verb, or possessive states a direction for either name.
+    Per the accepted refuse policy, both are unspecified -- there is no
+    bare-comparison default to fall back on.
+
+- id: dir-bare-comparison-02
+  category: bare_comparison
+  query: "compare Kenya and Uganda ODA"
+  entities:
+    - surface: "Kenya"
+      dcid: "country/KEN"
+      expected_axis: unspecified
+    - surface: "Uganda"
+      dcid: "country/UGA"
+      expected_axis: unspecified
+  note: "Same shape as dir-bare-comparison-01 with an explicit \"compare\"."
+
+- id: dir-between-01
+  category: between_x_and_y
+  query: "aid flows between Norway and Kenya"
+  entities:
+    - surface: "Norway"
+      dcid: "country/NOR"
+      expected_axis: unspecified
+    - surface: "Kenya"
+      dcid: "country/KEN"
+      expected_axis: unspecified
+  note: >
+    "Between X and Y" states a relationship, not a direction; world
+    knowledge about who typically donates is explicitly not licensed here.
+
+- id: dir-between-02
+  category: between_x_and_y
+  query: "the aid relationship between Sweden and Ethiopia"
+  entities:
+    - surface: "Sweden"
+      dcid: "country/SWE"
+      expected_axis: unspecified
+    - surface: "Ethiopia"
+      dcid: "country/ETH"
+      expected_axis: unspecified
+  note: "Same shape as dir-between-01."
+
+- id: dir-substring-sudan-01
+  category: substring_collision
+  query: "aid to South Sudan from Sudan"
+  entities:
+    - surface: "South Sudan"
+      dcid: "country/SSD"
+      expected_axis: destination
+    - surface: "Sudan"
+      dcid: "country/SDN"
+      expected_axis: origin
+  note: >
+    The "Sudan" anchor's first token-sequence match falls inside "South
+    Sudan", 3 tokens after "to", so the donor reads as a second destination.
+
+- id: dir-substring-sudan-02
+  category: substring_collision
+  query: "aid from Sudan to South Sudan"
+  entities:
+    - surface: "Sudan"
+      dcid: "country/SDN"
+      expected_axis: origin
+    - surface: "South Sudan"
+      dcid: "country/SSD"
+      expected_axis: destination
+  note: >
+    Reverse order control: with "Sudan" mentioned before "South Sudan", the
+    collision does not fire and both resolve correctly. Recorded so the
+    baseline table shows the collision is order-dependent, not a blanket
+    Sudan/South Sudan failure.
+
+- id: dir-substring-korea-01
+  category: substring_collision
+  query: "aid to South Korea from Korea"
+  entities:
+    - surface: "South Korea"
+      dcid: "country/KOR"
+      expected_axis: destination
+    - surface: "Korea"
+      dcid: "country/PRK"
+      expected_axis: origin
+  note: >
+    Same collision shape as dir-substring-sudan-01, naming the well-known
+    "Korea/South Korea" collision pair. The bare "Korea" mention is given a
+    distinct dcid (country/PRK) so the case stays a genuine two-place query;
+    the pairing illustrates the lexical collision mechanism and is not a
+    claim about a typical ODA relationship.
+
+- id: dir-substring-guinea-01
+  category: substring_collision
+  query: "aid to Papua New Guinea from Guinea"
+  entities:
+    - surface: "Papua New Guinea"
+      dcid: "country/PNG"
+      expected_axis: destination
+    - surface: "Guinea"
+      dcid: "country/GIN"
+      expected_axis: origin
+  note: "Same collision shape, three-token anchor (\"Papua New Guinea\")."
+
+- id: dir-substring-congo-01
+  category: substring_collision
+  query: "aid to DR Congo from Congo"
+  entities:
+    - surface: "DR Congo"
+      dcid: "country/COD"
+      expected_axis: destination
+    - surface: "Congo"
+      dcid: "country/COG"
+      expected_axis: origin
+  note: >
+    The Congo/DRC substring-collision pair. Uses the short "DR Congo"
+    surface form deliberately: the longer "Democratic Republic of the Congo" form
+    puts the embedded "Congo" token outside the scanner's 3-token adjacency
+    window, which would mask the collision rather than exercise it.
+
+- id: dir-non-english-es-01
+  category: non_english
+  query: "ayuda de Noruega a Kenia"
+  entities:
+    - surface: "Noruega"
+      dcid: "country/NOR"
+      expected_axis: origin
+    - surface: "Kenia"
+      dcid: "country/KEN"
+      expected_axis: destination
+  note: >
+    Spanish "de"/"a" state the direction as plainly as English "from"/"to",
+    but the scanner's preposition sets are English-only. Surface text here
+    is the query's own native-script wording (untranslated), isolating the
+    preposition-vocabulary gap from the translated-name gap covered by
+    dir-translated-name-01.
+
+- id: dir-non-english-fr-01
+  category: non_english
+  query: "aide de la France au Kenya"
+  entities:
+    - surface: "France"
+      dcid: "country/FRA"
+      expected_axis: origin
+    - surface: "Kenya"
+      dcid: "country/KEN"
+      expected_axis: destination
+  note: "Same gap in French (\"de\" / \"au\")."
+
+- id: dir-translated-name-01
+  category: non_english
+  query: "ayuda de Noruega a Kenia"
+  entities:
+    - surface: "Norway"
+      dcid: "country/NOR"
+      expected_axis: origin
+    - surface: "Kenya"
+      dcid: "country/KEN"
+      expected_axis: destination
+  note: >
+    Risk 6 from the plan: Extraction.entities' field description mandates
+    translating a name to English ("Espana" -> "Spain"), so the surface
+    recorded for a non-English mention is the ENGLISH name, which never
+    occurs in the query at all. Same query text as dir-non-english-es-01,
+    English surface substituted for the native-script one, to isolate this
+    failure from the preposition-vocabulary gap that case covers: here the
+    anchor itself cannot be found, at any adjacency, in either language.
+
+# ---------------------------------------------------------------------------
+# Adversarial groups, added after the team lead's review of the initial 25
+# cases: the original bare_comparison/between_x_and_y cases either use a
+# symmetric pair (Kenya/Uganda, both plausible recipients) or the word
+# "between" itself, which signals bidirectionality and does much of the
+# work. Neither exercises the two sharpest failure modes: a bare comparison
+# between countries the model has an asymmetric donor/recipient prior about
+# (world-knowledge bait), and explicit wording that runs AGAINST that prior
+# (prior-contradicting). Both groups are first-class parts of this set, not
+# a separate file, so scripts/eval_role_direction.py and any future scorer
+# picks them up automatically.
+
+# --- Group 1: world-knowledge bait -----------------------------------------
+# Bare, no preposition, no "between", asymmetric real-world donor/recipient
+# priors. Correct label is unspecified for every entity in every case: the
+# query's own wording states no direction, and a confident answer here can
+# only come from world knowledge, which is exactly what is banned. Order is
+# varied within each pair to expose order bias (first-mentioned-wins, or
+# similar) independent of the identity of the countries themselves.
+
+- id: dir-worldknowledge-01
+  category: world_knowledge_bait
+  query: "ODA Kenya Norway"
+  entities:
+    - surface: "Kenya"
+      dcid: "country/KEN"
+      expected_axis: unspecified
+    - surface: "Norway"
+      dcid: "country/NOR"
+      expected_axis: unspecified
+  note: >
+    Canonical world-knowledge bait: Norway is almost always a donor and
+    Kenya almost always a recipient in real ODA data, but nothing in the
+    query states a direction. A confident answer here can only be a guess
+    from the prior, which the field-description ban must refuse to make.
+
+- id: dir-worldknowledge-02
+  category: world_knowledge_bait
+  query: "ODA Norway Kenya"
+  entities:
+    - surface: "Norway"
+      dcid: "country/NOR"
+      expected_axis: unspecified
+    - surface: "Kenya"
+      dcid: "country/KEN"
+      expected_axis: unspecified
+  note: "Same pair as dir-worldknowledge-01, mention order reversed, to expose order bias."
+
+- id: dir-worldknowledge-03
+  category: world_knowledge_bait
+  query: "aid Sweden Ethiopia"
+  entities:
+    - surface: "Sweden"
+      dcid: "country/SWE"
+      expected_axis: unspecified
+    - surface: "Ethiopia"
+      dcid: "country/ETH"
+      expected_axis: unspecified
+  note: "A second donor/recipient pair, same bare-comparison shape."
+
+- id: dir-worldknowledge-04
+  category: world_knowledge_bait
+  query: "aid Ethiopia Sweden"
+  entities:
+    - surface: "Ethiopia"
+      dcid: "country/ETH"
+      expected_axis: unspecified
+    - surface: "Sweden"
+      dcid: "country/SWE"
+      expected_axis: unspecified
+  note: "Same pair as dir-worldknowledge-03, mention order reversed."
+
+- id: dir-worldknowledge-05
+  category: world_knowledge_bait
+  query: "development finance Germany Malawi"
+  entities:
+    - surface: "Germany"
+      dcid: "country/DEU"
+      expected_axis: unspecified
+    - surface: "Malawi"
+      dcid: "country/MWI"
+      expected_axis: unspecified
+  note: "A third donor/recipient pair, different phrasing (\"development finance\" instead of \"aid\"/\"ODA\")."
+
+- id: dir-worldknowledge-06
+  category: world_knowledge_bait
+  query: "2020 ODA Japan Bangladesh"
+  entities:
+    - surface: "Japan"
+      dcid: "country/JPN"
+      expected_axis: unspecified
+    - surface: "Bangladesh"
+      dcid: "country/BGD"
+      expected_axis: unspecified
+  note: "A fourth donor/recipient pair, with a leading date token ahead of the bare comparison."
+
+- id: dir-worldknowledge-07
+  category: world_knowledge_bait
+  query: "ODA Norway Kenya Uganda"
+  entities:
+    - surface: "Norway"
+      dcid: "country/NOR"
+      expected_axis: unspecified
+    - surface: "Kenya"
+      dcid: "country/KEN"
+      expected_axis: unspecified
+    - surface: "Uganda"
+      dcid: "country/UGA"
+      expected_axis: unspecified
+  note: >
+    Three-way bare comparison: one plausible donor, two plausible
+    recipients, still no stated direction for any of the three.
+
+# --- Group 2: prior-contradicting explicit wording --------------------------
+# The query's own wording states a direction that runs AGAINST the
+# real-world prior. The correct label is the STATED direction, not the
+# plausible one -- South-South cooperation and reverse flows are real, and a
+# system that "corrects" explicit wording toward its prior is answering a
+# question the user did not ask, with no refusal anywhere to signal it.
+
+- id: dir-priorcontra-01
+  category: prior_contradicting
+  query: "aid from Kenya to Norway"
+  entities:
+    - surface: "Kenya"
+      dcid: "country/KEN"
+      expected_axis: origin
+    - surface: "Norway"
+      dcid: "country/NOR"
+      expected_axis: destination
+  note: >
+    Explicit "from"/"to" reverse the typical Kenya/Norway roles. The correct
+    read is the stated one: Kenya is the donor here, whatever the prior says.
+
+- id: dir-priorcontra-02
+  category: prior_contradicting
+  query: "Malawi's development assistance to Germany"
+  entities:
+    - surface: "Malawi"
+      dcid: "country/MWI"
+      expected_axis: origin
+    - surface: "Germany"
+      dcid: "country/DEU"
+      expected_axis: destination
+  note: "Possessive states the donor; \"to\" states the recipient. Both run against the typical prior."
+
+- id: dir-priorcontra-03
+  category: prior_contradicting
+  query: "Ethiopia funds Sweden"
+  entities:
+    - surface: "Ethiopia"
+      dcid: "country/ETH"
+      expected_axis: origin
+    - surface: "Sweden"
+      dcid: "country/SWE"
+      expected_axis: destination
+  note: "Verb phrasing, no preposition, direction stated against the prior."
+
+- id: dir-priorcontra-04
+  category: prior_contradicting
+  query: "grants provided by Bangladesh to Japan"
+  entities:
+    - surface: "Bangladesh"
+      dcid: "country/BGD"
+      expected_axis: origin
+    - surface: "Japan"
+      dcid: "country/JPN"
+      expected_axis: destination
+  note: "Passive voice (\"provided by\") plus an explicit \"to\", both against the prior."
+
+# ---------------------------------------------------------------------------
+# Adjectival and possessive national forms, added with the extraction field
+# description that names them. A place the query names only through its own
+# national adjective ("French aid", "Kenyan aid") or through a possessive
+# over the measure it receives ("Kenya's imports") states that place's
+# direction without a preposition of its own, so these are directional
+# labels, not unspecified ones. `dir-adjectival-control-01` is the
+# axis-less control: a measure whose own wording carries no direction for
+# its one named place states none for it.
+
+- id: dir-adjectival-01
+  category: adjectival_origin
+  query: "French aid to Senegal"
+  entities:
+    - surface: "France"
+      dcid: "country/FRA"
+      expected_axis: origin
+    - surface: "Senegal"
+      dcid: "country/SEN"
+      expected_axis: destination
+  note: >
+    The provider is named only through its national adjective ("French"),
+    which never occurs as the country's own name in the query; the adjective
+    before the measure states the origin, and "to" states the destination.
+    This is the query in the direction-detection defect report.
+
+- id: dir-adjectival-02
+  category: adjectival_origin
+  query: "Kenyan aid to Uganda"
+  entities:
+    - surface: "Kenya"
+      dcid: "country/KEN"
+      expected_axis: origin
+    - surface: "Uganda"
+      dcid: "country/UGA"
+      expected_axis: destination
+  note: >
+    Same shape as dir-adjectival-01 with a different adjective; the
+    adjective's own noun is "aid" here, not the country's name, so a
+    scanner matching surface text against the query finds no "Kenya" at all.
+
+- id: dir-possessive-03
+  category: possessive
+  query: "aid from Kenya to Kenya"
+  entities:
+    - surface: "Kenya"
+      dcid: "country/KEN"
+      expected_axis: origin
+    - surface: "Kenya"
+      dcid: "country/KEN"
+      expected_axis: destination
+  note: >
+    One name on both axes: "from Kenya" states the origin, "to Kenya" the
+    destination. The same surface appears twice with opposite labels, so a
+    scanner keyed on surface text alone has to keep both occurrences rather
+    than collapsing them to the first axis it finds.
+
+- id: dir-adjectival-control-01
+  category: adjectival_origin
+  query: "ODA to Kenya"
+  entities:
+    - surface: "Kenya"
+      dcid: "country/KEN"
+      expected_axis: destination
+  note: >
+    Axis-less control for the group above: the query names no donor, no
+    national adjective and no possessive, and "to" states Kenya as the
+    destination. A rule that read the word before the measure as an origin
+    cue would read "ODA" as one and miss this label.

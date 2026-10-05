@@ -1,0 +1,288 @@
+- id: dq-dac-001
+  query: total ODA from France in 2022
+  activation: pending_data:dac1
+  why: DAC1 is the official headline (grant equivalent, all channels); CRS is bilateral only, so it understates the total.
+  tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: casual, overlap: [crs], probe: [source_election]}
+  expect:
+    definite:
+      measure: {family: dac1.oda_grant_equivalent}
+      entities: [{dcid: country/FRA, role: origin}]
+      window: {kind: range, start: 2022, end: 2022}
+
+- id: dq-dac-002
+  query: ODA as a share of GNI for Norway
+  activation: pending_data:dac1
+  why: Resolves to dac1.oda_gni_share for country/NOR as origin.
+  tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: dac1.oda_gni_share}
+      entities: [{dcid: country/NOR, role: origin}]
+      operations: []
+
+- id: dq-dac-003
+  query: which DAC donors met the 0.7% target in 2023
+  activation: pending_data:dac1
+  why: Resolves to dac1.oda_gni_share for DAC member set as origin in 2023.
+  tags: {theme: aid, entity: region_group, direction: origin_only, unit: default, time: year, operation: rank, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: dac1.oda_gni_share}
+      entities: [{dcid: {gl: DAC member set}, role: origin, expands: true}]
+      window: {kind: range, start: 2023, end: 2023}
+      operations: [{verb: rank, over: origin}]
+
+- id: dq-dac-004
+  query: grant-equivalent ODA from the UK since 2018
+  activation: pending_data:dac1
+  why: Grant-equivalent ODA is the DAC1 headline since 2018 and answers a donor total with no recipient.
+  tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: range, operation: none, breakdown: commitment_vs_disbursement, door: raw_text, phrasing: technical, overlap: [crs]}
+  expect:
+    definite:
+      measure: {family: dac1.oda_grant_equivalent}
+      entities: [{dcid: country/GBR, role: origin}]
+      window: {kind: range, start: 2018}
+
+- id: dq-dac-005
+  query: net ODA from Japan in 2017
+  activation: pending_data:dac1
+  why: Before 2018 the headline is net flows, so net ODA is the right measure for 2017.
+  tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: year, operation: none, breakdown: commitment_vs_disbursement, door: raw_text, phrasing: technical, overlap: [crs]}
+  expect:
+    definite:
+      measure: {family: dac1.oda_net}
+      entities: [{dcid: country/JPN, role: origin}]
+      window: {kind: range, start: 2017, end: 2017}
+
+- id: dq-dac-006
+  query: total ODA from all DAC countries in 2023
+  activation: pending_data:dac1
+  why: DAC1 publishes the DAC total as a provider in its own right; summing members differs where members report late.
+  tags: {theme: aid, entity: region_group, direction: origin_only, unit: default, time: year, operation: aggregate, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: dac1.oda_grant_equivalent}
+      entities: [{dcid: {gl: 'DAC1 ''DAC countries, total'' provider node'}, role: origin}]
+      window: {kind: range, start: 2023, end: 2023}
+      operations: []
+
+- id: dq-dac-007
+  query: ODA from G7 countries
+  activation: pending_data:dac1
+  why: DAC1 publishes a G7 total provider node, which answers in place of the member set.
+  tags: {theme: aid, entity: region_group, direction: origin_only, unit: default, time: none, operation: aggregate, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: dac1.oda_grant_equivalent}
+      entities: [{dcid: {gl: DAC1 G7 total provider node}, role: origin}]
+
+- id: dq-dac-008
+  query: in-donor refugee costs in Germany
+  activation: pending_data:dac1
+  why: In-donor refugee costs are booked against the donor, so Germany is the origin.
+  tags: {theme: humanitarian, entity: country, direction: origin_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    definite: {measure: {family: dac1.in_donor_refugee_costs}, entities: [{dcid: country/DEU, role: origin}]}
+
+- id: dq-dac-009
+  query: debt relief provided by France
+  activation: pending_data:dac1
+  why: Debt relief by France is a DAC1 series.
+  tags: {theme: debt, entity: country, direction: origin_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, overlap: [ids]}
+  expect: {definite: {measure: {family: dac1.debt_relief}, entities: [{dcid: country/FRA, role: origin}]}}
+
+- id: dq-dac-010
+  query: private finance mobilised by the UK
+  activation: pending_data:dac1
+  why: amountMobilised appears on 11 series split by instrument; the total or candidates over instruments fit.
+  tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: none, operation: none, breakdown: flow_type, door: raw_text, phrasing: technical}
+  expect:
+    entities: [{dcid: country/GBR, role: origin}]
+    definite: {measure: {family: dac1.private_mobilised}}
+    candidates: {include_families: [dac1.private_mobilised]}
+
+- id: dq-dac-011
+  query: bilateral and multilateral ODA of Sweden in 2022
+  activation: pending_data:dac1
+  why: Multilateral ODA here is core contributions as DAC1 reports them, while MLS imputes the spread by recipient.
+  tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: year, operation: none, breakdown: flow_type, door: raw_text, phrasing: technical, overlap: [crs, mls]}
+  expect:
+    parts:
+      - definite:
+          measure: {family: dac1.oda_bilateral}
+          entities: [{dcid: country/SWE, role: origin}]
+          window: {kind: range, start: 2022, end: 2022}
+      - definite:
+          measure: {family: dac1.oda_multilateral}
+          entities: [{dcid: country/SWE, role: origin}]
+          window: {kind: range, start: 2022, end: 2022}
+
+- id: dq-dac-012
+  query: ODA commitments from Spain in 2021
+  activation: pending_data:dac1
+  why: A donor commitment total with no recipient resolves to DAC1 under dataset precedence by grain.
+  tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: year, operation: none, breakdown: commitment_vs_disbursement, door: raw_text, phrasing: technical, overlap: [crs]}
+  expect:
+    definite:
+      measure: {family: dac1.oda_commitment}
+      entities: [{dcid: country/ESP, role: origin}]
+      window: {kind: range, start: 2021, end: 2021}
+
+- id: dq-dac-013
+  query: 'parsed: ODA from Ireland in 2023, in euros'
+  door: parsed
+  parsed:
+    - {variable_text: ODA, entities: [{text: Ireland, role_text: donor}], time_text: '2023', unit_text: euros}
+  activation: pending_data:dac1
+  why: The DAC conversion recipe is declared for DAC1 StatVars; DAC1 is also the source of the DAC deflators.
+  tags: {theme: aid, entity: country, direction: origin_only, unit: currency, time: year, operation: none, breakdown: none, door: parsed, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: dac1.oda_grant_equivalent}
+      entities: [{dcid: country/IRL, role: origin}]
+      window: {kind: range, start: 2023, end: 2023}
+      unit: {currency: EUR, prices: current}
+
+- id: dq-dac-014
+  query: 'parsed: ODA to GNI ratio for Norway, constant 2022 US dollars'
+  door: parsed
+  parsed:
+    - variable_text: ODA to GNI ratio
+      entities: [{text: Norway, role_text: donor}]
+      unit_text: constant 2022 US dollars
+  activation: pending_data:dac1
+  why: A ratio has no currency to deflate.
+  tags: {theme: aid, entity: country, direction: origin_only, unit: base_year, time: none, operation: none, breakdown: none, door: parsed, phrasing: technical, probe: [unsupported_unit]}
+  expect: {unsupported: {code: recipe_not_declared}}
+
+- id: dq-dac-015
+  query: ODA from Italy in 1965
+  activation: pending_data:dac1
+  why: CRS starts in 1973; only DAC1 answers 1965.
+  tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: casual, overlap: [crs]}
+  expect:
+    definite:
+      measure: {family: dac1.oda_net}
+      entities: [{dcid: country/ITA, role: origin}]
+      window: {kind: range, start: 1965, end: 1965}
+
+- id: dq-dac-016
+  query: GNI of Denmark
+  activation: pending_data:dac1
+  why: DAC1 carries GNI only as the denominator of the ODA ratio; a plain GNI question elects the World Bank series.
+  tags: {theme: macro, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, overlap: [dac1], probe: [source_election]}
+  expect: {definite: {measure: {family: base.gni}, entities: [{dcid: country/DNK, role: observationAbout}]}}
+
+- id: dq-dac-017
+  query: oda gni ratio swedan
+  activation: pending_data:dac1
+  why: Resolves to dac1.oda_gni_share for country/SWE as origin.
+  tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: misspelt}
+  expect: {definite: {measure: {family: dac1.oda_gni_share}, entities: [{dcid: country/SWE, role: origin}]}}
+
+- id: dq-dac-018
+  query: net ODA received by Ethiopia in 1965
+  activation: pending_data:dac2a
+  why: Resolves to dac2a.oda_net_received for country/ETH as destination in 1965.
+  tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_net_received}
+      entities: [{dcid: country/ETH, role: destination}]
+      window: {kind: range, start: 1965, end: 1965}
+
+- id: dq-dac-019
+  query: net ODA received by Kenya from all donors in 2022
+  activation: pending_data:dac2a
+  why: DAC2a counts imputed multilateral flows to the recipient and CRS counts the multilaterals' own spending, so the totals differ; DAC2a answers a recipient total with no sector.
+  tags:
+    theme: aid
+    entity: country
+    direction: destination_only
+    unit: default
+    time: year
+    operation: none
+    breakdown: commitment_vs_disbursement
+    door: raw_text
+    phrasing: technical
+    overlap: [crs]
+    probe: [source_election]
+  expect:
+    definite:
+      measure: {family: dac2a.oda_net_received}
+      entities: [{dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2022, end: 2022}
+
+- id: dq-dac-020
+  query: ODA commitments to Bangladesh from Japan in 1990
+  why: A donor-recipient pair after 1973 resolves to CRS under dataset precedence by grain; CRS holds Japan's 1990 commitments to Bangladesh.
+  tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: year, operation: none, breakdown: commitment_vs_disbursement, door: raw_text, phrasing: technical, overlap: [crs]}
+  expect:
+    definite:
+      measure: {family: crs.commitment, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: country/JPN, role: origin}, {dcid: country/BGD, role: destination}]
+      window: {kind: range, start: 1990, end: 1990}
+
+- id: dq-dac-021
+  query: net ODA received by low income countries in 2020
+  activation: pending_data:dac2a
+  why: DAC2a publishes income-group recipient codes as data entities, so the group node answers.
+  tags: {theme: aid, entity: region_group, direction: destination_only, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: technical, probe: [income_group]}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_net_received}
+      entities: [{dcid: {gl: DAC2a low-income recipient group node}, role: destination}]
+      window: {kind: range, start: 2020, end: 2020}
+
+- id: dq-dac-022
+  query: net ODA received by Sub-Saharan Africa
+  activation: pending_data:dac2a
+  why: DAC2a publishes 'South of Sahara, total' as a recipient node, which answers in place of the member countries.
+  tags: {theme: aid, entity: region_group, direction: destination_only, unit: default, time: none, operation: aggregate, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: dac2a.oda_net_received}
+      entities: [{dcid: {gl: 'DAC2a ''South of Sahara, total'' recipient node'}, role: destination}]
+
+- id: dq-dac-023
+  query: imputed multilateral ODA received by Kenya in 2022
+  activation: pending_data:dac2a
+  why: DAC2a aid type 106 and MLS share a constraint value and differ in method; both families fit, and candidates show both.
+  tags:
+    theme: aid
+    entity: country
+    direction: destination_only
+    unit: default
+    time: year
+    operation: none
+    breakdown: none
+    door: raw_text
+    phrasing: technical
+    overlap: [dac2a]
+    probe: [source_election]
+  expect:
+    entities: [{dcid: country/KEN, role: destination}]
+    window: {kind: range, start: 2022, end: 2022}
+    definite: {measure: {family: [mls.imputed, dac2a.imputed_multilateral]}}
+    candidates: {include_families: [mls.imputed, dac2a.imputed_multilateral]}
+
+- id: dq-dac-024
+  query: technical cooperation received by Malawi
+  activation: pending_data:dac2a
+  why: CRS cooperation modality D01/D02 also answers; candidates naming both families fit.
+  tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: modality, door: raw_text, phrasing: technical, overlap: [crs]}
+  expect:
+    entities: [{dcid: country/MWI, role: destination}]
+    definite: {measure: {family: dac2a.technical_cooperation}}
+    candidates: {include_families: [dac2a.technical_cooperation]}
+
+- id: dq-dac-025
+  query: food aid received by Haiti in 1995
+  activation: pending_data:dac2a
+  why: Resolves to dac2a.food_aid for country/HTI as destination in 1995.
+  tags: {theme: humanitarian, entity: country, direction: destination_only, unit: default, time: year, operation: none, breakdown: sector, door: raw_text, phrasing: casual, overlap: [crs]}
+  expect:
+    definite:
+      measure: {family: dac2a.food_aid}
+      entities: [{dcid: country/HTI, role: destination}]
+      window: {kind: range, start: 1995, end: 1995}

@@ -1,0 +1,62 @@
+- id: raw-01
+  query: a raw-text case, for the exclusion test's control case
+  why: A raw-text control for the structured-door exclusion test.
+  expect:
+    definite: {}
+- id: spec-01
+  query: 'dataset_resubmit: a dataset_resubmit case, for the exclusion test'
+  door: dataset_resubmit
+  resubmit:
+    variable_text: nominal GDP India
+    shape:
+      kind: statvar_schema
+      population_type: EconomicActivity
+      measured_property: amount
+      stat_type: measuredValue
+      measurement_qualifier: Nominal
+    slots:
+    - key:
+        axis: where
+        property: null
+        label: place
+      binding:
+        kind: value
+        value:
+          ref:
+            dcid: country/IND
+            label: India
+          value_kind: entity
+          time_window: null
+          literal: null
+    - key:
+        axis: how
+        property:
+          dcid: activitySource
+          label: activity source
+        label: activity source
+      binding:
+        kind: unbound
+    stat_var_dcids:
+    - Amount_EconomicActivity_GrossDomesticProduction_Nominal
+    entity_dcids:
+    - country/IND
+  why: A dataset_resubmit case the structured-door exclusion test names.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: EconomicActivity
+          measured_property: amount
+          stat_type: measuredValue
+          measurement_qualifier: Nominal
+          measurement_denominator: null
+        bound:
+          activitySource: GrossDomesticProduction
+        stat_vars:
+        - Amount_EconomicActivity_GrossDomesticProduction_Nominal
+      entities:
+      - dcid: country/IND
+        role: observationAbout

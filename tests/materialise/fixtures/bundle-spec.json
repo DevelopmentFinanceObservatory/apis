@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "spec_id": "spec_00000000000000000000000000000011",
+  "identity": {
+    "identity_version": "spec1",
+    "shape_id": "developmentFinanceFlow",
+    "slots": [
+      { "property": "DevelopmentFinancePurpose", "binding": { "state": "value", "ref": "Malaria" } },
+      { "property": "DevelopmentFinanceScheme", "binding": { "state": "value", "ref": "GrantsScheme" } }
+    ],
+    "entities": {
+      "provider": ["country/FRA"],
+      "recipient": ["country/TGO"]
+    },
+    "facets": {
+      "provenance": { "state": "value", "ref": "OECD_DAC2A" },
+      "measurementMethod": { "state": "value", "ref": "GrantEquivalent" }
+    },
+    "requested_window": { "kind": "range", "start_year": 2015, "end_year": 2024 }
+  }
+}

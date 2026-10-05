@@ -1,0 +1,196 @@
+{
+  "data": {
+    "dc/base/WorldDevelopmentIndicators": {
+      "arcs": {
+        "automaticRefreshType": {
+          "nodes": [
+            {
+              "provenanceId": "dc/base/Provenance",
+              "value": "GCPCloudRunAutomaticRefresh"
+            }
+          ]
+        },
+        "cachedSourceDataUrl": {
+          "nodes": [
+            {
+              "provenanceId": "dc/base/Provenance",
+              "value": "https://console.cloud.google.com/storage/browser/datacommons_public/unresolved_mcf/world_bank/wdi/202410/"
+            }
+          ]
+        },
+        "curator": {
+          "nodes": [
+            {
+              "dcid": "dc/cjj7vp",
+              "name": "dc/cjj7vp",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Curator"
+              ]
+            }
+          ]
+        },
+        "dataTransformationLogic": {
+          "nodes": [
+            {
+              "provenanceId": "dc/base/Provenance",
+              "value": "https://github.com/datacommonsorg/data/tree/master/scripts/world_bank/wdi/"
+            }
+          ]
+        },
+        "description": {
+          "nodes": [
+            {
+              "provenanceId": "dc/base/Provenance",
+              "value": "The primary World Bank collection of development indicators encompassing global economic and social data."
+            }
+          ]
+        },
+        "descriptionUrl": {
+          "nodes": [
+            {
+              "provenanceId": "dc/base/Provenance",
+              "value": "https://datacatalog.worldbank.org/search/dataset/0037712"
+            }
+          ]
+        },
+        "entityResolutionType": {
+          "nodes": [
+            {
+              "dcid": "IdResolutionWithoutKg",
+              "name": "ID resolution without Knowledge Graph",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "EntityResolutionTypeEnum"
+              ]
+            }
+          ]
+        },
+        "isPartOf": {
+          "nodes": [
+            {
+              "dcid": "dc/d/WorldBank_WorldDevelopmentIndicators",
+              "name": "World Development Indicators",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Dataset"
+              ]
+            }
+          ]
+        },
+        "license": {
+          "nodes": [
+            {
+              "provenanceId": "dc/base/Provenance",
+              "value": "https://datacatalog.worldbank.org/search/dataset/0037712"
+            }
+          ]
+        },
+        "licenseType": {
+          "nodes": [
+            {
+              "dcid": "CreativeCommonsAttributionLicense",
+              "name": "Creative Commons Attribution License",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "LicenseTypeEnum"
+              ]
+            }
+          ]
+        },
+        "name": {
+          "nodes": [
+            {
+              "provenanceId": "dc/base/Provenance",
+              "value": "WorldDevelopmentIndicators"
+            }
+          ]
+        },
+        "processingMethod": {
+          "nodes": [
+            {
+              "dcid": "CustomScript",
+              "name": "Custom script",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "ProcessingMethodEnum"
+              ]
+            }
+          ]
+        },
+        "provenance": {
+          "nodes": [
+            {
+              "dcid": "dc/base/WorldDevelopmentIndicators",
+              "name": "WorldDevelopmentIndicators",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Provenance"
+              ]
+            }
+          ]
+        },
+        "provenanceCategory": {
+          "nodes": [
+            {
+              "dcid": "StatisticsProvenance",
+              "name": "Statistics provenance",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "ProvenanceCategoryEnum"
+              ]
+            }
+          ]
+        },
+        "source": {
+          "nodes": [
+            {
+              "dcid": "dc/s/WorldBank",
+              "name": "World Bank",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Source"
+              ]
+            }
+          ]
+        },
+        "sourceDataUrl": {
+          "nodes": [
+            {
+              "provenanceId": "dc/base/Provenance",
+              "value": "http://api.worldbank.org/v2/en/country/AFG?downloadformat=csv"
+            }
+          ]
+        },
+        "sourceReleaseFrequency": {
+          "nodes": [
+            {
+              "provenanceId": "dc/base/Provenance",
+              "value": "P1M"
+            }
+          ]
+        },
+        "typeOf": {
+          "nodes": [
+            {
+              "dcid": "Provenance",
+              "name": "Provenance",
+              "provenanceId": "dc/base/Provenance",
+              "types": [
+                "Class"
+              ]
+            }
+          ]
+        },
+        "url": {
+          "nodes": [
+            {
+              "provenanceId": "dc/base/Provenance",
+              "value": "https://datatopics.worldbank.org/world-development-indicators/"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

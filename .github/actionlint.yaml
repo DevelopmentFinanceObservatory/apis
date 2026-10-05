@@ -1,0 +1,15 @@
+self-hosted-runner:
+  labels: []
+paths:
+  .github/workflows/deploy-{dev,prod}.yml:
+    ignore:
+      # GitHub documents `concurrency.queue` (workflow-syntax reference), but
+      # actionlint's schema doesn't know the key yet: rhysd/actionlint#657 is
+      # open. Narrowed to this one message so every other check still runs.
+      - 'unexpected key "queue" for "concurrency" section'
+  .github/workflows/deploy.yml:
+    ignore:
+      # WIF_PROVIDER and WIF_SA are secrets of the job's GitHub Environment,
+      # which a called workflow reads without declaring them. actionlint
+      # checks only the declared `workflow_call` secrets.
+      - 'property "wif_(provider|sa)" is not defined in object type'

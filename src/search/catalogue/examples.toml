@@ -1,0 +1,75 @@
+# The example sentences a catalogue answer offers. `search.catalogue.examples`
+# loads this file, and `python -m search.catalogue.job` publishes the lines
+# that pass its check.
+#
+# Each line is a template with one `{place}` slot, the StatVar search must
+# resolve it to, and a default country. The StatVar is what the sentence
+# names, checked against its graph name; a sentence that names a family of
+# CRS purpose codes, such as humanitarian aid, pins a member of that family.
+# A StatVar from the coverage index names the `role` its place fills (`donor`
+# or `recipient`); any other StatVar must be a base variable in the origin
+# catalogue. Those two artifacts say where the StatVar has data, and the
+# template is offered only there.
+#
+# The job runs each template through the search engine at its default place,
+# and at Tuvalu and Georgia where the StatVar has data there. A line passes
+# when every run returns a definite part whose StatVars include `stat_var`
+# and whose observations preview has points.
+
+[[example]]
+template = "Humanitarian aid to {place}"
+stat_var = "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSPurposeCode72010_Nominal"
+role = "recipient"
+place = "country/ETH"
+
+[[example]]
+template = "Humanitarian aid from {place}"
+stat_var = "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSPurposeCode72010_Nominal"
+role = "donor"
+place = "country/DEU"
+
+[[example]]
+template = "Basic health care aid from {place}"
+stat_var = "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSPurposeCode12220_Nominal"
+role = "donor"
+place = "country/GBR"
+
+[[example]]
+template = "Debt service as a proportion of exports of goods and services in {place}"
+stat_var = "sdg/DT_TDS_DECT"
+place = "country/GHA"
+
+[[example]]
+template = "Population of {place}"
+stat_var = "Count_Person"
+place = "country/KEN"
+
+[[example]]
+template = "Under-five mortality rate in {place}"
+stat_var = "sdg/SH_DYN_MORT.AGE--Y0T4"
+place = "country/NGA"
+
+[[example]]
+template = "Life expectancy in {place}"
+stat_var = "LifeExpectancy_Person"
+place = "country/IND"
+
+[[example]]
+template = "Inflation in {place}"
+stat_var = "sdg/FP_CPI_TOTL_ZG"
+place = "country/PAK"
+
+[[example]]
+template = "Access to electricity in {place}"
+stat_var = "worldBank/EG_ELC_ACCS_ZS"
+place = "country/TZA"
+
+[[example]]
+template = "Health spending per person in {place}"
+stat_var = "Amount_EconomicActivity_ExpenditureActivity_HealthcareExpenditure_AsFractionOf_Count_Person"
+place = "country/MWI"
+
+[[example]]
+template = "GDP per capita of {place}"
+stat_var = "Amount_EconomicActivity_GrossDomesticProduction_Nominal_PerCapita"
+place = "country/BRA"

@@ -1,0 +1,122 @@
+# Runs tests/dc_sdmx/test_live.py against the dev Data Commons Cloud Run
+# service, the deployment that serves the mixer's SDMX routes. Everything else
+# under tests/dc_sdmx/ runs offline against recorded wire fixtures, so a change
+# in what the deployment actually puts on the wire is invisible to ci.yml.
+#
+# Credentials are the pair eval-gate.yml already uses: the repo variable
+# SEARCH_GRAPH_BASE (the service root) and the repo secret SEARCH_GRAPH_TOKEN
+# (the x-graph-token WAF bypass -- runner IPs are datacenter ranges the service
+# challenges). SdmxClient appends its own /sdmx/v3/... paths to the API root,
+# so the live base is SEARCH_GRAPH_BASE plus the service's /core/api prefix.
+#
+# DFO_SDMX_LIVE_REQUIRED makes a missing live base a collection error rather
+# than a skip, so the job cannot report green over a suite that skipped every
+# test. The preflight step covers the one case that guard cannot see: an unset
+# SEARCH_GRAPH_BASE composes to the non-empty string "/core/api".
+#
+# Pushes and PRs touching dc_sdmx catch a wire regression at review time. The
+# weekday schedule catches drift in the deployment itself, with no repo change
+# to trigger a run. workflow_dispatch covers a manual check. The job runs only
+# for same-repo branches -- a fork PR receives no secrets and would fail on an
+# empty token with nothing the author could do about it.
+#
+# Do NOT add this workflow to branch protection's required checks: it is
+# path-filtered and skipped on fork PRs, and a required check reports nothing
+# in either case, hanging as "Expected" forever.
+name: SDMX live
+
+on:
+  push:
+    branches: [dev, main]
+    paths:
+      - packages/dfo-data-tools/src/dc_sdmx/**
+      - tests/dc_sdmx/**
+      - .github/workflows/sdmx-live.yml
+      - pyproject.toml
+      - uv.lock
+  pull_request:
+    branches: [dev, main]
+    # `edited` covers a stacked PR whose base is retargeted automatically when
+    # the PR beneath it merges, which emits no other activity type. See the
+    # matching note in ci.yml. `ready_for_review` covers a draft PR marked
+    # ready without a new commit, which otherwise leaves this check with no
+    # run at all.
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+    paths:
+      - packages/dfo-data-tools/src/dc_sdmx/**
+      - tests/dc_sdmx/**
+      - .github/workflows/sdmx-live.yml
+      - pyproject.toml
+      - uv.lock
+  schedule:
+    # 06:17 UTC, weekdays. GitHub cron is always UTC and never shifts for DST,
+    # and a scheduled run can be delayed or dropped under load, so this bounds
+    # how stale a wire regression gets rather than guaranteeing a daily run.
+    - cron: "17 6 * * 1-5"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Keyed on the PR number for pull_request events: a run on a closed PR
+  # resolves `github.ref` to the base branch, which would otherwise share a
+  # group with that branch's push runs and cancel them mid-suite.
+  group: sdmx-live-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # See ci.yml: `uv run` runs in exactly what the job's `uv sync` installed.
+  UV_NO_SYNC: "1"
+
+jobs:
+  sdmx-live:
+    # Runs against dev's live graph, so only in ONEcampaign.
+    if: >-
+      github.repository_owner == 'ONEcampaign' &&
+      (github.event_name != 'pull_request' ||
+       (github.event.pull_request.state == 'open' &&
+        github.event.pull_request.head.repo.full_name == github.repository))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # dc_sdmx arrives through the dfo-data-tools workspace member, whose
+      # dfo-spec-kit-frame-grammar dependency lives in the private
+      # dfo-spec-kit repo, so this job authenticates the same way the other
+      # workflows do. The `sdmx` extra carries only dc_sdmx's own dependency
+      # (httpx, pyarrow), with no FastAPI and no engine extras, which holds
+      # dc_sdmx to the independence contract tests/dc_sdmx/test_independence.py
+      # asserts. The `coverage` extra (numpy, also free of FastAPI) serves the
+      # session coverage service tests/conftest.py installs.
+      - name: Authenticate git for the dfo-spec-kit dependency
+        uses: ./.github/actions/spec-kit-auth
+        with:
+          client-id: ${{ vars.READER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.READER_APP_PRIVATE_KEY }}
+
+      - name: Install dependencies
+        run: uv sync --frozen --no-default-groups --group test --extra sdmx --extra coverage
+
+      - name: Check the graph credentials reached the runner
+        env:
+          GRAPH_BASE: ${{ vars.SEARCH_GRAPH_BASE }}
+          GRAPH_TOKEN: ${{ secrets.SEARCH_GRAPH_TOKEN }}
+        run: |
+          set -euo pipefail
+          [ -n "$GRAPH_BASE" ] || { echo "::error::repo variable SEARCH_GRAPH_BASE is unset"; exit 1; }
+          [ -n "$GRAPH_TOKEN" ] || { echo "::error::repo secret SEARCH_GRAPH_TOKEN is unset"; exit 1; }
+
+      - name: Run the live-gated dc_sdmx suite against the dev deployment
+        env:
+          DFO_SDMX_LIVE_BASE: ${{ vars.SEARCH_GRAPH_BASE }}/core/api
+          DFO_SDMX_LIVE_TOKEN: ${{ secrets.SEARCH_GRAPH_TOKEN }}
+          DFO_SDMX_LIVE_REQUIRED: "1"
+        run: uv run pytest -q tests/dc_sdmx/test_live.py

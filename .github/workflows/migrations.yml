@@ -1,0 +1,368 @@
+# Separate from ci.yml because these jobs need a real Postgres service
+# container and only dataset_store/artifact_store or presentation_store
+# changes can affect their outcome. The paths filter keeps unrelated
+# packages (search, dc_sdmx) from booting Postgres on every push/PR.
+# artifact_store is included in the dataset_store job's own paths because
+# artifact_store.inventory writes directly to the datasets.artifact_inventory/
+# artifact_location tables dataset_store's own migrations own -- its SQL runs
+# alongside dataset_store's own tests, in tests/dataset_store/test_live.py.
+# presentation_store gets its own job below: a separate database, migrator
+# role and migration set from dataset_store's own. Do NOT add this workflow
+# to branch protection's required checks -- a path-filtered workflow reports
+# nothing on PRs outside its paths, and a required check would hang as
+# "Expected" forever.
+name: Migrations
+
+on:
+  push:
+    branches: [dev, main]
+    paths:
+      - src/dataset_store/**
+      - tests/dataset_store/**
+      - src/artifact_store/**
+      - tests/artifact_store/**
+      - src/datasets_api/**
+      - src/presentation_store/**
+      - tests/presentation_store/**
+      - .github/workflows/migrations.yml
+      - pyproject.toml
+      - uv.lock
+  pull_request:
+    branches: [dev, main]
+    # `edited` is here for one case the default types miss: when a stacked PR's
+    # base is retargeted (GitHub does this automatically when the PR it was
+    # stacked on merges and its branch is deleted), the only activity emitted is
+    # `edited`. Without it the PR newly matches the `branches` filter above but
+    # no event type fires, so required checks sit "Expected" forever with no run
+    # to report them. The cost is a redundant run whenever someone edits a PR
+    # title or body; the concurrency group below cancels the older one.
+    # `ready_for_review` covers a second gap: a draft PR force-pushed while
+    # still a draft fires `synchronize`, but marking it ready for review later
+    # emits no event the default types cover, so no run ever lands on the sha
+    # that goes up for merge.
+    types: [opened, synchronize, reopened, edited, ready_for_review]
+    paths:
+      - src/dataset_store/**
+      - tests/dataset_store/**
+      - src/artifact_store/**
+      - tests/artifact_store/**
+      - src/datasets_api/**
+      - src/presentation_store/**
+      - tests/presentation_store/**
+      - .github/workflows/migrations.yml
+      - pyproject.toml
+      - uv.lock
+
+permissions:
+  contents: read
+
+concurrency:
+  # Keyed on the PR number for pull_request events: a run on a closed PR
+  # resolves `github.ref` to the base branch, which would otherwise share a
+  # group with that branch's push runs and cancel them mid-suite.
+  group: migrations-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # See ci.yml: `uv run` runs in exactly what the job's `uv sync` installed.
+  UV_NO_SYNC: "1"
+
+jobs:
+  migrations:
+    # Proves the migration applies forward and the migrator role owns what
+    # it creates, against an ephemeral Postgres container. Does not prove
+    # reachability of the real PSC-only instance -- see deploy/postgres.md
+    # for that.
+    # Mints a dfo-reader token, which prod keeps only in main-limited
+    # environments, so this runs in ONEcampaign only. The identical tree
+    # ran it here before it was synced.
+    if: >-
+      github.repository_owner == 'ONEcampaign' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: dataset_store_migrator
+          POSTGRES_PASSWORD: ci-throwaway
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U dataset_store_migrator"
+          --health-interval=5s --health-timeout=5s --health-retries=10
+    env:
+      DATASET_STORE_HOST: localhost
+      DATASET_STORE_PORT: "5432"
+      DATASET_STORE_DATABASE: datasets
+      DATASET_STORE_MIGRATOR_DB_USER: dataset_store_migrator
+      DATASET_STORE_MIGRATOR_DB_PASSWORD: ci-throwaway
+      DATASET_STORE_RUNTIME_DB_USER: runtime-placeholder@ci.dev
+      DATASET_STORE_WORKER_DB_USER: worker-placeholder@ci.dev
+      PGPASSWORD: ci-throwaway
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # The datasets extra pulls dfo-spec-kit-frame-grammar as a git
+      # dependency; uv sync needs the same credential rewrite as every
+      # other job that syncs it.
+      - name: Authenticate git for the dfo-spec-kit dependency
+        uses: ./.github/actions/spec-kit-auth
+        with:
+          client-id: ${{ vars.READER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.READER_APP_PRIVATE_KEY }}
+
+      - name: Install dependencies
+        run: uv sync --frozen --no-default-groups --group test --extra datasets
+
+      # The service container has no `datasets` database or runtime/worker
+      # role (Terraform provisions all three in the real environment) --
+      # create the database and both roles here first. The placeholder role
+      # names are email-shaped so they exercise the same quoted-identifier
+      # path as migration 0001's {{RUNTIME_DB_USER}} and 0012's
+      # {{WORKER_DB_USER}}. No membership grant here -- migration 0012 makes
+      # the worker role a member of the runtime role when `migrate up` runs.
+      - name: Create the datasets database and placeholder runtime/worker roles
+        run: |
+          psql -h localhost -U dataset_store_migrator -d postgres -v ON_ERROR_STOP=1 -c \
+            "CREATE DATABASE datasets;"
+          psql -h localhost -U dataset_store_migrator -d postgres -v ON_ERROR_STOP=1 -c \
+            "CREATE ROLE \"runtime-placeholder@ci.dev\" LOGIN;"
+          psql -h localhost -U dataset_store_migrator -d postgres -v ON_ERROR_STOP=1 -c \
+            "CREATE ROLE \"worker-placeholder@ci.dev\" LOGIN;"
+
+      - name: Apply migrations forward
+        run: uv run python -m dataset_store.migrate up
+
+      - name: Re-apply is a no-op (idempotency proof)
+        run: uv run python -m dataset_store.migrate up
+
+      - name: Assert the migrator role owns what it created
+        run: |
+          NS_OWNER=$(psql -h localhost -U dataset_store_migrator -d datasets -t -A -v ON_ERROR_STOP=1 \
+            -c "SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = 'datasets';")
+          echo "schema owner: $NS_OWNER"
+          [ "$NS_OWNER" = "dataset_store_migrator" ] || { echo "schema NOT owned by the migrator role"; exit 1; }
+
+          TABLE_COUNT=$(psql -h localhost -U dataset_store_migrator -d datasets -t -A -v ON_ERROR_STOP=1 \
+            -c "SELECT count(*) FROM pg_tables WHERE schemaname = 'datasets';")
+          [ "$TABLE_COUNT" -gt 0 ] || { echo "datasets schema has no tables -- migrations did not apply"; exit 1; }
+
+          TABLES_OWNED=$(psql -h localhost -U dataset_store_migrator -d datasets -t -A -v ON_ERROR_STOP=1 \
+            -c "SELECT bool_and(tableowner = 'dataset_store_migrator') FROM pg_tables WHERE schemaname = 'datasets';")
+          echo "every table owned by the migrator role: $TABLES_OWNED"
+          [ "$TABLES_OWNED" = "t" ] || { echo "a table in schema datasets is NOT owned by the migrator role"; exit 1; }
+
+          SEQUENCES_OWNED=$(psql -h localhost -U dataset_store_migrator -d datasets -t -A -v ON_ERROR_STOP=1 \
+            -c "SELECT bool_and(sequenceowner = 'dataset_store_migrator') FROM pg_sequences WHERE schemaname = 'datasets';")
+          echo "every sequence owned by the migrator role: $SEQUENCES_OWNED"
+          [ "$SEQUENCES_OWNED" = "t" ] || [ -z "$SEQUENCES_OWNED" ] || { echo "a sequence in schema datasets is NOT owned by the migrator role"; exit 1; }
+
+      # Migration 0001 grants the runtime role USAGE on the schema and, via
+      # ALTER DEFAULT PRIVILEGES, SELECT/INSERT/UPDATE/DELETE on tables and
+      # USAGE/SELECT on sequences created afterward by the migrator role.
+      # dataset_store_schema_migrations is excluded from the sweeps below: the
+      # migration runner creates it before any migration file runs, so it
+      # predates the ALTER DEFAULT PRIVILEGES statement and carries none of
+      # its grants. Migration 0001 creates no application table or sequence of
+      # its own, so this step also creates a throwaway table and sequence as
+      # the migrator role -- the same role and timing a real migration uses --
+      # to exercise the default ACLs end to end. Both are dropped on exit
+      # regardless of outcome.
+      - name: Assert the runtime role holds the privileges the migrations grant
+        run: |
+          trap 'psql -h localhost -U dataset_store_migrator -d datasets -v ON_ERROR_STOP=1 -c \
+            "DROP TABLE IF EXISTS datasets._privilege_probe; DROP SEQUENCE IF EXISTS datasets._privilege_probe_seq;" >/dev/null' EXIT
+
+          SCHEMA_USAGE=$(psql -h localhost -U dataset_store_migrator -d datasets -t -A -v ON_ERROR_STOP=1 \
+            -c "SELECT has_schema_privilege('runtime-placeholder@ci.dev', 'datasets', 'USAGE');")
+          echo "runtime role has USAGE on schema datasets: $SCHEMA_USAGE"
+          [ "$SCHEMA_USAGE" = "t" ] || { echo "runtime role missing USAGE on schema datasets"; exit 1; }
+
+          psql -h localhost -U dataset_store_migrator -d datasets -v ON_ERROR_STOP=1 -c \
+            "CREATE TABLE datasets._privilege_probe (id int); CREATE SEQUENCE datasets._privilege_probe_seq;"
+
+          PROBE_TABLE_DML=$(psql -h localhost -U dataset_store_migrator -d datasets -t -A -v ON_ERROR_STOP=1 \
+            -c "SELECT has_table_privilege('runtime-placeholder@ci.dev', 'datasets._privilege_probe', 'SELECT')
+                  AND has_table_privilege('runtime-placeholder@ci.dev', 'datasets._privilege_probe', 'INSERT')
+                  AND has_table_privilege('runtime-placeholder@ci.dev', 'datasets._privilege_probe', 'UPDATE')
+                  AND has_table_privilege('runtime-placeholder@ci.dev', 'datasets._privilege_probe', 'DELETE');")
+          echo "runtime role has SELECT/INSERT/UPDATE/DELETE on a freshly created table: $PROBE_TABLE_DML"
+          [ "$PROBE_TABLE_DML" = "t" ] || { echo "runtime role missing a default DML privilege on new tables"; exit 1; }
+
+          PROBE_SEQUENCE_PRIVS=$(psql -h localhost -U dataset_store_migrator -d datasets -t -A -v ON_ERROR_STOP=1 \
+            -c "SELECT has_sequence_privilege('runtime-placeholder@ci.dev', 'datasets._privilege_probe_seq', 'USAGE')
+                  AND has_sequence_privilege('runtime-placeholder@ci.dev', 'datasets._privilege_probe_seq', 'SELECT');")
+          echo "runtime role has USAGE/SELECT on a freshly created sequence: $PROBE_SEQUENCE_PRIVS"
+          [ "$PROBE_SEQUENCE_PRIVS" = "t" ] || { echo "runtime role missing a default privilege on new sequences"; exit 1; }
+
+          TABLE_COUNT=$(psql -h localhost -U dataset_store_migrator -d datasets -t -A -v ON_ERROR_STOP=1 \
+            -c "SELECT count(*) FROM pg_tables WHERE schemaname = 'datasets';")
+          [ "$TABLE_COUNT" -gt 0 ] || { echo "datasets schema has no tables -- migrations did not apply"; exit 1; }
+
+          TABLE_DML=$(psql -h localhost -U dataset_store_migrator -d datasets -t -A -v ON_ERROR_STOP=1 \
+            -c "SELECT bool_and(
+                  has_table_privilege('runtime-placeholder@ci.dev', format('%I.%I', schemaname, tablename), 'SELECT')
+                  AND has_table_privilege('runtime-placeholder@ci.dev', format('%I.%I', schemaname, tablename), 'INSERT')
+                  AND has_table_privilege('runtime-placeholder@ci.dev', format('%I.%I', schemaname, tablename), 'UPDATE')
+                  AND has_table_privilege('runtime-placeholder@ci.dev', format('%I.%I', schemaname, tablename), 'DELETE')
+                )
+                FROM pg_tables
+                WHERE schemaname = 'datasets'
+                  AND tablename NOT IN ('dataset_store_schema_migrations', '_privilege_probe');")
+          echo "runtime role has SELECT/INSERT/UPDATE/DELETE on every granted table: $TABLE_DML"
+          [ "$TABLE_DML" = "t" ] || [ -z "$TABLE_DML" ] || { echo "runtime role missing a DML privilege on a datasets table"; exit 1; }
+
+          SEQUENCE_PRIVS=$(psql -h localhost -U dataset_store_migrator -d datasets -t -A -v ON_ERROR_STOP=1 \
+            -c "SELECT bool_and(
+                  has_sequence_privilege('runtime-placeholder@ci.dev', format('%I.%I', schemaname, sequencename), 'USAGE')
+                  AND has_sequence_privilege('runtime-placeholder@ci.dev', format('%I.%I', schemaname, sequencename), 'SELECT')
+                )
+                FROM pg_sequences
+                WHERE schemaname = 'datasets' AND sequencename <> '_privilege_probe_seq';")
+          echo "runtime role has USAGE/SELECT on every sequence: $SEQUENCE_PRIVS"
+          [ "$SEQUENCE_PRIVS" = "t" ] || [ -z "$SEQUENCE_PRIVS" ] || { echo "runtime role missing a privilege on a datasets sequence"; exit 1; }
+
+      # Migration 0012 grants the worker role membership in the runtime
+      # role, so it inherits the runtime role's privileges without a
+      # separate schema-level grant. datasets.operation (migration 0011) is
+      # an existing table, proving inheritance against real grants rather
+      # than a throwaway probe table.
+      - name: Assert the worker role inherits the runtime role's privileges via migration 0012
+        run: |
+          WORKER_SELECT=$(psql -h localhost -U dataset_store_migrator -d datasets -t -A -v ON_ERROR_STOP=1 \
+            -c "SELECT has_table_privilege('worker-placeholder@ci.dev', 'datasets.operation', 'SELECT');")
+          echo "worker role has SELECT on datasets.operation: $WORKER_SELECT"
+          [ "$WORKER_SELECT" = "t" ] || { echo "worker role missing SELECT on datasets.operation"; exit 1; }
+
+          WORKER_INSERT=$(psql -h localhost -U dataset_store_migrator -d datasets -t -A -v ON_ERROR_STOP=1 \
+            -c "SELECT has_table_privilege('worker-placeholder@ci.dev', 'datasets.operation', 'INSERT');")
+          echo "worker role has INSERT on datasets.operation: $WORKER_INSERT"
+          [ "$WORKER_INSERT" = "t" ] || { echo "worker role missing INSERT on datasets.operation"; exit 1; }
+
+      # Simulates upgrading a bookkeeping table created before content_sha256
+      # existed: DROP COLUMN puts it back in that shape, then migrate up
+      # re-adds the column (ALTER TABLE ... ADD COLUMN IF NOT EXISTS) and
+      # backfills the one already-applied row's hash from the on-disk file.
+      - name: Legacy-upgrade proof -- a table missing content_sha256 gets it backfilled
+        run: |
+          psql -h localhost -U dataset_store_migrator -d datasets -v ON_ERROR_STOP=1 -c \
+            "ALTER TABLE datasets.dataset_store_schema_migrations DROP COLUMN content_sha256;"
+
+          uv run python -m dataset_store.migrate up
+
+          COLUMN_EXISTS=$(psql -h localhost -U dataset_store_migrator -d datasets -t -A -v ON_ERROR_STOP=1 \
+            -c "SELECT count(*) FROM information_schema.columns
+                  WHERE table_schema = 'datasets' AND table_name = 'dataset_store_schema_migrations'
+                    AND column_name = 'content_sha256';")
+          [ "$COLUMN_EXISTS" = "1" ] || { echo "content_sha256 column missing after migrate up"; exit 1; }
+
+          NULL_HASHES=$(psql -h localhost -U dataset_store_migrator -d datasets -t -A -v ON_ERROR_STOP=1 \
+            -c "SELECT count(*) FROM datasets.dataset_store_schema_migrations WHERE content_sha256 IS NULL;")
+          echo "rows with a null content_sha256 after backfill: $NULL_HASHES"
+          [ "$NULL_HASHES" = "0" ] || { echo "a row's content_sha256 was not backfilled"; exit 1; }
+
+      # Edits 0001_bootstrap.sql after it's already applied and recorded, so
+      # its on-disk hash no longer matches the one migrate up stored. The
+      # trap restores the file on exit regardless of outcome, so a failure
+      # partway through this step still leaves a pristine tree for the steps
+      # after it.
+      - name: Checksum-enforcement proof -- an edited already-applied migration blocks the next apply
+        run: |
+          trap 'git checkout -- src/dataset_store/migrations/0001_bootstrap.sql' EXIT
+
+          echo "-- edited after apply" >> src/dataset_store/migrations/0001_bootstrap.sql
+
+          if uv run python -m dataset_store.migrate up 2> migrate_stderr.txt; then
+            echo "migrate up exited 0 against a modified already-applied file"
+            exit 1
+          fi
+
+          cat migrate_stderr.txt
+          grep -q "0001_bootstrap.sql" migrate_stderr.txt || { echo "stderr did not name the modified file"; exit 1; }
+
+      - name: Run the live-gated dataset_store suite against the ephemeral instance
+        env:
+          DFO_DATASET_STORE_LIVE_DSN: postgresql://dataset_store_migrator:ci-throwaway@localhost:5432/datasets
+        run: uv run pytest -q tests/dataset_store/test_live.py
+
+  presentation-migrations:
+    # Proves presentation_store's own migrations apply forward against an
+    # ephemeral Postgres container, mirroring the dataset_store job above --
+    # a separate database, migrator role, and migration set. Does not prove
+    # reachability of the real PSC-only instance.
+    # Mints a dfo-reader token, which prod keeps only in main-limited
+    # environments, so this runs in ONEcampaign only. The identical tree
+    # ran it here before it was synced.
+    if: >-
+      github.repository_owner == 'ONEcampaign' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: presentation_store_migrator
+          POSTGRES_PASSWORD: ci-throwaway
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd="pg_isready -U presentation_store_migrator"
+          --health-interval=5s --health-timeout=5s --health-retries=10
+    env:
+      PRESENTATION_STORE_HOST: localhost
+      PRESENTATION_STORE_PORT: "5433"
+      PRESENTATION_STORE_DATABASE: presentation
+      PRESENTATION_STORE_MIGRATOR_DB_USER: presentation_store_migrator
+      PRESENTATION_STORE_MIGRATOR_DB_PASSWORD: ci-throwaway
+      PRESENTATION_STORE_RUNTIME_DB_USER: presentation-runtime-placeholder@ci.dev
+      PGPASSWORD: ci-throwaway
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # The datasets extra pulls dfo-spec-kit-frame-grammar as a git
+      # dependency; uv sync needs the same credential rewrite as every
+      # other job that syncs it.
+      - name: Authenticate git for the dfo-spec-kit dependency
+        uses: ./.github/actions/spec-kit-auth
+        with:
+          client-id: ${{ vars.READER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.READER_APP_PRIVATE_KEY }}
+
+      - name: Install dependencies
+        run: uv sync --frozen --no-default-groups --group test --extra datasets
+
+      # The service container has no `presentation` database or runtime role
+      # (Terraform provisions both in the real environment) -- create both
+      # here first. The placeholder role name is email-shaped so it
+      # exercises the same quoted-identifier path as migration 0001's
+      # {{RUNTIME_DB_USER}}.
+      - name: Create the presentation database and a placeholder runtime role
+        run: |
+          psql -h localhost -p 5433 -U presentation_store_migrator -d postgres -v ON_ERROR_STOP=1 -c \
+            "CREATE DATABASE presentation;"
+          psql -h localhost -p 5433 -U presentation_store_migrator -d postgres -v ON_ERROR_STOP=1 -c \
+            "CREATE ROLE \"presentation-runtime-placeholder@ci.dev\" LOGIN;"
+
+      - name: Apply migrations forward
+        run: uv run python -m presentation_store.migrate up
+
+      - name: Re-apply is a no-op (idempotency proof)
+        run: uv run python -m presentation_store.migrate up
+
+      - name: Run the live-gated presentation_store suite against the ephemeral instance
+        env:
+          DFO_PRESENTATION_STORE_LIVE_DSN: postgresql://presentation_store_migrator:ci-throwaway@localhost:5433/presentation
+        run: uv run pytest -q tests/presentation_store/test_live.py

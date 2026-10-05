@@ -1,0 +1,122 @@
+- id: skills-grant-equivalent-france
+  query: grant equivalent ODA from France
+  why: Grant equivalent ODA from France matches skills through the measuredProperty shape anchor and through the CRS source attachment.
+  tags:
+    feature: skills
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: FinancialFlow
+          measured_property: grantEquivalent
+          stat_type: measuredValue
+          measurement_qualifier: Nominal
+          measurement_denominator: null
+        bound:
+          crsTypeOfFlow: CRSTypeOfFlow10
+          financialFlowType: Disbursement
+      entities:
+      - dcid: country/FRA
+        role: origin
+      skills:
+        present: true
+- id: skills-refugee-costs-donor-countries
+  query: refugee costs in donor countries ODA
+  why: Refugee costs in donor countries binds crsPurpose 930, where oda-concepts and oda-dataset-selection attach; oda-crs follows through the source.
+  tags:
+    feature: skills
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: FinancialFlow
+          measured_property: amount
+          stat_type: measuredValue
+          measurement_qualifier: Nominal
+          measurement_denominator: null
+        bound:
+          crsPurpose: CRSPurposeCode930
+          crsTypeOfFlow: CRSTypeOfFlow10
+          financialFlowType: Disbursement
+          nettingBasis: Gross
+      entities: []
+      skills:
+        present: true
+- id: skills-oda-loans-japan
+  query: ODA loans by Japan
+  why: ODA loans by Japan binds crsTypeOfFinance 420, where oda-measures attaches; oda-crs follows through the source.
+  tags:
+    feature: skills
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: FinancialFlow
+          measured_property: amount
+          stat_type: measuredValue
+          measurement_qualifier: Nominal
+          measurement_denominator: null
+        bound:
+          crsTypeOfFinance: CRSTypeOfFinance420
+          crsTypeOfFlow: CRSTypeOfFlow10
+          financialFlowType: Disbursement
+          nettingBasis: Gross
+      entities:
+      - dcid: country/JPN
+        role: origin
+      skills:
+        present: true
+- id: skills-humanitarian-aid-united-kingdom
+  query: humanitarian aid from the United Kingdom
+  why: Humanitarian aid from the United Kingdom binds a purpose with no skill attached, so only the oda-crs source skill matches.
+  tags:
+    feature: skills
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: FinancialFlow
+          measured_property: amount
+          stat_type: measuredValue
+          measurement_qualifier: Nominal
+          measurement_denominator: null
+        bound:
+          crsPurpose: CRSPurposeCode700
+          crsTypeOfFlow: CRSTypeOfFlow10
+          financialFlowType: Disbursement
+          nettingBasis: Gross
+      entities:
+      - dcid: country/GBR
+        role: origin
+      skills:
+        present: true
+- id: skills-life-expectancy-brazil
+  query: life expectancy in Brazil
+  why: Life expectancy in Brazil carries no skill attachment, so resolved.skills is empty.
+  tags:
+    feature: skills
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: Person
+          measured_property: lifeExpectancy
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        stat_vars: [LifeExpectancy_Person]
+      entities:
+      - dcid: country/BRA
+        role: observationAbout
+      skills:
+        present: false

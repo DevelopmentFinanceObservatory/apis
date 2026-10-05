@@ -1,0 +1,38 @@
+[
+  {
+    "provenance": "provenance/OECDCreditorReportingSystem",
+    "financingProvider": "country/ARE",
+    "financingRecipient": "country/AZE",
+    "date": "2024",
+    "observations": [
+      {
+        "variable": "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityC01_CRSPurposeCode15250_Nominal",
+        "value": 5000000.0
+      },
+      {
+        "variable": "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance421_CRSCooperationModalityC01_CRSPurposeCode23260_Nominal",
+        "value": 0.0
+      }
+    ]
+  },
+  {
+    "provenance": "provenance/ONEImputedMultilateralSectors",
+    "financingProvider": "country/ROU",
+    "financingRecipient": "country/TKL",
+    "date": "2020",
+    "observations": [
+      {
+        "variable": "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_CRSPurposeCode31120_Nominal",
+        "value": 67.8
+      },
+      {
+        "variable": "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_CRSPurposeCode31220_Nominal",
+        "value": 0.0
+      },
+      {
+        "variable": "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_CRSPurposeCode31310_Nominal",
+        "value": 73.96
+      }
+    ]
+  }
+]

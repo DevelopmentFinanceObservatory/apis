@@ -1,0 +1,536 @@
+name: CI
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    # The globs cover every branch-type prefix this repository uses, because
+    # stacked PRs take sibling branches as bases and this filter matches the
+    # base, not the head; a PR whose base matches nothing here triggers no run
+    # and reports no checks at all, which reads as "not yet run" rather than as
+    # a failure. Adding a prefix here is part of adopting it for a branch that
+    # anything can stack on.
+    branches: [dev, main, "feat/**", "fix/**", "perf/**", "refactor/**", "test/**", "eval/**", "docs/**", "build/**", "ci/**", "chore/**"]
+    # `edited` is deliberately absent, and a stacked PR pays for it: when its
+    # base is retargeted (GitHub does this automatically when the PR it was
+    # stacked on merges and its branch is deleted) the only activity emitted is
+    # `edited`, so if the retarget is what first makes the PR match the
+    # `branches` filter above, its required checks sit "Expected" with no run to
+    # report them until someone presses re-run. That is the cheaper failure.
+    # Including `edited` means every title and body edit starts a run too, and
+    # no guard makes that run harmless: jobs held back by an `if` report as
+    # skipped, GitHub counts a skipped required check as satisfied, and the
+    # concurrency group below cancels the real suite the edit interrupted. The
+    # PR then reads mergeable with nothing tested on its head commit.
+    # `ready_for_review` is absent for a simpler reason: no job here is guarded
+    # on `draft`, so a draft PR runs the full suite on `opened` and
+    # `synchronize` like any other. Marking it ready changes no file, so the run
+    # it would start is a second full suite over an unchanged tree.
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  # Keyed on the PR number for pull_request events: a run on a closed PR
+  # resolves `github.ref` to the base branch, which would otherwise share a
+  # group with that branch's push runs and cancel them mid-suite.
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Extras the engine, the eval harness, and the datasets-side packages
+  # (materialise, dataset_store) need; the test suite imports all four.
+  UV_SYNC_ARGS: --frozen --extra engine --extra eval --extra datasets --extra graph
+  # Each job's `uv sync` builds the reduced environment that job runs in; a
+  # plain `uv run` would re-sync the default groups over it, so every step
+  # would run with the lint, typecheck and test groups installed.
+  UV_NO_SYNC: "1"
+
+jobs:
+  lint:
+    # Runs ruff and ty together, so branch protection's single `lint` check
+    # still fails on a type error. Installs the lint and typecheck groups
+    # (never test), plus the extras ty needs to resolve every import it
+    # checks.
+    # Mints a dfo-reader token, which prod keeps only in main-limited
+    # environments, so this runs in ONEcampaign only. The identical tree
+    # ran it here before it was synced.
+    if: >-
+      github.repository_owner == 'ONEcampaign' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # dfo-spec-kit is a private repo the default GITHUB_TOKEN cannot read;
+      # the engine extra pulls it as a git dependency, so `uv sync` needs
+      # this rewrite too, not just the vector checkout below.
+      - name: Authenticate git for the dfo-spec-kit dependency
+        uses: ./.github/actions/spec-kit-auth
+        with:
+          client-id: ${{ vars.READER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.READER_APP_PRIVATE_KEY }}
+
+      - name: Install dependencies
+        run: uv sync --frozen --no-default-groups --group lint --group typecheck --extra engine --extra eval --extra datasets --extra graph
+
+      - name: Ruff check
+        run: uv run ruff check .
+
+      - name: Ruff format check
+        run: uv run ruff format --check .
+
+      - name: Type check
+        run: uv run ty check
+
+  # One shard of the suite per matrix entry, each on its own runner. Splitting
+  # across machines instead of adding cores to one keeps every shard inside a
+  # fresh 4 vCPU / 16 GB box, so one shard's four xdist workers never compete
+  # with another shard's for memory. Three shards rather than four because
+  # billing rounds every job up to a whole minute: a measured four-shard run
+  # cost 13 of them against 10 for three, buying roughly 25s of wall clock once
+  # both are balanced. `fail-fast: false` because a failing shard should not
+  # cancel the other two: one run reporting every failure costs less than two
+  # runs each reporting one.
+  test-shard:
+    # Mints a dfo-reader token, which prod keeps only in main-limited
+    # environments, so this runs in ONEcampaign only. The identical tree
+    # ran it here before it was synced.
+    if: >-
+      github.repository_owner == 'ONEcampaign' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@v7
+
+      # The vector suite must come from the exact commit pyproject.toml pins,
+      # never a separately-tracked ref, or the vectors and the kit code they
+      # exercise can drift apart.
+      - name: Resolve the pinned dfo-spec-kit revision
+        id: spec-kit-rev
+        run: |
+          rev=$(python3 - <<'PY'
+          import re, sys
+          text = open("pyproject.toml").read()
+          match = re.search(r'^dfo-spec-kit = .*rev = "([0-9a-f]+)"', text, re.MULTILINE)
+          if not match:
+              sys.exit("could not resolve the dfo-spec-kit pin from pyproject.toml")
+          print(match.group(1))
+          PY
+          )
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+
+      # The engine extra pulls dfo-spec-kit as a git dependency, and the vector
+      # checkout below reads the same private repo, so both use this token.
+      - name: Authenticate git for the dfo-spec-kit dependency
+        id: spec-kit-auth
+        uses: ./.github/actions/spec-kit-auth
+        with:
+          client-id: ${{ vars.READER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.READER_APP_PRIVATE_KEY }}
+
+      # The identity vector suite is the normative conformance target and lives
+      # in dfo-spec-kit, a private repo the default GITHUB_TOKEN cannot read.
+      - name: Check out the identity vector suite
+        uses: actions/checkout@v7
+        with:
+          repository: ONEcampaign/dfo-spec-kit
+          ref: ${{ steps.spec-kit-rev.outputs.rev }}
+          path: .spec-kit
+          token: ${{ steps.spec-kit-auth.outputs.token }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependencies
+        run: uv sync ${{ env.UV_SYNC_ARGS }} --no-default-groups --group test
+
+      # The per-test durations pytest-split divides the shards by, as the
+      # latest push to dev recorded them (the `test` job saves them). The key
+      # never matches, so restore-keys takes the newest entry; a PR reads dev's
+      # entries because dev is the default branch. With no entry the shards
+      # divide by test count, which left a dev run's shards at 829s, 661s and
+      # 241s.
+      - name: Restore recorded test durations
+        uses: actions/cache/restore@v6
+        with:
+          path: .test_durations
+          key: test-durations-${{ github.sha }}
+          restore-keys: test-durations-
+
+      - name: Run tests
+        env:
+          DFO_SPEC_KIT_DIR: ${{ github.workspace }}/.spec-kit
+          # Turns a missing or moved vector suite into a failure rather than a
+          # silent module-level skip.
+          DFO_SPEC_KIT_REQUIRED: "1"
+        # -n auto lives here rather than in [tool.pytest.ini_options] addopts
+        # so it never applies to a targeted single-test run, where it would
+        # interleave output and break pdb. The `--splits` count has to match the
+        # matrix length above by hand, as GitHub exposes no expression for it.
+        # A test id missing from the restored durations is weighed at their
+        # mean, so tests added since the last dev push shift the balance only
+        # slightly. `--clean-durations` rewrites the file with the timings of
+        # this shard's tests alone, so the `test` job's union of the three files
+        # holds every current test and none that was deleted.
+        run: uv run pytest -q -n auto --splits 3 --group ${{ matrix.group }} --store-durations --clean-durations
+
+      - name: Upload this shard's durations
+        if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        uses: actions/upload-artifact@v7
+        with:
+          name: test-durations-${{ matrix.group }}
+          path: .test_durations
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  # Branch protection on dev requires a check named `test`. The shards report as
+  # `test-shard (1)` and so on, so this fan-in holds that name and stays the one
+  # to require. `always()` is load-bearing: without it a failing shard leaves
+  # this job skipped, and GitHub counts a skipped required check as satisfied.
+  test:
+    # Waits on test-shard, which runs in ONEcampaign only; a skipped shard would fail this job.
+    if: >-
+      always() &&
+      github.repository_owner == 'ONEcampaign' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
+    needs: test-shard
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every shard to have passed
+        run: |
+          result='${{ needs.test-shard.result }}'
+          if [ "$result" != "success" ]; then
+            echo "test shards reported: $result"
+            exit 1
+          fi
+          echo "all test shards passed"
+
+      # A push to dev saves the shards' timings for the next runs to split by.
+      # The count of 3 matches the matrix above.
+      - name: Download the shards' durations
+        if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        uses: actions/download-artifact@v8
+        with:
+          pattern: test-durations-*
+
+      - name: Merge the shards' durations
+        if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, sys
+          files = sorted(pathlib.Path().glob("test-durations-*/.test_durations"))
+          if len(files) != 3:
+              sys.exit(f"expected one durations file per shard, found {len(files)}")
+          merged = {}
+          for path in files:
+              merged.update(json.loads(path.read_text()))
+          pathlib.Path(".test_durations").write_text(json.dumps(merged, sort_keys=True))
+          print(f"merged {len(merged)} test durations from {len(files)} shards")
+          PY
+
+      - name: Save the merged durations
+        if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+        uses: actions/cache/save@v6
+        with:
+          path: .test_durations
+          key: test-durations-${{ github.sha }}
+
+  install:
+    # Verifies the dependency resolves and installs from a clean environment
+    # (no repo-local uv cache carried over from the other jobs), independent
+    # of whatever the test job's pytest run happens to exercise.
+    # Mints a dfo-reader token, which prod keeps only in main-limited
+    # environments, so this runs in ONEcampaign only. The identical tree
+    # ran it here before it was synced.
+    if: >-
+      github.repository_owner == 'ONEcampaign' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+
+      - name: Authenticate git for the dfo-spec-kit dependency
+        uses: ./.github/actions/spec-kit-auth
+        with:
+          client-id: ${{ vars.READER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.READER_APP_PRIVATE_KEY }}
+
+      - name: Install dependencies
+        run: uv sync --frozen --no-default-groups --extra engine --extra datasets --extra graph
+
+      - name: Smoke-check the dfo-spec-kit import
+        run: uv run python -c "import dfo_spec_kit.identity"
+
+      - name: Smoke-check the dfo_frame_grammar import
+        run: uv run python -c "import dfo_frame_grammar"
+
+  datasets_only_install:
+    # Proves the datasets+graph install is fully self-sufficient: fastapi
+    # lives in the shared `api` extra (pyproject.toml), which `datasets` and
+    # `graph` both pull in transitively, so this job installs without the
+    # `engine` extra and still imports every door those two extras ship,
+    # including datasets_api and graph_api's own fastapi-backed modules.
+    # Mints a dfo-reader token, which prod keeps only in main-limited
+    # environments, so this runs in ONEcampaign only. The identical tree
+    # ran it here before it was synced.
+    if: >-
+      github.repository_owner == 'ONEcampaign' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+
+      - name: Authenticate git for the dfo-spec-kit dependency
+        uses: ./.github/actions/spec-kit-auth
+        with:
+          client-id: ${{ vars.READER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.READER_APP_PRIVATE_KEY }}
+
+      - name: Install dependencies (datasets only -- no engine extra)
+        run: uv sync --frozen --no-default-groups --extra datasets --extra graph
+
+      - name: Smoke-check materialise, dfo_platform, dataset_store, datasets_api, and graph_api import
+        run: uv run python -c "import materialise; import dfo_platform; import dataset_store; import datasets_api; import graph_api; print('ok')"
+
+  package-install:
+    # Proves the dfo-data-tools member installs on its own, as the
+    # commit-pinned git dependency with a subdirectory that external
+    # consumers (dfo-ai) use, into a clean environment carrying none of the
+    # other jobs' caches. The explicit `@$(git rev-parse HEAD)` is required:
+    # this checkout is detached HEAD, which has no default branch for a bare
+    # git+file:// URL to fall back to.
+    # Mints a dfo-reader token, which prod keeps only in main-limited
+    # environments, so this runs in ONEcampaign only. The identical tree
+    # ran it here before it was synced.
+    if: >-
+      github.repository_owner == 'ONEcampaign' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+
+      - name: Authenticate git for the dfo-spec-kit dependency
+        uses: ./.github/actions/spec-kit-auth
+        with:
+          client-id: ${{ vars.READER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.READER_APP_PRIVATE_KEY }}
+
+      - name: Create a fresh venv
+        run: uv venv
+
+      - name: Install dfo-data-tools as a standalone git dependency
+        run: |
+          uv pip install "dfo-data-tools @ git+file://$GITHUB_WORKSPACE@$(git rev-parse HEAD)#subdirectory=packages/dfo-data-tools"
+
+      - name: Assert the installed set carries no surface, formats, sdmx, generation, or storage dependencies
+        run: |
+          offenders=""
+          for pkg in fastapi uvicorn starlette openpyxl httpx google-auth resolvekit numpy cloud-sql-python-connector pg8000 google-cloud-storage; do
+            if uv pip list | grep -qi "^${pkg} "; then
+              offenders="$offenders $pkg"
+            fi
+          done
+          if [ -n "$offenders" ]; then
+            echo "::error::Standalone dfo-data-tools install pulled in disallowed packages:$offenders"
+            exit 1
+          fi
+
+      # `uv run` is deliberately not used here: at $GITHUB_WORKSPACE (the
+      # workspace root) it would sync the root project's own lockfile into
+      # this venv, undoing the point of a standalone install. The venv's own
+      # interpreter is invoked directly instead. `assembler` (jsonschema plus
+      # the frame grammar, both core dependencies) is the one module
+      # `presentation_api`/`presentation_store` need from this package that a
+      # bare, no-extras install actually carries -- materialise and dc_sdmx
+      # need the `sdmx` extra (httpx, pyarrow), checked below.
+      - name: Smoke-check the pure imports
+        run: .venv/bin/python -c "import assembler; import dfo_platform; import dfo_spec_kit.registry; print('ok')"
+
+      - name: Confirm dfo_platform.app is absent without the surface extra
+        run: |
+          if .venv/bin/python -c "import dfo_platform.app" 2>/dev/null; then
+            echo "::error::import dfo_platform.app succeeded without the surface extra installed."
+            exit 1
+          fi
+
+      - name: Confirm materialise and dc_sdmx are absent without the sdmx extra
+        run: |
+          if .venv/bin/python -c "import materialise" 2>/dev/null; then
+            echo "::error::import materialise succeeded without the sdmx extra installed."
+            exit 1
+          fi
+          if .venv/bin/python -c "import dc_sdmx" 2>/dev/null; then
+            echo "::error::import dc_sdmx succeeded without the sdmx extra installed."
+            exit 1
+          fi
+
+      - name: Confirm materialise.formats is absent without the formats extra
+        run: |
+          if .venv/bin/python -c "import materialise.formats" 2>/dev/null; then
+            echo "::error::import materialise.formats succeeded without the formats extra installed."
+            exit 1
+          fi
+
+      # A separate venv from the bare install above, since the sdmx extra
+      # is what code-index-live.yml and sdmx-live.yml install alone -- this
+      # is the one place that shape gets a positive import check, rather
+      # than only the negative "absent without it" checks above.
+      - name: Create a second fresh venv for the sdmx extra
+        run: uv venv .venv-sdmx
+
+      - name: Install dfo-data-tools[sdmx] as a standalone git dependency
+        run: |
+          uv pip install --python .venv-sdmx/bin/python \
+            "dfo-data-tools[sdmx] @ git+file://$GITHUB_WORKSPACE@$(git rev-parse HEAD)#subdirectory=packages/dfo-data-tools"
+
+      - name: Confirm materialise, dc_sdmx, and dc_graph import under the sdmx extra alone
+        run: .venv-sdmx/bin/python -c "import materialise; import dc_sdmx; import dc_graph; print('ok')"
+
+  docker:
+    # Mints a dfo-reader token, which prod keeps only in main-limited
+    # environments, so this runs in ONEcampaign only. The identical tree
+    # ran it here before it was synced.
+    if: >-
+      github.repository_owner == 'ONEcampaign' &&
+      (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      # The Dockerfile mounts this token as a BuildKit secret to resolve the
+      # private dfo-spec-kit dependency.
+      - name: Mint a dfo-spec-kit read token
+        id: spec-kit-auth
+        uses: ./.github/actions/spec-kit-auth
+        with:
+          client-id: ${{ vars.READER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.READER_APP_PRIVATE_KEY }}
+
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          load: true
+          provenance: false
+          tags: dfo-apis:ci
+          build-args: DFO_BUILD_COMMIT=${{ github.sha }}
+          cache-from: type=gha
+          # `ignore-error` keeps a GitHub cache-export hiccup from failing a
+          # build that already succeeded.
+          cache-to: type=gha,mode=max,ignore-error=true
+          secrets: |
+            spec_kit_token=${{ steps.spec-kit-auth.outputs.token }}
+
+      # Proves the Graph surface's resolvekit cache is actually baked and
+      # takes the cache-hit path: `--read-only` means any cache miss (wrong
+      # key, a file still in WAL, a missing file) crashes the container
+      # before it can bind a port, so a served healthz response here is
+      # itself the proof. Do not weaken this to a writable run -- that would
+      # mask exactly the failure this job exists to catch.
+      #
+      # `deployed_surfaces()` mounts Search unconditionally, regardless of
+      # `DFO_GRAPH_SURFACE`, and Search's own surface construction loads the
+      # process-wide coverage artifact (`series_coverage.shared
+      # .get_coverage_service()`) before it can answer any request -- so this
+      # container needs a real `COVERAGE_ARTIFACT_URI` to start at all, the
+      # same recorded slice the test suite reads (`tests/fixtures
+      # /coverage_slice`), bind-mounted read-only alongside the read-only root
+      # filesystem. Search also loads the origin catalogue at construction
+      # (`origin_catalogue.service.get_catalogue_service`), so the job mounts
+      # the committed sample build (`tests/fixtures/origin_catalogue`, written
+      # by scripts/record_origin_catalogue_fixture.py) the same way. That
+      # directory holds a format root's contents, so it mounts at the root
+      # name the image reads (`origin_catalogue.schema.FORMAT_ROOT`). The slice
+      # covers a subset of the packaged code index's StatVars, so the coverage
+      # service would refuse it; COVERAGE_INDEX_CHECK=off serves it unchecked
+      # and logs a warning on every load. Search refuses to import without
+      # SEARCH_GRAPH_BASE, and healthz reads no graph, so an unroutable host
+      # is enough.
+      - name: Run the image read-only and confirm the Graph surface starts
+        run: |
+          format_root="$(docker run --rm dfo-apis:ci \
+            python -c 'from origin_catalogue.schema import FORMAT_ROOT; print(FORMAT_ROOT)')"
+
+          docker run -d --name dfo-apis-ci \
+            --read-only --tmpfs /tmp \
+            -v "$(pwd)/tests/fixtures/coverage_slice:/coverage-slice:ro" \
+            -v "$(pwd)/tests/fixtures/origin_catalogue:/origin-catalogue/${format_root}:ro" \
+            -p 8080:8080 \
+            -e DFO_GRAPH_SURFACE=1 \
+            -e GRAPH_DCP_BASE_URL=http://dcp.invalid \
+            -e GEMINI_API_KEY=ci-not-a-real-key \
+            -e SEARCH_GRAPH_BASE=https://graph.invalid \
+            -e COVERAGE_ARTIFACT_URI=file:///coverage-slice \
+            -e COVERAGE_INDEX_CHECK=off \
+            -e ORIGIN_CATALOGUE_URI=file:///origin-catalogue \
+            dfo-apis:ci
+
+          ok=""
+          for _ in $(seq 1 30); do
+            if [ "$(docker inspect -f '{{.State.Running}}' dfo-apis-ci)" != "true" ]; then
+              echo "::error::container exited before answering healthz"
+              break
+            fi
+            if curl -sf --max-time 2 http://localhost:8080/api/graph/healthz > /dev/null; then
+              ok=1
+              break
+            fi
+            sleep 1
+          done
+
+          # Once healthz answers, confirm the response carries the commit
+          # this job built the image from, the same value DFO_BUILD_COMMIT
+          # was passed as a build-arg above. This confirms the Dockerfile's
+          # ARG/ENV plumbing reaches a running container's responses.
+          commit_ok=""
+          if [ -n "$ok" ]; then
+            if curl -si --max-time 2 http://localhost:8080/api/graph/healthz \
+                | grep -qi "^x-dfo-commit: ${{ github.sha }}"; then
+              commit_ok=1
+            fi
+          fi
+
+          # Both are best-effort cleanup and diagnostics. Under `set -e` an
+          # unguarded failure here would exit before the gate below and
+          # replace the real reason with a docker error.
+          docker logs dfo-apis-ci || true
+          docker rm -f dfo-apis-ci > /dev/null || true
+
+          if [ -z "$ok" ]; then
+            echo "::error::Graph surface never answered /api/graph/healthz under --read-only"
+            exit 1
+          fi
+
+          if [ -z "$commit_ok" ]; then
+            echo "::error::/api/graph/healthz did not carry x-dfo-commit: ${{ github.sha }}"
+            exit 1
+          fi

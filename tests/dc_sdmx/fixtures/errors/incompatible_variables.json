@@ -1,0 +1,1 @@
+{"message": "resolveSdmxEntityShape: incompatible observationProperties for stat var \"single\": got [observationAbout], want [destinationCountry sourceCountry] from stat var \"multi\"", "code": 3}

@@ -1,0 +1,72 @@
+{
+  "measured_at": "2026-08-10T11:07:18.084897+00:00",
+  "per_member_seconds": 0.15,
+  "member_counts": [
+    1,
+    2,
+    4,
+    8
+  ],
+  "concurrency_levels": [
+    1,
+    4
+  ],
+  "measurements": [
+    {
+      "n_members": 1,
+      "member_concurrency": 1,
+      "wall_seconds": 0.15604399994481355,
+      "serial_baseline_seconds": 0.15,
+      "speedup": 0.9612673351942332
+    },
+    {
+      "n_members": 1,
+      "member_concurrency": 4,
+      "wall_seconds": 0.15579604194499552,
+      "serial_baseline_seconds": 0.15,
+      "speedup": 0.9627972452147285
+    },
+    {
+      "n_members": 2,
+      "member_concurrency": 1,
+      "wall_seconds": 0.3069446670124307,
+      "serial_baseline_seconds": 0.3,
+      "speedup": 0.9773748569081687
+    },
+    {
+      "n_members": 2,
+      "member_concurrency": 4,
+      "wall_seconds": 0.1529785000020638,
+      "serial_baseline_seconds": 0.3,
+      "speedup": 1.9610598874740748
+    },
+    {
+      "n_members": 4,
+      "member_concurrency": 1,
+      "wall_seconds": 0.6118848749902099,
+      "serial_baseline_seconds": 0.6,
+      "speedup": 0.9805766158374153
+    },
+    {
+      "n_members": 4,
+      "member_concurrency": 4,
+      "wall_seconds": 0.15510758303571492,
+      "serial_baseline_seconds": 0.6,
+      "speedup": 3.8682828283246766
+    },
+    {
+      "n_members": 8,
+      "member_concurrency": 1,
+      "wall_seconds": 1.2352589579531923,
+      "serial_baseline_seconds": 1.2,
+      "speedup": 0.971456221607479
+    },
+    {
+      "n_members": 8,
+      "member_concurrency": 4,
+      "wall_seconds": 0.3113698329543695,
+      "serial_baseline_seconds": 1.2,
+      "speedup": 3.853937899551936
+    }
+  ]
+}

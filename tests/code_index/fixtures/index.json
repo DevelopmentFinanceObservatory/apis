@@ -1,0 +1,4615 @@
+{
+  "stamp": {
+    "graph_endpoint": "https://dev.example/core/api",
+    "exported_at": "2026-09-09T00:00:00Z",
+    "code_counts": {
+      "crsPurpose": 289,
+      "crsTypeOfFinance": 65,
+      "crsCooperationModality": 35,
+      "crsTypeOfFlow": 9
+    },
+    "statvar_shape_counts": {
+      "crsPurpose": 9,
+      "crsTypeOfFinance": 9,
+      "crsTypeOfFlow": 9,
+      "crsCooperationModality": 2
+    },
+    "content_hash": "fixture-not-a-real-export",
+    "coverage_build": "fixture-coverage-build",
+    "statvars_without_coverage": 0
+  },
+  "declarations": [
+    {
+      "code_system": "crsPurpose",
+      "hierarchical": true,
+      "disjoint_from_children": true,
+      "summable": true,
+      "absent_reading": "not_declared",
+      "plain_name": "sector",
+      "default": null
+    },
+    {
+      "code_system": "crsTypeOfFinance",
+      "hierarchical": true,
+      "disjoint_from_children": true,
+      "summable": true,
+      "absent_reading": "not_declared",
+      "plain_name": "instrument",
+      "default": null
+    },
+    {
+      "code_system": "crsCooperationModality",
+      "hierarchical": true,
+      "disjoint_from_children": true,
+      "summable": true,
+      "absent_reading": "not_declared",
+      "plain_name": "modality",
+      "default": null
+    },
+    {
+      "code_system": "crsTypeOfFlow",
+      "hierarchical": false,
+      "disjoint_from_children": true,
+      "summable": true,
+      "absent_reading": "not_declared",
+      "plain_name": "flow",
+      "default": null
+    }
+  ],
+  "datasets": [
+    {
+      "provenance": "provenance/OECDCreditorReportingSystem",
+      "label": "OECD Creditor Reporting System (CRS)",
+      "synonyms": [
+        "CRS",
+        "creditor reporting system"
+      ],
+      "opt_in": false,
+      "absent_observation": "zero"
+    }
+  ],
+  "codes": [
+    {
+      "dcid": "CRSPurposeCode100",
+      "code_system": "crsPurpose",
+      "code": "100",
+      "label": "social infrastructure and services",
+      "synonyms": [
+        "SOCIAL INFRASTRUCTURE AND SERVICES"
+      ],
+      "short_name": null,
+      "parent": null
+    },
+    {
+      "dcid": "CRSPurposeCode110",
+      "code_system": "crsPurpose",
+      "code": "110",
+      "label": "education",
+      "synonyms": [
+        "Education"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode100"
+    },
+    {
+      "dcid": "CRSPurposeCode111",
+      "code_system": "crsPurpose",
+      "code": "111",
+      "label": "unspecified-level education",
+      "synonyms": [
+        "Education, level nnspecified"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode110"
+    },
+    {
+      "dcid": "CRSPurposeCode11110",
+      "code_system": "crsPurpose",
+      "code": "11110",
+      "label": "education policy and administrative management",
+      "synonyms": [
+        "education administration"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode111"
+    },
+    {
+      "dcid": "CRSPurposeCode11120",
+      "code_system": "crsPurpose",
+      "code": "11120",
+      "label": "education facility and training",
+      "synonyms": [
+        "education facilities and training"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode111"
+    },
+    {
+      "dcid": "CRSPurposeCode11130",
+      "code_system": "crsPurpose",
+      "code": "11130",
+      "label": "teacher training",
+      "synonyms": [
+        "educator training"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode111"
+    },
+    {
+      "dcid": "CRSPurposeCode11182",
+      "code_system": "crsPurpose",
+      "code": "11182",
+      "label": "educational research",
+      "synonyms": [
+        "education evaluation"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode111"
+    },
+    {
+      "dcid": "CRSPurposeCode112",
+      "code_system": "crsPurpose",
+      "code": "112",
+      "label": "basic education",
+      "synonyms": [
+        "Basic education"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode110"
+    },
+    {
+      "dcid": "CRSPurposeCode11220",
+      "code_system": "crsPurpose",
+      "code": "11220",
+      "label": "primary education",
+      "synonyms": [
+        "basic schooling"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode112"
+    },
+    {
+      "dcid": "CRSPurposeCode11230",
+      "code_system": "crsPurpose",
+      "code": "11230",
+      "label": "basic life skills for adults",
+      "synonyms": [
+        "adult basic education"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode112"
+    },
+    {
+      "dcid": "CRSPurposeCode11231",
+      "code_system": "crsPurpose",
+      "code": "11231",
+      "label": "basic life skills for youth",
+      "synonyms": [
+        "life skills education for youth"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode112"
+    },
+    {
+      "dcid": "CRSPurposeCode11232",
+      "code_system": "crsPurpose",
+      "code": "11232",
+      "label": "primary education equivalent for adults",
+      "synonyms": [
+        "adult elementary education"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode112"
+    },
+    {
+      "dcid": "CRSPurposeCode11240",
+      "code_system": "crsPurpose",
+      "code": "11240",
+      "label": "early childhood education",
+      "synonyms": [
+        "ECD"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode112"
+    },
+    {
+      "dcid": "CRSPurposeCode11250",
+      "code_system": "crsPurpose",
+      "code": "11250",
+      "label": "school feeding",
+      "synonyms": [
+        "food for education"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode112"
+    },
+    {
+      "dcid": "CRSPurposeCode11260",
+      "code_system": "crsPurpose",
+      "code": "11260",
+      "label": "lower secondary education",
+      "synonyms": [
+        "junior secondary education"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode112"
+    },
+    {
+      "dcid": "CRSPurposeCode113",
+      "code_system": "crsPurpose",
+      "code": "113",
+      "label": "upper secondary education",
+      "synonyms": [
+        "I.1.c. Upper secondary education"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode110"
+    },
+    {
+      "dcid": "CRSPurposeCode11320",
+      "code_system": "crsPurpose",
+      "code": "11320",
+      "label": "upper secondary schooling",
+      "synonyms": [
+        "Upper Secondary Education"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode113"
+    },
+    {
+      "dcid": "CRSPurposeCode11330",
+      "code_system": "crsPurpose",
+      "code": "11330",
+      "label": "vocational training",
+      "synonyms": [
+        "TVET"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode113"
+    },
+    {
+      "dcid": "CRSPurposeCode114",
+      "code_system": "crsPurpose",
+      "code": "114",
+      "label": "post-secondary education",
+      "synonyms": [
+        "I.1.d. Post-secondary education"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode110"
+    },
+    {
+      "dcid": "CRSPurposeCode11420",
+      "code_system": "crsPurpose",
+      "code": "11420",
+      "label": "higher education",
+      "synonyms": [
+        "degree programme"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode114"
+    },
+    {
+      "dcid": "CRSPurposeCode11430",
+      "code_system": "crsPurpose",
+      "code": "11430",
+      "label": "advanced technical and managerial training",
+      "synonyms": [
+        "Advanced technical and managerial training"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode114"
+    },
+    {
+      "dcid": "CRSPurposeCode120",
+      "code_system": "crsPurpose",
+      "code": "120",
+      "label": "health",
+      "synonyms": [
+        "Health"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode100"
+    },
+    {
+      "dcid": "CRSPurposeCode121",
+      "code_system": "crsPurpose",
+      "code": "121",
+      "label": "general health",
+      "synonyms": [
+        "Health, general"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode120"
+    },
+    {
+      "dcid": "CRSPurposeCode12110",
+      "code_system": "crsPurpose",
+      "code": "12110",
+      "label": "health policy and administrative management",
+      "synonyms": [
+        "health administration"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode121"
+    },
+    {
+      "dcid": "CRSPurposeCode12181",
+      "code_system": "crsPurpose",
+      "code": "12181",
+      "label": "medical education and training",
+      "synonyms": [
+        "clinical education"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode121"
+    },
+    {
+      "dcid": "CRSPurposeCode12182",
+      "code_system": "crsPurpose",
+      "code": "12182",
+      "label": "medical research",
+      "synonyms": [
+        "biomedical research"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode121"
+    },
+    {
+      "dcid": "CRSPurposeCode12191",
+      "code_system": "crsPurpose",
+      "code": "12191",
+      "label": "medical service",
+      "synonyms": [
+        "ambulance services"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode121"
+    },
+    {
+      "dcid": "CRSPurposeCode122",
+      "code_system": "crsPurpose",
+      "code": "122",
+      "label": "basic health",
+      "synonyms": [
+        "Basic health"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode120"
+    },
+    {
+      "dcid": "CRSPurposeCode12220",
+      "code_system": "crsPurpose",
+      "code": "12220",
+      "label": "basic health care",
+      "synonyms": [
+        "PHC"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode122"
+    },
+    {
+      "dcid": "CRSPurposeCode12230",
+      "code_system": "crsPurpose",
+      "code": "12230",
+      "label": "basic health infrastructure",
+      "synonyms": [
+        "dispensary"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode122"
+    },
+    {
+      "dcid": "CRSPurposeCode12240",
+      "code_system": "crsPurpose",
+      "code": "12240",
+      "label": "basic nutrition",
+      "synonyms": [
+        "food fortification"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode122"
+    },
+    {
+      "dcid": "CRSPurposeCode12250",
+      "code_system": "crsPurpose",
+      "code": "12250",
+      "label": "infectious disease control",
+      "synonyms": [
+        "communicable disease control"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode122"
+    },
+    {
+      "dcid": "CRSPurposeCode12261",
+      "code_system": "crsPurpose",
+      "code": "12261",
+      "label": "health education",
+      "synonyms": [
+        "health awareness"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode122"
+    },
+    {
+      "dcid": "CRSPurposeCode12262",
+      "code_system": "crsPurpose",
+      "code": "12262",
+      "label": "malaria control",
+      "synonyms": [
+        "anti-malaria"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode122"
+    },
+    {
+      "dcid": "CRSPurposeCode12263",
+      "code_system": "crsPurpose",
+      "code": "12263",
+      "label": "tuberculosis control",
+      "synonyms": [
+        "TB control"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode122"
+    },
+    {
+      "dcid": "CRSPurposeCode12264",
+      "code_system": "crsPurpose",
+      "code": "12264",
+      "label": "COVID-19 control",
+      "synonyms": [
+        "COVID control"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode122"
+    },
+    {
+      "dcid": "CRSPurposeCode12281",
+      "code_system": "crsPurpose",
+      "code": "12281",
+      "label": "health personnel development",
+      "synonyms": [
+        "community health worker training"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode122"
+    },
+    {
+      "dcid": "CRSPurposeCode123",
+      "code_system": "crsPurpose",
+      "code": "123",
+      "label": "noncommunicable disease",
+      "synonyms": [
+        "NCDs"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode120"
+    },
+    {
+      "dcid": "CRSPurposeCode12310",
+      "code_system": "crsPurpose",
+      "code": "12310",
+      "label": "general noncommunicable disease control",
+      "synonyms": [
+        "NCD control general"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode123"
+    },
+    {
+      "dcid": "CRSPurposeCode12320",
+      "code_system": "crsPurpose",
+      "code": "12320",
+      "label": "tobacco use control",
+      "synonyms": [
+        "FCTC implementation"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode123"
+    },
+    {
+      "dcid": "CRSPurposeCode12330",
+      "code_system": "crsPurpose",
+      "code": "12330",
+      "label": "control of harmful use of alcohol and drugs",
+      "synonyms": [
+        "alcohol and drug control"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode123"
+    },
+    {
+      "dcid": "CRSPurposeCode12340",
+      "code_system": "crsPurpose",
+      "code": "12340",
+      "label": "mental health and well-being promotion",
+      "synonyms": [
+        "Promotion of mental health and well-being"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode123"
+    },
+    {
+      "dcid": "CRSPurposeCode12350",
+      "code_system": "crsPurpose",
+      "code": "12350",
+      "label": "other noncommunicable disease prevention and treatment",
+      "synonyms": [
+        "NCD management"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode123"
+    },
+    {
+      "dcid": "CRSPurposeCode12382",
+      "code_system": "crsPurpose",
+      "code": "12382",
+      "label": "research for noncommunicable disease prevention and control",
+      "synonyms": [
+        "NCD research"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode123"
+    },
+    {
+      "dcid": "CRSPurposeCode130",
+      "code_system": "crsPurpose",
+      "code": "130",
+      "label": "population policy, programme, and reproductive health",
+      "synonyms": [
+        "Population policies/programmes and reproductive health"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode100"
+    },
+    {
+      "dcid": "CRSPurposeCode13010",
+      "code_system": "crsPurpose",
+      "code": "13010",
+      "label": "population policy and administrative management",
+      "synonyms": [
+        "Population policy and administrative management"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode130"
+    },
+    {
+      "dcid": "CRSPurposeCode13020",
+      "code_system": "crsPurpose",
+      "code": "13020",
+      "label": "reproductive health care",
+      "synonyms": [
+        "Reproductive health care"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode130"
+    },
+    {
+      "dcid": "CRSPurposeCode13030",
+      "code_system": "crsPurpose",
+      "code": "13030",
+      "label": "family planning",
+      "synonyms": [
+        "Family planning"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode130"
+    },
+    {
+      "dcid": "CRSPurposeCode13040",
+      "code_system": "crsPurpose",
+      "code": "13040",
+      "label": "sexually transmitted disease control",
+      "synonyms": [
+        "AIDS"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode130"
+    },
+    {
+      "dcid": "CRSPurposeCode13081",
+      "code_system": "crsPurpose",
+      "code": "13081",
+      "label": "personnel development for population and reproductive health",
+      "synonyms": [
+        "Personnel development for population and reproductive health"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode130"
+    },
+    {
+      "dcid": "CRSPurposeCode140",
+      "code_system": "crsPurpose",
+      "code": "140",
+      "label": "water supply and sanitation",
+      "synonyms": [
+        "I.4. Water supply and sanitation"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode100"
+    },
+    {
+      "dcid": "CRSPurposeCode14010",
+      "code_system": "crsPurpose",
+      "code": "14010",
+      "label": "water sector policy and administrative management",
+      "synonyms": [
+        "water governance"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode140"
+    },
+    {
+      "dcid": "CRSPurposeCode14015",
+      "code_system": "crsPurpose",
+      "code": "14015",
+      "label": "water resources conservation",
+      "synonyms": [
+        "Water resources conservation (including data collection)"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode140"
+    },
+    {
+      "dcid": "CRSPurposeCode14020",
+      "code_system": "crsPurpose",
+      "code": "14020",
+      "label": "large-scale water supply and sanitation system",
+      "synonyms": [
+        "Water supply and sanitation - large systems"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode140"
+    },
+    {
+      "dcid": "CRSPurposeCode14021",
+      "code_system": "crsPurpose",
+      "code": "14021",
+      "label": "large-scale water supply system",
+      "synonyms": [
+        "Water supply and sanitation - large systems"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode140"
+    },
+    {
+      "dcid": "CRSPurposeCode14022",
+      "code_system": "crsPurpose",
+      "code": "14022",
+      "label": "large-scale sanitation system",
+      "synonyms": [
+        "Sanitation - large systems"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode140"
+    },
+    {
+      "dcid": "CRSPurposeCode14030",
+      "code_system": "crsPurpose",
+      "code": "14030",
+      "label": "basic drinking water supply and basic sanitation",
+      "synonyms": [
+        "combined water and sanitation"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode140"
+    },
+    {
+      "dcid": "CRSPurposeCode14031",
+      "code_system": "crsPurpose",
+      "code": "14031",
+      "label": "basic drinking water supply",
+      "synonyms": [
+        "rural water supply"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode140"
+    },
+    {
+      "dcid": "CRSPurposeCode14032",
+      "code_system": "crsPurpose",
+      "code": "14032",
+      "label": "basic sanitation",
+      "synonyms": [],
+      "short_name": null,
+      "parent": "CRSPurposeCode140"
+    },
+    {
+      "dcid": "CRSPurposeCode14040",
+      "code_system": "crsPurpose",
+      "code": "14040",
+      "label": "river basin development",
+      "synonyms": [
+        "river basin management"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode140"
+    },
+    {
+      "dcid": "CRSPurposeCode14050",
+      "code_system": "crsPurpose",
+      "code": "14050",
+      "label": "waste management and disposal",
+      "synonyms": [
+        "Waste management/disposal"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode140"
+    },
+    {
+      "dcid": "CRSPurposeCode14081",
+      "code_system": "crsPurpose",
+      "code": "14081",
+      "label": "education and training in water supply and sanitation",
+      "synonyms": [
+        "sanitation training"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode140"
+    },
+    {
+      "dcid": "CRSPurposeCode150",
+      "code_system": "crsPurpose",
+      "code": "150",
+      "label": "government and civil society",
+      "synonyms": [
+        "I.5. Government and civil society"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode100"
+    },
+    {
+      "dcid": "CRSPurposeCode151",
+      "code_system": "crsPurpose",
+      "code": "151",
+      "label": "general government and civil society support",
+      "synonyms": [
+        "I.5.a. Government and civil society, general"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode150"
+    },
+    {
+      "dcid": "CRSPurposeCode15110",
+      "code_system": "crsPurpose",
+      "code": "15110",
+      "label": "public sector policy and administrative management",
+      "synonyms": [],
+      "short_name": null,
+      "parent": "CRSPurposeCode151"
+    },
+    {
+      "dcid": "CRSPurposeCode15111",
+      "code_system": "crsPurpose",
+      "code": "15111",
+      "label": "public finance management",
+      "synonyms": [
+        "PFM"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode151"
+    },
+    {
+      "dcid": "CRSPurposeCode15112",
+      "code_system": "crsPurpose",
+      "code": "15112",
+      "label": "decentralisation and support to subnational government",
+      "synonyms": [],
+      "short_name": null,
+      "parent": "CRSPurposeCode151"
+    },
+    {
+      "dcid": "CRSPurposeCode15113",
+      "code_system": "crsPurpose",
+      "code": "15113",
+      "label": "anti-corruption organisations and institutions",
+      "synonyms": [
+        "Anti-corruption  institutions"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode151"
+    },
+    {
+      "dcid": "CRSPurposeCode15114",
+      "code_system": "crsPurpose",
+      "code": "15114",
+      "label": "domestic revenue mobilisation",
+      "synonyms": [],
+      "short_name": null,
+      "parent": "CRSPurposeCode151"
+    },
+    {
+      "dcid": "CRSPurposeCode15125",
+      "code_system": "crsPurpose",
+      "code": "15125",
+      "label": "public procurement",
+      "synonyms": [],
+      "short_name": null,
+      "parent": "CRSPurposeCode151"
+    },
+    {
+      "dcid": "CRSPurposeCode15130",
+      "code_system": "crsPurpose",
+      "code": "15130",
+      "label": "legal and judicial development",
+      "synonyms": [],
+      "short_name": null,
+      "parent": "CRSPurposeCode151"
+    },
+    {
+      "dcid": "CRSPurposeCode15142",
+      "code_system": "crsPurpose",
+      "code": "15142",
+      "label": "macroeconomic policy",
+      "synonyms": [],
+      "short_name": null,
+      "parent": "CRSPurposeCode151"
+    },
+    {
+      "dcid": "CRSPurposeCode15150",
+      "code_system": "crsPurpose",
+      "code": "15150",
+      "label": "support for democratic participation and civil society",
+      "synonyms": [],
+      "short_name": null,
+      "parent": "CRSPurposeCode151"
+    },
+    {
+      "dcid": "CRSPurposeCode15151",
+      "code_system": "crsPurpose",
+      "code": "15151",
+      "label": "election",
+      "synonyms": [],
+      "short_name": null,
+      "parent": "CRSPurposeCode151"
+    },
+    {
+      "dcid": "CRSPurposeCode15152",
+      "code_system": "crsPurpose",
+      "code": "15152",
+      "label": "legislature and parliament strengthening",
+      "synonyms": [],
+      "short_name": null,
+      "parent": "CRSPurposeCode151"
+    },
+    {
+      "dcid": "CRSPurposeCode15153",
+      "code_system": "crsPurpose",
+      "code": "15153",
+      "label": "support for media and free flow of information",
+      "synonyms": [],
+      "short_name": null,
+      "parent": "CRSPurposeCode151"
+    },
+    {
+      "dcid": "CRSPurposeCode15160",
+      "code_system": "crsPurpose",
+      "code": "15160",
+      "label": "human rights institutions and mechanisms",
+      "synonyms": [],
+      "short_name": null,
+      "parent": "CRSPurposeCode151"
+    },
+    {
+      "dcid": "CRSPurposeCode15170",
+      "code_system": "crsPurpose",
+      "code": "15170",
+      "label": "women's rights organisations, movements, and institutions",
+      "synonyms": [
+        "WROS&M"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode151"
+    },
+    {
+      "dcid": "CRSPurposeCode15180",
+      "code_system": "crsPurpose",
+      "code": "15180",
+      "label": "support to end violence against women and girls",
+      "synonyms": [
+        "GBV"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode151"
+    },
+    {
+      "dcid": "CRSPurposeCode15190",
+      "code_system": "crsPurpose",
+      "code": "15190",
+      "label": "facilitation of orderly, safe, regular and responsible migration and mobility",
+      "synonyms": [],
+      "short_name": null,
+      "parent": "CRSPurposeCode151"
+    },
+    {
+      "dcid": "CRSPurposeCode152",
+      "code_system": "crsPurpose",
+      "code": "152",
+      "label": "conflict, peace and security",
+      "synonyms": [
+        "I.5.b. Conflict, peace and security"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode150"
+    },
+    {
+      "dcid": "CRSPurposeCode15210",
+      "code_system": "crsPurpose",
+      "code": "15210",
+      "label": "security system management and reform",
+      "synonyms": [
+        "Security System Management and Reform"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode152"
+    },
+    {
+      "dcid": "CRSPurposeCode15220",
+      "code_system": "crsPurpose",
+      "code": "15220",
+      "label": "civilian peace-building, conflict prevention and resolution",
+      "synonyms": [
+        "Civilian Peace-building, Conflict Prevention and Resolution"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode152"
+    },
+    {
+      "dcid": "CRSPurposeCode15230",
+      "code_system": "crsPurpose",
+      "code": "15230",
+      "label": "participation in international peacekeeping operations",
+      "synonyms": [
+        "Participation in International Peacekeeping Operations"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode152"
+    },
+    {
+      "dcid": "CRSPurposeCode15240",
+      "code_system": "crsPurpose",
+      "code": "15240",
+      "label": "reintegration and small arms and light weapons control",
+      "synonyms": [
+        "Reintegration and SALW Control"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode152"
+    },
+    {
+      "dcid": "CRSPurposeCode15250",
+      "code_system": "crsPurpose",
+      "code": "15250",
+      "label": "removal of land mines and explosive remnants of war",
+      "synonyms": [
+        "ERW"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode152"
+    },
+    {
+      "dcid": "CRSPurposeCode15261",
+      "code_system": "crsPurpose",
+      "code": "15261",
+      "label": "child soldier prevention and demobilisation",
+      "synonyms": [
+        "Child Soldiers (Prevention and Demobilisation)"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode152"
+    },
+    {
+      "dcid": "CRSPurposeCode160",
+      "code_system": "crsPurpose",
+      "code": "160",
+      "label": "other social infrastructure and services",
+      "synonyms": [
+        "I.6. Other social infrastructure and services Other Social Infrastructure and Services"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode100"
+    },
+    {
+      "dcid": "CRSPurposeCode16010",
+      "code_system": "crsPurpose",
+      "code": "16010",
+      "label": "social protection",
+      "synonyms": [
+        "Social Protection"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode160"
+    },
+    {
+      "dcid": "CRSPurposeCode16020",
+      "code_system": "crsPurpose",
+      "code": "16020",
+      "label": "employment creation",
+      "synonyms": [
+        "Employment Creation"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode160"
+    },
+    {
+      "dcid": "CRSPurposeCode16030",
+      "code_system": "crsPurpose",
+      "code": "16030",
+      "label": "housing policy and administrative management",
+      "synonyms": [
+        "Housing Policy and Administrative Management"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode160"
+    },
+    {
+      "dcid": "CRSPurposeCode16040",
+      "code_system": "crsPurpose",
+      "code": "16040",
+      "label": "low-cost housing",
+      "synonyms": [
+        "Low-cost Housing"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode160"
+    },
+    {
+      "dcid": "CRSPurposeCode16050",
+      "code_system": "crsPurpose",
+      "code": "16050",
+      "label": "multisector aid for basic social services",
+      "synonyms": [
+        "Multisector Aid for Basic Social Services"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode160"
+    },
+    {
+      "dcid": "CRSPurposeCode16061",
+      "code_system": "crsPurpose",
+      "code": "16061",
+      "label": "culture and cultural diversity",
+      "synonyms": [
+        "Culture and Cultural Diversity"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode160"
+    },
+    {
+      "dcid": "CRSPurposeCode16062",
+      "code_system": "crsPurpose",
+      "code": "16062",
+      "label": "statistical capacity building",
+      "synonyms": [
+        "Statistical Capacity Building"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode160"
+    },
+    {
+      "dcid": "CRSPurposeCode16063",
+      "code_system": "crsPurpose",
+      "code": "16063",
+      "label": "narcotics control",
+      "synonyms": [
+        "Narcotics Control"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode160"
+    },
+    {
+      "dcid": "CRSPurposeCode16064",
+      "code_system": "crsPurpose",
+      "code": "16064",
+      "label": "social mitigation of HIV and AIDS",
+      "synonyms": [
+        "AIDS mitigation"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode160"
+    },
+    {
+      "dcid": "CRSPurposeCode16070",
+      "code_system": "crsPurpose",
+      "code": "16070",
+      "label": "labour rights",
+      "synonyms": [
+        "Labour Rights"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode160"
+    },
+    {
+      "dcid": "CRSPurposeCode16080",
+      "code_system": "crsPurpose",
+      "code": "16080",
+      "label": "social dialogue",
+      "synonyms": [
+        "Social Dialogue"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode160"
+    },
+    {
+      "dcid": "CRSPurposeCode200",
+      "code_system": "crsPurpose",
+      "code": "200",
+      "label": "economic infrastructure and services",
+      "synonyms": [],
+      "short_name": null,
+      "parent": null
+    },
+    {
+      "dcid": "CRSPurposeCode210",
+      "code_system": "crsPurpose",
+      "code": "210",
+      "label": "transport and storage",
+      "synonyms": [
+        "II.1. Transport and storage"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode200"
+    },
+    {
+      "dcid": "CRSPurposeCode21010",
+      "code_system": "crsPurpose",
+      "code": "21010",
+      "label": "transport policy and administrative management",
+      "synonyms": [
+        "Transport Policy and Administrative Management"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode210"
+    },
+    {
+      "dcid": "CRSPurposeCode21020",
+      "code_system": "crsPurpose",
+      "code": "21020",
+      "label": "road transport",
+      "synonyms": [
+        "Road Transport"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode210"
+    },
+    {
+      "dcid": "CRSPurposeCode21030",
+      "code_system": "crsPurpose",
+      "code": "21030",
+      "label": "rail transport",
+      "synonyms": [
+        "Rail Transport"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode210"
+    },
+    {
+      "dcid": "CRSPurposeCode21040",
+      "code_system": "crsPurpose",
+      "code": "21040",
+      "label": "water transport",
+      "synonyms": [
+        "Water Transport"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode210"
+    },
+    {
+      "dcid": "CRSPurposeCode21050",
+      "code_system": "crsPurpose",
+      "code": "21050",
+      "label": "air transport",
+      "synonyms": [
+        "Air Transport"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode210"
+    },
+    {
+      "dcid": "CRSPurposeCode21061",
+      "code_system": "crsPurpose",
+      "code": "21061",
+      "label": "storage",
+      "synonyms": [
+        "Storage"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode210"
+    },
+    {
+      "dcid": "CRSPurposeCode21081",
+      "code_system": "crsPurpose",
+      "code": "21081",
+      "label": "education and training in transport and storage",
+      "synonyms": [
+        "Education and Training in Transport and Storage"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode210"
+    },
+    {
+      "dcid": "CRSPurposeCode220",
+      "code_system": "crsPurpose",
+      "code": "220",
+      "label": "communication system and technology",
+      "synonyms": [
+        "Communications"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode200"
+    },
+    {
+      "dcid": "CRSPurposeCode22010",
+      "code_system": "crsPurpose",
+      "code": "22010",
+      "label": "communications policy and administrative management",
+      "synonyms": [
+        "Communications Policy and Administrative Management"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode220"
+    },
+    {
+      "dcid": "CRSPurposeCode22020",
+      "code_system": "crsPurpose",
+      "code": "22020",
+      "label": "telecommunications",
+      "synonyms": [
+        "Telecommunications"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode220"
+    },
+    {
+      "dcid": "CRSPurposeCode22030",
+      "code_system": "crsPurpose",
+      "code": "22030",
+      "label": "radio, television, print and online media",
+      "synonyms": [
+        "Radio, Television, Print and Online Media"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode220"
+    },
+    {
+      "dcid": "CRSPurposeCode22040",
+      "code_system": "crsPurpose",
+      "code": "22040",
+      "label": "information and communication technology",
+      "synonyms": [
+        "ICT"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode220"
+    },
+    {
+      "dcid": "CRSPurposeCode22081",
+      "code_system": "crsPurpose",
+      "code": "22081",
+      "label": "education and training in information and communication technology, telecommunications and media",
+      "synonyms": [
+        "Education and Training in ICT, Telecommunications and Media"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode220"
+    },
+    {
+      "dcid": "CRSPurposeCode230",
+      "code_system": "crsPurpose",
+      "code": "230",
+      "label": "energy",
+      "synonyms": [
+        "Energy"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode200"
+    },
+    {
+      "dcid": "CRSPurposeCode231",
+      "code_system": "crsPurpose",
+      "code": "231",
+      "label": "energy policy",
+      "synonyms": [
+        "Energy Policy"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode230"
+    },
+    {
+      "dcid": "CRSPurposeCode23110",
+      "code_system": "crsPurpose",
+      "code": "23110",
+      "label": "energy policy and administrative management",
+      "synonyms": [
+        "Energy Policy and Administrative Management"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode231"
+    },
+    {
+      "dcid": "CRSPurposeCode23181",
+      "code_system": "crsPurpose",
+      "code": "23181",
+      "label": "energy education and training",
+      "synonyms": [
+        "Energy Education/Training"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode231"
+    },
+    {
+      "dcid": "CRSPurposeCode23182",
+      "code_system": "crsPurpose",
+      "code": "23182",
+      "label": "energy research",
+      "synonyms": [
+        "Energy Research"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode231"
+    },
+    {
+      "dcid": "CRSPurposeCode23183",
+      "code_system": "crsPurpose",
+      "code": "23183",
+      "label": "energy conservation and demand-side efficiency",
+      "synonyms": [
+        "Energy Conservation and Demand-side Efficiency"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode231"
+    },
+    {
+      "dcid": "CRSPurposeCode232",
+      "code_system": "crsPurpose",
+      "code": "232",
+      "label": "renewable energy generation",
+      "synonyms": [
+        "Energy Generation, Renewable Sources"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode230"
+    },
+    {
+      "dcid": "CRSPurposeCode23210",
+      "code_system": "crsPurpose",
+      "code": "23210",
+      "label": "renewable energy generation using multiple technologies",
+      "synonyms": [
+        "Energy Generation, Renewable Sources - Multiple Technologies"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode232"
+    },
+    {
+      "dcid": "CRSPurposeCode23220",
+      "code_system": "crsPurpose",
+      "code": "23220",
+      "label": "hydroelectric power plant",
+      "synonyms": [
+        "Hydro-electric power plants"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode232"
+    },
+    {
+      "dcid": "CRSPurposeCode23230",
+      "code_system": "crsPurpose",
+      "code": "23230",
+      "label": "solar energy for centralised grid",
+      "synonyms": [
+        "Solar Energy for Centralised Grids"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode232"
+    },
+    {
+      "dcid": "CRSPurposeCode23231",
+      "code_system": "crsPurpose",
+      "code": "23231",
+      "label": "solar energy for isolated grids and standalone system",
+      "synonyms": [
+        "Solar Energy for Isolated Grids and Standalone Systems"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode232"
+    },
+    {
+      "dcid": "CRSPurposeCode23232",
+      "code_system": "crsPurpose",
+      "code": "23232",
+      "label": "solar thermal energy",
+      "synonyms": [
+        "Solar Energy - Thermal Applications"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode232"
+    },
+    {
+      "dcid": "CRSPurposeCode23240",
+      "code_system": "crsPurpose",
+      "code": "23240",
+      "label": "wind energy generation",
+      "synonyms": [
+        "Wind Energy"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode232"
+    },
+    {
+      "dcid": "CRSPurposeCode23250",
+      "code_system": "crsPurpose",
+      "code": "23250",
+      "label": "marine energy generation",
+      "synonyms": [
+        "Marine Energy"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode232"
+    },
+    {
+      "dcid": "CRSPurposeCode23260",
+      "code_system": "crsPurpose",
+      "code": "23260",
+      "label": "geothermal energy generation",
+      "synonyms": [
+        "Geothermal Energy"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode232"
+    },
+    {
+      "dcid": "CRSPurposeCode23270",
+      "code_system": "crsPurpose",
+      "code": "23270",
+      "label": "biofuel-fired power plant",
+      "synonyms": [
+        "Biofuel-fired Power Plants"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode232"
+    },
+    {
+      "dcid": "CRSPurposeCode233",
+      "code_system": "crsPurpose",
+      "code": "233",
+      "label": "non-renewable energy generation",
+      "synonyms": [
+        "Energy Generation, Non-renewable Sources"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode230"
+    },
+    {
+      "dcid": "CRSPurposeCode23310",
+      "code_system": "crsPurpose",
+      "code": "23310",
+      "label": "unspecified non-renewable energy generation",
+      "synonyms": [
+        "Energy Generation, Non-renewable Sources, Unspecified"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode233"
+    },
+    {
+      "dcid": "CRSPurposeCode23320",
+      "code_system": "crsPurpose",
+      "code": "23320",
+      "label": "coal-fired electric power plant",
+      "synonyms": [
+        "Coal-fired Electric Power Plants"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode233"
+    },
+    {
+      "dcid": "CRSPurposeCode23330",
+      "code_system": "crsPurpose",
+      "code": "23330",
+      "label": "oil-fired electric power plant",
+      "synonyms": [
+        "Oil-fired Electric Power Plants"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode233"
+    },
+    {
+      "dcid": "CRSPurposeCode23340",
+      "code_system": "crsPurpose",
+      "code": "23340",
+      "label": "natural gas-fired electric power plant",
+      "synonyms": [
+        "Natural Gas-fired Electric Power Plants"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode233"
+    },
+    {
+      "dcid": "CRSPurposeCode23350",
+      "code_system": "crsPurpose",
+      "code": "23350",
+      "label": "fossil fuel electric power plant with carbon capture and storage",
+      "synonyms": [
+        "CCS"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode233"
+    },
+    {
+      "dcid": "CRSPurposeCode23360",
+      "code_system": "crsPurpose",
+      "code": "23360",
+      "label": "non-renewable waste-fired electric power plant",
+      "synonyms": [
+        "Non-renewable Waste-fired Electric Power Plants"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode233"
+    },
+    {
+      "dcid": "CRSPurposeCode234",
+      "code_system": "crsPurpose",
+      "code": "234",
+      "label": "hybrid energy plant",
+      "synonyms": [
+        "Hybrid Energy Plants"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode230"
+    },
+    {
+      "dcid": "CRSPurposeCode23410",
+      "code_system": "crsPurpose",
+      "code": "23410",
+      "label": "hybrid energy electric power plant",
+      "synonyms": [
+        "Hybrid Energy Electric Power Plants"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode234"
+    },
+    {
+      "dcid": "CRSPurposeCode235",
+      "code_system": "crsPurpose",
+      "code": "235",
+      "label": "nuclear energy plant",
+      "synonyms": [
+        "Nuclear Energy Plants"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode230"
+    },
+    {
+      "dcid": "CRSPurposeCode23510",
+      "code_system": "crsPurpose",
+      "code": "23510",
+      "label": "nuclear energy electric power plant and nuclear safety",
+      "synonyms": [
+        "Nuclear Energy Electric Power Plants and Nuclear Safety"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode235"
+    },
+    {
+      "dcid": "CRSPurposeCode236",
+      "code_system": "crsPurpose",
+      "code": "236",
+      "label": "energy distribution",
+      "synonyms": [
+        "Energy Distribution"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode230"
+    },
+    {
+      "dcid": "CRSPurposeCode23610",
+      "code_system": "crsPurpose",
+      "code": "23610",
+      "label": "heat plant",
+      "synonyms": [
+        "Heat Plants"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode236"
+    },
+    {
+      "dcid": "CRSPurposeCode23620",
+      "code_system": "crsPurpose",
+      "code": "23620",
+      "label": "district heating and cooling",
+      "synonyms": [
+        "District Heating and Cooling"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode236"
+    },
+    {
+      "dcid": "CRSPurposeCode23630",
+      "code_system": "crsPurpose",
+      "code": "23630",
+      "label": "electric power transmission and distribution for centralised grid",
+      "synonyms": [
+        "Electric Power Transmission and Distribution (Centralised Grids)"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode236"
+    },
+    {
+      "dcid": "CRSPurposeCode23631",
+      "code_system": "crsPurpose",
+      "code": "23631",
+      "label": "electric power transmission and distribution for isolated mini-grid",
+      "synonyms": [
+        "Electric Power Transmission and Distribution (Isolated Mini-grids)"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode236"
+    },
+    {
+      "dcid": "CRSPurposeCode23640",
+      "code_system": "crsPurpose",
+      "code": "23640",
+      "label": "retail gas distribution",
+      "synonyms": [
+        "Retail Gas Distribution"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode236"
+    },
+    {
+      "dcid": "CRSPurposeCode23641",
+      "code_system": "crsPurpose",
+      "code": "23641",
+      "label": "retail distribution of liquid or solid fossil fuel",
+      "synonyms": [
+        "Retail Distribution of Liquid or Solid Fossil Fuels"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode236"
+    },
+    {
+      "dcid": "CRSPurposeCode23642",
+      "code_system": "crsPurpose",
+      "code": "23642",
+      "label": "electric mobility infrastructure",
+      "synonyms": [
+        "EV infrastructure"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode236"
+    },
+    {
+      "dcid": "CRSPurposeCode240",
+      "code_system": "crsPurpose",
+      "code": "240",
+      "label": "banking and financial services",
+      "synonyms": [
+        "Banking and Financial Services"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode200"
+    },
+    {
+      "dcid": "CRSPurposeCode24010",
+      "code_system": "crsPurpose",
+      "code": "24010",
+      "label": "financial policy and administrative management",
+      "synonyms": [
+        "Financial Policy and Administrative Management"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode240"
+    },
+    {
+      "dcid": "CRSPurposeCode24020",
+      "code_system": "crsPurpose",
+      "code": "24020",
+      "label": "monetary institution",
+      "synonyms": [
+        "Monetary Institutions"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode240"
+    },
+    {
+      "dcid": "CRSPurposeCode24030",
+      "code_system": "crsPurpose",
+      "code": "24030",
+      "label": "formal sector financial intermediary",
+      "synonyms": [
+        "Formal Sector Financial Intermediaries"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode240"
+    },
+    {
+      "dcid": "CRSPurposeCode24040",
+      "code_system": "crsPurpose",
+      "code": "24040",
+      "label": "informal and semi-formal financial intermediary",
+      "synonyms": [
+        "Informal/Semi-formal Financial Intermediaries"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode240"
+    },
+    {
+      "dcid": "CRSPurposeCode24050",
+      "code_system": "crsPurpose",
+      "code": "24050",
+      "label": "remittance facilitation, promotion and optimisation",
+      "synonyms": [
+        "Remittance Facilitation, Promotion and Optimisation"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode240"
+    },
+    {
+      "dcid": "CRSPurposeCode24081",
+      "code_system": "crsPurpose",
+      "code": "24081",
+      "label": "education and training in banking and financial services",
+      "synonyms": [
+        "Education/Training in Banking and Financial Services"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode240"
+    },
+    {
+      "dcid": "CRSPurposeCode250",
+      "code_system": "crsPurpose",
+      "code": "250",
+      "label": "business environment and governance",
+      "synonyms": [
+        "Business and Other Services"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode200"
+    },
+    {
+      "dcid": "CRSPurposeCode25010",
+      "code_system": "crsPurpose",
+      "code": "25010",
+      "label": "business policy and administration",
+      "synonyms": [
+        "Business Policy and Administration"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode250"
+    },
+    {
+      "dcid": "CRSPurposeCode25020",
+      "code_system": "crsPurpose",
+      "code": "25020",
+      "label": "privatisation",
+      "synonyms": [
+        "Privatisation"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode250"
+    },
+    {
+      "dcid": "CRSPurposeCode25030",
+      "code_system": "crsPurpose",
+      "code": "25030",
+      "label": "business development service",
+      "synonyms": [
+        "BDS"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode250"
+    },
+    {
+      "dcid": "CRSPurposeCode25040",
+      "code_system": "crsPurpose",
+      "code": "25040",
+      "label": "responsible business conduct",
+      "synonyms": [
+        "ESG"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode250"
+    },
+    {
+      "dcid": "CRSPurposeCode300",
+      "code_system": "crsPurpose",
+      "code": "300",
+      "label": "productive sector",
+      "synonyms": [],
+      "short_name": null,
+      "parent": null
+    },
+    {
+      "dcid": "CRSPurposeCode310",
+      "code_system": "crsPurpose",
+      "code": "310",
+      "label": "agriculture, forestry and fishing",
+      "synonyms": [
+        "Agriculture, Forestry, Fishing"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode300"
+    },
+    {
+      "dcid": "CRSPurposeCode311",
+      "code_system": "crsPurpose",
+      "code": "311",
+      "label": "agriculture",
+      "synonyms": [
+        "Agriculture"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode310"
+    },
+    {
+      "dcid": "CRSPurposeCode31110",
+      "code_system": "crsPurpose",
+      "code": "31110",
+      "label": "agricultural policy and administrative management",
+      "synonyms": [
+        "Agricultural Policy and Administrative Management"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode311"
+    },
+    {
+      "dcid": "CRSPurposeCode31120",
+      "code_system": "crsPurpose",
+      "code": "31120",
+      "label": "agricultural development",
+      "synonyms": [
+        "Agricultural Development"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode311"
+    },
+    {
+      "dcid": "CRSPurposeCode31130",
+      "code_system": "crsPurpose",
+      "code": "31130",
+      "label": "agricultural land resource",
+      "synonyms": [
+        "Agricultural Land Resources"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode311"
+    },
+    {
+      "dcid": "CRSPurposeCode31140",
+      "code_system": "crsPurpose",
+      "code": "31140",
+      "label": "agricultural water resource",
+      "synonyms": [
+        "Agricultural Water Resources"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode311"
+    },
+    {
+      "dcid": "CRSPurposeCode31150",
+      "code_system": "crsPurpose",
+      "code": "31150",
+      "label": "agricultural input",
+      "synonyms": [
+        "Agricultural Inputs"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode311"
+    },
+    {
+      "dcid": "CRSPurposeCode31161",
+      "code_system": "crsPurpose",
+      "code": "31161",
+      "label": "food crop production",
+      "synonyms": [
+        "Food Crop Production"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode311"
+    },
+    {
+      "dcid": "CRSPurposeCode31162",
+      "code_system": "crsPurpose",
+      "code": "31162",
+      "label": "industrial and export crop production",
+      "synonyms": [
+        "Industrial Crops/Export Crops"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode311"
+    },
+    {
+      "dcid": "CRSPurposeCode31163",
+      "code_system": "crsPurpose",
+      "code": "31163",
+      "label": "livestock",
+      "synonyms": [
+        "Livestock"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode311"
+    },
+    {
+      "dcid": "CRSPurposeCode31164",
+      "code_system": "crsPurpose",
+      "code": "31164",
+      "label": "agrarian reform",
+      "synonyms": [
+        "Agrarian Reform"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode311"
+    },
+    {
+      "dcid": "CRSPurposeCode31165",
+      "code_system": "crsPurpose",
+      "code": "31165",
+      "label": "agricultural alternative development",
+      "synonyms": [
+        "Agricultural Alternative Development"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode311"
+    },
+    {
+      "dcid": "CRSPurposeCode31166",
+      "code_system": "crsPurpose",
+      "code": "31166",
+      "label": "agricultural extension",
+      "synonyms": [
+        "Agricultural Extension"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode311"
+    },
+    {
+      "dcid": "CRSPurposeCode31181",
+      "code_system": "crsPurpose",
+      "code": "31181",
+      "label": "agricultural education and training",
+      "synonyms": [
+        "Agricultural Education/Training"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode311"
+    },
+    {
+      "dcid": "CRSPurposeCode31182",
+      "code_system": "crsPurpose",
+      "code": "31182",
+      "label": "agricultural research",
+      "synonyms": [
+        "Agricultural Research"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode311"
+    },
+    {
+      "dcid": "CRSPurposeCode31191",
+      "code_system": "crsPurpose",
+      "code": "31191",
+      "label": "agricultural service",
+      "synonyms": [
+        "Agricultural Services"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode311"
+    },
+    {
+      "dcid": "CRSPurposeCode31192",
+      "code_system": "crsPurpose",
+      "code": "31192",
+      "label": "plant and post-harvest protection and pest control",
+      "synonyms": [
+        "IPM"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode311"
+    },
+    {
+      "dcid": "CRSPurposeCode31193",
+      "code_system": "crsPurpose",
+      "code": "31193",
+      "label": "agricultural financial service",
+      "synonyms": [
+        "Agricultural Financial Services"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode311"
+    },
+    {
+      "dcid": "CRSPurposeCode31194",
+      "code_system": "crsPurpose",
+      "code": "31194",
+      "label": "agricultural co-operative",
+      "synonyms": [
+        "Agricultural Co-operatives"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode311"
+    },
+    {
+      "dcid": "CRSPurposeCode31195",
+      "code_system": "crsPurpose",
+      "code": "31195",
+      "label": "livestock and veterinary service",
+      "synonyms": [
+        "Livestock/Veterinary Services"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode311"
+    },
+    {
+      "dcid": "CRSPurposeCode312",
+      "code_system": "crsPurpose",
+      "code": "312",
+      "label": "forestry",
+      "synonyms": [
+        "Forestry"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode310"
+    },
+    {
+      "dcid": "CRSPurposeCode31210",
+      "code_system": "crsPurpose",
+      "code": "31210",
+      "label": "forestry policy and administrative management",
+      "synonyms": [
+        "Forestry Policy and Administrative Management"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode312"
+    },
+    {
+      "dcid": "CRSPurposeCode31220",
+      "code_system": "crsPurpose",
+      "code": "31220",
+      "label": "forestry development",
+      "synonyms": [
+        "Forestry Development"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode312"
+    },
+    {
+      "dcid": "CRSPurposeCode31261",
+      "code_system": "crsPurpose",
+      "code": "31261",
+      "label": "fuelwood and charcoal",
+      "synonyms": [
+        "Fuelwood/Charcoal"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode312"
+    },
+    {
+      "dcid": "CRSPurposeCode31281",
+      "code_system": "crsPurpose",
+      "code": "31281",
+      "label": "forestry education and training",
+      "synonyms": [
+        "Forestry Education/Training"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode312"
+    },
+    {
+      "dcid": "CRSPurposeCode31282",
+      "code_system": "crsPurpose",
+      "code": "31282",
+      "label": "forestry research",
+      "synonyms": [
+        "Forestry Research"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode312"
+    },
+    {
+      "dcid": "CRSPurposeCode31291",
+      "code_system": "crsPurpose",
+      "code": "31291",
+      "label": "forestry service",
+      "synonyms": [
+        "Forestry Services"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode312"
+    },
+    {
+      "dcid": "CRSPurposeCode313",
+      "code_system": "crsPurpose",
+      "code": "313",
+      "label": "fishing",
+      "synonyms": [
+        "Fishing"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode310"
+    },
+    {
+      "dcid": "CRSPurposeCode31310",
+      "code_system": "crsPurpose",
+      "code": "31310",
+      "label": "fishing policy and administrative management",
+      "synonyms": [
+        "Fishing Policy and Administrative Management"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode313"
+    },
+    {
+      "dcid": "CRSPurposeCode31320",
+      "code_system": "crsPurpose",
+      "code": "31320",
+      "label": "fishery development",
+      "synonyms": [
+        "Fishery Development"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode313"
+    },
+    {
+      "dcid": "CRSPurposeCode31381",
+      "code_system": "crsPurpose",
+      "code": "31381",
+      "label": "fishery education and training",
+      "synonyms": [
+        "Fishery Education/Training"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode313"
+    },
+    {
+      "dcid": "CRSPurposeCode31382",
+      "code_system": "crsPurpose",
+      "code": "31382",
+      "label": "fishery research",
+      "synonyms": [
+        "Fishery Research"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode313"
+    },
+    {
+      "dcid": "CRSPurposeCode31391",
+      "code_system": "crsPurpose",
+      "code": "31391",
+      "label": "fishery service",
+      "synonyms": [
+        "Fishery Services"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode313"
+    },
+    {
+      "dcid": "CRSPurposeCode320",
+      "code_system": "crsPurpose",
+      "code": "320",
+      "label": "industry, mining and construction",
+      "synonyms": [
+        "III.2. Industry, mining, construction"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode300"
+    },
+    {
+      "dcid": "CRSPurposeCode321",
+      "code_system": "crsPurpose",
+      "code": "321",
+      "label": "industry",
+      "synonyms": [
+        "III.2.a. Industry"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode320"
+    },
+    {
+      "dcid": "CRSPurposeCode32110",
+      "code_system": "crsPurpose",
+      "code": "32110",
+      "label": "industrial policy and administrative management",
+      "synonyms": [
+        "Industrial Policy and Administrative Management"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode321"
+    },
+    {
+      "dcid": "CRSPurposeCode32120",
+      "code_system": "crsPurpose",
+      "code": "32120",
+      "label": "industrial development",
+      "synonyms": [
+        "Industrial Development"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode321"
+    },
+    {
+      "dcid": "CRSPurposeCode32130",
+      "code_system": "crsPurpose",
+      "code": "32130",
+      "label": "small and medium-sized enterprise development",
+      "synonyms": [
+        "MSME development"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode321"
+    },
+    {
+      "dcid": "CRSPurposeCode32140",
+      "code_system": "crsPurpose",
+      "code": "32140",
+      "label": "cottage industry and handicraft",
+      "synonyms": [
+        "Cottage Industries and Handicraft"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode321"
+    },
+    {
+      "dcid": "CRSPurposeCode32161",
+      "code_system": "crsPurpose",
+      "code": "32161",
+      "label": "agro-industry",
+      "synonyms": [
+        "Agro-industries"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode321"
+    },
+    {
+      "dcid": "CRSPurposeCode32162",
+      "code_system": "crsPurpose",
+      "code": "32162",
+      "label": "forest industry",
+      "synonyms": [
+        "Forest Industries"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode321"
+    },
+    {
+      "dcid": "CRSPurposeCode32163",
+      "code_system": "crsPurpose",
+      "code": "32163",
+      "label": "textile, leather and substitute production",
+      "synonyms": [
+        "Textiles, Leather and Substitutes"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode321"
+    },
+    {
+      "dcid": "CRSPurposeCode32164",
+      "code_system": "crsPurpose",
+      "code": "32164",
+      "label": "chemical production",
+      "synonyms": [
+        "Chemicals"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode321"
+    },
+    {
+      "dcid": "CRSPurposeCode32165",
+      "code_system": "crsPurpose",
+      "code": "32165",
+      "label": "fertilizer plant",
+      "synonyms": [
+        "Fertilizer Plants"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode321"
+    },
+    {
+      "dcid": "CRSPurposeCode32166",
+      "code_system": "crsPurpose",
+      "code": "32166",
+      "label": "cement, lime and plaster production",
+      "synonyms": [
+        "Cement/Lime/Plaster"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode321"
+    },
+    {
+      "dcid": "CRSPurposeCode32167",
+      "code_system": "crsPurpose",
+      "code": "32167",
+      "label": "fossil fuel energy manufacturing",
+      "synonyms": [
+        "Energy Manufacturing (Fossil Fuels)"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode321"
+    },
+    {
+      "dcid": "CRSPurposeCode32168",
+      "code_system": "crsPurpose",
+      "code": "32168",
+      "label": "pharmaceutical production",
+      "synonyms": [
+        "Pharmaceutical Production"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode321"
+    },
+    {
+      "dcid": "CRSPurposeCode32169",
+      "code_system": "crsPurpose",
+      "code": "32169",
+      "label": "basic metal industry",
+      "synonyms": [
+        "Basic Metal Industries"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode321"
+    },
+    {
+      "dcid": "CRSPurposeCode32170",
+      "code_system": "crsPurpose",
+      "code": "32170",
+      "label": "non-ferrous metal industry",
+      "synonyms": [
+        "Non-ferrous Metal Industries"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode321"
+    },
+    {
+      "dcid": "CRSPurposeCode32171",
+      "code_system": "crsPurpose",
+      "code": "32171",
+      "label": "industrial machinery manufacturing",
+      "synonyms": [
+        "Engineering"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode321"
+    },
+    {
+      "dcid": "CRSPurposeCode32172",
+      "code_system": "crsPurpose",
+      "code": "32172",
+      "label": "transport equipment industry",
+      "synonyms": [
+        "Transport Equipment Industry"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode321"
+    },
+    {
+      "dcid": "CRSPurposeCode32173",
+      "code_system": "crsPurpose",
+      "code": "32173",
+      "label": "modern biofuel manufacturing",
+      "synonyms": [
+        "Modern Biofuels Manufacturing"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode321"
+    },
+    {
+      "dcid": "CRSPurposeCode32174",
+      "code_system": "crsPurpose",
+      "code": "32174",
+      "label": "clean cooking appliance manufacturing, market development and distribution",
+      "synonyms": [
+        "Clean Cooking Appliances Manufacturing, Market Development and Distribution"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode321"
+    },
+    {
+      "dcid": "CRSPurposeCode32182",
+      "code_system": "crsPurpose",
+      "code": "32182",
+      "label": "technological research and development",
+      "synonyms": [
+        "Technological Research and Development"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode321"
+    },
+    {
+      "dcid": "CRSPurposeCode322",
+      "code_system": "crsPurpose",
+      "code": "322",
+      "label": "mineral resources and mining",
+      "synonyms": [
+        "III.2.b. Mineral resources and mining"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode320"
+    },
+    {
+      "dcid": "CRSPurposeCode32210",
+      "code_system": "crsPurpose",
+      "code": "32210",
+      "label": "mineral and mining policy and administrative management",
+      "synonyms": [
+        "Mineral/Mining Policy and Administrative Management"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode322"
+    },
+    {
+      "dcid": "CRSPurposeCode32220",
+      "code_system": "crsPurpose",
+      "code": "32220",
+      "label": "mineral prospection and exploration",
+      "synonyms": [
+        "Mineral Prospection and Exploration"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode322"
+    },
+    {
+      "dcid": "CRSPurposeCode32261",
+      "code_system": "crsPurpose",
+      "code": "32261",
+      "label": "coal mining",
+      "synonyms": [
+        "Coal"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode322"
+    },
+    {
+      "dcid": "CRSPurposeCode32262",
+      "code_system": "crsPurpose",
+      "code": "32262",
+      "label": "oil and gas extraction",
+      "synonyms": [
+        "LNG"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode322"
+    },
+    {
+      "dcid": "CRSPurposeCode32263",
+      "code_system": "crsPurpose",
+      "code": "32263",
+      "label": "ferrous metal mining",
+      "synonyms": [
+        "Ferrous Metals"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode322"
+    },
+    {
+      "dcid": "CRSPurposeCode32264",
+      "code_system": "crsPurpose",
+      "code": "32264",
+      "label": "nonferrous metal mining",
+      "synonyms": [
+        "Nonferrous Metals"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode322"
+    },
+    {
+      "dcid": "CRSPurposeCode32265",
+      "code_system": "crsPurpose",
+      "code": "32265",
+      "label": "precious metal and material mining",
+      "synonyms": [
+        "Precious Metals/Materials"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode322"
+    },
+    {
+      "dcid": "CRSPurposeCode32266",
+      "code_system": "crsPurpose",
+      "code": "32266",
+      "label": "industrial mineral extraction",
+      "synonyms": [
+        "Industrial Minerals"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode322"
+    },
+    {
+      "dcid": "CRSPurposeCode32267",
+      "code_system": "crsPurpose",
+      "code": "32267",
+      "label": "fertilizer mineral extraction",
+      "synonyms": [
+        "Fertilizer Minerals"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode322"
+    },
+    {
+      "dcid": "CRSPurposeCode32268",
+      "code_system": "crsPurpose",
+      "code": "32268",
+      "label": "offshore mineral extraction",
+      "synonyms": [
+        "Offshore Minerals"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode322"
+    },
+    {
+      "dcid": "CRSPurposeCode323",
+      "code_system": "crsPurpose",
+      "code": "323",
+      "label": "construction",
+      "synonyms": [
+        "Construction"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode320"
+    },
+    {
+      "dcid": "CRSPurposeCode32310",
+      "code_system": "crsPurpose",
+      "code": "32310",
+      "label": "construction policy and administrative management",
+      "synonyms": [
+        "Construction Policy and Administrative Management"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode323"
+    },
+    {
+      "dcid": "CRSPurposeCode331",
+      "code_system": "crsPurpose",
+      "code": "331",
+      "label": "trade policies and regulations",
+      "synonyms": [
+        "330"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode300"
+    },
+    {
+      "dcid": "CRSPurposeCode33110",
+      "code_system": "crsPurpose",
+      "code": "33110",
+      "label": "trade policy and administrative management",
+      "synonyms": [
+        "SPS"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode331"
+    },
+    {
+      "dcid": "CRSPurposeCode33120",
+      "code_system": "crsPurpose",
+      "code": "33120",
+      "label": "trade facilitation",
+      "synonyms": [
+        "Trade Facilitation"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode331"
+    },
+    {
+      "dcid": "CRSPurposeCode33130",
+      "code_system": "crsPurpose",
+      "code": "33130",
+      "label": "regional trade agreement",
+      "synonyms": [
+        "ACP/EU"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode331"
+    },
+    {
+      "dcid": "CRSPurposeCode33140",
+      "code_system": "crsPurpose",
+      "code": "33140",
+      "label": "multilateral trade negotiation",
+      "synonyms": [
+        "Multilateral Trade Negotiations"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode331"
+    },
+    {
+      "dcid": "CRSPurposeCode33150",
+      "code_system": "crsPurpose",
+      "code": "33150",
+      "label": "trade-related adjustment",
+      "synonyms": [
+        "Trade-related Adjustment"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode331"
+    },
+    {
+      "dcid": "CRSPurposeCode33181",
+      "code_system": "crsPurpose",
+      "code": "33181",
+      "label": "trade education and training",
+      "synonyms": [
+        "Trade Education/Training"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode331"
+    },
+    {
+      "dcid": "CRSPurposeCode332",
+      "code_system": "crsPurpose",
+      "code": "332",
+      "label": "tourism",
+      "synonyms": [
+        "III.3.b. Tourism"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode300"
+    },
+    {
+      "dcid": "CRSPurposeCode33210",
+      "code_system": "crsPurpose",
+      "code": "33210",
+      "label": "tourism policy and administrative management",
+      "synonyms": [
+        "Tourism Policy and Administrative Management"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode332"
+    },
+    {
+      "dcid": "CRSPurposeCode400",
+      "code_system": "crsPurpose",
+      "code": "400",
+      "label": "multisector",
+      "synonyms": [],
+      "short_name": null,
+      "parent": null
+    },
+    {
+      "dcid": "CRSPurposeCode410",
+      "code_system": "crsPurpose",
+      "code": "410",
+      "label": "general environment protection",
+      "synonyms": [
+        "General Environment Protection"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode400"
+    },
+    {
+      "dcid": "CRSPurposeCode41010",
+      "code_system": "crsPurpose",
+      "code": "41010",
+      "label": "environmental policy and administrative management",
+      "synonyms": [
+        "Environmental Policy and Administrative Management"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode410"
+    },
+    {
+      "dcid": "CRSPurposeCode41020",
+      "code_system": "crsPurpose",
+      "code": "41020",
+      "label": "biosphere protection",
+      "synonyms": [
+        "Biosphere Protection"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode410"
+    },
+    {
+      "dcid": "CRSPurposeCode41030",
+      "code_system": "crsPurpose",
+      "code": "41030",
+      "label": "biodiversity",
+      "synonyms": [
+        "Biodiversity"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode410"
+    },
+    {
+      "dcid": "CRSPurposeCode41040",
+      "code_system": "crsPurpose",
+      "code": "41040",
+      "label": "site preservation",
+      "synonyms": [
+        "Site Preservation"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode410"
+    },
+    {
+      "dcid": "CRSPurposeCode41081",
+      "code_system": "crsPurpose",
+      "code": "41081",
+      "label": "environmental education and training",
+      "synonyms": [
+        "Environmental Education/Training"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode410"
+    },
+    {
+      "dcid": "CRSPurposeCode41082",
+      "code_system": "crsPurpose",
+      "code": "41082",
+      "label": "environmental research",
+      "synonyms": [
+        "Environmental Research"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode410"
+    },
+    {
+      "dcid": "CRSPurposeCode430",
+      "code_system": "crsPurpose",
+      "code": "430",
+      "label": "other multisector",
+      "synonyms": [
+        "IV.2. Other Multisector"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode400"
+    },
+    {
+      "dcid": "CRSPurposeCode43010",
+      "code_system": "crsPurpose",
+      "code": "43010",
+      "label": "multisector aid",
+      "synonyms": [
+        "Multisector Aid"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode430"
+    },
+    {
+      "dcid": "CRSPurposeCode43030",
+      "code_system": "crsPurpose",
+      "code": "43030",
+      "label": "urban development and management",
+      "synonyms": [
+        "Urban Development and Management"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode430"
+    },
+    {
+      "dcid": "CRSPurposeCode43040",
+      "code_system": "crsPurpose",
+      "code": "43040",
+      "label": "rural development",
+      "synonyms": [
+        "Rural Development"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode430"
+    },
+    {
+      "dcid": "CRSPurposeCode43050",
+      "code_system": "crsPurpose",
+      "code": "43050",
+      "label": "non-agricultural alternative development",
+      "synonyms": [
+        "Non-agricultural Alternative Development"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode430"
+    },
+    {
+      "dcid": "CRSPurposeCode43060",
+      "code_system": "crsPurpose",
+      "code": "43060",
+      "label": "disaster risk reduction",
+      "synonyms": [
+        "DRR"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode430"
+    },
+    {
+      "dcid": "CRSPurposeCode43071",
+      "code_system": "crsPurpose",
+      "code": "43071",
+      "label": "food security policy and administrative management",
+      "synonyms": [
+        "Food Security Policy and Administrative Management"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode430"
+    },
+    {
+      "dcid": "CRSPurposeCode43072",
+      "code_system": "crsPurpose",
+      "code": "43072",
+      "label": "household food security programme",
+      "synonyms": [
+        "Household Food Security Programmes"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode430"
+    },
+    {
+      "dcid": "CRSPurposeCode43073",
+      "code_system": "crsPurpose",
+      "code": "43073",
+      "label": "food safety and quality",
+      "synonyms": [
+        "Food Safety and Quality"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode430"
+    },
+    {
+      "dcid": "CRSPurposeCode43081",
+      "code_system": "crsPurpose",
+      "code": "43081",
+      "label": "multisector education and training",
+      "synonyms": [
+        "Multisector Education/Training"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode430"
+    },
+    {
+      "dcid": "CRSPurposeCode43082",
+      "code_system": "crsPurpose",
+      "code": "43082",
+      "label": "research and scientific institution",
+      "synonyms": [
+        "Research/Scientific Institutions"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode430"
+    },
+    {
+      "dcid": "CRSPurposeCode500",
+      "code_system": "crsPurpose",
+      "code": "500",
+      "label": "commodity aid and general programme assistance",
+      "synonyms": [],
+      "short_name": null,
+      "parent": null
+    },
+    {
+      "dcid": "CRSPurposeCode510",
+      "code_system": "crsPurpose",
+      "code": "510",
+      "label": "budget support",
+      "synonyms": [
+        "GBS"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode500"
+    },
+    {
+      "dcid": "CRSPurposeCode51010",
+      "code_system": "crsPurpose",
+      "code": "51010",
+      "label": "general budget support",
+      "synonyms": [
+        "GBS"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode510"
+    },
+    {
+      "dcid": "CRSPurposeCode520",
+      "code_system": "crsPurpose",
+      "code": "520",
+      "label": "food assistance",
+      "synonyms": [
+        "Development Food Assistance"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode500"
+    },
+    {
+      "dcid": "CRSPurposeCode52010",
+      "code_system": "crsPurpose",
+      "code": "52010",
+      "label": "general food assistance",
+      "synonyms": [
+        "Food Assistance"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode520"
+    },
+    {
+      "dcid": "CRSPurposeCode530",
+      "code_system": "crsPurpose",
+      "code": "530",
+      "label": "other commodity assistance",
+      "synonyms": [
+        "Other Commodity Assistance"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode500"
+    },
+    {
+      "dcid": "CRSPurposeCode53030",
+      "code_system": "crsPurpose",
+      "code": "53030",
+      "label": "import support for capital goods",
+      "synonyms": [
+        "Import Support (Capital Goods)"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode530"
+    },
+    {
+      "dcid": "CRSPurposeCode53040",
+      "code_system": "crsPurpose",
+      "code": "53040",
+      "label": "import support for commodities",
+      "synonyms": [
+        "Import Support (Commodities)"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode530"
+    },
+    {
+      "dcid": "CRSPurposeCode600",
+      "code_system": "crsPurpose",
+      "code": "600",
+      "label": "action relating to debt",
+      "synonyms": [
+        "Action Relating to Debt"
+      ],
+      "short_name": null,
+      "parent": null
+    },
+    {
+      "dcid": "CRSPurposeCode60010",
+      "code_system": "crsPurpose",
+      "code": "60010",
+      "label": "general action relating to debt",
+      "synonyms": [
+        "Action Relating to Debt"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode600"
+    },
+    {
+      "dcid": "CRSPurposeCode60020",
+      "code_system": "crsPurpose",
+      "code": "60020",
+      "label": "debt forgiveness",
+      "synonyms": [
+        "Debt Forgiveness"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode600"
+    },
+    {
+      "dcid": "CRSPurposeCode60030",
+      "code_system": "crsPurpose",
+      "code": "60030",
+      "label": "relief of multilateral debt",
+      "synonyms": [
+        "HIPC"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode600"
+    },
+    {
+      "dcid": "CRSPurposeCode60040",
+      "code_system": "crsPurpose",
+      "code": "60040",
+      "label": "rescheduling and refinancing",
+      "synonyms": [
+        "Rescheduling and Refinancing"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode600"
+    },
+    {
+      "dcid": "CRSPurposeCode60061",
+      "code_system": "crsPurpose",
+      "code": "60061",
+      "label": "debt for development swap",
+      "synonyms": [
+        "Debt for Development Swap"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode600"
+    },
+    {
+      "dcid": "CRSPurposeCode60062",
+      "code_system": "crsPurpose",
+      "code": "60062",
+      "label": "other debt swap",
+      "synonyms": [
+        "Other Debt Swap"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode600"
+    },
+    {
+      "dcid": "CRSPurposeCode60063",
+      "code_system": "crsPurpose",
+      "code": "60063",
+      "label": "debt buy-back",
+      "synonyms": [
+        "Debt Buy-back"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode600"
+    },
+    {
+      "dcid": "CRSPurposeCode700",
+      "code_system": "crsPurpose",
+      "code": "700",
+      "label": "humanitarian aid",
+      "synonyms": [],
+      "short_name": null,
+      "parent": null
+    },
+    {
+      "dcid": "CRSPurposeCode720",
+      "code_system": "crsPurpose",
+      "code": "720",
+      "label": "emergency response",
+      "synonyms": [
+        "Emergency Response"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode700"
+    },
+    {
+      "dcid": "CRSPurposeCode72010",
+      "code_system": "crsPurpose",
+      "code": "72010",
+      "label": "material relief assistance and service",
+      "synonyms": [
+        "Material Relief Assistance and Services"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode720"
+    },
+    {
+      "dcid": "CRSPurposeCode72040",
+      "code_system": "crsPurpose",
+      "code": "72040",
+      "label": "emergency food assistance",
+      "synonyms": [
+        "Emergency Food Assistance"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode720"
+    },
+    {
+      "dcid": "CRSPurposeCode72050",
+      "code_system": "crsPurpose",
+      "code": "72050",
+      "label": "relief co-ordination and support service",
+      "synonyms": [
+        "Relief Co-ordination and Support Services"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode720"
+    },
+    {
+      "dcid": "CRSPurposeCode730",
+      "code_system": "crsPurpose",
+      "code": "730",
+      "label": "reconstruction and rehabilitation",
+      "synonyms": [
+        "Reconstruction and Rehabilitation"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode700"
+    },
+    {
+      "dcid": "CRSPurposeCode73010",
+      "code_system": "crsPurpose",
+      "code": "73010",
+      "label": "immediate post-emergency reconstruction and rehabilitation",
+      "synonyms": [
+        "Immediate Post-emergency Reconstruction and Rehabilitation"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode730"
+    },
+    {
+      "dcid": "CRSPurposeCode740",
+      "code_system": "crsPurpose",
+      "code": "740",
+      "label": "disaster preparedness",
+      "synonyms": [
+        "Disaster Preparedness"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode700"
+    },
+    {
+      "dcid": "CRSPurposeCode74020",
+      "code_system": "crsPurpose",
+      "code": "74020",
+      "label": "multi-hazard response preparedness",
+      "synonyms": [
+        "Multi-hazard Response Preparedness"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode740"
+    },
+    {
+      "dcid": "CRSPurposeCode910",
+      "code_system": "crsPurpose",
+      "code": "910",
+      "label": "administrative costs of donors",
+      "synonyms": [
+        "Administrative Costs of Donors"
+      ],
+      "short_name": null,
+      "parent": null
+    },
+    {
+      "dcid": "CRSPurposeCode91010",
+      "code_system": "crsPurpose",
+      "code": "91010",
+      "label": "non-sector allocable administrative costs",
+      "synonyms": [
+        "Administrative Costs (Non-sector Allocable)"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode910"
+    },
+    {
+      "dcid": "CRSPurposeCode930",
+      "code_system": "crsPurpose",
+      "code": "930",
+      "label": "support for refugees and asylum seekers in donor countries",
+      "synonyms": [
+        "Refugees/Asylum Seekers in Donor Countries"
+      ],
+      "short_name": null,
+      "parent": null
+    },
+    {
+      "dcid": "CRSPurposeCode93010",
+      "code_system": "crsPurpose",
+      "code": "93010",
+      "label": "general support for refugees and asylum seekers in donor countries",
+      "synonyms": [
+        "Refugees/Asylum Seekers in Donor Countries (Non-sector Allocable)"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode930"
+    },
+    {
+      "dcid": "CRSPurposeCode998",
+      "code_system": "crsPurpose",
+      "code": "998",
+      "label": "unallocated and unspecified",
+      "synonyms": [
+        "Unallocated / Unspecified"
+      ],
+      "short_name": null,
+      "parent": null
+    },
+    {
+      "dcid": "CRSPurposeCode99810",
+      "code_system": "crsPurpose",
+      "code": "99810",
+      "label": "sectors not specified",
+      "synonyms": [
+        "Sectors Not Specified"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode998"
+    },
+    {
+      "dcid": "CRSPurposeCode99820",
+      "code_system": "crsPurpose",
+      "code": "99820",
+      "label": "non-sector allocable promotion of development awareness",
+      "synonyms": [
+        "Promotion of Development Awareness (Non-sector Allocable)"
+      ],
+      "short_name": null,
+      "parent": "CRSPurposeCode998"
+    },
+    {
+      "dcid": "CRSTypeOfFinance0",
+      "code_system": "crsTypeOfFinance",
+      "code": "0",
+      "label": "non-flow item",
+      "synonyms": [
+        "NON FLOW ITEMS"
+      ],
+      "short_name": "non-flow items",
+      "parent": null
+    },
+    {
+      "dcid": "CRSTypeOfFinance1",
+      "code_system": "crsTypeOfFinance",
+      "code": "1",
+      "label": "gross national income",
+      "synonyms": [
+        "GNI"
+      ],
+      "short_name": "gross national income",
+      "parent": "CRSTypeOfFinance0"
+    },
+    {
+      "dcid": "CRSTypeOfFinance100",
+      "code_system": "crsTypeOfFinance",
+      "code": "100",
+      "label": "grant",
+      "synonyms": [
+        "grants"
+      ],
+      "short_name": "grants",
+      "parent": null
+    },
+    {
+      "dcid": "CRSTypeOfFinance1000",
+      "code_system": "crsTypeOfFinance",
+      "code": "1000",
+      "label": "guarantee and other unfunded contingent liability",
+      "synonyms": [
+        "contingent liability"
+      ],
+      "short_name": "guarantees and other unfunded contingent liabilities",
+      "parent": null
+    },
+    {
+      "dcid": "CRSTypeOfFinance110",
+      "code_system": "crsTypeOfFinance",
+      "code": "110",
+      "label": "standard grant",
+      "synonyms": [
+        "cash grant"
+      ],
+      "short_name": "standard grants",
+      "parent": "CRSTypeOfFinance100"
+    },
+    {
+      "dcid": "CRSTypeOfFinance1100",
+      "code_system": "crsTypeOfFinance",
+      "code": "1100",
+      "label": "guarantee and insurance",
+      "synonyms": [
+        "Guarantees/insurance"
+      ],
+      "short_name": "guarantees and insurance",
+      "parent": "CRSTypeOfFinance1000"
+    },
+    {
+      "dcid": "CRSTypeOfFinance1101",
+      "code_system": "crsTypeOfFinance",
+      "code": "1101",
+      "label": "individual loan guarantee",
+      "synonyms": [
+        "individual loan guarantees"
+      ],
+      "short_name": "individual loan guarantees",
+      "parent": "CRSTypeOfFinance1000"
+    },
+    {
+      "dcid": "CRSTypeOfFinance1102",
+      "code_system": "crsTypeOfFinance",
+      "code": "1102",
+      "label": "loan portfolio guarantee",
+      "synonyms": [
+        "loan portfolio guarantees"
+      ],
+      "short_name": "loan portfolio guarantees",
+      "parent": "CRSTypeOfFinance1000"
+    },
+    {
+      "dcid": "CRSTypeOfFinance1103",
+      "code_system": "crsTypeOfFinance",
+      "code": "1103",
+      "label": "individual mezzanine finance guarantee",
+      "synonyms": [
+        "individual mezzanine finance guarantees"
+      ],
+      "short_name": "individual mezzanine finance guarantees",
+      "parent": "CRSTypeOfFinance1000"
+    },
+    {
+      "dcid": "CRSTypeOfFinance1104",
+      "code_system": "crsTypeOfFinance",
+      "code": "1104",
+      "label": "mezzanine finance portfolio guarantee",
+      "synonyms": [
+        "mezzanine finance portfolio guarantees"
+      ],
+      "short_name": "mezzanine finance portfolio guarantees",
+      "parent": "CRSTypeOfFinance1000"
+    },
+    {
+      "dcid": "CRSTypeOfFinance1105",
+      "code_system": "crsTypeOfFinance",
+      "code": "1105",
+      "label": "individual equity finance guarantee",
+      "synonyms": [
+        "equity investment guarantee"
+      ],
+      "short_name": "individual equity finance guarantees",
+      "parent": "CRSTypeOfFinance1000"
+    },
+    {
+      "dcid": "CRSTypeOfFinance1106",
+      "code_system": "crsTypeOfFinance",
+      "code": "1106",
+      "label": "equity portfolio guarantee",
+      "synonyms": [
+        "equity portfolio guarantees"
+      ],
+      "short_name": "equity portfolio guarantees",
+      "parent": "CRSTypeOfFinance1000"
+    },
+    {
+      "dcid": "CRSTypeOfFinance1107",
+      "code_system": "crsTypeOfFinance",
+      "code": "1107",
+      "label": "first-loss guarantee",
+      "synonyms": [
+        "first loss guarantee"
+      ],
+      "short_name": "first-loss guarantees",
+      "parent": "CRSTypeOfFinance1000"
+    },
+    {
+      "dcid": "CRSTypeOfFinance1108",
+      "code_system": "crsTypeOfFinance",
+      "code": "1108",
+      "label": "other guarantee",
+      "synonyms": [
+        "miscellaneous guarantee"
+      ],
+      "short_name": "other guarantees",
+      "parent": "CRSTypeOfFinance1000"
+    },
+    {
+      "dcid": "CRSTypeOfFinance2",
+      "code_system": "crsTypeOfFinance",
+      "code": "2",
+      "label": "official development assistance as a percentage of gross national income",
+      "synonyms": [
+        "ODA % GNI"
+      ],
+      "short_name": "ODA as a share of GNI",
+      "parent": "CRSTypeOfFinance0"
+    },
+    {
+      "dcid": "CRSTypeOfFinance210",
+      "code_system": "crsTypeOfFinance",
+      "code": "210",
+      "label": "interest subsidy",
+      "synonyms": [
+        "export credit subsidy"
+      ],
+      "short_name": "interest subsidies",
+      "parent": "CRSTypeOfFinance100"
+    },
+    {
+      "dcid": "CRSTypeOfFinance3",
+      "code_system": "crsTypeOfFinance",
+      "code": "3",
+      "label": "total flows as a percentage of gross national income",
+      "synonyms": [
+        "Total Flows % GNI"
+      ],
+      "short_name": "total flows as a share of GNI",
+      "parent": "CRSTypeOfFinance0"
+    },
+    {
+      "dcid": "CRSTypeOfFinance310",
+      "code_system": "crsTypeOfFinance",
+      "code": "310",
+      "label": "capital subscription on deposit basis",
+      "synonyms": [
+        "capital subscriptions on deposit basis"
+      ],
+      "short_name": "capital subscriptions on deposit basis",
+      "parent": "CRSTypeOfFinance100"
+    },
+    {
+      "dcid": "CRSTypeOfFinance311",
+      "code_system": "crsTypeOfFinance",
+      "code": "311",
+      "label": "capital subscription on encashment basis",
+      "synonyms": [
+        "capital subscriptions on encashment basis"
+      ],
+      "short_name": "capital subscriptions on encashment basis",
+      "parent": "CRSTypeOfFinance100"
+    },
+    {
+      "dcid": "CRSTypeOfFinance4",
+      "code_system": "crsTypeOfFinance",
+      "code": "4",
+      "label": "population",
+      "synonyms": [
+        "population figures"
+      ],
+      "short_name": "population",
+      "parent": "CRSTypeOfFinance0"
+    },
+    {
+      "dcid": "CRSTypeOfFinance420",
+      "code_system": "crsTypeOfFinance",
+      "code": "420",
+      "label": "debt instrument",
+      "synonyms": [
+        "debt finance"
+      ],
+      "short_name": "debt instruments",
+      "parent": null
+    },
+    {
+      "dcid": "CRSTypeOfFinance421",
+      "code_system": "crsTypeOfFinance",
+      "code": "421",
+      "label": "standard loan",
+      "synonyms": [
+        "non-tradeable loan"
+      ],
+      "short_name": "loans",
+      "parent": "CRSTypeOfFinance420"
+    },
+    {
+      "dcid": "CRSTypeOfFinance422",
+      "code_system": "crsTypeOfFinance",
+      "code": "422",
+      "label": "reimbursable grant",
+      "synonyms": [
+        "contingent grant"
+      ],
+      "short_name": "reimbursable grants",
+      "parent": "CRSTypeOfFinance420"
+    },
+    {
+      "dcid": "CRSTypeOfFinance4221",
+      "code_system": "crsTypeOfFinance",
+      "code": "4221",
+      "label": "loan-type reimbursable grant",
+      "synonyms": [
+        "loan-type reimbursable grants"
+      ],
+      "short_name": "loan-type reimbursable grants",
+      "parent": "CRSTypeOfFinance422"
+    },
+    {
+      "dcid": "CRSTypeOfFinance4222",
+      "code_system": "crsTypeOfFinance",
+      "code": "4222",
+      "label": "reflow-based reimbursable grant",
+      "synonyms": [
+        "performance-based reimbursable grant"
+      ],
+      "short_name": "reflow-based reimbursable grants",
+      "parent": "CRSTypeOfFinance422"
+    },
+    {
+      "dcid": "CRSTypeOfFinance423",
+      "code_system": "crsTypeOfFinance",
+      "code": "423",
+      "label": "bond",
+      "synonyms": [
+        "bonds"
+      ],
+      "short_name": "bonds",
+      "parent": "CRSTypeOfFinance420"
+    },
+    {
+      "dcid": "CRSTypeOfFinance424",
+      "code_system": "crsTypeOfFinance",
+      "code": "424",
+      "label": "asset-backed security",
+      "synonyms": [
+        "ABS"
+      ],
+      "short_name": "asset-backed securities",
+      "parent": "CRSTypeOfFinance420"
+    },
+    {
+      "dcid": "CRSTypeOfFinance425",
+      "code_system": "crsTypeOfFinance",
+      "code": "425",
+      "label": "other debt security",
+      "synonyms": [
+        "other debt securities"
+      ],
+      "short_name": "other debt securities",
+      "parent": "CRSTypeOfFinance420"
+    },
+    {
+      "dcid": "CRSTypeOfFinance430",
+      "code_system": "crsTypeOfFinance",
+      "code": "430",
+      "label": "mezzanine finance instrument",
+      "synonyms": [
+        "hybrid finance instrument"
+      ],
+      "short_name": "mezzanine finance instruments",
+      "parent": null
+    },
+    {
+      "dcid": "CRSTypeOfFinance431",
+      "code_system": "crsTypeOfFinance",
+      "code": "431",
+      "label": "subordinated loan",
+      "synonyms": [
+        "junior debt"
+      ],
+      "short_name": "subordinated loans",
+      "parent": "CRSTypeOfFinance430"
+    },
+    {
+      "dcid": "CRSTypeOfFinance432",
+      "code_system": "crsTypeOfFinance",
+      "code": "432",
+      "label": "preferred equity",
+      "synonyms": [
+        "preference equity"
+      ],
+      "short_name": "preferred equity",
+      "parent": "CRSTypeOfFinance430"
+    },
+    {
+      "dcid": "CRSTypeOfFinance433",
+      "code_system": "crsTypeOfFinance",
+      "code": "433",
+      "label": "other hybrid instrument",
+      "synonyms": [
+        "convertible debt"
+      ],
+      "short_name": "other hybrid instruments",
+      "parent": "CRSTypeOfFinance430"
+    },
+    {
+      "dcid": "CRSTypeOfFinance434",
+      "code_system": "crsTypeOfFinance",
+      "code": "434",
+      "label": "multilateral hybrid capital",
+      "synonyms": [
+        "multilateral hybrid capital instruments"
+      ],
+      "short_name": "multilateral hybrid capital",
+      "parent": "CRSTypeOfFinance430"
+    },
+    {
+      "dcid": "CRSTypeOfFinance500",
+      "code_system": "crsTypeOfFinance",
+      "code": "500",
+      "label": "equity and share in collective investment vehicle",
+      "synonyms": [
+        "equity and shares in collective investment vehicles"
+      ],
+      "short_name": "equity",
+      "parent": null
+    },
+    {
+      "dcid": "CRSTypeOfFinance510",
+      "code_system": "crsTypeOfFinance",
+      "code": "510",
+      "label": "common equity",
+      "synonyms": [
+        "common equities"
+      ],
+      "short_name": "common equity",
+      "parent": "CRSTypeOfFinance500"
+    },
+    {
+      "dcid": "CRSTypeOfFinance520",
+      "code_system": "crsTypeOfFinance",
+      "code": "520",
+      "label": "share in collective investment vehicle",
+      "synonyms": [
+        "CIV share"
+      ],
+      "short_name": "shares in collective investment vehicles",
+      "parent": "CRSTypeOfFinance500"
+    },
+    {
+      "dcid": "CRSTypeOfFinance530",
+      "code_system": "crsTypeOfFinance",
+      "code": "530",
+      "label": "reinvested earning",
+      "synonyms": [
+        "FDI reinvested earnings"
+      ],
+      "short_name": "reinvested earnings",
+      "parent": "CRSTypeOfFinance500"
+    },
+    {
+      "dcid": "CRSTypeOfFinance600",
+      "code_system": "crsTypeOfFinance",
+      "code": "600",
+      "label": "debt relief",
+      "synonyms": [
+        "Debt Relief, finance type"
+      ],
+      "short_name": "debt relief",
+      "parent": null
+    },
+    {
+      "dcid": "CRSTypeOfFinance610",
+      "code_system": "crsTypeOfFinance",
+      "code": "610",
+      "label": "debt forgiveness of official development assistance claim on principal",
+      "synonyms": [
+        "Debt forgiveness: ODA claims (P)"
+      ],
+      "short_name": "debt forgiveness of ODA claims on principal",
+      "parent": "CRSTypeOfFinance600"
+    },
+    {
+      "dcid": "CRSTypeOfFinance611",
+      "code_system": "crsTypeOfFinance",
+      "code": "611",
+      "label": "debt forgiveness of official development assistance claim on interest",
+      "synonyms": [
+        "Debt forgiveness: ODA claims (I)"
+      ],
+      "short_name": "debt forgiveness of ODA claims on interest",
+      "parent": "CRSTypeOfFinance600"
+    },
+    {
+      "dcid": "CRSTypeOfFinance612",
+      "code_system": "crsTypeOfFinance",
+      "code": "612",
+      "label": "debt forgiveness of other official flow claim on principal",
+      "synonyms": [
+        "Debt forgiveness: OOF claims (P)"
+      ],
+      "short_name": "debt forgiveness of OOF claims on principal",
+      "parent": "CRSTypeOfFinance600"
+    },
+    {
+      "dcid": "CRSTypeOfFinance613",
+      "code_system": "crsTypeOfFinance",
+      "code": "613",
+      "label": "debt forgiveness of other official flow claim on interest",
+      "synonyms": [
+        "Debt forgiveness: OOF claims (I)"
+      ],
+      "short_name": "debt forgiveness of OOF claims on interest",
+      "parent": "CRSTypeOfFinance600"
+    },
+    {
+      "dcid": "CRSTypeOfFinance614",
+      "code_system": "crsTypeOfFinance",
+      "code": "614",
+      "label": "debt forgiveness of private claim on principal",
+      "synonyms": [
+        "Debt forgiveness: Private claims (P)"
+      ],
+      "short_name": "debt forgiveness of private claims on principal",
+      "parent": "CRSTypeOfFinance600"
+    },
+    {
+      "dcid": "CRSTypeOfFinance615",
+      "code_system": "crsTypeOfFinance",
+      "code": "615",
+      "label": "debt forgiveness of private claim on interest",
+      "synonyms": [
+        "Debt forgiveness: Private claims (I)"
+      ],
+      "short_name": "debt forgiveness of private claims on interest",
+      "parent": "CRSTypeOfFinance600"
+    },
+    {
+      "dcid": "CRSTypeOfFinance616",
+      "code_system": "crsTypeOfFinance",
+      "code": "616",
+      "label": "debt forgiveness of other official flow claim under debt service reduction",
+      "synonyms": [
+        "Debt forgiveness: OOF claims (DSR)"
+      ],
+      "short_name": "debt forgiveness of OOF claims under debt service reduction",
+      "parent": "CRSTypeOfFinance600"
+    },
+    {
+      "dcid": "CRSTypeOfFinance617",
+      "code_system": "crsTypeOfFinance",
+      "code": "617",
+      "label": "debt forgiveness of private claim under debt service reduction",
+      "synonyms": [
+        "Debt forgiveness: Private claims (DSR)"
+      ],
+      "short_name": "debt forgiveness of private claims under debt service reduction",
+      "parent": "CRSTypeOfFinance600"
+    },
+    {
+      "dcid": "CRSTypeOfFinance618",
+      "code_system": "crsTypeOfFinance",
+      "code": "618",
+      "label": "other debt forgiveness",
+      "synonyms": [
+        "Debt forgiveness: Other"
+      ],
+      "short_name": "other debt forgiveness",
+      "parent": "CRSTypeOfFinance600"
+    },
+    {
+      "dcid": "CRSTypeOfFinance620",
+      "code_system": "crsTypeOfFinance",
+      "code": "620",
+      "label": "debt rescheduling of official development assistance claim on principal",
+      "synonyms": [
+        "Debt rescheduling: ODA claims (P)"
+      ],
+      "short_name": "debt rescheduling of ODA claims on principal",
+      "parent": "CRSTypeOfFinance600"
+    },
+    {
+      "dcid": "CRSTypeOfFinance621",
+      "code_system": "crsTypeOfFinance",
+      "code": "621",
+      "label": "debt rescheduling of official development assistance claim on interest",
+      "synonyms": [
+        "Debt rescheduling: ODA claims (I)"
+      ],
+      "short_name": "debt rescheduling of ODA claims on interest",
+      "parent": "CRSTypeOfFinance600"
+    },
+    {
+      "dcid": "CRSTypeOfFinance622",
+      "code_system": "crsTypeOfFinance",
+      "code": "622",
+      "label": "debt rescheduling of other official flow claim on principal",
+      "synonyms": [
+        "Debt rescheduling: OOF claims (P)"
+      ],
+      "short_name": "debt rescheduling of OOF claims on principal",
+      "parent": "CRSTypeOfFinance600"
+    },
+    {
+      "dcid": "CRSTypeOfFinance623",
+      "code_system": "crsTypeOfFinance",
+      "code": "623",
+      "label": "debt rescheduling of other official flow claim on interest",
+      "synonyms": [
+        "Debt rescheduling: OOF claims (I)"
+      ],
+      "short_name": "debt rescheduling of OOF claims on interest",
+      "parent": "CRSTypeOfFinance600"
+    },
+    {
+      "dcid": "CRSTypeOfFinance624",
+      "code_system": "crsTypeOfFinance",
+      "code": "624",
+      "label": "debt rescheduling of private claim on principal",
+      "synonyms": [
+        "Debt rescheduling: Private claims (P)"
+      ],
+      "short_name": "debt rescheduling of private claims on principal",
+      "parent": "CRSTypeOfFinance600"
+    },
+    {
+      "dcid": "CRSTypeOfFinance625",
+      "code_system": "crsTypeOfFinance",
+      "code": "625",
+      "label": "debt rescheduling of private claim on interest",
+      "synonyms": [
+        "Debt rescheduling: Private claims (I)"
+      ],
+      "short_name": "debt rescheduling of private claims on interest",
+      "parent": "CRSTypeOfFinance600"
+    },
+    {
+      "dcid": "CRSTypeOfFinance626",
+      "code_system": "crsTypeOfFinance",
+      "code": "626",
+      "label": "debt rescheduling of other official flow claim under debt service reduction",
+      "synonyms": [
+        "Debt rescheduling: OOF claims (DSR)"
+      ],
+      "short_name": "debt rescheduling of OOF claims under debt service reduction",
+      "parent": "CRSTypeOfFinance600"
+    },
+    {
+      "dcid": "CRSTypeOfFinance627",
+      "code_system": "crsTypeOfFinance",
+      "code": "627",
+      "label": "debt rescheduling of private claim under debt service reduction",
+      "synonyms": [
+        "Debt rescheduling: Private claims (DSR)"
+      ],
+      "short_name": "debt rescheduling of private claims under debt service reduction",
+      "parent": "CRSTypeOfFinance600"
+    },
+    {
+      "dcid": "CRSTypeOfFinance630",
+      "code_system": "crsTypeOfFinance",
+      "code": "630",
+      "label": "debt rescheduling of other official flow claim under debt service reduction on original loan principal",
+      "synonyms": [
+        "Debt rescheduling: OOF claim (DSR \u2013 original loan principal)"
+      ],
+      "short_name": "debt rescheduling of OOF claims under debt service reduction on original loan principal",
+      "parent": "CRSTypeOfFinance600"
+    },
+    {
+      "dcid": "CRSTypeOfFinance631",
+      "code_system": "crsTypeOfFinance",
+      "code": "631",
+      "label": "debt rescheduling of other official flow claim under debt service reduction on original loan interest",
+      "synonyms": [
+        "Debt rescheduling: OOF claim (DSR \u2013 original loan interest)"
+      ],
+      "short_name": "debt rescheduling of OOF claims under debt service reduction on original loan interest",
+      "parent": "CRSTypeOfFinance600"
+    },
+    {
+      "dcid": "CRSTypeOfFinance632",
+      "code_system": "crsTypeOfFinance",
+      "code": "632",
+      "label": "debt rescheduling of private claim under debt service reduction on original loan principal",
+      "synonyms": [
+        "Debt rescheduling: Private claim (DSR \u2013 original loan principal)"
+      ],
+      "short_name": "debt rescheduling of private claims under debt service reduction on original loan principal",
+      "parent": "CRSTypeOfFinance600"
+    },
+    {
+      "dcid": "CRSTypeOfFinance633",
+      "code_system": "crsTypeOfFinance",
+      "code": "633",
+      "label": "debt forgiveness of export credit claim on principal",
+      "synonyms": [
+        "Debt forgiveness/conversion: export credit claims (P)"
+      ],
+      "short_name": "debt forgiveness of export credit claims on principal",
+      "parent": "CRSTypeOfFinance600"
+    },
+    {
+      "dcid": "CRSTypeOfFinance634",
+      "code_system": "crsTypeOfFinance",
+      "code": "634",
+      "label": "debt forgiveness of export credit claim on interest",
+      "synonyms": [
+        "Debt forgiveness/conversion: export credit claims (I)"
+      ],
+      "short_name": "debt forgiveness of export credit claims on interest",
+      "parent": "CRSTypeOfFinance600"
+    },
+    {
+      "dcid": "CRSTypeOfFinance635",
+      "code_system": "crsTypeOfFinance",
+      "code": "635",
+      "label": "debt forgiveness of export credit claim under debt service reduction",
+      "synonyms": [
+        "Debt forgiveness: export credit claims (DSR)"
+      ],
+      "short_name": "debt forgiveness of export credit claims under debt service reduction",
+      "parent": "CRSTypeOfFinance600"
+    },
+    {
+      "dcid": "CRSTypeOfFinance636",
+      "code_system": "crsTypeOfFinance",
+      "code": "636",
+      "label": "debt rescheduling of export credit claim on principal",
+      "synonyms": [
+        "Debt rescheduling: export credit claims (P)"
+      ],
+      "short_name": "debt rescheduling of export credit claims on principal",
+      "parent": "CRSTypeOfFinance600"
+    },
+    {
+      "dcid": "CRSTypeOfFinance637",
+      "code_system": "crsTypeOfFinance",
+      "code": "637",
+      "label": "debt rescheduling of export credit claim on interest",
+      "synonyms": [
+        "Debt rescheduling: export credit claims (I)"
+      ],
+      "short_name": "debt rescheduling of export credit claims on interest",
+      "parent": "CRSTypeOfFinance600"
+    },
+    {
+      "dcid": "CRSTypeOfFinance638",
+      "code_system": "crsTypeOfFinance",
+      "code": "638",
+      "label": "debt rescheduling of export credit claim under debt service reduction",
+      "synonyms": [
+        "Debt rescheduling: export credit claims (DSR)"
+      ],
+      "short_name": "debt rescheduling of export credit claims under debt service reduction",
+      "parent": "CRSTypeOfFinance600"
+    },
+    {
+      "dcid": "CRSTypeOfFinance639",
+      "code_system": "crsTypeOfFinance",
+      "code": "639",
+      "label": "debt rescheduling of export credit claim under debt service reduction on original loan principal",
+      "synonyms": [
+        "Debt rescheduling: export credit claim (DSR \u2013 original loan principal)"
+      ],
+      "short_name": "debt rescheduling of export credit claims under debt service reduction on original loan principal",
+      "parent": "CRSTypeOfFinance600"
+    },
+    {
+      "dcid": "CRSCooperationModalityA",
+      "code_system": "crsCooperationModality",
+      "code": "A",
+      "label": "budget support",
+      "synonyms": [
+        "budget support modality"
+      ],
+      "short_name": null,
+      "parent": null
+    },
+    {
+      "dcid": "CRSCooperationModalityA01",
+      "code_system": "crsCooperationModality",
+      "code": "A01",
+      "label": "general budget support",
+      "synonyms": [
+        "GBS"
+      ],
+      "short_name": null,
+      "parent": "CRSCooperationModalityA"
+    },
+    {
+      "dcid": "CRSCooperationModalityA02",
+      "code_system": "crsCooperationModality",
+      "code": "A02",
+      "label": "sector budget support",
+      "synonyms": [
+        "SBS"
+      ],
+      "short_name": null,
+      "parent": "CRSCooperationModalityA"
+    },
+    {
+      "dcid": "CRSCooperationModalityB",
+      "code_system": "crsCooperationModality",
+      "code": "B",
+      "label": "core contribution and pooled programme and fund",
+      "synonyms": [
+        "core contributions and pooled programmes and funds"
+      ],
+      "short_name": null,
+      "parent": null
+    },
+    {
+      "dcid": "CRSCooperationModalityB01",
+      "code_system": "crsCooperationModality",
+      "code": "B01",
+      "label": "core support to non-governmental organisations, other private bodies, public-private partnerships, and research institutes",
+      "synonyms": [
+        "Core support to NGOs, other private bodies, PPPs and research institutes"
+      ],
+      "short_name": null,
+      "parent": "CRSCooperationModalityB"
+    },
+    {
+      "dcid": "CRSCooperationModalityB02",
+      "code_system": "crsCooperationModality",
+      "code": "B02",
+      "label": "core contribution to multilateral institution (group)",
+      "synonyms": [
+        "Core contributions to multilateral institutions, general"
+      ],
+      "short_name": null,
+      "parent": "CRSCooperationModalityB"
+    },
+    {
+      "dcid": "CRSCooperationModalityB021",
+      "code_system": "crsCooperationModality",
+      "code": "B021",
+      "label": "core contribution to multilateral institution",
+      "synonyms": [
+        "core multilateral contributions"
+      ],
+      "short_name": null,
+      "parent": "CRSCooperationModalityB02"
+    },
+    {
+      "dcid": "CRSCooperationModalityB022",
+      "code_system": "crsCooperationModality",
+      "code": "B022",
+      "label": "core contribution to global fund",
+      "synonyms": [
+        "CERF"
+      ],
+      "short_name": null,
+      "parent": "CRSCooperationModalityB02"
+    },
+    {
+      "dcid": "CRSCooperationModalityB03",
+      "code_system": "crsCooperationModality",
+      "code": "B03",
+      "label": "contribution to specific-purpose programme and fund managed by an international organisation",
+      "synonyms": [
+        "Contributions to specific-purpose programmes and funds managed by International Organisations (multilateral, INGO)"
+      ],
+      "short_name": null,
+      "parent": "CRSCooperationModalityB"
+    },
+    {
+      "dcid": "CRSCooperationModalityB031",
+      "code_system": "crsCooperationModality",
+      "code": "B031",
+      "label": "contribution to multi-donor and multi-entity funding mechanism",
+      "synonyms": [
+        "Contributions to multi-donor/multi-entity funding mechanisms"
+      ],
+      "short_name": null,
+      "parent": "CRSCooperationModalityB03"
+    },
+    {
+      "dcid": "CRSCooperationModalityB032",
+      "code_system": "crsCooperationModality",
+      "code": "B032",
+      "label": "contribution to multi-donor and single-entity funding mechanism",
+      "synonyms": [
+        "Contributions to multi-donor/single-entity funding mechanisms"
+      ],
+      "short_name": null,
+      "parent": "CRSCooperationModalityB03"
+    },
+    {
+      "dcid": "CRSCooperationModalityB033",
+      "code_system": "crsCooperationModality",
+      "code": "B033",
+      "label": "contribution to single-donor funding mechanism or earmarked contribution to a specific funding window or geographical location",
+      "synonyms": [
+        "Contributions to single-donor funding mechanisms and contributions earmarked for a specific funding window or geographical location"
+      ],
+      "short_name": null,
+      "parent": "CRSCooperationModalityB03"
+    },
+    {
+      "dcid": "CRSCooperationModalityB04",
+      "code_system": "crsCooperationModality",
+      "code": "B04",
+      "label": "basket fund and pooled funding",
+      "synonyms": [
+        "Basket funds/pooled funding"
+      ],
+      "short_name": null,
+      "parent": "CRSCooperationModalityB"
+    },
+    {
+      "dcid": "CRSCooperationModalityB05",
+      "code_system": "crsCooperationModality",
+      "code": "B05",
+      "label": "private sector investment intra-governmental transfer",
+      "synonyms": [
+        "PSI intra-governmental transfers"
+      ],
+      "short_name": null,
+      "parent": "CRSCooperationModalityB"
+    },
+    {
+      "dcid": "CRSCooperationModalityC",
+      "code_system": "crsCooperationModality",
+      "code": "C",
+      "label": "project-type intervention (group)",
+      "synonyms": [
+        "Project-type intervention, general"
+      ],
+      "short_name": null,
+      "parent": null
+    },
+    {
+      "dcid": "CRSCooperationModalityC01",
+      "code_system": "crsCooperationModality",
+      "code": "C01",
+      "label": "project-type intervention",
+      "synonyms": [
+        "Project-type intervention"
+      ],
+      "short_name": null,
+      "parent": "CRSCooperationModalityC"
+    },
+    {
+      "dcid": "CRSCooperationModalityD",
+      "code_system": "crsCooperationModality",
+      "code": "D",
+      "label": "expert and other technical assistance",
+      "synonyms": [
+        "Experts and other technical assistance"
+      ],
+      "short_name": null,
+      "parent": null
+    },
+    {
+      "dcid": "CRSCooperationModalityD01",
+      "code_system": "crsCooperationModality",
+      "code": "D01",
+      "label": "donor country personnel",
+      "synonyms": [
+        "Donor country personnel"
+      ],
+      "short_name": null,
+      "parent": "CRSCooperationModalityD"
+    },
+    {
+      "dcid": "CRSCooperationModalityD02",
+      "code_system": "crsCooperationModality",
+      "code": "D02",
+      "label": "other technical assistance",
+      "synonyms": [
+        "Other technical assistance"
+      ],
+      "short_name": null,
+      "parent": "CRSCooperationModalityD"
+    },
+    {
+      "dcid": "CRSCooperationModalityE",
+      "code_system": "crsCooperationModality",
+      "code": "E",
+      "label": "scholarship and student cost in donor country",
+      "synonyms": [
+        "Scholarships and student costs in donor countries"
+      ],
+      "short_name": null,
+      "parent": null
+    },
+    {
+      "dcid": "CRSCooperationModalityE01",
+      "code_system": "crsCooperationModality",
+      "code": "E01",
+      "label": "scholarship and training in donor country",
+      "synonyms": [
+        "Scholarships/training in donor country"
+      ],
+      "short_name": null,
+      "parent": "CRSCooperationModalityE"
+    },
+    {
+      "dcid": "CRSCooperationModalityE02",
+      "code_system": "crsCooperationModality",
+      "code": "E02",
+      "label": "imputed student cost",
+      "synonyms": [
+        "Imputed student costs"
+      ],
+      "short_name": null,
+      "parent": "CRSCooperationModalityE"
+    },
+    {
+      "dcid": "CRSCooperationModalityF",
+      "code_system": "crsCooperationModality",
+      "code": "F",
+      "label": "debt relief (group)",
+      "synonyms": [
+        "Debt relief, General"
+      ],
+      "short_name": null,
+      "parent": null
+    },
+    {
+      "dcid": "CRSCooperationModalityF01",
+      "code_system": "crsCooperationModality",
+      "code": "F01",
+      "label": "debt relief",
+      "synonyms": [
+        "Debt relief, cooperarion modality type"
+      ],
+      "short_name": null,
+      "parent": "CRSCooperationModalityF"
+    },
+    {
+      "dcid": "CRSCooperationModalityG",
+      "code_system": "crsCooperationModality",
+      "code": "G",
+      "label": "other administrative cost (group)",
+      "synonyms": [
+        "Administrative costs not included elsewhere"
+      ],
+      "short_name": null,
+      "parent": null
+    },
+    {
+      "dcid": "CRSCooperationModalityG01",
+      "code_system": "crsCooperationModality",
+      "code": "G01",
+      "label": "other administrative cost",
+      "synonyms": [
+        "Administrative costs"
+      ],
+      "short_name": null,
+      "parent": "CRSCooperationModalityG"
+    },
+    {
+      "dcid": "CRSCooperationModalityH",
+      "code_system": "crsCooperationModality",
+      "code": "H",
+      "label": "other in-donor expenditure",
+      "synonyms": [
+        "Other in-donor expenditures"
+      ],
+      "short_name": null,
+      "parent": null
+    },
+    {
+      "dcid": "CRSCooperationModalityH01",
+      "code_system": "crsCooperationModality",
+      "code": "H01",
+      "label": "development awareness",
+      "synonyms": [
+        "Development awareness"
+      ],
+      "short_name": null,
+      "parent": "CRSCooperationModalityH"
+    },
+    {
+      "dcid": "CRSCooperationModalityH02",
+      "code_system": "crsCooperationModality",
+      "code": "H02",
+      "label": "refugee and asylum seeker in donor country",
+      "synonyms": [
+        "Refugees/ asylum seekers in-donor-countries"
+      ],
+      "short_name": null,
+      "parent": "CRSCooperationModalityH"
+    },
+    {
+      "dcid": "CRSCooperationModalityH03",
+      "code_system": "crsCooperationModality",
+      "code": "H03",
+      "label": "asylum seeker ultimately accepted",
+      "synonyms": [
+        "Asylum-seekers ultimately accepted"
+      ],
+      "short_name": null,
+      "parent": "CRSCooperationModalityH"
+    },
+    {
+      "dcid": "CRSCooperationModalityH04",
+      "code_system": "crsCooperationModality",
+      "code": "H04",
+      "label": "asylum seeker ultimately rejected",
+      "synonyms": [
+        "Asylum-seekers ultimately rejected"
+      ],
+      "short_name": null,
+      "parent": "CRSCooperationModalityH"
+    },
+    {
+      "dcid": "CRSCooperationModalityH05",
+      "code_system": "crsCooperationModality",
+      "code": "H05",
+      "label": "recognised refugee",
+      "synonyms": [
+        "Recognised refugee"
+      ],
+      "short_name": null,
+      "parent": "CRSCooperationModalityH"
+    },
+    {
+      "dcid": "CRSCooperationModalityH06",
+      "code_system": "crsCooperationModality",
+      "code": "H06",
+      "label": "refugee and asylum seeker in other provider country",
+      "synonyms": [
+        "Refugees and asylum seekers in other provider countries"
+      ],
+      "short_name": null,
+      "parent": "CRSCooperationModalityH"
+    },
+    {
+      "dcid": "CRSCooperationModalityJ",
+      "code_system": "crsCooperationModality",
+      "code": "J",
+      "label": "in-kind donation of goods (group)",
+      "synonyms": [
+        "In-kind donations of goods, general"
+      ],
+      "short_name": null,
+      "parent": null
+    },
+    {
+      "dcid": "CRSCooperationModalityJ01",
+      "code_system": "crsCooperationModality",
+      "code": "J01",
+      "label": "in-kind donation of goods",
+      "synonyms": [
+        "In-kind donations of goods"
+      ],
+      "short_name": null,
+      "parent": "CRSCooperationModalityJ"
+    },
+    {
+      "dcid": "CRSTypeOfFlow10",
+      "code_system": "crsTypeOfFlow",
+      "code": "10",
+      "label": "official development assistance",
+      "synonyms": [
+        "ODA"
+      ],
+      "short_name": "ODA",
+      "parent": null
+    },
+    {
+      "dcid": "CRSTypeOfFlow21",
+      "code_system": "crsTypeOfFlow",
+      "code": "21",
+      "label": "non-export credit official flow",
+      "synonyms": [
+        "Non-export credit OOF"
+      ],
+      "short_name": "OOF",
+      "parent": null
+    },
+    {
+      "dcid": "CRSTypeOfFlow22",
+      "code_system": "crsTypeOfFlow",
+      "code": "22",
+      "label": "officially supported export credit",
+      "synonyms": [
+        "export credit"
+      ],
+      "short_name": "export credits",
+      "parent": null
+    },
+    {
+      "dcid": "CRSTypeOfFlow30",
+      "code_system": "crsTypeOfFlow",
+      "code": "30",
+      "label": "private development finance",
+      "synonyms": [
+        "NGO financing"
+      ],
+      "short_name": "private philanthropy",
+      "parent": null
+    },
+    {
+      "dcid": "CRSTypeOfFlow36",
+      "code_system": "crsTypeOfFlow",
+      "code": "36",
+      "label": "private foreign direct investment",
+      "synonyms": [
+        "FDI"
+      ],
+      "short_name": "private FDI",
+      "parent": null
+    },
+    {
+      "dcid": "CRSTypeOfFlow37",
+      "code_system": "crsTypeOfFlow",
+      "code": "37",
+      "label": "other private flow at market terms",
+      "synonyms": [
+        "Other Private flows at market terms"
+      ],
+      "short_name": "other private flows",
+      "parent": null
+    },
+    {
+      "dcid": "CRSTypeOfFlow40",
+      "code_system": "crsTypeOfFlow",
+      "code": "40",
+      "label": "non-flow",
+      "synonyms": [
+        "GNI"
+      ],
+      "short_name": "non-flow indicators",
+      "parent": null
+    },
+    {
+      "dcid": "CRSTypeOfFlow50",
+      "code_system": "crsTypeOfFlow",
+      "code": "50",
+      "label": "other flow",
+      "synonyms": [
+        "Other flows"
+      ],
+      "short_name": "other flows",
+      "parent": null
+    },
+    {
+      "dcid": "CRSTypeOfFlow60",
+      "code_system": "crsTypeOfFlow",
+      "code": "60",
+      "label": "private sector instrument",
+      "synonyms": [
+        "PSI"
+      ],
+      "short_name": "private sector instruments",
+      "parent": null
+    }
+  ],
+  "statvars": [
+    {
+      "dcid": "FixtureStatVar_Amount_FinancialFlow_Disbursement_Gross_Nominal_Health_StandardGrant",
+      "population_type": "FinancialFlow",
+      "measured_property": "amount",
+      "stat_type": "measuredValue",
+      "measurement_qualifier": "Nominal",
+      "measurement_denominator": null,
+      "observation_properties": [
+        "financingProvider",
+        "financingRecipient"
+      ],
+      "constraint_properties": {
+        "crsPurpose": "CRSPurposeCode120",
+        "crsTypeOfFinance": "CRSTypeOfFinance110",
+        "crsTypeOfFlow": "CRSTypeOfFlow21",
+        "financialFlowType": "Disbursement",
+        "nettingBasis": "Gross"
+      },
+      "provenances": [
+        "provenance/OECDCreditorReportingSystem"
+      ]
+    },
+    {
+      "dcid": "FixtureStatVar_Amount_FinancialFlow_Disbursement_Gross_RealValue_Health_StandardGrant",
+      "population_type": "FinancialFlow",
+      "measured_property": "amount",
+      "stat_type": "measuredValue",
+      "measurement_qualifier": "RealValue",
+      "measurement_denominator": null,
+      "observation_properties": [
+        "financingProvider",
+        "financingRecipient"
+      ],
+      "constraint_properties": {
+        "crsPurpose": "CRSPurposeCode120",
+        "crsTypeOfFinance": "CRSTypeOfFinance110",
+        "crsTypeOfFlow": "CRSTypeOfFlow21",
+        "financialFlowType": "Disbursement",
+        "nettingBasis": "Gross"
+      },
+      "provenances": [
+        "provenance/OECDCreditorReportingSystem"
+      ]
+    },
+    {
+      "dcid": "FixtureStatVar_Amount_FinancialFlow_Disbursement_Net_Nominal_Health_StandardGrant",
+      "population_type": "FinancialFlow",
+      "measured_property": "amount",
+      "stat_type": "measuredValue",
+      "measurement_qualifier": "Nominal",
+      "measurement_denominator": null,
+      "observation_properties": [
+        "financingProvider",
+        "financingRecipient"
+      ],
+      "constraint_properties": {
+        "crsPurpose": "CRSPurposeCode120",
+        "crsTypeOfFinance": "CRSTypeOfFinance110",
+        "crsTypeOfFlow": "CRSTypeOfFlow21",
+        "financialFlowType": "Disbursement",
+        "nettingBasis": "Net"
+      },
+      "provenances": [
+        "provenance/OECDCreditorReportingSystem"
+      ]
+    },
+    {
+      "dcid": "FixtureStatVar_Amount_FinancialFlow_Disbursement_Net_RealValue_Health_StandardGrant",
+      "population_type": "FinancialFlow",
+      "measured_property": "amount",
+      "stat_type": "measuredValue",
+      "measurement_qualifier": "RealValue",
+      "measurement_denominator": null,
+      "observation_properties": [
+        "financingProvider",
+        "financingRecipient"
+      ],
+      "constraint_properties": {
+        "crsPurpose": "CRSPurposeCode120",
+        "crsTypeOfFinance": "CRSTypeOfFinance110",
+        "crsTypeOfFlow": "CRSTypeOfFlow21",
+        "financialFlowType": "Disbursement",
+        "nettingBasis": "Net"
+      },
+      "provenances": [
+        "provenance/OECDCreditorReportingSystem"
+      ]
+    },
+    {
+      "dcid": "FixtureStatVar_Amount_FinancialObligation_Commitment_Nominal_Health_StandardGrant",
+      "population_type": "FinancialObligation",
+      "measured_property": "amount",
+      "stat_type": "measuredValue",
+      "measurement_qualifier": "Nominal",
+      "measurement_denominator": null,
+      "observation_properties": [
+        "financingProvider",
+        "financingRecipient"
+      ],
+      "constraint_properties": {
+        "crsPurpose": "CRSPurposeCode120",
+        "crsTypeOfFinance": "CRSTypeOfFinance110",
+        "crsTypeOfFlow": "CRSTypeOfFlow21",
+        "financialObligationType": "Commitment"
+      },
+      "provenances": [
+        "provenance/OECDCreditorReportingSystem"
+      ]
+    },
+    {
+      "dcid": "FixtureStatVar_Amount_FinancialObligation_Commitment_RealValue_Health_StandardGrant",
+      "population_type": "FinancialObligation",
+      "measured_property": "amount",
+      "stat_type": "measuredValue",
+      "measurement_qualifier": "RealValue",
+      "measurement_denominator": null,
+      "observation_properties": [
+        "financingProvider",
+        "financingRecipient"
+      ],
+      "constraint_properties": {
+        "crsPurpose": "CRSPurposeCode120",
+        "crsTypeOfFinance": "CRSTypeOfFinance110",
+        "crsTypeOfFlow": "CRSTypeOfFlow21",
+        "financialObligationType": "Commitment"
+      },
+      "provenances": [
+        "provenance/OECDCreditorReportingSystem"
+      ]
+    },
+    {
+      "dcid": "FixtureStatVar_Amount_FinancialFlow_Disbursement_Gross_Nominal_EduODA_NoModality",
+      "population_type": "FinancialFlow",
+      "measured_property": "amount",
+      "stat_type": "measuredValue",
+      "measurement_qualifier": "Nominal",
+      "measurement_denominator": null,
+      "observation_properties": [
+        "financingProvider",
+        "financingRecipient"
+      ],
+      "constraint_properties": {
+        "crsPurpose": "CRSPurposeCode11110",
+        "crsTypeOfFinance": "CRSTypeOfFinance110",
+        "crsTypeOfFlow": "CRSTypeOfFlow10",
+        "financialFlowType": "Disbursement",
+        "nettingBasis": "Gross"
+      },
+      "provenances": [
+        "provenance/OECDCreditorReportingSystem"
+      ]
+    },
+    {
+      "dcid": "FixtureStatVar_Amount_FinancialFlow_Disbursement_Gross_Nominal_EduODA_GBS",
+      "population_type": "FinancialFlow",
+      "measured_property": "amount",
+      "stat_type": "measuredValue",
+      "measurement_qualifier": "Nominal",
+      "measurement_denominator": null,
+      "observation_properties": [
+        "financingProvider",
+        "financingRecipient"
+      ],
+      "constraint_properties": {
+        "crsPurpose": "CRSPurposeCode11110",
+        "crsTypeOfFinance": "CRSTypeOfFinance110",
+        "crsTypeOfFlow": "CRSTypeOfFlow10",
+        "financialFlowType": "Disbursement",
+        "nettingBasis": "Gross",
+        "crsCooperationModality": "CRSCooperationModalityA01"
+      },
+      "provenances": [
+        "provenance/OECDCreditorReportingSystem"
+      ]
+    },
+    {
+      "dcid": "FixtureStatVar_Amount_FinancialFlow_Disbursement_Gross_Nominal_EduODA_CoreNGO",
+      "population_type": "FinancialFlow",
+      "measured_property": "amount",
+      "stat_type": "measuredValue",
+      "measurement_qualifier": "Nominal",
+      "measurement_denominator": null,
+      "observation_properties": [
+        "financingProvider",
+        "financingRecipient"
+      ],
+      "constraint_properties": {
+        "crsPurpose": "CRSPurposeCode11110",
+        "crsTypeOfFinance": "CRSTypeOfFinance110",
+        "crsTypeOfFlow": "CRSTypeOfFlow10",
+        "financialFlowType": "Disbursement",
+        "nettingBasis": "Gross",
+        "crsCooperationModality": "CRSCooperationModalityB01"
+      },
+      "provenances": [
+        "provenance/OECDCreditorReportingSystem"
+      ]
+    }
+  ]
+}

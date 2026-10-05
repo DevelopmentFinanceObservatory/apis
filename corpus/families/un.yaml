@@ -1,0 +1,115 @@
+un.unicef_child_mortality:
+  origin: un_system
+  dataset: undata/p/UNICEF
+  shape: {population_type: undata/unicef/SERIES-CME_MR, measured_property: value, stat_type: measuredValue}
+  stat_vars: [undata/unicef/CME_MR.AGE--Y0T4]
+un.who_u5mr_by_wealth:
+  origin: un_system
+  dataset: undata/p/WHO
+  shape: {population_type: undata/who/SERIES-MORT_U5_RATE, measured_property: value, stat_type: measuredValue}
+  fixed: {}
+un.unaids_hiv_prevalence:
+  origin: un_system
+  dataset: undata/p/UNAIDS
+  shape: {population_type: undata/unaids/SERIES-HIV_PREV, measured_property: value, stat_type: measuredValue}
+un.ilo_gender_pay_gap:
+  origin: un_system
+  dataset: undata/p/ILO
+  shape: {population_type: undata/ilo/SERIES-EAR_GGAP_RT, measured_property: value, stat_type: measuredValue}
+un.undp_hdi:
+  origin: un_system
+  dataset: undata/p/UNDP_HDRO
+  shape: {population_type: undata/undphdro/SERIES-HDI_hdi, measured_property: value, stat_type: measuredValue}
+un.undp_gii:
+  origin: un_system
+  dataset: undata/p/UNDP_HDRO
+  shape: {population_type: undata/undphdro/SERIES-GII_gii, measured_property: value, stat_type: measuredValue}
+un.undp_mpi_value:
+  origin: un_system
+  dataset: undata/p/UNDP_HDRO
+  shape: {population_type: undata/undphdro/SERIES-MPI_mpi_value, measured_property: value, stat_type: measuredValue}
+un.undp_mpi_headcount:
+  origin: un_system
+  dataset: undata/p/UNDP_HDRO
+  shape: {population_type: undata/undphdro/SERIES-MPI_mpi_headcount, measured_property: value, stat_type: measuredValue}
+un.unesco_female_researchers:
+  origin: un_system
+  dataset: undata/p/UNESCO
+  shape: {population_type: undata/unesco/SERIES-FRESP_THC, measured_property: value, stat_type: measuredValue}
+un.unesco_female_researchers_fte:
+  origin: un_system
+  dataset: undata/p/UNESCO
+  shape: {population_type: undata/unesco/SERIES-FRESP_TFTE, measured_property: value, stat_type: measuredValue}
+un.eclac_extreme_poverty:
+  origin: un_system
+  dataset: undata/p/ECLAC
+  shape: {population_type: undata/eclac/SERIES-POVERTY_RATE, measured_property: value, stat_type: measuredValue}
+  fixed: {undataPovertyStatus: undata/POVERTY_STATUS-EXTREME_POVERTY}
+un.eclac_extreme_poverty_rural:
+  origin: un_system
+  dataset: undata/p/ECLAC
+  shape: {population_type: undata/eclac/SERIES-POVERTY_RATE, measured_property: value, stat_type: measuredValue}
+  fixed: {undataPovertyStatus: undata/POVERTY_STATUS-EXTREME_POVERTY, undataUrbanization: undata/URBANIZATION-R}
+un.unodc_homicide:
+  origin: un_system
+  dataset: undata/p/UNODC
+  shape: {population_type: undata/unodc/SERIES-VIC_HOM_RT, measured_property: value, stat_type: measuredValue}
+un.unhcr_refugees:
+  origin: un_system
+  dataset: undata/p/UNHCR
+  shape: {population_type: undata/unhcr/SERIES-END_YEAR_POPULATION, measured_property: value, stat_type: measuredValue}
+  fixed: {undataPopulationGroup: undata/POPULATION_GROUP-REFUGEES}
+un.iom_idps:
+  origin: un_system
+  dataset: undata/p/IOM_DTM
+  shape:
+    population_type: undata/iomdtm/SERIES-IDPS_PRESENT_BA_NATIONAL_LATEST
+    measured_property: value
+    stat_type: measuredValue
+un.itu_mobile_ownership:
+  origin: un_system
+  dataset: undata/p/ITU
+  shape: {population_type: undata/itu/SERIES-HHU271OWN, measured_property: value, stat_type: measuredValue}
+un.sdg_completion_rate:
+  origin: un_system
+  dataset: undata/p/SDG
+  shape: {population_type: undata/sdg/SERIES-SE_TOT_CPLR, measured_property: value, stat_type: measuredValue}
+un.sdg_women_local_government:
+  origin: un_system
+  dataset: undata/p/SDG
+  shape: {population_type: undata/sdg/SERIES-SG_GEN_LOCGELS, measured_property: value, stat_type: measuredValue}
+  fixed: {undataSex: undata/SEX-F}
+un.sdg_bribery:
+  origin: un_system
+  dataset: undata/p/SDG
+  shape: {population_type: undata/sdg/SERIES-IU_COR_BRIB, measured_property: value, stat_type: measuredValue}
+un.sdg_extreme_poverty:
+  origin: un_system
+  dataset: undata/p/SDG
+  shape: {population_type: undata/sdg/SERIES-SI_POV_DAY1, measured_property: value, stat_type: measuredValue}
+un.sdg_extreme_poverty_rural:
+  origin: un_system
+  dataset: undata/p/SDG
+  shape: {population_type: undata/sdg/SERIES-SI_POV_DAY1, measured_property: value, stat_type: measuredValue}
+  fixed: {undataUrbanization: undata/URBANIZATION-DOU_R}
+un.sdg_homicide:
+  origin: un_system
+  dataset: undata/p/SDG
+  shape: {population_type: undata/sdg/SERIES-VC_IHR_PSRC, measured_property: value, stat_type: measuredValue}
+un.sdg_u5mr:
+  origin: un_system
+  dataset: undata/p/SDG
+  shape: {population_type: undata/sdg/SERIES-SH_DYN_MORT, measured_property: value, stat_type: measuredValue}
+  fixed: {undataAge: undata/AGE-Y0T4}
+un.sdg_disability_employment:
+  origin: un_system
+  dataset: undata/p/SDG
+  shape: {population_type: undata/sdg/SERIES-SL_TLF_UEMDIS, measured_property: value, stat_type: measuredValue}
+un.unicef_stunting:
+  origin: un_system
+  dataset: undata/p/UNICEF
+  shape: {population_type: undata/unicef/SERIES-NT_ANT_HAZ_NE2, measured_property: value, stat_type: measuredValue}
+un.unicef_attendance:
+  origin: un_system
+  dataset: undata/p/UNICEF
+  shape: {population_type: undata/unicef/SERIES-FD_ANAR, measured_property: value, stat_type: measuredValue}

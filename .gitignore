@@ -1,0 +1,70 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Environment variables / secrets
+.env
+.env.*
+!.env.example
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+.pytest_cache/
+# pytest-split's per-test durations, which CI records and caches (ci.yml)
+.test_durations
+# `just test`'s pytest-testmon database and its hash of non-Python inputs
+.testmondata*
+.coverage
+coverage.xml
+htmlcov/
+
+# AI
+.claude/
+CLAUDE.md
+AGENTS.md
+
+# Ruff
+.ruff_cache/
+
+# Local dev-stack resolve kit cache (RESOLVEKIT_CACHE_DIR), booted on demand
+.resolvekit-cache/
+
+# Identity vector suite, checked out here by CI (see .github/workflows/ci.yml)
+.spec-kit/
+/.codegraph
+/docs/internal
+
+# Working output of scripts/intake_sheet.py, promoted into a domain file by hand
+/corpus/staging/
+/corpus/pending/
+
+# Generated prompt ladder rungs and run output; durable rungs live in
+# promptlab/rungs/ instead (see promptlab/README.md).
+/runs/
+
+# Pre-prune backup of the LLM fixture bank, written by scripts/harvest_llm_fixtures.py
+# so a bad prune is recoverable without git. Local recovery aid, not a committed artefact.
+tests/fixtures/llm_responses.json.preprune
+
+# Root-level screenshots dropped by hand or by the Playwright MCP server during
+# local UI debugging, and the MCP server's own working directory.
+/*.png
+.playwright-mcp/

@@ -1,0 +1,229 @@
+from __future__ import annotations
+
+from typing import Literal, get_args
+
+from dfo_platform import RoleAxis  # noqa: F401 -- re-exported by search.models
+
+SCHEMA_VERSION = 1
+
+
+def _require_schema_version_int(value: object) -> object:
+    """Accept only an exact integer. Reject booleans and floats before Literal[1] coerces them."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError("schema_version must be the integer 1")
+    return value
+
+
+# ---------------------------------------------------------------------------
+# Changes to these v1 contract values require a major version bump.
+# ---------------------------------------------------------------------------
+AnswerKind = Literal["resolution", "catalogue", "declined"]
+StatusLiteral = Literal["definite", "candidates", "no_data", "unsupported"]
+DeclinedReason = Literal["out_of_scope", "requires_analysis"]
+OperationVerb = Literal["rank", "aggregate", "growth", "share_of", "explain", "forecast", "report"]
+OperationAxis = Literal["place", "origin", "destination", "category", "year"]
+BindingKind = Literal["value", "set", "unbound"]
+Axis = Literal["what", "how", "where", "when", "source"]
+# SentenceAxis is the axis a sentence token fills: every request-slot axis plus
+# "unit", the byline's unit of measure, and "method", the byline's measurement method,
+# which no request slot carries.
+SentenceAxis = Literal[Axis, "unit", "method"]
+SentenceSegment = Literal["heading", "byline", "departure"]
+CoverageKind = Literal["exact", "breadth", "bare"]
+
+# BindingProvenance records why a slot has its value, independently of its
+# BindingKind. "binder" is the default LLM election. "text_recognized" is a
+# graph code named by the query. "measure_elected" comes from the elected
+# measure partition. "declared_default" fills an open slot from its code
+# system's declared default when another slot binds within that subtree, or
+# from the default its shape's population type declares.
+BindingProvenance = Literal["binder", "text_recognized", "measure_elected", "declared_default"]
+
+# ---------------------------------------------------------------------------
+# FacetAxis describes observation facets. Axis describes request slots.
+# Keep them separate: measurementMethod and unit have no request-slot axis.
+# ---------------------------------------------------------------------------
+FacetAxis = Literal["provenance", "measurementMethod", "unit"]
+
+_FACET_AXIS_SCHEMA_VERSION: dict[str, int] = {
+    "provenance": 1,
+    "measurementMethod": 1,
+    "unit": 1,
+}
+"""Every facet axis name any published schema knows, mapped to the
+schema_version that introduced it. All three ship at schema_version 1.
+A posted axis absent from this map is unrecognised (`request_invalid`/400);
+one present but mapped to a version greater than the running SCHEMA_VERSION
+is recognised but not yet published here (`unsupported_schema_version`/422)
+-- see `BaseIdentity`'s `mode="before"` validator, which is this map's only
+reader. The higher-version branch has no real member to exercise yet, so
+test coverage monkeypatches one synthetic entry into this map rather than
+naming a real axis."""
+
+EntryPath = Literal["raw_text", "parsed", "dataset_resubmit"]
+ValueKind = Literal["entity", "enum_value", "time_window", "source", "literal"]
+PipelineStepName = Literal["extract", "recall", "shape", "bind", "materialise", "answer"]
+DateSource = Literal["query", "default", "coverage_clamp"]
+DataCommonsId = Literal["dfo", "base", "un_system"]
+"""The Data Commons a provenance's data comes from: the Development Finance
+Observatory's own imports, Data Commons by Google, or the UN System Data
+Commons. Mirrors `origin_catalogue.OriginId`."""
+EntityRoleKey = Literal["observationAbout", "origin", "destination"]
+"""The role-key vocabulary a resolved entity plays: the subject role, or one
+of the engine's two flow axes. ``origin`` and ``destination`` name axes, never
+a StatVar's declared property; declared labels remain presentation data."""
+NoDataReason = Literal[
+    "entity_not_resolved",
+    "entity_ambiguous",
+    "entity_set_too_large",
+    "entity_role_not_admitted",
+    "variable_not_resolved",
+    "role_not_resolved",
+    "unit_not_resolved",
+    "rate_coverage_gap",
+    "no_matching_slice",
+    "binding_mismatch",
+    "denominator_not_available",
+    "no_observations",
+    "facet_not_available",
+    "role_incompatible",
+    "role_signature_incompatible",
+    "qualifier_not_bound",
+]
+NoDataCategory = Literal["unresolved", "absent"]
+DepartureCode = Literal[
+    "closest_match",
+    "measure_not_applied",
+    "operation_not_applied",
+    "breakdown_not_applied",
+    "entity_unavailable",
+    "year_unavailable",
+    "modelled_values",
+    "group_read_as_members",
+    "direction_discarded",
+    "scope_limited",
+]
+"""Every way an answer can differ from what its request asked (see
+`models.departure.Departure`), declared in precedence order, so the departure
+that changes the number most comes first. A closed vocabulary of its own. No
+departure code is a `Warning.code` or a refusal code, so the platform
+code registry does not list them."""
+DEPARTURE_ORDER: tuple[DepartureCode, ...] = get_args(DepartureCode)
+"""`DepartureCode` in precedence order. `_PartBase.departures` follows it."""
+ObservationsOmissionReason = Literal[
+    "observations_timed_out",
+    "observations_no_matching_source",
+    "observations_windowed_scope_unsupported",
+    "observations_converted_scope_unsupported",
+    "observations_no_dispatchable_facet",
+    "observations_bulk_fetch_failed",
+    "observations_probe_failed",
+    "observations_preview_too_large",
+    "observations_nothing_to_probe",
+    "observations_clients_unavailable",
+    "observations_no_points",
+]
+"""Every reason `SpecObservations.omitted.reason` (models/observations.py's
+`ObservationsOmission`) can carry -- one closed vocabulary, kept in lock-step
+by hand with `search.engine.region.codes`' own `OBSERVATIONS_*` string
+constants (this package cannot import the engine package; `NoDataReason`
+above is this same models/engine split's own precedent). Reason equals
+warning code: every one of these is also registered in
+`search.engine.codes.WARNING_CODES`, so a consumer reads one vocabulary
+regardless of whether it is looking at `omitted.reason` or a `Warning.code`
+that rides the same cause."""
+NoDataGate = Literal[
+    "no_member_has_data_at_place",
+    "no_member_asserts_bound_properties",
+    "only_alternate_has_data",
+]
+NO_DATA_RESOLUTION_ORDER: tuple[NoDataReason, ...] = (
+    "entity_not_resolved",
+    "entity_ambiguous",
+    "entity_set_too_large",
+    "entity_role_not_admitted",
+    "variable_not_resolved",
+    "role_not_resolved",
+    "role_incompatible",
+    "role_signature_incompatible",
+    "unit_not_resolved",
+    "rate_coverage_gap",
+    "qualifier_not_bound",
+    "no_matching_slice",
+    "binding_mismatch",
+    "denominator_not_available",
+    "no_observations",
+    "facet_not_available",
+)
+"""The contract's own no_data resolution order: entity (entity_ambiguous and
+entity_set_too_large and entity_role_not_admitted sit at the entity position,
+right after entity_not_resolved, in that order: the four run by how far the
+entity got, from no identity, to several candidate identities, to one
+confirmed identity whose expansion is unusable, to one confirmed identity
+whose role is wrong), variable, role (the two
+role-compatibility codes sit at the role position), unit (`rate_coverage_gap`,
+currency-conversion's own no_data reason, sits immediately after
+`unit_not_resolved`. `recipe_not_declared`, the other currency-conversion
+code, maps to `unsupported_code` rather than `no_data_reason` on the `raw_text`/`parsed`
+resolve doors, so a StatVar with no declared recipe surfaces as an
+`unsupported` part instead of reaching this order), slice
+(binding_mismatch sits at the slice position), denominator, observations,
+facet. When several reasons could apply, the first one in this order is what
+`reason` reports. This documents the contract sequence; it is not the
+enforcement mechanism. Each failure site in the pipeline returns immediately
+(region/pipeline.py, region/resubmit.py), so this constant can drift from
+actual behaviour if a check is reordered without updating it."""
+_UNRESOLVED_NO_DATA_REASONS: frozenset[NoDataReason] = frozenset(
+    {
+        "entity_not_resolved",
+        "entity_ambiguous",
+        "entity_role_not_admitted",
+        "variable_not_resolved",
+        "role_not_resolved",
+        "unit_not_resolved",
+    }
+)
+"""The NoDataReason values NoData._derive_category maps to category="unresolved"
+(the request could not be read into the graph); every other reason maps to
+"absent" (the read request names a place holding nothing). An explicit set
+rather than a naming-convention check (e.g. a "_not_resolved" suffix), since
+not every reason in this category shares that suffix: entity_ambiguous and
+entity_role_not_admitted do not."""
+_FLAG_BEARING_NO_DATA_REASONS: frozenset[NoDataReason] = frozenset(
+    {"no_observations", "no_matching_slice", "qualifier_not_bound"}
+)
+"""The NoDataReason values that carry a graph-confirmed variable identity,
+whether the resolve path that minted them reached a Materialised result or
+returned a bare NoDataDraft carrying one of these reasons directly (the
+role-bearing resolve path's own no_observations relaxation, for one).
+qualifier_not_bound reaches this set a third way: the guard that mints it
+runs only after materialise has already confirmed the elected shape's
+members. NoData.elected_stat_vars' own derivation
+(search.engine.region.state._elected_stat_vars) keys off this same set, so
+elected_stat_vars is set for exactly these reasons and no others. Every other
+reason stops short of a graph-confirmed identity, so elected_stat_vars stays
+None there."""
+Confidence = Literal["high", "medium", "low"]
+Ordering = Literal["broadest_first", "intent_rank"]
+FacetBasis = Literal["bound", "declared_default", "fallback"]
+"""Why a facet axis (or, on a unit-request's own member, a currency/prices/
+base_year value) carries the value it does: 'bound' when the request itself
+constrained it, 'declared_default' when an unbound axis was completed from a
+declared deployment policy, 'fallback' when neither applies and the engine's
+own selection (facets holding a point in the requested years first, then
+DFO's facets for a variable both DFO and base Data Commons hold, then the
+most places or role tuples covered there, then the most requested years the
+span covers, then most observations, then the latest observation, then a
+deterministic tie-break;
+or, for a unit-request member, the binder's fixed fallback constant)
+supplied it. Shared by ResolvedFacet.basis
+(axis-level) and ResolvedFacet.request_basis (per-member, unit axis only) --
+the same three-value vocabulary either way."""
+SlotOptionRelation = Literal["child", "parent", "root"]
+"""Where a level-scoped `SlotOption` sits in its slot's menu. On a bound slot,
+`"child"`/`"parent"` narrow or widen one step from the bound value in a
+hierarchical code system's taxonomy. On an unbound hierarchical slot, `"root"`
+is a classification root and `"child"` one of its children, named by
+`SlotOption.parent`. Every value of a flat code system
+(`code_index.CodeSystemDeclaration.hierarchical` is `False`) is `"root"`.
+Mirrors `code_index.LevelOption.relation`'s own vocabulary one-for-one."""

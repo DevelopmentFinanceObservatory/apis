@@ -1,0 +1,70 @@
+dac1.oda_grant_equivalent:
+  origin: dfo
+  dataset: {gl: DAC1 provenance}
+  shape: {measured_property: grantEquivalent, measurement_qualifier: Nominal}
+  fixed: {gl: 'DAC1 flow 1160, ODA aid type'}
+dac1.oda_net:
+  origin: dfo
+  dataset: {gl: DAC1 provenance}
+  shape: {population_type: FinancialFlow, measured_property: amount, measurement_qualifier: Nominal}
+  fixed: {gl: 'nettingBasis Net; DAC1 flow 1140, ODA aid type'}
+dac1.oda_gross_grants:
+  origin: dfo
+  dataset: {gl: DAC1 provenance}
+  shape: {population_type: FinancialFlow, measured_property: amount, measurement_qualifier: Nominal}
+  fixed: {gl: DAC1 flow 1121}
+dac1.oda_commitment:
+  origin: dfo
+  dataset: {gl: DAC1 provenance}
+  shape: {population_type: FinancialObligation, measurement_qualifier: Nominal}
+  fixed: {gl: DAC1 flow 1150}
+dac1.oda_gni_share:
+  origin: dfo
+  dataset: {gl: DAC1 provenance}
+  shape: {measurement_denominator: {gl: GNI StatVar about the provider}}
+dac1.oda_bilateral:
+  origin: dfo
+  dataset: {gl: DAC1 provenance}
+  fixed: {gl: DAC1 bilateral ODA aid type}
+dac1.oda_multilateral:
+  origin: dfo
+  dataset: {gl: DAC1 provenance}
+  fixed: {gl: DAC1 multilateral ODA aid type}
+dac1.in_donor_refugee_costs:
+  origin: dfo
+  dataset: {gl: DAC1 provenance}
+  fixed: {gl: DAC1 in-donor refugee costs aid type}
+dac1.debt_relief:
+  origin: dfo
+  dataset: {gl: DAC1 provenance}
+  fixed: {gl: DAC1 debt relief aid type}
+dac1.private_mobilised:
+  origin: dfo
+  dataset: {gl: DAC1 provenance}
+  shape: {measured_property: amountMobilised}
+dac1.gni:
+  origin: dfo
+  dataset: {gl: DAC1 provenance}
+  shape: {gl: GNI series about the provider}
+dac2a.oda_net_received:
+  origin: dfo
+  dataset: {gl: DAC2a provenance}
+  shape: {population_type: FinancialFlow, measurement_qualifier: Nominal}
+  fixed: {gl: nettingBasis Net; DAC2a total ODA aid type}
+dac2a.imputed_multilateral:
+  origin: dfo
+  dataset: {gl: DAC2a provenance}
+  fixed: {dac2aAidType: DAC2aAidType106}
+dac2a.technical_cooperation:
+  origin: dfo
+  dataset: {gl: DAC2a provenance}
+  fixed: {gl: DAC2a technical cooperation aid type}
+dac2a.food_aid:
+  origin: dfo
+  dataset: {gl: DAC2a provenance}
+  fixed: {gl: DAC2a development food aid aid type}
+dac2b.oda_commitment_received:
+  origin: dfo
+  dataset: {gl: DAC2b provenance}
+  shape: {population_type: FinancialObligation, measurement_qualifier: Nominal}
+  fixed: {gl: DAC2b ODA commitments aid type}

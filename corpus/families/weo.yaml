@@ -1,0 +1,73 @@
+weo.gdp:
+  origin: dfo
+  dataset: provenance/IMFWorldEconomicOutlook
+  shape:
+    population_type: EconomicProduction
+    measured_property: valueAdded
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  stat_vars: [ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_Nominal]
+weo.gdp_per_capita:
+  origin: dfo
+  dataset: provenance/IMFWorldEconomicOutlook
+  shape:
+    population_type: EconomicProduction
+    measured_property: valueAdded
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: Count_Person
+  stat_vars: [ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_Nominal_AsAFractionOf_Count_Person]
+weo.gdp_ppp:
+  origin: dfo
+  dataset: provenance/IMFWorldEconomicOutlook
+  shape:
+    population_type: EconomicProduction
+    measured_property: valueAdded
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {currencyConversionBasis: PurchasingPowerParityRate}
+  stat_vars: [ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_PurchasingPowerParityRate_Nominal]
+weo.gdp_ppp_per_capita:
+  origin: dfo
+  dataset: provenance/IMFWorldEconomicOutlook
+  shape:
+    population_type: EconomicProduction
+    measured_property: valueAdded
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: Count_Person
+  fixed: {currencyConversionBasis: PurchasingPowerParityRate}
+  stat_vars: [ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_PurchasingPowerParityRate_Nominal_AsAFractionOf_Count_Person]
+weo.savings_share:
+  origin: dfo
+  dataset: provenance/IMFWorldEconomicOutlook
+  shape:
+    population_type: EconomicUnit
+    measured_property: saving
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_Nominal
+  stat_vars: [Saving_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal_AsAFractionOf_ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_Nominal]
+weo.investment_share:
+  origin: dfo
+  dataset: provenance/IMFWorldEconomicOutlook
+  shape:
+    population_type: FinalExpenditure
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_Nominal
+  fixed: {finalExpenditureType: CapitalFormation}
+  stat_vars: [Amount_FinalExpenditure_GrossOfFixedCapitalConsumption_CapitalFormation_Nominal_AsAFractionOf_ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_Nominal]
+weo.output_gap:
+  origin: dfo
+  dataset: provenance/IMFWorldEconomicOutlook
+  shape:
+    population_type: EconomicProduction
+    measured_property: outputGap
+    stat_type: measuredValue
+    measurement_qualifier: RealValue
+    measurement_denominator: ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_CyclicallyAdjusted_RealValue
+  stat_vars: [OutputGap_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_RealValue_AsAFractionOf_ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_CyclicallyAdjusted_RealValue]

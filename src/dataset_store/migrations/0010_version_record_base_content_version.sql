@@ -1,0 +1,24 @@
+-- `base_content_version`, present only on a full groupby collapse's own
+-- version record: the raw materialisation's own `content_version` that
+-- collapsed identity was rendered from. `NULL` for every non-collapsed
+-- version record, and for a collection's (a collection never records a
+-- per-member collapsed identity). A column rather than a key inside
+-- `immutable_body` -- an older reader's `Manifest` model rejects an
+-- unrecognised field (`extra="forbid"`), so a stored body carrying this
+-- key would fail to decode on a deployment predating full collapse.
+-- Keeping it out of the body keeps a collapsed version's stored manifest
+-- readable by that older code.
+--
+-- The snapshot door's own base-revocation check
+-- (`datasets_api.doors.snapshot._refuse_if_base_revoked`) and the
+-- presentation frame store's matching check
+-- (`presentation_store.frame_store._resolve_canonical_location`) both
+-- read this column to also check the named base version's own revocation
+-- before serving the collapsed one: `datasets.version_revocation` is
+-- keyed per `(subject_id, content_version)`, so a takedown of the raw
+-- version alone would otherwise leave the collapsed one servable. No
+-- GRANT statement of its own: a new column on an already-granted table
+-- carries that table's existing privileges, and 0001_bootstrap.sql's
+-- ALTER DEFAULT PRIVILEGES covers `datasets.version_record` itself.
+
+ALTER TABLE datasets.version_record ADD COLUMN base_content_version text;

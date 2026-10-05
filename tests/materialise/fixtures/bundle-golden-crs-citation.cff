@@ -1,0 +1,25 @@
+cff-version: "1.2.0"
+message: "If you use this dataset, please cite it as below."
+type: "dataset"
+title: "OECD Creditor Reporting System (CRS), 1973–2024"
+abstract: "1,382 rows · 309 variables · 1 donor, 1 recipient · 1973–2024 · Unit: US dollar"
+version: "5c9dfd"
+date-released: "2026-10-04"
+url: "https://site.example/data?spec=spec_24e7ab259dcf221c56d7e76edeb977fd&v=cv_5c9dfd37e657d3a3c7000cc6acf49c43"
+authors:
+  - name: "Development Finance Observatory"
+    website: "https://site.example"
+    email: "data@one.org"
+contact:
+  - name: "Development Finance Observatory"
+    website: "https://site.example"
+    email: "data@one.org"
+references:
+  - type: "data"
+    title: "OECD Creditor Reporting System (CRS)"
+    authors:
+      - name: "Organisation for Economic Co-operation and Development (OECD)"
+    url: "https://data-explorer.oecd.org/vis?tm=crs&pg=0&snb=30&df[ds]=dsDisseminateFinalDMZ&df[id]=DSD_CRS%40DF_CRS&df[ag]=OECD.DCD.FSD&df[vs]=1.6&isAvailabilityDisabled=false&page=0"
+    license-url: "https://www.oecd.org/en/about/terms-conditions.html"
+    date-accessed: "2026-10-02"
+    notes: "OECD (2026), Creditor Reporting System (CRS), OECD Data Explorer, https://webfs-dcd.oecd.org/files/dotStat/DSD_CRS/CRS.parquet (accessed on 2026-10-02)"

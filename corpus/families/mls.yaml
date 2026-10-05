@@ -1,0 +1,14 @@
+mls.imputed:
+  origin: dfo
+  dataset: provenance/ONEImputedMultilateralSectors
+  shape:
+    population_type: FinancialFlow
+    measured_property: attributedAmount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed:
+    dac2aAidType: DAC2aAidType106
+    crsTypeOfFlow: CRSTypeOfFlow10
+    financialFlowType: Disbursement
+    nettingBasis: Gross

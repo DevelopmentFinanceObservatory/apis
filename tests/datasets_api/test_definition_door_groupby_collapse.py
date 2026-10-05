@@ -1,0 +1,488 @@
+"""Head-hit groupby renders must match fresh-mint content versions and bytes, preserve
+collapsed warnings with their structured fields, and leave the subject head at the raw version.
+"""
+
+from __future__ import annotations
+
+from dataclasses import replace
+from typing import cast
+
+import httpx
+
+from artifact_store import LiveArtifactInventory
+from assembler.ports import FrameRef
+from code_index import CodeIndex
+from dataset_store.snapshot import LiveSnapshotReader
+from presentation_store.frame_store import LiveFrameStore
+from spec_registry.identity import recompute_identity
+from spec_registry.reader import LiveSpecReader
+
+from ._graph_doubles import FakeMintGraphReader
+from ._legacy_conversion_trace import MIGRATED_CONVERSION
+from ._version_record_store import FakeVersionRecordDatasetStore
+from .conftest import FakeDatasetStore
+from .test_definition_door import _client
+from .test_definition_door_currency import _FakeHeadStore, _RenderableArtifactStore
+from .test_pin_door import FakeArtifactReferenceWriter
+from .test_serve_groupby_collapse import (
+    _CSV_HEADER,
+    _IDENTITY,
+    _MEMBER_A,
+    _MEMBER_ARCS,
+    _MEMBER_B,
+    _RECIPIENT,
+    _code_index,
+    _coverage_service,
+    _graph,
+    _mint,
+    _sdmx_transport,
+    _spec_id_and_sidecar,
+)
+
+_GROUPBY_OPTIONS = {"bundle": False, "groupby": {"by": ["recipient"], "op": "sum"}}
+_GROUPBY_QUERY = "bundle=false&groupby.by=recipient&groupby.op=sum"
+
+# The request is satisfied natively because the observed unit is USD. No rate table is needed.
+_CONVERTED_IDENTITY = {
+    **_IDENTITY,
+    "facets": {"unit": {"state": "value", "request": {"currency": "USD", "prices": "current"}}},
+}
+
+_CONVERTED_CSV_BODY = (
+    _CSV_HEADER
+    + f"dataflow,DC:DF_OBS(1.0.0),I,{_MEMBER_A},{_RECIPIENT},CurrencyUSD,GrantEquivalent,"
+    f"NotApplicable,OECD_DAC2A,2020,1000,,facet1\r\n"
+    + f"dataflow,DC:DF_OBS(1.0.0),I,{_MEMBER_B},{_RECIPIENT},CurrencyUSD,GrantEquivalent,"
+    f"NotApplicable,OECD_DAC2A,2020,500,,facet1\r\n"
+)
+
+
+def _converted_graph() -> FakeMintGraphReader:
+    return _graph_with_arcs(
+        {
+            _MEMBER_A: {**_MEMBER_ARCS, "testAxis": ("TestAxisA",)},
+            _MEMBER_B: {**_MEMBER_ARCS, "testAxis": ("TestAxisB",)},
+            "CurrencyUSD": {"typeOf": ("CurrencyUnit",)},
+        }
+    )
+
+
+def _graph_with_arcs(arcs: dict) -> FakeMintGraphReader:
+    return FakeMintGraphReader(arcs=arcs, labels={"OECD_DAC2A": "OECD DAC2a", _RECIPIENT: "Kenya"})
+
+
+def _converted_sdmx_transport() -> httpx.MockTransport:
+    return httpx.MockTransport(
+        lambda request: httpx.Response(
+            200,
+            text=_CONVERTED_CSV_BODY,
+            headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
+        )
+    )
+
+
+def _converted_spec_id_and_sidecar() -> tuple[str, dict]:
+    recomputed = recompute_identity(_CONVERTED_IDENTITY)
+    return recomputed.spec_id, {
+        "schema_version": 1,
+        "spec_id": recomputed.spec_id,
+        "identity": _CONVERTED_IDENTITY,
+    }
+
+
+def test_head_hit_mints_the_same_collapsed_content_version_and_bytes_as_the_fresh_path():
+    version_store = FakeVersionRecordDatasetStore()
+    client = _client(
+        graph=_graph(),
+        sdmx_transport=_sdmx_transport(),
+        version_store=version_store,
+        head_writer=_FakeHeadStore(),
+        artifact_store=_RenderableArtifactStore(
+            inventory=LiveArtifactInventory(store=version_store)
+        ),
+        code_index=_code_index(),
+        coverage=_coverage_service(),
+    )
+    spec_id, sidecar = _spec_id_and_sidecar()
+
+    # Minting primes `datasets.subject_head` with the raw content version.
+    fresh = _mint(client, spec_id=spec_id, sidecar=sidecar, options=_GROUPBY_OPTIONS)
+
+    got = client.get(f"/api/datasets/{spec_id}?{_GROUPBY_QUERY}")
+    assert got.status_code == 200, got.text
+    served = got.json()
+
+    assert served["trace"]["served_from"] == "head"
+    assert served["content_version"] == fresh["content_version"]
+    assert served["coverage"]["rows"] == fresh["coverage"]["rows"]
+    assert served["artifacts"][0]["artifact_digest"] == fresh["artifacts"][0]["artifact_digest"]
+    assert served["artifacts"][0]["bytes"] == fresh["artifacts"][0]["bytes"]
+
+    # The head-hit collapse mints the same `stat_vars_summed` disclosure
+    # the fresh path did.
+    assert "stat_vars_summed" in {w["code"] for w in fresh["warnings"]}
+    assert "stat_vars_summed" in {w["code"] for w in served["warnings"]}
+
+
+def test_a_snapshot_of_the_collapsed_version_still_reports_stat_vars_summed():
+    """The warning rides `Manifest.warnings` onto the recorded version body
+    (`datasets_api.manifest.encode_version_body` excludes only `artifacts`/
+    `output_options`), so a later `GET /api/datasets/{id}/{content_version}`
+    against the collapsed identity decodes it back unchanged -- the same
+    persistence `deflator_projected` already relies on.
+    """
+    version_store = FakeVersionRecordDatasetStore()
+    client = _client(
+        graph=_graph(),
+        sdmx_transport=_sdmx_transport(),
+        version_store=version_store,
+        head_writer=_FakeHeadStore(),
+        artifact_store=_RenderableArtifactStore(
+            inventory=LiveArtifactInventory(store=version_store)
+        ),
+        code_index=_code_index(),
+        coverage=_coverage_service(),
+    )
+    spec_id, sidecar = _spec_id_and_sidecar()
+
+    fresh = _mint(client, spec_id=spec_id, sidecar=sidecar, options=_GROUPBY_OPTIONS)
+
+    snapshot_resp = client.get(f"/api/datasets/{spec_id}/{fresh['content_version']}")
+    assert snapshot_resp.status_code == 200, snapshot_resp.text
+    snapshot = snapshot_resp.json()
+
+    assert "stat_vars_summed" in {w["code"] for w in snapshot["warnings"]}
+
+
+def test_head_hit_with_a_converted_base_mints_the_same_collapsed_content_version():
+    """The gap `content_version.mint_preimage_from_trace`'s own docstring
+    names: a base materialisation whose unit axis carried an explicit
+    currency-conversion request. `ManifestTrace.facets` alone (the wider,
+    7-key `as_trace_entry()` shape) cannot rebuild that axis's true grammar
+    ref -- only `ManifestTrace.mint_facets` (the exact
+    `as_grammar_facet()`-shaped preimage captured at finish time) can. This
+    pins that the head-hit collapse mints the identical `content_version`
+    the fresh path did for exactly this case."""
+    version_store = FakeVersionRecordDatasetStore()
+    client = _client(
+        graph=_converted_graph(),
+        sdmx_transport=_converted_sdmx_transport(),
+        version_store=version_store,
+        head_writer=_FakeHeadStore(),
+        artifact_store=_RenderableArtifactStore(
+            inventory=LiveArtifactInventory(store=version_store)
+        ),
+        code_index=_code_index(),
+        coverage=_coverage_service(unit="CurrencyUSD"),
+    )
+    spec_id, sidecar = _converted_spec_id_and_sidecar()
+
+    fresh = _mint(client, spec_id=spec_id, sidecar=sidecar, options=_GROUPBY_OPTIONS)
+
+    got = client.get(f"/api/datasets/{spec_id}?{_GROUPBY_QUERY}")
+    assert got.status_code == 200, got.text
+    served = got.json()
+
+    assert served["trace"]["served_from"] == "head"
+    assert served["content_version"] == fresh["content_version"]
+    assert served["coverage"]["rows"] == fresh["coverage"]["rows"]
+    assert served["artifacts"][0]["artifact_digest"] == fresh["artifacts"][0]["artifact_digest"]
+    assert served["artifacts"][0]["bytes"] == fresh["artifacts"][0]["bytes"]
+
+
+def _groupby_head_hit_over_stored_conversion(conversion: object) -> httpx.Response:
+    """Mints the raw version, replaces its stored `trace.conversion`, then requests a groupby
+    rendering, which the head hit builds from the stored frame1 and trace."""
+    version_store = FakeVersionRecordDatasetStore()
+    client = _client(
+        graph=_graph(),
+        sdmx_transport=_sdmx_transport(),
+        version_store=version_store,
+        head_writer=_FakeHeadStore(),
+        artifact_store=_RenderableArtifactStore(
+            inventory=LiveArtifactInventory(store=version_store)
+        ),
+        code_index=_code_index(),
+        coverage=_coverage_service(),
+    )
+    spec_id, sidecar = _spec_id_and_sidecar()
+    base = _mint(client, spec_id=spec_id, sidecar=sidecar, options={"bundle": False})
+
+    with version_store.transaction() as tx:
+        row = tx.fetch_one(
+            "SELECT immutable_body FROM datasets.version_record "
+            "WHERE subject_id = %s AND content_version = %s",
+            (spec_id, base["content_version"]),
+        )
+        assert row is not None
+        body = cast(dict, row["immutable_body"])
+        body["trace"]["conversion"] = conversion
+        tx.execute(
+            "UPDATE datasets.version_record SET immutable_body = %s "
+            "WHERE subject_id = %s AND content_version = %s",
+            (body, spec_id, base["content_version"]),
+        )
+
+    return client.get(f"/api/datasets/{spec_id}?{_GROUPBY_QUERY}")
+
+
+def test_a_groupby_head_hit_renders_from_a_migrated_trace_conversion():
+    """Migrations 0017 and 0020 rewrite a stored object-shaped `trace.conversion` into
+    `MIGRATED_CONVERSION`. A groupby head hit rebuilds its preimage from that one entry and
+    answers 200 with the list on the wire."""
+    got = _groupby_head_hit_over_stored_conversion(MIGRATED_CONVERSION)
+
+    assert got.status_code == 200, got.text
+    served = got.json()
+    assert served["trace"]["served_from"] == "head"
+    assert served["trace"]["conversion"] == MIGRATED_CONVERSION
+    assert "stat_vars_summed" in {w["code"] for w in served["warnings"]}
+
+
+def test_a_groupby_head_hit_over_a_two_entry_trace_conversion_is_an_internal_error():
+    """A stored `trace.conversion` list of two entries is corrupt: the head hit refuses it
+    as an internal error rather than rendering under a preimage it cannot read."""
+    got = _groupby_head_hit_over_stored_conversion([*MIGRATED_CONVERSION, *MIGRATED_CONVERSION])
+
+    assert got.status_code == 500, got.text
+    assert got.json()["code"] == "internal_error"
+
+
+def test_a_repeated_head_hit_keeps_minting_the_same_collapsed_content_version():
+    """Repeated head hits keep the collapsed content version and create no third version record."""
+    version_store = FakeVersionRecordDatasetStore()
+    client = _client(
+        graph=_graph(),
+        sdmx_transport=_sdmx_transport(),
+        version_store=version_store,
+        head_writer=_FakeHeadStore(),
+        artifact_store=_RenderableArtifactStore(
+            inventory=LiveArtifactInventory(store=version_store)
+        ),
+        code_index=_code_index(),
+        coverage=_coverage_service(),
+    )
+    spec_id, sidecar = _spec_id_and_sidecar()
+    fresh = _mint(client, spec_id=spec_id, sidecar=sidecar, options=_GROUPBY_OPTIONS)
+
+    first = client.get(f"/api/datasets/{spec_id}?{_GROUPBY_QUERY}")
+    second = client.get(f"/api/datasets/{spec_id}?{_GROUPBY_QUERY}")
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert first.json()["content_version"] == fresh["content_version"]
+    assert second.json()["content_version"] == fresh["content_version"]
+
+    with version_store.transaction() as tx:
+        rows = tx.fetch_all(
+            "SELECT content_version FROM datasets.version_record WHERE subject_id = %s "
+            "ORDER BY content_version",
+            (spec_id,),
+        )
+    recorded_versions = {row["content_version"] for row in rows}
+    # The table contains the raw and collapsed versions only.
+    assert len(recorded_versions) == 2
+    assert fresh["content_version"] in recorded_versions
+
+
+def test_a_collapsed_mint_never_moves_subject_head_to_the_collapsed_version():
+    version_store = FakeVersionRecordDatasetStore()
+    client = _client(
+        graph=_graph(),
+        sdmx_transport=_sdmx_transport(),
+        version_store=version_store,
+        head_writer=_FakeHeadStore(),
+        artifact_store=_RenderableArtifactStore(
+            inventory=LiveArtifactInventory(store=version_store)
+        ),
+        code_index=_code_index(),
+        coverage=_coverage_service(),
+    )
+    spec_id, sidecar = _spec_id_and_sidecar()
+
+    fresh = _mint(client, spec_id=spec_id, sidecar=sidecar, options=_GROUPBY_OPTIONS)
+    collapsed_head_hit = client.get(f"/api/datasets/{spec_id}?{_GROUPBY_QUERY}")
+    assert collapsed_head_hit.status_code == 200, collapsed_head_hit.text
+
+    # A plain GET serves the raw frame named by the subject head.
+    raw = client.get(f"/api/datasets/{spec_id}?bundle=false")
+    assert raw.status_code == 200, raw.text
+    body = raw.json()
+
+    assert body["trace"]["served_from"] == "head"
+    assert body["content_version"] != fresh["content_version"]
+    assert body["coverage"]["rows"] == 2
+
+
+_FAMILY_LABEL = "Axis value A/Axis value B"
+
+
+def _summed_warning(manifest: dict) -> dict:
+    return next(w for w in manifest["warnings"] if w["code"] == "stat_vars_summed")
+
+
+def test_the_summed_warning_carries_its_structured_fields_on_fresh_head_hit_and_snapshot():
+    version_store = FakeVersionRecordDatasetStore()
+    client = _client(
+        graph=_graph(),
+        sdmx_transport=_sdmx_transport(),
+        version_store=version_store,
+        head_writer=_FakeHeadStore(),
+        artifact_store=_RenderableArtifactStore(
+            inventory=LiveArtifactInventory(store=version_store)
+        ),
+        code_index=_code_index(),
+        coverage=_coverage_service(),
+    )
+    spec_id, sidecar = _spec_id_and_sidecar()
+
+    fresh = _mint(client, spec_id=spec_id, sidecar=sidecar, options=_GROUPBY_OPTIONS)
+    head_hit = client.get(f"/api/datasets/{spec_id}?{_GROUPBY_QUERY}")
+    assert head_hit.status_code == 200, head_hit.text
+    assert head_hit.json()["trace"]["served_from"] == "head"
+    snapshot = client.get(f"/api/datasets/{spec_id}/{fresh['content_version']}")
+    assert snapshot.status_code == 200, snapshot.text
+
+    for manifest in (fresh, head_hit.json(), snapshot.json()):
+        warning = _summed_warning(manifest)
+        assert warning["contributing_member_count"] == 2
+        assert warning["stat_var_ref"] == f"dcid:{spec_id}"
+        assert warning["stat_var_label"] == _FAMILY_LABEL
+        for other in manifest["warnings"]:
+            if other["code"] != "stat_vars_summed":
+                assert set(other) == {"code", "severity", "message"}
+
+
+def test_the_summed_warning_label_is_the_presentation_door_label_for_the_collapsed_version():
+    store = FakeDatasetStore()
+    version_store = FakeVersionRecordDatasetStore()
+    artifact_store = _RenderableArtifactStore(inventory=LiveArtifactInventory(store=version_store))
+    client = _client(
+        graph=_graph(),
+        store=store,
+        sdmx_transport=_sdmx_transport(),
+        version_store=version_store,
+        head_writer=_FakeHeadStore(),
+        artifact_store=artifact_store,
+        code_index=_code_index(),
+        coverage=_coverage_service(),
+    )
+    spec_id, sidecar = _spec_id_and_sidecar()
+    collapsed = _mint(client, spec_id=spec_id, sidecar=sidecar, options=_GROUPBY_OPTIONS)
+    warning = _summed_warning(collapsed)
+
+    frame_store = LiveFrameStore(
+        snapshots=LiveSnapshotReader(store=version_store),
+        artifacts=artifact_store,
+        graph=None,
+        reference_writer=FakeArtifactReferenceWriter(),
+        spec_reader=LiveSpecReader(store=store),
+        code_index=_code_index(),
+    )
+    resolved = frame_store.load(
+        frame_ref=FrameRef(spec_id=spec_id, content_version=collapsed["content_version"])
+    )
+
+    assert resolved.labels[warning["stat_var_ref"]] == warning["stat_var_label"] == _FAMILY_LABEL
+
+
+def _relabelled_code_index() -> CodeIndex:
+    """`_code_index` with every code relabelled, as after a code-index re-export."""
+    base = _code_index()
+    return CodeIndex(
+        stamp=base.stamp,
+        declarations=tuple(base.declarations.values()),
+        codes=tuple(replace(code, label=f"Renamed {code.code}") for code in base.codes),
+        statvars=base.statvars,
+    )
+
+
+def test_every_door_returns_the_recorded_summed_label_after_a_code_index_relabel():
+    """A collapsed version recorded under one code-index label keeps that label on a head-hit
+    GET, a snapshot GET, and a repeat mint served under a relabelled index."""
+    store = FakeDatasetStore()
+    version_store = FakeVersionRecordDatasetStore()
+    head_store = _FakeHeadStore()
+    artifact_store = _RenderableArtifactStore(inventory=LiveArtifactInventory(store=version_store))
+
+    def _client_with(code_index: CodeIndex):
+        return _client(
+            graph=_graph(),
+            store=store,
+            sdmx_transport=_sdmx_transport(),
+            version_store=version_store,
+            head_writer=head_store,
+            artifact_store=artifact_store,
+            code_index=code_index,
+            coverage=_coverage_service(),
+        )
+
+    spec_id, sidecar = _spec_id_and_sidecar()
+    recorded = _mint(
+        _client_with(_code_index()), spec_id=spec_id, sidecar=sidecar, options=_GROUPBY_OPTIONS
+    )
+    assert _summed_warning(recorded)["stat_var_label"] == _FAMILY_LABEL
+
+    relabelled = _client_with(_relabelled_code_index())
+    head_hit = relabelled.get(f"/api/datasets/{spec_id}?{_GROUPBY_QUERY}")
+    assert head_hit.status_code == 200, head_hit.text
+    assert head_hit.json()["trace"]["served_from"] == "head"
+    snapshot = relabelled.get(f"/api/datasets/{spec_id}/{recorded['content_version']}")
+    assert snapshot.status_code == 200, snapshot.text
+    repeat = _mint(relabelled, spec_id=spec_id, sidecar=sidecar, options=_GROUPBY_OPTIONS)
+
+    for manifest in (head_hit.json(), snapshot.json(), repeat):
+        assert manifest["content_version"] == recorded["content_version"]
+        assert [w for w in manifest["warnings"] if w["code"] == "stat_vars_summed"] == [
+            _summed_warning(recorded)
+        ]
+    assert head_hit.json()["warnings"] == snapshot.json()["warnings"]
+
+
+def test_a_head_hit_returns_a_stored_summed_warning_recorded_without_structured_fields():
+    """A collapsed version whose stored `stat_vars_summed` entry predates the structured fields
+    returns that entry unchanged, once, on a head-hit GET."""
+    version_store = FakeVersionRecordDatasetStore()
+    client = _client(
+        graph=_graph(),
+        sdmx_transport=_sdmx_transport(),
+        version_store=version_store,
+        head_writer=_FakeHeadStore(),
+        artifact_store=_RenderableArtifactStore(
+            inventory=LiveArtifactInventory(store=version_store)
+        ),
+        code_index=_code_index(),
+        coverage=_coverage_service(),
+    )
+    spec_id, sidecar = _spec_id_and_sidecar()
+    content_version = _mint(client, spec_id=spec_id, sidecar=sidecar, options=_GROUPBY_OPTIONS)[
+        "content_version"
+    ]
+    with version_store.transaction() as tx:
+        row = tx.fetch_one(
+            "SELECT immutable_body FROM datasets.version_record "
+            "WHERE subject_id = %s AND content_version = %s",
+            (spec_id, content_version),
+        )
+        assert row is not None
+        body = cast(dict, row["immutable_body"])
+        body["warnings"] = [
+            {key: w[key] for key in ("code", "severity", "message")}
+            if w["code"] == "stat_vars_summed"
+            else w
+            for w in body["warnings"]
+        ]
+        tx.execute(
+            "UPDATE datasets.version_record SET immutable_body = %s "
+            "WHERE subject_id = %s AND content_version = %s",
+            (body, spec_id, content_version),
+        )
+    (legacy,) = [w for w in body["warnings"] if w["code"] == "stat_vars_summed"]
+
+    head_hit = client.get(f"/api/datasets/{spec_id}?{_GROUPBY_QUERY}")
+    assert head_hit.status_code == 200, head_hit.text
+    served = head_hit.json()
+
+    assert served["trace"]["served_from"] == "head"
+    assert served["content_version"] == content_version
+    assert [w for w in served["warnings"] if w["code"] == "stat_vars_summed"] == [legacy]

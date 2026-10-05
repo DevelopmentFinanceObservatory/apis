@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://one.org/search/engine/region/equivalent_series.schema.json",
+  "title": "Cross-vocabulary twin series registry",
+  "description": "Curated clusters of StatVar dcids known to encode the same real-world indicator under different source vocabularies. See search.engine.region.equivalent_series for the loader and the shared_cluster() lookup built on top of it. This schema covers per-entry shape only; the cross-entry invariant that no dcid appears in two different clusters is enforced by the loader and by tests, not expressible here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format_version", "entries"],
+  "properties": {
+    "format_version": {
+      "description": "The registry format's own version. Pinned to the version this schema validates; a registry claiming a different format_version must validate against that version's own schema instead.",
+      "const": 1
+    },
+    "entries": {
+      "description": "The registered twin clusters, in lookup-precedence order.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "$defs": {
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["members", "note"],
+      "properties": {
+        "members": {
+          "description": "Every StatVar dcid known to encode this cluster's indicator. At least two -- a cluster of one dcid has no twin.",
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "note": {
+          "description": "The real-world indicator this cluster's members encode.",
+          "type": "string",
+          "minLength": 1
+        },
+        "preferred": {
+          "description": "The member an answer serves first, with the elected twin listed as an equivalent reading, when the preferred member is shown to hold data in every requested year the elected twin holds, at every place it serves. This is an authority choice between equally covering readings: membership states the members encode the same indicator, and preferred names the source served first only under equal coverage. A question that names no dates compares twins by place only, so the preferred member serves whenever it has data at the question's places, whatever its history. Where the preferred member covers less, the elected twin answers and lists it. Must be one of members, which the loader checks. Absent, the elected twin stays first.",
+          "type": "string",
+          "minLength": 1
+        },
+        "currency": {
+          "description": "The ISO 4217 currency the members are equivalent in. A member whose facets also report other currencies (IMF WEO GDP reports national currency beside US dollars) is equivalent only through its facets in this one. The loader checks the code is ISO 4217. Absent, the members carry no currency.",
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        }
+      }
+    }
+  }
+}

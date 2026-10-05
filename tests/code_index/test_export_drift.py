@@ -1,0 +1,79 @@
+"""Compare a fresh export of the live graph with the committed code index.
+It compares every block the graph and the authored config determine: declarations, datasets, codes,
+StatVars without their provenances, measure axes, values, and partition labels, plus the stamp's
+counts and content hash.
+The run time and graph endpoint vary, so the check excludes them. Each StatVar's provenances, the
+coverage build id, and the count of StatVars without coverage come from the coverage build, which
+`python -m series_coverage.verify_index` checks at deploy.
+It fails if the committed export is missing and skips without `SEARCH_GRAPH_BASE`.
+Set `SEARCH_GRAPH_BASE` and, behind a WAF, `SEARCH_GRAPH_TOKEN` to run this test:
+    uv run --env-file .env pytest -m live tests/code_index/test_export_drift.py
+"""
+
+from __future__ import annotations
+
+import gzip
+import json
+import os
+
+import pytest
+
+from code_index.loader import default_index_path, load_index
+from scripts.export_code_index import (
+    content_hash,
+    export_graph_blocks,
+    export_reader,
+    stamp_counts,
+)
+
+_GRAPH_BASE = os.environ.get("SEARCH_GRAPH_BASE")
+
+pytestmark = [
+    pytest.mark.live,
+    pytest.mark.skipif(
+        not _GRAPH_BASE, reason="set SEARCH_GRAPH_BASE to run the export drift test"
+    ),
+]
+
+_GRAPH_ROW_FIELDS_EXCLUDED = ("provenances",)
+
+
+def _without_provenances(row: dict) -> dict:
+    return {key: value for key, value in row.items() if key not in _GRAPH_ROW_FIELDS_EXCLUDED}
+
+
+def test_export_matches_committed_index():
+    index_path = default_index_path()
+    if not index_path.is_file():
+        pytest.fail(
+            f"{index_path} does not exist -- the code index export has not been run yet. "
+            "This test fails rather than skips: a live drift gate that goes green over a "
+            "missing export is fail-open."
+        )
+    # The committed export must load before its blocks are compared.
+    load_index(index_path)
+    committed = json.loads(gzip.decompress(index_path.read_bytes()))
+
+    reader = export_reader(f"{_GRAPH_BASE}/core/api", os.environ.get("SEARCH_GRAPH_TOKEN"))
+    try:
+        fresh = export_graph_blocks(reader)
+    finally:
+        reader.close()
+
+    assert set(fresh) == set(committed) - {"stamp"}
+    for block in ("declarations", "datasets", "codes"):
+        assert fresh[block] == committed[block], block
+    for block in ("measure_axes", "measure_values", "measure_partition_labels", "measure_nouns"):
+        assert fresh[block] == committed[block], block
+    assert fresh["statvars"] == [_without_provenances(row) for row in committed["statvars"]]
+
+    counts = stamp_counts(fresh)
+    assert counts["code_counts"] == committed["stamp"]["code_counts"]
+    assert counts["statvar_shape_counts"] == committed["stamp"]["statvar_shape_counts"]
+
+    # The stamp's hash covers each row's provenances, so the committed ones complete the fresh
+    # rows before hashing.
+    committed_provenances = {row["dcid"]: row["provenances"] for row in committed["statvars"]}
+    for row in fresh["statvars"]:
+        row["provenances"] = committed_provenances[row["dcid"]]
+    assert content_hash(fresh) == committed["stamp"]["content_hash"]

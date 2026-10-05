@@ -1,0 +1,214 @@
+base.gdp:
+  origin: base
+  dataset: dc/base/WorldDevelopmentIndicators
+  shape:
+    population_type: EconomicActivity
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {activitySource: GrossDomesticProduction}
+  stat_vars: [Amount_EconomicActivity_GrossDomesticProduction_Nominal]
+base.gdp_per_capita:
+  origin: base
+  dataset: dc/base/WorldDevelopmentIndicators
+  shape:
+    population_type: EconomicActivity
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: PerCapita
+  fixed: {activitySource: GrossDomesticProduction}
+  stat_vars: [Amount_EconomicActivity_GrossDomesticProduction_Nominal_PerCapita]
+base.gdp_growth:
+  origin: base
+  dataset: dc/base/WorldDevelopmentIndicators
+  shape: {population_type: EconomicActivity, measured_property: amount, stat_type: growthRate}
+  fixed: {activitySource: GrossDomesticProduction}
+  stat_vars: [GrowthRate_Amount_EconomicActivity_GrossDomesticProduction]
+base.co2_per_capita:
+  origin: base
+  dataset: dc/base/WorldDevelopmentIndicators
+  shape: {population_type: Emissions, measured_property: amount, stat_type: measuredValue, measurement_denominator: PerCapita}
+  fixed: {emittedThing: CarbonDioxide}
+  stat_vars: [Amount_Emissions_CarbonDioxide_PerCapita]
+base.inflation:
+  origin: base
+  dataset: dc/base/WorldBankDatasets
+  shape: {population_type: EconomicActivity, measured_property: worldBank/FP_CPI_TOTL_ZG, stat_type: measuredValue}
+  stat_vars: [worldBank/FP_CPI_TOTL_ZG]
+base.government_debt:
+  origin: base
+  dataset: dc/base/WorldBankDatasets
+  shape: {population_type: EconomicActivity, measured_property: worldBank/GC_DOD_TOTL_GD_ZS, stat_type: measuredValue}
+  stat_vars: [worldBank/GC_DOD_TOTL_GD_ZS]
+base.u5mr:
+  origin: base
+  dataset: dc/base/WorldDevelopmentIndicators
+  shape:
+    population_type: Person
+    measured_property: mortalityRate
+    stat_type: measuredValue
+    measurement_denominator: Count_BirthEvent_LiveBirth
+  fixed: {age: YearsUpto4}
+  stat_vars: [MortalityRate_Person_Upto4Years_AsFractionOf_Count_BirthEvent_LiveBirth]
+base.who_u5mr_by_wealth:
+  origin: base
+  dataset: dc/base/UN_WHO
+  shape: {population_type: WHO_u5mr, measured_property: value, stat_type: measuredValue}
+base.who_immunisation:
+  origin: base
+  dataset: dc/base/UN_WHO
+  shape: {population_type: WHO_WHS4_100, measured_property: value, stat_type: measuredValue}
+  stat_vars: [who/WHS4_100]
+base.who_dtp3_survey:
+  origin: base
+  dataset: dc/base/UN_WHO
+  shape: {population_type: WHO_vdpt, measured_property: value, stat_type: measuredValue}
+base.sdg_dtp3:
+  origin: base
+  dataset: dc/base/UN_SDG
+  shape: {population_type: SDG_SH_ACS_DTP3, measured_property: value, stat_type: measuredValue}
+  stat_vars: [sdg/SH_ACS_DTP3]
+base.who_anc4:
+  origin: base
+  dataset: dc/base/UN_WHO
+  shape: {population_type: WHO_WHS4_154, measured_property: value, stat_type: measuredValue}
+  stat_vars: [who/WHS4_154]
+base.who_anc4_survey:
+  origin: base
+  dataset: dc/base/UN_WHO
+  shape: {population_type: WHO_anc4, measured_property: value, stat_type: measuredValue}
+base.wb_road_traffic_mortality:
+  origin: base
+  dataset: dc/base/WorldBankDatasets
+  shape: {population_type: MortalityEvent, measured_property: worldBank/SH_STA_TRAF_P5, stat_type: measuredValue}
+  stat_vars: [worldBank/SH_STA_TRAF_P5]
+base.sdg_road_traffic_death_rate:
+  origin: base
+  dataset: dc/base/UN_SDG
+  shape: {population_type: SDG_SH_STA_TRAF, measured_property: value, stat_type: measuredValue}
+base.sdg_road_traffic_deaths:
+  origin: base
+  dataset: dc/base/UN_SDG
+  shape: {population_type: SDG_SH_STA_TRAFN, measured_property: value, stat_type: measuredValue}
+  stat_vars: [sdg/SH_STA_TRAFN]
+base.who_air_deaths_household:
+  origin: base
+  dataset: dc/base/UN_WHO
+  shape: {population_type: WHO_AIR_11, measured_property: value, stat_type: measuredValue}
+  stat_vars: [who/AIR_11]
+base.who_air_deaths_ambient:
+  origin: base
+  dataset: dc/base/UN_WHO
+  shape: {population_type: WHO_AIR_41, measured_property: value, stat_type: measuredValue}
+  stat_vars: [who/AIR_41]
+base.sdg_air_mortality:
+  origin: base
+  dataset: dc/base/UN_SDG
+  shape: {population_type: SDG_SH_STA_ASAIRP, measured_property: value, stat_type: measuredValue}
+  stat_vars: [sdg/SH_STA_ASAIRP]
+base.sdg_air_mortality_ambient:
+  origin: base
+  dataset: dc/base/UN_SDG
+  shape: {population_type: SDG_SH_AAP_ASMORT, measured_property: value, stat_type: measuredValue}
+  stat_vars: [sdg/SH_AAP_ASMORT]
+base.sdg_air_mortality_household:
+  origin: base
+  dataset: dc/base/UN_SDG
+  shape: {population_type: SDG_SH_HAP_ASMORT, measured_property: value, stat_type: measuredValue}
+  stat_vars: [sdg/SH_HAP_ASMORT]
+base.wb_air_mortality:
+  origin: base
+  dataset: dc/base/WorldBankDatasets
+  shape: {population_type: MortalityEvent, measured_property: worldBank/SH_STA_AIRP_P5, stat_type: measuredValue}
+  stat_vars: [worldBank/SH_STA_AIRP_P5]
+base.who_finprotection_10:
+  origin: base
+  dataset: dc/base/UN_WHO
+  shape: {population_type: WHO_FINPROTECTION_CATA_TOT_10_POP, measured_property: value, stat_type: measuredValue}
+base.who_finprotection_25:
+  origin: base
+  dataset: dc/base/UN_WHO
+  shape: {population_type: WHO_FINPROTECTION_CATA_TOT_25_POP, measured_property: value, stat_type: measuredValue}
+base.sdg_health_spending_10:
+  origin: base
+  dataset: dc/base/UN_SDG
+  shape: {population_type: SDG_SH_XPD_EARN10, measured_property: value, stat_type: measuredValue}
+  stat_vars: [sdg/SH_XPD_EARN10]
+base.sdg_health_spending_25:
+  origin: base
+  dataset: dc/base/UN_SDG
+  shape: {population_type: SDG_SH_XPD_EARN25, measured_property: value, stat_type: measuredValue}
+  stat_vars: [sdg/SH_XPD_EARN25]
+base.who_covid_deaths:
+  origin: base
+  dataset: dc/base/WHO_COVID19
+  shape: {population_type: MedicalConditionIncident, measured_property: cumulativeCount, stat_type: measuredValue}
+  fixed: {incidentType: COVID_19, medicalStatus: PatientDeceased}
+  stat_vars: [CumulativeCount_MedicalConditionIncident_COVID_19_PatientDeceased]
+base.wb_hiv_prevalence_young_women:
+  origin: base
+  dataset: dc/base/WorldBankDatasets
+  shape: {population_type: Person, measured_property: worldBank/SH_HIV_1524_FE_ZS, stat_type: measuredValue}
+  stat_vars: [worldBank/SH_HIV_1524_FE_ZS]
+base.uis_tertiary_ger:
+  origin: base
+  dataset: dc/base/WorldBankDatasets
+  shape: {population_type: Person, measured_property: worldBank/SE_TER_ENRR, stat_type: measuredValue}
+  stat_vars: [worldBank/SE_TER_ENRR]
+base.barro_lee_years:
+  origin: base
+  dataset: dc/base/WorldBankDatasets
+  shape: {population_type: Person, measured_property: worldBank/BAR_SCHL_25UP_FE, stat_type: measuredValue}
+  stat_vars: [worldBank/BAR_SCHL_25UP_FE]
+base.population:
+  origin: base
+  dataset: dc/base/WorldDevelopmentIndicators
+  shape: {population_type: Person, measured_property: count, stat_type: measuredValue}
+  stat_vars: [Count_Person]
+base.population_by_age:
+  origin: base
+  dataset: dc/base/Kenya_Census
+  shape: {population_type: Person, measured_property: count, stat_type: measuredValue}
+base.energy_coal:
+  origin: base
+  dataset: dc/base/UNEnergy
+  shape:
+    population_type: Fuel
+    measured_property: consumption
+    stat_type: measuredValue
+    measurement_qualifier: Annual
+base.gni:
+  origin: base
+  dataset: dc/base/WorldBankDatasets
+  shape: {population_type: EconomicActivity, measured_property: worldBank/NY_GNP_MKTP_CD, stat_type: measuredValue}
+  stat_vars: [worldBank/NY_GNP_MKTP_CD]
+base.homicide_rate:
+  origin: base
+  dataset: dc/base/WorldDevelopmentIndicators
+  shape:
+    population_type: CriminalActivities
+    measured_property: count
+    stat_type: measuredValue
+    measurement_denominator: Count_Person
+  fixed: {crimeType: MurderAndNonNegligentManslaughter}
+base.sdg_homicide_rate:
+  origin: base
+  dataset: dc/base/UN_SDG
+  shape: {population_type: SDG_VC_IHR_PSRC, measured_property: value, stat_type: measuredValue}
+base.sdg_refugees_by_origin:
+  origin: base
+  dataset: dc/base/UN_SDG
+  shape: {population_type: SDG_SM_POP_REFG_OR, measured_property: value, stat_type: measuredValue}
+  stat_vars: [sdg/SM_POP_REFG_OR]
+base.wb_idps_conflict:
+  origin: base
+  dataset: dc/base/WorldBankDatasets
+  shape: {population_type: Person, measured_property: worldBank/VC_IDP_TOCV, stat_type: measuredValue}
+  stat_vars: [worldBank/VC_IDP_TOCV]
+base.wb_control_of_corruption:
+  origin: base
+  dataset: dc/base/WorldBankDatasets
+  shape: {population_type: EconomicActivity, measured_property: worldBank/CC_EST, stat_type: measuredValue}
+  stat_vars: [worldBank/CC_EST]

@@ -1,0 +1,378 @@
+- id: dq-weo-001
+  query: GDP growth in Nigeria
+  why: WEO real growth is not published, so the World Bank growth rate answers; 'GDP growth rate' is an indicator, so no growth operation applies.
+  reuse: panel/weo-001
+  tags: {theme: macro, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [weo_unpublished], overlap: [weo]}
+  expect:
+    definite:
+      measure: {family: base.gdp_growth}
+      entities: [{dcid: country/NGA, role: observationAbout}]
+      operations: []
+
+- id: dq-weo-002
+  query: GDP of Kenya in current US dollars
+  why: The equivalent-series registry folds the World Bank and WEO series into one definite answer carrying the WEO twin.
+  reuse: panel/weo-002
+  tags: {theme: macro, entity: country, direction: subject, unit: currency, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical, overlap: [weo]}
+  expect: {definite: {measure: {family: base.gdp}, entities: [{dcid: country/KEN, role: observationAbout}]}}
+
+- id: dq-weo-003
+  query: IMF GDP current prices Kenya
+  why: A named publisher elects its provenance, so 'IMF GDP' resolves to the WEO series.
+  reuse: panel/weo-004
+  tags: {theme: macro, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical, overlap: [wdi]}
+  known_failure: {issue: 1156, checks: [measure, provenance]}
+  expect: {definite: {measure: {family: weo.gdp}, entities: [{dcid: country/KEN, role: observationAbout}]}}
+
+- id: dq-weo-004
+  query: GDP per capita PPP Japan
+  why: WEO PPP per capita and any base series are not registered equivalents, so definite on either or candidates including WEO fit.
+  reuse: panel/weo-005
+  tags: {theme: macro, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical, overlap: [wdi]}
+  expect:
+    entities: [{dcid: country/JPN, role: observationAbout}]
+    definite: {measure: {family: weo.gdp_ppp_per_capita}}
+    candidates: {include_families: [weo.gdp_ppp_per_capita]}
+
+- id: dq-weo-005
+  query: gross national savings percent of GDP Zambia
+  why: Resolves to weo.savings_share for country/ZMB as observationAbout.
+  reuse: panel/weo-007
+  tags: {theme: macro, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    definite: {measure: {family: weo.savings_share}, entities: [{dcid: country/ZMB, role: observationAbout}]}
+
+- id: dq-weo-006
+  query: investment as share of GDP Kenya
+  why: Resolves to weo.investment_share for country/KEN as observationAbout.
+  reuse: panel/weo-008
+  tags: {theme: macro, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: weo.investment_share}
+      entities: [{dcid: country/KEN, role: observationAbout}]
+      operations: []
+
+- id: dq-weo-007
+  query: gross capital formation for Ghana, Nigeria and Kenya since 2000
+  why: WEO publishes capital formation only as a share of GDP; a base amount series may also match the bare phrase.
+  reuse: panel/weo-009
+  tags: {theme: macro, entity: two_countries, direction: subject, unit: default, time: range, operation: compare, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    entities:
+      - {dcid: country/GHA, role: observationAbout}
+      - {dcid: country/NGA, role: observationAbout}
+      - {dcid: country/KEN, role: observationAbout}
+    window: {kind: range, start: 2000}
+    definite: {measure: {family: weo.investment_share}}
+    candidates: {include_families: [weo.investment_share]}
+
+- id: dq-weo-008
+  query: output gap in Germany 2025
+  why: The WEO output gap is a modelled estimate for the named year.
+  reuse: panel/weo-011
+  tags: {theme: macro, entity: country, direction: subject, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: weo.output_gap}
+      entities: [{dcid: country/DEU, role: observationAbout}]
+      window: {kind: range, start: 2025, end: 2025}
+
+- id: dq-weo-009
+  query: GDP of Sub-Saharan Africa
+  why: No dataset holds GDP for the SubSaharanAfrica node, so the region reads as its member countries; WEO excludes IMF groups.
+  reuse: panel/weo-012
+  tags: {theme: macro, entity: region_group, direction: subject, unit: default, time: none, operation: aggregate, breakdown: none, door: raw_text, phrasing: casual, overlap: [weo]}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: base.gdp}
+      entities: [{dcid: SubSaharanAfrica, role: observationAbout, expands: true}]
+
+- id: dq-weo-010
+  query: GDP of advanced economies
+  why: Advanced economies names a country group, so the answer is no_data with entity_not_resolved.
+  reuse: panel/weo-015
+  tags: {theme: macro, entity: region_group, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical, probe: [income_group]}
+  expect: {no_data: {reason: entity_not_resolved, category: unresolved}}
+
+- id: dq-weo-011
+  query: GDP of the euro area
+  why: The graph holds no euro area node, so the group reads as its member countries; entity_not_resolved also fits if it does not resolve.
+  reuse: panel/weo-017
+  tags: {theme: macro, entity: region_group, direction: subject, unit: default, time: none, operation: aggregate, breakdown: none, door: raw_text, phrasing: casual, overlap: [weo]}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: base.gdp}
+      entities: [{label: Euro Area, role: observationAbout, expands: true}]
+    no_data: {reason: entity_not_resolved, category: unresolved}
+
+- id: dq-weo-012
+  query: global GDP
+  why: Global GDP resolves to the World Bank series for Earth.
+  reuse: panel/weo-022
+  tags: {theme: macro, entity: region_group, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [disposition, task_outcome]}
+  expect: {definite: {measure: {family: base.gdp}, entities: [{dcid: Earth, role: observationAbout}]}}
+
+- id: dq-weo-013
+  query: GDP of Lagos State
+  why: Lagos State is a sub-national place with no GDP series; Nigeria's GDP answers a different question.
+  reuse: panel/weo-024
+  tags: {theme: macro, entity: region_group, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [missing_data]}
+  expect:
+    no_data:
+      entities: [{dcid: wikidataId/Q815913, role: observationAbout}]
+      reason: no_observations
+      category: absent
+
+- id: dq-weo-014
+  query: GDP of Japan in dollars
+  why: The WEO twin lists its US dollar facets; a twin reading yen is dropped.
+  reuse: panel/weo-025
+  tags: {theme: macro, entity: country, direction: subject, unit: currency, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, overlap: [weo]}
+  expect: {definite: {measure: {family: base.gdp}, entities: [{dcid: country/JPN, role: observationAbout}]}}
+
+- id: dq-weo-015
+  query: 'parsed: GDP of Kenya, in Kenyan shillings'
+  door: parsed
+  parsed: [{variable_text: GDP, entities: [{text: Kenya}], unit_text: Kenyan shillings}]
+  why: The World Bank series has no conversion recipe, so a unit request elects the WEO series; recipe_not_declared means the election ignored the twin.
+  reuse: panel/weo-026
+  tags: {theme: macro, entity: country, direction: subject, unit: currency, time: none, operation: none, breakdown: none, door: parsed, phrasing: casual, overlap: [wdi]}
+  expect:
+    definite:
+      measure: {family: weo.gdp}
+      entities: [{dcid: country/KEN, role: observationAbout}]
+      unit: {currency: KES, prices: current}
+
+- id: dq-weo-016
+  query: GDP in Kenyan shillings
+  why: The currency adjective may or may not bind Kenya as the place; the Kenyan shilling request reaches the unit binder on the WEO series.
+  tags: {theme: macro, entity: country, direction: subject, unit: currency, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, overlap: [weo]}
+  known_failure: {issue: 1156, checks: [measure, provenance, request]}
+  expect:
+    entities: [{dcid: country/KEN, role: observationAbout}]
+    definite: {measure: {family: weo.gdp}, unit: {currency: KES, prices: current}}
+    candidates: {}
+
+- id: dq-weo-017
+  query: Zambia gross capital formation in 2026
+  why: WEO holds 2026 as an Estimated projection; the answer serves it from that facet.
+  reuse: panel/weo-027
+  tags: {theme: macro, entity: country, direction: subject, unit: default, time: projection, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: weo.investment_share}
+      entities: [{dcid: country/ZMB, role: observationAbout}]
+      window: {kind: range, start: 2026, end: 2026}
+      operations: []
+
+- id: dq-weo-018
+  query: what will GDP per capita PPP in Japan be in 2029
+  why: WEO holds Japan's PPP GDP per capita to 2031 as Estimated projections, so 2029 serves from that facet with no forecast; as weo-004, candidates with WEO fit.
+  reuse: panel/weo-029
+  tags: {theme: macro, entity: country, direction: subject, unit: default, time: projection, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [request]}
+  expect:
+    entities: [{dcid: country/JPN, role: observationAbout}]
+    window: {kind: range, start: 2029, end: 2029}
+    definite: {measure: {family: weo.gdp_ppp_per_capita}, operations: []}
+    candidates: {include_families: [weo.gdp_ppp_per_capita]}
+
+- id: dq-weo-019
+  query: gross capital formation Zambia in 2035
+  why: Resolves to weo.investment_share for country/ZMB as observationAbout.
+  reuse: panel/weo-031
+  tags: {theme: macro, entity: country, direction: subject, unit: default, time: projection, operation: forecast, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: weo.investment_share}
+      entities: [{dcid: country/ZMB, role: observationAbout}]
+      window: {kind: all}
+      operations: [{verb: forecast, target_year: 2035}]
+
+- id: dq-weo-020
+  query: GDP per capita PPP Japan 1975
+  why: WEO starts in 1980; a single earlier year serves the held years with a window note; as weo-004, candidates including WEO also fit.
+  reuse: panel/weo-032
+  tags: {theme: macro, entity: country, direction: subject, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: technical, probe: [missing_data]}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    entities: [{dcid: country/JPN, role: observationAbout}]
+    window: {kind: range, start: 1975, end: 1975}
+    definite: {measure: {family: weo.gdp_ppp_per_capita}}
+    candidates: {include_families: [weo.gdp_ppp_per_capita]}
+
+- id: dq-weo-021
+  query: gross national savings Zambia from 2015 to 2026
+  why: The window straddles reported and projected years, so both facets serve as one joined series.
+  reuse: panel/weo-033
+  tags: {theme: macro, entity: country, direction: subject, unit: default, time: range, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: weo.savings_share}
+      entities: [{dcid: country/ZMB, role: observationAbout}]
+      window: {kind: range, start: 2015, end: 2026}
+
+- id: dq-weo-022
+  query: rank the G20 by investment share of GDP in 2024
+  why: Resolves to weo.investment_share for G20 member set as observationAbout in 2024.
+  reuse: panel/weo-036
+  tags: {theme: macro, entity: region_group, direction: subject, unit: default, time: year, operation: rank, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: weo.investment_share}
+      entities: [{label: G20, role: observationAbout, expands: true}]
+      window: {kind: range, start: 2024, end: 2024}
+      operations: [{verb: rank, over: place}]
+
+- id: dq-weo-023
+  query: cost of living in Egypt
+  why: WEO publishes no consumer price series; a base inflation series answers if one holds Egypt, otherwise no_data.
+  reuse: panel/weo-038
+  tags: {theme: macro, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [weo_unpublished]}
+  known_failure: {issue: 1156, checks: [measure, provenance]}
+  expect:
+    definite: {measure: {family: base.inflation}}
+    candidates: {}
+    no_data: {reason: variable_not_resolved, category: unresolved}
+
+- id: dq-weo-024
+  query: GGXWDG_NGDP for Zambia
+  why: The code names general government gross debt; IDS external debt is a different measure.
+  reuse: panel/weo-039
+  tags: {theme: debt, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical, probe: [weo_unpublished]}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect: {no_data: {reason: variable_not_resolved, category: unresolved}}
+
+- id: dq-weo-025
+  query: government debt as a share of GDP in Kenya
+  why: A World Bank Datasets central government debt share answers if it holds Kenya, otherwise no_data.
+  reuse: panel/weo-040
+  tags: {theme: debt, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [weo_unpublished], overlap: [ids]}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: base.government_debt}
+      entities: [{dcid: country/KEN, role: observationAbout}]
+    no_data: {reason: [variable_not_resolved, no_observations]}
+
+- id: dq-weo-026
+  query: inflation in Ghana in 2023
+  why: WEO inflation is not published; a base consumer-price inflation series answers where it exists.
+  tags: {theme: macro, entity: country, direction: subject, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [weo_unpublished]}
+  known_failure: {issue: 1156, checks: [measure, provenance]}
+  expect:
+    window: {kind: range, start: 2023, end: 2023}
+    definite: {measure: {family: base.inflation}, entities: [{dcid: country/GHA, role: observationAbout}]}
+    no_data: {reason: variable_not_resolved, category: unresolved}
+
+- id: dq-weo-027
+  query: GDP per captia of Kenya in PPP dolars
+  why: Misspelt form of the weo-004 query; PPP per capita series are not registered equivalents, so definite or candidates including WEO fit.
+  reuse: panel/weo-043
+  tags: {theme: macro, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: misspelt}
+  expect:
+    entities: [{dcid: country/KEN, role: observationAbout}]
+    definite: {measure: {family: weo.gdp_ppp_per_capita}}
+    candidates: {include_families: [weo.gdp_ppp_per_capita]}
+
+- id: dq-weo-028
+  query: Kenya GDP growth, gross capital formation and savings since 2010
+  why: Growth, capital formation and savings are separate series, so the query splits into one part each.
+  reuse: panel/weo-044
+  tags: {theme: macro, entity: country, direction: subject, unit: default, time: range, operation: none, breakdown: none, door: raw_text, phrasing: casual, overlap: [wdi]}
+  known_failure: {issue: 1156, checks: [disposition, parts]}
+  expect:
+    parts:
+      - definite:
+          measure: {family: base.gdp_growth}
+          entities: [{dcid: country/KEN, role: observationAbout}]
+          window: {kind: range, start: 2010}
+      - entities: [{dcid: country/KEN, role: observationAbout}]
+        window: {kind: range, start: 2010}
+        definite: {measure: {family: weo.investment_share}}
+        candidates: {}
+      - definite:
+          measure: {family: weo.savings_share}
+          entities: [{dcid: country/KEN, role: observationAbout}]
+          window: {kind: range, start: 2010}
+
+- id: dq-weo-029
+  query: GDP per capita current prices in Kenya from the April 2025 World Economic Outlook
+  why: Only the latest WEO release is kept and no WEO StatVar has a vintage slot, so the April 2025 edition is qualifier_not_bound.
+  reuse: panel/weo-045
+  tags: {theme: macro, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  known_failure: {issue: 1156, checks: [refusal]}
+  expect:
+    entities: [{dcid: country/KEN, role: observationAbout}]
+    no_data: {reason: qualifier_not_bound, category: absent}
+
+- id: dq-weo-030
+  query: 'parsed: GDP per capita of Kenya, in PPP'
+  door: parsed
+  parsed: [{variable_text: GDP per capita, entities: [{text: Kenya}], unit_text: PPP}]
+  why: PPP is a measure in the graph and belongs in variable_text; as a unit request it is unsupported.
+  tags: {theme: macro, entity: country, direction: subject, unit: unsupported, time: none, operation: none, breakdown: none, door: parsed, phrasing: technical, probe: [unsupported_unit]}
+  expect: {unsupported: {code: unit_request_unsupported}}
+
+- id: dq-weo-031
+  query: 'parsed: gross national savings of Zambia, in euros'
+  door: parsed
+  parsed: [{variable_text: gross national savings, entities: [{text: Zambia}], unit_text: euros}]
+  why: The savings share is published in Percent, which no currency unit expresses, so a euro request is facet_binding_unsupported.
+  tags: {theme: macro, entity: country, direction: subject, unit: currency, time: none, operation: none, breakdown: none, door: parsed, phrasing: technical, probe: [unsupported_unit]}
+  expect: {unsupported: {code: facet_binding_unsupported}}
+
+- id: dq-weo-032
+  query: 'parsed: GDP of Ghana 2010 to 2024, constant 2015 US dollars'
+  door: parsed
+  parsed:
+    - variable_text: GDP
+      entities: [{text: Ghana}]
+      time_text: 2010 to 2024
+      unit_text: constant 2015 US dollars
+  why: Resolves to weo.gdp for country/GHA as observationAbout from 2010 to 2024.
+  tags: {theme: macro, entity: country, direction: subject, unit: base_year, time: range, operation: none, breakdown: none, door: parsed, phrasing: technical, overlap: [wdi]}
+  expect:
+    definite:
+      measure: {family: weo.gdp}
+      entities: [{dcid: country/GHA, role: observationAbout}]
+      window: {kind: range, start: 2010, end: 2024}
+      unit: {currency: USD, prices: constant, base_year: 2015}
+
+- id: dq-weo-033
+  query: 'parsed: GDP of Kenya, source IMF'
+  door: parsed
+  parsed: [{variable_text: GDP, entities: [{text: Kenya}], source_text: IMF}]
+  why: A named source is a facet binding that the parsed door cannot carry, so the answer is facet_binding_unsupported.
+  tags: {theme: macro, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: parsed, phrasing: technical}
+  expect: {unsupported: {code: facet_binding_unsupported}}
+
+- id: dq-weo-034
+  query: GDP per capita PPP for African Union members
+  why: As weo-004, PPP per capita series are not registered equivalents, so definite or candidates including WEO fit.
+  reuse: panel/weo-020
+  tags: {theme: macro, entity: region_group, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    entities:
+      - {label: African Union, role: observationAbout, expands: true}
+    definite: {measure: {family: weo.gdp_ppp_per_capita}}
+    candidates: {include_families: [weo.gdp_ppp_per_capita]}
+
+- id: dq-weo-035
+  query: latest GDP per capita PPP for Nigeria, Egypt and South Africa
+  why: As weo-004, for the latest year, definite or candidates including WEO fit, and latest lands on a reported year.
+  reuse: panel/weo-035
+  tags: {theme: macro, entity: two_countries, direction: subject, unit: default, time: latest, operation: compare, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    entities:
+      - {dcid: country/NGA, role: observationAbout}
+      - {dcid: country/EGY, role: observationAbout}
+      - {dcid: country/ZAF, role: observationAbout}
+    window: {kind: latest}
+    definite: {measure: {family: weo.gdp_ppp_per_capita}}
+    candidates: {include_families: [weo.gdp_ppp_per_capita]}

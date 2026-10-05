@@ -1,0 +1,72 @@
+name: Bundle round-trip
+
+on:
+  pull_request:
+    branches: [dev, main]
+    paths:
+      - "packages/dfo-data-tools/src/materialise/**"
+      - "scripts/bundle_round_trip.R"
+      - "scripts/generate_sample_bundle.py"
+      - ".github/workflows/bundle-round-trip.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bundle-round-trip-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Same extras `ci.yml`'s test job syncs with -- `materialise` (this job's
+  # only import) lives under `datasets`, but syncing identically to the main
+  # suite keeps this job's environment interchangeable with the others.
+  UV_SYNC_ARGS: --frozen --extra engine --extra eval --extra datasets --extra graph
+  UV_NO_SYNC: "1"
+
+jobs:
+  round-trip:
+    # Mints a dfo-reader token, which prod keeps only in main-limited
+    # environments, so this runs in ONEcampaign only. The identical tree
+    # ran it here before it was synced.
+    if: github.repository_owner == 'ONEcampaign'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # dfo-spec-kit is a private repo the default GITHUB_TOKEN cannot read;
+      # the engine extra pulls it as a git dependency, so `uv sync` needs
+      # this rewrite (see `ci.yml`'s own lint/test jobs).
+      - name: Authenticate git for the dfo-spec-kit dependency
+        uses: ./.github/actions/spec-kit-auth
+        with:
+          client-id: ${{ vars.READER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.READER_APP_PRIVATE_KEY }}
+
+      - name: Install dependencies
+        run: uv sync ${{ env.UV_SYNC_ARGS }} --no-default-groups
+
+      - name: Generate the sample bundle
+        run: uv run python scripts/generate_sample_bundle.py "${{ runner.temp }}/sample-bundle"
+
+      - name: Set up R
+        uses: r-lib/actions/setup-r@v2.12.1
+        with:
+          r-version: "4.6.1"
+          use-public-rspm: true
+
+      - name: Install system libraries for R package builds
+        run: sudo apt-get install -y libcurl4-openssl-dev
+
+      - name: Install the pinned frictionless R package
+        run: |
+          Rscript -e 'install.packages("remotes")'
+          Rscript -e 'remotes::install_version("frictionless", version = "1.3.0", repos = "https://cloud.r-project.org")'
+
+      - name: Run the R round-trip gate
+        run: Rscript scripts/bundle_round_trip.R "${{ runner.temp }}/sample-bundle"

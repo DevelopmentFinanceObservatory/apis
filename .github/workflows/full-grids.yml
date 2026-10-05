@@ -1,0 +1,98 @@
+# Runs the invariant grids over their full products. On a pull request
+# ci.yml runs each grid's committed covering array (tests/_covering_array.py,
+# tests/engine/_grid_cells.py): every four factor values some cell holds, in
+# about a twentieth of the answer grid's cells and half the cells of the role
+# and pinned-resubmit read-plan grids. The standard read-plan grid has four
+# factors, so its covering array is its full product and it always runs whole.
+# DFO_FULL_GRIDS=1 runs every cell, which catches a fault that needs five or
+# more factor values together.
+#
+# Pushes to dev and main check each merge. The nightly schedule catches a
+# grid that drifts with no push, and workflow_dispatch runs it on any branch.
+#
+# Checkout, install and test environment copy ci.yml's test-shard job.
+name: Full grids
+
+on:
+  push:
+    branches: [dev, main]
+  schedule:
+    # 03:41 UTC daily. GitHub cron is always UTC, and a scheduled run can be
+    # delayed or dropped under load.
+    - cron: "41 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Runs queue rather than cancel, so every merge to dev and main is checked.
+concurrency:
+  group: full-grids-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # The same extras and sync behaviour as ci.yml.
+  UV_SYNC_ARGS: --frozen --extra engine --extra eval --extra datasets --extra graph
+  UV_NO_SYNC: "1"
+
+jobs:
+  full-grids:
+    # Mints a dfo-reader token, which prod keeps only in main-limited
+    # environments, so this runs in ONEcampaign only. The identical tree
+    # ran it here before it was synced.
+    if: github.repository_owner == 'ONEcampaign'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The vector suite comes from the exact commit pyproject.toml pins, as in
+      # ci.yml.
+      - name: Resolve the pinned dfo-spec-kit revision
+        id: spec-kit-rev
+        run: |
+          rev=$(python3 - <<'PY'
+          import re, sys
+          text = open("pyproject.toml").read()
+          match = re.search(r'^dfo-spec-kit = .*rev = "([0-9a-f]+)"', text, re.MULTILINE)
+          if not match:
+              sys.exit("could not resolve the dfo-spec-kit pin from pyproject.toml")
+          print(match.group(1))
+          PY
+          )
+          echo "rev=$rev" >> "$GITHUB_OUTPUT"
+
+      # The engine extra pulls dfo-spec-kit as a git dependency, and the vector
+      # checkout below reads the same private repo, so both use this token.
+      - name: Authenticate git for the dfo-spec-kit dependency
+        id: spec-kit-auth
+        uses: ./.github/actions/spec-kit-auth
+        with:
+          client-id: ${{ vars.READER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.READER_APP_PRIVATE_KEY }}
+
+      - name: Check out the identity vector suite
+        uses: actions/checkout@v7
+        with:
+          repository: ONEcampaign/dfo-spec-kit
+          ref: ${{ steps.spec-kit-rev.outputs.rev }}
+          path: .spec-kit
+          token: ${{ steps.spec-kit-auth.outputs.token }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependencies
+        run: uv sync ${{ env.UV_SYNC_ARGS }} --no-default-groups --group test
+
+      - name: Run the grids over their full products
+        env:
+          DFO_SPEC_KIT_DIR: ${{ github.workspace }}/.spec-kit
+          DFO_SPEC_KIT_REQUIRED: "1"
+          DFO_FULL_GRIDS: "1"
+        run: >-
+          uv run pytest -q -n auto
+          tests/engine/test_answer_invariants.py
+          tests/engine/test_read_plan_grid.py

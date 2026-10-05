@@ -1,0 +1,119 @@
+name: Eval nightly
+
+# One sample of every eligible corpus case against the deployed dev service,
+# logged to Langfuse as one experiment per case file (python -m search.eval.sync
+# --nightly, which syncs the datasets first). The run summary lists every check
+# that failed outside its case's known_failure, and every check lost to
+# infrastructure.
+#
+# The job fails on exit 2, a crash or setup error, whether or not alerting is on.
+# Alerting is off unless the repository variable EVAL_NIGHTLY_ALERT is 'true'.
+# With it off, an unmarked failure (1) or an infrastructure loss (3) is a
+# warning and the job passes. With it on, either fails the job, and an unmarked
+# failure opens one issue, or updates its body when it is already open.
+
+on:
+  schedule:
+    # 04:17 UTC daily. GitHub cron is always UTC.
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: eval-nightly
+  cancel-in-progress: false
+
+env:
+  UV_SYNC_ARGS: --frozen --extra eval --extra api --extra engine --extra datasets --extra graph
+  UV_NO_SYNC: "1"
+  # The dfo-dev Cloud Run service dfo-infra defines.
+  SEARCH_API_URL: https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app
+  ISSUE_TITLE: "Nightly Search eval: unmarked failures"
+
+jobs:
+  nightly:
+    name: Eval nightly
+    # Mints a dfo-reader token and writes to Langfuse against dev, so this runs
+    # in ONEcampaign only.
+    if: github.repository_owner == 'ONEcampaign'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      # dfo-spec-kit is a private repo the default GITHUB_TOKEN cannot read, and
+      # the engine extra pulls it as a git dependency.
+      - name: Authenticate git for the dfo-spec-kit dependency
+        uses: ./.github/actions/spec-kit-auth
+        with:
+          client-id: ${{ vars.READER_APP_CLIENT_ID }}
+          private-key: ${{ secrets.READER_APP_PRIVATE_KEY }}
+
+      - name: Install dependencies
+        run: uv sync ${{ env.UV_SYNC_ARGS }} --no-default-groups
+
+      # The checks read the deployed coverage and origin catalogue buckets.
+      - name: Authenticate to Google Cloud as the eval reader
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ secrets.EVAL_WIF_PROVIDER }}
+          service_account: ${{ secrets.EVAL_WIF_SA }}
+
+      - name: Run the nightly eval
+        env:
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          LANGFUSE_BASE_URL: ${{ secrets.LANGFUSE_BASE_URL }}
+          SEARCH_GRAPH_BASE: ${{ vars.SEARCH_GRAPH_BASE }}
+          # WAF bypass for the graph: CI runner IPs are datacenter ranges the
+          # graph's bot protection challenges, and this header exempts them.
+          SEARCH_GRAPH_TOKEN: ${{ secrets.SEARCH_GRAPH_TOKEN }}
+          COVERAGE_ARTIFACT_URI: gs://dfo-dev-coverage-dev-fin-observatory/
+          ORIGIN_CATALOGUE_URI: gs://dfo-dev-origin-catalogue-dev-fin-observatory/
+          ALERT: ${{ vars.EVAL_NIGHTLY_ALERT }}
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          summary="$RUNNER_TEMP/nightly.md"
+          rc=0
+          uv run python -m search.eval.sync --nightly "$SEARCH_API_URL" --summary "$summary" || rc=$?
+          if [ -f "$summary" ]; then
+            cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          case "$rc" in
+            0) exit 0 ;;
+            1|3) ;;
+            *) echo "::error::The nightly eval crashed with exit code $rc."; exit "$rc" ;;
+          esac
+          if [ "$ALERT" != "true" ]; then
+            echo "::warning::The nightly eval exited $rc; alerting is off (vars.EVAL_NIGHTLY_ALERT)."
+            exit 0
+          fi
+          if [ "$rc" -eq 1 ]; then
+            body="$RUNNER_TEMP/issue.md"
+            { [ -f "$summary" ] && cat "$summary" && echo; echo "Run: $RUN_URL"; } > "$body"
+            number="$(gh issue list --state open --search "\"$ISSUE_TITLE\" in:title" \
+              --json number,title --jq "map(select(.title == \"$ISSUE_TITLE\"))[0].number // empty")"
+            if [ -n "$number" ]; then
+              gh issue edit "$number" --body-file "$body"
+            else
+              gh issue create --title "$ISSUE_TITLE" --body-file "$body"
+            fi
+          fi
+          echo "::error::The nightly eval exited $rc; see the run summary."
+          exit 1

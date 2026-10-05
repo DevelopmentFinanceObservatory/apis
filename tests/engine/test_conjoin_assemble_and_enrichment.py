@@ -1,0 +1,751 @@
+"""Tests response assembly, echo handling, candidate ordering, and same-shape merges.
+Fake tasks check enrichment retargets merged specs and preserves untouched tasks.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import dataclasses
+import time
+
+from search.engine.conjoin import BINDING_FOLDED, assemble_region, combine_regions
+from search.engine.deadline import _cancel_and_await
+from search.engine.enrichment import _reconcile_after_collapse, _stream_slot_options
+from search.engine.envelope import now_ms
+from search.engine.events import SlotOptionsEvent
+from search.engine.region import RegionResult
+from search.engine.region.facet_probe import FacetProbe
+from search.engine.region.result import (
+    AmbiguousEntity,
+    AmbiguousEntityCandidate,
+    RoleNotAdmittedEntity,
+)
+from search.engine.same_shape import collapse_same_shape
+from search.engine.spec_build import build_spec
+from search.models import (
+    BindingSet,
+    CandidatesPart,
+    CoverageBare,
+    NoDataPart,
+    PipelineStep,
+    QueryEcho,
+    SlotKey,
+    SlotOptions,
+    StatVar,
+    TimeWindow,
+    Warning,
+)
+from tests.engine._builders import conjoin_spec as _spec
+from tests.engine._builders import constraint_value_slot as _value_slot
+from tests.engine._builders import gref as _gr
+from tests.engine._conjoin_fixtures import _ECON_SHAPE, _PERSON_SHAPE, _region
+
+# ---------------------------------------------------------------------------
+# echo kwarg passthrough
+# ---------------------------------------------------------------------------
+
+
+def _assemble_kwargs(region: RegionResult, **overrides):
+    """Minimal keyword args for assemble_region / combine_regions."""
+    return {
+        "query": "test query",
+        "extra_warnings": [],
+        "start_ms": now_ms(),
+        "engine_build": "test",
+        "include_sentence": False,
+        "max_candidates": 10,
+    } | overrides
+
+
+def _resubmit_echo(variable_text: str = "aid to ethiopia") -> QueryEcho:
+    return QueryEcho(
+        entry_path="dataset_resubmit",
+        raw_query=None,
+        normalized_query=None,
+        extract_skipped=True,
+    )
+
+
+def test_assemble_region_default_echo_uses_raw_text():
+    """Without an explicit echo, assemble_region builds entry_path='raw_text'."""
+    spec = _spec(_PERSON_SHAPE, "any")
+    region = _region(spec, "population")
+    response = assemble_region(region, **_assemble_kwargs(region))
+    assert response.query_echo.entry_path == "raw_text"
+    assert response.query_echo.extract_skipped is False
+
+
+def test_assemble_region_supplied_echo_used_verbatim():
+    """When echo is supplied, assemble_region uses it verbatim (entry_path preserved)."""
+    spec = _spec(_PERSON_SHAPE, "any")
+    region = _region(spec, "aid to ethiopia")
+    supplied = _resubmit_echo("aid to ethiopia")
+    response = assemble_region(region, echo=supplied, **_assemble_kwargs(region))
+    assert response.query_echo.entry_path == "dataset_resubmit"
+    assert response.query_echo.extract_skipped is True
+    assert response.query_echo.raw_query is None
+
+
+def test_assemble_region_candidates_moves_loose_readings_after_strong_ones():
+    """When the near-neighbour gate fires, bind order ranks loose readings behind strong ones.
+    Retrieval scores disagree with bind order in this fixture.
+    """
+    spec_a = _spec(_PERSON_SHAPE, "any", sv_dcid="sv_a")
+    spec_b = _spec(_ECON_SHAPE, "any", sv_dcid="sv_b")
+    spec_c = _spec(_PERSON_SHAPE, "other", sv_dcid="sv_c")
+    scores = {spec_a.spec_id: 0.9, spec_b.spec_id: 0.5, spec_c.spec_id: 0.3}
+
+    region = RegionResult(
+        variable_text="test variable",
+        status="candidates",
+        specs=(spec_b, spec_c, spec_a),
+        no_data_reason=None,
+        warnings=(),
+        timing_by_step={},
+        candidate_scores=scores,
+        near_neighbor_fired=True,
+    )
+
+    response = assemble_region(region, **_assemble_kwargs(region))
+    part = response.parts[0]
+    assert isinstance(part, CandidatesPart)
+    ordered_ids = [s.spec_id for s in part.candidates.specs]
+    assert ordered_ids == [spec_a.spec_id, spec_b.spec_id, spec_c.spec_id]
+
+
+def test_combine_regions_default_echo_uses_raw_text():
+    """Without an explicit echo, combine_regions builds entry_path='raw_text'."""
+    spec_a = _spec(_PERSON_SHAPE, "any", sv_dcid="sv_a")
+    spec_b = _spec(_ECON_SHAPE, "any", sv_dcid="sv_b")
+    regions = [
+        _region(spec_a, "population", earliest_index=0),
+        _region(spec_b, "GDP", earliest_index=1),
+    ]
+    response, _effective = combine_regions(
+        regions,
+        query="population and GDP",
+        extra_warnings=[],
+        start_ms=now_ms(),
+        engine_build="test",
+        include_sentence=False,
+        max_candidates=10,
+    )
+    assert response.query_echo.entry_path == "raw_text"
+
+
+def test_combine_regions_no_data_part_carries_gate_and_alternate_match():
+    """The first no_data part keeps its gate and alternate match when a second part is combined."""
+    alternate = _spec(_ECON_SHAPE, "any", sv_dcid="sdg/SH_HIV_INCD")
+    regions = [
+        _region(
+            _spec(_PERSON_SHAPE, "any", sv_dcid="sv_a"),
+            "population",
+            status="no_data",
+            no_data_reason="no_matching_slice",
+            earliest_index=0,
+            gate="only_alternate_has_data",
+            alternate_match=alternate,
+        ),
+        _region(
+            _spec(_ECON_SHAPE, "any", sv_dcid="sv_b"),
+            "GDP",
+            status="no_data",
+            no_data_reason="no_observations",
+            earliest_index=1,
+        ),
+    ]
+
+    response, _effective = combine_regions(
+        regions,
+        query="population and GDP",
+        extra_warnings=[],
+        start_ms=now_ms(),
+        engine_build="test",
+        include_sentence=False,
+        max_candidates=10,
+    )
+
+    first = response.parts[0]
+    assert first.status == "no_data"
+    assert first.no_data.gate == "only_alternate_has_data"
+    assert first.no_data.alternate_match is not None
+    assert first.no_data.alternate_match.spec_id == alternate.spec_id
+
+
+def _entity_terms_part(region: RegionResult) -> NoDataPart:
+    response = assemble_region(region, **_assemble_kwargs(region, include_sentence=True))
+    part = response.parts[0]
+    assert isinstance(part, NoDataPart)
+    return part
+
+
+def test_assemble_region_threads_every_unresolved_entity_term():
+    region = RegionResult(
+        variable_text="population",
+        status="no_data",
+        specs=(),
+        no_data_reason="entity_not_resolved",
+        warnings=(),
+        timing_by_step={},
+        unresolved_entity_names=("Atlantis", "El Dorado"),
+    )
+
+    part = _entity_terms_part(region)
+
+    assert part.no_data.entity_terms == ["Atlantis", "El Dorado"]
+    assert part.rendered_sentence == (
+        'Could not use "Atlantis" and "El Dorado" as places for this query. '
+        "Try a different place name."
+    )
+
+
+def test_assemble_region_threads_every_ambiguous_entity_term():
+    """Guinea precedes Congo in query order but not alphabetically, so a
+    sorted() regression in _no_data_entity_terms would reorder entity_terms
+    and this assertion would catch it.
+    """
+    region = RegionResult(
+        variable_text="population",
+        status="no_data",
+        specs=(),
+        no_data_reason="entity_ambiguous",
+        warnings=(),
+        timing_by_step={},
+        ambiguous_entities=(
+            AmbiguousEntity(
+                text="Guinea",
+                candidates=(
+                    AmbiguousEntityCandidate(dcid="country/GIN", name="Guinea", kind="Country"),
+                ),
+            ),
+            AmbiguousEntity(
+                text="Congo",
+                candidates=(
+                    AmbiguousEntityCandidate(
+                        dcid="country/COD", name="Congo [DRC]", kind="Country"
+                    ),
+                    AmbiguousEntityCandidate(
+                        dcid="country/COG", name="Congo [Republic]", kind="Country"
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    part = _entity_terms_part(region)
+
+    assert part.no_data.entity_terms == ["Guinea", "Congo"]
+    assert part.rendered_sentence == (
+        '"Guinea" and "Congo" match more than one entity: "Guinea", '
+        '"Congo [DRC]", and "Congo [Republic]". Be more specific.'
+    )
+
+
+def test_assemble_region_non_entity_reason_ignores_unresolved_entity_names():
+    """C50b: entity_terms is empty for every no_data reason other than
+    entity_not_resolved, entity_ambiguous, and entity_role_not_admitted, even
+    when unresolved_entity_names is (spuriously) populated. This must go
+    through assemble_region/build_no_data_part -- a bare NoData(...) never
+    reaches _no_data_entity_terms, the function that decides this, and would
+    pass vacuously.
+    """
+    region = RegionResult(
+        variable_text="population",
+        status="no_data",
+        specs=(),
+        no_data_reason="no_observations",
+        warnings=(),
+        timing_by_step={},
+        unresolved_entity_names=("Atlantis", "El Dorado"),
+    )
+
+    part = _entity_terms_part(region)
+
+    assert part.no_data.entity_terms == []
+
+
+def test_assemble_region_threads_every_role_not_admitted_entity_term():
+    region = RegionResult(
+        variable_text="population",
+        status="no_data",
+        specs=(),
+        no_data_reason="entity_role_not_admitted",
+        warnings=(),
+        timing_by_step={},
+        role_not_admitted_entities=(
+            RoleNotAdmittedEntity(
+                text="African Development Bank", dcid="org/ADB", graph_type="Organization"
+            ),
+            RoleNotAdmittedEntity(text="World Bank", dcid="org/WB", graph_type="Organization"),
+        ),
+    )
+
+    part = _entity_terms_part(region)
+
+    assert part.no_data.entity_terms == ["African Development Bank", "World Bank"]
+    assert part.rendered_sentence == (
+        '"population" data is not reported for "African Development Bank" and "World Bank".'
+    )
+
+
+def test_combine_regions_supplied_echo_used_verbatim():
+    """When echo is supplied, combine_regions uses it verbatim across all branches."""
+    spec_a = _spec(_PERSON_SHAPE, "any", sv_dcid="sv_a")
+    spec_b = _spec(_ECON_SHAPE, "any", sv_dcid="sv_b")
+    regions = [
+        _region(spec_a, "population", earliest_index=0),
+        _region(spec_b, "GDP", earliest_index=1),
+    ]
+    supplied = _resubmit_echo("population and GDP")
+    response, _effective = combine_regions(
+        regions,
+        query="population and GDP",
+        extra_warnings=[],
+        start_ms=now_ms(),
+        engine_build="test",
+        include_sentence=False,
+        max_candidates=10,
+        echo=supplied,
+    )
+    assert response.query_echo.entry_path == "dataset_resubmit"
+    assert response.query_echo.extract_skipped is True
+
+
+def test_combine_regions_full_collapse_threads_echo():
+    """A same-shape collapse reducing every part to one shared spec still
+    threads the supplied echo through combine_regions' own per-part loop."""
+    # Two regions with the same five-tuple collapse to one shared spec.
+    spec_a = _spec(_PERSON_SHAPE, "grants", sv_dcid="sv_grants")
+    spec_b = _spec(_PERSON_SHAPE, "loans", sv_dcid="sv_loans")
+    regions = [
+        _region(spec_a, "grants", earliest_index=0),
+        _region(spec_b, "loans", earliest_index=1),
+    ]
+    supplied = _resubmit_echo("grants and loans")
+    response, _effective = combine_regions(
+        regions,
+        query="grants and loans",
+        extra_warnings=[],
+        start_ms=now_ms(),
+        engine_build="test",
+        include_sentence=False,
+        max_candidates=10,
+        echo=supplied,
+    )
+    assert response.query_echo.entry_path == "dataset_resubmit"
+    assert response.query_echo.extract_skipped is True
+    assert response.parts[0].spec.spec_id == response.parts[1].spec.spec_id
+    assert BINDING_FOLDED not in [warning.code for warning in response.parts[0].warnings]
+    assert BINDING_FOLDED in [warning.code for warning in response.parts[1].warnings]
+
+
+# ---------------------------------------------------------------------------
+# collapse_same_shape propagates value_kind from source binding
+# ---------------------------------------------------------------------------
+
+
+def test_collapse_same_shape_propagates_enum_value_kind():
+    """Merged BindingSet carries value_kind from the source slot, not hardcoded 'entity'.
+
+    _value_slot builds what-axis slots with value_kind='enum_value'. After collapse,
+    the merged BindingSet values must also carry 'enum_value', not 'entity'.
+    """
+    spec_a = _spec(_PERSON_SHAPE, "ValA")
+    spec_b = _spec(_PERSON_SHAPE, "ValB")
+    r_a = _region(spec_a, "var A", earliest_index=0)
+    r_b = _region(spec_b, "var B", earliest_index=1)
+
+    effective, residual = collapse_same_shape([r_a, r_b])
+
+    assert len(effective) == 1
+    assert residual == []
+    merged_binding = effective[0].spec.resolved.slots[0].binding
+    assert isinstance(merged_binding, BindingSet)
+    # value_kind must come from the source slot (enum_value), not hardcoded entity
+    for sv in merged_binding.values:
+        assert sv.value_kind == "enum_value", (
+            f"expected 'enum_value' from source binding, got {sv.value_kind!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# A merge creates a new spec id, so reconciliation cancels stale probes and launches one
+# for the merged region. Untouched regions keep their task; fake probes use asyncio Tasks.
+# ---------------------------------------------------------------------------
+
+_PROBE_KEY = SlotKey(axis="what", property=_gr("constraintProp"), label="constraintProp")
+
+
+def _fake_slot_options_event(
+    spec_id: str,
+) -> tuple[tuple[SlotOptionsEvent, ...], tuple[Warning, ...]]:
+    return (SlotOptionsEvent(spec_id=spec_id, key=_PROBE_KEY, options=[], truncated=False),), ()
+
+
+async def _probe_coro(spec_id: str) -> tuple[tuple[SlotOptionsEvent, ...], tuple[Warning, ...]]:
+    return _fake_slot_options_event(spec_id)
+
+
+def _make_relaunch(call_log: list[str], tag: str):
+    """Return a closure that logs its target spec id and emits an event for it."""
+
+    def _relaunch(
+        spec_id: str, slot_options: list[SlotOptions], facet_probe: FacetProbe | None = None
+    ) -> asyncio.Task:
+        call_log.append(f"{tag}:{spec_id}")
+        return asyncio.create_task(_probe_coro(spec_id))
+
+    return _relaunch
+
+
+def test_reconcile_after_collapse_relaunches_merged_region_against_its_own_spec_id():
+    """A merged region gets a probe keyed to its new spec id.
+    An untouched region keeps its task.
+    """
+
+    async def _body():
+        call_log: list[str] = []
+
+        spec_a = _spec(_PERSON_SHAPE, "ValA")
+        spec_b = _spec(_PERSON_SHAPE, "ValB")
+        spec_c = _spec(_ECON_SHAPE, "any", sv_dcid="sv_c")
+
+        task_a = asyncio.create_task(_probe_coro(spec_a.spec_id))
+        task_b = asyncio.create_task(_probe_coro(spec_b.spec_id))
+        task_c = asyncio.create_task(_probe_coro(spec_c.spec_id))
+        await asyncio.gather(task_a, task_b, task_c)
+
+        r_a = dataclasses.replace(
+            _region(spec_a, "var A", earliest_index=0),
+            slot_options_task=task_a,
+            slot_options_relaunch=_make_relaunch(call_log, "a"),
+        )
+        r_b = dataclasses.replace(
+            _region(spec_b, "var B", earliest_index=1),
+            slot_options_task=task_b,
+            slot_options_relaunch=_make_relaunch(call_log, "b"),
+        )
+        r_c = dataclasses.replace(
+            _region(spec_c, "var C", earliest_index=2),
+            slot_options_task=task_c,
+            slot_options_relaunch=_make_relaunch(call_log, "c"),
+        )
+
+        _response, effective = combine_regions(
+            [r_a, r_b, r_c],
+            query="var A and var B and var C",
+            extra_warnings=[],
+            start_ms=now_ms(),
+            engine_build="test",
+            include_sentence=False,
+            max_candidates=10,
+        )
+        # Sanity: A/B actually collapsed into one merged region distinct from both.
+        effective_spec_ids = {r.spec.spec_id for r in effective if r.status == "definite"}
+        assert spec_a.spec_id not in effective_spec_ids
+        assert spec_b.spec_id not in effective_spec_ids
+        assert spec_c.spec_id in effective_spec_ids
+
+        streaming_regions, stale_tasks = _reconcile_after_collapse([r_a, r_b, r_c], effective)
+
+        assert set(stale_tasks) == {task_a, task_b}
+        await asyncio.gather(*(_cancel_and_await(t) for t in stale_tasks), return_exceptions=True)
+
+        survivor_c = next(r for r in streaming_regions if r.spec.spec_id == spec_c.spec_id)
+        assert survivor_c.slot_options_task is task_c
+        assert not any(entry.startswith("c:") for entry in call_log), (
+            "an untouched region's probe must never be relaunched"
+        )
+
+        merged = next(
+            r
+            for r in streaming_regions
+            if r.spec.spec_id not in {spec_a.spec_id, spec_b.spec_id, spec_c.spec_id}
+        )
+        assert merged.slot_options_task not in (None, task_a, task_b)
+        events, warns = await merged.slot_options_task
+        assert warns == ()
+        assert len(events) == 1
+        assert events[0].spec_id == merged.spec.spec_id, (
+            "relaunched enrichment must be keyed to the MERGED spec's own spec_id, "
+            "never a stale pre-merge one"
+        )
+        assert f"a:{merged.spec.spec_id}" in call_log or f"b:{merged.spec.spec_id}" in call_log
+
+    asyncio.run(_body())
+
+
+def test_stream_slot_options_never_yields_event_for_a_spec_id_absent_from_response():
+    """Every streamed options event must name a spec in the final response."""
+
+    async def _body():
+        spec_a = _spec(_PERSON_SHAPE, "ValA")
+        spec_b = _spec(_PERSON_SHAPE, "ValB")
+
+        task_a = asyncio.create_task(_probe_coro(spec_a.spec_id))
+        task_b = asyncio.create_task(_probe_coro(spec_b.spec_id))
+        await asyncio.gather(task_a, task_b)
+
+        call_log: list[str] = []
+        r_a = dataclasses.replace(
+            _region(spec_a, "var A", earliest_index=0),
+            slot_options_task=task_a,
+            slot_options_relaunch=_make_relaunch(call_log, "a"),
+        )
+        r_b = dataclasses.replace(
+            _region(spec_b, "var B", earliest_index=1),
+            slot_options_task=task_b,
+            slot_options_relaunch=_make_relaunch(call_log, "b"),
+        )
+
+        response, effective = combine_regions(
+            [r_a, r_b],
+            query="var A and var B",
+            extra_warnings=[],
+            start_ms=now_ms(),
+            engine_build="test",
+            include_sentence=False,
+            max_candidates=10,
+        )
+        streaming_regions, stale_tasks = _reconcile_after_collapse([r_a, r_b], effective)
+        await asyncio.gather(*(_cancel_and_await(t) for t in stale_tasks), return_exceptions=True)
+
+        response_spec_ids = {part.spec.spec_id for part in response.parts}
+
+        warnings_out: list[Warning] = []
+        events = [
+            ev
+            async for ev in _stream_slot_options(
+                streaming_regions,
+                deadline=time.monotonic() + 5,
+                warnings_out=warnings_out,
+                late_departures_out=[],
+                response=None,
+                answered=(),
+            )
+        ]
+        assert events, "expected the merged region's relaunched probe to yield an event"
+        for ev in events:
+            assert isinstance(ev, SlotOptionsEvent)
+            assert ev.spec_id in response_spec_ids, (
+                f"slot_options event spec_id {ev.spec_id!r} is absent from the "
+                f"response's specs {response_spec_ids!r} -- undeliverable enrichment"
+            )
+
+    asyncio.run(_body())
+
+
+def test_window_refusal_keeps_original_enrichment_tasks_joinable_to_visible_parts():
+    """Different windows keep both specs visible, so their original probes remain valid."""
+
+    async def _body():
+        call_log: list[str] = []
+        spec_a = build_spec(
+            measure_elected_properties=frozenset(),
+            shape=_PERSON_SHAPE,
+            slots=[_value_slot("constraintProp", "ValA")],
+            stat_vars=[
+                StatVar(
+                    ref=_gr("sv_a"),
+                    shape_id=_PERSON_SHAPE.shape_id,
+                    slot_values=[],
+                    constraint_properties=[],
+                )
+            ],
+            entities=[],
+            coverage=CoverageBare(has_data=True),
+            pipeline_trace=[PipelineStep(step="extract", ran=True)],
+            requested_window=TimeWindow(start_year=2015, end_year=2020),
+        )
+        spec_b = build_spec(
+            measure_elected_properties=frozenset(),
+            shape=_PERSON_SHAPE,
+            slots=[_value_slot("constraintProp", "ValB")],
+            stat_vars=[
+                StatVar(
+                    ref=_gr("sv_b"),
+                    shape_id=_PERSON_SHAPE.shape_id,
+                    slot_values=[],
+                    constraint_properties=[],
+                )
+            ],
+            entities=[],
+            coverage=CoverageBare(has_data=True),
+            pipeline_trace=[PipelineStep(step="extract", ran=True)],
+            requested_window=TimeWindow(start_year=2018, end_year=2020),
+        )
+        task_a = asyncio.create_task(_probe_coro(spec_a.spec_id))
+        task_b = asyncio.create_task(_probe_coro(spec_b.spec_id))
+        await asyncio.gather(task_a, task_b)
+        r_a = dataclasses.replace(
+            _region(spec_a, "var A", earliest_index=0),
+            slot_options_task=task_a,
+            slot_options_relaunch=_make_relaunch(call_log, "a"),
+        )
+        r_b = dataclasses.replace(
+            _region(spec_b, "var B", earliest_index=1),
+            slot_options_task=task_b,
+            slot_options_relaunch=_make_relaunch(call_log, "b"),
+        )
+
+        response, effective = combine_regions(
+            [r_a, r_b],
+            query="var A and var B",
+            extra_warnings=[],
+            start_ms=now_ms(),
+            engine_build="test",
+            include_sentence=False,
+            max_candidates=10,
+        )
+        streaming_regions, stale_tasks = _reconcile_after_collapse([r_a, r_b], effective)
+
+        assert effective == [r_a, r_b]
+        assert streaming_regions == [r_a, r_b]
+        assert effective[0] is r_a
+        assert effective[1] is r_b
+        assert streaming_regions[0] is r_a
+        assert streaming_regions[1] is r_b
+        assert stale_tasks == []
+        assert call_log == []
+
+        response_spec_ids = {part.spec.spec_id for part in response.parts}
+        warnings_out: list[Warning] = []
+        events = [
+            event
+            async for event in _stream_slot_options(
+                streaming_regions,
+                deadline=time.monotonic() + 5,
+                warnings_out=warnings_out,
+                late_departures_out=[],
+                response=None,
+                answered=(),
+            )
+        ]
+        assert {event.spec_id for event in events} == response_spec_ids
+
+    asyncio.run(_body())
+
+
+def test_stale_slot_options_task_cancelled_before_it_runs():
+    """Cancelling before the event loop steps a task prevents its coroutine body from running."""
+
+    async def _body():
+        call_log: list[str] = []
+
+        async def _tracked_probe(spec_id: str):
+            call_log.append(spec_id)
+            return _fake_slot_options_event(spec_id)
+
+        task = asyncio.create_task(_tracked_probe("never-should-run"))
+        # No await in between task creation and cancellation: the loop has not
+        # yet had a chance to schedule this task's first step.
+        await _cancel_and_await(task)
+
+        assert task.cancelled()
+        assert call_log == [], (
+            "a task cancelled before the loop ever scheduled it must never "
+            "execute its body — the probe function must not have been called"
+        )
+
+    asyncio.run(_body())
+
+
+def test_each_part_of_a_fold_gets_its_own_late_departures_over_sse():
+    """Two parts of one shape fold into one merged Spec ("aid for health and education").
+    Its streamed read used projected rates, so `done` carries a late list for each part,
+    named by `part_index`. Each list is the part's shipped list plus `modelled_values`.
+    The folded part's list lacks the dropped-filter departure that part 0 raised."""
+    import json
+
+    from search.engine.departures import warning_key
+    from search.engine.events import DoneEvent, DoneTelemetry, ObservationsEvent, serialize_sse
+    from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
+    from search.heading.departure_fact import DepartureFact
+    from search.models import (
+        ObservationSeries,
+        ObservationSeriesConversion,
+        SeriesEntityRef,
+        SeriesFacetRef,
+        SeriesStatVarRef,
+        SpecObservations,
+    )
+
+    dropped = Warning(code=QUERY_QUALIFIER_DROPPED, severity="info", message="malaria")
+    dropped_fact = DepartureFact(code="measure_not_applied", binding_ref=None, asked="malaria")
+
+    def _projected(spec_id: str) -> SpecObservations:
+        conversion = ObservationSeriesConversion(
+            recipe_id="recipe/Test",
+            table_provenance=SeriesFacetRef(ref="provenance/TestRateTables"),
+            exchange_rate_table_version="2026-01-01T00:00:00Z",
+            fallback_count=0,
+            projected_count=2,
+        )
+        return SpecObservations(
+            series=[
+                ObservationSeries(
+                    stat_var=SeriesStatVarRef(ref=spec_id),
+                    entities=[SeriesEntityRef(role="observationAbout", ref="country/KEN")],
+                    points=[],
+                    total_obs=0,
+                    conversion=conversion,
+                )
+            ],
+            total_obs=0,
+            truncated=False,
+        )
+
+    async def _read(spec_id: str):
+        return (ObservationsEvent(spec_id=spec_id, observations=_projected(spec_id)),), ()
+
+    def _relaunch(spec_id: str) -> asyncio.Task:
+        return asyncio.create_task(_read(spec_id))
+
+    async def _body():
+        spec_a = _spec(_PERSON_SHAPE, "ValA")
+        spec_b = _spec(_PERSON_SHAPE, "ValB")
+        regions = [
+            dataclasses.replace(
+                _region(spec_a, "health", earliest_index=0),
+                warnings=(dropped,),
+                departure_facts={warning_key(dropped): dropped_fact},
+                observations_relaunch=_relaunch,
+            ),
+            dataclasses.replace(
+                _region(spec_b, "education", earliest_index=1),
+                observations_relaunch=_relaunch,
+            ),
+        ]
+        response, effective = combine_regions(regions, **_assemble_kwargs(regions[0]))
+        streaming, stale = _reconcile_after_collapse(regions, effective)
+        await asyncio.gather(*(_cancel_and_await(t) for t in stale), return_exceptions=True)
+        late: list = []
+        async for _event in _stream_slot_options(
+            streaming,
+            deadline=time.monotonic() + 5,
+            warnings_out=[],
+            late_departures_out=late,
+            response=response,
+            answered=regions,
+        ):
+            pass
+        return response, late
+
+    response, late = asyncio.run(_body())
+    first, folded = response.parts
+    assert first.spec.spec_id == folded.spec.spec_id, "the two parts must fold"
+    assert [w.code for w in folded.warnings] == [BINDING_FOLDED]
+
+    done = DoneEvent(elapsed_ms=1, trace_id="t", telemetry=DoneTelemetry(), late_departures=late)
+    frame = json.loads(serialize_sse(done).split("data: ", 1)[1])
+    modelled = {"code": "modelled_values", "text": "Some of these values are modelled estimates."}
+    by_index = {entry["part_index"]: entry for entry in frame["late_departures"]}
+    assert sorted(by_index) == [0, 1]
+    for index, part in enumerate(response.parts):
+        shipped = [d.model_dump(mode="json", exclude_none=True) for d in part.departures]
+        assert by_index[index]["spec_id"] == part.spec.spec_id
+        assert sorted(by_index[index]["departures"], key=lambda d: d["code"]) == sorted(
+            [*shipped, modelled], key=lambda d: d["code"]
+        )
+    assert "measure_not_applied" in {d.code for d in first.departures}
+    assert "measure_not_applied" not in {d["code"] for d in by_index[1]["departures"]}

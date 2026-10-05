@@ -1,0 +1,582 @@
+- id: ids-001
+  query: "total debt service of Ghana"
+  source: ids
+  axes:
+    debtor: country
+    creditor: none
+    indicator: debt_service
+    time: none
+    operation: total
+    phrasing: casual
+  intent: "Ghana's total external debt service, latest or all years."
+- id: ids-002
+  query: "Ghana's debt service to China"
+  source: ids
+  axes:
+    debtor: country
+    creditor: country
+    indicator: debt_service
+    time: none
+    operation: none
+    phrasing: casual
+  intent: "Debt service Ghana pays to China."
+- id: ids-003
+  query: "how much do countries owe China"
+  source: ids
+  axes:
+    debtor: none
+    creditor: country
+    indicator: stock
+    time: none
+    operation: total
+    phrasing: casual
+  intent: "Total owed to China across debtors."
+  edge: "Creditor only; the series is by creditor and needs a debtor, so the engine may offer candidates."
+- id: ids-004
+  query: "external debt stocks"
+  source: ids
+  axes:
+    debtor: none
+    creditor: none
+    indicator: stock
+    time: none
+    operation: none
+    phrasing: expert
+  intent: "Debt stocks with no debtor named."
+  edge: "Neither debtor nor creditor; expects a refusal or a clarifying question."
+- id: ids-005
+  query: "how much does Kenya owe China"
+  source: ids
+  axes:
+    debtor: country
+    creditor: country
+    indicator: stock
+    time: none
+    operation: none
+    phrasing: casual
+  intent: "Kenya's external debt owed to China."
+- id: ids-006
+  query: "Kenya's debt by creditor"
+  source: ids
+  axes:
+    debtor: country
+    creditor: ambiguous
+    indicator: stock
+    time: none
+    operation: none
+    phrasing: casual
+  intent: "Kenya's debt broken down by creditor."
+  edge: No creditor named; the by-creditor series and the total series differ only in their creditor breakdown.
+- id: ids-007
+  query: "Zambia debt owed to bondholders"
+  source: ids
+  axes:
+    debtor: country
+    creditor: creditor_class
+    indicator: stock
+    time: none
+    operation: none
+    phrasing: casual
+  intent: "Zambia's external debt held by bondholders."
+  edge: "Bondholders are a slot value, not an entity; a stock-by-bondholder series may not exist."
+- id: ids-008
+  query: "Kenya debt service to bondholders"
+  source: ids
+  axes:
+    debtor: country
+    creditor: creditor_class
+    indicator: debt_service
+    time: none
+    operation: none
+    phrasing: casual
+  intent: "Kenya's debt service paid to bondholders."
+- id: ids-009
+  query: "Ghana debt service to private creditors"
+  source: ids
+  axes:
+    debtor: country
+    creditor: creditor_class
+    indicator: debt_service
+    time: none
+    operation: none
+    phrasing: casual
+  intent: "Debt service to private creditors."
+- id: ids-010
+  query: "Ghana debt service to official bilateral creditors"
+  source: ids
+  axes:
+    debtor: country
+    creditor: creditor_class
+    indicator: debt_service
+    time: none
+    operation: none
+    phrasing: expert
+  intent: "Debt service to official bilateral creditors."
+- id: ids-011
+  query: "Ghana debt service to multilateral creditors"
+  source: ids
+  axes:
+    debtor: country
+    creditor: creditor_class
+    indicator: debt_service
+    time: none
+    operation: none
+    phrasing: expert
+  intent: "Debt service to multilateral lenders."
+  edge: Multilateral creditors as a class; the grain holds IDA, IBRD and IMF only as entities.
+- id: ids-012
+  query: "Ghana debt service to IDA"
+  source: ids
+  axes:
+    debtor: country
+    creditor: multilateral
+    indicator: debt_service
+    time: none
+    operation: none
+    phrasing: expert
+  intent: "Debt service Ghana pays to the International Development Association."
+- id: ids-013
+  query: "what does Zambia owe the IMF"
+  source: ids
+  axes:
+    debtor: country
+    creditor: multilateral
+    indicator: stock
+    time: none
+    operation: none
+    phrasing: casual
+  intent: "Zambia's outstanding IMF credit."
+  edge: The IMF as an entity creditor, read through the by-creditor series.
+- id: ids-014
+  query: "Ghana debt service to the World Bank"
+  source: ids
+  axes:
+    debtor: country
+    creditor: ambiguous
+    indicator: debt_service
+    time: none
+    operation: none
+    phrasing: casual
+  intent: "Debt service to the World Bank."
+  edge: "World Bank matches both IBRD and IDA; expects an ambiguity message."
+- id: ids-015
+  query: "Ghana debt service to the Paris Club"
+  source: ids
+  axes:
+    debtor: country
+    creditor: country_group
+    indicator: debt_service
+    time: none
+    operation: none
+    phrasing: expert
+  intent: "Debt service to Paris Club creditors."
+  edge: "Paris Club is not an entity in the graph."
+- id: ids-016
+  query: "Kenya debt service to G20 creditors"
+  source: ids
+  axes:
+    debtor: country
+    creditor: country_group
+    indicator: debt_service
+    time: none
+    operation: none
+    phrasing: expert
+  intent: "Debt service to G20 members."
+  edge: "G20 resolves to a group, but no bilateral rollup exists."
+- id: ids-017
+  query: "Ghana debt service to commercial banks"
+  source: ids
+  axes:
+    debtor: country
+    creditor: creditor_class
+    indicator: debt_service
+    time: none
+    operation: none
+    phrasing: casual
+  intent: "Debt service to commercial banks."
+  edge: "Commercial banks are not a creditor entity or class on the graph."
+- id: ids-018
+  query: "Ghana debt service in 2020"
+  source: ids
+  axes:
+    debtor: country
+    creditor: none
+    indicator: debt_service
+    time: year
+    operation: none
+    phrasing: casual
+  intent: "Ghana's debt service in 2020."
+- id: ids-019
+  query: "Zambia total debt service 2015 to 2020"
+  source: ids
+  axes:
+    debtor: country
+    creditor: none
+    indicator: debt_service
+    time: range
+    operation: trend
+    phrasing: casual
+  intent: "Zambia's debt service over the range."
+- id: ids-020
+  query: "Ghana debt service since 2010"
+  source: ids
+  axes:
+    debtor: country
+    creditor: none
+    indicator: debt_service
+    time: since
+    operation: trend
+    phrasing: casual
+  intent: "Ghana's debt service from 2010 to the latest year."
+- id: ids-021
+  query: "latest external debt stocks of Kenya"
+  source: ids
+  axes:
+    debtor: country
+    creditor: none
+    indicator: stock
+    time: latest
+    operation: none
+    phrasing: casual
+  intent: "Kenya's most recent debt stock."
+- id: ids-022
+  query: "Kenya external debt over the last decade"
+  source: ids
+  axes:
+    debtor: country
+    creditor: none
+    indicator: stock
+    time: relative
+    operation: trend
+    phrasing: casual
+  intent: "Kenya's debt stocks over the past ten years."
+- id: ids-023
+  query: "projected debt service payments for Zambia in 2027"
+  source: ids
+  axes:
+    debtor: country
+    creditor: none
+    indicator: projection
+    time: future
+    operation: none
+    phrasing: expert
+  intent: "Projected debt service on existing commitments."
+  edge: Projected debt service for a year after 2024; the pipeline marks projections as estimated.
+- id: ids-024
+  query: "future debt service of Ghana to China"
+  source: ids
+  axes:
+    debtor: country
+    creditor: country
+    indicator: projection
+    time: future
+    operation: none
+    phrasing: casual
+  intent: "Scheduled debt service Ghana owes China in coming years."
+  edge: "Projection by creditor; may not exist."
+- id: ids-025
+  query: "compare Ghana's debt service to China and to IDA"
+  source: ids
+  axes:
+    debtor: country
+    creditor: multilateral
+    indicator: debt_service
+    time: none
+    operation: compare
+    phrasing: casual
+  intent: "Compare debt service to two creditors."
+  edge: "Two creditors of different kinds in one query."
+- id: ids-026
+  query: "which countries have the highest external debt stocks"
+  source: ids
+  axes:
+    debtor: country
+    creditor: none
+    indicator: stock
+    time: latest
+    operation: rank
+    phrasing: casual
+  intent: "Rank debtors by latest debt stock."
+- id: ids-027
+  query: "top 10 debtors of China"
+  source: ids
+  axes:
+    debtor: country
+    creditor: country
+    indicator: stock
+    time: latest
+    operation: rank
+    phrasing: casual
+  intent: "Rank debtors by amount owed to China."
+  edge: "Creditor-only ranking across debtors."
+- id: ids-028
+  query: "what share of Kenya's debt is owed to China"
+  source: ids
+  axes:
+    debtor: country
+    creditor: country
+    indicator: stock
+    time: none
+    operation: share
+    phrasing: casual
+  intent: "China's share of Kenya's external debt."
+  edge: "Share needs a numerator by creditor and a total denominator."
+- id: ids-029
+  query: "growth in Zambia's external debt since 2000"
+  source: ids
+  axes:
+    debtor: country
+    creditor: none
+    indicator: stock
+    time: since
+    operation: growth
+    phrasing: casual
+  intent: "Growth of Zambia's debt stock since 2000."
+- id: ids-030
+  query: "PPG external debt stocks, DOD, Ghana"
+  source: ids
+  axes:
+    debtor: country
+    creditor: none
+    indicator: stock
+    time: none
+    operation: none
+    phrasing: expert
+  intent: "Ghana's public and publicly guaranteed external debt stocks, disbursed and outstanding."
+- id: ids-031
+  query: "Ghana short-term external debt"
+  source: ids
+  axes:
+    debtor: country
+    creditor: none
+    indicator: stock
+    time: none
+    operation: none
+    phrasing: expert
+  intent: "Short-term external debt stock."
+  edge: Short-term debt, where several flow and position types may match.
+- id: ids-032
+  query: "Zambia external debt arrears"
+  source: ids
+  axes:
+    debtor: country
+    creditor: none
+    indicator: arrears
+    time: none
+    operation: none
+    phrasing: expert
+  intent: "Arrears on external debt."
+  edge: "Arrears are excluded by the pipeline."
+- id: ids-033
+  query: "Kenya interest payments on external debt"
+  source: ids
+  axes:
+    debtor: country
+    creditor: none
+    indicator: interest
+    time: none
+    operation: none
+    phrasing: expert
+  intent: "Interest paid on external debt."
+- id: ids-034
+  query: "Kenya principal repayments"
+  source: ids
+  axes:
+    debtor: country
+    creditor: none
+    indicator: principal
+    time: none
+    operation: none
+    phrasing: expert
+  intent: "Principal repaid on external debt."
+- id: ids-035
+  query: "Ghana net financial flows on external debt"
+  source: ids
+  axes:
+    debtor: country
+    creditor: none
+    indicator: net_flow
+    time: none
+    operation: none
+    phrasing: expert
+  intent: "Net flows on external debt."
+  edge: "Net flows may be absent from the served grain."
+- id: ids-036
+  query: "Ghana disbursements from bilateral creditors"
+  source: ids
+  axes:
+    debtor: country
+    creditor: creditor_class
+    indicator: disbursement
+    time: none
+    operation: none
+    phrasing: expert
+  intent: "Loan disbursements from bilateral creditors."
+- id: ids-037
+  query: "Ghana debt service as a share of exports"
+  source: ids
+  axes:
+    debtor: country
+    creditor: none
+    indicator: ratio
+    time: none
+    operation: none
+    phrasing: expert
+  intent: "Debt service to exports ratio."
+  edge: A ratio to exports, where the sentence must not label it as a dollar flow.
+- id: ids-038
+  query: "debt service and interest payments of Zambia and Ghana"
+  source: ids
+  axes:
+    debtor: country
+    creditor: none
+    indicator: interest
+    time: none
+    operation: compare
+    phrasing: multi_part
+  intent: "Two indicators for two debtors."
+  edge: "Multi-part query with two indicators and two debtors."
+- id: ids-039
+  query: "external debt of sub-saharan africa"
+  source: ids
+  axes:
+    debtor: region
+    creditor: none
+    indicator: stock
+    time: none
+    operation: none
+    phrasing: casual
+  intent: "Regional debt stock."
+  edge: A regional aggregate as debtor, which IDS does not cover and the SDG tables do.
+- id: ids-040
+  query: "debt service of low income countries"
+  source: ids
+  axes:
+    debtor: income_group
+    creditor: none
+    indicator: debt_service
+    time: none
+    operation: total
+    phrasing: casual
+  intent: "Income group debt service."
+  edge: An income group as debtor, which IDS may not hold as a place.
+- id: ids-041
+  query: "external debt of IDA countries"
+  source: ids
+  axes:
+    debtor: income_group
+    creditor: none
+    indicator: stock
+    time: none
+    operation: total
+    phrasing: expert
+  intent: "Debt stocks of IDA-eligible countries."
+  edge: "IDA countries is not a place."
+- id: ids-042
+  query: "external debt of HIPCs"
+  source: ids
+  axes:
+    debtor: country_group
+    creditor: none
+    indicator: stock
+    time: none
+    operation: total
+    phrasing: expert
+  intent: "Debt of heavily indebted poor countries."
+  edge: The HIPC group may not resolve as a place.
+- id: ids-043
+  query: "Africa's debt crisis"
+  source: ids
+  axes:
+    debtor: region
+    creditor: none
+    indicator: stock
+    time: none
+    operation: none
+    phrasing: vague
+  intent: "Overview of debt in Africa."
+  edge: "Vague phrasing, region debtor, no indicator named."
+- id: ids-044
+  query: "debt"
+  source: ids
+  axes:
+    debtor: none
+    creditor: none
+    indicator: broad
+    time: none
+    operation: none
+    phrasing: vague
+  intent: "Debt with nothing else."
+  edge: "WEO general government gross debt would also match."
+- id: ids-045
+  query: "Japan government debt"
+  source: ids
+  axes:
+    debtor: country
+    creditor: none
+    indicator: broad
+    time: none
+    operation: none
+    phrasing: casual
+  intent: "Japan's public debt."
+  edge: "High-income country IDS does not cover; WEO series applies."
+- id: ids-046
+  query: "Germany external debt stocks"
+  source: ids
+  axes:
+    debtor: country
+    creditor: none
+    indicator: stock
+    time: none
+    operation: none
+    phrasing: casual
+  intent: "Germany's external debt."
+  edge: "High-income debtor with no IDS data."
+- id: ids-047
+  query: "how much does China owe India"
+  source: ids
+  axes:
+    debtor: country
+    creditor: country
+    indicator: stock
+    time: none
+    operation: none
+    phrasing: casual
+  intent: "Debt owed by China to India."
+  edge: "China and India are both creditors and debtors."
+- id: ids-048
+  query: "Chinas external debt"
+  source: ids
+  axes:
+    debtor: country
+    creditor: none
+    indicator: stock
+    time: none
+    operation: none
+    phrasing: misspelling
+  intent: "China's external debt stocks."
+  edge: "Missing apostrophe; China is a debtor in IDS and a creditor elsewhere."
+- id: ids-049
+  query: "Gahna debt servise"
+  source: ids
+  axes:
+    debtor: country
+    creditor: none
+    indicator: debt_service
+    time: none
+    operation: none
+    phrasing: misspelling
+  intent: "Ghana debt service."
+  edge: "Two misspellings."
+- id: ids-050
+  query: "Kenya debt to Japans"
+  source: ids
+  axes:
+    debtor: country
+    creditor: country
+    indicator: stock
+    time: none
+    operation: none
+    phrasing: misspelling
+  intent: "Kenya's debt owed to Japan."
+  edge: "Misspelt creditor; Japan may not be a broken-out creditor."

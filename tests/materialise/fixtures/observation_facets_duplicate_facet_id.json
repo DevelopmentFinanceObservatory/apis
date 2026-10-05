@@ -1,0 +1,47 @@
+{
+  "byVariable": {
+    "Amount_SyntheticFlow_Test": {
+      "byEntity": {
+        "country/ZZZ": {
+          "orderedFacets": [
+            {
+              "facetId": "A",
+              "obsCount": 1,
+              "earliestDate": "2021",
+              "latestDate": "2021"
+            },
+            {
+              "facetId": "A",
+              "obsCount": 2,
+              "earliestDate": "2019",
+              "latestDate": "2020"
+            },
+            {
+              "facetId": "B",
+              "obsCount": 1,
+              "earliestDate": "2018",
+              "latestDate": "2018"
+            },
+            {
+              "obsCount": 1,
+              "earliestDate": "2022",
+              "latestDate": "2022"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "facets": {
+    "A": {
+      "provenanceId": "prov/A",
+      "measurementMethod": "Method",
+      "unit": "USD"
+    },
+    "B": {
+      "provenanceId": "prov/B",
+      "measurementMethod": "Method",
+      "unit": "EUR"
+    }
+  }
+}

@@ -1,0 +1,588 @@
+- id: dq-ids-001
+  query: total debt service of Ghana
+  why: Resolves to ids.debt_service for country/GHA as destination.
+  reuse: panel/ids-001
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: ids.debt_service, stat_vars: [Amount_FinancialFlow_ServicingPayment_Nominal]}
+      entities: [{dcid: country/GHA, role: destination}]
+      window: {kind: all}
+      operations: []
+
+- id: dq-ids-002
+  query: Ghana's debt service to China
+  why: Resolves to ids.debt_service for country/CHN as origin and country/GHA as destination.
+  reuse: panel/ids-002
+  tags: {theme: debt, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: ids.debt_service, stat_vars: [Amount_FinancialFlow_ServicingPayment_ByCreditor_Nominal]}
+      entities: [{dcid: country/CHN, role: origin}, {dcid: country/GHA, role: destination}]
+      operations: []
+
+- id: dq-ids-003
+  query: how much do countries owe China
+  why: A creditor with an open debtor axis is a complete question; stock and flow candidates also fit, since 'owe' leans to the stock.
+  reuse: panel/ids-003
+  tags: {theme: debt, entity: country, direction: origin_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [measure, entities]}
+  expect:
+    entities: [{dcid: country/CHN, role: origin}]
+    definite:
+      measure:
+        family: ids.debt_stock
+        stat_vars: [Amount_FinancialPosition_AmountOutstanding_ByCreditor_Nominal]
+    candidates: {include_families: [ids.debt_stock]}
+
+- id: dq-ids-004
+  query: external debt stocks
+  why: With no debtor the engine opens the debtor axis on the total or offers the PPG and total stocks as candidates.
+  reuse: panel/ids-004
+  tags: {theme: debt, entity: none, direction: none, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: ids.debt_stock, stat_vars: [Amount_FinancialPosition_AmountOutstanding_Nominal]}
+    candidates: {include_families: [ids.debt_stock]}
+
+- id: dq-ids-005
+  query: how much does Kenya owe China
+  why: Same reading as the ids-debt-to-china-kenya golden, from casual phrasing.
+  reuse: panel/ids-005
+  tags: {theme: debt, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [measure, entities, provenance]}
+  expect:
+    definite:
+      measure:
+        family: ids.debt_stock
+        stat_vars: [Amount_FinancialPosition_AmountOutstanding_ByCreditor_Nominal]
+      entities: [{dcid: country/CHN, role: origin}, {dcid: country/KEN, role: destination}]
+
+- id: dq-ids-006
+  query: Kenya's debt by creditor
+  why: A bare 'by creditor' opens the creditor axis, so the answer is the ByCreditor twin.
+  reuse: panel/ids-006
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: creditor_class, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure:
+        family: ids.debt_stock
+        stat_vars: [Amount_FinancialPosition_AmountOutstanding_ByCreditor_Nominal]
+      entities: [{dcid: country/KEN, role: destination}]
+
+- id: dq-ids-007
+  query: Zambia debt owed to bondholders
+  why: IDS publishes the bondholder stock (DT.DOD.PBND.CD) and reports it for Zambia, so the answer binds the bondholder creditor class.
+  reuse: panel/ids-007
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: creditor_class, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: ids.debt_stock, bound: {idsCreditorType: IDSCreditorTypePBND}}
+      entities: [{dcid: country/ZMB, role: destination}]
+
+- id: dq-ids-008
+  query: Ghana debt service to private creditors
+  why: Resolves to ids.debt_service for country/GHA as destination.
+  reuse: panel/ids-009
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: creditor_class, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: ids.debt_service, bound: {idsCreditorType: IDSCreditorTypePRVT}}
+      entities: [{dcid: country/GHA, role: destination}]
+
+- id: dq-ids-009
+  query: Ghana debt service to multilateral creditors
+  why: Resolves to ids.debt_service for country/GHA as destination.
+  reuse: panel/ids-011
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: creditor_class, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: ids.debt_service, bound: {idsCreditorType: IDSCreditorTypeMLAT}}
+      entities: [{dcid: country/GHA, role: destination}]
+
+- id: dq-ids-010
+  query: Ghana debt service to IDA
+  why: Resolves to ids.debt_service for IDA creditor node as origin and country/GHA as destination.
+  reuse: panel/ids-012
+  tags: {theme: debt, entity: organisation, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: ids.debt_service}
+      entities: [{dcid: InternationalDevelopmentAssociation, role: origin}, {dcid: country/GHA, role: destination}]
+
+- id: dq-ids-011
+  query: what does Zambia owe the IMF
+  why: InternationalMonetaryFund is the origin dcid the cur-ids-tza-imf-usd-constant-2024-projected golden posts.
+  reuse: panel/ids-013
+  tags: {theme: debt, entity: organisation, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: ids.debt_stock}
+      entities: [{dcid: InternationalMonetaryFund, role: origin}, {dcid: country/ZMB, role: destination}]
+
+- id: dq-ids-012
+  query: Ghana debt service to the World Bank
+  why: '''World Bank'' is ambiguous between IBRD and IDA, so the answer is entity_ambiguous.'
+  reuse: panel/ids-014
+  tags: {theme: debt, entity: organisation, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect: {no_data: {reason: entity_ambiguous, category: unresolved}}
+
+- id: dq-ids-013
+  query: Ghana debt service to the Paris Club
+  why: The Paris Club names a creditor group, so the answer is no_data with entity_not_resolved or qualifier_not_bound.
+  reuse: panel/ids-015
+  tags: {theme: debt, entity: organisation, direction: both, unit: default, time: none, operation: none, breakdown: creditor_class, door: raw_text, phrasing: casual}
+  expect: {no_data: {reason: [entity_not_resolved, qualifier_not_bound]}}
+
+- id: dq-ids-014
+  query: Kenya debt service to G20 creditors
+  why: G20 has no graph node, so it expands by label to member countries as creditors, each with a ByCreditor series; no_data naming the group as unresolved also fits.
+  reuse: panel/ids-016
+  tags: {theme: debt, entity: region_group, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: ids.debt_service}
+      entities:
+        - {label: G20, role: origin, expands: true}
+        - {dcid: country/KEN, role: destination}
+    no_data: {reason: entity_not_resolved, category: unresolved}
+
+- id: dq-ids-015
+  query: Ghana debt service to commercial banks
+  why: Commercial banks are an IDS creditor class (DT.TDS.PCBK.CD) with values for Ghana, so the answer binds that class.
+  reuse: panel/ids-017
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: creditor_class, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: ids.debt_service, bound: {idsCreditorType: IDSCreditorTypePCBK}}
+      entities: [{dcid: country/GHA, role: destination}]
+
+- id: dq-ids-016
+  query: latest external debt stocks of Kenya
+  why: Latest lands on the last reported year.
+  reuse: panel/ids-021
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: latest, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: ids.debt_stock, stat_vars: [Amount_FinancialPosition_AmountOutstanding_Nominal]}
+      entities: [{dcid: country/KEN, role: destination}]
+      window: {kind: latest}
+
+- id: dq-ids-017
+  query: projected debt service payments for Zambia in 2027
+  why: IDS holds projected debt service through 2032 as Estimated observations; 2027 serves from that facet.
+  reuse: panel/ids-023
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: projection, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [ids_projection]}
+  known_failure: {issue: 1156, checks: [request, operations]}
+  expect:
+    definite:
+      measure: {family: ids.debt_service}
+      entities: [{dcid: country/ZMB, role: destination}]
+      window: {kind: range, start: 2027, end: 2027}
+      operations: []
+
+- id: dq-ids-018
+  query: future debt service of Ghana to China
+  why: The ByCreditor twin carries the Estimated facet for China to Ghana through 2032, so the projection answers.
+  reuse: panel/ids-024
+  tags: {theme: debt, entity: two_roles, direction: both, unit: default, time: projection, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [ids_projection]}
+  known_failure: {issue: 1156, checks: [measure, entities, provenance]}
+  expect:
+    definite:
+      measure: {family: ids.debt_service, stat_vars: [Amount_FinancialFlow_ServicingPayment_ByCreditor_Nominal]}
+      entities: [{dcid: country/CHN, role: origin}, {dcid: country/GHA, role: destination}]
+
+- id: dq-ids-019
+  query: Kenya's debt service to the IMF in 2030
+  why: 2030 is inside the 2032 projection horizon, and the ByCreditor twin projects IMF debt service for Kenya through 2032.
+  tags: {theme: debt, entity: organisation, direction: both, unit: default, time: projection, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [ids_projection]}
+  known_failure: {issue: 1156, checks: [request]}
+  expect:
+    definite:
+      measure: {family: ids.debt_service}
+      entities: [{dcid: InternationalMonetaryFund, role: origin}, {dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2030, end: 2030}
+
+- id: dq-ids-020
+  query: Zambia debt service from 2020 to 2030
+  why: The window straddles reported and projected years, so both facets serve as one joined series.
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: range, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [ids_projection]}
+  expect:
+    definite:
+      measure: {family: ids.debt_service}
+      entities: [{dcid: country/ZMB, role: destination}]
+      window: {kind: range, start: 2020, end: 2030}
+
+- id: dq-ids-021
+  query: compare Ghana's debt service to China and to IDA
+  why: Resolves to ids.debt_service for country/CHN as origin and IDA creditor node as origin and country/GHA as destination.
+  reuse: panel/ids-025
+  tags: {theme: debt, entity: two_roles, direction: both, unit: default, time: none, operation: compare, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: ids.debt_service, stat_vars: [Amount_FinancialFlow_ServicingPayment_ByCreditor_Nominal]}
+      entities:
+        - {dcid: country/CHN, role: origin}
+        - {dcid: InternationalDevelopmentAssociation, role: origin}
+        - {dcid: country/GHA, role: destination}
+      operations: []
+
+- id: dq-ids-022
+  query: which countries have the highest external debt stocks
+  why: Resolves to ids.debt_stock.
+  reuse: panel/ids-026
+  tags: {theme: debt, entity: none, direction: destination_only, unit: default, time: none, operation: rank, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [operations]}
+  expect:
+    definite:
+      measure: {family: ids.debt_stock, stat_vars: [Amount_FinancialPosition_AmountOutstanding_Nominal]}
+      operations: [{verb: rank, over: destination}]
+
+- id: dq-ids-023
+  query: top 10 debtors of China
+  why: Resolves to ids.debt_stock for country/CHN as origin.
+  reuse: panel/ids-027
+  tags: {theme: debt, entity: country, direction: origin_only, unit: default, time: none, operation: rank, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure:
+        family: ids.debt_stock
+        stat_vars: [Amount_FinancialPosition_AmountOutstanding_ByCreditor_Nominal]
+      entities: [{dcid: country/CHN, role: origin}]
+      operations: [{verb: rank, over: destination}]
+
+- id: dq-ids-024
+  query: what share of Kenya's debt is owed to China
+  why: The share needs every creditor's stock, so the origin axis stays open with China in the operation.
+  reuse: panel/ids-028
+  tags: {theme: debt, entity: two_roles, direction: both, unit: default, time: none, operation: share_of, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [entities, operations]}
+  expect:
+    definite:
+      measure:
+        family: ids.debt_stock
+        stat_vars: [Amount_FinancialPosition_AmountOutstanding_ByCreditor_Nominal]
+      entities: [{dcid: country/KEN, role: destination}]
+      operations: [{verb: share_of, over: origin}]
+
+- id: dq-ids-025
+  query: growth in Zambia's external debt since 2000
+  why: Growth in the debt stock since 2000 is a growth operation on the series from 2000.
+  reuse: panel/ids-029
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: range, operation: growth, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: ids.debt_stock, stat_vars: [Amount_FinancialPosition_AmountOutstanding_Nominal]}
+      entities: [{dcid: country/ZMB, role: destination}]
+      window: {kind: range, start: 2000}
+      operations: [{verb: growth}]
+
+- id: dq-ids-026
+  query: PPG external debt stocks, DOD, Ghana
+  why: Resolves to ids.debt_stock for country/GHA as destination.
+  reuse: panel/ids-030
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: creditor_class, door: raw_text, phrasing: technical}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: ids.debt_stock, bound: {guaranteeStatus: PublicOrPubliclyGuaranteed}}
+      entities: [{dcid: country/GHA, role: destination}]
+
+- id: dq-ids-027
+  query: Ghana short-term external debt
+  why: Resolves to ids.debt_stock for country/GHA as destination.
+  reuse: panel/ids-031
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: creditor_class, door: raw_text, phrasing: technical}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: ids.debt_stock, bound: {maturityBand: ShortTermMaturity}}
+      entities: [{dcid: country/GHA, role: destination}]
+
+- id: dq-ids-028
+  query: Zambia external debt arrears
+  why: IDS publishes principal (AXA) and interest (IXA) arrears by creditor class and has no total, so either arrears stock answers.
+  reuse: panel/ids-032
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  expect: {definite: {measure: {family: [ids.principal_arrears, ids.interest_arrears]}, entities: [{dcid: country/ZMB, role: destination}]}}
+
+- id: dq-ids-029
+  query: Kenya principal repayments
+  why: Resolves to ids.principal for country/KEN as destination.
+  reuse: panel/ids-034
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect: {definite: {measure: {family: ids.principal}, entities: [{dcid: country/KEN, role: destination}]}}
+
+- id: dq-ids-030
+  query: Ghana net financial flows on external debt
+  why: Resolves to ids.net_flows for country/GHA as destination.
+  reuse: panel/ids-035
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect: {definite: {measure: {family: ids.net_flows}, entities: [{dcid: country/GHA, role: destination}]}}
+
+- id: dq-ids-031
+  query: Ghana disbursements from bilateral creditors
+  why: '''Disbursements'' also names a CRS measure; bilateral creditors place the question in IDS.'
+  reuse: panel/ids-036
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: creditor_class, door: raw_text, phrasing: technical}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: ids.disbursement, bound: {idsCreditorType: IDSCreditorTypeBLAT}}
+      entities: [{dcid: country/GHA, role: destination}]
+
+- id: dq-ids-032
+  query: Ghana debt service as a share of exports
+  why: The ratio is a published IDS series with an exports denominator; share_of would ask the caller to divide.
+  reuse: panel/ids-037
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  known_failure: {issue: 1156, checks: [measure]}
+  expect:
+    definite:
+      measure: {family: ids.debt_service_ratio}
+      entities: [{dcid: country/GHA, role: destination}]
+      operations: []
+
+- id: dq-ids-033
+  query: debt service and interest payments of Zambia and Ghana
+  why: Debt service and interest payments are separate series, so the query splits into one part each.
+  reuse: panel/ids-038
+  tags: {theme: debt, entity: two_countries, direction: destination_only, unit: default, time: none, operation: compare, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [disposition, measure, entities, provenance, parts]}
+  expect:
+    parts:
+      - definite:
+          measure: {family: ids.debt_service}
+          entities: [{dcid: country/ZMB, role: destination}, {dcid: country/GHA, role: destination}]
+      - definite:
+          measure: {family: ids.interest, stat_vars: [Amount_FinancialFlow_InterestPayment_Nominal]}
+          entities: [{dcid: country/ZMB, role: destination}, {dcid: country/GHA, role: destination}]
+
+- id: dq-ids-034
+  query: external debt of sub-saharan africa
+  why: IDS publishes a Sub-Saharan Africa aggregate debtor, and that node answers in place of the member countries.
+  reuse: panel/ids-039
+  tags: {theme: debt, entity: region_group, direction: destination_only, unit: default, time: none, operation: aggregate, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [measure, entities, provenance]}
+  expect:
+    definite:
+      measure: {family: ids.debt_stock, stat_vars: [Amount_FinancialPosition_AmountOutstanding_Nominal]}
+      entities: [{dcid: WorldBankSubSaharanAfricaExcludingHighIncome, role: destination}]
+      operations: []
+
+- id: dq-ids-035
+  query: debt service of low income countries
+  why: IDS publishes a low-income aggregate debtor, and that node answers.
+  reuse: panel/ids-040
+  tags: {theme: debt, entity: region_group, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [income_group]}
+  known_failure: {issue: 1156, checks: [measure, entities, provenance]}
+  expect:
+    definite:
+      measure: {family: ids.debt_service}
+      entities: [{dcid: WorldBankLowIncome, role: destination}]
+
+- id: dq-ids-036
+  query: external debt of HIPCs
+  why: HIPCs name a debtor group, so the answer is no_data with entity_not_resolved.
+  reuse: panel/ids-042
+  tags: {theme: debt, entity: region_group, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical, probe: [income_group]}
+  expect: {no_data: {reason: entity_not_resolved, category: unresolved}}
+
+- id: dq-ids-037
+  query: debt
+  why: A bare 'debt' names no debtor or measure, so the answer offers the IDS stock families as candidates.
+  reuse: panel/ids-044
+  tags: {theme: debt, entity: none, direction: none, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [candidates]}
+  expect: {candidates: {include_families: [ids.debt_stock]}}
+
+- id: dq-ids-038
+  query: Japan government debt
+  why: WEO government debt is not published and Japan is not an IDS debtor; a World Bank Datasets series answers if it holds Japan, otherwise no_data.
+  reuse: panel/ids-045
+  tags: {theme: debt, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [weo_unpublished], overlap: [ids, weo]}
+  expect:
+    definite:
+      measure: {family: base.government_debt}
+      entities: [{dcid: country/JPN, role: observationAbout}]
+    no_data: {reason: [variable_not_resolved, no_observations]}
+
+- id: dq-ids-039
+  query: Germany external debt stocks
+  why: Germany has no IDS stock observations, so the answer is no_data with no_observations.
+  reuse: panel/ids-046
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical, probe: [missing_data]}
+  expect:
+    no_data: {entities: [{dcid: country/DEU, role: destination}], reason: no_observations, category: absent}
+
+- id: dq-ids-040
+  query: how much does China owe India
+  why: India is a creditor in IDS only if IDS publishes it; either way China is the debtor and India the creditor.
+  reuse: panel/ids-047
+  tags: {theme: debt, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    entities: [{dcid: country/IND, role: origin}, {dcid: country/CHN, role: destination}]
+    definite:
+      measure:
+        family: ids.debt_stock
+        stat_vars: [Amount_FinancialPosition_AmountOutstanding_ByCreditor_Nominal]
+    no_data: {reason: no_observations, category: absent}
+
+- id: dq-ids-041
+  query: Chinas external debt
+  why: Resolves to ids.debt_stock for country/CHN as destination.
+  reuse: panel/ids-048
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: misspelt}
+  expect:
+    definite:
+      measure: {family: ids.debt_stock, stat_vars: [Amount_FinancialPosition_AmountOutstanding_Nominal]}
+      entities: [{dcid: country/CHN, role: destination}]
+
+- id: dq-ids-042
+  query: Gahna debt servise
+  why: Resolves to ids.debt_service for country/GHA as destination.
+  reuse: panel/ids-049
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: misspelt}
+  expect:
+    definite: {measure: {family: ids.debt_service}, entities: [{dcid: country/GHA, role: destination}]}
+
+- id: dq-ids-043
+  query: average interest rate on new external debt commitments to Kenya
+  why: Resolves to the IDS average interest rate on new commitments for country/KEN as destination.
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: ids.average_interest_rate}
+      entities: [{dcid: country/KEN, role: destination}]
+
+- id: dq-ids-044
+  query: average maturity of new loans to Ethiopia from official creditors
+  why: Resolves to the IDS average maturity on new commitments from official creditors for country/ETH as destination.
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: creditor_class, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [measure]}
+  expect:
+    definite:
+      measure: {family: ids.average_maturity, bound: {idsCreditorType: IDSCreditorTypeOFFT}}
+      entities: [{dcid: country/ETH, role: destination}]
+
+- id: dq-ids-045
+  query: grant element of new commitments to Malawi in 2020
+  why: IDS reports the PPG grant element for Malawi in 2020, so the year answers from the average-terms series.
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: ids.average_grant_element}
+      entities: [{dcid: country/MWI, role: destination}]
+      window: {kind: range, start: 2020, end: 2020}
+
+- id: dq-ids-046
+  query: undisbursed external debt of Zambia
+  why: Resolves to ids.undisbursed for country/ZMB as destination.
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  expect: {definite: {measure: {family: ids.undisbursed}, entities: [{dcid: country/ZMB, role: destination}]}}
+
+- id: dq-ids-047
+  query: net transfers on external debt for Ghana
+  why: Resolves to ids.net_transfers for country/GHA as destination.
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
+  expect:
+    definite: {measure: {family: ids.net_transfers}, entities: [{dcid: country/GHA, role: destination}]}
+
+- id: dq-ids-048
+  query: share of Kenya's public debt denominated in US dollars
+  why: Resolves to ids.currency_composition for country/KEN as destination.
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    definite:
+      measure: {family: ids.currency_composition, bound: {currencyOfDenomination: CurrencyUSD}}
+      entities: [{dcid: country/KEN, role: destination}]
+      operations: []
+
+- id: dq-ids-049
+  query: 'parsed: Ghana debt service, in euros'
+  door: parsed
+  parsed: [{variable_text: debt service, entities: [{text: Ghana, role_text: debtor}], unit_text: euros}]
+  why: Resolves to ids.debt_service for country/GHA as destination.
+  tags: {theme: debt, entity: country, direction: destination_only, unit: currency, time: none, operation: none, breakdown: none, door: parsed, phrasing: casual}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: ids.debt_service}
+      entities: [{dcid: country/GHA, role: destination}]
+      unit: {currency: EUR, prices: current}
+
+- id: dq-ids-050
+  query: 'parsed: Zambia debt service 2015 to 2030, constant 2020 Zambian kwacha'
+  door: parsed
+  parsed:
+    - variable_text: debt service
+      entities: [{text: Zambia, role_text: debtor}]
+      time_text: 2015 to 2030
+      unit_text: constant 2020 Zambian kwacha
+  include_observations: true
+  why: Resolves to ids.debt_service for country/ZMB as destination from 2015 to 2030.
+  tags: {theme: debt, entity: country, direction: destination_only, unit: base_year, time: range, operation: none, breakdown: none, door: parsed, phrasing: technical, probe: [ids_projection]}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: ids.debt_service}
+      entities: [{dcid: country/ZMB, role: destination}]
+      window: {kind: range, start: 2015, end: 2030}
+      unit: {currency: ZMW, prices: constant, base_year: 2020}
+
+- id: dq-ids-051
+  query: 'parsed: Kenya external debt stocks, constant 2024 US dollars'
+  door: parsed
+  parsed:
+    - variable_text: external debt stocks
+      entities: [{text: Kenya, role_text: debtor}]
+      unit_text: constant 2024 US dollars
+  why: No deflation recipe is declared for a stock, so the refusal is recipe_not_declared.
+  tags: {theme: debt, entity: country, direction: destination_only, unit: base_year, time: none, operation: none, breakdown: none, door: parsed, phrasing: technical, probe: [unsupported_unit]}
+  expect: {unsupported: {code: recipe_not_declared}}
+
+- id: dq-ids-052
+  query: Kenya's debt to China in yuan
+  why: The currency reaches the unit binder and meets the stock refusal of ids-051 (recipe_not_declared).
+  tags: {theme: debt, entity: two_roles, direction: both, unit: currency, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    unsupported:
+      measure:
+        family: ids.debt_stock
+        stat_vars: [Amount_FinancialPosition_AmountOutstanding_ByCreditor_Nominal]
+      entities: [{dcid: country/CHN, role: origin}, {dcid: country/KEN, role: destination}]
+      code: recipe_not_declared
+
+- id: dq-ids-053
+  query: debt service of the African Development Bank
+  why: The African Development Bank is an IDS creditor with no debtor series; reading it as a creditor with an open debtor axis also fits.
+  tags: {theme: debt, entity: organisation, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [refusal]}
+  expect: {no_data: {reason: entity_role_not_admitted, category: unresolved}}
+
+- id: dq-ids-054
+  query: Is Zambia's debt sustainable?
+  why: The sustainability judgement is requires_analysis; the question also names debt, so a resolution to Zambia's debt stock serves the user too.
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    kind: [declined, resolution]
+    definite: {measure: {family: ids.debt_stock}, entities: [{dcid: country/ZMB, role: destination}]}
+    declined: {reason: requires_analysis}
+    scope_place: country/ZMB
+
+- id: dq-ids-055
+  query: What debt data do you have on Zambia?
+  why: A scoped catalogue request with a topic; the catalogue answer scoped to Zambia is preferred, and candidates over IDS families also fit.
+  tags: {theme: debt, entity: country, direction: none, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  known_failure: {issue: 1156, checks: [disposition]}
+  expect:
+    kind: [catalogue, resolution]
+    candidates: {include_families: [ids.debt_stock, ids.debt_service]}
+    scope_place: country/ZMB

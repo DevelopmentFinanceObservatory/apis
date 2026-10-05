@@ -1,0 +1,13 @@
+{
+  "data": {
+    "country/KEN": {
+      "arcs": {
+        "name": {
+          "nodes": [
+            {"value": "Kenya"}
+          ]
+        }
+      }
+    }
+  }
+}

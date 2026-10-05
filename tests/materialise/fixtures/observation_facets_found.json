@@ -1,0 +1,25 @@
+{
+  "byVariable": {
+    "MalariaGrantDisbursements": {
+      "byEntity": {
+        "country/KEN": {
+          "orderedFacets": [
+            {
+              "facetId": "facet1",
+              "obsCount": 402,
+              "earliestDate": "1991",
+              "latestDate": "2024"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "facets": {
+    "facet1": {
+      "provenanceId": "OECD_DAC2A",
+      "measurementMethod": "GrantEquivalent",
+      "unit": "USD"
+    }
+  }
+}

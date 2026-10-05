@@ -1,0 +1,16 @@
+{
+  "name": "rung0",
+  "description": "The near-empty extract starting point: task, schema pointer, date anchor, and security line only.",
+  "stage": "extract",
+  "blocks": [
+    {
+      "id": "r0-task"
+    },
+    {
+      "id": "r0-date"
+    },
+    {
+      "id": "r0-security"
+    }
+  ]
+}

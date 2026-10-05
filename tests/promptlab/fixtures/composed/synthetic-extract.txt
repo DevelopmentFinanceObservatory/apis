@@ -1,0 +1,2 @@
+Alpha block content.
+Beta block content.

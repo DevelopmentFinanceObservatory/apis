@@ -1,0 +1,64 @@
+# Trimmed copies of sdg-01, sdg-03 and sdg-04 from corpus/sdg.yaml, for the offline e2e-cell tests.
+- id: sdg-01
+  query: maternal mortality ratio female SDG
+  why: Maternal mortality ratio for women under the SDG framing resolves to sdg/SH_STA_MORT.SEX--F; the
+    raw-count shape has too little data to compete.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SH_STA_MORT
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        stat_vars:
+        - sdg/SH_STA_MORT.SEX--F
+      entities: []
+- id: sdg-03
+  query: tuberculosis incidence rate SDG 3.3.2 Ethiopia
+  why: Tuberculosis incidence rate SDG 3.3.2 in Ethiopia resolves to sdg/SH_TBS_INCD through the SDG taxonomy
+    topic expansion.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SH_TBS_INCD
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        stat_vars:
+        - sdg/SH_TBS_INCD
+      entities:
+      - dcid: country/ETH
+        role: observationAbout
+- id: sdg-04
+  query: HIV incidence rate Kenya
+  why: HIV incidence rate in Kenya resolves to the bare aggregate sdg/SH_HIV_INCD, with the sex-disaggregated
+    siblings inside that one reading.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: SDG_SH_HIV_INCD
+          measured_property: value
+          stat_type: measuredValue
+          measurement_qualifier: null
+          measurement_denominator: null
+        open:
+        - sdg_sex
+        stat_vars:
+        - sdg/SH_HIV_INCD
+      entities:
+      - dcid: country/KEN
+        role: observationAbout

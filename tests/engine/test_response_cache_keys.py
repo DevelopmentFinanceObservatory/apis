@@ -1,0 +1,652 @@
+"""Pins request and extraction fields that distinguish response-cache keys.
+
+A collision serves one query's cached answer to a different query."""
+
+from __future__ import annotations
+
+from search.engine.config import settings
+from search.engine.extract import ExtractedDate, ExtractedEntity
+from search.engine.qualifier_match import CodedQualifier, QualifierMatch, recall_text
+from search.engine.response_cache_flow import compute_layer2_signals
+from search.engine.response_cache_keys import (
+    is_cacheable_request,
+    layer1_key,
+    layer2_key,
+    normalise_query,
+    scope_document,
+)
+from search.models import Operation, ResolveOptions
+
+
+def _scope(
+    *,
+    schema_version: int = 1,
+    options: ResolveOptions | None = None,
+    max_candidates: int = 6,
+    seam_default: bool = True,
+    build_commit: str = "commit-a",
+    model: str = "model-a",
+    seed: int | None = 1,
+    today: str = "2026-09-20",
+    graph_generation: str = "gen-a",
+    coverage_stamp: str = "coverage-a",
+    conversion_catalogue: str | None = "catalogue-a",
+) -> dict:
+    return scope_document(
+        schema_version=schema_version,
+        options=options,
+        max_candidates=max_candidates,
+        seam_default=seam_default,
+        build_commit=build_commit,
+        model=model,
+        seed=seed,
+        today=today,
+        graph_generation=graph_generation,
+        coverage_stamp=coverage_stamp,
+        conversion_catalogue=conversion_catalogue,
+    )
+
+
+def _effective_max_candidates(raw: int | None) -> int:
+    """Mirrors core's fallback, floor of 2, and server ceiling."""
+    cap = raw if raw else settings().max_candidates
+    return max(2, min(cap, settings().max_candidates))
+
+
+def _entity(**overrides: object) -> ExtractedEntity:
+    fields: dict[str, object] = {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+    }
+    fields.update(overrides)
+    return ExtractedEntity(**fields)
+
+
+def _date(**overrides: object) -> ExtractedDate:
+    fields: dict[str, object] = {"kind": "point", "start": "2010", "end": None}
+    fields.update(overrides)
+    return ExtractedDate(**fields)
+
+
+def _coded_qualifier(**overrides: object) -> CodedQualifier:
+    fields: dict[str, object] = {
+        "phrase": "type of finance 110",
+        "spans": (),
+        "matches": (
+            QualifierMatch(
+                code_system="crsTypeOfFinance",
+                code_dcid="CRSTypeOfFinance110",
+                label="Standard grant",
+                source="code",
+                matched_text="110",
+            ),
+        ),
+    }
+    fields.update(overrides)
+    return CodedQualifier(**fields)
+
+
+def _layer2_key(
+    *,
+    variables: list[str] | None = None,
+    entities: list[ExtractedEntity] | None = None,
+    dates: list[ExtractedDate] | None = None,
+    dropped_qualifiers: list[str] | None = None,
+    variable_qualifiers: list[tuple[CodedQualifier, ...]] | None = None,
+    operations: list[tuple[Operation, ...]] | None = None,
+    role_contradictions: list[dict[str, object]] | None = None,
+    query_text_qualifier_matches: list[dict[str, object]] | None = None,
+    query_text_qualifier_ties: list[dict[str, object]] | None = None,
+    query_text_qualifier_readings: list[dict[str, object]] | None = None,
+    unsupported_qualifier_phrases: list[str] | None = None,
+    declared_default_trigger_words: list[dict[str, str]] | None = None,
+    declared_default_slots_named: list[str] | None = None,
+    scope: dict | None = None,
+) -> str:
+    """`layer2_key` with every raw-text signal defaulting to empty, for a
+    test that means to vary exactly one argument."""
+    resolved_variables = variables if variables is not None else ["GDP"]
+    return layer2_key(
+        variables=resolved_variables,
+        entities=entities if entities is not None else [_entity()],
+        dates=dates if dates is not None else [_date()],
+        dropped_qualifiers=dropped_qualifiers if dropped_qualifiers is not None else [],
+        variable_qualifiers=(
+            variable_qualifiers
+            if variable_qualifiers is not None
+            else [() for _ in resolved_variables]
+        ),
+        operations=operations if operations is not None else [() for _ in resolved_variables],
+        role_contradictions=role_contradictions if role_contradictions is not None else [],
+        query_text_qualifier_matches=(
+            query_text_qualifier_matches if query_text_qualifier_matches is not None else []
+        ),
+        query_text_qualifier_ties=(
+            query_text_qualifier_ties if query_text_qualifier_ties is not None else []
+        ),
+        query_text_qualifier_readings=(
+            query_text_qualifier_readings if query_text_qualifier_readings is not None else []
+        ),
+        unsupported_qualifier_phrases=(
+            unsupported_qualifier_phrases if unsupported_qualifier_phrases is not None else []
+        ),
+        declared_default_trigger_words=(
+            declared_default_trigger_words if declared_default_trigger_words is not None else []
+        ),
+        declared_default_slots_named=(
+            declared_default_slots_named if declared_default_slots_named is not None else []
+        ),
+        scope=scope if scope is not None else _scope(),
+    )
+
+
+def test_normalise_query_collapses_whitespace_and_nfkc_but_preserves_case() -> None:
+    """Layer 1 preserves case because extraction can change; both layers collapse whitespace."""
+    a = normalise_query("What is  GDP   in Kenya?")
+    b = normalise_query("What is GDP in Kenya?")
+    assert a == b  # only whitespace differs
+
+    assert normalise_query("Show US aid") != normalise_query("show us aid")
+
+
+def test_two_wordings_with_identical_extraction_share_layer2_key() -> None:
+    """Different wordings with the same extraction and raw-text signals share a key."""
+    key_a = _layer2_key()
+    key_b = _layer2_key()
+    assert key_a == key_b
+
+
+def test_flow_role_alone_changes_layer2_key() -> None:
+    """Changing an entity's flow role changes the key."""
+    origin_kenya = _layer2_key(
+        variables=["aid"],
+        entities=[_entity(text="Kenya", flow_role="origin", role_span="from")],
+        dates=[],
+    )
+    destination_kenya = _layer2_key(
+        variables=["aid"],
+        entities=[_entity(text="Kenya", flow_role="destination", role_span="to")],
+        dates=[],
+    )
+    assert origin_kenya != destination_kenya
+
+
+def test_variable_qualifiers_alone_changes_layer2_key_at_n_ge_2() -> None:
+    """Multi-variable keys include coded qualifiers because they lack a raw `query_text` signal."""
+    finance_110 = _layer2_key(
+        variables=["grant equivalent", "aid"],
+        dates=[],
+        variable_qualifiers=[
+            (
+                _coded_qualifier(
+                    phrase="type of finance 110",
+                    matches=(
+                        QualifierMatch(
+                            code_system="crsTypeOfFinance",
+                            code_dcid="CRSTypeOfFinance110",
+                            label="Standard grant",
+                            source="code",
+                            matched_text="110",
+                        ),
+                    ),
+                ),
+            ),
+            (),
+        ],
+    )
+    finance_421 = _layer2_key(
+        variables=["grant equivalent", "aid"],
+        dates=[],
+        variable_qualifiers=[
+            (
+                _coded_qualifier(
+                    phrase="type of finance 421",
+                    matches=(
+                        QualifierMatch(
+                            code_system="crsTypeOfFinance",
+                            code_dcid="CRSTypeOfFinance421",
+                            label="Standard loan",
+                            source="code",
+                            matched_text="421",
+                        ),
+                    ),
+                ),
+            ),
+            (),
+        ],
+    )
+    assert finance_110 != finance_421
+
+    # Matching qualifiers also share a key.
+    finance_110_again = _layer2_key(
+        variables=["grant equivalent", "aid"],
+        dates=[],
+        variable_qualifiers=[
+            (
+                _coded_qualifier(
+                    phrase="type of finance 110",
+                    matches=(
+                        QualifierMatch(
+                            code_system="crsTypeOfFinance",
+                            code_dcid="CRSTypeOfFinance110",
+                            label="Standard grant",
+                            source="code",
+                            matched_text="110",
+                        ),
+                    ),
+                ),
+            ),
+            (),
+        ],
+    )
+    assert finance_110 == finance_110_again
+
+
+def test_variable_qualifiers_phrase_alone_changes_layer2_key() -> None:
+    """The qualifier phrase appears in warnings and resolved text, so it remains part of the key."""
+    same_match = QualifierMatch(
+        code_system="crsTypeOfFinance",
+        code_dcid="CRSTypeOfFinance110",
+        label="Standard grant",
+        source="code",
+        matched_text="110",
+    )
+    phrase_a = _layer2_key(
+        variable_qualifiers=[
+            (_coded_qualifier(phrase="type of finance 110", matches=(same_match,)),)
+        ]
+    )
+    phrase_b = _layer2_key(
+        variable_qualifiers=[(_coded_qualifier(phrase="finance type 110", matches=(same_match,)),)]
+    )
+    assert phrase_a != phrase_b
+
+
+def test_variable_qualifiers_order_changes_layer2_key_when_it_changes_recall_text() -> None:
+    """Qualifier order changes the `recall_text` sent to retrieval, so the layer-2 key changes."""
+    finance = _coded_qualifier(
+        phrase="type of finance 110",
+        matches=(
+            QualifierMatch(
+                code_system="crsTypeOfFinance",
+                code_dcid="CRSTypeOfFinance110",
+                label="Standard grant",
+                source="code",
+                matched_text="110",
+            ),
+        ),
+    )
+    flow = _coded_qualifier(
+        phrase="type of flow 10",
+        matches=(
+            QualifierMatch(
+                code_system="crsTypeOfFlow",
+                code_dcid="CRSTypeOfFlow10",
+                label="ODA",
+                source="code",
+                matched_text="10",
+            ),
+        ),
+    )
+    variable = "GDP"
+    assert recall_text(variable, (finance, flow)) != recall_text(variable, (flow, finance))
+
+    finance_then_flow = _layer2_key(variables=[variable], variable_qualifiers=[(finance, flow)])
+    flow_then_finance = _layer2_key(variables=[variable], variable_qualifiers=[(flow, finance)])
+    assert finance_then_flow != flow_then_finance
+
+
+def test_variable_qualifiers_order_does_not_change_layer2_key_when_recall_text_agrees() -> None:
+    """If `variable` already contains both phrases, qualifier order leaves retrieval text and key unchanged."""
+    finance = _coded_qualifier(
+        phrase="type of finance 110",
+        matches=(
+            QualifierMatch(
+                code_system="crsTypeOfFinance",
+                code_dcid="CRSTypeOfFinance110",
+                label="Standard grant",
+                source="code",
+                matched_text="110",
+            ),
+        ),
+    )
+    flow = _coded_qualifier(
+        phrase="type of flow 10",
+        matches=(
+            QualifierMatch(
+                code_system="crsTypeOfFlow",
+                code_dcid="CRSTypeOfFlow10",
+                label="ODA",
+                source="code",
+                matched_text="10",
+            ),
+        ),
+    )
+    variable = "GDP type of finance 110 type of flow 10"
+    assert (
+        recall_text(variable, (finance, flow)) == recall_text(variable, (flow, finance)) == variable
+    )
+
+    finance_then_flow = _layer2_key(variables=[variable], variable_qualifiers=[(finance, flow)])
+    flow_then_finance = _layer2_key(variables=[variable], variable_qualifiers=[(flow, finance)])
+    assert finance_then_flow == flow_then_finance
+
+
+def test_role_contradiction_verdict_alone_changes_layer2_key() -> None:
+    """Opposing raw-text role signals change the key even when extraction matches."""
+    supports = _layer2_key(
+        role_contradictions=[{"span": "Kenya", "axis": "destination", "contradicts": False}]
+    )
+    contradicts = _layer2_key(
+        role_contradictions=[{"span": "Kenya", "axis": "destination", "contradicts": True}]
+    )
+    assert supports != contradicts
+
+    # Matching verdicts also share a key.
+    supports_again = _layer2_key(
+        role_contradictions=[{"span": "Kenya", "axis": "destination", "contradicts": False}]
+    )
+    assert supports == supports_again
+
+
+def test_query_text_qualifier_match_alone_changes_layer2_key() -> None:
+    """The raw word "agriculture" adds a purpose-code match absent from the extracted phrase."""
+    match = {
+        "code_system": "crsPurpose",
+        "code_dcid": "CRSPurposeCode311",
+        "label": "agriculture",
+        "source": "label",
+        "matched_text": "agriculture",
+    }
+    with_match = _layer2_key(query_text_qualifier_matches=[match])
+    without_match = _layer2_key(query_text_qualifier_matches=[])
+    assert with_match != without_match
+
+
+def test_query_text_qualifier_tie_alone_changes_layer2_key() -> None:
+    """The raw phrase "budget support" ties two code systems and changes the key."""
+    tie = {
+        "matched_text": "budget support",
+        "rows": [
+            {
+                "code_system": "crsCooperationModality",
+                "code_dcid": "CRSCooperationModalityA",
+                "label": "budget support",
+                "source": "label",
+                "matched_text": "budget support",
+            },
+            {
+                "code_system": "crsPurpose",
+                "code_dcid": "CRSPurposeCode510",
+                "label": "budget support",
+                "source": "label",
+                "matched_text": "budget support",
+            },
+        ],
+    }
+    with_tie = _layer2_key(query_text_qualifier_ties=[tie])
+    without_tie = _layer2_key(query_text_qualifier_ties=[])
+    assert with_tie != without_tie
+
+
+def test_query_text_qualifier_reading_alone_changes_layer2_key() -> None:
+    """ "PPP" in the raw query is a two-reading span that `match_query_readings` reads from
+    `query_text`; it feeds the availability prune and bind, so its presence must change
+    the key."""
+    match = {"source": "synonym", "matched_text": "PPP"}
+    reading = {
+        "matched_text": "PPP",
+        "code": {
+            **match,
+            "code_system": "crsPurpose",
+            "code_dcid": "CRSPurposeCode25010",
+            "label": "business policy and administration",
+        },
+        "measure": {
+            **match,
+            "code_system": "measurementQualifier",
+            "code_dcid": "PurchasingPowerParity",
+            "label": "purchasing power parity",
+        },
+    }
+    with_reading = _layer2_key(query_text_qualifier_readings=[reading])
+    without_reading = _layer2_key(query_text_qualifier_readings=[])
+    assert with_reading != without_reading
+
+
+def test_unsupported_qualifier_phrase_alone_changes_layer2_key() -> None:
+    """ "non-concessional" in the raw query is a closed unsupported-vocabulary
+    term (qualifier_match._UNSUPPORTED_QUALIFIER_TERMS) that
+    `_resolve_query_qualifiers` reads from `query_text` and turns into a
+    `no_vocabulary` disposition, refusing the whole answer via
+    `qualifier_not_bound`. Same Extraction, the phrase present on one side
+    and absent on the other, must be a different key."""
+    with_phrase = _layer2_key(unsupported_qualifier_phrases=["non-concessional"])
+    without_phrase = _layer2_key(unsupported_qualifier_phrases=[])
+    assert with_phrase != without_phrase
+
+
+def test_variables_content_alone_changes_layer2_key() -> None:
+    """Extracted variable text already keys declared defaults through `variables`."""
+    aid = _layer2_key(variables=["aid to Kenya"])
+    loans = _layer2_key(variables=["loans to Kenya"])
+    assert aid != loans
+
+
+def test_raw_text_declared_default_trigger_alone_changes_layer2_key() -> None:
+    """The raw word "aid" triggers the declared default even when extraction matches."""
+    variable = "development assistance to Kenya"
+    keys = []
+    for raw in ("How much aid did Kenya get?", "How much development assistance did Kenya get?"):
+        signals = compute_layer2_signals(query=raw, entity_roles={}, query_text=raw)
+        keys.append(
+            _layer2_key(
+                variables=[variable],
+                declared_default_trigger_words=list(signals.declared_default_trigger_words),
+            )
+        )
+    assert keys[0] != keys[1]
+
+
+def test_raw_text_naming_a_defaulted_slot_alone_changes_layer2_key() -> None:
+    """ "flows" in the raw query decides whether the flow default warns, so equal
+    extractions of "aid to Kenya" and "aid flows to Kenya" key apart."""
+    keys = []
+    for raw in ("aid to Kenya", "aid flows to Kenya"):
+        signals = compute_layer2_signals(query=raw, entity_roles={}, query_text=raw)
+        keys.append(
+            _layer2_key(
+                variables=["aid"],
+                declared_default_trigger_words=list(signals.declared_default_trigger_words),
+                declared_default_slots_named=list(signals.declared_default_slots_named),
+            )
+        )
+    assert keys[0] != keys[1]
+
+
+def test_dropped_qualifiers_content_alone_changes_layer2_key() -> None:
+    """A dropped "across all flows" phrase changes the key because it suppresses a default."""
+    with_breadth = _layer2_key(dropped_qualifiers=["across all flows"])
+    without_breadth = _layer2_key(dropped_qualifiers=[])
+    assert with_breadth != without_breadth
+
+
+def test_operations_change_layer2_key() -> None:
+    """Operations ride on the part and reach its bind, so two extractions differing only
+    in them, or in their order, key apart."""
+    rank = Operation(verb="rank", phrase="top 5 donors", over="origin")
+    explain = Operation(verb="explain", phrase="why did fall")
+    without = _layer2_key(variables=["education aid"])
+    with_rank = _layer2_key(variables=["education aid"], operations=[(rank,)])
+    with_both = _layer2_key(variables=["education aid"], operations=[(rank, explain)])
+    reordered = _layer2_key(variables=["education aid"], operations=[(explain, rank)])
+    assert len({without, with_rank, with_both, reordered}) == 4
+    assert with_rank == _layer2_key(variables=["education aid"], operations=[(rank,)])
+
+
+def test_include_observations_changes_key() -> None:
+    """Requests with different observation options produce different keys."""
+    off = layer1_key(query="gdp kenya", scope=_scope(options=None))
+    on = layer1_key(
+        query="gdp kenya",
+        scope=_scope(options=ResolveOptions(include_observations=True)),
+    )
+    assert off != on
+
+
+def test_include_skills_changes_key() -> None:
+    off = layer1_key(query="gdp kenya", scope=_scope(options=None))
+    on = layer1_key(
+        query="gdp kenya",
+        scope=_scope(options=ResolveOptions(include_skills=True)),
+    )
+    assert off != on
+
+
+def test_different_effective_max_candidates_changes_key() -> None:
+    """The key folds in the caller's EFFECTIVE, already server-clamped
+    candidates ceiling (what `core.py` computes and passes in), not the
+    raw `response_options.max_candidates` request field."""
+    lower = layer1_key(query="gdp kenya", scope=_scope(max_candidates=2))
+    higher = layer1_key(query="gdp kenya", scope=_scope(max_candidates=settings().max_candidates))
+    assert lower != higher
+
+
+def test_raw_max_candidates_values_clamping_to_the_same_effective_value_share_a_key() -> None:
+    """Requests clamped to the same effective candidate limit share a key."""
+    over_ceiling = _effective_max_candidates(settings().max_candidates + 100)
+    at_ceiling = _effective_max_candidates(settings().max_candidates)
+    assert over_ceiling == at_ceiling  # sanity: the clamp itself agrees
+
+    key_over = layer1_key(query="gdp kenya", scope=_scope(max_candidates=over_ceiling))
+    key_at = layer1_key(query="gdp kenya", scope=_scope(max_candidates=at_ceiling))
+    assert key_over == key_at
+
+
+def test_different_seam_default_changes_key() -> None:
+    """SEARCH_SEAM_DEFAULT gates directional binding on every request with no
+    per-request override on the wire, so it changes the answer without
+    moving build_commit. It must be part of the key."""
+    on = layer1_key(query="gdp kenya", scope=_scope(seam_default=True))
+    off = layer1_key(query="gdp kenya", scope=_scope(seam_default=False))
+    assert on != off
+
+
+def test_include_sentence_none_and_true_share_a_key() -> None:
+    """A defaulted `include_sentence` and explicit `true` share a key."""
+    absent = layer1_key(
+        query="gdp kenya",
+        scope=_scope(options=ResolveOptions(include_sentence=None)),
+    )
+    explicit_true = layer1_key(
+        query="gdp kenya",
+        scope=_scope(options=ResolveOptions(include_sentence=True)),
+    )
+    assert absent == explicit_true
+
+
+def test_different_today_changes_key() -> None:
+    """The current day changes an open-ended window's result and belongs in the key."""
+    day_one = layer1_key(query="gdp kenya", scope=_scope(today="2026-09-20"))
+    day_two = layer1_key(query="gdp kenya", scope=_scope(today="2026-09-21"))
+    assert day_one != day_two
+
+
+def test_different_build_commit_changes_key() -> None:
+    a = layer1_key(query="gdp kenya", scope=_scope(build_commit="commit-a"))
+    b = layer1_key(query="gdp kenya", scope=_scope(build_commit="commit-b"))
+    assert a != b
+
+
+def test_different_model_changes_key() -> None:
+    a = layer1_key(query="gdp kenya", scope=_scope(model="model-a"))
+    b = layer1_key(query="gdp kenya", scope=_scope(model="model-b"))
+    assert a != b
+
+
+def test_different_seed_changes_key() -> None:
+    a = layer1_key(query="gdp kenya", scope=_scope(seed=1))
+    b = layer1_key(query="gdp kenya", scope=_scope(seed=2))
+    assert a != b
+
+
+def test_different_graph_generation_changes_key() -> None:
+    """Known and unreadable generation stamps each produce distinct keys."""
+    known = layer1_key(query="gdp kenya", scope=_scope(graph_generation="gen-a"))
+    known_other = layer1_key(query="gdp kenya", scope=_scope(graph_generation="gen-b"))
+    unknown = layer1_key(query="gdp kenya", scope=_scope(graph_generation="unknown"))
+    assert known != known_other
+    assert known != unknown
+    assert known_other != unknown
+
+
+def test_different_coverage_stamp_changes_key() -> None:
+    """A new coverage stamp changes both keys for role-bearing answers."""
+    a = layer1_key(query="gdp kenya", scope=_scope(coverage_stamp="stamp-a"))
+    b = layer1_key(query="gdp kenya", scope=_scope(coverage_stamp="stamp-b"))
+    assert a != b
+
+
+def test_layer1_and_layer2_keys_never_collide_for_the_same_scope() -> None:
+    scope = _scope()
+    l1 = layer1_key(query="gdp kenya", scope=scope)
+    l2 = _layer2_key(scope=scope)
+    assert l1 != l2
+    assert l1.startswith("l1_")
+    assert l2.startswith("l2_")
+
+
+def test_keys_are_stable_across_independently_built_equal_inputs() -> None:
+    """Equal scope documents hash identically despite nested dictionary order."""
+    scope_forward = scope_document(
+        schema_version=1,
+        options=ResolveOptions(max_candidates=5, include_sentence=True),
+        max_candidates=5,
+        seam_default=True,
+        build_commit="commit-a",
+        model="model-a",
+        seed=1,
+        today="2026-09-20",
+        graph_generation="gen-a",
+        coverage_stamp="coverage-a",
+        conversion_catalogue="catalogue-a",
+    )
+    scope_reversed = scope_document(
+        today="2026-09-20",
+        seed=1,
+        model="model-a",
+        build_commit="commit-a",
+        seam_default=True,
+        max_candidates=5,
+        options=ResolveOptions(include_sentence=True, max_candidates=5),
+        schema_version=1,
+        graph_generation="gen-a",
+        coverage_stamp="coverage-a",
+        conversion_catalogue="catalogue-a",
+    )
+    key_forward = layer1_key(query="gdp kenya", scope=scope_forward)
+    key_reversed = layer1_key(query="gdp kenya", scope=scope_reversed)
+    assert key_forward == key_reversed
+
+
+def test_is_cacheable_request_refuses_option_coverage() -> None:
+    assert is_cacheable_request(ResolveOptions(include_option_coverage=True)) is False
+
+
+def test_is_cacheable_request_refuses_observations() -> None:
+    assert is_cacheable_request(ResolveOptions(include_observations=True)) is False
+
+
+def test_is_cacheable_request_accepts_none() -> None:
+    assert is_cacheable_request(None) is True
+
+
+def test_is_cacheable_request_accepts_other_options() -> None:
+    assert (
+        is_cacheable_request(
+            ResolveOptions(include_skills=True, include_sentence=False, max_candidates=3)
+        )
+        is True
+    )

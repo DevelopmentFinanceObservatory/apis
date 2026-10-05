@@ -1,0 +1,911 @@
+"""Environment-backed settings for the Search engine.
+
+One ``SearchSettings`` object is built at import, so invalid values fail at
+startup. Consumers read fields through ``settings()`` at use time, allowing
+fixtures to replace the object and every caller to see the same settings.
+This module makes no LLM or graph calls.
+"""
+
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+from urllib.parse import urlparse
+
+from pydantic import Field, field_validator, model_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from dfo_platform.flags import lenient_bool
+from materialise.recipe_bodies import RECIPE_CLASSES as _MATERIALISE_RECIPE_CLASSES
+from origin_catalogue.graph import UN_BASE_URL, UN_BASE_URL_ENV
+from origin_catalogue.topic_walk import TOPIC_EXPAND_MAX_DEPTH, TOPIC_EXPAND_MAX_MEMBERS
+from search.engine.unit.lexicon import ISO_4217_CODES
+from search.models import _RESUBMIT_MAX_RESOLVED_STAT_VARS
+from search.observations import observation_settings
+
+# Accepted values for SEARCH boolean flags. Whitespace is significant.
+_SEARCH_BOOL_TRUTHY = frozenset({"1", "true", "yes"})
+
+
+def _load_dotenv() -> None:
+    """Load unquoted, uninterpolated ``KEY=VALUE`` lines from ``.env``.
+
+    Existing environment values take precedence. Blank and comment lines are skipped.
+    """
+    env_file = Path(__file__).resolve().parents[3] / ".env"
+    if not env_file.is_file():
+        return
+    for line in env_file.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        os.environ.setdefault(key.strip(), value.strip())
+
+
+_load_dotenv()
+
+# ---------------------------------------------------------------------------
+# Fixed module constants without environment overrides.
+# ---------------------------------------------------------------------------
+
+# User-Agent identifying DFO API traffic in the graph's request logs.
+USER_AGENT: str = "dfo-apis (+https://github.com/ONEcampaign/dfo-apis)"
+
+# Fixed parsed-door caps duplicated as Pydantic ``Field(max_length=...)``
+# literals in search.models, which avoids an engine import cycle and engine-extra dependency.
+# Oversized parsed input raises
+# Parsed inputs raise ``request_invalid``. ``max_variables`` clamps with a warning.
+# Keeping these values out of the environment keeps model and capability caps aligned.
+SEARCH_MAX_PARTS: int = 6
+SEARCH_MAX_PART_ENTITIES: int = 16
+SEARCH_MAX_VARIABLE_TEXT_CHARS: int = 200
+SEARCH_MAX_ENTITY_TEXT_CHARS: int = 128
+SEARCH_MAX_ROLE_TEXT_CHARS: int = 64
+SEARCH_MAX_TIME_TEXT_CHARS: int = 100
+SEARCH_MAX_UNIT_TEXT_CHARS: int = 100
+SEARCH_MAX_SOURCE_TEXT_CHARS: int = 200
+
+# Resolve doors in contract order. Capabilities and capability_version use this tuple.
+SEARCH_RESOLVE_DOORS: tuple[str, ...] = ("raw_text", "parsed", "dataset_resubmit")
+
+# Unserved contract doors, read by the resolve route and capabilities endpoint.
+# Empty while every contract-defined door is live.
+SEARCH_UNIMPLEMENTED_DOORS: frozenset[str] = frozenset()
+
+# Capability markers for native unit refs, whose currency roster comes from a graph read.
+# The hash records its source and the native ``current`` prices vocabulary. Constant
+# prices and other currencies come from conversion recipes.
+SEARCH_UNIT_REF_SOURCE: str = "graph:currency_units"
+SEARCH_UNIT_REF_PRICES_VOCABULARY: tuple[str, ...] = ("current",)
+
+# The conversion recipe members this deployment applies, the sorted keys of
+# materialise.recipe_bodies.RECIPE_BODIES. Published as capabilities' recipe_classes.
+SEARCH_RECIPE_CLASSES: tuple[str, ...] = _MATERIALISE_RECIPE_CLASSES
+
+# Cap on NoData.unit_alternatives. The binder's largest candidate set is three, either
+# the three currencies for "francs" or "kr" or the three spec roles.
+SEARCH_MAX_UNIT_ALTERNATIVES: int = 10
+
+# Distinguishes an unset derived default from an explicit value.
+_UNSET_DERIVED_DEFAULT = -1
+
+
+class SearchSettings(BaseSettings):
+    """Engine configuration, read from `SEARCH_*` environment variables.
+
+    Constructed once at import (`_SETTINGS` below); every consumer reads a
+    field off `settings()`'s return value at the point of use. Field names
+    are the `SEARCH_` env var name lowercased with that prefix stripped
+    (e.g. `SEARCH_MAX_VARIABLES` -> `max_variables`); `gemini_api_key` is the
+    one exception, aliased to the unprefixed `GEMINI_API_KEY` that every
+    other Gemini-touching tool in this ecosystem already expects.
+
+    Cross-field invariants (a concurrency total that must dominate its own
+    per-call width, a cache that must not evict what a full-cap read just
+    wrote, ...) are enforced in `_validate_bounds` below, in the same order
+    as the fields they check.
+    """
+
+    model_config = SettingsConfigDict(env_prefix="SEARCH_", extra="forbid")
+
+    # -- LLM ------------------------------------------------------------
+    # Concrete default ties local evaluation baselines to one model. CI pins its own value.
+    engine_model: str = "gemini-3.5-flash-lite"
+
+    # Best-effort Gemini seed. Repeated identical queries matched on the pinned model.
+    # Defaults to 1. An explicit empty string selects unseeded sampling.
+    llm_seed: int | None = 1
+
+    # Overrides the model-derived thinking level where that config is supported.
+    llm_thinking_level: str | None = None
+
+    # Gemini API key for LLM calls. Reads unprefixed GEMINI_API_KEY.
+    gemini_api_key: str = Field(default="", validation_alias="GEMINI_API_KEY")
+
+    # -- Graph ------------------------------------------------------------
+    # Bare host of the Data Commons service, from SEARCH_GRAPH_BASE. Required, so
+    # a process with no graph target fails at import rather than reading another
+    # environment's graph.
+    graph_base: str
+
+    # Optional x-graph-token secret. The WAF challenges data-centre IPs with browser checks.
+    # A matching token exempts trusted clients. Empty values omit the header.
+    graph_token: str = ""
+
+    # The UN System Data Commons API root, which serves `undata/` dcids. It takes no token.
+    # Reads unprefixed UN_GRAPH_BASE_URL, like every other surface and the catalogue job.
+    un_graph_base_url: str = Field(default=UN_BASE_URL, validation_alias=UN_BASE_URL_ENV)
+
+    # -- SDMX ------------------------------------------------------------
+    # Client-side /data caps. Data Commons leaves response-size limits to clients.
+    # Broad ODA health reads returned 154,839 rows/43.9 MiB. Peak measured response was
+    # Largest measured response reached 58.29 MiB.
+    # The 200,000-row/64-MiB caps admit those reads with margin.
+    # Preview reads use obs_preview_max_rows.
+    sdmx_max_rows: int = 200_000
+    sdmx_max_bytes: int = 64 * 1024 * 1024
+
+    # Per-call width for chunked SDMX reads. Defaults to dc_sdmx's 8 and is bounded by the total.
+    sdmx_chunk_concurrency: int = 8
+
+    # Both SDMX clients share the process-wide GET semaphore from clients/sdmx.py.
+    # Three runs of 520 GETs showed little benefit past 16. P95 rises 65% at 24.
+    # No errors occurred through 32.
+    # Must be at least sdmx_chunk_concurrency (8) so one call can use its full worker width.
+    sdmx_total_concurrency: int = 16
+
+    # Maximum role_series cache entries. 0 disables caching. A 26-facet, 8-role,
+    # 40-point entry measured about 35 KB, or about 18 MB at the 512-entry default.
+    # This worst case is small against the 150-266 MB process baseline on a 1 GiB instance.
+    sdmx_facet_cache_size: int = 512
+
+    # Row cap per series of a materialise_preview read, separate from the broad-read and
+    # inline-display caps. A read of several series shares the cap times its series equally.
+    obs_preview_max_rows: int = 20_000
+
+    # Open-axis discovery filters the coverage artifact without a member-count cap.
+    # scope_min_year floors open-ended windows. Coverage paths also floor at the artifact's
+    # epoch_year, the first year represented by its bitmask.
+    # scope_max_window_years limits year lists before they become SDMX OR-filters.
+    # region_max_members bounds alt-shape observation-facet prewarming.
+    # The options candidate probe passes its StatVar set to the facet read.
+    region_max_members: int = 700
+
+    # Maximum members refreshed before a role-bearing verdict. In dev, 2,637 members add
+    # about 6 s. 5,000 add about 11 s of the 45-s request budget.
+    # The 13,090-member CRS family would cost about 30 s and uses packaged roles
+    # with role_declaration_unverified.
+    # The per-process arc cache holds a full refresh (validated against this cap).
+    role_refresh_max_members: int = 5000
+    scope_min_year: int = 1960
+    scope_max_window_years: int = 80
+
+    # -- Timeouts ------------------------------------------------------------
+    # Passed to httpx.Client(timeout=...) as one number, which sets the
+    # connect, read, write, and pool timeouts alike.
+    graph_timeout_s: float = 30
+
+    # Gemini HTTP timeout in seconds. genai expects milliseconds. This bounds each call so
+    # pipeline deadline handling can proceed.
+    llm_timeout_s: float = 30
+
+    # clients/llm.py limits each event loop to this many HTTP/1.1 connections.
+    # Requests over the cap wait for a free connection up to llm_timeout_s.
+    llm_max_concurrency: int = 32
+
+    # Overall request deadline in seconds. asyncio.wait_for wraps resolve_async.
+    # Prevents sequential graph rounds from stacking unbounded.
+    request_timeout_s: float = 45
+
+    # -- Unit completion ---------------------------------------------------
+    # ISO 4217 code a unit phrase that names no currency completes to.
+    unit_default_currency: str = "USD"
+
+    # -- Directional place constraint (PAC) ------------------------------
+    # Server default for place-as-constraint (PAC). When on, recipients bind directionally.
+    # Every request uses this server-side default. The wire has no override.
+    seam_default: bool = True
+
+    # -- Security / prompt safety ------------------------------------------
+    # FastAPI rejects longer queries with 422 before any LLM or graph call.
+    max_query_chars: int = 2000
+
+    # -- Shape discovery ------------------------------------------------------
+    # Candidate SVs confirmed per batched node_arcs call. A larger pool adds no round trips.
+    max_confirm_candidates: int = 40
+
+    # Reserve this many top-scoring direct recalls before topic-expanded candidates fill the cap.
+    # Applied before shape-class floors and clamped to max_confirm_candidates.
+    min_recall_confirm_slots: int = 8
+
+    # Per-class reserve for role-bearing and standard candidates, applied in that order after
+    # min_recall_confirm_slots. Each reserve takes the highest scores above unknown_score_threshold
+    # and shrinks to the room left under max_confirm_candidates.
+    min_shape_class_confirm_slots: int = 8
+
+    # /v2/resolve scope, passed verbatim as the request body's "target" field.
+    # "base_only" searches core Data Commons only, "custom_only" searches ONE's custom
+    # data only, "base_and_custom" searches both. The accepted set is exactly the
+    # mixer's ResolveTarget* constants (datacommonsorg/mixer,
+    # internal/server/v2/resolve/resolve.go).
+    resolve_target: str = "base_and_custom"
+
+    # Timeout in seconds for the UN System Data Commons resolve, which starts beside ours in
+    # recall. Only a part whose first pass ends no_data waits for it. On failure or timeout,
+    # search answers from our candidates, and such a part carries un_system_unavailable. The
+    # UN resolve measured 0.72 s.
+    # SEARCH_REQUEST_TIMEOUT_S still bounds the whole request.
+    un_resolve_timeout_s: float = 3.0
+
+    # Timeout in seconds for a definite answer's related-measures reads (`related`), which
+    # start beside the answer's other post-election reads. Past it the answer states
+    # related_measures as null. Three graph reads, two of them side by side, measured
+    # 0.5-0.8 s on dfo-dev. A cold read beside a heavy answer's own took up to 2 s, and this
+    # bound keeps that time from the answer.
+    related_measures_timeout_s: float = 1.0
+
+    # Number of top-scoring detect_svs candidates kept after sorting descending by
+    # Client-side cap on top-scoring detect_svs candidates.
+    # unknown_score_threshold gates query-level abstention.
+    detect_k: int = 80
+
+    # Resolver scores span about 0.55-0.95. Calibration: France 0.6065 (unresolved),
+    # Kenya 0.7493, India 0.7628, GDP 0.9084, Spain 0.8226 (resolved), Brazil forest area
+    # 0.8230 versus 0.8184 (margin 0.0046).
+    # Scores below 0.65 are dropped. A query with no eligible shape returns variable_not_resolved.
+    # Confirm-cap reserves and role classification also use this floor.
+    unknown_score_threshold: float = 0.65
+
+    # Minimum score for a recalled SV to be treated as confident (non-weak).
+    # Only used below as the lower bound of the RETRIEVAL_SCORE_WEAK info-warning band.
+    # Equal to unknown_score_threshold. Weak-match warnings start above this cutoff.
+    relevance_threshold: float = 0.65
+
+    # Scores between relevance_threshold and this value trigger RETRIEVAL_SCORE_WEAK.
+    weak_score_threshold: float = 0.75
+
+    # Below this score gap, a distinct shape becomes a candidate when the elected label
+    # lacks a match to the query. Forest area in Brazil differs by 0.0046.
+    # Fertility rate in Kenya differs by 0.243.
+    near_margin: float = 0.025
+
+    # Token-set Jaccard floor between the query phrase and elected label. At 0.3 it is a
+    # A 0.3 score permits a thin-margin match only when a query token names the elected concept
+    # and is absent from the neighbor's label. Generic queries score 0.40+ against vaccine
+    # siblings, so the neighbor-token check decides. Below 0.3, the match is ambiguous.
+    near_label_similarity: float = 0.3
+
+    # Cap for resolved.stat_vars.items, so a client can list every served member of a
+    # large family. Internal specs may be uncapped. member_count reports the full
+    # population, and truncated marks partial items. An item is about 1 KB, so ODA from
+    # Germany (1,626 members) carries about 1.6 MB of items. The cap equals the
+    # resubmit ceiling on resolved_stat_var_dcids, so a client can post every item back.
+    # Ordinary recall caps at 40.
+    resolved_stat_vars_max: int = _RESUBMIT_MAX_RESOLVED_STAT_VARS
+
+    # Maximum number of candidate specs returned in a CandidatesPart.
+    # Clamped broadest-first when multiple five-tuple groups survive ranking.
+    max_candidates: int = 6
+
+    # Variables above this post-extraction cap are dropped with a VARIABLES_CLAMPED warning.
+    max_variables: int = 6
+
+    # Raw entity count checked before deduplication or span scanning. Overflow raises
+    # request_invalid because dropping an entity would hide a place from every variable.
+    # The cap 96 matches the parsed door's 6 parts x 16 entities and admits ordinary G20 asks.
+    # Resolvekit costs about 0.3-0.4 ms per entity. 96 takes tens of milliseconds of the
+    # 45-s request budget. The cap bounds work on the process's single shared resolver thread.
+    max_entities: int = 96
+
+    # Raw mention cap, checked alongside max_entities before scanning entity spans.
+    # max_entities limits distinct names. This cap bounds repeats because span processing visits
+    # every occurrence. The default is max_entities * 4. An environment value overrides it.
+    max_entity_occurrences: int = _UNSET_DERIVED_DEFAULT
+
+    # At most 20 dropped qualifiers per extraction. The densest corpus query has 2.
+    # the cap bounds qualifier-to-variable scans to 120 comparisons at 6 variables.
+    max_dropped_qualifiers: int = 20
+
+    # Truncated phrases retain coded qualifiers because the matcher reads their leading text.
+    # The 200-character cap matches SEARCH_MAX_VARIABLE_TEXT_CHARS.
+    max_dropped_qualifier_length: int = 200
+
+    # Maximum number of candidate shapes (across all families) presented to the universal
+    # choose+bind prompt. Retrieval ranks shapes. The LLM elects the winner.
+    bind_top_k: int = 8
+
+    # Reserve top-scoring direct recalls before topic-expanded shapes fill the bind menu.
+    # Topic expansions inherit their root's rank. The reserve is clamped to bind_top_k.
+    min_recall_bind_slots: int = 2
+
+    # A Topic expands when its score is within this margin of the pool top, including the
+    # best non-topic candidate. This lets a specific SDG indicator Topic survive broader
+    # distractor Topics and higher-scoring non-topic candidates.
+    topic_expand_margin: float = 0.05
+
+    # Drop roots above this leaf count. The per-root cap leaves other roots available.
+    # Topic and StatVarPeerGroup nodes can contain 1,700-5,200+ members.
+    topic_expand_max_members: int = TOPIC_EXPAND_MAX_MEMBERS
+
+    # Maximum independent Topic roots expanded per query, bounding BFS traversals.
+    topic_expand_max_roots: int = 3
+
+    # Each BFS level costs one batched node_arcs call, independent of frontier width.
+    # Four levels cover the deepest observed SDG chain: indicator Topic, series Topic,
+    # StatVarPeerGroup, then leaf StatisticalVariable (3 container hops).
+    topic_expand_max_depth: int = TOPIC_EXPAND_MAX_DEPTH
+
+    # Place-set expansion cap before the standard observation probe. At 256 it covers all
+    # countries under Earth and 33 resolvekit groups. The UN is largest, with 193 members.
+    # SDMX entity filters cost 4,399/7,800 URL bytes at 256 dcids, 3,328 at 193, and 1,067
+    # at 60. The hard wall is about 450 per role. Two maximum roles can exceed it.
+    # Larger sets increase SDMX chunking and request count. Clamping emits CHILD_PLACES_CLAMPED.
+    max_child_places: int = 256
+
+    # Cap on named recipient places before expansion. The standard door truncates in query
+    # order with MULTI_RECIPIENT_TRUNCATED. Resubmit refuses overflow because canonical
+    # identities carry no naming order for a safe truncation. Ten covers G7 comparisons.
+    # max_standard_probe_places separately caps the expanded entity set.
+    max_standard_places: int = 10
+
+    # Cap on the combined entity probe after each place set's max_child_places clamp.
+    # Overflow emits STANDARD_PROBE_PLACES_CLAMPED alongside any per-set warnings.
+    # The default 256 covers one full place set. Raise it with max_child_places.
+    max_standard_probe_places: int = 256
+
+    # Sample size per shape family across unasserted axes. One asserting StatVar confirms an axis.
+    # Truncated pages may omit unconfirmed axes from slot_options. Posted keys remain valid.
+    resubmit_axis_sample: int = 50
+
+    # Presence-check cap for raw options candidates, separate from resolve fan-out.
+    # At 500 it covers 256 Earth countries, 8 continents, and dozens of regions per country.
+    max_options: int = 500
+
+    # Member cap for graph-based options population when no code index is available.
+    options_member_cap: int = 700
+
+    # -- Variable pipeline concurrency ------------------------------------
+    # Concurrent variable legs per request. The limit must cover max_variables.
+    # Entity resolution uses one separate call for the full unique-entity set (up to 96).
+    max_variable_concurrency: int = 8
+
+    # -- Client-side caches (per-LiveGraphClient, cleared on restart) -----
+    # Observation-facet LRU entries keyed by (stat_var, entity, needs_dates). Cleared on restart.
+    obs_cache_size: int = 512
+
+    # detect_svs LRU entries use (generation stamp, catalogue build, UN setting, query,
+    # resolve_target, detect_k) as the key.
+    detect_cache_size: int = 256
+
+    # node_arcs and node_arcs_batch share an LRU keyed by dcid. Cleared on restart.
+    arcs_cache_size: int = 4096
+
+    # LRU entries for node_observation_properties_batch, separate from the full-arc cache.
+    # Must cover role_refresh_max_members so a full refresh keeps its entries for repeat reads.
+    obs_properties_cache_size: int = 5000
+
+    # -- Response cache (process-wide, shared across requests) ------------------
+    # Enable raw-text response caching. The deployed model/seed pin preserves behaviour.
+    response_cache_enabled: bool = True
+
+    # Exact serialized response bytes retained before LRU eviction. The cache stores encoded bytes.
+    response_cache_max_bytes: int = 64 * 1024 * 1024
+
+    # Oversized responses are served without storage, protecting other entries from eviction.
+    response_cache_max_entry_bytes: int = 2 * 1024 * 1024
+
+    # OptionsPopulation memo, one per search_surface(), keyed by (identity.shape, identity.slots).
+    # Defaults on, like response_cache_enabled.
+    options_population_cache_enabled: bool = True
+
+    # Maximum distinct (identity.shape, identity.slots) populations held before LRU eviction.
+    options_population_cache_max_entries: int = Field(default=256, ge=1)
+
+    # Dedicated workers and non-blocking gate keep place prefetch off asyncio's shared executor.
+    # Four workers cover the 2-job peers/children pair across overlapping requests.
+    place_options_workers: int = 4
+
+    # Process-wide options cache, keyed after resolve_options_target and enabled by default.
+    # Cache warning-free responses only. Run validation and role/anchor refusals on each request.
+    # A hit skips response building.
+    options_response_cache_enabled: bool = True
+
+    # Maximum distinct options-response keys held before LRU eviction.
+    options_response_cache_max_entries: int = Field(default=512, ge=1)
+
+    # LLM memo lifetime. Cached answers carry no graph-generation stamp.
+    llm_memo_ttl_s: float = 3600
+
+    # Exact retained JSON-byte cap before LRU eviction. 0 disables memoisation.
+    llm_memo_max_bytes: int = 16 * 1024 * 1024
+
+    # Oversized answers are served without storage, protecting other memo entries from eviction.
+    llm_memo_max_entry_bytes: int = 256 * 1024
+
+    # -- Observation values ------------------------------------------------
+    # Worker cap for one preview fetch. 1 runs its pairs sequentially.
+    # Each variable leg has a preview pool. obs_preview_total_concurrency caps aggregate fetches.
+    obs_preview_concurrency: int = 8
+
+    # Process-wide semaphore caps preview pair fetches.
+    obs_preview_total_concurrency: int = 32
+
+    # On dev, 139 node-arc chunks took 5.9 s at 8 threads.
+    # At 16 threads they took 2.75 s, with no errors or continuation tokens.
+    node_arc_call_concurrency: int = 16
+
+    # Process-wide cap on node-arc batch POSTs, including halving retries.
+    # Node label/type reads are outside this bound. Each batch POST holds one permit.
+    # Must be at least node_arc_call_concurrency.
+    node_arc_total_concurrency: int = 32
+
+    # Process-wide cap for materialise facet-probe POSTs. Also limits each call's worker pool.
+    facet_probe_total_concurrency: int = 8
+
+    # -- Recall quality, acronym canonicalization, and relevance floor --------
+    # Expand configured acronyms before bare-variable detection. Other fields keep their input.
+    acronym_canonicalize: bool = True
+
+    # Drop candidates below 0.30 before shape derivation. Topic candidates are exempt.
+    # Correct fixture scores include GDP at 0.619 and life expectancy in Kenya at 0.562.
+    # Unresolvable queries score well below 0.3. Query-level unknown_score_threshold is 0.65.
+    recall_score_floor: float = 0.30
+
+    # -- Eval-harness build fingerprint -------------------------------------
+    # Eval fingerprint for comparing runs. Diagnostics expose the image commit separately.
+    engine_build: str = "search-engine-dev"
+
+    # Capability token in problem details and capabilities. It differs from schema_version.
+    # SEARCH_CAPABILITY_VERSION overrides it. Otherwise the deterministic hash uses ``cap_``.
+    capability_version: str = ""
+
+    @field_validator("llm_seed", mode="before")
+    @classmethod
+    def _seed_empty_string_opts_out(cls, value: object) -> object:
+        """An explicit empty string opts back out to unseeded sampling (None)."""
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator("llm_thinking_level", mode="before")
+    @classmethod
+    def _thinking_level_empty_string_is_unset(cls, value: object) -> object:
+        if isinstance(value, str) and value.strip() == "":
+            return None
+        return value.strip() if isinstance(value, str) else value
+
+    @field_validator(
+        "seam_default",
+        "response_cache_enabled",
+        "options_population_cache_enabled",
+        "options_response_cache_enabled",
+        "acronym_canonicalize",
+        mode="before",
+    )
+    @classmethod
+    def _parse_lenient_bool_flags(cls, value: object) -> object:
+        return lenient_bool(truthy=_SEARCH_BOOL_TRUTHY, strip=False)(value)
+
+    @field_validator("unit_default_currency")
+    @classmethod
+    def _unit_default_currency_is_iso(cls, value: str) -> str:
+        if value not in ISO_4217_CODES:
+            raise ValueError(
+                f"SEARCH_UNIT_DEFAULT_CURRENCY must be a registered ISO 4217 code; got {value!r}"
+            )
+        return value
+
+    @field_validator("capability_version", mode="before")
+    @classmethod
+    def _capability_version_stripped(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+    @model_validator(mode="after")
+    def _derive_defaults(self) -> "SearchSettings":
+        """Set dependent field defaults before ``_validate_bounds`` checks them."""
+        if self.max_entity_occurrences == _UNSET_DERIVED_DEFAULT:
+            self.max_entity_occurrences = self.max_entities * 4
+        if not self.capability_version:
+            self.capability_version = self._compute_capability_version()
+        return self
+
+    def _capability_version_payload(self) -> dict:
+        return {
+            "doors": {
+                door: door not in SEARCH_UNIMPLEMENTED_DOORS for door in SEARCH_RESOLVE_DOORS
+            },
+            "seam_default": self.seam_default,
+            "unit_default_currency": self.unit_default_currency,
+            "unit_ref_source": SEARCH_UNIT_REF_SOURCE,
+            "unit_ref_prices_vocabulary": list(SEARCH_UNIT_REF_PRICES_VOCABULARY),
+            "recipe_classes": list(SEARCH_RECIPE_CLASSES),
+            "caps": {
+                "max_query_chars": self.max_query_chars,
+                "max_candidates": self.max_candidates,
+                "max_variables": self.max_variables,
+                "obs_preview_points": observation_settings().obs_preview_points,
+                "obs_inline_max": observation_settings().obs_inline_max,
+                "max_options": self.max_options,
+                "max_parts": SEARCH_MAX_PARTS,
+                "max_part_entities": SEARCH_MAX_PART_ENTITIES,
+                "max_variable_text_chars": SEARCH_MAX_VARIABLE_TEXT_CHARS,
+                "max_entity_text_chars": SEARCH_MAX_ENTITY_TEXT_CHARS,
+                "max_role_text_chars": SEARCH_MAX_ROLE_TEXT_CHARS,
+                "max_time_text_chars": SEARCH_MAX_TIME_TEXT_CHARS,
+                "max_unit_text_chars": SEARCH_MAX_UNIT_TEXT_CHARS,
+                "max_source_text_chars": SEARCH_MAX_SOURCE_TEXT_CHARS,
+                "resolved_stat_vars_max": self.resolved_stat_vars_max,
+                "region_max_members": self.region_max_members,
+                "scope_min_year": self.scope_min_year,
+                "scope_max_window_years": self.scope_max_window_years,
+            },
+        }
+
+    def _compute_capability_version(self) -> str:
+        """Deterministic `capability_version` token: a short content hash over
+        this deployment's stable capability fields (per-door liveness, the
+        place-as-constraint default, and the published caps), so a config
+        change mints a new token while repeated boots of the identical config
+        agree on the same one. The running image's own commit sha is excluded
+        from this hash, so a rebuild with no behaviour change mints no new
+        token.
+        """
+        canonical = json.dumps(
+            self._capability_version_payload(), sort_keys=True, separators=(",", ":")
+        )
+        digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+        return f"cap_{digest}"
+
+    @model_validator(mode="after")
+    def _validate_bounds(self) -> "SearchSettings":
+        """Startup validation: raises ValueError at import, before the port binds."""
+        self._validate_retrieval_and_scope_bounds()
+        self._validate_confirm_and_candidate_bounds()
+        self._validate_bind_and_cache_bounds()
+        self._validate_topic_and_place_bounds()
+        self._validate_timeout_and_preview_bounds()
+        self._validate_concurrency_and_deployment_bounds()
+        self._validate_cache_and_memo_bounds()
+        return self
+
+    def _validate_retrieval_and_scope_bounds(self) -> None:
+        """Confirm-candidate count, SDMX read caps, observation-preview caps,
+        role/region member caps, and the scope window."""
+        if self.max_confirm_candidates < 1:
+            raise ValueError(
+                f"SEARCH_MAX_CONFIRM_CANDIDATES must be >= 1; got {self.max_confirm_candidates!r}"
+            )
+        if self.sdmx_max_rows < 1:
+            raise ValueError(f"SEARCH_SDMX_MAX_ROWS must be >= 1; got {self.sdmx_max_rows!r}")
+        if self.sdmx_max_bytes < 1:
+            raise ValueError(f"SEARCH_SDMX_MAX_BYTES must be >= 1; got {self.sdmx_max_bytes!r}")
+        if self.sdmx_chunk_concurrency < 1:
+            raise ValueError(
+                f"SEARCH_SDMX_CHUNK_CONCURRENCY must be >= 1; got {self.sdmx_chunk_concurrency!r}"
+            )
+        if self.sdmx_total_concurrency < self.sdmx_chunk_concurrency:
+            raise ValueError(
+                f"SEARCH_SDMX_TOTAL_CONCURRENCY ({self.sdmx_total_concurrency!r}) must be "
+                f">= SEARCH_SDMX_CHUNK_CONCURRENCY ({self.sdmx_chunk_concurrency!r})"
+            )
+        if self.sdmx_facet_cache_size < 0:
+            raise ValueError(
+                f"SEARCH_SDMX_FACET_CACHE_SIZE must be >= 0; got {self.sdmx_facet_cache_size!r}"
+            )
+        if self.obs_preview_max_rows < 1:
+            raise ValueError(
+                f"SEARCH_OBS_PREVIEW_MAX_ROWS must be >= 1; got {self.obs_preview_max_rows!r}"
+            )
+        if self.role_refresh_max_members < 1:
+            raise ValueError(
+                "SEARCH_ROLE_REFRESH_MAX_MEMBERS must be >= 1; got "
+                f"{self.role_refresh_max_members!r}"
+            )
+        if self.region_max_members < 1:
+            raise ValueError(
+                f"SEARCH_REGION_MAX_MEMBERS must be >= 1; got {self.region_max_members!r}"
+            )
+        if self.scope_min_year < 1:
+            raise ValueError(f"SEARCH_SCOPE_MIN_YEAR must be >= 1; got {self.scope_min_year!r}")
+        if self.scope_max_window_years < 1:
+            raise ValueError(
+                f"SEARCH_SCOPE_MAX_WINDOW_YEARS must be >= 1; got {self.scope_max_window_years!r}"
+            )
+
+    def _validate_confirm_and_candidate_bounds(self) -> None:
+        """Recall, shape-class and origin confirm-slot reserves, score thresholds, and
+        the resolved-StatVar/candidate/variable/entity ceilings."""
+        if self.min_recall_confirm_slots < 0:
+            raise ValueError(
+                "SEARCH_MIN_RECALL_CONFIRM_SLOTS must be >= 0; got "
+                f"{self.min_recall_confirm_slots!r}"
+            )
+        if self.min_shape_class_confirm_slots < 0:
+            raise ValueError(
+                "SEARCH_MIN_SHAPE_CLASS_CONFIRM_SLOTS must be >= 0; got "
+                f"{self.min_shape_class_confirm_slots!r}"
+            )
+        if not (0 < self.relevance_threshold <= 1):
+            raise ValueError(
+                f"SEARCH_RELEVANCE_THRESHOLD must be in (0, 1]; got {self.relevance_threshold!r}"
+            )
+        if not (0 < self.weak_score_threshold <= 1):
+            raise ValueError(
+                f"SEARCH_WEAK_SCORE_THRESHOLD must be in (0, 1]; got {self.weak_score_threshold!r}"
+            )
+        if self.near_margin < 0:
+            raise ValueError(f"SEARCH_NEAR_MARGIN must be >= 0; got {self.near_margin!r}")
+        if not (0 <= self.near_label_similarity <= 1):
+            raise ValueError(
+                "SEARCH_NEAR_LABEL_SIMILARITY must be in [0, 1]; got "
+                f"{self.near_label_similarity!r}"
+            )
+        if self.resolved_stat_vars_max < 1:
+            raise ValueError(
+                f"SEARCH_RESOLVED_STAT_VARS_MAX must be >= 1; got {self.resolved_stat_vars_max!r}"
+            )
+        if self.resolved_stat_vars_max > _RESUBMIT_MAX_RESOLVED_STAT_VARS:
+            raise ValueError(
+                "SEARCH_RESOLVED_STAT_VARS_MAX must be <= "
+                "search.models._RESUBMIT_MAX_RESOLVED_STAT_VARS "
+                f"({_RESUBMIT_MAX_RESOLVED_STAT_VARS!r}), the request-side field ceiling on "
+                f"resolved_stat_var_dcids; got {self.resolved_stat_vars_max!r}. Raising this "
+                "env var above that literal would let the engine serve more resolved "
+                "StatVars than a resubmit could ever echo back, reproducing the exact "
+                "gap this guard closes -- raise the literal alongside it instead."
+            )
+        if self.max_confirm_candidates > self.resolved_stat_vars_max:
+            raise ValueError(
+                "SEARCH_MAX_CONFIRM_CANDIDATES must be <= SEARCH_RESOLVED_STAT_VARS_MAX; got "
+                f"{self.max_confirm_candidates!r} > {self.resolved_stat_vars_max!r}. A "
+                "catch-all identity's recall-sourced member set (shape_member_facts, "
+                "retrieval/bound_values.py) is bounded by SEARCH_MAX_CONFIRM_CANDIDATES, "
+                "which is what lets the serving cap always show its complete answer; "
+                "raising this env var above the serving cap would reopen the truncated-"
+                "seed-as-membership gap for catch-all shapes."
+            )
+        if self.max_candidates < 1:
+            raise ValueError(f"SEARCH_MAX_CANDIDATES must be >= 1; got {self.max_candidates!r}")
+        if self.max_variables < 1:
+            raise ValueError(f"SEARCH_MAX_VARIABLES must be >= 1; got {self.max_variables!r}")
+        if self.max_entities < 1:
+            raise ValueError(f"SEARCH_MAX_ENTITIES must be >= 1; got {self.max_entities!r}")
+        if self.max_entity_occurrences < self.max_entities:
+            raise ValueError(
+                "SEARCH_MAX_ENTITY_OCCURRENCES must be >= SEARCH_MAX_ENTITIES "
+                f"({self.max_entities!r}); got {self.max_entity_occurrences!r}"
+            )
+
+    def _validate_bind_and_cache_bounds(self) -> None:
+        """Dropped-qualifier limits, bind/detect caps, and read-cache sizes."""
+        if self.max_dropped_qualifiers < 1:
+            raise ValueError(
+                f"SEARCH_MAX_DROPPED_QUALIFIERS must be >= 1; got {self.max_dropped_qualifiers!r}"
+            )
+        if self.max_dropped_qualifier_length < 1:
+            raise ValueError(
+                "SEARCH_MAX_DROPPED_QUALIFIER_LENGTH must be >= 1; got "
+                f"{self.max_dropped_qualifier_length!r}"
+            )
+        if self.bind_top_k < 1:
+            raise ValueError(f"SEARCH_BIND_TOP_K must be >= 1; got {self.bind_top_k!r}")
+        if not (0 <= self.min_recall_bind_slots <= self.bind_top_k):
+            raise ValueError(
+                "SEARCH_MIN_RECALL_BIND_SLOTS must be in [0, SEARCH_BIND_TOP_K]; got "
+                f"{self.min_recall_bind_slots!r} against SEARCH_BIND_TOP_K={self.bind_top_k!r}"
+            )
+        if self.detect_k < 1:
+            raise ValueError(f"SEARCH_DETECT_K must be >= 1; got {self.detect_k!r}")
+        if self.arcs_cache_size < 1:
+            raise ValueError(f"SEARCH_ARCS_CACHE_SIZE must be >= 1; got {self.arcs_cache_size!r}")
+        if self.obs_properties_cache_size < 1:
+            raise ValueError(
+                "SEARCH_OBS_PROPERTIES_CACHE_SIZE must be >= 1; got "
+                f"{self.obs_properties_cache_size!r}"
+            )
+        if self.obs_properties_cache_size < self.role_refresh_max_members:
+            raise ValueError(
+                "SEARCH_OBS_PROPERTIES_CACHE_SIZE must be >= SEARCH_ROLE_REFRESH_MAX_MEMBERS, "
+                "so a declared-role refresh at the full member cap never evicts an entry it "
+                f"just wrote; got SEARCH_OBS_PROPERTIES_CACHE_SIZE="
+                f"{self.obs_properties_cache_size!r} against SEARCH_ROLE_REFRESH_MAX_MEMBERS="
+                f"{self.role_refresh_max_members!r}"
+            )
+
+    def _validate_topic_and_place_bounds(self) -> None:
+        """Resolve-target mode, topic-expand bounds, and place/option caps."""
+        if self.resolve_target not in {"base_only", "custom_only", "base_and_custom"}:
+            raise ValueError(
+                "SEARCH_RESOLVE_TARGET must be one of 'base_only', 'custom_only', "
+                "'base_and_custom'; "
+                f"got {self.resolve_target!r}"
+            )
+        if not (0 < self.unknown_score_threshold <= 1):
+            raise ValueError(
+                "SEARCH_UNKNOWN_SCORE_THRESHOLD must be in (0, 1]; got "
+                f"{self.unknown_score_threshold!r}"
+            )
+        if self.topic_expand_margin < 0:
+            raise ValueError(
+                f"SEARCH_TOPIC_EXPAND_MARGIN must be >= 0; got {self.topic_expand_margin!r}"
+            )
+        if self.topic_expand_max_members < 1:
+            raise ValueError(
+                "SEARCH_TOPIC_EXPAND_MAX_MEMBERS must be >= 1; got "
+                f"{self.topic_expand_max_members!r}"
+            )
+        if self.topic_expand_max_roots < 1:
+            raise ValueError(
+                f"SEARCH_TOPIC_EXPAND_MAX_ROOTS must be >= 1; got {self.topic_expand_max_roots!r}"
+            )
+        if self.topic_expand_max_depth < 1:
+            raise ValueError(
+                f"SEARCH_TOPIC_EXPAND_MAX_DEPTH must be >= 1; got {self.topic_expand_max_depth!r}"
+            )
+        if self.max_child_places < 1:
+            raise ValueError(f"SEARCH_MAX_CHILD_PLACES must be >= 1; got {self.max_child_places!r}")
+        if self.max_standard_places < 1:
+            raise ValueError(
+                f"SEARCH_MAX_STANDARD_PLACES must be >= 1; got {self.max_standard_places!r}"
+            )
+        if self.max_standard_probe_places < 1:
+            raise ValueError(
+                "SEARCH_MAX_STANDARD_PROBE_PLACES must be >= 1; got "
+                f"{self.max_standard_probe_places!r}"
+            )
+        if self.resubmit_axis_sample < 1:
+            raise ValueError(
+                f"SEARCH_RESUBMIT_AXIS_SAMPLE must be >= 1; got {self.resubmit_axis_sample!r}"
+            )
+        if self.max_options < 1:
+            raise ValueError(f"SEARCH_MAX_OPTIONS must be >= 1; got {self.max_options!r}")
+        if self.options_member_cap < 1:
+            raise ValueError(
+                f"SEARCH_OPTIONS_MEMBER_CAP must be >= 1; got {self.options_member_cap!r}"
+            )
+
+    def _validate_timeout_and_preview_bounds(self) -> None:
+        """Graph/LLM/request timeouts, Gemini and observation-preview concurrency."""
+        if self.graph_timeout_s <= 0:
+            raise ValueError(f"SEARCH_GRAPH_TIMEOUT_S must be > 0; got {self.graph_timeout_s!r}")
+        if self.llm_timeout_s <= 0:
+            raise ValueError(f"SEARCH_LLM_TIMEOUT_S must be > 0; got {self.llm_timeout_s!r}")
+        if self.llm_max_concurrency < 1:
+            raise ValueError(
+                f"SEARCH_LLM_MAX_CONCURRENCY must be >= 1; got {self.llm_max_concurrency!r}"
+            )
+        if self.max_query_chars < 1:
+            raise ValueError(f"SEARCH_MAX_QUERY_CHARS must be >= 1; got {self.max_query_chars!r}")
+        if self.request_timeout_s <= 0:
+            raise ValueError(
+                f"SEARCH_REQUEST_TIMEOUT_S must be > 0; got {self.request_timeout_s!r}"
+            )
+        if self.un_resolve_timeout_s <= 0:
+            raise ValueError(
+                f"SEARCH_UN_RESOLVE_TIMEOUT_S must be > 0; got {self.un_resolve_timeout_s!r}"
+            )
+        if self.related_measures_timeout_s <= 0:
+            raise ValueError(
+                "SEARCH_RELATED_MEASURES_TIMEOUT_S must be > 0; "
+                f"got {self.related_measures_timeout_s!r}"
+            )
+        if self.max_variable_concurrency < self.max_variables:
+            raise ValueError(
+                f"SEARCH_MAX_VARIABLE_CONCURRENCY ({self.max_variable_concurrency!r}) must be "
+                f">= SEARCH_MAX_VARIABLES ({self.max_variables!r})"
+            )
+        if self.obs_preview_concurrency < 1:
+            raise ValueError(
+                f"SEARCH_OBS_PREVIEW_CONCURRENCY must be >= 1; got {self.obs_preview_concurrency!r}"
+            )
+        if self.obs_preview_total_concurrency < 1:
+            raise ValueError(
+                "SEARCH_OBS_PREVIEW_TOTAL_CONCURRENCY must be >= 1; got "
+                f"{self.obs_preview_total_concurrency!r}"
+            )
+
+    def _validate_concurrency_and_deployment_bounds(self) -> None:
+        """Graph-read concurrency, the recall score floor, and deployment
+        identity bounds (LLM thinking level, graph base URL scheme)."""
+        if self.node_arc_call_concurrency < 1:
+            raise ValueError(
+                "SEARCH_NODE_ARC_CALL_CONCURRENCY must be >= 1; got "
+                f"{self.node_arc_call_concurrency!r}"
+            )
+        if self.node_arc_total_concurrency < self.node_arc_call_concurrency:
+            raise ValueError(
+                f"SEARCH_NODE_ARC_TOTAL_CONCURRENCY ({self.node_arc_total_concurrency!r}) "
+                f"must be >= SEARCH_NODE_ARC_CALL_CONCURRENCY "
+                f"({self.node_arc_call_concurrency!r})"
+            )
+        if self.facet_probe_total_concurrency < 1:
+            raise ValueError(
+                "SEARCH_FACET_PROBE_TOTAL_CONCURRENCY must be >= 1; got "
+                f"{self.facet_probe_total_concurrency!r}"
+            )
+        if not (0 <= self.recall_score_floor < 1):
+            raise ValueError(
+                f"SEARCH_RECALL_SCORE_FLOOR must be in [0, 1); got {self.recall_score_floor!r}"
+            )
+        if self.llm_thinking_level is not None and self.llm_thinking_level not in {
+            "minimal",
+            "low",
+            "medium",
+            "high",
+        }:
+            raise ValueError(
+                "SEARCH_LLM_THINKING_LEVEL must be one of 'minimal', 'low', 'medium', 'high'; "
+                f"got {self.llm_thinking_level!r}"
+            )
+        graph_base_parsed = urlparse(self.graph_base)
+        # https:// is allowed for any host. http:// is allowed only for the loopback
+        # dev hosts, compared by exact hostname so spoofs like http://localhost.evil.com
+        # or http://127.0.0.1.attacker are rejected.
+        if not (
+            graph_base_parsed.scheme == "https"
+            or (
+                graph_base_parsed.scheme == "http"
+                and graph_base_parsed.hostname in {"localhost", "127.0.0.1"}
+            )
+        ):
+            raise ValueError(
+                f"SEARCH_GRAPH_BASE must use https:// (or http://localhost / http://127.0.0.1 "
+                f"for dev); got {self.graph_base!r}"
+            )
+
+    def _validate_cache_and_memo_bounds(self) -> None:
+        """Response-cache and LLM-memo cache bounds."""
+        if self.response_cache_max_bytes < 1:
+            raise ValueError(
+                "SEARCH_RESPONSE_CACHE_MAX_BYTES must be >= 1; got "
+                f"{self.response_cache_max_bytes!r}"
+            )
+        if self.response_cache_max_entry_bytes < 1:
+            raise ValueError(
+                "SEARCH_RESPONSE_CACHE_MAX_ENTRY_BYTES must be >= 1; got "
+                f"{self.response_cache_max_entry_bytes!r}"
+            )
+        if self.response_cache_max_entry_bytes > self.response_cache_max_bytes:
+            raise ValueError(
+                "SEARCH_RESPONSE_CACHE_MAX_ENTRY_BYTES "
+                f"({self.response_cache_max_entry_bytes!r}) must be <= "
+                f"SEARCH_RESPONSE_CACHE_MAX_BYTES ({self.response_cache_max_bytes!r})"
+            )
+        if self.place_options_workers < 1:
+            raise ValueError(
+                f"SEARCH_PLACE_OPTIONS_WORKERS must be >= 1; got {self.place_options_workers!r}"
+            )
+        if not math.isfinite(self.llm_memo_ttl_s) or self.llm_memo_ttl_s < 0:
+            raise ValueError(
+                f"SEARCH_LLM_MEMO_TTL_S must be a finite value >= 0; got {self.llm_memo_ttl_s!r}"
+            )
+        if self.llm_memo_max_bytes < 0:
+            raise ValueError(
+                f"SEARCH_LLM_MEMO_MAX_BYTES must be >= 0; got {self.llm_memo_max_bytes!r}"
+            )
+        if self.llm_memo_max_entry_bytes < 1:
+            raise ValueError(
+                "SEARCH_LLM_MEMO_MAX_ENTRY_BYTES must be >= 1; got "
+                f"{self.llm_memo_max_entry_bytes!r}"
+            )
+        if self.llm_memo_max_entry_bytes > self.llm_memo_max_bytes and self.llm_memo_max_bytes > 0:
+            raise ValueError(
+                "SEARCH_LLM_MEMO_MAX_ENTRY_BYTES "
+                f"({self.llm_memo_max_entry_bytes!r}) must be <= "
+                f"SEARCH_LLM_MEMO_MAX_BYTES ({self.llm_memo_max_bytes!r})"
+            )
+
+
+_SETTINGS: SearchSettings = SearchSettings()
+
+
+def settings() -> SearchSettings:
+    """Return the process-wide SearchSettings object.
+
+    Constructed once at import (`_SETTINGS` above); a test fixture installs a
+    different constructed instance for its duration via
+    `monkeypatch.setattr(search.engine.config, "_SETTINGS", SearchSettings(...))`.
+    """
+    return _SETTINGS

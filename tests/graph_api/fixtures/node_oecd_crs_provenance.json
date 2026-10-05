@@ -1,0 +1,80 @@
+{
+  "data": {
+    "provenance/OECDCreditorReportingSystem": {
+      "arcs": {
+        "earliestObservationDate": {
+          "nodes": [
+            {
+              "provenanceId": "provenance/OECDCreditorReportingSystem",
+              "value": "1973"
+            }
+          ]
+        },
+        "latestObservationDate": {
+          "nodes": [
+            {
+              "provenanceId": "provenance/OECDCreditorReportingSystem",
+              "value": "2024"
+            }
+          ]
+        },
+        "license": {
+          "nodes": [
+            {
+              "provenanceId": "provenance/OECDCreditorReportingSystem",
+              "value": "https://www.oecd.org/en/about/terms-conditions.html"
+            }
+          ]
+        },
+        "name": {
+          "nodes": [
+            {
+              "provenanceId": "provenance/OECDCreditorReportingSystem",
+              "value": "OECD Creditor Reporting System"
+            }
+          ]
+        },
+        "source": {
+          "nodes": [
+            {
+              "dcid": "dc/s/OrganisationForEconomicCo-operationAndDevelopmentOecd",
+              "name": "dc/s/OrganisationForEconomicCo-operationAndDevelopmentOecd",
+              "provenanceId": "provenance/OECDCreditorReportingSystem",
+              "types": [
+                "Source"
+              ]
+            }
+          ]
+        },
+        "sourceReleaseFrequency": {
+          "nodes": [
+            {
+              "provenanceId": "provenance/OECDCreditorReportingSystem",
+              "value": "P1Y"
+            }
+          ]
+        },
+        "typeOf": {
+          "nodes": [
+            {
+              "dcid": "Provenance",
+              "name": "Provenance",
+              "provenanceId": "provenance/OECDCreditorReportingSystem",
+              "types": [
+                "Class"
+              ]
+            }
+          ]
+        },
+        "url": {
+          "nodes": [
+            {
+              "provenanceId": "provenance/OECDCreditorReportingSystem",
+              "value": "https://data-explorer.oecd.org/vis?tm=crs&pg=0&snb=30&df[ds]=dsDisseminateFinalDMZ&df[id]=DSD_CRS%40DF_CRS&df[ag]=OECD.DCD.FSD&df[vs]=1.6&isAvailabilityDisabled=false&page=0"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,237 @@
+# Admitted upstream sources. Adding or removing a source is a pull request to
+# this file, and `origin_catalogue.registry` validates it.
+#
+# [[base]]: a base Data Commons Source node.
+#   source            the dc/s/* dcid
+#   label             display name (the graph's `name`, except where noted)
+#   exclusions        provenances not admitted, each with a reason. An empty
+#                     list records that overlap with DFO was reviewed
+#   country           a national source's country
+#   scan_type         the place type where the source's series sit, scanned
+#                     inside `country` at any depth, or everywhere when the
+#                     entry names no country
+#
+# [[un_system]]: a UN agency on the UN System Data Commons.
+#   provenance        the undata/p/* agency provenance, also its source
+#   segment           the id segment in undata/<segment>/... and
+#                     undata/topic/<segment>/...
+#   label             display name
+
+[[base]]
+source = "dc/s/BankForInternationalSettlementsBis"
+label = "Bank for International Settlements (BIS)"
+
+[[base]]
+source = "dc/s/CentralStatisticsOfficeCsoIreland"
+label = "Central Statistics Office (CSO), Ireland"
+country = "country/IRL"
+scan_type = "County"
+
+[[base]]
+source = "dc/s/DepartmentOfStatisticsSingapore"
+label = "Department of Statistics Singapore"
+# A city-state: its subnational places hold none of this source's series.
+country = "country/SGP"
+
+[[base]]
+source = "dc/s/EuropeanUnionEuEurostat"
+label = "European Union (EU) Eurostat"
+scan_type = "EurostatNUTS2"
+
+[[base]]
+source = "dc/s/FoodAndAgricultureOrganizationFaoOfTheUnitedNations"
+label = "Food and Agriculture Organization (FAO) of the United Nations"
+
+[[base]]
+source = "dc/s/IndiaMinistryOfStatisticsAndProgrammeImplementation"
+label = "India Ministry of Statistics and Programme Implementation"
+country = "country/IND"
+scan_type = "AdministrativeArea1"
+
+[[base]]
+source = "dc/s/MongolianStatisticalService"
+label = "Mongolian Statistical Service"
+country = "country/MNG"
+scan_type = "AdministrativeArea1"
+
+[[base]]
+source = "dc/s/NationalInstituteOfStatisticsAndEconomicStudiesFrance"
+label = "National Institute of Statistics and Economic Studies, France"
+country = "country/FRA"
+scan_type = "AdministrativeArea1"
+
+[[base]]
+source = "dc/s/NationalStatisticalInstituteOfBulgaria"
+label = "National Statistical Institute of Bulgaria"
+country = "country/BGR"
+scan_type = "AdministrativeArea1"
+
+[[base]]
+source = "dc/s/NationalStatisticalInstituteOfPoland"
+label = "National Statistical Institute of Poland"
+country = "country/POL"
+scan_type = "AdministrativeArea1"
+
+[[base]]
+source = "dc/s/OpenDataForAfrica"
+label = "Open Data for Africa"
+
+[[base]]
+source = "dc/s/OrganisationForEconomicCo-operationAndDevelopmentOecd"
+label = "Organisation for Economic Co-operation and Development (OECD)"
+# DFO imports the Creditor Reporting System under this source; base Data
+# Commons holds no copy of it.
+exclusions = []
+
+[[base]]
+source = "dc/s/ReserveBankOfIndia"
+label = "Reserve Bank of India"
+country = "country/IND"
+scan_type = "AdministrativeArea1"
+
+[[base]]
+source = "dc/s/SouthKoreaStatisticsAgencyKosa"
+label = "South Korea Statistics Agency (KOSA)"
+country = "country/KOR"
+scan_type = "AdministrativeArea1"
+
+[[base]]
+source = "dc/s/SouthafricaBudget"
+# The graph names it "SouthAfrica Budget".
+label = "South Africa Budget"
+country = "country/ZAF"
+# Municipal budgets: its series sit at municipalities one level below the
+# provinces (Cape Town holds 602 variables). Provinces and the country hold none.
+scan_type = "AdministrativeArea2"
+
+[[base]]
+source = "dc/s/StatisticsCanada"
+label = "Statistics Canada"
+country = "country/CAN"
+scan_type = "AdministrativeArea1"
+
+[[base]]
+source = "dc/s/StatisticsDenmark"
+label = "Statistics Denmark"
+country = "country/DNK"
+scan_type = "AdministrativeArea1"
+
+[[base]]
+source = "dc/s/StatisticsFinland"
+label = "Statistics Finland"
+country = "country/FIN"
+scan_type = "AdministrativeArea1"
+
+[[base]]
+source = "dc/s/StatisticsOfNewZealand"
+label = "Statistics of New Zealand"
+country = "country/NZL"
+scan_type = "AdministrativeArea1"
+
+[[base]]
+source = "dc/s/UsBureauOfEconomicAnalysisBea"
+label = "U.S. Bureau of Economic Analysis (BEA)"
+country = "country/USA"
+scan_type = "State"
+
+[[base]]
+source = "dc/s/UsBureauOfLaborStatisticsBls"
+label = "U.S. Bureau of Labor Statistics (BLS)"
+country = "country/USA"
+scan_type = "State"
+
+[[base]]
+source = "dc/s/UsFederalReserve"
+label = "U.S. Federal Reserve"
+country = "country/USA"
+scan_type = "State"
+
+[[base]]
+source = "dc/s/UnitedNationsUn"
+label = "United Nations (UN)"
+exclusions = []
+
+[[base]]
+source = "dc/s/UnitedNationsOfficeForTheCoordinationOfHumanitarianAffairsUnOcha"
+label = "United Nations Office for the Coordination of Humanitarian Affairs (UN OCHA)"
+
+[[base]]
+source = "dc/s/WorldBank"
+label = "World Bank"
+exclusions = [
+  { provenance = "dc/base/WorldBank_IDS", reason = "superseded_by_dfo" },
+]
+
+[[base]]
+source = "dc/s/WorldHealthOrganizationWho"
+label = "World Health Organization (WHO)"
+
+[[un_system]]
+provenance = "undata/p/WHO"
+segment = "who"
+label = "World Health Organization (WHO)"
+
+[[un_system]]
+provenance = "undata/p/UNICEF"
+segment = "unicef"
+label = "United Nations Children's Fund (UNICEF)"
+
+[[un_system]]
+provenance = "undata/p/ILO"
+segment = "ilo"
+label = "International Labour Organization (ILO)"
+
+[[un_system]]
+provenance = "undata/p/UNHCR"
+segment = "unhcr"
+label = "United Nations High Commissioner for Refugees (UNHCR)"
+
+[[un_system]]
+provenance = "undata/p/UNESCO"
+segment = "unesco"
+label = "United Nations Educational, Scientific and Cultural Organization (UNESCO)"
+
+[[un_system]]
+provenance = "undata/p/UNIDO"
+segment = "unido"
+label = "United Nations Industrial Development Organization (UNIDO)"
+
+[[un_system]]
+provenance = "undata/p/ITU"
+segment = "itu"
+label = "International Telecommunication Union (ITU)"
+
+[[un_system]]
+provenance = "undata/p/ECLAC"
+segment = "eclac"
+label = "Economic Commission for Latin America and the Caribbean (ECLAC)"
+
+[[un_system]]
+provenance = "undata/p/IOM_DTM"
+segment = "iomdtm"
+label = "International Organization for Migration Displacement Tracking Matrix (IOM-DTM)"
+
+[[un_system]]
+provenance = "undata/p/UNAIDS"
+segment = "unaids"
+label = "Joint United Nations Programme on HIV/AIDS (UNAIDS)"
+
+[[un_system]]
+provenance = "undata/p/UNDP_HDRO"
+segment = "undphdro"
+label = "United Nations Development Programme Human Development Report Office (UNDP-HDRO)"
+
+[[un_system]]
+provenance = "undata/p/UNFPA"
+segment = "unfpa"
+label = "United Nations Population Fund (UNFPA)"
+
+[[un_system]]
+provenance = "undata/p/UNODC"
+segment = "unodc"
+label = "United Nations Office on Drugs and Crime (UNODC)"
+
+[[un_system]]
+provenance = "undata/p/SDG"
+segment = "sdg"
+label = "SDG Global Database"

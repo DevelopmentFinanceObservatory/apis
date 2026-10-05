@@ -1,0 +1,43 @@
+"""Live tests compare graph exports with committed entity and region data.
+
+Set SEARCH_GRAPH_BASE and, behind a WAF, SEARCH_GRAPH_TOKEN. Run with:
+`uv run --env-file .env pytest -m live tests/entity_resolution/test_export_drift.py`
+"""
+
+from __future__ import annotations
+
+import json
+import os
+
+import pytest
+
+from dc_graph import GraphClient
+from entity_resolution import pack
+from scripts.export_graph_entities import export_entities, export_regions
+
+_GRAPH_BASE = os.environ.get("SEARCH_GRAPH_BASE")
+
+pytestmark = [
+    pytest.mark.live,
+    pytest.mark.skipif(
+        not _GRAPH_BASE, reason="set SEARCH_GRAPH_BASE to run the export drift test"
+    ),
+]
+
+
+def test_entities_export_matches_committed_records():
+    reader = GraphClient(
+        base_url=f"{_GRAPH_BASE}/core/api", token=os.environ.get("SEARCH_GRAPH_TOKEN")
+    )
+    try:
+        fresh = export_entities(reader)
+    finally:
+        reader.close()
+    committed = json.loads(pack.records_path().read_text())
+    assert fresh == committed
+
+
+def test_regions_export_matches_committed_ids():
+    fresh = export_regions(graph_base_url=_GRAPH_BASE, token=os.environ.get("SEARCH_GRAPH_TOKEN"))
+    committed = json.loads(pack.region_ids_path().read_text())
+    assert fresh == committed
