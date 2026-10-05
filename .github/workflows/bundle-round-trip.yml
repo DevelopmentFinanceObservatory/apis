@@ -8,6 +8,10 @@ on:
       - "scripts/bundle_round_trip.R"
       - "scripts/generate_sample_bundle.py"
       - ".github/workflows/bundle-round-trip.yml"
+    # The job skips on a draft PR. Marking a draft ready emits only
+    # `ready_for_review`, so that type starts the run the draft skipped. A
+    # push runs nothing: this check is path-filtered and not required.
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
@@ -28,7 +32,9 @@ jobs:
     # Mints a dfo-reader token, which prod keeps only in main-limited
     # environments, so this runs in ONEcampaign only. The identical tree
     # ran it here before it was synced.
-    if: github.repository_owner == 'ONEcampaign'
+    if: >-
+      github.repository_owner == 'ONEcampaign' &&
+      github.event.pull_request.draft != true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7

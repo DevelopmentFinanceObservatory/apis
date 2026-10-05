@@ -2,6 +2,11 @@
 # container and only dataset_store/artifact_store or presentation_store
 # changes can affect their outcome. The paths filter keeps unrelated
 # packages (search, dc_sdmx) from booting Postgres on every push/PR.
+# Triggers: pull requests to dev and main once out of draft, and pushes to
+# dev. Branch protection lets a PR merge without updating to dev's latest
+# tip, and this workflow has no schedule, so the dev push run is its only
+# test of the merged tree. main only moves to a commit dev has already
+# tested, so a push there runs nothing.
 # artifact_store is included in the dataset_store job's own paths because
 # artifact_store.inventory writes directly to the datasets.artifact_inventory/
 # artifact_location tables dataset_store's own migrations own -- its SQL runs
@@ -15,7 +20,7 @@ name: Migrations
 
 on:
   push:
-    branches: [dev, main]
+    branches: [dev]
     paths:
       - src/dataset_store/**
       - tests/dataset_store/**
@@ -40,6 +45,8 @@ on:
     # still a draft fires `synchronize`, but marking it ready for review later
     # emits no event the default types cover, so no run ever lands on the sha
     # that goes up for merge.
+    # Both jobs skip while the PR is a draft (`github.event.pull_request.draft
+    # != true` in each `if`), and `ready_for_review` starts the run then.
     types: [opened, synchronize, reopened, edited, ready_for_review]
     paths:
       - src/dataset_store/**
@@ -78,6 +85,7 @@ jobs:
     # ran it here before it was synced.
     if: >-
       github.repository_owner == 'ONEcampaign' &&
+      github.event.pull_request.draft != true &&
       (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
     runs-on: ubuntu-latest
     services:
@@ -302,6 +310,7 @@ jobs:
     # ran it here before it was synced.
     if: >-
       github.repository_owner == 'ONEcampaign' &&
+      github.event.pull_request.draft != true &&
       (github.event_name != 'pull_request' || github.event.pull_request.state == 'open')
     runs-on: ubuntu-latest
     services:

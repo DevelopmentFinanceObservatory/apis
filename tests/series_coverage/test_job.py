@@ -298,6 +298,13 @@ _ROW_IDS_TOTAL = {
     "donor": "",
     "recipient": "country/KEN",
 }
+_PROVIDER_TOTAL = "AmountMobilised_FinancialFlow_Gross_Disbursement_DAC1AidType2233_Nominal"
+_ROW_PROVIDER_TOTAL = {
+    **_ROW_V1,
+    "variable": _PROVIDER_TOTAL,
+    "donor": "country/FRA",
+    "recipient": "",
+}
 
 
 def test_build_coverage_table_matches_schema_and_masks():
@@ -449,15 +456,20 @@ def test_build_coverage_table_refuses_on_popcount_mismatch():
         job.build_coverage_table(bq, connection=_CONNECTION)
 
 
-def test_build_coverage_table_selects_by_role_count_and_places_a_lone_entity_as_recipient():
+def test_build_coverage_table_selects_by_role_count_and_places_a_lone_entity_on_its_axis():
     bq = FakeBigQuery(
         {
             "AS max_year": [year_stats(max_year=2022)],
-            "GROUP BY variable, facet_id, donor, recipient": [_ROW_V1, _ROW_IDS_TOTAL],
+            "GROUP BY variable, facet_id, donor, recipient": [
+                _ROW_V1,
+                _ROW_IDS_TOTAL,
+                _ROW_PROVIDER_TOTAL,
+            ],
         }
     )
     table = job.build_coverage_table(bq, connection=_CONNECTION).table
     assert [(r["variable"], r["donor"], r["recipient"]) for r in table.to_pylist()] == [
+        (_PROVIDER_TOTAL, "country/FRA", ""),
         (_IDS_TOTAL, "", "country/KEN"),
         ("V1", "country/FRA", "country/KEN"),
     ]
@@ -465,9 +477,18 @@ def test_build_coverage_table_selects_by_role_count_and_places_a_lone_entity_as_
     for sql in (year_sql, build_sql):
         assert "FROM declared_roles WHERE n_roles BETWEEN 1 AND 2" in sql
         assert "extra_entities_id IS NOT NULL" not in sql
+    # `lone_origin` holds for a variable whose one role ROLE_AXES puts on the origin axis.
+    assert (
+        "COUNT(DISTINCT object_id) = 1\n"
+        "      AND LOGICAL_AND(object_id IN "
+        "('creditor', 'financingProvider', 'provider', 'source')) AS lone_origin"
+    ) in build_sql
     assert "JOIN role_bearing AS r ON o.variable_measured = r.variable" in build_sql
-    assert "IF(r.n_roles = 1, '', o.entity1) AS donor" in build_sql
-    assert "IF(r.n_roles = 1, o.entity1, o.extra_entities_id) AS recipient" in build_sql
+    assert "IF(r.n_roles = 1 AND NOT r.lone_origin, '', o.entity1) AS donor" in build_sql
+    assert (
+        "CASE WHEN r.n_roles = 2 THEN o.extra_entities_id\n"
+        "    WHEN r.lone_origin THEN '' ELSE o.entity1 END AS recipient"
+    ) in build_sql
 
 
 def test_build_coverage_table_refuses_entities_that_disagree_with_the_role_count():
@@ -689,11 +710,26 @@ def test_resolve_role_names_applies_one_resolution_to_the_whole_group():
     assert calls == [["V1"]]
 
 
-def test_resolve_role_names_gives_a_one_role_variable_no_donor_without_an_sdmx_probe():
-    table = _coverage_table(_ROW_IDS_TOTAL)
-    bq = FakeBigQuery(
-        {"observationProperties": [{"variable": _IDS_TOTAL, "role": "financingRecipient"}]}
-    )
+@pytest.mark.parametrize(
+    ("row", "role", "expected"),
+    [
+        (
+            _ROW_IDS_TOTAL,
+            "financingRecipient",
+            RoleNames(donor=None, recipient="financingRecipient"),
+        ),
+        (
+            _ROW_PROVIDER_TOTAL,
+            "financingProvider",
+            RoleNames(donor="financingProvider", recipient=None),
+        ),
+    ],
+)
+def test_resolve_role_names_names_a_one_role_variable_by_its_axis_without_an_sdmx_probe(
+    row: dict[str, Any], role: str, expected: RoleNames
+):
+    table = _coverage_table(row)
+    bq = FakeBigQuery({"observationProperties": [{"variable": row["variable"], "role": role}]})
 
     def _no_probe(*_args, **_kwargs):
         raise AssertionError("a one-role variable needs no SDMX probe")
@@ -701,15 +737,15 @@ def test_resolve_role_names_gives_a_one_role_variable_no_donor_without_an_sdmx_p
     role_names = job.resolve_role_names(
         bq, FakeSdmx(data_responder=_no_probe), connection=_CONNECTION, table=table
     )
-    assert role_names == {_IDS_TOTAL: RoleNames(donor=None, recipient="financingRecipient")}
+    assert role_names == {row["variable"]: expected}
 
 
-def test_resolve_role_names_refuses_a_one_role_variable_off_the_destination_axis():
+def test_resolve_role_names_refuses_a_one_role_variable_on_no_axis():
     table = _coverage_table(_ROW_IDS_TOTAL)
     bq = FakeBigQuery(
-        {"observationProperties": [{"variable": _IDS_TOTAL, "role": "financingProvider"}]}
+        {"observationProperties": [{"variable": _IDS_TOTAL, "role": "financingChannel"}]}
     )
-    with pytest.raises(job.CoverageRoleNameError, match="destination axis"):
+    with pytest.raises(job.CoverageRoleNameError, match="no flow axis"):
         job.resolve_role_names(bq, FakeSdmx(), connection=_CONNECTION, table=table)
 
 
@@ -888,24 +924,41 @@ def test_reconcile_raises_on_empty_table():
         job.reconcile(sdmx, table=empty, role_names={}, stamp=_STAMP, max_rows=_BUDGET)
 
 
-def test_reconcile_filters_a_one_role_group_on_its_recipient_axis():
-    table = _coverage_table(_ROW_V1, _ROW_IDS_TOTAL, {**_ROW_IDS_TOTAL, "recipient": "country/UGA"})
-    role_names = {
-        **_ROLE_NAMES,
-        _IDS_TOTAL: RoleNames(donor=None, recipient="financingRecipient"),
-    }
+@pytest.mark.parametrize(
+    ("row", "column", "names", "dcids"),
+    [
+        (
+            _ROW_IDS_TOTAL,
+            "recipient",
+            RoleNames(donor=None, recipient="financingRecipient"),
+            ("country/KEN", "country/UGA"),
+        ),
+        (
+            _ROW_PROVIDER_TOTAL,
+            "donor",
+            RoleNames(donor="financingProvider", recipient=None),
+            ("country/FRA", "country/UGA"),
+        ),
+    ],
+)
+def test_reconcile_filters_a_one_role_group_on_its_own_axis(
+    row: dict[str, Any], column: str, names: RoleNames, dcids: tuple[str, ...]
+):
+    variable = row["variable"]
+    table = _coverage_table(_ROW_V1, row, {**row, column: "country/UGA"})
+    role_names = {**_ROLE_NAMES, variable: names}
     sdmx = FakeSdmx(
         batches_by_group={
             ("financingProvider", "financingRecipient"): [("V1", 3)],
-            ("financingRecipient",): [(_IDS_TOTAL, 6)],
+            names.declared: [(variable, 6)],
         }
     )
     result = job.reconcile(sdmx, table=table, role_names=role_names, stamp=_STAMP, max_rows=_BUDGET)
     assert result.variables_checked == 2
     one_role_call = next(
-        call for call in sdmx.stream_data_batches_calls if call["roles"] == ("financingRecipient",)
+        call for call in sdmx.stream_data_batches_calls if call["roles"] == names.declared
     )
-    assert one_role_call["entities"] == {"financingRecipient": ("country/KEN", "country/UGA")}
+    assert one_role_call["entities"] == {names.declared[0]: dcids}
 
 
 def test_reconcile_samples_a_one_role_group_by_its_smallest_variable():
