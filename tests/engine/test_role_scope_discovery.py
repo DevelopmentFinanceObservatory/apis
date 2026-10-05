@@ -3,6 +3,10 @@ Synthetic fixtures pin filters, windows, dimensions, and no-data outcomes."""
 
 from __future__ import annotations
 
+import functools
+
+import pytest
+
 from materialise.roles import axis_for_role
 from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import Facet
@@ -16,7 +20,7 @@ from search.engine.retrieval.retrieve import (
 from search.engine.retrieval.role_resolve import graph_confirm_resolve
 from search.engine.shape import ShapeDraft
 from search.models import TimeWindow
-from series_coverage.schema import BUILD_EPOCH_YEAR, FacetMetadata, RoleNames
+from series_coverage.schema import ABSENT_ENTITY, BUILD_EPOCH_YEAR, FacetMetadata, RoleNames
 from tests.engine._fake_coverage import (
     CoverageRow,
     FakeCoverageService,
@@ -304,11 +308,28 @@ def test_origin_only_signature_without_discovery_stays_role_incompatible():
     assert via_materialise.reason == "role_not_resolved"
 
 
-def test_origin_only_signature_discovers_the_origin_axis(monkeypatch):
+def _provider_only_seed(
+    members: list[str], svs: list[str]
+) -> tuple[list[CoverageRow], dict[str, RoleNames]]:
+    """Rows of a variable declaring `financingProvider` alone: each member in `donor` and
+    the recipient empty, as the coverage build stores a one-role origin-axis variable."""
+    rows: list[CoverageRow] = [
+        (sv, "f1", member, ABSENT_ENTITY, [2020]) for sv in svs for member in members
+    ]
+    return rows, {sv: RoleNames(donor="financingProvider", recipient=None) for sv in svs}
+
+
+@pytest.mark.parametrize(
+    "seed",
+    [
+        functools.partial(_coverage_seed_for, "financingProvider"),
+        _provider_only_seed,
+    ],
+    ids=["two-role-coverage", "provider-only-coverage"],
+)
+def test_origin_only_signature_discovers_the_origin_axis(monkeypatch, seed):
     shape = _shape(declared_roles=("financingProvider",))
-    rows, role_names = _coverage_seed_for(
-        "financingProvider", ["country/DEU", "country/FRA"], [_SV]
-    )
+    rows, role_names = seed(["country/DEU", "country/FRA"], [_SV])
     observations = {_SV: {(("financingProvider", "country/FRA"),): [_facet(5)]}}
     _auto_coverage_index_1 = patch_coverage(monkeypatch, rows, role_names=role_names)
 

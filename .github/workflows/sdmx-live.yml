@@ -14,11 +14,11 @@
 # test. The preflight step covers the one case that guard cannot see: an unset
 # SEARCH_GRAPH_BASE composes to the non-empty string "/core/api".
 #
-# Pushes and PRs touching dc_sdmx catch a wire regression at review time. The
-# weekday schedule catches drift in the deployment itself, with no repo change
-# to trigger a run. workflow_dispatch covers a manual check. The job runs only
-# for same-repo branches -- a fork PR receives no secrets and would fail on an
-# empty token with nothing the author could do about it.
+# Pull requests touching dc_sdmx, once out of draft, catch a wire regression
+# at review time. The weekday schedule catches drift in the deployment itself
+# and on dev, so a push runs nothing. workflow_dispatch covers a manual check.
+# The job runs only for same-repo branches -- a fork PR receives no secrets and
+# would fail on an empty token with nothing the author could do about it.
 #
 # Do NOT add this workflow to branch protection's required checks: it is
 # path-filtered and skipped on fork PRs, and a required check reports nothing
@@ -26,14 +26,6 @@
 name: SDMX live
 
 on:
-  push:
-    branches: [dev, main]
-    paths:
-      - packages/dfo-data-tools/src/dc_sdmx/**
-      - tests/dc_sdmx/**
-      - .github/workflows/sdmx-live.yml
-      - pyproject.toml
-      - uv.lock
   pull_request:
     branches: [dev, main]
     # `edited` covers a stacked PR whose base is retargeted automatically when
@@ -41,6 +33,8 @@ on:
     # matching note in ci.yml. `ready_for_review` covers a draft PR marked
     # ready without a new commit, which otherwise leaves this check with no
     # run at all.
+    # The job skips while the PR is a draft, and `ready_for_review` starts
+    # the run then.
     types: [opened, synchronize, reopened, edited, ready_for_review]
     paths:
       - packages/dfo-data-tools/src/dc_sdmx/**
@@ -61,7 +55,8 @@ permissions:
 concurrency:
   # Keyed on the PR number for pull_request events: a run on a closed PR
   # resolves `github.ref` to the base branch, which would otherwise share a
-  # group with that branch's push runs and cancel them mid-suite.
+  # group with that branch's scheduled and dispatched runs and cancel them
+  # mid-suite.
   group: sdmx-live-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
@@ -74,6 +69,7 @@ jobs:
     # Runs against dev's live graph, so only in ONEcampaign.
     if: >-
       github.repository_owner == 'ONEcampaign' &&
+      github.event.pull_request.draft != true &&
       (github.event_name != 'pull_request' ||
        (github.event.pull_request.state == 'open' &&
         github.event.pull_request.head.repo.full_name == github.repository))

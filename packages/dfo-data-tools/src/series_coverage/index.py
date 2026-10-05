@@ -6,8 +6,8 @@ search, filter bound roles with Arrow over those rows alone, then apply year
 windows through uint64 masks. `PairRows` uses the same binary search to read
 only the requested group. Load-time validation guarantees `n_obs` matches
 each row's mask. `role_names` maps package role labels to graph properties.
-A variable that declares one role has no donor: its rows carry
-`ABSENT_ENTITY` in the donor column, which no lookup returns as a dcid.
+A variable that declares one role carries `ABSENT_ENTITY` in the column of
+the role it lacks, which no lookup returns as a dcid.
 """
 
 from __future__ import annotations
@@ -67,9 +67,9 @@ class ProvenanceShape:
 
     `observation_periods` holds each facet's ISO 8601 period, with `None`
     for a facet that has none. `role_axes` holds one set per variable: the
-    flow axes of its declared roles (its recipient alone when it has no
-    donor), with `None` for a role that `materialise.roles.axis_for_role`
-    places on no axis.
+    flow axes of its declared roles (one axis for a one-role variable), with
+    `None` for a role that `materialise.roles.axis_for_role` places on no
+    axis.
     """
 
     observation_periods: frozenset[str | None]
@@ -359,9 +359,7 @@ def _provenance_views(
         provenance = metadata.provenance_id
         periods.setdefault(provenance, set()).add(metadata.observation_period)
         axes.setdefault(provenance, set()).add(
-            frozenset(
-                axis_for_role(role) for role in (names.donor, names.recipient) if role is not None
-            )
+            frozenset(axis_for_role(role) for role in names.declared)
         )
         if (
             metadata.unit is not None
@@ -1025,7 +1023,8 @@ class CoverageIndex:
         separate in the wire shape as "N observations across M series".
 
         `role_counts` omits a role no active row carries, such as `donor`
-        when every active row belongs to a one-role variable.
+        when every active row belongs to a variable declaring a recipient
+        role alone.
         """
         rows = self._member_rows(variables=variables, bound=bound)
         if served is not None and rows.num_rows:
@@ -1300,7 +1299,7 @@ class CoverageIndex:
         Bound roles pass their dcid sets through. SDMX requires at least one
         entity filter, so a fully open request uses
         `exhaustive_single_axis_filter` over the group's variables, as the
-        fetch does. A bound donor matches no row of a one-role variable. A
+        fetch does. A bound role matches no row of a variable that lacks it. A
         variable with a coverage row under `bound` and no `RoleNames` raises
         `KeyError`. Other variables without `RoleNames` add nothing to either
         count.
@@ -1331,11 +1330,11 @@ class CoverageIndex:
             if dispatching.isdisjoint(group_variables):
                 continue
             entities: dict[str, tuple[str, ...]] = {}
-            # A bound donor matches no row of a one-role variable, so a
-            # surviving group without a donor role has no donor to place.
+            # A bound role matches no row of a variable that lacks it, so a
+            # surviving group has no entity to place on a role it lacks.
             if donor_bound and names.donor is not None:
                 entities[names.donor] = tuple(sorted(bound["donor"]))
-            if recipient_bound:
+            if recipient_bound and names.recipient is not None:
                 entities[names.recipient] = tuple(sorted(bound["recipient"]))
             if both_unbound:
                 entities = self.exhaustive_single_axis_filter(
@@ -1354,14 +1353,14 @@ class CoverageIndex:
         *,
         variables: Sequence[str],
         donor_role: str | None,
-        recipient_role: str,
+        recipient_role: str | None,
     ) -> dict[str, tuple[str, ...]]:
         """Returns the exhaustive entities filter for an already-unbound
         fetch group. `variables` must share the supplied `RoleNames` pair.
         The filter lists every dcid `variables` cover on the smaller role
-        axis, or on the recipient axis when `donor_role` is `None`, across
-        all years, which satisfies SDMX's entity requirement while leaving
-        the other axis open. `estimate` and the fetch both read it, so the
+        axis, or on the one axis a one-role pair names, across all years,
+        which satisfies SDMX's entity requirement while leaving the other axis
+        open. `estimate` and the fetch both read it, so the
         request count priced is the one sent.
 
         The year window plays no part: a fetch chunk can hold members with
@@ -1371,21 +1370,21 @@ class CoverageIndex:
         rows = self._member_rows(variables=variables, bound=_NO_BINDING)
         if rows.num_rows == 0:
             return {}
-        recipients = cast("list[str]", pc.unique(rows[RECIPIENT_COLUMN]).to_pylist())
-        if donor_role is None:
-            return {recipient_role: tuple(sorted(recipients))}
-        donors = cast("list[str]", pc.unique(rows[DONOR_COLUMN]).to_pylist())
-        if len(donors) <= len(recipients):
-            return {donor_role: tuple(sorted(donors))}
-        return {recipient_role: tuple(sorted(recipients))}
+        axes = [
+            (role, tuple(sorted(cast("list[str]", pc.unique(rows[column]).to_pylist()))))
+            for role, column in ((donor_role, DONOR_COLUMN), (recipient_role, RECIPIENT_COLUMN))
+            if role is not None
+        ]
+        role, dcids = min(axes, key=lambda axis: len(axis[1]))
+        return {role: dcids}
 
 
 @dataclass(frozen=True, slots=True)
 class PairGroup:
     """One (variable, facet_id)'s rows in a `PairRows`: how many (donor,
     recipient) pairs it carries, the latest of their last years with data, and
-    the distinct dcids on each role. `donors` is empty for a one-role
-    variable."""
+    the distinct dcids on each role. A one-role variable's set for the role it
+    lacks is empty."""
 
     variable: str
     facet_id: str
@@ -1478,7 +1477,7 @@ class PairRows:
                 pair_count=count,
                 last_year=last_year,
                 donors=frozenset(donor_names[i] for i in donors) - {ABSENT_ENTITY},
-                recipients=frozenset(recipient_names[i] for i in recipients),
+                recipients=frozenset(recipient_names[i] for i in recipients) - {ABSENT_ENTITY},
             )
             for variable, facet_id, count, last_year, donors, recipients in zip(
                 _key_values(grouped[VARIABLE_COLUMN]),
@@ -1545,10 +1544,10 @@ class PairRows:
         facet_id: str,
         first_year: int | None = None,
         last_year: int | None = None,
-    ) -> list[tuple[str | None, str, int]]:
+    ) -> list[tuple[str | None, str | None, int]]:
         """`(donor, recipient, n_obs)` for every row of one (variable,
-        facet_id), in row order, with `None` as the donor of a one-role
-        variable. `n_obs` counts only the years inside `[first_year,
+        facet_id), in row order, with `None` for the role a one-role
+        variable lacks. `n_obs` counts only the years inside `[first_year,
         last_year]` as well as this lookup's own window, and is 0 when a row
         has no observations in the requested range. Every pair row remains
         listed."""
@@ -1558,7 +1557,7 @@ class PairRows:
         views = self._views
         counts = self._counts(rows, first_year=first_year, last_year=last_year)
         return [
-            (donor or None, recipient, n_obs)
+            (donor or None, recipient or None, n_obs)
             for donor, recipient, n_obs in zip(
                 _decode(views.donor_dictionary, views.donors[rows]),
                 _decode(views.recipient_dictionary, views.recipients[rows]),
@@ -1691,8 +1690,8 @@ class PairRows:
 
         `member_is_donor` selects the returned role. With no opposite role,
         rows sharing a member are summed and sorted by member. With both
-        roles, `member_sorts_first` selects the primary key, and a one-role
-        variable's absent donor reads as a `None` opposite. Sorted dictionary
+        roles, `member_sorts_first` selects the primary key, and the role a
+        one-role variable lacks reads as a `None` opposite. Sorted dictionary
         codes preserve string order, so each group needs one numpy sort.
         """
         rows = self._group(variable, facet_id)

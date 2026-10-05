@@ -248,14 +248,19 @@ def _read_role_names(prefix: str, manifest: CoverageManifest) -> dict[str, RoleN
 
 
 def _role_names_entry(variable: str, names: dict[str, object]) -> RoleNames:
-    """One `role_names.json` entry: a string recipient and a string or null donor."""
+    """One `role_names.json` entry: a string or null donor and recipient, at least one a
+    string."""
     donor, recipient = names["donor"], names["recipient"]
-    if not isinstance(recipient, str) or not (donor is None or isinstance(donor, str)):
+    if not (donor is None or isinstance(donor, str)) or not (
+        recipient is None or isinstance(recipient, str)
+    ):
         raise ValueError(
-            f"variable {variable!r} needs a string recipient and a string or null donor; "
-            f"got {names!r}"
+            f"variable {variable!r} needs a string or null donor and recipient; got {names!r}"
         )
-    return RoleNames(donor=donor, recipient=recipient)
+    try:
+        return RoleNames(donor=donor, recipient=recipient)
+    except ValueError as exc:
+        raise ValueError(f"variable {variable!r}: {exc}; got {names!r}") from exc
 
 
 def _read_facet_metadata(prefix: str, manifest: CoverageManifest) -> dict[str, FacetMetadata]:
@@ -302,9 +307,9 @@ def _check_facet_metadata_completeness(
         )
 
 
-def _variables_with_absent_entity(table: pa.Table, column: str) -> set[str]:
-    """The variables with at least one row holding `ABSENT_ENTITY` in `column`,
-    tested once per dictionary entry."""
+def _variables_by_absent_entity(table: pa.Table, column: str) -> tuple[set[str], set[str]]:
+    """The variables with at least one row holding `ABSENT_ENTITY` in `column`, and those
+    with at least one row holding another value, tested once per dictionary entry."""
     absent_rows = pa.chunked_array(
         [
             pc.take(
@@ -315,38 +320,36 @@ def _variables_with_absent_entity(table: pa.Table, column: str) -> set[str]:
         ],
         type=pa.bool_(),
     )
-    variables = table[VARIABLE_COLUMN].filter(absent_rows)
-    return set(cast("list[str]", pc.unique(variables).cast(pa.string()).to_pylist()))
+
+    def variables(rows: pa.ChunkedArray) -> set[str]:
+        found = pc.unique(table[VARIABLE_COLUMN].filter(rows))
+        return set(cast("list[str]", found.cast(pa.string()).to_pylist()))
+
+    return variables(absent_rows), variables(pc.invert(absent_rows))
 
 
 def _check_role_slots(table: pa.Table, role_names: dict[str, RoleNames], *, label: str) -> None:
-    """Requires every row's entities to match its variable's `RoleNames`: an
-    empty `donor` exactly when the variable has no donor role, and a
-    non-empty `recipient` always."""
+    """Requires every row's entities to match its variable's `RoleNames`: every row of a
+    variable with no donor role holds an empty `donor`, and no row of any other variable
+    does, and the same for `recipient`."""
     if table.num_rows == 0:
         return
     covered = set(
         cast("list[str]", pc.unique(table[VARIABLE_COLUMN]).cast(pa.string()).to_pylist())
     )
-    one_role = {
-        variable
-        for variable in covered
-        if (names := role_names.get(variable)) and names.donor is None
-    }
-    without_donor = _variables_with_absent_entity(table, DONOR_COLUMN)
-    mismatched = sorted(without_donor ^ one_role)
-    if mismatched:
-        raise CoverageArtifactError(
-            f"{label} has {len(mismatched)} variable(s) whose rows' donor column disagrees "
-            f"with role_names.json (an empty donor needs a null donor role and the "
-            f"reverse), e.g. {mismatched[:10]!r}"
-        )
-    without_recipient = sorted(_variables_with_absent_entity(table, RECIPIENT_COLUMN))
-    if without_recipient:
-        raise CoverageArtifactError(
-            f"{label} has {len(without_recipient)} variable(s) with an empty recipient, "
-            f"e.g. {without_recipient[:10]!r}"
-        )
+    named = [(variable, names) for variable in covered if (names := role_names.get(variable))]
+    for role, column, lacking in (
+        ("donor", DONOR_COLUMN, {v for v, n in named if n.donor is None}),
+        ("recipient", RECIPIENT_COLUMN, {v for v, n in named if n.recipient is None}),
+    ):
+        with_absent, with_entity = _variables_by_absent_entity(table, column)
+        mismatched = sorted((lacking & with_entity) | (with_absent - lacking))
+        if mismatched:
+            raise CoverageArtifactError(
+                f"{label} has {len(mismatched)} variable(s) whose rows' {role} column "
+                f"disagrees with role_names.json (every row of a variable with a null {role} "
+                f"role holds an empty {role}, and no other row does), e.g. {mismatched[:10]!r}"
+            )
 
 
 def _check_popcount_invariant(table: pa.Table, horizon: YearHorizon, *, label: str) -> None:

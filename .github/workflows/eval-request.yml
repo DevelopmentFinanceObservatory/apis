@@ -1,0 +1,44 @@
+name: Eval request
+
+# Adding the `run-eval` label to an open pull request asks for another paired
+# eval, draft or not. The dispatch job starts eval-gate.yml on the PR's head
+# branch with the PR number as its `pr` input, so the run reports its checks,
+# `Eval gate` among them, on the branch's latest commit, the PR head. It then
+# removes the label, so adding it again asks again. A run started with
+# GITHUB_TOKEN starts no workflow on most events, but workflow_dispatch is an
+# exception. Fork PRs are excluded: their head branch is not in this
+# repository. Any other label skips the job, whose check is named "Request an
+# eval run", so a label event leaves a commit's `Eval gate` result alone.
+
+on:
+  pull_request:
+    branches: [dev, main]
+    types: [labeled]
+
+permissions: {}
+
+jobs:
+  dispatch:
+    name: Request an eval run
+    if: >-
+      github.repository_owner == 'ONEcampaign' &&
+      github.event.label.name == 'run-eval' &&
+      github.event.pull_request.state == 'open' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      pull-requests: write
+    steps:
+      # Dispatches first, so a failed dispatch leaves the label in place.
+      - name: Dispatch the eval and remove the run-eval label
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          gh workflow run eval-gate.yml --repo "$GITHUB_REPOSITORY" --ref "$HEAD_REF" -f "pr=$PR_NUMBER"
+          gh api --method DELETE "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/labels/run-eval" > /dev/null
+          echo "Dispatched eval-gate.yml for #$PR_NUMBER on \`$HEAD_REF\`; removed the \`run-eval\` label." >> "$GITHUB_STEP_SUMMARY"

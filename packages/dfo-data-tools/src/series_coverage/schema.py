@@ -4,8 +4,9 @@ Each row represents `(variable, facet_id, donor, recipient)`. Word `w`, bit
 `b` marks year `epoch_year + 64*w + b`. The manifest records the horizon.
 `donor` and `recipient` map Spanner's entity columns, while `RoleNames` stores
 graph property names per variable. A variable that declares one role stores
-its entity in `recipient` and `ABSENT_ENTITY` in `donor`, and its `RoleNames`
-has no donor. Each row's `n_obs` equals its mask popcount, checked by the
+its entity in the column of that role's flow axis (`recipient` for a
+destination-axis role, `donor` for an origin-axis one) and `ABSENT_ENTITY` in
+the other, and its `RoleNames` holds `None` for the role it lacks. Each row's `n_obs` equals its mask popcount, checked by the
 loader and used for exact windowed counts.
 """
 
@@ -21,12 +22,15 @@ import pyarrow as pa
 
 from artifact_publication import POINTER_FILE, VERSIONS_PREFIX
 
-COVERAGE_FORMAT_VERSION: Final[int] = 2
+COVERAGE_FORMAT_VERSION: Final[int] = 3
 """The artifact's on-disk shape: the Parquet schema, the bit-packing
-convention, and the manifest's required fields. Format 2 splits the year
-mask into `year_mask_<w>` words, records the `YearHorizon` in the manifest,
-and admits rows of a variable that declares one role: `donor` holds
-`ABSENT_ENTITY` and the variable's `RoleNames.donor` is `None`. Every artifact lives under its format's own root,
+convention, and the manifest's required fields. The year mask is split into
+`year_mask_<w>` words and the manifest records the `YearHorizon`. A variable
+that declares one role has `ABSENT_ENTITY` in the column of the role it lacks
+and `None` for that role in `RoleNames`: format 3 admits a one-role variable
+on either axis, where format 2 admitted it on the recipient axis only, so a
+format-2 reader refuses a format-3 build that holds an origin-axis variable.
+Every artifact lives under its format's own root,
 `<COVERAGE_ARTIFACT_URI>/format-<COVERAGE_FORMAT_VERSION>/` (`FORMAT_ROOT`),
 so an image reads and writes only artifacts of its own format, and a change
 to this number starts a new, empty root that the next job run fills.
@@ -68,8 +72,9 @@ FIRST_YEAR_COLUMN: Final[str] = "first_year"
 LAST_YEAR_COLUMN: Final[str] = "last_year"
 
 ABSENT_ENTITY: Final[str] = ""
-"""The `donor` value of a row whose variable declares only a recipient role.
-No graph dcid is empty, so the value never collides with a real entity."""
+"""The `donor` or `recipient` value of a row whose variable declares no role
+for that column. No graph dcid is empty, so the value never collides with a
+real entity."""
 
 
 def year_mask_column(word: int) -> str:
@@ -161,13 +166,24 @@ class YearHorizon:
 class RoleNames:
     """Graph property names bound to this variable's donor and recipient roles.
 
-    `donor` is `None` for a variable that declares one role, a
-    destination-axis role such as `financingRecipient`. Its rows carry
-    `ABSENT_ENTITY` in the `donor` column.
+    A variable that declares one role holds `None` for the other: `donor` is
+    `None` for a destination-axis role such as `financingRecipient`, and
+    `recipient` is `None` for an origin-axis role such as `financingProvider`.
+    Its rows carry `ABSENT_ENTITY` in that role's column. Raises `ValueError`
+    when both are `None`.
     """
 
     donor: str | None
-    recipient: str
+    recipient: str | None
+
+    def __post_init__(self) -> None:
+        if self.donor is None and self.recipient is None:
+            raise ValueError("RoleNames needs a donor role, a recipient role, or both")
+
+    @property
+    def declared(self) -> tuple[str, ...]:
+        """The roles this variable declares, donor first."""
+        return tuple(role for role in (self.donor, self.recipient) if role is not None)
 
 
 @dataclass(frozen=True, slots=True)
