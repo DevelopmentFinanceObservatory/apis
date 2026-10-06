@@ -28,12 +28,13 @@ from search.engine.region.option_coverage import _facet_options, _maybe_build_fa
 from search.engine.region.relaunch import _relaunch_slot_options
 from search.engine.region.un_system import NO_LABELS
 from search.engine.same_shape import collapse_same_shape
-from search.engine.spec_build import build_spec
+from search.engine.spec_build import NamedGroup, build_spec
 from search.models import (
     BindingSet,
     BindingValue,
     CoverageBare,
     Entity,
+    EntityGroup,
     EntityRoleDirectional,
     EntityRoleSubject,
     Expansion,
@@ -454,7 +455,8 @@ def test_collapse_same_shape_refuses_merge_when_entity_flips_role():
 
 def test_collapse_same_shape_reversed_provider_recipient_stays_distinct():
     """Opposite provider-recipient identities stay distinct when resolved entities share one subject.
-    `identity_entities` carries the direction omitted from `resolved.entities`.
+    `identity_entities` carries the direction omitted from `resolved.entities`. A member's
+    named group survives the merge on the role its identity binds the group's members on.
     """
     usa_to_eth = [
         _directional_entity("country/USA", "provider", "origin"),
@@ -465,6 +467,10 @@ def test_collapse_same_shape_reversed_provider_recipient_stays_distinct():
         _directional_entity("country/USA", "recipient", "destination"),
     ]
     collapsed_subject = [Entity(ref=_gr("flow/placeholder"), role=EntityRoleSubject())]
+
+    usa_group = NamedGroup(
+        label="the test group", dcid=None, member_dcids=frozenset({"country/USA"})
+    )
 
     def _place_constraint_off_spec(constraint_val, sv_dcid, identity_entities):
         return build_spec(
@@ -483,6 +489,7 @@ def test_collapse_same_shape_reversed_provider_recipient_stays_distinct():
             entities=collapsed_subject,
             identity_entities=identity_entities,
             coverage=CoverageBare(has_data=True),
+            named_groups=(usa_group,),
         )
 
     group1 = [
@@ -516,6 +523,9 @@ def test_collapse_same_shape_reversed_provider_recipient_stays_distinct():
     assert len(merged1) == 1
     assert len(merged2) == 1
     assert merged1[0].spec.spec_id != merged2[0].spec.spec_id
+    served = EntityGroup(dcid=None, label="the test group")
+    assert merged1[0].spec.resolved.entity_groups == {"origin": served}
+    assert merged2[0].spec.resolved.entity_groups == {"destination": served}
 
 
 def test_collapse_same_shape_divergent_entities_on_non_where_axis_stays_residual():

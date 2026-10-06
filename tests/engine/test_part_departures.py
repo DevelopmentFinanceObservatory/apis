@@ -27,9 +27,9 @@ from search.engine.retrieval.retrieve import FamilyTotalAbsent
 from search.heading.departure_fact import DepartureFact
 from search.models import (
     Entity,
+    EntityGroup,
     EntityRoleSubject,
     GraphRef,
-    IdentityEntityGroup,
     Operation,
     Part,
     ResolvedFacet,
@@ -368,11 +368,7 @@ def test_a_group_s_departures_ask_in_the_request_s_words(region_words, door_word
     spec = spec.model_copy(
         update={
             "resolved": spec.resolved.model_copy(
-                update={
-                    "entity_groups": {
-                        "observationAbout": IdentityEntityGroup(label="European Union")
-                    }
-                }
+                update={"entity_groups": {"observationAbout": EntityGroup(label="European Union")}}
             )
         }
     )
@@ -415,11 +411,7 @@ def test_a_resubmit_s_departures_ask_for_nothing():
     spec = spec.model_copy(
         update={
             "resolved": spec.resolved.model_copy(
-                update={
-                    "entity_groups": {
-                        "observationAbout": IdentityEntityGroup(label="European Union")
-                    }
-                }
+                update={"entity_groups": {"observationAbout": EntityGroup(label="European Union")}}
             )
         }
     )

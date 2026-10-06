@@ -48,13 +48,6 @@ def test_recompute_identity_mints_the_same_id_the_kit_would() -> None:
     assert recomputed.spec_id == f"spec_{recomputed.identity_digest[:32]}"
 
 
-def test_recompute_identity_drops_search_entity_groups_from_hash_and_document() -> None:
-    identity_definition = minimal_identity(entities={"origin": ["country/FRA"]})
-    grouped = {**identity_definition, "entity_groups": {"origin": {"label": "France"}}}
-
-    assert recompute_identity(grouped) == recompute_identity(identity_definition)
-
-
 def test_recompute_identity_is_deterministic() -> None:
     identity_definition = minimal_identity()
 
@@ -72,17 +65,31 @@ def test_recompute_identity_propagates_identity_error_unwrapped() -> None:
     assert excinfo.value.category == "unsupported_identity_version"
 
 
-def test_recompute_identity_ignores_envelope_fields_outside_the_projection() -> None:
+@pytest.mark.parametrize(
+    "document",
+    [
+        pytest.param(
+            {"schema_version": 1, "spec_id": "spec_whatever", "identity": minimal_identity()},
+            id="wire_envelope",
+        ),
+        pytest.param(
+            {
+                **minimal_identity(entities={"origin": ["country/FRA"]}),
+                "entity_groups": {"origin": {"label": "France"}},
+            },
+            id="entity_groups",
+        ),
+    ],
+)
+def test_recompute_identity_refuses_a_member_outside_the_projection(document) -> None:
     # Only the identity-core document itself feeds the hash -- a caller
     # accidentally handing in the full wire envelope (spec_id/schema_version
     # alongside `identity`) must refuse (unknown_member), not silently hash
     # the envelope. This pins the exact byte-compare target: the identity
-    # projection, never the wire definition.
-    identity_definition = minimal_identity()
-    wrapped = {"schema_version": 1, "spec_id": "spec_whatever", "identity": identity_definition}
-
+    # projection, never the wire definition. A named group is request context
+    # beside an identity, so the document refuses it the same way.
     with pytest.raises(IdentityError) as excinfo:
-        recompute_identity(wrapped)
+        recompute_identity(document)
     assert excinfo.value.category == "unknown_member"
 
 

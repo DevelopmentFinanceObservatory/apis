@@ -1,11 +1,11 @@
 """``entities``: the exact set of (dcid, role) pairs the answer binds.
 
 Reads ``definition.identity.entities`` (role to dcids) and, for an entity marked
-``expands``, ``definition.identity.entity_groups``: a group read as members passes when the
-identity records that group's node on its role and binds at least one member there. A group
-named by ``label`` matches a recorded group with no node (a null dcid) whose label is the
-same, ignoring case and surrounding space. The members on a group's role are left out of
-the exact comparison.
+``expands``, ``resolved.entity_groups``: a group read as members passes when the answer
+records that group's node on its role and binds at least one member there. A group named by
+``label`` matches a recorded group with no node (a null dcid) whose label is the same,
+ignoring case and surrounding space. An unsupported answer has no ``resolved`` half and
+records no group. The members on a group's role are left out of the exact comparison.
 """
 
 from __future__ import annotations
@@ -35,16 +35,18 @@ def _same_label(a: object, b: str) -> bool:
 
 def _group(entity: ExpectedEntity, answer: Answer, ctx: ScoreContext) -> Result:
     role = str(entity.role)
-    dcid = answer.identity(f"entity_groups.{role}.dcid", ctx)
+    recorded = answer.read("resolved.entity_groups", ctx) if answer.is_spec else None
+    group = (recorded or {}).get(role) or {}
+    dcid = group.get("dcid")
     if entity.label is not None:
         name = entity.label
-        label = answer.identity(f"entity_groups.{role}.label", ctx)
+        label = group.get("label")
         if dcid is not None or not _same_label(label, name):
-            return fail(f"group {name!r} on {role}: the identity names group {dcid or label!r}")
+            return fail(f"group {name!r} on {role}: the answer names group {dcid or label!r}")
     else:
         name = str(entity.dcid)
         if dcid != entity.dcid:
-            return fail(f"group {name} on {role}: the identity names group {dcid!r}")
+            return fail(f"group {name} on {role}: the answer names group {dcid!r}")
     if not (answer.identity("entities", ctx) or {}).get(role):
         return fail(f"group {name} on {role}: no member is bound")
     return PASS

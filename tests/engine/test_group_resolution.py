@@ -18,7 +18,7 @@ from search.engine.core import resolve_async
 from search.engine.departures import spec_departure_facts
 from search.engine.region.pipeline import resolve_variable
 from search.engine.role_text import DoorRole
-from search.models import IdentityEntityGroup, RawTextInput, ResolveRequest
+from search.models import EntityGroup, RawTextInput, ResolveRequest
 from series_coverage.schema import RoleNames
 from series_coverage.shared import CoverageSnapshot
 from tests.engine._fake_coverage import (
@@ -319,12 +319,11 @@ class TestGroupRoleBearingExpansion:
         assert entities_by_ref["country/T1"] == "origin"
         assert entities_by_ref["country/T2"] == "origin"
         assert entities_by_ref["country/KEN"] == "destination"
-        group = IdentityEntityGroup(
-            dcid=group_node.dcid if group_node is not None else None, label=label
-        )
+        group = EntityGroup(dcid=group_node.dcid if group_node is not None else None, label=label)
         assert spec.resolved.entity_groups == {"origin": group}
-        assert spec.definition.identity.entity_groups == {"origin": group}
-        assert spec.spec_id == spec_id_from_value(spec.definition.identity.core_document())
+        assert spec.spec_id == spec_id_from_value(
+            spec.definition.identity.model_dump(exclude_none=True)
+        )
         asked = [
             fact.asked
             for fact in spec_departure_facts(spec, operations=(), entity_words=result.entity_words)

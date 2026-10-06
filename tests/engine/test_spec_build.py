@@ -34,9 +34,9 @@ from search.models import (
     CoverageBare,
     DateRange,
     Entity,
+    EntityGroup,
     EntityRoleDirectional,
     GraphRef,
-    IdentityEntityGroup,
     MembersNotStated,
     Slot,
     SlotKey,
@@ -412,9 +412,9 @@ class TestBuildSpecEntityGroups:
         grouped = self._spec(members, named_groups=(self._BALTIC,))
         ungrouped = self._spec(members, named_groups=())
 
-        expected = {"origin": IdentityEntityGroup(dcid=None, label="Baltic states")}
+        expected = {"origin": EntityGroup(dcid=None, label="Baltic states")}
         assert grouped.spec_id == ungrouped.spec_id
-        assert grouped.definition.identity.entity_groups == expected
+        assert grouped.definition.identity == ungrouped.definition.identity
         assert grouped.resolved.entity_groups == expected
         assert ungrouped.resolved.entity_groups is None
 
@@ -430,5 +430,4 @@ class TestBuildSpecEntityGroups:
     def test_a_role_that_is_not_exactly_the_members_carries_no_group(self, origin_dcids):
         spec = self._spec(origin_dcids, named_groups=(self._BALTIC,))
 
-        assert spec.definition.identity.entity_groups is None
         assert spec.resolved.entity_groups is None

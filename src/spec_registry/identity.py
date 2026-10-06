@@ -16,11 +16,6 @@ from dfo_platform.roles import role_key_axis
 # The adapter receives parsed values, so it enforces the kit's 65,536-byte cap on compact JSON.
 _MAX_IDENTITY_DOCUMENT_BYTES = 65_536
 
-# Search's `BaseIdentity.entity_groups` records how a request named a role's entities. It
-# stays outside the identity core and the hash (`BaseIdentity.core_document()`), so a Search
-# definition posted here verifies against the spec_id Search minted.
-_NON_CORE_MEMBERS = frozenset({"entity_groups"})
-
 
 def _refuse_bound_open_axes(projection: dict[str, object]) -> None:
     """Refuse a projection that binds a role in `entities` on the axis of one of its
@@ -60,9 +55,6 @@ class RecomputedIdentity:
 def recompute_identity(identity_definition: object) -> RecomputedIdentity:
     """Recompute identity from the parsed identity-core document, excluding the wire envelope.
 
-    Members outside the identity core (`_NON_CORE_MEMBERS`) are dropped first, so neither the
-    hash nor the returned canonical document carries them.
-
     Raises the kit's `IdentityError` on schema failure, when compact JSON exceeds 65,536
     bytes, or when `entities` binds a role on the axis of one of `open_roles`
     (`_refuse_bound_open_axes`).
@@ -77,10 +69,6 @@ def recompute_identity(identity_definition: object) -> RecomputedIdentity:
             f"{_MAX_IDENTITY_DOCUMENT_BYTES}",
         )
 
-    if isinstance(identity_definition, dict):
-        identity_definition = {
-            key: value for key, value in identity_definition.items() if key not in _NON_CORE_MEMBERS
-        }
     projection = identity.build_projection(identity_definition)
     _refuse_bound_open_axes(projection)
     canonical = identity.canonicalize(projection)

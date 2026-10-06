@@ -9,8 +9,8 @@ from search.models import (
     Binding,
     BindingSet,
     BindingValue,
+    EntityGroup,
     GraphRef,
-    IdentityEntityGroup,
     RoleAxis,
     SentenceAxis,
     SentenceToken,
@@ -260,7 +260,7 @@ _MEMBER_NOUNS = frozenset(
 )
 
 
-def group_text(count: int, group: IdentityEntityGroup) -> str:
+def group_text(count: int, group: EntityGroup) -> str:
     """Name a group of ``count`` entities: "the {n} {label} members" ("the 27 European
     Union members").
 

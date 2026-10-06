@@ -75,7 +75,7 @@ def _scope_too_broad_region(
             ),
             definition={
                 "schema_version": SCHEMA_VERSION,
-                "identity": identity.core_document(mode="json"),
+                "identity": identity.model_dump(mode="json", exclude_none=True),
             },
         ),
     )

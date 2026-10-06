@@ -63,6 +63,7 @@ from search.models import (
     DataCommonsRef,
     DateRange,
     Entity,
+    EntityGroup,
     EntityOptions,
     EntityRole,
     EntityRoleDirectional,
@@ -70,7 +71,6 @@ from search.models import (
     FacetOptions,
     GraphRef,
     Headline,
-    IdentityEntityGroup,
     IdentityFacetBinding,
     MeasureAxisValue,
     OpenAxisValueCount,
@@ -264,21 +264,22 @@ class NamedGroup:
     member_dcids: frozenset[str]
 
 
-def identity_named_groups(identity: BaseIdentity) -> tuple[NamedGroup, ...]:
-    """The groups `identity` carries, each standing for its role's entities there."""
+def spec_named_groups(spec: Spec) -> tuple[NamedGroup, ...]:
+    """The groups `spec` serves, each standing for its role's entities in the identity.
+
+    The members come from ``definition.identity.entities``, since ``resolved.entities`` is
+    the display projection and can collapse origin and destination.
+    """
+    entities = spec.definition.identity.entities
     return tuple(
-        NamedGroup(
-            label=group.label,
-            dcid=group.dcid,
-            member_dcids=frozenset(identity.entities[role]),
-        )
-        for role, group in (identity.entity_groups or {}).items()
+        NamedGroup(label=group.label, dcid=group.dcid, member_dcids=frozenset(entities[role]))
+        for role, group in (spec.resolved.entity_groups or {}).items()
     )
 
 
 def role_entity_groups(
     groups: Iterable[NamedGroup], entities: Iterable[Entity]
-) -> dict[str, IdentityEntityGroup]:
+) -> dict[str, EntityGroup]:
     """The group each role's entities stand for, keyed by identity role key.
 
     A role takes a group when its bound dcids are exactly the group's members, so a role
@@ -289,11 +290,11 @@ def role_entity_groups(
     for entity in entities:
         dcids_by_role.setdefault(entity_role_key(entity), set()).add(entity.ref.dcid)
     groups = tuple(groups)
-    result: dict[str, IdentityEntityGroup] = {}
+    result: dict[str, EntityGroup] = {}
     for role, dcids in dcids_by_role.items():
         group = next((g for g in groups if g.member_dcids == dcids), None)
         if group is not None:
-            result[role] = IdentityEntityGroup(dcid=group.dcid, label=group.label)
+            result[role] = EntityGroup(dcid=group.dcid, label=group.label)
     return result
 
 
@@ -957,8 +958,7 @@ def build_spec(
             the hashed entities.
         named_groups: The groups the request named. A role whose identity entities are
             exactly one group's members carries that group on
-            ``definition.identity.entity_groups`` and ``ResolvedSpec.entity_groups``,
-            outside the spec_id hash (`role_entity_groups`).
+            ``ResolvedSpec.entity_groups`` (`role_entity_groups`).
         facet_bindings: Measurement-method and unit bindings included in identity.
         inapplicable_slots and unresolved_slots: Graph constraint facts reported in
             ``ResolvedSpec`` and excluded from identity.
@@ -995,6 +995,7 @@ def build_spec(
 
     # spec_id and identity derive from one projection through build_spec_identity.
     hashed_entities = identity_entities if identity_entities is not None else entities
+    entity_groups = role_entity_groups(named_groups, hashed_entities)
     spec_id, identity_doc = build_spec_identity(
         identity_shape_from_wire(shape),
         slots,
@@ -1002,7 +1003,6 @@ def build_spec(
         open_roles=open_roles,
         requested_window=requested_window,
         explicit_facets=facet_bindings,
-        entity_groups=role_entity_groups(named_groups, hashed_entities),
     )
     definition = SpecDefinition(spec_id=spec_id, identity=identity_doc)
     slots = slots_in_identity_order(slots, identity_doc)
@@ -1086,7 +1086,7 @@ def build_spec(
                 stated=stated,
             ),
             entities=_resolved_entities(entities),
-            entity_groups=identity_doc.entity_groups,
+            entity_groups=entity_groups or None,
             coverage=coverage,
             headline=headline,
             download=download,

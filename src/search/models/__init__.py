@@ -29,7 +29,14 @@ from .departure import (
     departures_in_precedence_order,
     role_ref,
 )
-from .entity import Entity, EntityRole, EntityRoleDirectional, EntityRoleSubject, ResolvedEntity
+from .entity import (
+    Entity,
+    EntityGroup,
+    EntityRole,
+    EntityRoleDirectional,
+    EntityRoleSubject,
+    ResolvedEntity,
+)
 from .envelope import Diagnostics, QueryEcho, Timing, Warning
 from .grammar import (
     Binding,
@@ -72,7 +79,6 @@ from .identity import (
     IdentityBindingValue,
     IdentityCurrency,
     IdentityCurrencyRole,
-    IdentityEntityGroup,
     IdentityFacetBinding,
     IdentityFacetValueAbsent,
     IdentityFacetValueRequest,
@@ -280,6 +286,7 @@ __all__ = [
     "DownloadFacts",
     "DownloadLicence",
     "Entity",
+    "EntityGroup",
     "EntityOptions",
     "EntityRole",
     "EntityRoleDirectional",
@@ -300,7 +307,6 @@ __all__ = [
     "IdentityBindingValue",
     "IdentityCurrency",
     "IdentityCurrencyRole",
-    "IdentityEntityGroup",
     "IdentityFacetBinding",
     "IdentityFacetValueAbsent",
     "IdentityFacetValueRequest",

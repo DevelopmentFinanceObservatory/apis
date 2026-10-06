@@ -50,7 +50,7 @@ from series_coverage.shared import CoverageSnapshot
 
 def spec_resubmit_input_for_identity(entry: ResubmitIdentityEntry) -> ResubmitIdentityPayload:
     """Copy an identity entry into its promote payload."""
-    return ResubmitIdentityPayload(identity=entry.identity)
+    return ResubmitIdentityPayload(identity=entry.identity, entity_groups=entry.entity_groups)
 
 
 def _rewrite_candidate_pointer(
@@ -226,7 +226,9 @@ async def resolve_candidates_entry(
             try:
                 return await asyncio.to_thread(
                     resolve_spec_resubmit,
-                    inp=ResubmitIdentityPayload(identity=candidate.identity),
+                    inp=ResubmitIdentityPayload(
+                        identity=candidate.identity, entity_groups=candidate.entity_groups
+                    ),
                     graph=graph,
                     sdmx=sdmx,
                     coverage=coverage,
