@@ -482,7 +482,7 @@ class BaseIdentity(StrictModel):
     `identity.entities.destination`. StatVar members are graph state, derived from the
     identity, and no member here.
 
-    The document is hashed whole: `"spec_"` plus the first 32 hex digits of
+    The document is hashed whole. `"spec_"` plus the first 32 hex digits of
     the SHA-256 of its RFC 8785 serialisation, with null members omitted, is
     the Spec's spec_id.
     """
