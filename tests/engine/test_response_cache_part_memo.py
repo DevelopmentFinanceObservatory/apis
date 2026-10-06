@@ -51,6 +51,9 @@ from tests.engine.test_membership_authority import (
     _debt_coverage,
 )
 from tests.engine.test_membership_authority import _run as _first_answer
+from tests.engine.test_resubmit_entity_groups import _CONFIRMED, _NODE, _TRIANGLE, _nodes
+from tests.engine.test_resubmit_entity_groups import _OBS as _TRIANGLE_OBS
+from tests.engine.test_resubmit_entity_groups import _identity as _triangle_identity
 from tests.engine.test_role_class_shapes import _DEBT_NODES, _OBS, _TOTAL, _walk_reader
 from tests.fixtures import FakeGraph, FakeLLM, _load_json
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue
@@ -297,6 +300,36 @@ def test_a_hit_folded_with_a_fresh_sibling_equals_an_all_fresh_run(caplog):
     (line,) = [r.getMessage() for r in caplog.records if r.getMessage().startswith("resolve ")]
     logged = json.loads(line.removeprefix("resolve "))
     assert (logged["memo_hits"], logged["memo_misses"]) == (1, 1)
+
+
+@pytest.mark.parametrize("grouped_first", [True, False], ids=["group_then_none", "none_then_group"])
+def test_one_identity_posted_with_and_without_a_group_gets_an_answer_for_each(grouped_first):
+    """The same identity posted with a graph-confirmed group and with none, through one live
+    memo: each post is a miss, the grouped one serves the group on `resolved.entity_groups`
+    and the other serves none."""
+    spec_id, identity = _triangle_identity(_TRIANGLE)
+    graph = FakeGraph(nodes=_nodes(_TRIANGLE), obs=_TRIANGLE_OBS)
+    memo = PartMemo()
+    posted = {"observationAbout": EntityGroup(dcid=_NODE, label="posted")}
+    order = [posted, None] if grouped_first else [None, posted]
+
+    served = []
+    for entity_groups in order:
+        entry = ResubmitIdentityEntry(
+            variable_text="population", identity=identity, entity_groups=entity_groups
+        )
+        response = offline_resolve(
+            ResolveRequest(input=DatasetResubmitInput(entries=[entry])),
+            graph=graph,
+            sdmx=FakeSdmxClient(observations={}, availability={}),
+            part_memo=memo,
+        )
+        (part,) = response.parts
+        assert part.spec.spec_id == spec_id
+        served.append(part.spec.resolved.entity_groups)
+
+    assert served == ([_CONFIRMED, None] if grouped_first else [None, _CONFIRMED])
+    assert (memo.stats()["hits"], memo.stats()["entries"]) == (0, 2)
 
 
 def _fertility_request(options: ResolveOptions) -> ResolveRequest:

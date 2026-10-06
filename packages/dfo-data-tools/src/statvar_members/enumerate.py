@@ -386,7 +386,8 @@ class NotAStatisticalVariable(Exception):
 
 class MemberRoleDisagreement(Exception):
     """Antichain members declare different role sets: a tie `elect_role_class` cannot
-    break, between members no one of whose role sets sits inside all the others.
+    break, between members no one of whose role sets sits inside all the others, or whose
+    fewest-role members hold constraint keys the others lack.
     Checked only on final survivors, whose roles must agree for materialisation."""
 
     def __init__(
@@ -1955,8 +1956,8 @@ class RoleClassElection:
     """The antichain of `family` over constraint keys, in the order given. Every id the
     constraint antichain and the role-twin collapse leave when the election ties."""
     tied: bool
-    """Whether the ids the antichain and the twin collapse leave declare role sets with no
-    one set inside all the others, which the caller refuses."""
+    """Whether the ids the antichain and the twin collapse leave declare more than one role
+    set and no one of them is elected, which the caller refuses."""
     role_keys: frozenset[str]
     """The keys the election ran under: the bound ones and the open ones that joined
     (`electing_role_keys`). An election over the same ids that binds these keys and
@@ -1993,13 +1994,16 @@ def elect_role_class(
     recipient is bound, and the twin alone covers a bound creditor.
 
     Of the role sets the ids left declare, the smallest is elected when every other one
-    contains it: an id declaring a role the keys do not ask for leaves when an id with
-    fewer roles can answer. A by-creditor series with no total at its own constraint
-    values leaves for the totals at other values, and answers once the creditor is bound.
-    The family is every covering id of the elected role set and the members are the
-    antichain of the family alone, since an id of a role set the election does not read
-    dominates nothing: a total only a by-creditor series dominates stays a member. Role
-    sets none of which sits inside all the others all survive, and `tied` reports it."""
+    contains it and the constraint keys of each id left that declares it are among those
+    of each id left that declares another: an id declaring a role the keys do not ask for
+    leaves when ids with fewer roles and its own constraint keys can answer. A
+    by-creditor series with no total at its own constraint values leaves for the totals
+    that hold other values of the same keys, and answers once the creditor is bound. The
+    family is every covering id of the elected role set and the members are the antichain
+    of the family alone, since an id of a role set the election does not read dominates
+    nothing. Role sets none of which sits inside all the others all survive, as do nested
+    role sets whose ids hold other constraint keys: a series with fewer roles is the
+    total of none that breaks down by another property. `tied` reports both."""
     return elect_role_class_of(
         role_class_facts(
             {dcid: constraints_by_id[dcid] for dcid in order},
@@ -2077,7 +2081,9 @@ def _elect_under(
     survivor_classes = {class_of[dcid] for dcid in survivors} if displaced else minimal
     role_sets = {role_class.role_set for role_class in survivor_classes}
     smallest = min(role_sets, key=len, default=frozenset())
-    if not all(smallest <= role_set for role_set in role_sets):
+    if not all(smallest <= role_set for role_set in role_sets) or not _keys_inside(
+        survivor_classes, smallest
+    ):
         return RoleClassElection(family=covered, members=survivors, tied=True, role_keys=role_keys)
     family_classes = {role_class for role_class in candidates if role_class.role_set == smallest}
     family = (
@@ -2098,6 +2104,15 @@ def _elect_under(
     }
     members = tuple(dcid for dcid in family if class_of[dcid] in family_minimal)
     return RoleClassElection(family=family, members=members, tied=False, role_keys=role_keys)
+
+
+def _keys_inside(classes: Collection[RoleClass], role_set: frozenset[str]) -> bool:
+    """Whether the constraint keys of each class of `classes` declaring `role_set` are
+    among those of each class declaring another role set, the test under which
+    `elect_role_class` reads the first as totals of the second."""
+    own = {role_class.keys for role_class in classes if role_class.role_set == role_set}
+    others = {role_class.keys for role_class in classes if role_class.role_set != role_set}
+    return all(keys <= other for keys in own for other in others)
 
 
 def role_class_covers(declared_roles: tuple[str, ...], role_keys: Collection[str]) -> bool:

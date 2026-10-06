@@ -5,8 +5,9 @@
 identity and `check_reproducible` admits. Each cell of the role grid becomes the identity
 Search mints for it: its bound keys as entities and, as open roles, the open keys the rule
 admits. Three paths resolve it: the packaged code index, a synthetic index that holds one
-population, and the graph walk over a graph that holds one. A family two datasets publish
-(`role_grid.SHARED`) is asked of an index holding it, naming each dataset and naming none.
+population, and the graph walk over a graph that holds one. A family several datasets
+publish (`role_grid.SHARED`) is asked of an index holding it, naming each dataset and
+naming none.
 
 The packaged grid is `role_grid.sampled_packaged_cells` with `_SAMPLED_SLOTS` single-value
 bindings per population. The index paths ask each cell naming the dataset and naming none.
@@ -289,9 +290,9 @@ def test_each_path_refuses_and_serves(path: str):
 
 @pytest.mark.parametrize("case", DATASET_CASES)
 def test_the_mint_serves_a_shared_family_from_the_dataset_the_rule_elects(case: str):
-    """For a family two datasets publish, an identity naming no dataset is served from the
-    dataset the rule elects, with the members and family of that dataset's own reading,
-    and one naming a dataset from that dataset's."""
+    """For a family several datasets publish, an identity naming no dataset is served from
+    the dataset the rule elects, with the members and family of that dataset's own
+    reading, and one naming a dataset from that dataset's."""
     found = [cell for cell in shared_cells() if cell.expected.case == case]
     assert found, f"the shared grid holds no cell of the case {case!r}"
     asked = [

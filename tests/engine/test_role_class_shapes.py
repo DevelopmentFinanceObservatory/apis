@@ -455,9 +455,16 @@ _BY_CREDITOR_NODES = {
         "Guaranteed debt, by creditor", _PAIR, positionType="AmountOutstanding", guarantee="Public"
     ),
 }
-# A recipient-only total with other constraint keys: its role set lies inside the
-# by-creditor members', so a question naming no creditor reads it.
+# A recipient-only total holding another value of the least-constrained by-creditor
+# member's one constraint key: its role set lies inside the by-creditor members', so a
+# question naming no creditor reads it.
 _NESTED_NODES = {
+    **_BY_CREDITOR_NODES,
+    "Tie_Total_Arrears": _node("Debt arrears total", _RECIPIENT, positionType="Arrears"),
+}
+# A recipient-only total with other constraint keys: its role set lies inside the
+# by-creditor members', and it is the total of none of them.
+_APART_NODES = {
     **_BY_CREDITOR_NODES,
     "Tie_Total_G": _node("Guaranteed debt total", _RECIPIENT, guarantee="Public"),
 }
@@ -467,6 +474,10 @@ _TIE_NODES = {
     **_BY_CREDITOR_NODES,
     "Tie_Owed_G": _node("Guaranteed debt owed", ["debtor"], guarantee="Public"),
 }
+_TIES = [
+    pytest.param(_TIE_NODES, id="role sets that do not nest"),
+    pytest.param(_APART_NODES, id="nested role sets on other constraint keys"),
+]
 
 
 def _by_creditor_sample_shape() -> ShapeDraft:
@@ -477,10 +488,11 @@ def _by_creditor_sample_shape() -> ShapeDraft:
     return shape
 
 
-def test_a_total_of_other_constraint_keys_only_the_walk_sees_answers():
+def test_a_total_of_another_constraint_value_only_the_walk_sees_answers():
     """The sample holds by-creditor members. The graph also holds a recipient-only total
-    with other constraint keys. With the recipient alone bound, the mint reads the total,
-    the series published without a creditor, and the shape takes its member and name."""
+    at another value of their constraint key. With the recipient alone bound, the mint
+    reads the total, the series published without a creditor, and the shape takes its
+    member and name."""
     settled = _narrowed(
         _by_creditor_sample_shape(),
         "destination",
@@ -488,21 +500,23 @@ def test_a_total_of_other_constraint_keys_only_the_walk_sees_answers():
         arcs_graph=FakeGraph(nodes=_NESTED_NODES, obs={}, detect={}, resolve={}),
     )
 
-    assert list(settled.sv_arc_facts or {}) == ["Tie_Total_G"]
+    assert list(settled.sv_arc_facts or {}) == ["Tie_Total_Arrears"]
     assert settled.declared_roles == ("financingRecipient",)
-    assert settled.label == "Guaranteed debt total"
+    assert settled.label == "Debt arrears total"
 
 
-def test_a_tie_only_the_walk_sees_is_not_answered_from_the_sample():
+@pytest.mark.parametrize("nodes", _TIES)
+def test_a_tie_only_the_walk_sees_is_not_answered_from_the_sample(nodes: dict):
     """The sample holds by-creditor members. The graph also holds a member that places
-    the recipient under a role of its own, and neither role set holds the other. The mint
-    refuses the identity, so the sample does not answer it."""
+    the recipient under a role of its own, where neither role set holds the other, or a
+    recipient-only total with other constraint keys. The mint refuses the identity, so
+    the sample does not answer it."""
     with pytest.raises(RoleSignatureError):
         _narrowed(
             _by_creditor_sample_shape(),
             "destination",
-            walks=RoleClassWalks(_walk_reader(_TIE_NODES)),
-            arcs_graph=FakeGraph(nodes=_TIE_NODES, obs={}, detect={}, resolve={}),
+            walks=RoleClassWalks(_walk_reader(nodes)),
+            arcs_graph=FakeGraph(nodes=nodes, obs={}, detect={}, resolve={}),
         )
 
 
@@ -636,17 +650,18 @@ def _guaranteed_debt_of_kenya(nodes: dict, *, obs: dict | None = None):
     )
 
 
-def test_a_place_whose_walk_meets_a_tie_reports_the_role_signature_refusal():
-    result = _guaranteed_debt_of_kenya(_TIE_NODES)
+@pytest.mark.parametrize("nodes", _TIES)
+def test_a_place_whose_walk_meets_a_tie_reports_the_role_signature_refusal(nodes: dict):
+    result = _guaranteed_debt_of_kenya(nodes)
 
     assert (result.status, result.no_data_reason) == ("no_data", "role_signature_incompatible")
 
 
-def test_a_place_whose_walk_finds_a_total_of_other_constraint_keys_answers_the_total():
-    result = _guaranteed_debt_of_kenya(_NESTED_NODES, obs={"Tie_Total_G|country/KEN": _OBS})
+def test_a_place_whose_walk_finds_a_total_of_another_constraint_value_answers_the_total():
+    result = _guaranteed_debt_of_kenya(_NESTED_NODES, obs={"Tie_Total_Arrears|country/KEN": _OBS})
 
     assert result.status == "definite"
-    assert [sv.ref.dcid for sv in result.specs[0].resolved.members] == ["Tie_Total_G"]
+    assert [sv.ref.dcid for sv in result.specs[0].resolved.members] == ["Tie_Total_Arrears"]
     assert result.specs[0].definition.identity.entities == {"destination": ["country/KEN"]}
 
 

@@ -2057,10 +2057,13 @@ class WalkedMembers:
         names only the served ones, so its own query carries the elected keys. The mint's
         walk of that identity asks exactly those keys and elects the same members.
 
-        The identity names every asked axis the elected members declare
-        (`role_resolve.graph_confirm_resolve`), and a member elected under one open key
-        can declare a role on another the election set aside. Its query is then `query`
-        itself (`asked`), which the mint walks as Search did."""
+        For a walked family the identity names every asked axis the elected members
+        declare (`role_resolve.graph_confirm_resolve`), and a member elected under one
+        open key can declare a role on another the election set aside. Where those axes
+        are every axis asked, the identity's query is `query` itself (`asked`), which the
+        mint walks as Search did. Where they sit strictly between the elected keys and
+        the asked ones, the identity's query is neither, and the walk settles nothing for
+        it (`settles`)."""
         family = group.stated_family
         asked = walk_key(query)
         key = walk_key(replace(query, open_role_keys=group.elected_open_role_keys))
@@ -2342,6 +2345,20 @@ def shape_member_facts(
             row.dcid: IndexMemberFacts(row=row, dataset=family.provenance) for row in family.rows
         }, True
     return _recall_role_class(recall, query), False
+
+
+def index_open_role_keys(query: FamilyQuery) -> frozenset[str] | None:
+    """The open role keys that joined the election of the family the code index resolves
+    for `query` (`DatasetFamily.role_keys` less the bound keys), or `None` when it
+    resolves none.
+
+    Asked again with these open keys alone, the index elects the same dataset, rows, keys
+    and tie (`code_index.members.elect_dataset`), which no other subset of the open keys
+    asked guarantees: among three datasets, a subset between the two can elect another."""
+    family = _resolved_family(get_index(), query)
+    if family is None:
+        return None
+    return family.role_keys - query.role_keys
 
 
 def query_members(shape: ShapeDraft, query: FamilyQuery) -> tuple[dict[str, MemberFacts], bool]:

@@ -23,8 +23,8 @@ holds the rows of the value alone.
 
 Each comparison is made twice: with the identity that carries the open roles the rule
 admits, and with the one built from the open roles `_admit_population` itself records.
-The families of `role_grid.SHARED`, each published by two datasets, are asked of an index
-holding them, naming each dataset and none. One population is asked through the member
+The families of `role_grid.SHARED`, each published by two or three datasets, are asked of
+an index holding them, naming each dataset and none. One population is asked through the member
 walk and `graph_confirm_resolve`: its elected member declares a role on an open axis the
 election set aside.
 
@@ -482,7 +482,7 @@ def test_the_identity_search_records_resolves_at_the_mint_to_the_members_it_admi
 
 
 # ---------------------------------------------------------------------------
-# A family two datasets publish
+# A family several datasets publish
 # ---------------------------------------------------------------------------
 
 
@@ -490,7 +490,7 @@ def _one_role_per_axis(family: SharedFamily) -> bool:
     roles = {
         role for population in family.populations for row in population.rows for role in row.roles
     }
-    axes = [ROLE_AXES[role] for role in roles]
+    axes = [ROLE_AXES[role] for role in roles if role in ROLE_AXES]
     return len(axes) == len(set(axes))
 
 
@@ -552,10 +552,12 @@ def _shared_admitted(cell: SharedCell, dataset: str | None) -> NoDataDraft | _Ad
 
 
 def test_search_admits_from_a_shared_family_what_the_mint_serves_for_its_identity():
-    """Over a family two datasets publish, `_admit_population` reads the members the rule
-    elects from the dataset it elects. The identity built from the open roles Search
-    records is served by the members door with those members, from one dataset, and
-    `stated_members` states the door's count and digest for it."""
+    """Over a family two or three datasets publish, `_admit_population` reads the members
+    the rule elects from the dataset it elects. The identity built from the open roles
+    Search records is served by the members door with those members, from one dataset,
+    and `stated_members` states the door's count and digest for it. Among three datasets
+    with both axes open, the elected member declares a role on an axis the election set
+    aside, and the identity names only the axes that joined."""
     found = _shared_asked()
     assert {cell.expected.case for cell, _dataset in found} >= {ASKED_AGAIN, TIE_SET_ASIDE}
     differences = []

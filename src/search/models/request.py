@@ -312,7 +312,7 @@ _ENTITY_GROUPS_DESCRIPTION = (
 
 ResubmitEntityGroups = Annotated[
     dict[EntityRoleKey, EntityGroup] | None,
-    Field(default=None, max_length=3, description=_ENTITY_GROUPS_DESCRIPTION),
+    Field(default=None, description=_ENTITY_GROUPS_DESCRIPTION),
 ]
 """The named groups posted beside one resubmitted identity: request context for its
 roles, outside the identity and its spec_id."""
@@ -322,8 +322,8 @@ class ResubmitIdentityPayload(StrictModel):
     """One identity to re-materialise.
 
     Not a request input of its own: the transport that carries it is
-    `ResubmitIdentityEntry` (inside a `DatasetResubmitInput`), and this model is
-    what that entry's identity deserializes into before the engine resolves it.
+    `ResubmitIdentityEntry` (inside a `DatasetResubmitInput`), and this model holds
+    that entry's identity and its entity groups for the engine to resolve.
 
     `identity` is the complete definition. A no-op resubmit posts the
     `Spec.definition.identity` it received byte-for-byte. The engine derives the

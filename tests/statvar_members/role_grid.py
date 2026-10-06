@@ -5,9 +5,12 @@ in `statvar_members.enumerate` or `code_index.members`:
 
 1. Among the rows that place every bound role key (every row when none does), after the
    constraint antichain and the twin collapse, the smallest surviving role set is
-   elected. Role sets that do not nest tie. The family is every placing row of the
-   elected role set, and the query reads the antichain of the family alone: a row of a
-   role set the query does not read dominates nothing.
+   elected when every other surviving role set contains it and the constraint keys of
+   each surviving row declaring it are among those of each surviving row declaring
+   another. Role sets that do not nest tie, and so do nested ones whose rows hold other
+   constraint keys. The family is every placing row of the elected role set, and the
+   query reads the antichain of the family alone: a row of a role set the query does not
+   read dominates nothing.
 2. An open key joins the bound keys only when a row of that reading, or a role twin of
    one (a row with the same constraint map), places it. Otherwise it is ignored and the
    election runs as if the role were unnamed.
@@ -31,7 +34,7 @@ agree on every cell whose label is outside `MOVED_LABELS`.
 A cell is one population of rows, one slot binding, and one pair of bound and open role
 keys. `packaged_cells` crosses every dataset's rows of every family of the packaged code
 index, and `synthetic_cells` the populations of `SYNTHETIC`. `shared_cells` crosses the
-families of `SHARED`, each published by two datasets.
+families of `SHARED`, each published by two or three datasets.
 """
 
 from __future__ import annotations
@@ -56,7 +59,8 @@ DESTINATION = "destination"
 
 ONE_ROLE_SET = "one role set"
 TWIN = "twin"
-NESTED = "nested without twin"
+NESTED = "nested without twin on shared constraint keys"
+NESTED_APART = "nested without twin on other constraint keys"
 NOT_NESTED = "not nested"
 OPEN_HONOURED = "open honoured"
 OPEN_UNPLACED = "open ignored with no row placing it"
@@ -66,6 +70,7 @@ LABELS = (
     ONE_ROLE_SET,
     TWIN,
     NESTED,
+    NESTED_APART,
     NOT_NESTED,
     OPEN_HONOURED,
     OPEN_UNPLACED,
@@ -158,12 +163,18 @@ class _Reading:
     smallest: frozenset[str] | None
     """The surviving role set every other one contains, or `None` when the role sets do
     not nest."""
+    elected: frozenset[str] | None
+    """The role set the reading elects: `smallest` when the constraint keys of each
+    survivor declaring it are among those of each survivor declaring another role set.
+    `None` when the reading ties."""
 
     @property
     def structure(self) -> str:
         if len(self.role_sets) == 1:
             return TWIN if self.collapsed else ONE_ROLE_SET
-        return NOT_NESTED if self.smallest is None else NESTED
+        if self.smallest is None:
+            return NOT_NESTED
+        return NESTED_APART if self.elected is None else NESTED
 
 
 def antichain(rows: Sequence[Row], readings: Mapping[str, AbsentReading]) -> tuple[Row, ...]:
@@ -203,13 +214,18 @@ def _read(
         if not any(other < found.role_set for other in role_sets_held[found.held])
     ]
     role_sets = frozenset(found.role_set for found in survivors)
+    smallest = next((s for s in role_sets if all(s <= other for other in role_sets)), None)
+    own_keys = {found.keys for found in survivors if found.role_set == smallest}
+    other_keys = {found.keys for found in survivors if found.role_set != smallest}
+    inside = all(own <= other for own in own_keys for other in other_keys)
     return _Reading(
         candidates=tuple(candidates),
         survivors=tuple(survivors),
         collapsed=len(survivors) < len(minimal),
         readings=readings,
         role_sets=role_sets,
-        smallest=next((s for s in role_sets if all(s <= other for other in role_sets)), None),
+        smallest=smallest,
+        elected=smallest if inside else None,
     )
 
 
@@ -247,14 +263,14 @@ def _members(reading: _Reading, *, nested_tie: bool) -> tuple[Row, ...]:
 
 def _family(reading: _Reading, *, nested_tie: bool) -> tuple[Row, ...]:
     """The rows of the elected role set before the antichain: the candidates declaring
-    the smallest surviving role set, or every candidate when the reading ties."""
+    it, or every candidate when the reading ties."""
     if _tied(reading, nested_tie=nested_tie):
         return reading.candidates
-    return tuple(found for found in reading.candidates if found.role_set == reading.smallest)
+    return tuple(found for found in reading.candidates if found.role_set == reading.elected)
 
 
 def _tied(reading: _Reading, *, nested_tie: bool) -> bool:
-    return len(reading.role_sets) > 1 and (nested_tie or reading.smallest is None)
+    return len(reading.role_sets) > 1 and (nested_tie or reading.elected is None)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -300,7 +316,8 @@ def elect(
 
     The label names the case in this order. `OPEN_UNTWINNED` when the rows the bound keys
     read and their twins admit other open keys than every row would. `NESTED` when the
-    elected keys leave nested role sets no twin relates. With an open key asked,
+    elected keys leave nested role sets no twin relates and the smallest is elected, and
+    `NESTED_APART` when they tie on their constraint keys. With an open key asked,
     `OPEN_HONOURED` when one joined and `OPEN_UNPLACED` when no row places any. Else the
     structure the elected keys leave: `ONE_ROLE_SET`, `TWIN` when a twin was displaced, or
     `NOT_NESTED`, which also names open keys that different rows place and none outranks."""
@@ -313,8 +330,8 @@ def elect(
     elected = _read(rows, keys, readings) if admitted else reading
     if admitted != by_any_row:
         label = OPEN_UNTWINNED
-    elif elected.structure == NESTED:
-        label = NESTED
+    elif elected.structure in (NESTED, NESTED_APART):
+        label = elected.structure
     elif admitted:
         label = OPEN_HONOURED
     elif asked and not any(
@@ -704,13 +721,14 @@ SYNTHETIC: tuple[Population, ...] = (
         row("by_creditor_public", {"guarantee": "Public"}, _PAIR),
     ),
 )
-"""In the last, only a row of the larger role set dominates `total_public_by_term`, so
-the query reads it beside `total_service`."""
+"""In the last, only a row of the larger role set dominates `total_public_by_term`, and
+that row and `total_service` hold other constraint keys, so a bound recipient ties."""
 
 
 FIRST_DATASET = "provenance/RoleGridFirst"
 SECOND_DATASET = "provenance/RoleGridSecond"
-"""The two datasets of each family of `SHARED`, the first ranked ahead of the second."""
+THIRD_DATASET = "provenance/RoleGridThird"
+"""The datasets of the families of `SHARED`, in rank order."""
 
 _CREDITOR = ("creditor",)
 _DEBTOR = ("debtor",)
@@ -720,12 +738,18 @@ _DISBURSEMENT_PUBLIC = {"flowType": "Disbursement", "guarantee": "Public"}
 _SERVICE_CREDITOR_BY_BOTH = row("service_public_by_creditor", _SERVICE_PUBLIC, _CREDITOR)
 
 
-def _shared(name: str, first: Sequence[Row], second: Sequence[Row]) -> SharedFamily:
+def _shared(name: str, *published: Sequence[Row]) -> SharedFamily:
+    """A family whose datasets, in rank order, publish the rows of `published`."""
+    datasets = (FIRST_DATASET, SECOND_DATASET, THIRD_DATASET)
     return SharedFamily(
         name=name,
-        populations=(
-            _population(f"{name}: first", *first, dataset=FIRST_DATASET),
-            _population(f"{name}: second", *second, dataset=SECOND_DATASET),
+        populations=tuple(
+            _population(
+                f"{name}: {dataset.removeprefix('provenance/RoleGrid').lower()}",
+                *rows,
+                dataset=dataset,
+            )
+            for dataset, rows in zip(datasets, published, strict=False)
         ),
     )
 
@@ -805,10 +829,19 @@ SHARED: tuple[SharedFamily, ...] = (
             _SERVICE_CREDITOR_BY_BOTH,
         ),
     ),
+    _shared(
+        "a provider row with an unplaced role, a provider row and a recipient row",
+        (row("flow_by_provider_and_channel", {}, ("financingProvider", "channel")),),
+        (row("flow_by_provider", {}, _PROVIDER),),
+        (row("flow_by_recipient", {}, _RECIPIENT),),
+    ),
 )
-"""Families two datasets publish. In the fourth, the first dataset's subject total has a
-twin on each axis, so with both axes open neither joins for it, and with the origin alone
-open it reads its provider twin."""
+"""Families two or three datasets publish. In the fourth, the first dataset's subject total
+has a twin on each axis, so with both axes open neither joins for it, and with the origin
+alone open it reads its provider twin. In the last, with nothing bound and both axes open,
+two datasets read the origin and the third the destination, so no open key joins and rank
+elects the first, whose row declares a provider. Asked with the origin alone open, the
+second serves, since its row declares exactly the role the origin places."""
 
 
 def packaged_populations(index: CodeIndex) -> Iterator[Population]:

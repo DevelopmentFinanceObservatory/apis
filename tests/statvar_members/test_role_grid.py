@@ -51,8 +51,9 @@ _GRID_LABELS = {
     "packaged": (ONE_ROLE_SET, NESTED, OPEN_HONOURED, OPEN_UNPLACED, OPEN_UNTWINNED),
     "synthetic": LABELS,
 }
-"""The labels each grid holds. The packaged index has no role twin and no role sets that
-do not nest."""
+"""The labels each grid holds. The packaged index has no role twin, no role sets that do
+not nest, and no nested role sets whose rows hold other constraint keys under one slot
+binding."""
 
 
 def _cases(*, grids: tuple[str, ...] = tuple(_GRIDS)):

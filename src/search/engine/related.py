@@ -194,10 +194,10 @@ def related_measures(related: Related, elected: BaseIdentity) -> list[RelatedMea
 
     A member's identity is built from its five-tuple (`identity_shape_for`) and its
     constraint values as bound what/how slots, with `elected`'s entities and requested
-    window. `elected`'s facets are dropped, since a
-    unit or source the elected measure pins says nothing about another measure. Its open
-    roles are dropped too, since they name roles of the elected family that another
-    member's family need not declare, so a related identity carries no open role.
+    window. `elected`'s facets are dropped, since a unit or source the elected measure pins
+    says nothing about another measure. Its open roles are dropped too, since they name
+    roles of the elected family that another member's family need not declare, so a related
+    identity carries no open role.
     """
     base = elected.model_dump(exclude_none=True)
     base.pop("facets", None)

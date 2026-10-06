@@ -4,8 +4,8 @@
 Each population is one dataset's rows of one family. The packaged populations are read
 from the packaged index, and each synthetic one from an index that holds it alone. A
 cell asks the index twice, naming the dataset and naming none. Each family of
-`role_grid.SHARED` is published by two datasets, and a cell asks its index naming none
-and naming each.
+`role_grid.SHARED` is published by two or three datasets, and a cell asks its index
+naming none and naming each.
 
 The packaged grid keeps every population under every pair of role keys with no slot
 bound, every slot binding that holds a cell of a moved label, and `_SAMPLED_SLOTS`
@@ -165,8 +165,8 @@ def test_the_shared_grid_holds_every_case_of_the_dataset_rule():
 
 
 @pytest.mark.parametrize("case", DATASET_CASES)
-def test_index_family_elects_the_dataset_the_rule_elects_among_two(case: str):
-    """Naming no dataset, `index_family` elects the dataset the rule elects among the two
+def test_index_family_elects_the_dataset_the_rule_elects_among_several(case: str):
+    """Naming no dataset, `index_family` elects the dataset the rule elects among those
     publishing the family, with the family, tie and keys of that dataset's own reading."""
     found = [cell for cell in shared_cells() if cell.expected.case == case]
 
@@ -183,8 +183,8 @@ def test_index_family_elects_the_dataset_the_rule_elects_among_two(case: str):
     assert not differences, f"{len(differences)} of {len(found)} differ; first: {differences[:1]}"
 
 
-def test_index_family_reads_a_named_dataset_of_two_on_its_own_rows():
-    """Naming one of two publishers, `index_family` reads that dataset's rows alone by
+def test_index_family_reads_a_named_dataset_of_several_on_its_own_rows():
+    """Naming one of several publishers, `index_family` reads that dataset's rows alone by
     the rule, and returns no row where the slot binding admits none of them."""
     differences = []
     for cell in shared_cells():

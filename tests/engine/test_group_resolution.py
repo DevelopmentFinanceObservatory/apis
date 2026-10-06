@@ -286,7 +286,7 @@ class TestGroupRoleBearingExpansion:
         self, monkeypatch, group_node, graph_label, label
     ):
         """The where-slot binds Kenya; each origin member belongs in resolved entities, and the
-        origin role carries the group outside the spec_id hash, with its node when the graph
+        origin role's group is served on `resolved.entity_groups`, with its node when the graph
         holds one. The label is the graph's for that node, else the query's name for the group.
         Its departure asks for it as the query named it."""
         _auto_coverage_index_1 = patch_coverage(
