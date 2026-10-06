@@ -27,7 +27,7 @@ from search.engine.retrieval.read_plan import facets_served
 from search.engine.retrieval.retrieve import Materialised
 from search.engine.shape import ShapeDraft, SlotKeyDraft, is_role_bearing
 from search.engine.spec_build import NamedGroup
-from search.models import CoverageBare, EntityRoleKey, IdentityEntityGroup, TimeWindow
+from search.models import CoverageBare, EntityGroup, EntityRoleKey, TimeWindow
 from series_coverage.schema import FacetMetadata, RoleNames
 from series_coverage.shared import CoverageSnapshot
 from tests.engine import _answer_invariants_world as fixture_world
@@ -182,7 +182,7 @@ def test_relaxation_names_the_dropped_binding_when_a_relaxes():
     assert len(suggestions) == 1
     suggestion = suggestions[0]
     assert suggestion.resolved.entity_groups == {
-        "observationAbout": IdentityEntityGroup(dcid=None, label="the test group")
+        "observationAbout": EntityGroup(dcid=None, label="the test group")
     }
     assert suggestion.relaxation.axis == "how"
     assert suggestion.relaxation.property_dcid == _PROP_A

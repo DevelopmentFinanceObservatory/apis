@@ -10,9 +10,11 @@ from pydantic import (
 )
 
 from .base import StrictModel
+from .entity import EntityGroup
 from .identity import BaseIdentity
 from .vocab import (
     SCHEMA_VERSION,
+    EntityRoleKey,
     NoDataReason,
     OperationAxis,
     OperationVerb,
@@ -300,6 +302,22 @@ class ParsedInput(StrictModel):
     )
 
 
+_ENTITY_GROUPS_DESCRIPTION = (
+    "the named group each role's entities were asked for as, keyed by entity role "
+    "key. Post a prior Spec's resolved.entity_groups beside any identity derived "
+    "from that Spec. A group is kept when it posts a dcid and the graph's members "
+    "of that node are exactly the identity's entities on the role; any other group, "
+    "including one on a role the identity binds no entity on, is dropped"
+)
+
+ResubmitEntityGroups = Annotated[
+    dict[EntityRoleKey, EntityGroup] | None,
+    Field(default=None, max_length=3, description=_ENTITY_GROUPS_DESCRIPTION),
+]
+"""The named groups posted beside one resubmitted identity: request context for its
+roles, outside the identity and its spec_id."""
+
+
 class ResubmitIdentityPayload(StrictModel):
     """One identity to re-materialise.
 
@@ -311,6 +329,10 @@ class ResubmitIdentityPayload(StrictModel):
     `Spec.definition.identity` it received byte-for-byte. The engine derives the
     identity's StatVar members itself: from the packaged code index when it decides
     the identity, else from the graph walk the Datasets mint runs.
+
+    `entity_groups` names the group a role's entities were asked for as. The engine
+    keeps a group the graph confirms for the identity's entities on that role
+    (`resubmit_request.resubmit_named_groups`).
     """
 
     identity: BaseIdentity = Field(
@@ -320,6 +342,7 @@ class ResubmitIdentityPayload(StrictModel):
             "entities.origin or entities.destination, to edit that definition"
         )
     )
+    entity_groups: ResubmitEntityGroups
 
 
 # ---------------------------------------------------------------------------
@@ -351,6 +374,7 @@ class ResubmitIdentityEntry(StrictModel):
             "entities.origin or entities.destination, to edit that definition"
         )
     )
+    entity_groups: ResubmitEntityGroups
     operations: list[Operation] = Field(
         default_factory=list,
         max_length=_PARSED_MAX_PART_OPERATIONS,
@@ -363,6 +387,7 @@ class ResubmitCandidate(StrictModel):
     engine derives its StatVar members as it does for an identity entry."""
 
     identity: BaseIdentity = Field(description="this candidate's complete identity")
+    entity_groups: ResubmitEntityGroups
 
 
 _RESUBMIT_MAX_CANDIDATES = 50

@@ -1193,7 +1193,7 @@ def mint_sibling_identity(
     (see `engine.spec_id.mint_identity`'s own docstring, the seam this mints
     through).
 
-    `elected`'s entities, entity_groups, requested_window and facets describe a fact the
+    `elected`'s entities, requested_window and facets describe a fact the
     sibling agrees with -- being a sibling means sharing every axis but the
     declared measure ones -- so they carry over byte-identical, read
     straight off `elected`'s own validated document.
@@ -1300,7 +1300,7 @@ def mint_sibling_identity(
     )
 
     measure_axis_names = {axis.axis for axis in axes}
-    base = elected.core_document()
+    base = elected.model_dump(exclude_none=True)
     base.pop("open_roles", None)
     sibling_slots = [slot for slot in base["slots"] if slot["property"] not in measure_axis_names]
     if shape is not None:
@@ -1338,7 +1338,7 @@ def mint_sibling_identity(
     projection = {**base, "shape": sibling_shape, "slots": sibling_slots}
     if shape is not None:
         projection = dict(canonical_identity(get_index(), projection))
-    spec_id, identity = mint_identity(projection, entity_groups=elected.entity_groups)
+    spec_id, identity = mint_identity(projection)
     return SiblingIdentity(
         spec_id=spec_id, identity=identity, label=label_for_partition(partition, labels)
     )
@@ -1591,7 +1591,7 @@ def slot_expansions(bindings: Sequence[SlotBindingDraft]) -> dict[str, Expansion
 
 def _identity_document(identity: BaseIdentity) -> dict[str, object]:
     """Return `identity` as the document the Datasets mint reads."""
-    return identity.core_document(mode="json")
+    return identity.model_dump(mode="json", exclude_none=True)
 
 
 def identity_query(identity: BaseIdentity) -> FamilyQuery:
@@ -2828,7 +2828,7 @@ def canonicalise_identity(identity: BaseIdentity) -> BaseIdentity:
     canonical = canonical_identity(get_index(), document)
     if canonical is document:
         return identity
-    return mint_identity(canonical, entity_groups=identity.entity_groups)[1]
+    return mint_identity(canonical)[1]
 
 
 def _unexported_shared_values(

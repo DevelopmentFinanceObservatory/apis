@@ -6,6 +6,7 @@ from pydantic import Field
 
 from .base import StrictModel
 from .grammar import GraphRef
+from .identity import IdentityString
 from .vocab import Confidence, EntityRoleKey, RoleAxis
 
 # ---------------------------------------------------------------------------
@@ -78,4 +79,29 @@ class ResolvedEntity(StrictModel):
             "-- no entity-resolution confidence signal exists yet, so this ships None "
             "on every entity today"
         ),
+    )
+
+
+_ENTITY_GROUP_LABEL_MAX_LENGTH = 120
+"""Code points a group's name may span. Real names ("least developed countries",
+"EU institutions") run under 40; the heading and departures echo the label."""
+
+
+class EntityGroup(StrictModel):
+    """A named group whose members fill one entity role, as the request named it
+    ("EU member states"). The members themselves are the role's dcids in
+    `BaseIdentity.entities`. This records only that they were asked for as one
+    group, so the heading can say "the 27 EU member states" after any edit that
+    keeps the role's members. A Spec serves its groups on
+    `ResolvedSpec.entity_groups`, and a resubmit posts them beside the identity
+    (`ResubmitIdentityEntry.entity_groups`)."""
+
+    dcid: IdentityString | None = Field(
+        default=None,
+        description="the group's own graph node, when the graph holds one; null otherwise",
+    )
+    label: str = Field(
+        min_length=1,
+        max_length=_ENTITY_GROUP_LABEL_MAX_LENGTH,
+        description="the group's name as the request gave it, plain text",
     )

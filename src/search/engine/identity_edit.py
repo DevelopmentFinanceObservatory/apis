@@ -53,7 +53,7 @@ def validate_edited_identity(identity: BaseIdentity, *, pointer: str = "/input/i
     """
     check_no_exact_bindings(identity, pointer=pointer)
     try:
-        _identity.validate_identity_core(identity.core_document())
+        _identity.validate_identity_core(identity.model_dump(exclude_none=True))
     except ValueError as exc:
         raise EngineInputError(
             f"identity is not a well-formed identity document: {exc}",

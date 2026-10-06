@@ -12,9 +12,9 @@ from pydantic import (
 
 from .base import StrictModel
 from .coverage import Coverage, Headline
-from .entity import ResolvedEntity
+from .entity import EntityGroup, ResolvedEntity
 from .grammar import DataCommonsRef, GraphRef, SentenceToken, Shape, Slot, SourceRef, TimeWindow
-from .identity import BaseIdentity, IdentityEntityGroup
+from .identity import BaseIdentity
 from .observations import SpecObservations
 from .options import EntityOptions, FacetOptions, SlotOptions
 from .statvar import ResolvedStatVars, SentenceFacts, StatVar
@@ -603,14 +603,14 @@ class ResolvedSpec(StrictModel):
     entities: list[ResolvedEntity] = Field(
         description="resolved entities the data is about; may be empty if where is unbound"
     )
-    entity_groups: dict[str, IdentityEntityGroup] | None = Field(
+    entity_groups: dict[str, EntityGroup] | None = Field(
         default=None,
         description=(
             "the named group each role's entities stand for, keyed by the role key "
-            "the entities above carry: the groups of definition.identity.entity_groups "
-            "whose members this Spec still binds. The heading names a role by its "
-            "group and member count ('the 27 EU member states') instead of listing "
-            "its members. None when no role was asked for as a group. Never hashed"
+            "the entities above carry: each group whose members are exactly the "
+            "entities definition.identity binds on that role. The heading names a "
+            "role by its group and member count ('the 27 EU member states') in place "
+            "of its members. None when no role was asked for as a group. Never hashed"
         ),
     )
     coverage: Coverage = Field(description="observation footprint")

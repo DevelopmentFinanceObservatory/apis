@@ -60,22 +60,30 @@ def test_register_definition_is_contract_shaped() -> None:
     }
 
 
-def test_register_a_grouped_identity_stores_its_identity_core() -> None:
-    """`entity_groups` from a grouped Search answer stays outside the hash: the door accepts
-    the Search spec_id and the registry stores the identity core."""
+def test_register_refuses_an_identity_that_carries_entity_groups() -> None:
+    """A named group is request context beside an identity. The door refuses it inside the
+    identity as an unknown member and stores nothing, and registers the same identity
+    without it."""
     store = FakeDatasetStore()
     client = make_client(registry=LiveSpecRegistry(store=store))
     identity = pinned_identity(entities={"origin": ["country/EST", "country/LTU", "country/LVA"]})
     grouped = {**identity, "entity_groups": {"origin": {"label": "Baltic states"}}}
     spec_id = recompute_identity(identity).spec_id
 
-    resp = client.post(
+    refused = client.post(
         "/api/datasets/register",
         json=register_body(definition=wire_definition_for(spec_id=spec_id, identity=grouped)),
     )
+    assert refused.status_code == 400, refused.text
+    assert refused.json()["code"] == "request_invalid"
+    assert store.state.spec_registry == {}
 
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["definition"]["spec_id"] == spec_id
+    accepted = client.post(
+        "/api/datasets/register",
+        json=register_body(definition=wire_definition_for(spec_id=spec_id, identity=identity)),
+    )
+
+    assert accepted.status_code == 200, accepted.text
     assert store.state.spec_definition[(spec_id, 1)]["definition"]["identity"] == identity
 
 
