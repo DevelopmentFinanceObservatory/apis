@@ -457,6 +457,13 @@ ROWS = [
         unsupported("x"),
         PASS,
     ),
+    # An unsupported answer records no group.
+    (
+        "entities",
+        {"unsupported": {"entities": [{"dcid": "country/FRA", "role": "origin", "expands": True}]}},
+        unsupported("x"),
+        FAIL,
+    ),
     ("entities", {"definite": {}}, panel("crs-001"), NA),
     # provenance: the family's, or an override.
     (

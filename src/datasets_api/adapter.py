@@ -672,8 +672,9 @@ def resolve_definition_members(
     least-constrained first, then those declaring the fewest roles, so a member
     lacking a role its sibling carries answers as the aggregate over that role.
     `RoleSignatureIncompatible` reports a tie that election cannot break, between
-    members whose role sets do not contain one another, and takes precedence under
-    a confirmed root, where an unverified candidate cannot remove a member.
+    members whose role sets do not contain one another or whose fewest-role members
+    hold constraint keys the others lack, and takes precedence under a confirmed
+    root, where an unverified candidate cannot remove a member.
 
     An unresolved denominator (`{"unresolved": true}`) matches a target with
     no dcid or one typed exactly `ProvisionalNode`, as Search reads it.

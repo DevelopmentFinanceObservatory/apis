@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 
 import pytest
+from pydantic import ValidationError
 
 from search.engine.region import resolve_spec_resubmit
 from search.engine.spec_id import build_spec_identity
@@ -14,6 +15,7 @@ from search.models import (
     BaseIdentity,
     DatasetResubmitInput,
     EntityGroup,
+    RequestedWindow,
     ResolveRequest,
     ResubmitCandidate,
     ResubmitCandidatesEntry,
@@ -71,12 +73,15 @@ _OBS = {
 }
 
 
-def _identity(dcids: tuple[str, ...]) -> tuple[str, BaseIdentity]:
+def _identity(
+    dcids: tuple[str, ...], requested_window: RequestedWindow | None = None
+) -> tuple[str, BaseIdentity]:
     return build_spec_identity(
         PERSON_COUNT_SHAPE,
         [],
         entities=[subject_entity(dcid) for dcid in dcids],
         open_roles=(),
+        requested_window=requested_window,
     )
 
 
@@ -149,65 +154,74 @@ def test_a_group_posting_a_dcid_is_checked_and_labelled_by_the_graph(
     assert (logged in caplog.text) if logged else "dropped group" not in caplog.text
 
 
-def _identity_entry(identity: BaseIdentity, groups: dict) -> ResubmitIdentityEntry:
-    return ResubmitIdentityEntry(
-        variable_text="population", identity=identity, entity_groups=groups
-    )
+_CONFIRMED = {"observationAbout": EntityGroup(dcid=_NODE, label="Northern Triangle")}
 
 
-def _candidates_entry(identity: BaseIdentity, groups: dict) -> ResubmitCandidatesEntry:
-    return ResubmitCandidatesEntry(
-        variable_text="population",
-        ordering="broadest_first",
-        truncated=False,
-        candidates=[ResubmitCandidate(identity=identity, entity_groups=groups)] * 2,
-    )
-
-
-@pytest.mark.parametrize("entry_for", [_identity_entry, _candidates_entry])
-def test_a_group_posted_beside_an_identity_reaches_the_answer_on_each_resubmit_door(entry_for):
-    """An identity entry and a candidate each carry their group beside the identity, and
-    the part's Spec serves the graph-confirmed group on `resolved.entity_groups`."""
-    spec_id, identity = _identity(_TRIANGLE)
-    graph = FakeGraph(nodes=_nodes(_TRIANGLE), obs=_OBS)
-    entry = entry_for(identity, {"observationAbout": EntityGroup(dcid=_NODE, label="posted")})
-
+def _resolve_entry(entry: ResubmitIdentityEntry | ResubmitCandidatesEntry):
+    """The one part a resubmit of `entry` answers, over a graph that places every triangle
+    country in the group's node."""
     response = offline_resolve(
         ResolveRequest(input=DatasetResubmitInput(entries=[entry])),
-        graph=graph,
+        graph=FakeGraph(nodes=_nodes(_TRIANGLE), obs=_OBS),
         sdmx=FakeSdmxClient(observations={}, availability={}),
     )
-
     (part,) = response.parts
-    specs = [part.spec] if part.status == "definite" else part.candidates.specs
-    assert specs
-    for spec in specs:
-        assert spec.spec_id == spec_id
-        assert spec.resolved.entity_groups == {
-            "observationAbout": EntityGroup(dcid=_NODE, label="Northern Triangle")
-        }
+    return part
+
+
+def test_a_group_posted_beside_an_identity_entry_reaches_the_answer():
+    spec_id, identity = _identity(_TRIANGLE)
+
+    part = _resolve_entry(
+        ResubmitIdentityEntry(
+            variable_text="population",
+            identity=identity,
+            entity_groups={"observationAbout": EntityGroup(dcid=_NODE, label="posted")},
+        )
+    )
+
+    assert part.spec.spec_id == spec_id
+    assert part.spec.resolved.entity_groups == _CONFIRMED
+
+
+def test_a_candidate_serves_only_the_group_posted_beside_its_own_identity():
+    """Both candidates bind the group's members, so the graph would confirm the group for
+    either. The candidate posting it serves it on `resolved.entity_groups`, and the
+    candidate posting none serves none."""
+    grouped_id, grouped = _identity(_TRIANGLE)
+    bare_id, bare = _identity(_TRIANGLE, "latest")
+
+    part = _resolve_entry(
+        ResubmitCandidatesEntry(
+            variable_text="population",
+            ordering="broadest_first",
+            truncated=False,
+            candidates=[
+                ResubmitCandidate(
+                    identity=grouped,
+                    entity_groups={"observationAbout": EntityGroup(dcid=_NODE, label="posted")},
+                ),
+                ResubmitCandidate(identity=bare),
+            ],
+        )
+    )
+
+    assert [(spec.spec_id, spec.resolved.entity_groups) for spec in part.candidates.specs] == [
+        (grouped_id, _CONFIRMED),
+        (bare_id, None),
+    ]
 
 
 @pytest.mark.parametrize(
     "model", [ResubmitIdentityPayload, ResubmitIdentityEntry, ResubmitCandidate]
 )
-@pytest.mark.parametrize(
-    "groups",
-    [
-        {"creditor": {"label": "Paris Club"}},
-        {role: {"label": "x"} for role in ("observationAbout", "origin", "destination", "a")},
-    ],
-    ids=["unknown_role_key", "four_roles"],
-)
-def test_the_request_models_refuse_a_group_on_no_entity_role(model, groups):
-    """A group's key is one of the three entity role keys, so a fourth key or any other
-    name fails validation on every model that carries the field."""
-    from pydantic import ValidationError
-
+def test_the_request_models_refuse_a_group_on_no_entity_role(model):
+    """A group's key is one of the three entity role keys, so any other name fails
+    validation on every model that carries the field."""
     document = {
         "variable_text": "population",
         "identity": _identity(_TRIANGLE)[1].model_dump(mode="json", exclude_none=True),
-        "entity_groups": groups,
+        "entity_groups": {"creditor": {"label": "Paris Club"}},
     }
     fields = {name: document[name] for name in model.model_fields if name in document}
 

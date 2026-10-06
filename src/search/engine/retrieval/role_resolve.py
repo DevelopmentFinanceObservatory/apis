@@ -17,6 +17,7 @@ from search.engine.errors import GraphInfraError, RoleSignatureError
 from search.engine.retrieval.bound_values import (
     bound_values_from_bindings,
     declared_role_signature,
+    index_open_role_keys,
     shape_member_facts,
     shape_query,
     undeclared_bound_roles,
@@ -625,8 +626,9 @@ class _AdmittedPopulation:
     roles_unverified: bool
     member_population_exact: bool
     open_axes: frozenset[RoleAxis]
-    """The open axes asked for that the survivors declare a role on, which the answer's
-    identity names as its open roles."""
+    """The open axes the answer's identity names as its open roles: those that joined the
+    code index's election of the family, or, for a family the index does not elect, the
+    open axes asked for that the survivors declare a role on."""
 
 
 def _admit_population(
@@ -653,11 +655,13 @@ def _admit_population(
 
     The population read here is one family already: the index's elected rows, a walked
     family, or the recalled members of one role set (`shape_member_facts`). Electing among
-    it joins every open axis its role set places, so the open axes the answer serves are
-    read from the survivors' roles (`_AdmittedPopulation.open_axes`). The election that
-    chose the family among every candidate can have set one of them aside
-    (`statvar_members.electing_role_keys`); the mint elects the same members under either
-    set of keys.
+    it joins every open axis its role set places. The election that chose the family among
+    every candidate can have set one of them aside (`statvar_members.electing_role_keys`),
+    and the mint is sure to elect the same dataset and members only under the open keys
+    that joined that election (`code_index.members.elect_dataset`). The identity's open
+    roles (`_AdmittedPopulation.open_axes`) are therefore those keys where the index
+    elected the family (`index_open_role_keys`), and the open axes the survivors declare
+    a role on where a walk or the recall did.
 
     Empty populations return ``NoDataDraft`` with one of four reasons:
     ``variable_not_resolved`` (no members, or none whose unbound constraints all
@@ -735,6 +739,8 @@ def _admit_population(
     except (RoleSignatureError, ValueError):
         return NoDataDraft(reason="role_signature_incompatible")
 
+    joined = index_open_role_keys(query) if index_sourced else None
+    minted_open_keys = open_role_keys if joined is None else joined
     return _AdmittedPopulation(
         surviving_svs=surviving_svs,
         member_facts=member_facts,
@@ -743,7 +749,7 @@ def _admit_population(
         bindings_admitted_dcids=bindings_admitted_dcids,
         roles_unverified=roles_unverified,
         member_population_exact=member_population_exact,
-        open_axes=frozenset(axis for axis in names if axis in open_role_keys),
+        open_axes=frozenset(axis for axis in names if axis in minted_open_keys),
     )
 
 
@@ -917,7 +923,7 @@ def graph_confirm_resolve(
     declares, since recall is a sample of the family. A family with a by-creditor twin
     answers with the twin, and one whose members all lack the axis elects as it would
     without it (`statvar_members.electing_role_keys`). The result's ``open_axes`` holds
-    those the elected members declare, which are the identity's open roles.
+    the identity's open roles (`_AdmittedPopulation.open_axes`).
 
     Returns ``Materialised``, ``NoDataDraft``, or ``UnsupportedDraft``. A bound
     destination with no observations returns an unavailable ``Materialised``
@@ -971,7 +977,7 @@ def graph_confirm_resolve(
     )
     if not isinstance(admitted, _AdmittedPopulation):
         return admitted
-    # The open axes the elected members declare. The others stay unnamed.
+    # The open axes the identity names. The others stay unnamed.
     elected_open_axes = admitted.open_axes
     surviving_svs = admitted.surviving_svs
     refuse_declared_defaults(graph, surviving_svs)
