@@ -30,7 +30,7 @@ from search.models import (
     ResubmitParsedEntry,
     Slot,
 )
-from tests.engine._base_identity import GDP_SHAPE, make_base, make_identity, subject_entity
+from tests.engine._base_identity import GDP_SHAPE, make_identity, subject_entity
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
@@ -54,14 +54,10 @@ _ACTIVITY_SOURCE_SLOT = Slot.model_validate(
 
 def _gdp_identity_entry(entity_dcid: str, variable_text: str) -> ResubmitIdentityEntry:
     entities = [subject_entity(entity_dcid)]
-    base_spec_id, base_identity = make_base(GDP_SHAPE, entities=entities)
     identity = make_identity(GDP_SHAPE, [_ACTIVITY_SOURCE_SLOT], entities=entities)
     return ResubmitIdentityEntry(
         variable_text=variable_text,
         identity=identity,
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=["Amount_EconomicActivity_GrossDomesticProduction_Nominal"],
     )
 
 
@@ -126,7 +122,6 @@ def test_run_variables_streaming_use_semaphore_without_a_scope_raises():
                 admission=admission,
                 llm=llm,
                 sdmx=sdmx,
-                base_steps=[],
                 base_timing={},
                 pre_resolved=None,
                 deadline=time.monotonic() + 3600,
@@ -163,7 +158,6 @@ def test_scoped_concurrency_lets_the_same_call_succeed():
                 admission=admission,
                 llm=llm,
                 sdmx=sdmx,
-                base_steps=[],
                 base_timing={},
                 pre_resolved=None,
                 deadline=time.monotonic() + 3600,
@@ -265,7 +259,7 @@ def test_mixed_dataset_resubmit_request_shares_one_semaphore(search_settings):
     ]
     request = ResolveRequest(
         input=DatasetResubmitInput(entries=entries),
-        response_options=ResolveOptions(include_sentence=False),
+        response_options=ResolveOptions(),
     )
 
     async def _drain() -> None:

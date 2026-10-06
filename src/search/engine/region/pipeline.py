@@ -17,6 +17,7 @@ from origin_catalogue import recording_un_blocked_places
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
+from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.envelope import _sum_usage, now_ms
 from search.engine.errors import (
     DeclaredDefaultUnsupportedError,
@@ -58,7 +59,7 @@ from search.engine.region.un_system import with_un_unavailable_warning
 from search.engine.region.withheld import with_withheld_warning
 from search.engine.retrieval.bound_values import RoleClassWalks
 from search.engine.role_text import DoorRole
-from search.models import Operation, PipelineStep, Warning
+from search.models import Operation, RoleAxis, Warning
 from series_coverage.shared import CoverageSnapshot
 
 logger = logging.getLogger(__name__)
@@ -103,6 +104,7 @@ async def resolve_variable(
     entity_roles: dict[str, list[DoorRole]] | None = None,
     dropped_qualifier_phrases: list[str] | None = None,
     operations: Sequence[Operation] = (),
+    open_axes: frozenset[RoleAxis] = frozenset(),
     query_text: str | None = None,
     qualifiers: tuple[CodedQualifier, ...] | None = None,
     pac: bool,
@@ -111,7 +113,6 @@ async def resolve_variable(
     admission: Admission | None = None,
     llm: SupportsLLM,
     sdmx: EngineSdmxClient,
-    base_steps: list[PipelineStep],
     base_timing: dict[str, int],
     pre_resolved: dict[str, Resolution] | None = None,
     variable_index: int = 0,
@@ -119,6 +120,7 @@ async def resolve_variable(
     unit_text: str | None = None,
     unit_text_best_effort: bool = False,
     source_text: str | None = None,
+    named_dataset: str | None = None,
     coverage: CoverageSnapshot,
     options: EngineOptions | None = None,
 ) -> RegionResult:
@@ -133,7 +135,8 @@ async def resolve_variable(
     `dropped_qualifier_phrases` are the request's match text, plus on the raw-text door this
     variable's own operation phrases, which bind treats alike. `operations` are the leg's
     admitted operations; one over `category` opens the slots its phrase names on the
-    elected shape whether or not bind claims them. `query_text` adds
+    elected shape whether or not bind claims them. `open_axes` are the flow axes the leg
+    asks every member of (`ResolveState.open_axes`). `query_text` adds
     the verbatim query as a match source for a single-variable request. `qualifiers` adds a
     typed source. Its phrase-relative spans stay separate from variable spans. The raw-text door
     supplies both qualifier inputs.
@@ -146,7 +149,9 @@ async def resolve_variable(
     dispatch.
 
     `emit` adds `shape` and `sentence` events concurrently with pipeline work. `variable_index`
-    correlates them. `unit_text` and `source_text` carry parsed-door requests, and
+    correlates them. `named_dataset` is the declared dataset a parsed part names in
+    `ParsedPart.provenance`, which shape candidacy reads (`ResolveState.named_dataset`).
+    `unit_text` and `source_text` carry parsed-door requests, and
     `unit_text` the raw-text door's typed unit phrase. A bound, expressible unit narrows
     observation facets. With `unit_text_best_effort`, a unit the elected data cannot convert
     to is withdrawn and the leg answers unconverted (`phase_shared.withdraw_typed_unit`).
@@ -154,7 +159,7 @@ async def resolve_variable(
 
     `graph` and `sdmx` are shared, thread-safe clients. Dev-finance role-keyed observation and
     availability reads use `sdmx`. `llm` is stateless per call. `date_request` is the shared
-    window, while `base_steps` and `base_timing` carry extraction results.
+    window, while `base_timing` carries extraction timing.
 
     Recall runs once. The pipeline answers from our candidates first; when that pass ends
     `no_data`, it waits for the UN System Data Commons resolve that recall started and runs
@@ -165,7 +170,8 @@ async def resolve_variable(
     When the pipeline's UN System Data Commons reads named places the UN front door refuses,
     the result carries `un_system_unavailable` naming them. The request's first subject-only
     no-data answer with an elected shape carries `withheld_by_registry` when the catalogue
-    withholds the provenances holding its data (`region.withheld`).
+    withholds the provenances holding its data (`region.withheld`). The result is `degraded`
+    when the call swallowed a read (`degraded_reads`).
     """
     _admission = admission if admission is not None else Admission(graph=graph)
     _options = options if options is not None else EngineOptions()
@@ -187,7 +193,6 @@ async def resolve_variable(
         pool: Literal["ours", "un_system"],
         emit: EventSink | None,
         deadline: float | None,
-        pipeline_steps: list[PipelineStep],
         timing: dict[str, int],
     ) -> ResolveState:
         return ResolveState(
@@ -199,6 +204,7 @@ async def resolve_variable(
             entity_roles=entity_roles or {},
             dropped_qualifier_phrases=dropped_qualifier_phrases or [],
             operations=tuple(operations),
+            open_axes=open_axes,
             query_text=query_text,
             qualifiers=qualifiers,
             pac=pac,
@@ -218,6 +224,7 @@ async def resolve_variable(
             unit_text=unit_text,
             unit_text_best_effort=unit_text_best_effort,
             source_text=source_text,
+            named_dataset=named_dataset,
             materialise_graph=materialise_graph,
             materialise_sdmx=_options.materialise_sdmx,
             rate_cache=_options.rate_cache,
@@ -226,7 +233,6 @@ async def resolve_variable(
             role_class_walks=role_class_walks,
             coverage=coverage,
             pool=pool,
-            pipeline_steps=pipeline_steps,
             timing=timing,
             warnings=[],
             var_usage=None,
@@ -253,40 +259,42 @@ async def resolve_variable(
             else emit
         ),
         deadline=_options.deadline,
-        pipeline_steps=list(base_steps),
         timing=dict(base_timing),
     )
-    with recording_un_blocked_places() as un_blocked:
-        await _phase_recall(state)
-        rcl = cast(Recall, state.rcl)
-        # `_phase_resolve_places` rewrites both entity maps in place, so the second pass
-        # starts from recall's own.
-        recalled = rcl.model_copy(
-            update={
-                "resolutions": dict(rcl.resolutions),
-                "resolved_entity_names": dict(rcl.resolved_entity_names),
-            }
-        )
-        recall_steps = list(state.pipeline_steps)
-        result = await _run_phases(state)
-        result = await _fill_gap(
-            result,
-            rcl=recalled,
-            deadline=_options.deadline,
-            variable_index=variable_index,
-            emit=emit,
-            first_sentences=first_sentences,
-            first_measure_class_refused=state.n_measure_class_refused,
-            second_state=lambda sink, bound: new_state(
-                pool="un_system",
-                emit=sink,
-                deadline=bound,
-                pipeline_steps=list(recall_steps),
-                timing={},
-            ),
-        )
-    result = with_un_unavailable_warning(result, un_blocked)
-    return await with_withheld_warning(result, state.graph, deadline=state.deadline)
+    # A read the pass swallows marks the part degraded, so no cache stores it.
+    with recording_degraded_reads() as lost:
+        with recording_un_blocked_places() as un_blocked:
+            await _phase_recall(state)
+            rcl = cast(Recall, state.rcl)
+            # `_phase_resolve_places` rewrites both entity maps in place, so the second pass
+            # starts from recall's own.
+            recalled = rcl.model_copy(
+                update={
+                    "resolutions": dict(rcl.resolutions),
+                    "resolved_entity_names": dict(rcl.resolved_entity_names),
+                }
+            )
+            result = await _run_phases(state)
+            result = await _fill_gap(
+                result,
+                rcl=recalled,
+                deadline=_options.deadline,
+                variable_index=variable_index,
+                emit=emit,
+                first_sentences=first_sentences,
+                first_measure_class_refused=state.n_measure_class_refused,
+                first_names_dataset=state.named_dataset is not None
+                or bool(state.excluded_datasets),
+                second_state=lambda sink, bound: new_state(
+                    pool="un_system",
+                    emit=sink,
+                    deadline=bound,
+                    timing={},
+                ),
+            )
+        result = with_un_unavailable_warning(result, un_blocked)
+        result = await with_withheld_warning(result, state.graph, deadline=state.deadline)
+    return dataclasses.replace(result, degraded=True) if lost.degraded else result
 
 
 def _holding_sentences(emit: EventSink, held: list[SentenceEvent]) -> EventSink:
@@ -310,11 +318,18 @@ async def _fill_gap(
     emit: EventSink | None,
     first_sentences: list[SentenceEvent],
     first_measure_class_refused: int,
+    first_names_dataset: bool,
     second_state: Callable[[EventSink | None, float | None], ResolveState],
 ) -> RegionResult:
     """`first`, or the answer from a second pass over `rcl.un_candidates` when `first` is
-    `no_data`.
+    `no_data` and its part names or excludes no dataset.
 
+    A part that names a dataset, by the parsed door's `provenance`, its source slot or
+    electing an opt-in table's own measure, or that excludes one through its source slot
+    (`first_names_dataset`, read from `ResolveState.named_dataset` and
+    `ResolveState.excluded_datasets` after vetting), answers from the declared datasets it
+    chose, so its `first` stands: the UN System Data Commons publishes none of them, and
+    an answer from it would serve what the part named another table for or excluded.
     The second pass shares recall and the resolved entities, and ends `_SECOND_PASS_RESERVE_S`
     before `deadline`. It first waits for recall's UN resolve, which is bounded by
     `SEARCH_UN_RESOLVE_TIMEOUT_S`, and not past that bound. Its answer stands only when it is
@@ -347,7 +362,7 @@ async def _fill_gap(
         return result
 
     bound = None if deadline is None else deadline - _SECOND_PASS_RESERVE_S
-    skip = await _second_pass_skip(first, rcl=rcl, bound=bound)
+    skip = await _second_pass_skip(first, rcl=rcl, bound=bound, names_dataset=first_names_dataset)
     if skip is not None:
         _log_gap_fill(
             variable_index,
@@ -442,14 +457,19 @@ async def _fill_gap(
     )
 
 
-async def _second_pass_skip(first: RegionResult, *, rcl: Recall, bound: float | None) -> str | None:
+async def _second_pass_skip(
+    first: RegionResult, *, rcl: Recall, bound: float | None, names_dataset: bool
+) -> str | None:
     """Why the second pass does not run after `first`, or `None` when it runs. `bound` is
-    when the second pass must end. Only a `no_data` answer that the second pass could fill
-    waits for the UN resolve, and not past `bound`."""
+    when the second pass must end. `names_dataset` holds when the part names or excludes a
+    dataset. Only a `no_data` answer that the second pass could fill waits for the UN
+    resolve, and not past `bound`."""
     if first.status != "no_data":
         return "answered"
     if first.no_data_reason in _ENTITY_TERMINALS:
         return "entity"
+    if names_dataset:
+        return "named_dataset"
     try:
         async with asyncio.timeout(None if bound is None else bound - time.monotonic()):
             await rcl.settle_un()
@@ -602,7 +622,9 @@ async def _end_related_reads(state: ResolveState) -> None:
 # `_phase_facet_requests` handles `unit_not_resolved` when a bound unit fails parsing. It also
 # rejects inexpressible units and bare data-source requests as unsupported.
 # `qualifier_not_bound` comes from definite assembly after identity confirmation or candidates'
-# single-survivor collapse. Both paths call `_unbound_query_qualifiers`.
+# single-survivor collapse. Both paths call `_unbound_query_qualifiers`. Prune/rank mints it
+# for a named dataset that publishes no recalled shape, and vetting for a source slot that
+# excludes every dataset the part may answer from.
 # Materialise can mint `no_matching_slice`, deferred to the place-less mint, or `binding_mismatch`.
 # No-data/candidate handlers forward materialised `binding_mismatch` reasons.
 # `_phase_materialise` reports `denominator_not_available` after `no_matching_slice` is resolved.

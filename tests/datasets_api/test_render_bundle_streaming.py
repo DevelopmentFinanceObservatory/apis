@@ -11,7 +11,6 @@ from datasets_api.manifest_models import CitationSource
 from datasets_api.mint_models import MintOptions
 from datasets_api.render import render_and_store
 from materialise.enrichment import EnrichmentLookup
-from materialise.formats import Rendering, write_csv
 from materialise.reshape import Table
 
 from ._artifact_doubles import FakeArtifactStore
@@ -74,18 +73,25 @@ def test_bundle_zip_streamed_via_open_put_is_a_valid_archive_with_the_expected_m
     }
     assert digest.startswith("sha256:")
 
-    # ZIP_STORED preserves the CSV bytes written to the sink.
-    class _Sink:
-        def __init__(self) -> None:
-            self.buffer = bytearray()
-
-        def write(self, data: bytes, /) -> int:
-            self.buffer.extend(data)
-            return len(data)
-
-    sink = _Sink()
-    write_csv((_TABLE,), rendering=Rendering(), sink=sink)
-    assert data_bytes == bytes(sink.buffer)
+    # ZIP_STORED preserves the CSV bytes the bare rendering writes.
+    artifact_store = FakeArtifactStore()
+    bare = render_and_store(
+        frame_chunks=iter((_TABLE,)),
+        options=MintOptions(format="csv", bundle=False),
+        spec={"spec_id": "bundle-streaming-test"},
+        provenance_refs=[],
+        citations={},
+        reproducing_call=None,
+        content_version="sha256:" + "0" * 64,
+        artifact_store=artifact_store,
+        entity_columns=("recipient",),
+        enrichment=EnrichmentLookup(_GRAPH),
+        resolved_stat_var_refs=(),
+        pivot_max_output_cells=5_000_000,
+        prepared_at=PREPARED_AT,
+        site=SITE,
+    )
+    assert data_bytes == artifact_store.fetch(bare.artifact.url)
 
 
 def test_bundle_zip_is_byte_identical_across_two_independent_renders():

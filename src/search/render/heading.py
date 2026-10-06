@@ -28,6 +28,7 @@ from search.models import (
     Coverage,
     CoverageBreadth,
     CoverageExact,
+    DateRange,
     Entity,
     EntityRoleDirectional,
     GraphRef,
@@ -42,9 +43,9 @@ from search.models import (
     ResolvedEntity,
     ResolvedFacet,
     ResolvedScope,
-    ResolvedStatVar,
     RoleAxis,
     RoleAxisFact,
+    SentenceFacts,
     Slot,
     SlotValue,
     Spec,
@@ -281,8 +282,8 @@ def heading_for(
         resolved.shape,
         resolved.coverage.window,
         latest=spec.definition.identity.requested_window.kind == "latest",
-        sv_labels=[_humanize_ref(sv.ref, sv.label) for sv in resolved.stat_vars.items],
-        stat_vars=resolved.stat_vars.items,
+        facts=resolved.sentence_facts,
+        served=resolved.stat_vars.data_date_range,
         resolved_sources=resolved.trace.resolved_sources,
         coverage=resolved.coverage,
         scope=resolved.scope,
@@ -383,8 +384,8 @@ def heading_from_parts(
     window: TimeWindow | None,
     *,
     latest: bool = False,
-    sv_labels: list[str] | None = None,
-    stat_vars: list[ResolvedStatVar] | None = None,
+    facts: SentenceFacts | None = None,
+    served: DateRange | None = None,
     resolved_sources: Sequence[GraphRef] | None = None,
     coverage: Coverage | None = None,
     scope: ResolvedScope | None = None,
@@ -405,7 +406,7 @@ def heading_from_parts(
     then its byline (latest-year label, unit, source).
 
     The actor leads in possessive form when it names one entity: the flow family's
-    possessor role (`RoleWording.possessor`: the donor for aid, the debtor for debt),
+    possessor role (`RoleWording.possessor`: the provider for aid, the debtor for debt),
     or the subject place when no flow role applies. "Germany's gross ODA disbursements
     to Kenya", "Japan's GDP per capita in PPP international dollars". Every other role
     follows the noun with its family preposition, destination first ("owed to China",
@@ -435,8 +436,11 @@ def heading_from_parts(
     with its price basis (`_byline_unit`), and the source, a bound
     source constraint or the resolved provenance.
 
-    ``shape`` needs only ``ShapeLike`` fields. ``sv_labels`` enables the single-StatVar
-    name. ``stat_vars``, ``resolved_sources``, ``coverage``, ``scope``, ``facets`` and
+    ``shape`` needs only ``ShapeLike`` fields. ``facts`` are what the served members give
+    (`ResolvedSpec.sentence_facts`), namely one member's name and the flow family.
+    ``served`` is the date range the answer serves over them
+    (`ResolvedStatVars.data_date_range`), which gives the period. ``facts``, ``served``,
+    ``resolved_sources``, ``coverage``, ``scope``, ``facets`` and
     ``role_axis_facts`` fill resolved values into open slots and roles.
     Pre-materialisation callers omit them, leaving their slots silent, the unit absent,
     and open roles unstated. ``keep_how_properties`` preserves sibling-distinguishing
@@ -453,14 +457,15 @@ def heading_from_parts(
     """
     norm_entities = _normalize_entities(entities)
     constraints = _shared_constraint_values(slots, open_axis_facts)
-    family = _flow_family(shape, stat_vars, constraints, members=member_constraints)
+    family = _flow_family(shape, facts, constraints, members=member_constraints)
     wording = role_wording(family)
     groups = entity_groups or {}
 
     noun = _resolve_noun(
         slots,
         shape,
-        sv_labels,
+        # A label equal to its dcid is no name (`candidates._graph_name`).
+        None if facts is None else [m.label for m in facts.members if m.label != m.dcid],
         measure_label,
         measure_label_axes,
         measure_label_named_values,
@@ -487,15 +492,14 @@ def heading_from_parts(
         coverage=coverage,
         # A spoken how value narrows a role's members, so "all" would overstate them.
         states_all=family is not None
-        and bool(stat_vars)
+        and facts is not None
+        and bool(facts.members)
         and not any(value.text for value in (*modifiers, *how)),
     )
     subject = (
         None
         if "destination" in roles
-        else _subject_phrase(
-            where_slot, group=groups.get("observationAbout"), coverage=coverage, wording=wording
-        )
+        else _subject_phrase(where_slot, group=groups.get("observationAbout"), coverage=coverage)
     )
     lead: RolePhrase | None = None
     if wording.possessor in roles and roles[wording.possessor].possessable:
@@ -534,7 +538,7 @@ def heading_from_parts(
         roles=tuple(roles.values()),
         how=tuple(how),
         subject=subject,
-        period=served_period(stat_vars, window),
+        period=served_period(served, window),
         when_slot=_find_slot(slots, axis="when"),
         family=family,
     )
@@ -714,13 +718,11 @@ _ROLE_COVERAGE_LABELS: Mapping[str, RoleAxis] = {
 }
 
 
-def _entities_text(
-    labels: list[str], *, group: IdentityEntityGroup | None, plural: str, wording: RoleWording
-) -> str:
+def _entities_text(labels: list[str], *, group: IdentityEntityGroup | None, plural: str) -> str:
     """Name a role's entities: by group and count (`group_text`), by count past three,
     else by name."""
     if group is not None and len(labels) > 1:
-        return group_text(len(labels), group, wording=wording)
+        return group_text(len(labels), group)
     if len(labels) > _MAX_NAMED_ENTITIES:
         return f"{len(labels)} {plural}"
     return _join_labels(labels)
@@ -789,7 +791,7 @@ def _role_phrases(
         if entities:
             group = entity_groups.get(axis) if len(entities) > 1 else None
             labels = [_entity_name(e.dcid, e.label) for e in entities]
-            text = _entities_text(labels, group=group, plural=noun.plural, wording=wording)
+            text = _entities_text(labels, group=group, plural=noun.plural)
             possessable = len(entities) == 1 and axis not in entity_groups
         else:
             reading = _open_role_reading(
@@ -820,7 +822,6 @@ def _subject_phrase(
     *,
     group: IdentityEntityGroup | None,
     coverage: Coverage | None,
-    wording: RoleWording,
 ) -> RolePhrase | None:
     """Return the where slot's phrase for a heading with no destination, or None.
 
@@ -836,7 +837,7 @@ def _subject_phrase(
         return RolePhrase(
             axis=None,
             preposition="in",
-            text=_entities_text(labels, group=group, plural="places", wording=wording),
+            text=_entities_text(labels, group=group, plural="places"),
             entity_dcids=dcids,
             slot=where_slot,
             possessable=len(labels) == 1 and group is None,
@@ -853,7 +854,7 @@ def _subject_phrase(
 
 def _flow_family(
     shape: ShapeLike,
-    stat_vars: Sequence[ResolvedStatVar] | None,
+    facts: SentenceFacts | None,
     constraints: Mapping[str, str],
     *,
     members: Sequence[Mapping[str, str]] = (),
@@ -861,13 +862,13 @@ def _flow_family(
     """The flow family the members share (`flow_family`), or None.
 
     ``members`` are the elected members' own constraint values, when known. Otherwise
-    each StatVar that lists its constraint properties is one member, valued from the
-    values every member shares. With none, the shared values stand for the one member.
+    each constraint property list the served members state (`SentenceFacts`) is one
+    member, valued from the values every member shares. With none, the shared values
+    stand for the one member.
     """
     members = list(members) or [
-        {prop_dcid: constraints.get(prop_dcid, "") for prop_dcid in sv.constraint_properties}
-        for sv in stat_vars or ()
-        if sv.constraint_properties is not None
+        {prop_dcid: constraints.get(prop_dcid, "") for prop_dcid in properties}
+        for properties in (facts.constraint_properties if facts is not None else ())
     ]
     if not members and constraints:
         members = [dict(constraints)]

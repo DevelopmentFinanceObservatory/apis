@@ -4,10 +4,10 @@ chained derivations. The JSON Schema holds identifier patterns.
 This module duplicates them in Python. Keep both aligned with the envelope schema.
 
 The fixed caps are 256 input versions (68 characters each), 16 role keys, 22 row keys, 1,024
-characters per cell or key, 3 unit entries, and 1,000,000 rows. The input limit exceeds
-`MAX_COLLECTION_MEMBERS`. Role names use open vocabulary. The grammar NFC-normalises and
-deduplicates names and reserves fixed columns. CRS shapes use two role keys. Dcids and time
-    periods stay under 100 characters. Row width is six fixed columns plus the role-key limit.
+characters per cell or key, 3 unit entries, and 1,000,000 rows. Role names use open vocabulary.
+The grammar NFC-normalises and deduplicates names and reserves fixed columns. CRS shapes use two
+role keys. Dcids and time periods stay under 100 characters. Row width is six fixed columns plus
+the role-key limit.
 
 Cells are scalars, with one level of scalar mapping under `unit` and keys `currency`, `prices`, or
 `base_year`. The validator checks dict-key lengths itself to protect the JSON Pointer from echoing

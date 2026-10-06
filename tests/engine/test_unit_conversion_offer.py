@@ -541,7 +541,6 @@ def test_a_definite_dollar_part_carries_the_warning_while_no_catalogue_is_loaded
             extra_warnings=[],
             start_ms=now_ms(),
             engine_build="test",
-            include_sentence=False,
             max_candidates=10,
         )
     codes = [warning.code for warning in response.parts[0].warnings]

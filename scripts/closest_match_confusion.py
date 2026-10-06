@@ -9,22 +9,31 @@ its readings raises the fact.
 Each reading's inputs come from the recorded body: `variable_text` and the
 `retrieval_score_weak` warning from its part, the measure noun from the authored noun
 `search.heading.measure_noun` gives the Spec's shape and shared constraint values, else the
-first `what` token of the Spec's own recorded `sentence_plan`, the StatVar names from
-`resolved.stat_vars.items[].label`, and the bound codes from the how-slot bindings and the
-StatVars' `slot_values`. Responses carry no `alternateName`, so those come from a
-snapshot file mapping StatVar dcid to every `name` and `alternateName` it holds.
-`--fetch-alternate-names` writes that snapshot from the graph at `SEARCH_GRAPH_BASE`
-(the service root, as the engine reads it) for the StatVars of every weak reading. A run
-without it reads the snapshot and touches no network, so it reruns to the same output.
+first `what` token of the Spec's own recorded `sentence_plan`, the StatVar names from its
+members' labels, and the bound codes from the how-slot bindings and the members'
+constraint values.
+
+Responses carry neither a Spec's members nor any `alternateName`, so both come from
+snapshot files. The members snapshot maps a `spec_id` to the `members` the Datasets
+members door (`POST /api/datasets/{id}/members`) lists for the Spec's `definition`: the
+StatVars a mint of it serves. `--fetch-members` writes it from the service at `--base` for
+every Spec the responses show. The names snapshot maps a StatVar dcid to every `name` and
+`alternateName` it holds. `--fetch-alternate-names` writes it from the graph at
+`SEARCH_GRAPH_BASE` (the service root, as the engine reads it) for the StatVars of every
+weak reading. A run with neither flag reads the snapshots and touches no network, so it
+reruns to the same output.
 
 The labels file maps a query id to `{"closest_match": bool, "basis": "assessment" | "own",
 "reason": str}`. A query it does not list is a negative whose basis is the assessment.
 
 Usage:
     uv run python scripts/closest_match_confusion.py --raw-dir RUNS --labels LABELS.json \\
-        --alternate-names NAMES.json --out confusion.md
+        --members MEMBERS.json --fetch-members
     uv run --env-file .env python scripts/closest_match_confusion.py --raw-dir RUNS \\
-        --labels LABELS.json --alternate-names NAMES.json --fetch-alternate-names
+        --labels LABELS.json --members MEMBERS.json --alternate-names NAMES.json \\
+        --fetch-alternate-names
+    uv run python scripts/closest_match_confusion.py --raw-dir RUNS --labels LABELS.json \\
+        --members MEMBERS.json --alternate-names NAMES.json --out confusion.md
 """
 
 from __future__ import annotations
@@ -36,11 +45,16 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
+import httpx
+
 from search.engine.closest_match import bound_code_names, closest_match_fact
 from search.heading.measure_noun import measure_noun
 from search.heading.words import content_words
 
 _WEAK = "retrieval_score_weak"
+_DCID_PREFIX = "dcid:"
+DEFAULT_BASE = "https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app"
+TIMEOUT_S = 150
 
 
 @dataclass(frozen=True)
@@ -51,7 +65,7 @@ class Reading:
     variable_text: str
     weak: bool
     measure_noun: str
-    stat_vars: tuple[tuple[str, str], ...]
+    stat_vars: tuple[tuple[str, str | None], ...]
     bound_codes: tuple[str, ...]
 
 
@@ -62,35 +76,51 @@ class Query:
     readings: tuple[Reading, ...]
 
 
-def _load_queries(raw_dir: Path) -> list[Query]:
+def _load_records(raw_dir: Path) -> list[dict]:
     paths = sorted(raw_dir.glob("raw-*.jsonl"))
     if not paths:
         raise SystemExit(f"no raw-*.jsonl files under {raw_dir}")
-    queries: list[Query] = []
-    for path in paths:
-        for line in path.read_text().splitlines():
-            record = json.loads(line)
-            body = record.get("body") or {}
-            readings = tuple(
-                reading
-                for part in body.get("parts", [])
-                for reading in _readings(record["id"], part)
-            )
-            queries.append(Query(record["id"], record["query"], readings))
-    return queries
+    return [json.loads(line) for path in paths for line in path.read_text().splitlines()]
 
 
-def _readings(query_id: str, part: dict) -> Iterator[Reading]:
+def _parts(record: dict) -> list[dict]:
+    return (record.get("body") or {}).get("parts", [])
+
+
+def _shown_specs(part: dict) -> list[dict]:
+    """The Specs a recorded part shows: a definite part's one, a candidates part's each."""
     if part["status"] == "definite":
-        specs = [part["spec"]]
-    elif part["status"] == "candidates":
-        specs = part["candidates"]["specs"]
-    else:
-        return
+        return [part["spec"]]
+    if part["status"] == "candidates":
+        return part["candidates"]["specs"]
+    return []
+
+
+def _load_queries(records: list[dict], members: dict[str, list[dict]]) -> list[Query]:
+    return [
+        Query(
+            record["id"],
+            record["query"],
+            tuple(
+                reading
+                for part in _parts(record)
+                for reading in _readings(record["id"], part, members)
+            ),
+        )
+        for record in records
+    ]
+
+
+def _readings(query_id: str, part: dict, members: dict[str, list[dict]]) -> Iterator[Reading]:
     weak = any(warning["code"] == _WEAK for warning in part.get("warnings", []))
-    for spec in specs:
+    for spec in _shown_specs(part):
         resolved = spec["resolved"]
-        items = resolved["stat_vars"]["items"]
+        if spec["spec_id"] not in members:
+            raise SystemExit(
+                f"the members snapshot holds no {spec['spec_id']} (query {query_id}); "
+                "write it with --fetch-members"
+            )
+        items = members[spec["spec_id"]]
         what = [token["text"] for token in resolved["sentence_plan"] if token.get("axis") == "what"]
         codes = [
             value["ref"]["dcid"]
@@ -98,45 +128,35 @@ def _readings(query_id: str, part: dict) -> Iterator[Reading]:
             if slot["key"]["axis"] == "how"
             for value in _binding_values(slot["binding"])
         ]
-        codes.extend(
-            slot_value["value"]["ref"]["dcid"]
-            for item in items
-            for slot_value in item.get("slot_values", [])
-            if slot_value["value"].get("ref")
-        )
+        codes.extend(value for item in items for value in item["constraints"].values() if value)
         noun = _authored_noun(resolved["shape"], items)
         yield Reading(
             query_id=query_id,
             variable_text=part["variable_text"],
             weak=weak,
             measure_noun=noun or (what[0] if what else resolved["shape"]["label"]),
-            stat_vars=tuple((item["ref"], item["label"]) for item in items),
+            stat_vars=tuple(
+                (item["ref"].removeprefix(_DCID_PREFIX), item["label"]) for item in items
+            ),
             bound_codes=tuple(dict.fromkeys(codes)),
         )
 
 
 def _authored_noun(shape: dict, items: list[dict]) -> str | None:
     """The authored measure noun the heading shows for `shape`, from the
-    constraint values every StatVar in `items` shares."""
-    values: dict[str, set[str]] = {}
-    for item in items:
-        for slot_value in item.get("slot_values", []):
-            if (ref := slot_value["value"].get("ref")) and (
-                prop := slot_value["key"].get("property")
-            ):
-                values.setdefault(prop["dcid"], set()).add(ref["dcid"])
-    shared = {
-        prop: next(iter(found))
-        for prop, found in values.items()
-        if len(found) == 1
-        and all(
-            any(
-                sv["key"].get("property", {}).get("dcid") == prop
-                for sv in item.get("slot_values", [])
-            )
-            for item in items
-        )
-    }
+    constraint values every member in `items` shares."""
+    bound = [
+        {prop: value for prop, value in item["constraints"].items() if value} for item in items
+    ]
+    shared = (
+        {
+            prop: value
+            for prop, value in bound[0].items()
+            if all(other.get(prop) == value for other in bound)
+        }
+        if bound
+        else {}
+    )
     noun = measure_noun(
         population_type=(shape.get("population_type") or {}).get("dcid"),
         measured_property=(shape.get("measured_property") or {}).get("dcid"),
@@ -159,6 +179,7 @@ def _stat_var_names(reading: Reading, alternate_names: dict[str, list[str]]) -> 
         name
         for dcid, label in reading.stat_vars
         for name in (label, *alternate_names.get(dcid, ()))
+        if name
     ]
 
 
@@ -189,6 +210,31 @@ def _shared_words(reading: Reading, alternate_names: dict[str, list[str]]) -> li
         if holder is not None:
             shared[word] = holder
     return [f"{word!r} in {holder!r}" for word, holder in shared.items()]
+
+
+def _fetch_members(records: list[dict], path: Path, *, base: str) -> None:
+    definitions = {
+        spec["spec_id"]: spec["definition"]
+        for record in records
+        for part in _parts(record)
+        for spec in _shown_specs(part)
+    }
+    if not definitions:
+        raise SystemExit("the responses show no Spec; nothing to fetch")
+    members: dict[str, list[dict]] = {}
+    with httpx.Client(base_url=base.rstrip("/"), timeout=TIMEOUT_S) as client:
+        for spec_id, definition in sorted(definitions.items()):
+            response = client.post(
+                f"/api/datasets/{spec_id}/members",
+                json={"schema_version": 1, "definition": definition},
+            )
+            if response.status_code != 200:
+                raise SystemExit(
+                    f"the members door refused {spec_id}: {response.status_code} {response.text}"
+                )
+            members[spec_id] = response.json()["members"]
+    path.write_text(json.dumps(members, indent=1) + "\n")
+    print(f"wrote the members of {len(members)} Specs to {path}")
 
 
 def _fetch_alternate_names(queries: list[Query], path: Path) -> None:
@@ -278,12 +324,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--raw-dir", type=Path, required=True)
     parser.add_argument("--labels", type=Path, required=True)
-    parser.add_argument("--alternate-names", type=Path, required=True)
+    parser.add_argument("--members", type=Path, required=True)
+    parser.add_argument("--fetch-members", action="store_true")
+    parser.add_argument("--base", default=DEFAULT_BASE)
+    parser.add_argument("--alternate-names", type=Path)
     parser.add_argument("--fetch-alternate-names", action="store_true")
     parser.add_argument("--out", type=Path)
     args = parser.parse_args()
 
-    queries = _load_queries(args.raw_dir)
+    records = _load_records(args.raw_dir)
+    if args.fetch_members:
+        _fetch_members(records, args.members, base=args.base)
+        return
+    if args.alternate_names is None:
+        parser.error("--alternate-names is required without --fetch-members")
+    queries = _load_queries(records, json.loads(args.members.read_text()))
     if args.fetch_alternate_names:
         _fetch_alternate_names(queries, args.alternate_names)
         return

@@ -53,8 +53,8 @@ _GRID = "tests/engine/test_answer_invariants.py"
 _GRID_TEST = "test_every_cell_holds_every_invariant"
 _FIELDS = ("outcome", "served", "requests", "depth")
 # Recorded only for a door whose nearest-real relaxations, or whose alternates and
-# re-election siblings, walked their members.
-_WALK_FIELDS = ("relaxation_walk", "alternate_walk")
+# re-election siblings, walked their members, or whose Specs built facet options.
+_WALK_FIELDS = ("relaxation_walk", "alternate_walk", "facet_options")
 
 type DoorKey = tuple[str, str, int]
 type Doors = dict[DoorKey, dict[str, Any]]

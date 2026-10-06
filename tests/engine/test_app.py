@@ -3,28 +3,34 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 
+import pytest
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from dfo_platform.build import build_commit
 from search.engine.config import settings
 from search.models import Resolution
-from tests.engine._base_identity import GDP_SHAPE, make_base, make_identity, subject_entity
+from tests.engine._base_identity import GDP_SHAPE, make_identity, subject_entity
+from tests.engine._builders import value_slot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import member_walk_reader
 from tests.engine._search_app import search_app
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 
 
 def make_client(*, graph=None, llm=None, sdmx=None) -> TestClient:
-    """Build an offline client. Callers can replace any fake dependency."""
+    """Build an offline client. Callers can replace any fake dependency. A resubmit walks
+    the mint's member enumeration over the graph's nodes."""
     _graph = graph or FakeGraph()
     app = search_app(
         graph=_graph,
         resolver=make_resolver(_graph),
         llm=llm or FakeLLM(),
         sdmx=sdmx or FakeSdmxClient(),
+        materialise_graph=member_walk_reader(_graph) if isinstance(_graph, FakeGraph) else None,
     )
     return TestClient(app, raise_server_exceptions=False)
 
@@ -487,16 +493,14 @@ class TestSchema:
         assert "response_options" in properties
         assert "options" not in properties
 
-    def test_response_options_schema_has_exactly_the_five_contract_fields(self):
+    def test_response_options_schema_has_exactly_the_contract_fields(self):
         client = make_client()
         body = client.get("/api/search/schema").json()
         resolve_options = body["request"]["$defs"]["ResolveOptions"]
         assert set(resolve_options["properties"]) == {
             "include_observations",
             "include_option_coverage",
-            "include_sentence",
             "include_skills",
-            "max_candidates",
         }
 
     def test_include_observations_schema_describes_the_opt_in_default(self):
@@ -511,10 +515,8 @@ class TestSchema:
     def test_role_key_descriptions_use_only_clean_contract_vocabulary(self):
         client = make_client()
         schema = client.get("/api/search/schema").json()
-        request_defs = schema["request"]["$defs"]
         response_defs = schema["response"]["$defs"]
         descriptions = [
-            request_defs["RemovedParts"]["properties"]["entities"]["description"],
             response_defs["ResolvedScope"]["description"],
             response_defs["ResolvedSpec"]["properties"]["scope"]["description"],
             client.get("/openapi.json").json()["paths"]["/api/search/options"]["post"][
@@ -769,9 +771,9 @@ class TestEngineInputError:
         _assert_error(resp, status=400, code="request_invalid", detail="Bad request")
 
 
-def test_resubmit_identity_unknown_shape_returns_400():
-    """A resubmitted identity for a standard (non-family) shape with no promote anchor
-    must return HTTP 400."""
+def test_resubmit_identity_naming_no_measured_property_answers_variable_not_resolved():
+    """A resubmitted identity whose shape names no measured property anchors no member walk.
+    The mint refuses it, so the part answers `variable_not_resolved`."""
     client = make_client()
     resp = client.post(
         "/api/search/resolve",
@@ -796,41 +798,9 @@ def test_resubmit_identity_unknown_shape_returns_400():
             }
         },
     )
-    body = _assert_error(resp, status=400, code="request_invalid")
-    assert body["pointer"] == "/input/entries/0/base_identity"
-    assert body["detail"] == ("standard resubmit requires a base_identity (alongside base_spec_id)")
-
-
-def test_resubmit_identity_missing_stat_var_dcids_surfaces_code():
-    """An omitted stat_var_dcids field returns request_invalid through the real route."""
-    client = make_client()
-    resp = client.post(
-        "/api/search/resolve",
-        json={
-            "input": {
-                "kind": "dataset_resubmit",
-                "entries": [
-                    {
-                        "entry_kind": "identity",
-                        "variable_text": "a resubmitted identity",
-                        "identity": {
-                            "shape": {
-                                "kind": "statvar_schema",
-                                "population_type": "EconomicActivity",
-                                "measured_property": "Amount",
-                                "stat_type": "measuredValue",
-                                "measurement_qualifier": "Nominal",
-                            },
-                            "slots": [],
-                            "entities": {},
-                            "requested_window": {"kind": "all"},
-                        },
-                    }
-                ],
-            }
-        },
-    )
-    _assert_error(resp, status=400, code="request_invalid")
+    assert resp.status_code == 200, resp.text
+    (part,) = resp.json()["parts"]
+    assert part["no_data"]["reason"] == "variable_not_resolved"
 
 
 def test_resubmit_identity_missing_role_refs_name_every_missing_dcid():
@@ -838,8 +808,8 @@ def test_resubmit_identity_missing_role_refs_name_every_missing_dcid():
     its invalid_role_ref problem detail."""
     missing_dcids = ["country/ZZZ_NOT_A_PLACE", "country/ZZZ_ALSO_NOT_A_PLACE"]
     entities = [subject_entity(dcid) for dcid in missing_dcids]
-    base_spec_id, base_identity = make_base(GDP_SHAPE, entities=entities)
-    identity = make_identity(GDP_SHAPE, entities=entities)
+    gdp = value_slot("how", "activitySource", "activity source", "GrossDomesticProduction")
+    identity = make_identity(GDP_SHAPE, [gdp], entities=entities)
 
     client = make_client()
     resp = client.post(
@@ -852,11 +822,6 @@ def test_resubmit_identity_missing_role_refs_name_every_missing_dcid():
                         "entry_kind": "identity",
                         "variable_text": "a resubmitted identity",
                         "identity": identity.model_dump(mode="json"),
-                        "base_spec_id": base_spec_id,
-                        "base_identity": base_identity.model_dump(mode="json"),
-                        "resolved_stat_var_dcids": [
-                            "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
-                        ],
                     }
                 ],
             }
@@ -930,10 +895,6 @@ class TestFacetAxisVersioning:
                             "identity": _base_identity_with_facets(
                                 {"bogus_axis": {"state": "unbound"}}
                             ),
-                            "base_spec_id": "spec_" + "0" * 32,
-                            "base_identity": _base_identity_with_facets(
-                                {"bogus_axis": {"state": "unbound"}}
-                            ),
                         }
                     ],
                 }
@@ -956,10 +917,6 @@ class TestFacetAxisVersioning:
                             "entry_kind": "identity",
                             "variable_text": "a resubmitted identity",
                             "identity": _base_identity_with_facets(
-                                {"futureAxis": {"state": "value", "ref": "x"}}
-                            ),
-                            "base_spec_id": "spec_" + "0" * 32,
-                            "base_identity": _base_identity_with_facets(
                                 {"futureAxis": {"state": "value", "ref": "x"}}
                             ),
                         }
@@ -985,10 +942,6 @@ class TestFacetAxisVersioning:
                             "entry_kind": "identity",
                             "variable_text": "a resubmitted identity",
                             "identity": _base_identity_with_facets(
-                                {"futureAxis": {"state": "value", "ref": "x"}}
-                            ),
-                            "base_spec_id": "spec_" + "0" * 32,
-                            "base_identity": _base_identity_with_facets(
                                 {"futureAxis": {"state": "value", "ref": "x"}}
                             ),
                         }
@@ -1073,3 +1026,54 @@ class TestCORS:
             },
         )
         assert "access-control-allow-origin" not in resp.headers
+
+
+@pytest.mark.parametrize("transport", ["buffered", "sse"])
+def test_resolve_logs_one_line_with_caller_flags_transport_cache_and_timing(transport):
+    """Each resolve logs one `resolve` line whose timing matches the response it served."""
+    # A handler on the module's own logger, since the `search` logger may stop propagation.
+    records: list[logging.LogRecord] = []
+    handler = logging.Handler()
+    handler.emit = records.append
+    core_logger = logging.getLogger("search.engine.core")
+    core_logger.addHandler(handler)
+    previous_level = core_logger.level
+    core_logger.setLevel(logging.INFO)
+    headers = {"User-Agent": "dfo-test/1"}
+    if transport == "sse":
+        headers["Accept"] = "text/event-stream"
+    try:
+        resp = make_client().post(
+            "/api/search/resolve",
+            json={
+                "input": {"kind": "raw_text", "query": "fertility rate in Kenya"},
+                "response_options": {"include_observations": True},
+            },
+            headers=headers,
+        )
+    finally:
+        core_logger.removeHandler(handler)
+        core_logger.setLevel(previous_level)
+    assert resp.status_code == 200
+    body = (
+        resp.json()
+        if transport == "buffered"
+        else next(data["response"] for event, data in _parse_sse(resp.text) if event == "response")
+    )
+
+    lines = [r.getMessage() for r in records if r.getMessage().startswith("resolve {")]
+    assert len(lines) == 1
+    logged = json.loads(lines[0].removeprefix("resolve "))
+    assert logged["kind"] == "raw_text"
+    assert logged["caller"] == "dfo-test/1"
+    assert logged["include_observations"] is True
+    assert "include_skills" not in logged
+    assert logged["transport"] == transport
+    assert logged["cache"] in {"inactive", "miss", "hit layer1", "hit layer2"}
+    timing = body["diagnostics"]["timing_ms"]
+    assert logged["total_ms"] == timing["total"]
+    assert logged["by_step"] == timing.get("by_step")
+    assert logged["parts_by_step"] == [
+        (part.get("timing_ms") or {}).get("by_step") for part in body["parts"]
+    ]
+    assert any(logged["parts_by_step"])

@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Trim a sentence panel run into the golden `tests/render/test_sentence_golden.py` reads.
 
-The sentence panel (`scripts/sentence_panel/run.py`) writes one `raw-<slice>.jsonl` per slice,
-each line a query and the full `/api/search/resolve` response. This script keeps what the
-sentence renderer reads and the plans it wrote, and writes
+The sentence panel run in process (`scripts/sentence_panel/run.py --in-process`) writes one
+`raw-<slice>.jsonl` per slice, each line a query, the full `/api/search/resolve` response and
+the sentence facts of each Spec in it (`sentence_facts`, by spec id). This script keeps what
+the sentence renderer reads and the plans it wrote, and writes
 `tests/fixtures/sentence_panel/<slice>.jsonl.gz`, one JSON line per query:
 
 - `id`, `query`: the panel query.
@@ -12,23 +13,28 @@ sentence renderer reads and the plans it wrote, and writes
   sentence; a definite part's Spec, a candidates part's shown Specs, a no-data part's reason.
 
 A Spec keeps its definition and the resolved fields `render_sentence_plan` reads (shape,
-slots, StatVars, entities and groups, coverage, scope, facets, slot options, open-axis and
-role-axis facts, measure label, the trace's sources) with its recorded sentence. A StatVar
-keeps its ref, label, constraint properties and served date range. Observations, timing,
-diagnostics, skills, entity and facet options and the rest of the trace go; the model fields
-that are required but unread (`slot_values`, the trace's StatVar, entity, filter and step
-lists) are written empty, and a role-axis fact's `member_count`, which the wire omits when
-it is null, is restored as null. A no-data part keeps only its reason, since the envelope
+slots, StatVar counts and served dates, entities and groups, coverage, scope, facets, slot
+options, open-axis and role-axis facts, measure label, the trace's sources) with its recorded
+sentence. Beside `resolved` each Spec stores `sentence_facts`, what the renderer reads that
+the wire does not carry: the facts of its served members (`search.models.SentenceFacts`),
+which the in-process panel run records from each answer, and, for a Spec whose measure label
+names code pairs, those pairs (`measure_label_named_values`), which the script derives from
+the Spec's `measure_axis_values` and the packaged measure index, as
+`spec_build.measure_label_for_partition` does. A replay states both on the Spec it rebuilds
+(`golden_parts`). Observations, timing, diagnostics, skills, entity and facet options and the
+rest of the trace go; the model fields that are required but unread (the trace's entity and
+filter lists) are written empty, and a role-axis fact's `member_count`, which the wire omits
+when it is null, is restored as null. A no-data part keeps only its reason, since the envelope
 composer reads no other `no_data` field.
 
-The files are gzipped. A panel run's StatVar lists alone hold about 3 MB of JSON, and the
-182-query golden is about 400 kB compressed against 5.7 MB plain. Gzip runs with a zero
-mtime, so the same run writes the same bytes. To review a re-recording, the script prints
+The files are gzipped: the 182-query golden is about 370 kB compressed against 4.8 MB
+plain. Gzip runs with a zero mtime, so the same run writes the same bytes. To review a re-recording, the script prints
 each query whose envelope sentence differs from the golden it replaces, old then new.
 
 Every trimmed line is parsed with the response models before it is written. The script exits
-non-zero on a non-200 row, a non-resolution body or an empty raw file, and writes nothing
-for a slice that fails.
+non-zero on a non-200 row, a non-resolution body, a row without the sentence facts of one of
+its Specs (a panel run against a deployed service records none) or an empty raw file, and
+writes nothing for a slice that fails.
 
 `--rerender` rewrites the recorded plans of the committed golden with the current renderer
 and leaves every input as recorded, so a renderer change updates the golden with no live
@@ -37,6 +43,7 @@ part's candidate plans and its own plan, and the envelope plan, with the sentenc
 A no-data part's own plan needs inputs the wire does not carry, so it stays as recorded.
 
 Usage:
+    just sentence-panel --in-process
     just sentence-golden runs/sentence-panel
     uv run python scripts/sentence_golden.py runs/sentence-panel [--out DIR]
     uv run python scripts/sentence_golden.py --rerender [--out DIR]
@@ -45,6 +52,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import copy
 import gzip
 import json
 import sys
@@ -53,7 +61,15 @@ from typing import Any
 
 from pydantic import TypeAdapter
 
-from search.models import CandidatesPart, DefinitePart, SentenceToken, Spec
+from code_index.shared import get_measure_index
+from code_index.types import label_for_pairs
+from search.models import (
+    CandidatesPart,
+    DefinitePart,
+    SentenceFacts,
+    SentenceToken,
+    Spec,
+)
 from search.models.response import Part
 from search.render.candidates import candidate_differences, candidates_sentence_plan
 from search.render.envelope import compose_envelope_sentence
@@ -85,11 +101,9 @@ _RESOLVED_KEYS = (
     "role_axis_facts",
     "measure_label",
     "measure_label_axes",
-    "measure_label_named_values",
     "rendered_sentence",
     "sentence_plan",
 )
-_STAT_VAR_KEYS = ("ref", "label", "constraint_properties", "data_date_range")
 
 _PARTS = TypeAdapter(list[Part])
 _PLAN = TypeAdapter(list[SentenceToken])
@@ -99,43 +113,103 @@ def _pick(source: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
     return {key: source[key] for key in keys if key in source}
 
 
-def trim_spec(spec: dict[str, Any]) -> dict[str, Any]:
-    """`spec` with only what the renderer reads and the sentence it recorded."""
+def spec_dicts(part: dict[str, Any]) -> list[dict[str, Any]]:
+    """The Spec dicts a golden part carries: a definite part's Spec, a candidates part's
+    shown Specs, none otherwise."""
+    match part["status"]:
+        case "definite":
+            return [part["spec"]]
+        case "candidates":
+            return part["candidates"]["specs"]
+        case _:
+            return []
+
+
+def spec_stating_facts(spec: Spec, raw: dict[str, Any]) -> Spec:
+    """`spec` stating the sentence facts stored beside its recorded form `raw`: its members'
+    facts and the code pairs its measure label names."""
+    stored = dict(raw["sentence_facts"])
+    named = tuple(tuple(pair) for pair in stored.pop("measure_label_named_values", ()))
+    resolved = spec.resolved.stating_sentence_facts(SentenceFacts.model_validate(stored))
+    return spec.model_copy(update={"resolved": resolved.stating_measure_label_named_values(named)})
+
+
+def _part_stating_facts(part: Part, raw: dict[str, Any]) -> Part:
+    if isinstance(part, DefinitePart):
+        return part.model_copy(update={"spec": spec_stating_facts(part.spec, raw["spec"])})
+    if isinstance(part, CandidatesPart):
+        specs = [
+            spec_stating_facts(spec, raw_spec)
+            for spec, raw_spec in zip(
+                part.candidates.specs, raw["candidates"]["specs"], strict=True
+            )
+        ]
+        return part.model_copy(
+            update={"candidates": part.candidates.model_copy(update={"specs": specs})}
+        )
+    return part
+
+
+def golden_parts(raw_parts: list[dict[str, Any]]) -> list[Part]:
+    """The parts of a golden line, each Spec stating the sentence facts stored beside it.
+    A Spec stored without them raises `KeyError`."""
+    bare = copy.deepcopy(raw_parts)
+    for part in bare:
+        for spec in spec_dicts(part):
+            del spec["sentence_facts"]
+    return [
+        _part_stating_facts(part, raw)
+        for part, raw in zip(_PARTS.validate_python(bare), raw_parts, strict=True)
+    ]
+
+
+def _named_values(resolved: dict[str, Any]) -> list[list[str]]:
+    """The code pairs the measure label of a wire `resolved` names, taken from the authored label
+    its `measure_axis_values` match in the measure index (`label_for_pairs`)."""
+    if resolved.get("measure_label") is None:
+        return []
+    pairs = [(entry["axis"], entry["value"]["dcid"]) for entry in resolved["measure_axis_values"]]
+    match = label_for_pairs(pairs, get_measure_index().partition_labels)
+    return [list(pair) for pair in match.named_values] if match is not None else []
+
+
+def trim_spec(spec: dict[str, Any], facts: dict[str, Any]) -> dict[str, Any]:
+    """`spec` with only what the renderer reads, the sentence it recorded, and its sentence
+    facts: the member facts `facts` the in-process run recorded for it and the code pairs its
+    measure label names."""
     resolved = spec["resolved"]
     trimmed = _pick(resolved, _RESOLVED_KEYS)
-    stat_vars = resolved["stat_vars"]
-    trimmed["stat_vars"] = {
-        **{key: value for key, value in stat_vars.items() if key != "items"},
-        "items": [
-            {**_pick(item, _STAT_VAR_KEYS), "slot_values": []} for item in stat_vars["items"]
-        ],
-    }
     trimmed["trace"] = {
         "resolved_sources": resolved["trace"]["resolved_sources"],
-        "resolved_stat_vars": [],
         "resolved_entities": [],
         "slot_filters": [],
-        "pipeline_trace": [],
     }
-    if facts := resolved.get("role_axis_facts"):
+    if role_facts := resolved.get("role_axis_facts"):
         # The wire omits null fields and `RoleAxisFact.member_count` is required but
         # nullable, so an unknown count comes back as an absent key.
-        trimmed["role_axis_facts"] = [{"member_count": None, **fact} for fact in facts]
-    return {"spec_id": spec["spec_id"], "definition": spec["definition"], "resolved": trimmed}
+        trimmed["role_axis_facts"] = [{"member_count": None, **fact} for fact in role_facts]
+    if named := _named_values(resolved):
+        facts = {**facts, "measure_label_named_values": named}
+    return {
+        "spec_id": spec["spec_id"],
+        "definition": spec["definition"],
+        "resolved": trimmed,
+        "sentence_facts": facts,
+    }
 
 
-def trim_part(part: dict[str, Any]) -> dict[str, Any]:
+def trim_part(part: dict[str, Any], facts: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """`part` with its own sentence, departures and warnings, and the inputs the renderer
-    reads for its status."""
+    reads for its status, each Spec with its entry in `facts`, keyed by spec id."""
     trimmed = _pick(part, _PART_KEYS)
     match part["status"]:
         case "definite":
-            trimmed["spec"] = trim_spec(part["spec"])
+            trimmed["spec"] = trim_spec(part["spec"], facts[part["spec"]["spec_id"]])
         case "candidates":
             candidates = part["candidates"]
             trimmed["candidates"] = {
                 **{key: value for key, value in candidates.items() if key != "specs"},
-                "specs": [trim_spec(spec) for spec in candidates["specs"]],
+                "specs": [trim_spec(spec, facts[spec["spec_id"]]) for spec in candidates["specs"]],
             }
         case "no_data":
             trimmed["no_data"] = {"reason": part["no_data"]["reason"]}
@@ -151,14 +225,26 @@ def trim_row(row: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"{row.get('id')}: HTTP {row.get('http_status')}, no body to record")
     if body.get("kind") != "resolution":
         raise ValueError(f"{row['id']}: body kind {body.get('kind')!r} is not a resolution")
+    facts = row.get("sentence_facts", {})
+    missing = [
+        spec["spec_id"]
+        for part in body["parts"]
+        for spec in spec_dicts(part)
+        if spec["spec_id"] not in facts
+    ]
+    if missing:
+        raise ValueError(
+            f"{row['id']}: no sentence facts for {missing}; record the panel in process "
+            "(scripts/sentence_panel/run.py --in-process)"
+        )
     line = {
         "id": row["id"],
         "query": row["query"],
         "rendered_sentence": body["rendered_sentence"],
         "sentence_plan": body["sentence_plan"],
-        "parts": [trim_part(part) for part in body["parts"]],
+        "parts": [trim_part(part, facts) for part in body["parts"]],
     }
-    _PARTS.validate_python(line["parts"])
+    golden_parts(line["parts"])
     _PLAN.validate_python(line["sentence_plan"] or [])
     return line
 
@@ -230,7 +316,7 @@ def _set_plan(target: dict[str, Any], plan: list[SentenceToken]) -> None:
 def rerender_line(line: dict[str, Any]) -> dict[str, Any]:
     """`line` with every plan the golden test compares re-rendered by the current renderer
     and every input unchanged."""
-    parts = _PARTS.validate_python(line["parts"])
+    parts = golden_parts(line["parts"])
     declarations = declared_axis_names()
     for part, raw in zip(parts, line["parts"], strict=True):
         if isinstance(part, DefinitePart):
@@ -247,7 +333,7 @@ def rerender_line(line: dict[str, Any]) -> dict[str, Any]:
                     specs, truncated=part.candidates.truncated, departures=part.departures
                 ),
             )
-    composed = compose_envelope_sentence(_PARTS.validate_python(line["parts"]))
+    composed = compose_envelope_sentence(golden_parts(line["parts"]))
     if composed is None:
         line["rendered_sentence"], line["sentence_plan"] = None, None
     else:

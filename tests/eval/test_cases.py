@@ -146,7 +146,6 @@ EXAMPLES = """
         binding: {kind: value, value: {ref: {dcid: DebtInstrument, label: debt instrument}, value_kind: enum_value, time_window: null, literal: null}}
       - key: {axis: when, property: null, label: when}
         binding: {kind: value, value: {ref: null, value_kind: time_window, time_window: {start_year: 2015, end_year: 2024}, literal: null}}
-    stat_var_dcids: [Amount_FinancialFlow_Disbursement_DebtInstrument_Nominal]
     entity_dcids: [country/TZA]
     origin_dcids: [InternationalMonetaryFund]
     facets: {unit: {state: value, request: {currency: USD, prices: constant, base_year: 2024}}}

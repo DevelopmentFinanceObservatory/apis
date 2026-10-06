@@ -30,7 +30,13 @@ from search.engine.concurrency import scoped_concurrency
 from search.engine.core import resolve_async
 from search.engine.errors import EngineInputError, GraphInfraError
 from search.engine.region import RegionResult, related_read, resolve_spec_resubmit
-from search.engine.related import NO_RELATED, Related, read_related, related_measures
+from search.engine.related import (
+    NO_RELATED,
+    Related,
+    RelatedMember,
+    read_related,
+    related_measures,
+)
 from search.engine.retrieval.facts import read_five_tuple
 from search.engine.shape import identity_shape_for
 from search.engine.spec_id import mint_identity
@@ -47,11 +53,12 @@ from search.models import (
 )
 from statvar_members import MemberEnumerator
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
+from tests.datasets_api._member_bounds import mint_bounds
 from tests.datasets_api.test_resolve_definition_members_index import _STAMP
 from tests.engine._base_identity import make_base, subject_entity
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import make_request, offline_resolve
+from tests.engine._harness import make_request, offline_resolve, walk_options
 from tests.engine._virtual_clock import VirtualRequests
 from tests.engine.test_facet_unit_gate_multi_statvar import _NODES as _UNIT_GATE_NODES
 from tests.engine.test_facet_unit_gate_multi_statvar import _SV_A as _UNIT_GATE_A
@@ -139,7 +146,9 @@ def test_inflation_in_pakistan_offers_five_macroeconomic_dashboard_members():
 
     assert found.group == GraphRef(dcid=_DASHBOARD, label="17.13.1: Macroeconomic Dashboard")
     assert [m.dcids for m in found.members] == [(dcid,) for dcid in _FIRST_FIVE]
-    assert found.members[0].label == "Current account balance as a proportion of GDP"
+    assert found.members[0].stat_var == GraphRef(
+        dcid=_FIRST_FIVE[0], label="Current account balance as a proportion of GDP"
+    )
 
 
 def test_members_order_by_shared_years_then_dcid_and_a_range_keeps_those_with_a_year_in_it(
@@ -358,7 +367,7 @@ def test_a_member_identity_is_its_own_shape_and_constraints_with_the_answer_plac
     arcs = nodes["Both_Places"]["arcs"]
     member = related.RelatedMember(
         dcids=("Both_Places",),
-        label="Female count",
+        stat_var=GraphRef(dcid="Both_Places", label="Female count"),
         five_tuple=read_five_tuple(arcs),
         constraints={"gender": "Female"},
     )
@@ -380,13 +389,16 @@ def test_a_member_identity_is_its_own_shape_and_constraints_with_the_answer_plac
         },
     )
 
+    # A hand-built open role on the elected identity. The elected family's roles say nothing
+    # about the member's.
+    elected = elected.model_copy(update={"open_roles": ["origin"]})
+
     [measure] = related_measures(
         Related(group=GraphRef(dcid="g/a", label="Group a"), members=(member,)), elected
     )
 
     identity = measure.definition.identity
-    assert measure.label == "Female count"
-    assert measure.resolved_stat_var_dcids == ["Both_Places"]
+    assert measure.stat_var == GraphRef(dcid="Both_Places", label="Female count")
     assert identity.model_dump(include={"shape"}, exclude_none=True)["shape"] == {
         "kind": "statvar_schema",
         "population_type": "Person",
@@ -397,6 +409,7 @@ def test_a_member_identity_is_its_own_shape_and_constraints_with_the_answer_plac
         ("gender", {"state": "value", "ref": "Female"})
     ]
     assert identity.facets is None
+    assert identity.open_roles is None
     assert identity.entities == elected.entities
     assert identity.requested_window == elected.requested_window
     assert measure.definition.spec_id == mint_identity(identity.model_dump(exclude_none=True))[0]
@@ -406,73 +419,65 @@ def test_a_member_identity_is_its_own_shape_and_constraints_with_the_answer_plac
 def test_every_inflation_in_pakistan_member_resubmits_to_a_definite_answer_electing_it(
     monkeypatch, twins: bool
 ):
-    """Each of the 18 Macroeconomic Dashboard measures with Pakistan data, posted back with
-    its `resolved_stat_var_dcids`, answers definitely from the StatVars it names. Members
+    """Each of the 18 Macroeconomic Dashboard measures with Pakistan data, posted back as its
+    identity, answers definitely from the StatVars it names. Members
     sharing an identity make one measure naming them all, and one sharing inflation's makes
     none, since a mint of an identity reads every member that holds it."""
     monkeypatch.setattr(related, "RELATED_MEASURES_MAX", 20)
     nodes, obs = _pakistan_nodes(twins=twins)
     graph = FakeGraph(nodes=nodes, obs=obs, detect={}, resolve={})
-    measures = _pakistan_measures(graph)
-    assert len(measures) == 18
-    named = [dcid for m in measures for dcid in m.resolved_stat_var_dcids]
+    pairs = _pakistan_pairs(graph)
+    assert len(pairs) == 18
+    named = [dcid for member, _measure in pairs for dcid in member.dcids]
     assert f"{_INFLATION}_TWIN" not in named
-    twinned = next(m for m in measures if _TWINNED in m.resolved_stat_var_dcids)
-    if twins:
-        assert twinned.resolved_stat_var_dcids == [_TWINNED, f"{_TWINNED}_TWIN"]
-        assert twinned.label.endswith(f" / {_TWINNED}_TWIN name")
-    else:
-        assert twinned.resolved_stat_var_dcids == [_TWINNED]
+    twinned, twinned_measure = next(pair for pair in pairs if _TWINNED in pair[0].dcids)
+    assert twinned_measure.stat_var == twinned.stat_var
+    assert twinned.stat_var.dcid == _TWINNED
+    assert twinned.dcids == ((_TWINNED, f"{_TWINNED}_TWIN") if twins else (_TWINNED,))
 
     mint_graph = _mint_graph(nodes)
-    for measure in measures:
+    for member, measure in pairs:
         region = _resubmit(measure, graph)
 
-        assert region.status == "definite", (measure.label, region.no_data_reason)
+        assert region.status == "definite", (measure.stat_var, region.no_data_reason)
         [spec] = region.specs
         assert spec.spec_id == measure.definition.spec_id
-        assert spec.resolved.stat_vars.member_count == len(measure.resolved_stat_var_dcids)
-        assert {sv.ref for sv in spec.resolved.stat_vars.items} <= set(
-            measure.resolved_stat_var_dcids
-        )
-        # A Datasets mint of the definition, seeded with the measure's StatVars, reads them.
+        assert spec.resolved.stat_vars.member_count == len(member.dcids)
+        assert {sv.ref.dcid for sv in spec.resolved.members} <= set(member.dcids)
+        # A Datasets mint of the definition reads them.
         family = resolve_definition_members(
             measure.definition.identity.model_dump(exclude_none=True),
             spec_id=measure.definition.spec_id,
             graph=mint_graph,
-            enumerator=MemberEnumerator(graph=mint_graph),
+            enumerator=MemberEnumerator(),
             code_index=CodeIndex(stamp=_STAMP, declarations=(), codes=(), statvars=()),
-            seed=measure.resolved_stat_var_dcids,
+            bounds=mint_bounds(),
         ).family
-        assert family == set(measure.resolved_stat_var_dcids), measure.label
+        assert family == set(member.dcids), measure.stat_var
         # An answer reading several StatVars offers no related measures (`related_read`).
-        if len(measure.resolved_stat_var_dcids) > 1:
+        if len(member.dcids) > 1:
             assert spec.resolved.related_measures is None
             continue
         # The answer lists its own siblings, never itself.
         assert spec.resolved.related_group == GraphRef(
             dcid=_DASHBOARD, label="17.13.1: Macroeconomic Dashboard"
         )
-        listed = {
-            dcid for m in spec.resolved.related_measures or () for dcid in m.resolved_stat_var_dcids
-        }
+        listed = {m.stat_var.dcid for m in spec.resolved.related_measures or ()}
         assert listed
-        assert listed.isdisjoint(measure.resolved_stat_var_dcids)
+        assert listed.isdisjoint(member.dcids)
 
 
 def test_a_resubmitted_sibling_lists_its_own_siblings():
-    measure = next(
-        m for m in _pakistan_measures() if m.resolved_stat_var_dcids == ["sdg/BN_CAB_XOKA_GD_ZS"]
-    )
+    measure = next(m for m in _pakistan_measures() if m.stat_var.dcid == "sdg/BN_CAB_XOKA_GD_ZS")
 
     [spec] = _resubmit(measure, _pakistan_graph()).specs
 
-    assert [m.resolved_stat_var_dcids for m in spec.resolved.related_measures or ()] == [
-        ["sdg/BN_KLT_PTXL_CD"],
-        ["sdg/BX_KLT_DINV_WD_GD_ZS"],
-        ["sdg/DT_DOD_DECT_GN_ZS"],
-        ["sdg/FI_RES_TOTL_MO"],
-        ["sdg/FM_LBL_BMNY_IR_ZS"],
+    assert [m.stat_var.dcid for m in spec.resolved.related_measures or ()] == [
+        "sdg/BN_KLT_PTXL_CD",
+        "sdg/BX_KLT_DINV_WD_GD_ZS",
+        "sdg/DT_DOD_DECT_GN_ZS",
+        "sdg/FI_RES_TOTL_MO",
+        "sdg/FM_LBL_BMNY_IR_ZS",
     ]
 
 
@@ -517,7 +522,7 @@ def test_a_resubmit_waits_for_its_related_read_however_it_answers(
         return NO_RELATED
 
     monkeypatch.setattr(related_read, "read_related", _slow_read)
-    measure = next(m for m in _pakistan_measures() if m.resolved_stat_var_dcids == [_CAB])
+    measure = next(m for m in _pakistan_measures() if m.stat_var.dcid == _CAB)
     posted = measure.definition.identity.model_dump(exclude_none=True)
     posted["entities"] = {"observationAbout": places} if places else {}
     if facets is not None:
@@ -528,13 +533,11 @@ def test_a_resubmit_waits_for_its_related_read_however_it_answers(
         region = resolve_spec_resubmit(
             inp=ResubmitIdentityPayload(
                 identity=identity,
-                base_spec_id=mint_identity(identity.model_dump(exclude_none=True))[0],
-                base_identity=identity,
-                resolved_stat_var_dcids=[_CAB],
             ),
             graph=_pakistan_graph(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(_pakistan_graph()),
         )
         answered = region.no_data_reason or region.status
     except EngineInputError as refusal:
@@ -552,7 +555,7 @@ def test_a_resubmit_logs_a_failed_related_read_it_answers_without(monkeypatch, c
         raise ValueError("a malformed page")
 
     monkeypatch.setattr(related_read, "read_related", _broken_read)
-    measure = next(m for m in _pakistan_measures() if m.resolved_stat_var_dcids == [_CAB])
+    measure = next(m for m in _pakistan_measures() if m.stat_var.dcid == _CAB)
     posted = measure.definition.identity.model_dump(exclude_none=True)
     posted["entities"] = {"observationAbout": [_KEN]}
     identity = BaseIdentity.model_validate(posted)
@@ -561,13 +564,11 @@ def test_a_resubmit_logs_a_failed_related_read_it_answers_without(monkeypatch, c
         region = resolve_spec_resubmit(
             inp=ResubmitIdentityPayload(
                 identity=identity,
-                base_spec_id=mint_identity(identity.model_dump(exclude_none=True))[0],
-                base_identity=identity,
-                resolved_stat_var_dcids=[_CAB],
             ),
             graph=_pakistan_graph(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(_pakistan_graph()),
         )
 
     assert region.no_data_reason == "no_observations"
@@ -576,9 +577,20 @@ def test_a_resubmit_logs_a_failed_related_read_it_answers_without(monkeypatch, c
     assert record.exc_info is not None
 
 
+def _pakistan_pairs(graph: FakeGraph | None = None) -> list[tuple[RelatedMember, RelatedMeasure]]:
+    """Every Macroeconomic Dashboard member with Pakistan data, up to
+    `RELATED_MEASURES_MAX`, with the measure related to inflation in Pakistan it makes."""
+    found = _read(graph or _pakistan_graph(), arcs=_inflation_arcs())
+    return list(zip(found.members, related_measures(found, _inflation_elected()), strict=True))
+
+
 def _pakistan_measures(graph: FakeGraph | None = None) -> list[RelatedMeasure]:
-    """Every Macroeconomic Dashboard member with Pakistan data, as a measure related to
-    inflation in Pakistan, up to `RELATED_MEASURES_MAX`."""
+    """The measures of `_pakistan_pairs`."""
+    return [measure for _member, measure in _pakistan_pairs(graph)]
+
+
+def _inflation_elected() -> BaseIdentity:
+    """Inflation in Pakistan's identity."""
     _spec_id, elected = make_base(
         identity_shape_for(
             pop_type_dcid="SDG_FP_CPI_TOTL_ZG",
@@ -589,7 +601,7 @@ def _pakistan_measures(graph: FakeGraph | None = None) -> list[RelatedMeasure]:
         ),
         entities=[subject_entity(_PAK, "Pakistan")],
     )
-    return related_measures(_read(graph or _pakistan_graph(), arcs=_inflation_arcs()), elected)
+    return elected
 
 
 def _mint_graph(nodes: Mapping[str, dict]) -> FakeMintGraphReader:
@@ -607,18 +619,16 @@ def _mint_graph(nodes: Mapping[str, dict]) -> FakeMintGraphReader:
 
 
 def _resubmit(measure: RelatedMeasure, graph: FakeGraph) -> RegionResult:
-    """`measure` posted back with its seed, as a client switching to it does."""
+    """`measure` posted back as its identity, as a client switching to it does."""
     definition = measure.definition
     return resolve_spec_resubmit(
         inp=ResubmitIdentityPayload(
             identity=definition.identity,
-            base_spec_id=definition.spec_id,
-            base_identity=definition.identity,
-            resolved_stat_var_dcids=measure.resolved_stat_var_dcids,
         ),
         graph=graph,
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
+        options=walk_options(graph),
     )
 
 
@@ -633,10 +643,10 @@ def test_a_definite_answer_carries_its_related_group_and_measures():
 
     resolved = part.spec.resolved
     assert resolved.related_group == GraphRef(dcid="dc/g/Demographics", label="dc/g/Demographics")
-    assert [(m.label, m.resolved_stat_var_dcids) for m in resolved.related_measures or ()] == [
-        ("Rate of Population Growth", ["GrowthRate_Count_Person"]),
-        ("Life Expectancy", ["LifeExpectancy_Person"]),
-        ("Population Density", ["Count_Person_PerArea"]),
+    assert [m.stat_var for m in resolved.related_measures or ()] == [
+        GraphRef(dcid="GrowthRate_Count_Person", label="Rate of Population Growth"),
+        GraphRef(dcid="LifeExpectancy_Person", label="Life Expectancy"),
+        GraphRef(dcid="Count_Person_PerArea", label="Population Density"),
     ]
 
 
@@ -654,6 +664,25 @@ class _SlowSubjects(FakeGraph):
 class _BrokenSubjects(FakeGraph):
     def node_subjects_many(self, *args, **kwargs) -> dict[str, SubjectsPage]:
         raise ValueError("a malformed page")
+
+
+@pytest.mark.parametrize(
+    ("graph_type", "degraded"),
+    [(FakeGraph, False), (_FailingSubjects, True)],
+    ids=["read", "read-failed"],
+)
+def test_a_resubmit_whose_related_read_failed_is_degraded(graph_type, degraded: bool):
+    """The resubmit door joins its related read as it finalises (`joined_related`); a failed
+    read leaves the Spec without related measures and marks the region degraded, so no cache
+    stores it."""
+    nodes, obs = _pakistan_nodes()
+    measure = next(m for m in _pakistan_measures() if m.stat_var.dcid == _CAB)
+
+    region = _resubmit(measure, graph_type(nodes=nodes, obs=obs, detect={}, resolve={}))
+
+    [spec] = region.specs
+    assert (spec.resolved.related_group is None) is degraded
+    assert region.degraded is degraded
 
 
 @pytest.mark.related_read_threads
@@ -697,7 +726,7 @@ def _stalled_first_answer() -> Spec:
 
 def _stalled_resubmit() -> Spec:
     nodes, obs = _pakistan_nodes()
-    measure = next(m for m in _pakistan_measures() if m.resolved_stat_var_dcids == [_CAB])
+    measure = next(m for m in _pakistan_measures() if m.stat_var.dcid == _CAB)
     graph = _StalledSubjects(nodes=nodes, obs=obs, detect={}, resolve={})
     [spec] = _resubmit(measure, graph).specs
     return spec
@@ -732,9 +761,7 @@ def _first_answer() -> Coroutine[Any, Any, object]:
 def _sibling_resubmit() -> Coroutine[Any, Any, object]:
     """A resubmit of the current account balance, a Macroeconomic Dashboard member, in
     Pakistan, run off the event loop as the resubmit door runs it."""
-    measure = next(
-        m for m in _pakistan_measures() if m.resolved_stat_var_dcids == ["sdg/BN_CAB_XOKA_GD_ZS"]
-    )
+    measure = next(m for m in _pakistan_measures() if m.stat_var.dcid == "sdg/BN_CAB_XOKA_GD_ZS")
     return asyncio.to_thread(_resubmit, measure, _pakistan_graph())
 
 

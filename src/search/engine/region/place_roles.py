@@ -12,11 +12,14 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, cast
 
+from code_index.members import family_declares_roles
+from code_index.shared import get_index
 from materialise.roles import axis_for_role
 from search.engine.bind import SlotBindingDraft
 from search.engine.config import settings
 from search.engine.errors import RoleEntityUnplaced
 from search.engine.interpret import Recall
+from search.engine.retrieval.bound_values import shape_family, shape_part_datasets
 from search.engine.role_text import DoorRole, contradicts
 from search.engine.shape import (
     ShapeDraft,
@@ -58,6 +61,12 @@ class PlaceRoles:
     # The names in `discarded_directions` whose direction the request's words did not state
     # (`DoorRole.stated`), so the extractor inferred it.
     inferred_directions: frozenset[str] = frozenset()
+    # The flow axes the request asks every member of that no place binds, until the
+    # members are elected, and then those of them the elected members declare
+    # (`PlaceContext.settled`). The role keys read them (`bound_values.entity_role_keys`),
+    # and a family whose members declare no role on one elects as if it were unnamed. A
+    # subject-only shape leaves it empty.
+    open_axes: frozenset[RoleAxis] = frozenset()
 
 
 def _required_role_axis(shape: ShapeDraft) -> RoleAxis | None:
@@ -70,12 +79,18 @@ def _required_role_axis(shape: ShapeDraft) -> RoleAxis | None:
 
 
 def _undirected_place_axis(
-    state: ResolveState, shape: ShapeDraft, dcids: Iterable[str]
+    state: ResolveState, shape: ShapeDraft, dcids: Iterable[str], *, group: bool
 ) -> RoleAxis | None:
     """Return the flow axis the place `dcids`, named without a direction, binds under on
-    `shape`.
+    `shape`. `group` says the place is a named group of places.
 
-    It is the axis of the shape's one required role. A shape that requires two roles takes
+    It is the axis of the shape's one required role. On a shape with a role on each axis,
+    an operation running across one of them leaves that axis open, and a single place takes
+    the other axis: "top creditors of external debt of Kenya" reads Kenya as the debtor.
+    This holds for the elected shape and every alternate alike. A group can read either way
+    ("top recipients of aid in Africa" scopes the ranked recipients, "top creditors of
+    external debt of Africa" names the debtors), so it skips this rule. Otherwise a shape
+    that requires two roles takes
     the axis the elected shape (`state.shape_draft`) bound the place under, when it declares
     a role on that axis: an alternate reads the variable another way, not the place, so a
     debt total's recipient stays the recipient of a by-creditor alternate. That axis is
@@ -84,8 +99,19 @@ def _undirected_place_axis(
     roles.
     """
     axis = _required_role_axis(shape)
-    if axis is not None or state.shape_draft is None or state.shape_draft is shape:
+    if axis is not None:
         return axis
+    open_axes = {
+        operation.over
+        for operation in state.operations
+        if operation.over == "origin" or operation.over == "destination"
+    }
+    names = role_names_by_axis(shape)
+    if not group and len(open_axes) == 1 and len(names) == 2:
+        (open_axis,) = open_axes
+        return "destination" if open_axis == "origin" else "origin"
+    if state.shape_draft is None or state.shape_draft is shape:
+        return None
     elected = state.elected_place_roles
     if elected is None:
         return None
@@ -119,6 +145,75 @@ def subject_shapes_refused(state: ResolveState) -> bool:
         for role in state.entity_roles.get(name) or ()
     }
     return {"origin", "destination"} <= query_directions
+
+
+def query_role_axes(state: ResolveState) -> frozenset[RoleAxis]:
+    """The flow axes the query needs a role-bearing shape to declare a role on: each axis
+    a resolved place is directed to ("to Kenya" needs the destination) and each flow axis
+    an operation runs across ("top recipients" needs the destination). An axis the query
+    asks every member of (`state.open_axes`) is a preference among the shapes that hold
+    these (`without_open_axis_gaps`)."""
+    resolved = state.rcl.resolved_entity_names if state.rcl is not None else {}
+    directed = {
+        role.axis
+        for name in state.entities
+        if resolved.get(name) is not None
+        for role in state.entity_roles.get(name) or ()
+    }
+    over = {
+        operation.over
+        for operation in state.operations
+        if operation.over == "origin" or operation.over == "destination"
+    }
+    return frozenset(directed | over)
+
+
+def _declares_axes(shape: ShapeDraft, axes: frozenset[RoleAxis]) -> bool:
+    """Whether role-bearing `shape` declares a role on each of `axes`.
+
+    A shape the index carries declares the axes some dataset the part may answer it from
+    (`shape_part_datasets`) declares in its index family (`shape_family`,
+    `code_index.members.family_declares_roles`), the test the dataset election applies,
+    whichever members recall confirmed: a shape of a part naming a donor-only table lacks
+    the recipient though another table of the family holds it. A family no dataset
+    publishes declares the axes its rows hold. Any other shape declares the axes of its
+    members' roles (`role_names_by_axis`)."""
+    index = get_index()
+    family = shape_family(shape, index)
+    if family is None:
+        return axes <= role_names_by_axis(shape).keys()
+    return family_declares_roles(index, family, axes, datasets=shape_part_datasets(shape, index))
+
+
+def lacks_query_axis(state: ResolveState, shape: ShapeDraft) -> bool:
+    """Whether role-bearing `shape` declares no role on an axis the query needs
+    (`query_role_axes`, read by `_declares_axes`): a provider-only shape for "aid to
+    Kenya" or "top recipients of US aid". `bind_place_roles` would refuse it
+    `role_incompatible`, or its answer could not run the operation. A subject-only shape
+    lacks no axis: it binds a directed place as its subject."""
+    axes = query_role_axes(state)
+    return bool(axes) and is_role_bearing(shape) and not _declares_axes(shape, axes)
+
+
+def without_open_axis_gaps(state: ResolveState, shapes: Sequence[ShapeDraft]) -> list[ShapeDraft]:
+    """`shapes` less the role-bearing shapes the index carries that declare no role on an
+    axis the query asks every member of (`state.open_axes`), each axis read beside the
+    axes the query needs (`query_role_axes`).
+
+    Such a shape leaves only when a role-bearing shape of `shapes` declares the axis
+    (`_declares_axes`): "aid from France to every recipient" leaves a provider-only shape
+    for one that lists recipients, and with no such shape the provider-only one stays and
+    answers France's total. A subject-only shape stays, and so does a role-bearing shape
+    the index does not carry: its recalled members are a sample of its family, so a debt
+    shape recalled by its totals alone can still hold their by-creditor twins."""
+    needed = query_role_axes(state)
+    kept = list(shapes)
+    for axis in sorted(state.open_axes - needed):
+        axes = needed | {axis}
+        declares = {id(s): _declares_axes(s, axes) for s in kept if is_role_bearing(s)}
+        if any(declares.values()):
+            kept = [s for s in kept if declares.get(id(s), True) or shape_family(s) is None]
+    return kept
 
 
 def capped_place_dcids(state: ResolveState) -> tuple[list[str], int]:
@@ -160,8 +255,9 @@ def bind_place_roles(
 
     A role-bearing shape has no subject slot: each place takes its door-resolved axis,
     coordinated members included, and origins are kept for nearest-real probes. A place
-    with no axis binds to the shape's one required role, or on an alternate that requires
-    two to the axis the elected shape binds it under (`_undirected_place_axis`). It is
+    with no axis binds to the shape's one required role, a single place beside an operation
+    over one flow axis to the other axis, or on an alternate that requires two to
+    the axis the elected shape binds it under (`_undirected_place_axis`). It is
     ambiguous when no such axis exists, when a second place also lacks an axis, or when a
     directed place already holds that axis. Raw text compares extractor roles with the query
     wording; parsed role text has no separate preposition channel, though wording inside
@@ -169,6 +265,9 @@ def bind_place_roles(
 
     A subject-only shape binds every place as its subject, and a single directed place
     drops its direction (`discarded_directions`).
+
+    A role-bearing shape leaves open each axis of `state.open_axes` that no place binds. A
+    bound axis wins over an open one (`PlaceRoles.open_axes`).
     """
     rcl = cast(Recall, state.rcl)
     group_member_dcids_by_name = state.group_member_dcids_by_name
@@ -210,6 +309,7 @@ def bind_place_roles(
                 state,
                 shape,
                 [dcid for name, dcid, role in named_entities if role is None],
+                group=undirected_names <= group_member_dcids_by_name.keys(),
             )
             directed_axes = {role.axis for _, _, role in named_entities if role is not None}
             if (
@@ -237,9 +337,15 @@ def bind_place_roles(
             )
         except RoleEntityUnplaced:
             return "role_incompatible"
+        bound_axes = {
+            axis
+            for axis, dcids in (("destination", destination_dcids), ("origin", origin_dcids))
+            if dcids
+        }
         return PlaceRoles(
             destination_dcids=destination_dcids,
             origin_dcids=origin_dcids,
+            open_axes=state.open_axes - bound_axes,
             resolved_entities=resolved_entities,
             roles=[(dcid, "destination") for dcid in destination_dcids]
             + [(dcid, "origin") for dcid in origin_dcids],
@@ -276,6 +382,7 @@ def bind_place_roles(
     return PlaceRoles(
         destination_dcids=[],
         origin_dcids=[],
+        open_axes=frozenset(),
         resolved_entities=resolved_entities,
         roles=[(dcid, "observationAbout") for dcid in standard_place_dcids],
         where_dcids=list(standard_place_dcids),

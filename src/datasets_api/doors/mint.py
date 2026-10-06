@@ -1,8 +1,5 @@
 """The mint door: `POST /api/datasets`.
 
-Previews use mint's executor and admission gate. They return `PreviewEnvelope`
-responses, while render options govern real mints.
-
 Mint calls run on a dedicated `ThreadPoolExecutor`, separate from the platform
 and register-door pools. Its non-blocking semaphore uses
 `DATASETS_MINT_MAX_CONCURRENCY`. A full pool returns retryable 503
@@ -53,19 +50,11 @@ from datasets_api.doors.mint_errors import (
 )
 from datasets_api.generation import enter_shared_generation
 from datasets_api.headers import no_store_headers
-from datasets_api.kinds.collection_id import mint_collection_id, preview_collection_id
-from datasets_api.kinds.source_codes import mint_source_codes, preview_source_codes
-from datasets_api.kinds.spec_id import mint_spec_id, preview_spec_id
-from datasets_api.kinds.statvar_set import mint_statvar_set, preview_statvar_set
+from datasets_api.kinds.spec_id import mint_spec_id
+from datasets_api.kinds.statvar_set import mint_statvar_set
 from datasets_api.manifest_models import Manifest
 from datasets_api.mint_deps import MintDeps
-from datasets_api.mint_models import (
-    CollectionIdInput,
-    MintRequest,
-    SourceCodesInput,
-    SpecIdInput,
-    StatVarSetInput,
-)
+from datasets_api.mint_models import MintRequest, StatVarSetInput
 from datasets_api.operation_store import LiveOperationStore, NullOperationStore, OperationStore
 from datasets_api.operations.submit import (
     OperationSubmitted,
@@ -78,7 +67,6 @@ from datasets_api.operations.task_client import (
     TaskClientSettings,
     build_live_task_client,
 )
-from datasets_api.preview_models import PreviewEnvelope
 from datasets_api.render import check_options_supported
 from datasets_api.revision import SentinelRevisionReader
 from datasets_api.schema import OperationResource
@@ -105,7 +93,7 @@ from origin_catalogue.service import CatalogueService
 from series_coverage.shared import CoverageService, get_coverage_service
 from spec_registry import LiveSpecRegistry, SpecRegistry
 from spec_registry.reader import LiveSpecReader, SpecReader
-from statvar_members import MemberEnumerator
+from statvar_members import shared_enumerator
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +178,7 @@ def _build_mint_deps(
     Lifespan resolves missing registry, graph, SDMX, and artifact-store clients.
     The in-memory code index and coverage service resolve here. A missing or
     unreadable coverage artifact fails door construction. `member_concurrency`
-    bounds SDMX reads within collections and described-arm groups.
+    bounds SDMX reads within described-arm groups.
 
     Lifespan wires missing version, snapshot, head, and operation stores to its existing
     `LiveDatasetStore`. The surface supplies a shared `materialise_semaphore`.
@@ -210,12 +198,7 @@ def _build_mint_deps(
         capability_version=capability_version,
         ceiling=ceiling,
         member_concurrency=member_concurrency,
-        # Direct resolver calls use this base enumerator. Requests get a fresh
-        # instance, so member-group caches stay within one request.
-        # Build it here for injected graphs, or in lifespan for a live graph.
-        enumerator=MemberEnumerator(graph=graph)
-        if graph is not None
-        else cast(MemberEnumerator, None),
+        enumerator=shared_enumerator(),
         enrichment=EnrichmentLookup(graph) if graph is not None else cast(EnrichmentLookup, None),
         code_index=code_index if code_index is not None else get_index(),
         rate_cache=rate_cache,
@@ -286,12 +269,11 @@ def _mint_open_graph_sdmx_and_artifact_store(
                 base_url=live_settings.un_graph_base_url,
                 timeout=state.settings.sdmx_timeout_seconds,
             ),
+            **live_settings.graph_cache_options(),
         )
-        # `deps.enumerator`/`deps.enrichment` are `None` at this point,
-        # because `_build_mint_deps` builds them only when `graph` is
-        # injected at door-build time. This builds them here, once a live
-        # graph exists to wrap.
-        state.deps.enumerator = MemberEnumerator(graph=state.deps.graph)
+        # `deps.enrichment` is `None` at this point, because `_build_mint_deps`
+        # builds it only when `graph` is injected at door-build time. This
+        # builds it here, once a live graph exists to wrap.
         state.deps.enrichment = EnrichmentLookup(state.deps.graph)
     if not state.injected.sdmx:
         state.deps.sdmx = SdmxClient(
@@ -402,10 +384,8 @@ async def _mint_lifespan(_app: FastAPI, *, state: _MintDoorState) -> AsyncIterat
             _mint_close_live_clients_built_here(state, pool_opened_here=borrow.opened_here)
 
 
-async def _run_mint(
-    state: _MintDoorState, fn, /, *, timings: PhaseTimings, **kwargs
-) -> Manifest | PreviewEnvelope:
-    """Run a mint or preview on the shared executor and admission gate.
+async def _run_mint(state: _MintDoorState, fn, /, *, timings: PhaseTimings, **kwargs) -> Manifest:
+    """Run a mint on the shared executor and admission gate.
 
     Raises `MintBackpressure` when capacity is full or shutdown has begun.
     `BrokenExecutor` signals a permanently broken worker pool.
@@ -469,68 +449,6 @@ async def _run_mint(
             timings.record("handoff", (time.perf_counter() - finished_at[0]) * 1000)
 
 
-async def _mint_preview_response(
-    body: MintRequest, *, state: _MintDoorState, request_deps: MintDeps
-) -> JSONResponse:
-    """Dispatch a preview request to its resolver and return a `PreviewEnvelope`.
-
-    Preview options do not affect the response.
-    """
-    assert body.preview is not None
-    input_ = body.input
-    limit = body.preview.limit
-    with door_call("mint", logger=logger) as call:
-        if isinstance(input_, StatVarSetInput):
-            envelope = await _run_mint(
-                state,
-                preview_statvar_set,
-                timings=call.timings,
-                statvars=input_.statvars,
-                scope=input_.scope,
-                limit=limit,
-                deps=request_deps,
-            )
-        elif isinstance(input_, SourceCodesInput):
-            envelope = await _run_mint(
-                state,
-                preview_source_codes,
-                timings=call.timings,
-                codes=input_.codes,
-                source=input_.source,
-                scope=input_.scope,
-                limit=limit,
-                deps=request_deps,
-            )
-        elif isinstance(input_, SpecIdInput):
-            envelope = await _run_mint(
-                state,
-                preview_spec_id,
-                timings=call.timings,
-                spec_id=input_.spec_id,
-                definition=input_.definition,
-                scope=input_.scope,
-                resolved_stat_var_dcids=input_.resolved_stat_var_dcids,
-                limit=limit,
-                deps=request_deps,
-            )
-        else:
-            assert isinstance(input_, CollectionIdInput)
-            envelope = await _run_mint(
-                state,
-                preview_collection_id,
-                timings=call.timings,
-                collection_id=input_.collection_id,
-                members=input_.members,
-                scope=input_.scope,
-                limit=limit,
-                deps=request_deps,
-            )
-    return JSONResponse(
-        envelope.model_dump(mode="json", exclude_none=True),
-        headers=no_store_headers(server_timing=call.server_timing),
-    )
-
-
 async def _mint_real_response(
     body: MintRequest, *, state: _MintDoorState, request_deps: MintDeps, trace_id: str
 ) -> JSONResponse:
@@ -554,39 +472,13 @@ async def _mint_real_response(
                     deps=request_deps,
                     trace_id=trace_id,
                 )
-            elif isinstance(input_, SourceCodesInput):
-                manifest = await _run_mint(
-                    state,
-                    mint_source_codes,
-                    timings=call.timings,
-                    codes=input_.codes,
-                    source=input_.source,
-                    scope=input_.scope,
-                    options=body.options,
-                    deps=request_deps,
-                    trace_id=trace_id,
-                )
-            elif isinstance(input_, SpecIdInput):
+            else:
                 manifest = await _run_mint(
                     state,
                     mint_spec_id,
                     timings=call.timings,
                     spec_id=input_.spec_id,
                     definition=input_.definition,
-                    scope=input_.scope,
-                    resolved_stat_var_dcids=input_.resolved_stat_var_dcids,
-                    options=body.options,
-                    deps=request_deps,
-                    trace_id=trace_id,
-                )
-            else:
-                assert isinstance(input_, CollectionIdInput)
-                manifest = await _run_mint(
-                    state,
-                    mint_collection_id,
-                    timings=call.timings,
-                    collection_id=input_.collection_id,
-                    members=input_.members,
                     scope=input_.scope,
                     options=body.options,
                     deps=request_deps,
@@ -612,19 +504,12 @@ async def _mint_real_response(
 
 
 async def _mint_endpoint_impl(body: MintRequest, *, state: _MintDoorState) -> JSONResponse:
-    """Build request-scoped enumeration and an SDMX deadline.
-
-    A fresh enumerator keeps member-group caches within one request. Then dispatch
-    the preview or mint.
-    """
+    """Build the request's SDMX deadline, then dispatch the mint."""
     trace_id = get_trace_id()
     request_deps = replace(
         state.deps,
-        enumerator=MemberEnumerator(graph=state.deps.graph),
         deadline=_sdmx_deadline(state.settings.mint_timeout_seconds),
     )
-    if body.preview is not None:
-        return await _mint_preview_response(body, state=state, request_deps=request_deps)
     return await _mint_real_response(
         body, state=state, request_deps=request_deps, trace_id=trace_id
     )
@@ -717,7 +602,7 @@ def build_mint_door(
 
     router = APIRouter()
 
-    @router.post("/api/datasets", response_model=Manifest | PreviewEnvelope)
+    @router.post("/api/datasets", response_model=Manifest)
     async def mint_endpoint(body: MintRequest) -> JSONResponse:
         return await _mint_endpoint_impl(body, state=state)
 

@@ -7,166 +7,14 @@ from pydantic import ValidationError
 
 from search.engine.spec_build import build_spec
 from search.models import (
-    BreadthDim,
-    CoverageExact,
-    GraphRef,
     ResolvedFacet,
-    StatVar,
-    TimeWindow,
 )
 from tests.engine._assemble_fixtures import (
     _directional_entity,
     _make_coverage,
     _make_entity,
-    _make_five_tuple_refs,
-    _make_pipeline_steps,
     _make_spec,
-    _standard_shape_draft,
 )
-
-# applied_window / date_source in ResolutionTrace
-
-
-def _make_exact_coverage(window: TimeWindow | None) -> CoverageExact:
-    return CoverageExact(
-        has_data=True,
-        observation_count=42,
-        dimensions=[
-            BreadthDim(label="sources", count=1),
-            BreadthDim(label="observations", count=42),
-        ],
-        window=window,
-    )
-
-
-def test_build_spec_applied_window_and_date_source_when_window_present():
-    window = TimeWindow(start_year=2015, end_year=2020)
-    from search.engine.bind import SlotBindingDraft
-    from search.engine.spec_build import build_shape_model, build_slot, build_spec
-
-    shape_draft = _standard_shape_draft()
-    five_tuple_refs = _make_five_tuple_refs()
-
-    scheme_draft = SlotBindingDraft(
-        axis="what",
-        property_dcid="TestSchemeProp",
-        kind="value",
-        value_dcids=["ODAGrants"],
-    )
-    purpose_draft = SlotBindingDraft(
-        axis="how",
-        property_dcid="TestPurposeProp",
-        kind="value",
-        value_dcids=["DAC/Health"],
-    )
-    place_draft = SlotBindingDraft(
-        axis="where",
-        property_dcid="TestPlaceProp",
-        kind="value",
-        value_dcids=["country/ETH"],
-    )
-
-    slots = []
-    slot_key_models = []
-    for slot_draft_key, binding_draft, grounded in [
-        (shape_draft.slot_keys[0], scheme_draft, [GraphRef(dcid="ODAGrants", label="ODA Grants")]),
-        (shape_draft.slot_keys[1], purpose_draft, [GraphRef(dcid="DAC/Health", label="Health")]),
-        (
-            shape_draft.slot_keys[2],
-            place_draft,
-            [GraphRef(dcid="country/ETH", label="Ethiopia")],
-        ),
-    ]:
-        prop_dcid = slot_draft_key.property_dcid
-        assert prop_dcid is not None
-        prop_ref = GraphRef(dcid=prop_dcid, label=prop_dcid)
-        slot = build_slot(slot_draft_key, binding_draft, grounded, property_ref=prop_ref)
-        slots.append(slot)
-        slot_key_models.append(slot.key)
-
-    shape_model = build_shape_model(
-        shape_draft, slot_key_models, five_tuple_refs, member_count=1, members=None
-    )
-    sv_ref = GraphRef(dcid="Count_Person", label="Health ODA")
-    stat_vars = [
-        StatVar(ref=sv_ref, shape_id=shape_draft.shape_id, slot_values=[], constraint_properties=[])
-    ]
-
-    result_spec = build_spec(
-        measure_elected_properties=frozenset(),
-        shape=shape_model,
-        slots=slots,
-        stat_vars=stat_vars,
-        entities=[_make_entity("country/ETH", "Ethiopia")],
-        coverage=_make_exact_coverage(window),
-        pipeline_trace=_make_pipeline_steps(),
-        date_source="query",
-    )
-
-    assert result_spec.resolved.trace.applied_window == window
-    assert result_spec.resolved.trace.date_source == "query"
-
-
-def test_build_spec_applied_window_and_date_source_none_when_no_window():
-    spec = _make_spec(
-        sv_dcid="Count_Person",
-        purpose_dcid="DAC/Health",
-        place_dcid="country/ETH",
-    )
-    assert spec.resolved.trace.applied_window is None
-    assert spec.resolved.trace.date_source is None
-
-
-# build_spec date_source explicit override
-
-
-def test_build_spec_date_source_explicit_coverage_clamp():
-    window = TimeWindow(start_year=2015, end_year=2020)
-    spec = _make_spec(
-        sv_dcid="Count_Person",
-        purpose_dcid="DAC/Health",
-        place_dcid="country/ETH",
-    )
-    sv_ref = GraphRef(dcid="Count_Person", label="Health ODA")
-    result = build_spec(
-        measure_elected_properties=frozenset(),
-        shape=spec.resolved.shape,
-        slots=[],
-        stat_vars=[
-            StatVar(
-                ref=sv_ref,
-                shape_id=spec.resolved.shape.shape_id,
-                slot_values=[],
-                constraint_properties=[],
-            )
-        ],
-        entities=[],
-        coverage=_make_exact_coverage(window),
-        pipeline_trace=[],
-        date_source="coverage_clamp",
-    )
-    assert result.resolved.trace.date_source == "coverage_clamp"
-    assert result.resolved.trace.applied_window == window
-
-
-def test_build_spec_date_source_default_infers_query_when_window():
-    window = TimeWindow(start_year=2018)
-    spec = _make_spec(
-        sv_dcid="Count_Person",
-        purpose_dcid="DAC/Health",
-        place_dcid="country/ETH",
-    )
-    result = build_spec(
-        measure_elected_properties=frozenset(),
-        shape=spec.resolved.shape,
-        slots=[],
-        stat_vars=[],
-        entities=[],
-        coverage=_make_exact_coverage(window),
-        pipeline_trace=[],
-    )
-    assert result.resolved.trace.date_source == "query"
-
 
 # Facet variants survive JSON serialisation.
 
@@ -190,13 +38,13 @@ def test_build_spec_facets_serialised_body_has_the_four_resolved_facet_shapes():
         ),
     }
     result = build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=spec.resolved.shape,
         slots=[],
         stat_vars=[],
         entities=[],
         coverage=_make_coverage(),
-        pipeline_trace=_make_pipeline_steps(),
         facets=facets,
     )
     body = result.model_dump(mode="json", exclude_none=True)
@@ -228,13 +76,13 @@ def test_build_spec_facets_defaults_to_empty_when_not_supplied():
         place_dcid="country/ETH",
     )
     result = build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=spec.resolved.shape,
         slots=[],
         stat_vars=[],
         entities=[],
         coverage=_make_coverage(),
-        pipeline_trace=_make_pipeline_steps(),
     )
     assert result.resolved.facets == {}
     body = result.model_dump(mode="json", exclude_none=True)
@@ -257,13 +105,13 @@ def test_build_spec_rejects_request_basis_on_a_non_unit_axis():
     }
     with pytest.raises(ValidationError, match="request_basis is only meaningful"):
         build_spec(
+            open_roles=(),
             measure_elected_properties=frozenset(),
             shape=spec.resolved.shape,
             slots=[],
             stat_vars=[],
             entities=[],
             coverage=_make_coverage(),
-            pipeline_trace=_make_pipeline_steps(),
             facets=facets,
         )
 

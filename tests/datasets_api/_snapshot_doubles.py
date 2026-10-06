@@ -26,18 +26,14 @@ _NOW = datetime(2026, 6, 1, tzinfo=UTC)
 class FakeSpecReader:
     """Return a sentinel for known IDs; callers check presence by testing for `None`."""
 
-    def __init__(self, *, spec_ids: Sequence[str] = (), collection_ids: Sequence[str] = ()) -> None:
+    def __init__(self, *, spec_ids: Sequence[str] = ()) -> None:
         self._spec_ids = set(spec_ids)
-        self._collection_ids = set(collection_ids)
 
     def read_definition(self, spec_id: str, *, schema_version: int | None = None):
         return object() if spec_id in self._spec_ids else None
 
     def read_definitions(self, spec_ids):
         return {}
-
-    def read_collection(self, collection_id: str):
-        return object() if collection_id in self._collection_ids else None
 
 
 class BlockingFakeSpecReader(FakeSpecReader):

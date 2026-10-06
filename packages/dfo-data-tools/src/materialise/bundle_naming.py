@@ -21,7 +21,7 @@ SLUG_MAX_LENGTH = 40
 """The longest slug `slugify` and `sources_slug` return."""
 
 RESERVED_MEMBER_SLUGS = frozenset({"codes"})
-"""Slugs the bundle's codes table holds, which no collection member takes."""
+"""Slugs the bundle's codes table holds, which no data file takes."""
 
 EN_DASH = "\u2013"
 """The dash between the first and last year of a window."""
@@ -138,7 +138,7 @@ def bare_file_name(
 
 
 def member_slugs(member_source_names: Sequence[Sequence[str]]) -> tuple[str, ...]:
-    """One slug per collection member, in order, from each member's source names.
+    """One slug per bundle member, in order, from each member's source names.
 
     A slug an earlier member took, or one in `RESERVED_MEMBER_SLUGS`, gains the first free
     suffix `-2`, `-3`, and so on."""

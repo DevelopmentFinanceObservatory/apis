@@ -101,7 +101,6 @@ def _search_answer() -> Spec:
             graph=graph,
             resolver=make_resolver(graph),
             llm=_Bind(),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),

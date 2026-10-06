@@ -145,7 +145,7 @@ def test_a_decoded_column_named_in_columns_without_a_code_index_still_refuses_co
     assert excinfo.value.pointer == "/options/columns"
 
 
-def test_a_decoded_column_can_be_dropped_via_columns_selection():
+def test_a_long_selection_naming_no_decoded_column_keeps_the_decoded_columns():
     table = _reshape(
         _TABLE,
         options=MintOptions(columns=list(_TABLE_COLUMNS), pivot=None),
@@ -157,4 +157,4 @@ def test_a_decoded_column_can_be_dropped_via_columns_selection():
         pivot_max_output_cells=5_000_000,
     ).table
 
-    assert table.columns == _TABLE_COLUMNS
+    assert table.columns == (*_TABLE_COLUMNS, "stat_var_crsPurpose")

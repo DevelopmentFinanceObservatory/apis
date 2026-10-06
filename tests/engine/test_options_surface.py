@@ -14,13 +14,13 @@ from fastapi.testclient import TestClient
 from materialise.facets import ElectedDataset
 from materialise.graph import Facet as MaterialiseFacet
 from materialise.graph import GraphReadError, SubjectPage
-from origin_catalogue import note_un_blocked_places
+from origin_catalogue import UnReadFailure, note_un_blocked_places
+from origin_catalogue.context import un_unavailability_record
 from search.engine.config import settings
 from search.engine.envelope import now_ms
 from search.engine.errors import EngineInputError, GraphCapExceededError
 from search.engine.options import surface
-from search.engine.options.population import OptionsPopulation
-from search.engine.options.resolve import ResolvedOptionsTarget, resolve_options_target
+from search.engine.options.resolve import resolve_options_target
 from search.engine.options.surface import build_options_response
 from search.engine.region import OPTION_COVERAGE_PROBE_FAILED
 from search.engine.region.codes import UN_SYSTEM_UNAVAILABLE
@@ -36,7 +36,6 @@ from search.models import (
     IdentityWindowRange,
     OptionsFor,
     OptionsRequest,
-    ResolvedEntity,
 )
 from series_coverage.schema import RoleNames
 from tests.engine._fake_coverage import (
@@ -1053,6 +1052,29 @@ class TestDirectionalOptions:
         (warning,) = [w for w in resp.diagnostics.warnings if w.code == UN_SYSTEM_UNAVAILABLE]
         assert "country/XYZ" in warning.message
 
+    def test_a_failed_un_read_is_named_without_a_label_read(self, monkeypatch):
+        """The door holds no member names, so the warning names the failed variable `""`
+        with no read of the deployment that just failed."""
+        build_set = surface._directional_options_set
+
+        def failing(*args, **kwargs):
+            record = un_unavailability_record()
+            assert record is not None
+            record.add_failure(
+                UnReadFailure(variables=("undata/who/MORT",), places=("country/KEN",), detail="")
+            )
+            return build_set(*args, **kwargs)
+
+        monkeypatch.setattr(surface, "_directional_options_set", failing)
+        rows = _directional_coverage_rows(role="destination", members=["country/KEN"])
+        _target, resp, _sdmx = _directional_response(
+            role="destination", monkeypatch=monkeypatch, rows=rows
+        )
+
+        (warning,) = [w for w in resp.diagnostics.warnings if w.code == UN_SYSTEM_UNAVAILABLE]
+        assert warning.params is not None
+        assert warning.params["variable_labels"] == [""]
+
     def test_destination_request_returns_coverage_members_with_labels(self, monkeypatch):
         rows = _directional_coverage_rows(
             role="destination", members=["country/KEN", "country/UGA"]
@@ -1334,72 +1356,6 @@ class TestDiagnosticsReflectTheWholeRequest:
             )
         assert resp.status_code == 200
         assert resp.json()["diagnostics"]["timing_ms"]["total"] >= 50
-
-
-# ---------------------------------------------------------------------------
-# Population truncation propagates independently of candidate-list truncation.
-# ---------------------------------------------------------------------------
-
-
-class TestPopulationTruncationPropagatesToOptionsSet:
-    def test_observation_about_reports_truncated_even_when_candidates_are_not(self):
-        req = _place_request(entities={"observationAbout": ["country/GTM"]})
-        graph = _place_graph()
-        population = OptionsPopulation(
-            stat_var_dcids=(_LIFE_EXPECTANCY_SV,),
-            declared_roles=("observationAbout",),
-            source="graph",
-            truncated=True,
-        )
-        target = ResolvedOptionsTarget(
-            population=population,
-            anchors=(
-                ResolvedEntity(ref="country/GTM", entity_type="Country", role="observationAbout"),
-            ),
-            facets=None,
-            requested_window=None,
-            role_names_by_axis={},
-        )
-        resp = build_options_response(
-            req, target, graph=graph, start_ms=now_ms(), coverage=empty_coverage_snapshot()
-        )
-        assert resp.options.truncated is True
-        # Proves this reports truncated on the population's own strength,
-        # not because the candidate list itself was clipped.
-        assert len(resp.options.items) < settings().max_options
-
-    def test_directional_reports_truncated_from_the_population_alone(self, monkeypatch):
-        rows = _directional_coverage_rows(role="destination", members=["country/KEN"])
-        _auto_coverage_index_1 = patch_coverage(
-            monkeypatch, rows, role_names={_DIRECTIONAL_SV_DCID: _DIRECTIONAL_ROLE_NAMES}
-        )
-        graph = _directional_graph()
-        population = OptionsPopulation(
-            stat_var_dcids=(_DIRECTIONAL_SV_DCID,),
-            declared_roles=("financingProvider", "financingRecipient"),
-            source="graph",
-            truncated=True,
-        )
-        target = ResolvedOptionsTarget(
-            population=population,
-            anchors=(),
-            facets=None,
-            requested_window=None,
-            role_names_by_axis={
-                "origin": "financingProvider",
-                "destination": "financingRecipient",
-            },
-        )
-        req = _directional_request(role="destination", entities={})
-        resp = build_options_response(
-            req,
-            target,
-            graph=graph,
-            start_ms=now_ms(),
-            coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
-        )
-        assert resp.options.truncated is True
-        assert resp.options.items, "a genuine non-empty result, not the empty-read case"
 
 
 # ---------------------------------------------------------------------------

@@ -12,7 +12,6 @@ from dc_sdmx import SdmxClient
 from materialise import (
     EnrichmentLookup,
     MaterialisationRequest,
-    materialise_collection,
     materialise_group,
     materialise_preview,
     materialise_spec,
@@ -32,8 +31,6 @@ _STAT_VAR_A = "dcid:LatestWindowMemberA"
 _STAT_VAR_B = "dcid:LatestWindowMemberB"
 _BARE_A = "LatestWindowMemberA"
 _BARE_B = "LatestWindowMemberB"
-_SPEC_ID_A = "spec_0000000000000000000000000000000a"
-_SPEC_ID_B = "spec_0000000000000000000000000000000b"
 
 _SNAPSHOT = RevisionSnapshot(
     graph_revision="graph-rev-2024-01",
@@ -197,190 +194,6 @@ def test_single_member_latest_window_blank_value_at_latest_period_serves_no_row(
     assert only_chunk(result).rows == ()
     assert result.coverage.rows == 0
     assert {w["code"] for w in result.warnings} == {"empty_result"}
-
-
-def test_shared_chunk_both_latest_members_send_time_period_latest_in_one_request():
-    combined_body = (
-        _CSV_HEADER
-        + _row(stat_var=_BARE_A, recipient="country/KEN", year="2017", value="1000")
-        + _row(stat_var=_BARE_B, recipient="country/KEN", year="2017", value="2000")
-    )
-    sdmx, requests = _recording_sdmx(combined_body)
-    graph = FakeGraphReader(
-        facets={
-            (_BARE_A, "country/KEN"): [_facet("facet1")],
-            (_BARE_B, "country/KEN"): [_facet("facet1")],
-        }
-    )
-
-    coverage = _coverage_for([(_BARE_A, "country/KEN"), (_BARE_B, "country/KEN")])
-
-    result = materialise_collection(
-        [
-            (
-                _SPEC_ID_A,
-                _request(
-                    stat_var=_STAT_VAR_A,
-                    recipient="country/KEN",
-                    window=RequestedWindow(kind="latest"),
-                ),
-            ),
-            (
-                _SPEC_ID_B,
-                _request(
-                    stat_var=_STAT_VAR_B,
-                    recipient="country/KEN",
-                    window=RequestedWindow(kind="latest"),
-                ),
-            ),
-        ],
-        sdmx=sdmx,
-        graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
-        materialiser_build="build-123",
-        capability_version="cap-v1",
-        member_concurrency=1,
-        coverage=coverage,
-    )
-
-    # With concurrency 1, both latest members share one chunk; the default 4 would split them.
-    assert len(requests) == 1
-    fetch_requests = [r for r in requests if _is_data_fetch(r)]
-    assert len(fetch_requests) == 1
-    assert fetch_requests[0].url.params.get("c[TIME_PERIOD]") == "LATEST"
-    assert len(result.members) == 2
-
-
-def test_latest_member_and_all_window_member_share_scope_but_land_in_different_chunks():
-    # Latest and all-window members require separate fetch chunks.
-    def handler(request: httpx.Request) -> httpx.Response:
-        variables = str(request.url.params.get("c[variableMeasured]"))
-        if variables == _BARE_A:
-            body = _CSV_HEADER + _row(
-                stat_var=_BARE_A, recipient="country/KEN", year="2017", value="1000"
-            )
-        elif variables == _BARE_B:
-            body = _CSV_HEADER + _row(
-                stat_var=_BARE_B, recipient="country/KEN", year="2016", value="2000"
-            )
-        else:
-            raise AssertionError(f"unexpected c[variableMeasured]={variables!r}")
-        return httpx.Response(
-            200, text=body, headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"}
-        )
-
-    requests: list[httpx.Request] = []
-
-    def recording_handler(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        return handler(request)
-
-    sdmx = SdmxClient(base_url=_BASE_URL, transport=httpx.MockTransport(recording_handler))
-    graph = FakeGraphReader(
-        facets={
-            (_BARE_A, "country/KEN"): [_facet("facet1")],
-            (_BARE_B, "country/KEN"): [_facet("facet1")],
-        }
-    )
-    coverage = _coverage_for([(_BARE_A, "country/KEN"), (_BARE_B, "country/KEN")])
-
-    result = materialise_collection(
-        [
-            (
-                _SPEC_ID_A,
-                _request(
-                    stat_var=_STAT_VAR_A,
-                    recipient="country/KEN",
-                    window=RequestedWindow(kind="latest"),
-                ),
-            ),
-            (
-                _SPEC_ID_B,
-                _request(
-                    stat_var=_STAT_VAR_B,
-                    recipient="country/KEN",
-                    window=RequestedWindow(kind="all"),
-                ),
-            ),
-        ],
-        sdmx=sdmx,
-        graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
-        materialiser_build="build-123",
-        capability_version="cap-v1",
-        coverage=coverage,
-    )
-
-    # The two window kinds require separate `c[TIME_PERIOD]` filters.
-    assert len(requests) == 2
-    fetch_requests = [r for r in requests if _is_data_fetch(r)]
-    assert len(fetch_requests) == 2
-    by_variables = {str(r.url.params.get("c[variableMeasured]")): r for r in fetch_requests}
-    assert by_variables[_BARE_A].url.params.get("c[TIME_PERIOD]") == "LATEST"
-    assert "c[TIME_PERIOD]" not in by_variables[_BARE_B].url.params
-    assert len(result.members) == 2
-
-
-def test_shared_chunk_latest_window_blank_value_at_latest_period_serves_no_row_for_that_member():
-    # At concurrency 1, both KEN members share a chunk. A's blank 2017 value yields no row.
-    # B's 2017 value survives.
-    combined_body = (
-        _CSV_HEADER
-        + _row(stat_var=_BARE_A, recipient="country/KEN", year="2015", value="1000")
-        + _row(stat_var=_BARE_A, recipient="country/KEN", year="2017", value="")
-        + _row(stat_var=_BARE_B, recipient="country/KEN", year="2017", value="2000")
-    )
-    sdmx, requests = _recording_sdmx(combined_body)
-    graph = FakeGraphReader(
-        facets={
-            (_BARE_A, "country/KEN"): [_facet("facet1")],
-            (_BARE_B, "country/KEN"): [_facet("facet1")],
-        }
-    )
-    coverage = _coverage_for([(_BARE_A, "country/KEN"), (_BARE_B, "country/KEN")])
-
-    result = materialise_collection(
-        [
-            (
-                _SPEC_ID_A,
-                _request(
-                    stat_var=_STAT_VAR_A,
-                    recipient="country/KEN",
-                    window=RequestedWindow(kind="latest"),
-                ),
-            ),
-            (
-                _SPEC_ID_B,
-                _request(
-                    stat_var=_STAT_VAR_B,
-                    recipient="country/KEN",
-                    window=RequestedWindow(kind="latest"),
-                ),
-            ),
-        ],
-        sdmx=sdmx,
-        graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
-        materialiser_build="build-123",
-        capability_version="cap-v1",
-        member_concurrency=1,
-        coverage=coverage,
-    )
-
-    # Both members share one fetch.
-    assert len(requests) == 1
-    fetch_requests = [r for r in requests if _is_data_fetch(r)]
-    assert len(fetch_requests) == 1
-    assert fetch_requests[0].url.params.get("c[TIME_PERIOD]") == "LATEST"
-
-    members_by_spec = dict(result.members)
-    assert only_chunk(members_by_spec[_SPEC_ID_A]).rows == ()
-    assert members_by_spec[_SPEC_ID_A].coverage.rows == 0
-    assert {w["code"] for w in members_by_spec[_SPEC_ID_A].warnings} == {"empty_result"}
-    assert members_by_spec[_SPEC_ID_B].coverage.rows == 1
 
 
 def test_group_member_time_period_matches_each_members_own_window_kind():

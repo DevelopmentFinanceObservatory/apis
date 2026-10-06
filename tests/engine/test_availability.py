@@ -17,10 +17,10 @@ from search.engine.retrieval.retrieve import Materialised
 from search.engine.retrieval.standard import standard_resolve
 from search.engine.shape import ShapeDraft
 from search.models import RawTextInput, ResolveRequest, ResubmitIdentityPayload
-from tests.engine._base_identity import make_base, make_identity
+from tests.engine._base_identity import make_identity
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import offline_resolve
+from tests.engine._harness import offline_resolve, walk_options
 from tests.fixtures import FakeGraph, make_resolver
 
 _RECIPIENT = "country/XYZ"
@@ -109,18 +109,13 @@ class TestFlaggedUnavailableStandard:
         assert flagged is not None
         assert flagged.resolved.available_at_place is False
         assert flagged.resolved.confidence == "low"
-        assert flagged.resolved.stat_vars.items, (
-            "flagged_match must carry the matched-but-unavailable SV"
-        )
+        assert flagged.resolved.members, "flagged_match must carry the matched-but-unavailable SV"
         assert inner.no_data.gate == NO_MEMBER_HAS_DATA_AT_PLACE
         assert inner.rendered_sentence == "No data for Nauru's teachers."
-        # On this gate elected_stat_vars and flagged_match name the same
+        # On this gate elected_count and flagged_match count the same
         # variable, since no_member_has_data_at_place has no separate
         # alternate to name.
-        assert inner.no_data.elected_stat_vars is not None
-        assert [ref.dcid for ref in inner.no_data.elected_stat_vars] == [
-            sv.ref for sv in flagged.resolved.stat_vars.items
-        ]
+        assert inner.no_data.elected_count == len(flagged.resolved.members)
 
 
 # (c) A data-bearing sibling answers when the representative is empty.
@@ -256,7 +251,6 @@ class TestMemberProbeRunsNearestReal:
                 graph=self._graph(),
                 resolver=make_resolver(self._graph()),
                 llm=self._GenderBoundLLM(),
-                base_steps=[],
                 base_timing={},
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 coverage=empty_coverage_snapshot(),
@@ -271,10 +265,10 @@ class TestMemberProbeRunsNearestReal:
         assert len(result.flagged_match) == 1
         flagged = result.flagged_match[0]
         assert result.gate == NO_MEMBER_HAS_DATA_AT_PLACE
-        assert [sv.ref for sv in flagged.resolved.stat_vars.items] == [self._FEMALE_SV]
+        assert [sv.ref.dcid for sv in flagged.resolved.members] == [self._FEMALE_SV]
         assert result.nearest_real
         assert [nr.relaxation.axis for nr in result.nearest_real] == ["how"]
-        assert [sv.ref for sv in result.nearest_real[0].resolved.stat_vars.items] == [
+        assert [sv.ref.dcid for sv in result.nearest_real[0].resolved.members] == [
             self._AGGREGATE_SV
         ]
 
@@ -299,7 +293,6 @@ class TestMemberProbeRunsNearestReal:
                 graph=graph,
                 resolver=make_resolver(graph),
                 llm=self._GenderBoundLLM(),
-                base_steps=[],
                 base_timing={},
                 sdmx=FakeSdmxClient(
                     observations={}, availability={}, scope_availability=graph.scope_availability
@@ -387,7 +380,6 @@ class TestEntityLessDefiniteConfidenceFreshPath:
                     observations={}, availability={}, scope_availability=graph.scope_availability
                 ),
                 llm=_NoEntityBindLLM(),
-                base_steps=[],
                 base_timing={},
                 coverage=empty_coverage_snapshot(),
             )
@@ -416,7 +408,6 @@ class TestEntityLessDefiniteConfidenceFreshPath:
                     observations={}, availability={}, scope_availability=graph.scope_availability
                 ),
                 llm=_NoEntityBindLLM(),
-                base_steps=[],
                 base_timing={},
                 coverage=empty_coverage_snapshot(),
             )
@@ -451,12 +442,8 @@ class TestEntityLessDefiniteConfidenceResubmitPath:
             },
             children={"Earth": {"Country": [_NO_ENTITY_COUNTRY]}},
         )
-        base_spec_id, base_identity = make_base(self._SHAPE, slots=[])
         inp = ResubmitIdentityPayload(
             identity=make_identity(self._SHAPE, []),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_NO_ENTITY_SV],
         )
 
         region = resolve_spec_resubmit(
@@ -466,6 +453,7 @@ class TestEntityLessDefiniteConfidenceResubmitPath:
                 observations={}, availability={}, scope_availability=graph.scope_availability
             ),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(graph),
         )
 
         assert region.status == "definite"

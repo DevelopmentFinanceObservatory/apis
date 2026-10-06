@@ -44,7 +44,7 @@ class MaterialisationError(Exception):
 
 
 class CollectionProbeCeilingExceededError(MaterialisationError):
-    """422 `collection_probe_ceiling`. Raised before any facet probe when a collection's sum of
+    """422 `collection_probe_ceiling`. Raised before any facet probe when a request group's sum of
     distinct StatVars x entities across subject-only scope groups exceeds the pair cap."""
 
     def __init__(self, *args: object) -> None:
@@ -165,8 +165,8 @@ class UpstreamVersionChangedError(MaterialisationError):
 
 
 class MaterialisationUsageError(ValueError):
-    """Caller-side input bug, raised before network calls. Collection members need unique
-    `spec_id`s, and `stat_var` values include the `dcid:` prefix."""
+    """Caller-side input bug, raised before network calls. `stat_var` values include the
+    `dcid:` prefix."""
 
 
 class UpstreamResponseError(Exception):

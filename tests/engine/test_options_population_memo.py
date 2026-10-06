@@ -10,6 +10,7 @@ import pytest
 
 from graph_generation import FakeGeneration, GenerationStamp
 from search.engine.errors import EngineInputError
+from search.engine.options import population as population_module
 from search.engine.options.population import OptionsPopulation
 from search.engine.options.population_memo import (
     OptionsPopulationMemo,
@@ -27,6 +28,7 @@ from search.models import (
     OptionsFor,
     OptionsRequest,
 )
+from statvar_members import MemberEnumerator
 from tests.code_index.aid_identity import (
     AID_TYPE,
     IMPUTED_MEMBER_COUNT,
@@ -36,9 +38,18 @@ from tests.code_index.aid_identity import (
 from tests.fixtures import FakeGraph
 from tests.statvar_members.conftest import FakeMemberArcReader, kenya_reader
 
+
+@pytest.fixture(autouse=True)
+def _walks_store_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each derivation walks the graph, so a graph read counts a derivation the memo ran.
+    The shared enumerator's own cache would otherwise answer a repeat walk."""
+    enumerator = MemberEnumerator(max_weight=0)
+    monkeypatch.setattr(population_module, "shared_enumerator", lambda: enumerator)
+
+
 # Mirrors test_options_population.py's own _NON_INDEX_SHAPE: a five-tuple the
-# packaged index carries no row for, so options_population sources it via
-# statvar_members.enumerate_members -- the one branch that reads `graph`.
+# packaged index carries no row for, so options_population sources it through the
+# shared enumerator -- the one branch that reads `graph`.
 _NON_INDEX_SHAPE = IdentityShapeSchema(
     population_type="Person", measured_property="lifeExpectancy", stat_type="measuredValue"
 )
@@ -77,6 +88,9 @@ class _CountingReader:
     def node_arcs_many(self, *args, **kwargs):
         return self._inner.node_arcs_many(*args, **kwargs)
 
+    def generation_stamp(self) -> GenerationStamp:
+        return self._inner.generation_stamp()
+
 
 class _FailFirstReader:
     """Raises on the first `node_subjects` call, then delegates."""
@@ -95,6 +109,9 @@ class _FailFirstReader:
 
     def node_arcs_many(self, *args, **kwargs):
         return self._inner.node_arcs_many(*args, **kwargs)
+
+    def generation_stamp(self) -> GenerationStamp:
+        return self._inner.generation_stamp()
 
 
 def test_miss_derives_and_returns_the_real_population():
@@ -248,6 +265,9 @@ def test_a_waiter_on_a_failing_inflight_derivation_gets_the_same_failure():
     release = threading.Event()
 
     class _FailingSlowReader:
+        def generation_stamp(self) -> GenerationStamp:
+            return GenerationStamp(token=None)
+
         def node_subjects(self, *args, **kwargs):
             started.set()
             assert release.wait(timeout=5), "test deadlocked waiting for release"

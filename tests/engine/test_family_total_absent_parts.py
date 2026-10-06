@@ -78,7 +78,6 @@ def _resolve(
             graph=graph,
             resolver=make_resolver(graph),
             llm=_BindLLM(also_plausible),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
@@ -97,14 +96,13 @@ def _sentence(result, query: str) -> str:
         extra_warnings=[],
         start_ms=now_ms(),
         engine_build="test",
-        include_sentence=True,
         max_candidates=5,
     )
     return response.parts[0].spec.resolved.rendered_sentence or ""
 
 
 def _stat_vars(spec) -> list[str]:
-    return [sv.ref for sv in spec.resolved.stat_vars.items]
+    return [sv.ref.dcid for sv in spec.resolved.members]
 
 
 @pytest.fixture
@@ -162,7 +160,6 @@ def _resolve_rate_in(date_request: DateRequest | None):
             graph=graph,
             resolver=make_resolver(graph),
             llm=_BindLLM(None),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),

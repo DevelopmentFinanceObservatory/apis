@@ -134,6 +134,7 @@ class TestParsedInputParts:
                     "time_text": "2015 to 2024",
                     "unit_text": "constant 2023 USD",
                     "source_text": "OECD CRS",
+                    "provenance": "provenance/SomeTable",
                     "operations": [
                         {
                             "verb": "rank",
@@ -142,6 +143,7 @@ class TestParsedInputParts:
                             "target_year": None,
                         }
                     ],
+                    "open_roles": ["recipient"],
                 }
             ],
             "raw_query": "health ODA grants from USA since 2015",

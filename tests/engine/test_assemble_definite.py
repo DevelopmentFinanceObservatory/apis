@@ -20,31 +20,12 @@ def test_build_definite_part_renders_sentence_when_requested():
         spec_health,
         variable_text="test variable",
         warnings=[],
-        include_sentence=True,
     )
 
     assert part.spec.resolved.rendered_sentence is not None
     assert part.spec.resolved.rendered_sentence == sentence_from_plan(
         part.spec.resolved.sentence_plan
     )
-
-
-def test_build_definite_part_no_sentence_when_not_requested():
-    spec_health = _make_spec(
-        sv_dcid="Count_Person",
-        purpose_dcid="DAC/Health",
-        place_dcid="country/ETH",
-    )
-
-    part = build_definite_part(
-        spec_health,
-        variable_text="test variable",
-        warnings=[],
-    )
-
-    assert part.spec.resolved.rendered_sentence is None
-    assert part.rendered_sentence is None
-    assert part.sentence_plan is None
 
 
 def test_a_definite_spec_sentence_is_its_heading_and_byline_alone():
@@ -71,7 +52,6 @@ def test_a_definite_spec_sentence_is_its_heading_and_byline_alone():
         spec_health,
         variable_text="test variable",
         warnings=[],
-        include_sentence=True,
     )
 
     assert part.spec.resolved.sentence_plan == render_sentence_plan(spec_health)

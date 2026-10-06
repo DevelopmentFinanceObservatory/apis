@@ -405,7 +405,6 @@ def _run():
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_BindPurposeMentionedFlowSoleOption(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )

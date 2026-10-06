@@ -170,7 +170,6 @@ async def _resolving(
         resolver=make_resolver(graph),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         llm=llm or _ElectFirstLLM(),
-        base_steps=[],
         base_timing={},
         emit=emit,
         coverage=empty_coverage_snapshot(),
@@ -179,7 +178,7 @@ async def _resolving(
 
 
 def _elected(result: RegionResult) -> list[str]:
-    return [sv.ref for spec in result.specs for sv in spec.resolved.stat_vars.items]
+    return [sv.ref.dcid for spec in result.specs for sv in spec.resolved.members]
 
 
 def _codes(result: RegionResult) -> list[str]:
@@ -265,12 +264,10 @@ def test_a_first_pass_without_observations_is_filled_from_the_un_shape(caplog) -
     assert line.endswith("pass2_score=0.8500")
 
 
-def test_the_filled_answer_carries_both_passes_usage_and_the_second_passs_trace() -> None:
+def test_the_filled_answer_carries_both_passes_usage() -> None:
     result = _resolve(_graph())
 
     assert result.llm_usage == {"input_tokens": 2, "output_tokens": 2, "cached_tokens": 0}
-    steps = [step.step for step in result.specs[0].resolved.trace.pipeline_trace]
-    assert steps.count("recall") == steps.count("shape") == steps.count("bind") == 1
 
 
 def test_a_failed_second_pass_keeps_the_first_with_a_warning(caplog) -> None:
@@ -322,6 +319,7 @@ def test_a_failed_second_pass_logs_the_refusals_its_prune_made(monkeypatch, capl
                 emit=None,
                 first_sentences=[],
                 first_measure_class_refused=3,
+                first_names_dataset=False,
                 second_state=lambda emit, bound: cast(Any, state),
             )
         )
@@ -531,7 +529,7 @@ def test_a_two_part_request_fills_only_the_part_without_data() -> None:
 
     parts = response.parts
     assert all(isinstance(part, DefinitePart) for part in parts)
-    elected = [[sv.ref for sv in part.spec.resolved.stat_vars.items] for part in parts]
+    elected = [[sv.ref.dcid for sv in part.spec.resolved.members] for part in parts]
     assert elected == [[_UN], [_ENROLMENT]]
 
 
@@ -790,7 +788,7 @@ def test_a_weak_second_pass_answer_leaves_the_first_passs_alternate_standing(cap
     assert result.no_data_reason == "no_observations"
     assert result.gate == "only_alternate_has_data"
     assert result.alternate_match is not None
-    assert [sv.ref for sv in result.alternate_match.resolved.stat_vars.items] == [_FERTILITY_RATE]
+    assert [sv.ref.dcid for sv in result.alternate_match.resolved.members] == [_FERTILITY_RATE]
     assert [sv.dcid for sv in result.elected_stat_vars or []] == [_CRUDE_BIRTH_RATE]
     assert _menu_named(llm, _UN_TOTAL_FERTILITY_RATE), "the second pass never reached bind"
     assert "un_system_unavailable" not in _codes(result)

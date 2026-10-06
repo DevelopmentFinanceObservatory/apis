@@ -37,7 +37,7 @@ from tests.engine._builders import (
 )
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import materialise_double_from_obs
+from tests.engine._harness import materialise_double_from_obs, walk_options, with_member_arcs
 from tests.fixtures import FakeGraph
 
 # ---------------------------------------------------------------------------
@@ -85,10 +85,6 @@ class TestResubmitResolvedSources:
         graph_obs.json has no provenanceId, so resolved_sources must be [].
         """
         entities = [subject_entity(_GDP_ENTITY_DCID)]
-        base_spec_id, base_identity = make_base(
-            GDP_SHAPE,
-            entities=entities,
-        )
         inp = ResubmitIdentityPayload(
             identity=make_identity(
                 GDP_SHAPE,
@@ -97,12 +93,13 @@ class TestResubmitResolvedSources:
                 [_unbound_slot("how", "activitySource", "activity source")],
                 entities=entities,
             ),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_GDP_SV_DCID],
         )
         region = resolve_spec_resubmit(
-            inp=inp, graph=FakeGraph(), sdmx=FakeSdmxClient(), coverage=empty_coverage_snapshot()
+            inp=inp,
+            graph=FakeGraph(),
+            sdmx=FakeSdmxClient(),
+            coverage=empty_coverage_snapshot(),
+            options=walk_options(FakeGraph()),
         )
         assert region.status == "definite"
         assert region.specs[0].resolved.trace.resolved_sources == [], (
@@ -176,10 +173,15 @@ def _resolve_standard_with_window(
         graph=FakeGraph(obs=_WINDOW_GDP_OBS),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
-        options=EngineOptions(
-            include_observations=include_observations,
-            materialise_graph=materialise_graph,
-            materialise_sdmx=materialise_sdmx,
+        options=walk_options(
+            FakeGraph(obs=_WINDOW_GDP_OBS),
+            EngineOptions(
+                include_observations=include_observations,
+                materialise_graph=with_member_arcs(
+                    materialise_graph, FakeGraph(obs=_WINDOW_GDP_OBS)
+                ),
+                materialise_sdmx=materialise_sdmx,
+            ),
         ),
     )
 
@@ -190,7 +192,6 @@ def _standard_window_inp(
     extra_slots: list[Slot] | None = None,
 ) -> ResubmitIdentityPayload:
     entities = [subject_entity(_GDP_ENTITY_DCID)]
-    base_spec_id, base_identity = make_base(GDP_SHAPE, entities=entities)
     return ResubmitIdentityPayload(
         identity=make_identity(
             GDP_SHAPE,
@@ -198,9 +199,6 @@ def _standard_window_inp(
             entities=entities,
             requested_window=requested_window,
         ),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[_GDP_SV_DCID],
     )
 
 
@@ -219,20 +217,18 @@ def test_resubmit_property_label_miss_is_humanized_in_slots() -> None:
 
     entities = [subject_entity(_GDP_ENTITY_DCID)]
     residence_slot = _unbound_slot("how", property_dcid, property_dcid)
-    base_spec_id, base_identity = make_base(
+    base_spec_id, _base_identity = make_base(
         PERSON_COUNT_SHAPE, slots=[residence_slot], entities=entities
     )
     inp = ResubmitIdentityPayload(
         identity=make_identity(PERSON_COUNT_SHAPE, [residence_slot], entities=entities),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=["Count_Person_Urban"],
     )
     region = resolve_spec_resubmit(
         inp=inp,
         graph=MissingResidenceLabelGraph(),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
+        options=walk_options(MissingResidenceLabelGraph()),
     )
 
     assert region.status == "definite", region.no_data_reason
@@ -251,14 +247,12 @@ class TestRequestedWindowAppliedToStandardRetrieval:
     the "latest" sentinel) with no matching when-slot binding must apply
     directly to retrieval, not resolve against the full history."""
 
-    def test_coverage_and_trace_reflect_the_requested_window(self):
+    def test_coverage_and_when_slot_reflect_the_requested_window(self):
         inp = _standard_window_inp(requested_window=_WINDOW_REQUESTED)
         region = _resolve_standard_with_window(inp)
         assert region.status == "definite", region.no_data_reason
         spec = region.specs[0]
         assert spec.resolved.coverage.window == _WINDOW_REQUESTED
-        assert spec.resolved.trace.applied_window == _WINDOW_REQUESTED
-        assert spec.resolved.trace.date_source == "query"
         when_slot = next(s for s in spec.resolved.slots if s.key.axis == "when")
         assert isinstance(when_slot.binding, BindingValue)
         assert when_slot.binding.value.time_window == _WINDOW_REQUESTED
@@ -300,7 +294,6 @@ class TestRequestedWindowAppliedToStandardRetrieval:
         assert region.status == "definite", region.no_data_reason
         spec = region.specs[0]
         assert spec.resolved.coverage.window == _WINDOW_REQUESTED
-        assert spec.resolved.trace.applied_window == _WINDOW_REQUESTED
 
     def test_reversed_requested_window_refuses_in_the_identity(self):
         """Identity normalisation rejects a reversed window before
@@ -342,10 +335,15 @@ class TestRequestedWindowAppliedToStandardRetrieval:
                 graph=FakeGraph(obs=_SOURCE_BOUND_OUT_OF_WINDOW_OBS),
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 coverage=empty_coverage_snapshot(),
-                options=EngineOptions(
-                    include_observations=include_observations,
-                    materialise_graph=materialise_graph,
-                    materialise_sdmx=materialise_sdmx,
+                options=walk_options(
+                    FakeGraph(obs=_SOURCE_BOUND_OUT_OF_WINDOW_OBS),
+                    EngineOptions(
+                        include_observations=include_observations,
+                        materialise_graph=with_member_arcs(
+                            materialise_graph, FakeGraph(obs=_SOURCE_BOUND_OUT_OF_WINDOW_OBS)
+                        ),
+                        materialise_sdmx=materialise_sdmx,
+                    ),
                 ),
             )
         else:
@@ -354,7 +352,10 @@ class TestRequestedWindowAppliedToStandardRetrieval:
                 graph=FakeGraph(obs=_SOURCE_BOUND_OUT_OF_WINDOW_OBS),
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 coverage=empty_coverage_snapshot(),
-                options=EngineOptions(include_observations=include_observations),
+                options=walk_options(
+                    FakeGraph(obs=_SOURCE_BOUND_OUT_OF_WINDOW_OBS),
+                    EngineOptions(include_observations=include_observations),
+                ),
             )
         assert region.status == "no_data"
         assert region.no_data_reason == "no_observations"
@@ -367,13 +368,15 @@ class TestRequestedWindowAppliedToStandardRetrieval:
             graph=FakeGraph(obs=_SOURCE_BOUND_OUT_OF_WINDOW_OBS),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
-            options=EngineOptions(include_observations=False),
+            options=walk_options(
+                FakeGraph(obs=_SOURCE_BOUND_OUT_OF_WINDOW_OBS),
+                EngineOptions(include_observations=False),
+            ),
         )
         part = _build_part(
             region,
             representative=region,
             folded=False,
-            include_sentence=True,
             max_candidates=5,
             include_observations=False,
             include_skills=False,
@@ -392,14 +395,10 @@ class TestRequestedWindowAppliedToStandardRetrieval:
     def test_no_where_slot_still_reports_the_requested_window(self):
         """The entity-less resubmit uses the Earth/Country scope. Its concrete
         requested window applies to the entity probe."""
-        base_spec_id, base_identity = make_base(GDP_SHAPE, entities=[])
         inp = ResubmitIdentityPayload(
             identity=make_identity(
                 GDP_SHAPE, [_ACTIVITY_SOURCE_SLOT], requested_window=_WINDOW_REQUESTED
             ),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_GDP_SV_DCID],
         )
         region = _resolve_standard_with_window(inp)
         assert region.status == "definite", region.no_data_reason
@@ -407,7 +406,6 @@ class TestRequestedWindowAppliedToStandardRetrieval:
         spec = region.specs[0]
         assert spec.resolved.coverage.kind == "exact"
         assert spec.resolved.coverage.window == _WINDOW_REQUESTED
-        assert spec.resolved.trace.applied_window == _WINDOW_REQUESTED
 
     def test_flagged_unavailable_carrier_reports_the_requested_window(self):
         """The flagged unavailable carrier retains the requested window."""
@@ -417,6 +415,7 @@ class TestRequestedWindowAppliedToStandardRetrieval:
             graph=FakeGraph(obs={}),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(FakeGraph(obs={})),
         )
         assert region.status == "no_data"
         assert region.no_data_reason == "no_observations"
@@ -424,7 +423,6 @@ class TestRequestedWindowAppliedToStandardRetrieval:
         flagged = region.flagged_match[0]
         assert region.gate == NO_MEMBER_HAS_DATA_AT_PLACE
         assert flagged.resolved.coverage.window == _WINDOW_REQUESTED
-        assert flagged.resolved.trace.applied_window == _WINDOW_REQUESTED
 
     def test_flagged_unavailable_carrier_skips_coverage_probe(self, monkeypatch):
         """A non-definite carrier skips option-coverage probes."""
@@ -449,7 +447,7 @@ class TestRequestedWindowAppliedToStandardRetrieval:
             graph=FakeGraph(obs={}),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
-            options=EngineOptions(include_option_coverage=True),
+            options=walk_options(FakeGraph(obs={}), EngineOptions(include_option_coverage=True)),
         )
         assert region.status == "no_data"
         assert region.no_data_reason == "no_observations"
@@ -483,18 +481,15 @@ class TestResubmitBoundToLiteralEarth:
 
     def test_earth_bound_where_slot_resolves_as_ordinary_bound_place(self):
         entities = [subject_entity("Earth", label="World")]
-        base_spec_id, base_identity = make_base(GDP_SHAPE, entities=entities)
         inp = ResubmitIdentityPayload(
             identity=make_identity(GDP_SHAPE, [_ACTIVITY_SOURCE_SLOT], entities=entities),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_GDP_SV_DCID],
         )
         region = resolve_spec_resubmit(
             inp=inp,
             graph=FakeGraph(obs=_EARTH_BOUND_GDP_OBS),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(FakeGraph(obs=_EARTH_BOUND_GDP_OBS)),
         )
 
         assert region.status == "definite", region.no_data_reason

@@ -95,26 +95,6 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
         "aid",
         "You asked for constant 2022 dollars. This shows current US dollars.",
     ),
-    # A dataset the request named that the answer does not use is cleared by the source,
-    # which names the one shown.
-    (
-        DepartureFact(
-            code="measure_not_applied",
-            binding_ref="source:",
-            asked="the IMF WEO",
-            shown="OECD Creditor Reporting System (CRS)",
-        ),
-        None,
-        "You asked for the IMF WEO. This uses OECD Creditor Reporting System (CRS).",
-    ),
-    # mls-011: readings from several sources, none of them the dataset asked for.
-    (
-        DepartureFact(
-            code="measure_not_applied", binding_ref="source:", asked="imputed multilateral ODA"
-        ),
-        "aid",
-        "You asked for imputed multilateral ODA. None of these readings comes from it.",
-    ),
     # crs-040: the share is named by its verb; the recorded phrase is a fragment.
     (
         DepartureFact(
@@ -562,21 +542,6 @@ _NO_DATA_CASES: list[tuple[DepartureFact, str | None, str]] = [
         ),
         "aid",
         "You asked for constant 2022 dollars. This checked current US dollars.",
-    ),
-    (
-        DepartureFact(
-            code="measure_not_applied",
-            binding_ref="source:",
-            asked="the IMF WEO",
-            shown="OECD Creditor Reporting System (CRS)",
-        ),
-        None,
-        "You asked for the IMF WEO. This checked OECD Creditor Reporting System (CRS).",
-    ),
-    (
-        DepartureFact(code="measure_not_applied", binding_ref="source:", asked="the IMF WEO"),
-        None,
-        "You asked for the IMF WEO. This check left it out.",
     ),
     # ids-027.
     (

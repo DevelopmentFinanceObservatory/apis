@@ -52,7 +52,6 @@ from search.models import (
 )
 from search.render.plan import render_sentence
 from series_coverage.schema import FacetMetadata, RoleNames
-from tests.engine._base_identity import base_from_spec
 from tests.engine._fake_coverage import (
     FakeCoverageService,
     build_coverage_index,
@@ -65,6 +64,7 @@ from tests.engine._harness import (
     ObsFacetFixture,
     _csv_header,
     _csv_row,
+    walk_options,
 )
 from tests.engine.test_cited_sources import (
     _ALAND,
@@ -164,7 +164,9 @@ def _sdmx_requests(clients: list[FakeSdmxClient]) -> int:
 # The graph requests each route makes for a first answer and an unchanged resubmit: the
 # shape, labels, types and facet policies, and for an answer resolved through the event
 # stream whether the graph declares facet defaults at all. Dating, scoping and the read decision read the plan and
-# the coverage index alone, so they add none.
+# the coverage index alone, so they add none. The trailing label read of each names the values
+# its facet options offer (`_maybe_build_facet_options`), after a facets read on the standard
+# route; a role route reads its facets from the coverage index.
 _NAMED_FIRST = [
     "detect_svs",
     "resolve_by_arc",
@@ -177,6 +179,7 @@ _NAMED_FIRST = [
     *["default_facet_policy"] * 3,
     "node_labels_batch",
     *["node_type", "node_label"] * 2,
+    "node_labels_batch",
 ]
 _NAMED_RESUBMIT = [
     "node_arcs_batch",
@@ -186,14 +189,14 @@ _NAMED_RESUBMIT = [
     *["default_facet_policy"] * 3,
     "node_labels_batch",
     *["node_type", "node_label"] * 2,
+    "node_labels_batch",
 ]
 _DISCOVERED_FIRST = [
     "detect_svs",
     "node_arcs_batch",
     "node_labels_batch",
     *["default_facet_policy"] * 3,
-    "node_labels_batch",
-    "node_labels_batch",
+    *["node_labels_batch"] * 3,
     "node_types_batch",
 ]
 _DISCOVERED_RESUBMIT = [
@@ -202,6 +205,7 @@ _DISCOVERED_RESUBMIT = [
     "node_labels_batch",
     "node_labels_batch",
     "node_types_batch",
+    "node_labels_batch",
 ]
 # A resubmit pinning a source also reads that source's label.
 _DISCOVERED_PINNED_RESUBMIT = [
@@ -209,6 +213,7 @@ _DISCOVERED_PINNED_RESUBMIT = [
     *["default_facet_policy"] * 3,
     *["node_labels_batch"] * 3,
     "node_types_batch",
+    "node_labels_batch",
 ]
 _STANDARD_FIRST = [
     # The engine entry resolves through the event stream (`core.resolve_events`).
@@ -225,6 +230,8 @@ _STANDARD_FIRST = [
     "node_labels_batch",
     "node_type",
     "node_label",
+    "observation_facets_batch",
+    "node_labels_batch",
 ]
 # The fertility rate's StatVarGroups, then its related group's members' arcs beside their
 # facets at Kenya (`related.read_related`).
@@ -239,6 +246,8 @@ _STANDARD_RESUBMIT = [
     "node_labels_batch",
     "node_type",
     "node_label",
+    "observation_facets_batch",
+    "node_labels_batch",
 ]
 
 
@@ -250,7 +259,7 @@ def _route_requests(discovered: bool) -> tuple[list[str], list[str]]:
 
 
 def _dates(spec: Spec) -> list[DateRange | None]:
-    return [sv.data_date_range for sv in spec.resolved.stat_vars.items]
+    return [sv.data_date_range for sv in spec.resolved.members]
 
 
 def _assert_dated_by(spec: Spec, plan: ReadPlan | None, expected: DateRange) -> None:
@@ -614,7 +623,7 @@ def test_candidates_serving_different_scopes_share_a_warning_without_a_count(
         assert {d.label: d.count for d in resolved.coverage.dimensions}["recipients"] == len(
             members
         )
-        scopes[resolved.stat_vars.items[0].ref] = members
+        scopes[resolved.members[0].ref.dcid] = members
     assert scopes == {_FLOW: [_ALAND], cited_sources._ALT_FLOW: [_ALAND, _BLAND]}
     warnings = [w.message for w in result.warnings if w.code == "role_scope_defaulted"]
     assert warnings[0] == (
@@ -810,6 +819,7 @@ def _named_plan(index) -> ReadPlan:
 def _discovered_plan(index) -> ReadPlan | None:
     result = role_scope.discover_role_scope(
         surviving_svs=[_FLOW],
+        admitted_dcids=[_FLOW],
         member_facts={_FLOW: ArcsMemberFacts(arcs={})},
         member_population_exact=True,
         open_flow_axis="destination",
@@ -931,6 +941,7 @@ def test_a_per_pair_plan_builds_only_the_series_holding_a_point_in_its_years(
     if discovered:
         result = role_scope.discover_role_scope(
             surviving_svs=[_FLOW],
+            admitted_dcids=[_FLOW],
             member_facts={_FLOW: ArcsMemberFacts(arcs={})},
             member_population_exact=True,
             open_flow_axis="destination",
@@ -1266,18 +1277,16 @@ def _resubmit_window(spec: Spec, index, window: TimeWindow):
             )
         }
     )
-    base_spec_id, base_identity = base_from_spec(spec)
     return resolve_spec_resubmit(
         inp=ResubmitIdentityPayload(
             identity=edited.definition.identity,
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[sv.ref for sv in spec.resolved.stat_vars.items],
         ),
         graph=FakeGraph(nodes=cited_sources._nodes(), detect={}, resolve={}, obs={}),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=FakeCoverageService(index).snapshot(),
-        options=EngineOptions(),
+        options=walk_options(
+            FakeGraph(nodes=cited_sources._nodes(), detect={}, resolve={}, obs={}), EngineOptions()
+        ),
     )
 
 
@@ -1334,21 +1343,19 @@ def test_a_standard_window_without_points_names_the_span_a_dateless_answer_serve
         ("year_unavailable", "2023 to 2025")
     ]
 
-    base_spec_id, base_identity = base_from_spec(dateless)
     identity = dateless.definition.identity.model_copy(
         update={"requested_window": IdentityWindowRange(start_year=2023, end_year=2025)}
     )
     edited = resolve_spec_resubmit(
         inp=ResubmitIdentityPayload(
             identity=identity,
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[sv.ref for sv in dateless.resolved.stat_vars.items],
         ),
         graph=parsed._graph_with_two_unit_facets_on_fertility_kenya(),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
-        options=EngineOptions(),
+        options=walk_options(
+            parsed._graph_with_two_unit_facets_on_fertility_kenya(), EngineOptions()
+        ),
     )
     assert (edited.status, edited.no_data_reason) == ("no_data", "no_observations")
     assert edited.window_gap_fact is not None

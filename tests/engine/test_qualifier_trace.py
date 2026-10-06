@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-from search.models import GraphRef, PipelineStep, ResolutionTrace, ResolvedQualifier
+from search.models import GraphRef, ResolutionTrace, ResolvedQualifier
 
 
 def _minimal_trace(**overrides: object) -> ResolutionTrace:
     fields = {
-        "resolved_stat_vars": [],
         "resolved_entities": [],
         "resolved_sources": [],
         "slot_filters": [],
-        "pipeline_trace": [PipelineStep(step="extract", ran=True)],
     }
     fields.update(overrides)
     return ResolutionTrace(**fields)  # type: ignore[arg-type]
@@ -43,11 +41,9 @@ def test_resolution_trace_validates_from_a_payload_predating_the_field():
     # Mirrors a serialized Spec minted before query_qualifiers existed: the
     # key is simply absent from the payload, not present-and-null.
     payload = {
-        "resolved_stat_vars": [],
         "resolved_entities": [],
         "resolved_sources": [],
         "slot_filters": [],
-        "pipeline_trace": [{"step": "extract", "ran": True}],
     }
     trace = ResolutionTrace.model_validate(payload)
     assert trace.query_qualifiers == []

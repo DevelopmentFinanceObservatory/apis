@@ -63,7 +63,6 @@ naming a real axis."""
 EntryPath = Literal["raw_text", "parsed", "dataset_resubmit"]
 ValueKind = Literal["entity", "enum_value", "time_window", "source", "literal"]
 PipelineStepName = Literal["extract", "recall", "shape", "bind", "materialise", "answer"]
-DateSource = Literal["query", "default", "coverage_clamp"]
 DataCommonsId = Literal["dfo", "base", "un_system"]
 """The Data Commons a provenance's data comes from: the Development Finance
 Observatory's own imports, Data Commons by Google, or the UN System Data
@@ -198,13 +197,17 @@ returned a bare NoDataDraft carrying one of these reasons directly (the
 role-bearing resolve path's own no_observations relaxation, for one).
 qualifier_not_bound reaches this set a third way: the guard that mints it
 runs only after materialise has already confirmed the elected shape's
-members. NoData.elected_stat_vars' own derivation
+members. NoData.elected_count's own derivation
 (search.engine.region.state._elected_stat_vars) keys off this same set, so
-elected_stat_vars is set for exactly these reasons and no others. Every other
-reason stops short of a graph-confirmed identity, so elected_stat_vars stays
+elected_count is set for exactly these reasons and no others. Every other
+reason stops short of a graph-confirmed identity, so elected_count stays
 None there."""
 Confidence = Literal["high", "medium", "low"]
 Ordering = Literal["broadest_first", "intent_rank"]
+PreviewOrder = Literal["ranked", "fixed"]
+"""How a role-bearing bulk preview chose its series: `ranked` reads every series and shows
+the first by `search.observations.series_rank`; `fixed` reads a selection made before any
+value is known (`search.observations.fixed_selection`)."""
 FacetBasis = Literal["bound", "declared_default", "fallback"]
 """Why a facet axis (or, on a unit-request's own member, a currency/prices/
 base_year value) carries the value it does: 'bound' when the request itself

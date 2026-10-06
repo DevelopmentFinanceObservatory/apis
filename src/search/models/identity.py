@@ -16,7 +16,7 @@ from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import CoreSchema, PydanticCustomError
 
 from .base import StrictModel
-from .vocab import _FACET_AXIS_SCHEMA_VERSION, SCHEMA_VERSION
+from .vocab import _FACET_AXIS_SCHEMA_VERSION, SCHEMA_VERSION, RoleAxis
 
 # ---------------------------------------------------------------------------
 # BaseIdentity mirrors the identity core's wire schema. It is the document
@@ -501,14 +501,10 @@ class BaseIdentity(StrictModel):
 
     Every Spec carries one, on `Spec.definition.identity` (see
     `SpecDefinition`). A dataset_resubmit identity entry posts a prior Spec's own
-    `definition.identity` byte-for-byte as its edited `identity`; it uses the
-    same document as `base_identity` when the engine must verify a baseline
-    by hash and diff the edit. Directional entities live directly in
-    `identity.entities.origin` and `identity.entities.destination`.
-
-    `resolved_stat_var_dcids` (the standard shape's member seed) is deliberately NOT a
-    member here. It is graph state outside the hash, and it rides on `ResubmitIdentityPayload.resolved_stat_var_dcids`, a
-    sibling field alongside the edited `identity` and `base_identity`.
+    `definition.identity` byte-for-byte as its edited `identity`. Directional
+    entities live directly in `identity.entities.origin` and
+    `identity.entities.destination`. StatVar members are graph state, derived from the
+    identity, and no member here.
 
     `entity_groups` is the one member outside the hash. It records how the
     request named a role's entities, so it must survive the byte-for-byte
@@ -557,6 +553,16 @@ class BaseIdentity(StrictModel):
         ),
     )
 
+    open_roles: list[RoleAxis] | None = Field(
+        default=None,
+        description=(
+            "the flow axes asked for member by member (every creditor, every donor), "
+            "sorted and de-duplicated; omitted when none is. A role absent from both "
+            "entities and open_roles asks for the total over that role. An open role is "
+            "never also an entities key, and a pinned shape (kind='stat_var') carries none"
+        ),
+    )
+
     entity_groups: dict[str, IdentityEntityGroup] | None = Field(
         default=None,
         max_length=3,
@@ -590,6 +596,20 @@ class BaseIdentity(StrictModel):
     def _pin_arm_requires_empty_slots(self) -> BaseIdentity:
         if isinstance(self.shape, IdentityShapePin) and self.slots:
             raise ValueError("a pinned shape (kind='stat_var') requires an empty slots array")
+        return self
+
+    @model_validator(mode="after")
+    def _open_roles_unbound_and_described(self) -> BaseIdentity:
+        # Entity keys here are the axis labels themselves, so a shared key is a shared axis.
+        if not self.open_roles:
+            self.open_roles = None
+            return self
+        bound = sorted(set(self.open_roles) & set(self.entities))
+        if bound:
+            raise ValueError(f"open_roles names role(s) entities also binds: {bound!r}")
+        if isinstance(self.shape, IdentityShapePin):
+            raise ValueError("a pinned shape (kind='stat_var') cannot carry open_roles")
+        self.open_roles = sorted(set(self.open_roles))
         return self
 
     @model_validator(mode="after")

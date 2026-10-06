@@ -4,6 +4,7 @@ rule, open roles, and the how slots a heading leaves silent."""
 from __future__ import annotations
 
 import dataclasses
+import json
 from pathlib import Path
 
 import pytest
@@ -42,6 +43,7 @@ from tests.render._helpers import (
     _spec,
     _where_place_slot,
     assert_round_trip,
+    recorded_spec,
 )
 
 
@@ -70,11 +72,11 @@ def _with(spec: Spec, **resolved: object) -> Spec:
 def _with_measure_label(spec: Spec) -> Spec:
     """mls-001's Spec with the measure label the engine gives its imputed partition."""
     label = measure_label_for_partition(MeasurePartition(values=_MLS_001_PARTITION, members=()))
-    return _with(
-        spec,
-        measure_label=label.text,
-        measure_label_axes=label.axes,
-        measure_label_named_values=list(label.named_values),
+    labelled = _with(spec, measure_label=label.text, measure_label_axes=label.axes)
+    return labelled.model_copy(
+        update={
+            "resolved": labelled.resolved.stating_measure_label_named_values(label.named_values)
+        }
     )
 
 
@@ -202,13 +204,22 @@ _DONORS = [
             id="three-named",
         ),
         pytest.param(
-            _DONORS, None, "Gross ODA disbursements to Ethiopia from 4 donors.", id="four-counted"
+            _DONORS,
+            None,
+            "Gross ODA disbursements to Ethiopia from 4 providers.",
+            id="four-counted",
         ),
         pytest.param(
             _DONORS,
             {"origin": IdentityEntityGroup(label="EU member states")},
             "Gross ODA disbursements to Ethiopia from the 4 EU member states.",
             id="group",
+        ),
+        pytest.param(
+            _DONORS,
+            {"origin": IdentityEntityGroup(label="DAC donors")},
+            "Gross ODA disbursements to Ethiopia from the 4 DAC donors.",
+            id="group-named-by-its-members",
         ),
     ],
 )
@@ -340,7 +351,7 @@ def test_mls_001_names_the_imputed_multilateral_measure_once():
     """mls-001, "Imputed multilateral ODA from Norway", recorded on dev: the code index's
     label for the imputed partition is the noun, so neither the flow type nor the aid
     type it names repeats as a how phrase."""
-    recorded = Spec.model_validate_json(Path(__file__).with_name("mls_001_spec.json").read_text())
+    recorded = recorded_spec(json.loads(Path(__file__).with_name("mls_001_spec.json").read_text()))
     spec = _with_measure_label(recorded)
     plan = render_sentence_plan(spec)
     heading = sentence_from_plan([t for t in plan if t.segment == "heading"])
@@ -357,7 +368,7 @@ def test_every_sentence_surface_leaves_out_a_slot_the_five_tuple_pins():
     `dac2aAidType` on the imputed five-tuple), so only the pins keep "for imputed
     multilateral ODA" out of the Spec's sentence, the envelope's, a candidates reading's
     and a no-data claim."""
-    spec = Spec.model_validate_json(Path(__file__).with_name("mls_001_spec.json").read_text())
+    spec = recorded_spec(json.loads(Path(__file__).with_name("mls_001_spec.json").read_text()))
     assert not spec.resolved.measure_label_named_values
     sentence = render_sentence_plan(spec)
     part = DefinitePart(
@@ -387,7 +398,7 @@ def test_every_sentence_surface_leaves_out_a_slot_the_five_tuple_pins():
 def test_heading_tokens_leave_out_the_period_and_take_claim_form():
     """mls-001's heading without its period, closed or in claim form: a lead keeps its
     case in claim form, and a noun that opens the heading is lowered there."""
-    recorded = Spec.model_validate_json(Path(__file__).with_name("mls_001_spec.json").read_text())
+    recorded = recorded_spec(json.loads(Path(__file__).with_name("mls_001_spec.json").read_text()))
     plan = heading_for(_with_measure_label(recorded))
     heading = plan.heading
     assert sentence_from_plan(heading_tokens(heading, period=False)) == (

@@ -10,7 +10,6 @@ from pydantic import (
 from dfo_platform import Cause
 
 from .base import StrictModel
-from .grammar import GraphRef
 from .identity import IdentityCurrency
 from .request import ParsedInput
 from .spec import NearestRealSpec, Spec
@@ -53,8 +52,7 @@ class CandidateSet(StrictModel):
     visible afterward, preserving their base order within that band.
 
     Each candidate carries its own heading and byline inside its own
-    ``resolved.rendered_sentence``/``resolved.sentence_plan`` (present under
-    ``include_sentence``). There is no separate parallel sentence array, and a
+    ``resolved.rendered_sentence``/``resolved.sentence_plan``. There is no separate parallel sentence array, and a
     candidate's Spec is a returned Spec like any other. The part's own
     sentence opens with how many readings there are and states, for each
     shown candidate, the source and span that set it apart.
@@ -212,7 +210,7 @@ class NoData(StrictModel):
             "the plain-language sentence for reason, naming the query terms it concerns "
             "where the reason has them (the indicator, place, or category wording), so a "
             "client can show a person the reason beside its code. Every no_data part the "
-            "engine returns sets it, whatever response_options.include_sentence says. "
+            "engine returns sets it. "
             "Clients must not parse it"
         ),
     )
@@ -269,7 +267,7 @@ class NoData(StrictModel):
         description=(
             "optional; a categorically different, data-bearing variable the request did "
             "not elect, present exactly when gate == 'only_alternate_has_data'. "
-            "elected_stat_vars still names the variable the request actually asked for; "
+            "elected_count still counts the variable the request actually asked for; "
             "alternate_match is the one substitute the engine found nearby with "
             "observations of its own. Distinct from flagged_match (the elected variable "
             "itself, present on the other two gates) and from nearest_real (up to two "
@@ -277,19 +275,18 @@ class NoData(StrictModel):
             "names a different variable."
         ),
     )
-    elected_stat_vars: list[GraphRef] | None = Field(
+    elected_count: int | None = Field(
         default=None,
         description=(
-            "optional; the StatVar(s) the request actually elected. Present whenever the "
+            "optional; how many StatVars the request actually elected. Present whenever the "
             "elected shape's variable identity was graph-confirmed, whatever no_data reason "
             "or gate the outcome ultimately carries. None when the outcome stops short of a "
             "graph-confirmed identity altogether (variable_not_resolved, role_not_resolved, "
-            "role_signature_incompatible, and binding_mismatch all resolve no StatVar to name). "
-            "Names the SAME variable "
-            "as flagged_match whenever flagged_match is present. On "
-            "gate=only_alternate_has_data, where flagged_match is absent, elected_stat_vars "
-            "still names the variable the request elected, distinct from alternate_match's "
-            "different variable."
+            "role_signature_incompatible, and binding_mismatch all resolve no StatVar to "
+            "count). Counts the SAME variable as flagged_match whenever flagged_match is "
+            "present. On gate=only_alternate_has_data, where flagged_match is absent, "
+            "elected_count still counts the variable the request elected, distinct from "
+            "alternate_match's different variable."
         ),
     )
     entity_terms: list[str] = Field(
@@ -325,13 +322,6 @@ class NoData(StrictModel):
             "for a role-relative currency phrase beside entities on two roles. "
             "Absent on every other outcome, and on a unit_not_resolved outcome "
             "the binder offers no candidates for"
-        ),
-    )
-    unit_alternatives_truncated: bool | None = Field(
-        default=None,
-        description=(
-            "present exactly when unit_alternatives is: true when the cap cut "
-            "candidates from unit_alternatives, false otherwise"
         ),
     )
     unbound_qualifiers: list[ResolvedQualifier] = Field(
@@ -372,8 +362,6 @@ class NoData(StrictModel):
 
     @model_validator(mode="after")
     def _validate_unit_alternatives(self) -> NoData:
-        if (self.unit_alternatives is None) != (self.unit_alternatives_truncated is None):
-            raise ValueError("unit_alternatives and unit_alternatives_truncated travel together")
         if self.unit_alternatives is not None and self.reason != "unit_not_resolved":
             raise ValueError("unit_alternatives belongs to reason='unit_not_resolved' only")
         return self

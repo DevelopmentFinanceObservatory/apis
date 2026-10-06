@@ -99,7 +99,6 @@ def _resolve(recalled: list[str], *, bind_guarantee: bool):
             resolver=make_resolver(graph),
             llm=_BindLLM(bind_guarantee=bind_guarantee),
             sdmx=FakeSdmxClient(observations={}, availability={}),
-            base_steps=[],
             base_timing={},
             coverage=FakeCoverageService(
                 build_coverage_index(_COVERAGE_ROWS, role_names=_ROLE_NAMES)
@@ -138,7 +137,7 @@ def test_a_narrowed_candidate_answers_under_its_admitted_places(
 
     assert result.status == "candidates"
     by_member = {
-        tuple(sv.ref for sv in spec.resolved.stat_vars.items): spec.definition.identity.entities
+        tuple(sv.ref.dcid for sv in spec.resolved.members): spec.definition.identity.entities
         for spec in result.specs
     }
     assert by_member == {
@@ -188,7 +187,6 @@ def test_a_two_role_alternate_binds_the_place_where_the_elected_shape_bound_it()
             resolver=make_resolver(graph),
             llm=_BindLLM(bind_guarantee=True),
             sdmx=FakeSdmxClient(observations={}, availability={}),
-            base_steps=[],
             base_timing={},
             coverage=coverage,
         )
@@ -196,7 +194,7 @@ def test_a_two_role_alternate_binds_the_place_where_the_elected_shape_bound_it()
 
     assert result.status == "candidates"
     assert {
-        tuple(sv.ref for sv in spec.resolved.stat_vars.items): spec.definition.identity.entities
+        tuple(sv.ref.dcid for sv in spec.resolved.members): spec.definition.identity.entities
         for spec in result.specs
     } == {
         (_BY_CREDITOR_GUARANTEED,): {"destination": [_KEN]},

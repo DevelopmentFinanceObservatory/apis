@@ -7,21 +7,12 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 
-from code_index.shared import get_index
 from dataset_store.snapshot import LiveSnapshotReader
-from datasets_api.capabilities import build_capabilities
-from datasets_api.config import DatasetsBuildSettings
-from datasets_api.manifest import decode_collection_version_body
 from datasets_api.manifest_models import CoverageModel
-from datasets_api.manifest_models import Manifest as RuntimeManifest
-from datasets_api.output_options import derive_output_options
 from datasets_api.revision import SentinelRevisionReader
 from datasets_api.store_errors import DatasetsStoreUnavailable
-from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from datasets_api.version_store import LiveVersionRecordWriter, rendering_key
 from datasets_api.versions import ArtifactRecord, VersionRecord
-from dfo_platform.build import build_commit
-from materialise.formats import FRAME1_MEDIA_TYPE
 from materialise.graph import Facet
 from series_coverage.schema import FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
@@ -166,12 +157,18 @@ def _client(*, version_writer):
                 "typeOf": ("StatisticalVariable",),
                 "observationProperties": ("recipient",),
                 "measuredProperty": ("amount",),
+                "name": ("Statistical variable A",),
             },
             _STAT_VAR_B: {
                 "typeOf": ("StatisticalVariable",),
                 "observationProperties": ("recipient",),
                 "measuredProperty": ("amount",),
+                "name": ("Statistical variable B",),
             },
+            # Named so a download's default name columns fill and the render adds no
+            # `enrichment_unavailable` warning beyond the version record's own.
+            "country/KEN": {"name": ("Kenya",)},
+            "GrantEquivalent": {"name": ("Grant equivalent",)},
         },
         facets={
             (_STAT_VAR_A, "country/KEN"): [_FACET],
@@ -234,95 +231,11 @@ def test_definition_mint_records_version_exactly_once_with_no_live_artifacts_in_
     assert record.subject_kind == "spec"
     assert record.subject_id == manifest["definition"]["spec_id"]
     assert record.content_version == manifest["content_version"]
-    assert record.member_versions == ()
     assert "artifacts" not in record.immutable_body
 
-    # Compare fields carried on the wire. `exclude_none=True` omits top-level `collection: None`.
+    # Compare fields carried on the wire.
     assert record.immutable_body["definition"] == manifest["definition"]
-    assert record.immutable_body.get("collection") is None
-    assert record.immutable_body["content_version"] == manifest["content_version"]
-    # A stored dimension retains `axis: None`, while the wire response omits it.
-    assert _wire_coverage(record.immutable_body) == manifest["coverage"]
-    assert record.immutable_body["citation"]["text"] == manifest["citation"]["text"]
-    assert record.immutable_body["trace"] == manifest["trace"]
-    assert record.immutable_body["warnings"] == manifest["warnings"]
-
-
-def test_collection_mint_records_one_version_per_member_plus_the_collection_itself():
-    writer = RecordingVersionRecordWriter()
-    client = _client(version_writer=writer)
-
-    resp = client.post("/api/datasets", json=_scope(statvars=[_REF_A, _REF_B]))
-
-    assert resp.status_code == 200, resp.text
-    manifest = resp.json()
-    collection_records = [r for r in writer.records if r.subject_kind == "collection"]
-    member_records = [r for r in writer.records if r.subject_kind == "spec"]
-    assert len(writer.records) == 3
-    assert len(collection_records) == 1
-    assert len(member_records) == 2
-    record = collection_records[0]
-
-    assert record.subject_kind == "collection"
-    assert record.subject_id == manifest["collection"]["collection_id"]
-    assert record.content_version == manifest["content_version"]
-    assert "artifacts" not in record.immutable_body
-
-    # Each member also gets its own `(spec_id, content_version)` version
-    # record, with its own frame1 rendering as the sole recorded artifact,
-    # written by `serve.py`'s own `_record_member_versions`.
-    expected_member_content_versions = {
-        member["definition"]["spec_id"]: member["content_version"]
-        for member in manifest["collection"]["members"]
-    }
-    for member_record in member_records:
-        assert member_record.subject_id in expected_member_content_versions
-        assert (
-            member_record.content_version
-            == expected_member_content_versions[member_record.subject_id]
-        )
-        assert member_record.member_versions == ()
-        assert len(member_record.artifacts) == 1
-        assert member_record.artifacts[0].media_type == FRAME1_MEDIA_TYPE
-        assert "artifacts" not in member_record.immutable_body
-        assert member_record.immutable_body["definition"]["spec_id"] == member_record.subject_id
-        assert member_record.immutable_body["content_version"] == member_record.content_version
-
-    expected_member_versions = tuple(
-        (member["definition"]["spec_id"], member["content_version"])
-        for member in manifest["collection"]["members"]
-    )
-    assert record.member_versions == expected_member_versions
-
-    # Persist source profiles, then derive deployment-specific output options when reading.
-    stored_members = record.immutable_body["collection"]["members"]
-    assert len(stored_members) == 2
-    for stored_member in stored_members:
-        assert "output_profile" in stored_member
-        assert "output_options" not in stored_member
-
-    # Stored bodies retain `change: None`, while wire responses omit it.
-    # Re-derive options and normalise through `Manifest` before comparing responses.
-    fields, profiles = decode_collection_version_body(record.immutable_body)
-    assert all(profile is not None for profile in profiles)
-    capabilities = build_capabilities(
-        capability_version=DATASETS_CAPABILITY_VERSION,
-        build=build_commit(),
-        code_index_stamp=get_index().stamp,
-        declarations=get_index().declarations,
-        settings=DatasetsBuildSettings(),
-    )
-    decoded_members = fields["collection"]["members"]
-    for decoded_member, profile in zip(decoded_members, profiles, strict=True):
-        decoded_member["output_options"] = derive_output_options(
-            profile, capabilities=capabilities
-        ).model_dump(mode="json")
-
-    reconstituted = RuntimeManifest.model_validate({**fields, "artifacts": []}).model_dump(
-        mode="json", exclude_none=True
-    )
-    assert reconstituted["collection"] == manifest["collection"]
-    assert record.immutable_body.get("definition") is None
+    assert "collection" not in record.immutable_body
     assert record.immutable_body["content_version"] == manifest["content_version"]
     # A stored dimension retains `axis: None`, while the wire response omits it.
     assert _wire_coverage(record.immutable_body) == manifest["coverage"]
@@ -458,38 +371,6 @@ def test_record_version_returns_whether_its_own_insert_created_the_row(version_s
 
     assert writer.record_version(record) is True
     assert writer.record_version(record) is False
-
-
-def test_live_writer_persists_collection_member_versions_in_position_order(version_store):
-    writer = LiveVersionRecordWriter(
-        store=version_store, now=lambda: datetime(2026, 1, 1, tzinfo=UTC)
-    )
-
-    writer.record_version(
-        VersionRecord(
-            subject_id="col_a",
-            subject_kind="collection",
-            content_version="cv1",
-            schema_version=1,
-            immutable_body={},
-            member_versions=(("spec_a", "cv_a"), ("spec_b", "cv_b")),
-        )
-    )
-
-    with version_store.transaction() as tx:
-        member_rows = tx.fetch_all(
-            "SELECT position, member_spec_id, member_content_version "
-            "FROM datasets.version_member WHERE subject_id = %s AND content_version = %s "
-            "ORDER BY position",
-            ("col_a", "cv1"),
-        )
-    assert [
-        (row["position"], row["member_spec_id"], row["member_content_version"])
-        for row in member_rows
-    ] == [
-        (0, "spec_a", "cv_a"),
-        (1, "spec_b", "cv_b"),
-    ]
 
 
 def test_live_writer_does_not_rewrite_an_already_recorded_versions_immutable_body(version_store):

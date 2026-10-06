@@ -21,7 +21,6 @@ from search.models import (
     Diagnostics,
     EntryPath,
     Part,
-    PipelineStep,
     PipelineStepName,
     QueryEcho,
     Resolution,
@@ -40,25 +39,12 @@ def now_ms() -> int:
     return int(time.monotonic() * 1000)
 
 
-def make_pipeline_step(step: PipelineStepName, ran: bool, ms: int | None = None) -> PipelineStep:
-    """Build a PipelineStep record."""
-    return PipelineStep(step=step, ran=ran, ms=ms)
-
-
-async def _record_step(
-    pipeline_steps: list[PipelineStep],
-    emit: EventSink | None,
-    variable_index: int,
-    step: PipelineStepName,
-    *,
-    ran: bool,
-    ms: int | None = None,
+async def _emit_step(
+    emit: EventSink | None, variable_index: int, step: PipelineStepName, *, ms: int
 ) -> None:
-    """Record a step and emit it when streaming if it ran."""
-    ps = make_pipeline_step(step, ran=ran, ms=ms)
-    pipeline_steps.append(ps)
-    if emit is not None and ran:
-        await emit(StepEvent(variable_index=variable_index, step=ps.step, ran=ps.ran, ms=ps.ms))
+    """Emit a `step` event for a step that ran, when streaming."""
+    if emit is not None:
+        await emit(StepEvent(variable_index=variable_index, step=step, ran=True, ms=ms))
 
 
 def make_query_echo(
@@ -192,6 +178,7 @@ def _terminal_events(
     *,
     start_ms: int,
     timed_out: bool = False,
+    degraded_leg: bool = False,
     llm_usage: dict | None = None,
 ) -> tuple[Event, Event]:
     """Build terminal response and done events for early-exit paths."""
@@ -200,6 +187,7 @@ def _terminal_events(
         DoneEvent(
             elapsed_ms=now_ms() - start_ms,
             timed_out=timed_out,
+            degraded_leg=degraded_leg,
             trace_id=get_trace_id(),
             telemetry=DoneTelemetry(llm_usage=llm_usage),
         ),

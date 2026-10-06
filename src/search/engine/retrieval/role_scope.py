@@ -634,6 +634,7 @@ def _no_point_in_years(
     coverage_index: CoverageIndex,
     *,
     surviving_svs: list[str],
+    admitted_dcids: Sequence[str],
     axis: CoverageRole,
     bound: BoundRoles,
     role_name: str,
@@ -649,7 +650,8 @@ def _no_point_in_years(
     holding data, its lifetime facets across those members and the gap `date_request` leaves
     in the plan the same scope builds with the window removed (`read_plan.window_gap` over
     `_read_scope` on every year). None for a latest or dateless request, or when no member
-    holds data in any year."""
+    holds data in any year. The population states `admitted_dcids`, as `discover_role_scope`
+    does."""
     from search.engine.retrieval.retrieve import Materialised, MemberPopulation
 
     years = asked_years(date_request)
@@ -696,8 +698,8 @@ def _no_point_in_years(
         role_declaration_unverified=role_declaration_unverified,
         member_facts=member_facts,
         population=MemberPopulation(
-            admitted=len(surviving_svs),
-            admitted_dcids=tuple(surviving_svs),
+            admitted=len(admitted_dcids),
+            admitted_dcids=tuple(admitted_dcids),
             confirmed=0,
             exact=member_population_exact,
         ),
@@ -707,6 +709,7 @@ def _no_point_in_years(
 def discover_role_scope(
     *,
     surviving_svs: list[str],
+    admitted_dcids: Sequence[str],
     member_facts: dict[str, MemberFacts],
     member_population_exact: bool,
     role_declaration_unverified: bool = False,
@@ -723,6 +726,11 @@ def discover_role_scope(
 
     The caller supplies the already-filtered ``member_facts``, population
     exactness, and role-refresh status; this function narrows only by coverage.
+    ``surviving_svs`` are the members read: those the role-class election kept.
+    ``admitted_dcids`` are the members the bindings admit before that election: the
+    family the Datasets mint resolves for the identity where the code index decides the
+    shape's membership, and the recalled members the bindings admit elsewhere. The
+    population states them (``MemberPopulation.admitted``), as a bound destination's does.
     It returns the window carrier (`_no_point_in_years`) when the axis has members
     only outside the years asked, including years outside the coverage horizon, and
     ``NoDataDraft`` when the axis has no member in any year, the range asks for no
@@ -792,6 +800,7 @@ def discover_role_scope(
         return _no_point_in_years(
             coverage_index,
             surviving_svs=surviving_svs,
+            admitted_dcids=admitted_dcids,
             axis=discover_coverage_role,
             bound=bound,
             role_name=role_name,
@@ -834,12 +843,11 @@ def discover_role_scope(
         member_facts=member_facts,
         headline=headline,
         coverage_stamp=coverage_snapshot.stamp,
-        # This path counts surviving_svs after role filtering; member_facts may
-        # still contain the broader source population. Confirmation does not
-        # elect a narrower set, so sv_dcids and confirmed have the same size.
+        # Confirmation does not elect a narrower set, so sv_dcids and confirmed have the
+        # same size.
         population=MemberPopulation(
-            admitted=len(surviving_svs),
-            admitted_dcids=tuple(surviving_svs),
+            admitted=len(admitted_dcids),
+            admitted_dcids=tuple(admitted_dcids),
             confirmed=len(confirmed_svs),
             exact=member_population_exact,
         ),

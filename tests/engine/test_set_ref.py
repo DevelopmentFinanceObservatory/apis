@@ -255,6 +255,7 @@ def _entity_slot(axis: Axis, val: str) -> Slot:
 
 def _region(shape: Shape, slot: Slot, sv: str = "sv/X", index: int = 0) -> RegionResult:
     spec = build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
         slots=[slot],
@@ -263,7 +264,6 @@ def _region(shape: Shape, slot: Slot, sv: str = "sv/X", index: int = 0) -> Regio
         ],
         entities=[],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[],
     )
     return RegionResult(
         variable_text="test",

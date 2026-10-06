@@ -8,10 +8,9 @@ from __future__ import annotations
 import pytest
 
 from search.engine.clients.graph import Facet
-from search.engine.entry.dataset_entries import _candidate_promote_input
 from search.engine.region import resolve_spec_resubmit
 from search.engine.shape import identity_shape_for
-from search.models import RemovedParts, ResubmitCandidate, ResubmitIdentityPayload
+from search.models import ResubmitIdentityPayload
 from series_coverage.schema import RoleNames
 from tests.engine._base_identity import (
     GDP_SHAPE,
@@ -23,6 +22,7 @@ from tests.engine._base_identity import (
 from tests.engine._builders import value_slot
 from tests.engine._fake_coverage import FakeCoverageService, empty_coverage_snapshot, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import walk_options
 from tests.fixtures import FakeGraph
 
 _FRA = "country/FRA"
@@ -39,7 +39,7 @@ _HOW_PROPS = {
     "financialFlowType": "Disbursement",
     "nettingBasis": "Gross",
 }
-# Served members assert crsCooperationModality as an open-axis fact.
+# A family member asserts crsCooperationModality, past the five posted keys.
 _MODALITY_PROP = "crsCooperationModality"
 _MODALITY_VALUE = "CRSCooperationModalityA02"
 
@@ -147,52 +147,49 @@ def test_noop_resubmit_of_the_served_definition_remints_the_base_spec_id(monkeyp
     base_spec_id, base_identity = _served_definition()
     inp = ResubmitIdentityPayload(
         identity=base_identity,
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[_SEED_SV, _MODALITY_SV],
     )
     region = resolve_spec_resubmit(
-        inp=inp, graph=_graph(), sdmx=_sdmx(), coverage=_coverage(monkeypatch)
+        inp=inp,
+        graph=_graph(),
+        sdmx=_sdmx(),
+        coverage=_coverage(monkeypatch),
+        options=walk_options(_graph()),
     )
 
     assert region.status == "definite", region.no_data_reason
     spec = region.specs[0]
     assert spec.spec_id == base_spec_id
-    # The five posted keys remain slots. Modality stays an open-axis fact.
+    # The five posted keys remain slots, though the family holds a member asserting modality.
     assert {slot.property for slot in spec.definition.identity.slots} == set(_HOW_PROPS)
-    open_props = {fact.property for fact in spec.resolved.open_axis_facts or ()}
-    assert _MODALITY_PROP in open_props
 
 
 @pytest.mark.parametrize(
-    "edit_entities, removed, check",
+    "edit_entities, check",
     [
         pytest.param(
             lambda entities: {k: v for k, v in entities.items() if k != "origin"},
-            RemovedParts(entities=["origin"]),
             lambda entities: "origin" not in entities,
             id="origin_removed_resolves_any_donor",
         ),
         pytest.param(
             lambda entities: {**entities, "origin": [_DEU]},
-            None,
             lambda entities: entities.get("origin") == [_DEU],
             id="origin_changed_resolves",
         ),
     ],
 )
-def test_resubmit_origin_edit_resolves(edit_entities, removed, check, monkeypatch):
-    base_spec_id, base_identity = _served_definition()
+def test_resubmit_origin_edit_resolves(edit_entities, check, monkeypatch):
+    _spec_id, base_identity = _served_definition()
     identity = base_identity.model_copy(update={"entities": edit_entities(base_identity.entities)})
     inp = ResubmitIdentityPayload(
         identity=identity,
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        removed=removed,
-        resolved_stat_var_dcids=[_SEED_SV, _MODALITY_SV],
     )
     region = resolve_spec_resubmit(
-        inp=inp, graph=_graph(), sdmx=_sdmx(), coverage=_coverage(monkeypatch)
+        inp=inp,
+        graph=_graph(),
+        sdmx=_sdmx(),
+        coverage=_coverage(monkeypatch),
+        options=walk_options(_graph()),
     )
 
     assert region.status == "definite", region.no_data_reason
@@ -203,7 +200,6 @@ def test_resubmit_origin_edit_resolves(edit_entities, removed, check, monkeypatc
 # A candidate promote re-mints the candidate's own spec_id.
 # ---------------------------------------------------------------------------
 
-_GDP_SV_DCID = "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
 _GDP_ENTITY_DCID = "country/IND"
 _ACTIVITY_SOURCE_SLOT = value_slot(
     "how", "activitySource", "activity source", "GrossDomesticProduction"
@@ -216,13 +212,13 @@ def test_candidate_promote_remints_the_candidates_own_spec_id():
     candidate_spec_id, candidate_identity = make_base(
         GDP_SHAPE, [_ACTIVITY_SOURCE_SLOT], entities=entities
     )
-    candidate = ResubmitCandidate(
-        identity=candidate_identity, resolved_stat_var_dcids=[_GDP_SV_DCID]
-    )
-
-    inp = _candidate_promote_input(candidate)
+    inp = ResubmitIdentityPayload(identity=candidate_identity)
     region = resolve_spec_resubmit(
-        inp=inp, graph=FakeGraph(), sdmx=FakeSdmxClient(), coverage=empty_coverage_snapshot()
+        inp=inp,
+        graph=FakeGraph(),
+        sdmx=FakeSdmxClient(),
+        coverage=empty_coverage_snapshot(),
+        options=walk_options(FakeGraph()),
     )
 
     assert region.status == "definite", region.no_data_reason

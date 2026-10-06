@@ -9,7 +9,7 @@ from code_index import CodeIndex, IndexStamp, StatVarRow
 from code_index.types import MeasureAxis
 from search.engine.retrieval.bound_values import elect_measure_family
 from search.engine.shape import ShapeDraft
-from tests.engine._index_slots import query_for
+from tests.engine._index_slots import crs_flow_slot_keys, query_for
 
 _FIVE_TUPLE = {
     "pop_type_dcid": "Widget",
@@ -314,7 +314,7 @@ def test_real_index_elects_gross_nominal_disbursements_with_two_siblings():
         stat_type_dcid=flow_row.stat_type,
         meas_qual_dcid="Nominal",
         meas_denom_dcid=None,
-        slot_keys=(),
+        slot_keys=crs_flow_slot_keys(),
     )
 
     election = elect_measure_family(shape, index, axes, query_for(shape, {}))

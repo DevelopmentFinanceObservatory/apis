@@ -49,7 +49,6 @@ def _run(cosine_score: float) -> RegionResult:
             graph=graph,
             resolver=make_resolver(graph),
             llm=FakeLLM(),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),

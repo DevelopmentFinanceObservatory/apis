@@ -7,9 +7,9 @@ import logging
 import re
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from typing import Literal, cast
 
-from code_index.members import is_opt_in
 from code_index.query import CodeIndex
 from code_index.shared import get_index, get_measure_index
 from code_index.types import CodeRow, MeasureAxis
@@ -20,14 +20,7 @@ from search.engine.bind_repair import (
     _unscoped_property_values,
 )
 from search.engine.config import settings
-from search.engine.dataset_mention import (
-    DatasetMention,
-    dataset_mentions,
-    mention_measure,
-    whole_mention,
-    without_mention,
-)
-from search.engine.envelope import _record_step, now_ms
+from search.engine.envelope import _emit_step, now_ms
 from search.engine.interpret import Recall
 from search.engine.qualifier_match import (
     CodedQualifier,
@@ -42,13 +35,19 @@ from search.engine.qualifier_match import (
     match_qualifier_ties,
     match_qualifiers,
     match_unsupported_qualifier_phrases,
+    names_plain_name,
     recognise_spans,
     slot_noun_named,
 )
-from search.engine.region.alternate_guard import (
+from search.engine.quantity import (
     PER_HEAD_RATE_BASE_RE,
-    PER_PERSON_DENOMINATORS,
+    PER_PERSON_FORMS,
     STRONG_RATE_REQUEST_RE,
+    DenominatorKind,
+    denominator_kinds,
+    normalisation_class,
+)
+from search.engine.region.alternate_guard import (
     is_cross_population_false_friend,
     leaves_price_basis_unread,
     measure_class,
@@ -62,7 +61,11 @@ from search.engine.region.availability import (
 from search.engine.region.codes import AVAILABILITY_PROBE_FAILED
 from search.engine.region.grounding import _shape_with_taxonomy
 from search.engine.region.phase_intake import _unresolved_entity_terminal
-from search.engine.region.place_roles import subject_shapes_refused
+from search.engine.region.place_roles import (
+    lacks_query_axis,
+    subject_shapes_refused,
+    without_open_axis_gaps,
+)
 from search.engine.region.qualifier_readings import match_query_readings, reading_for_shape
 from search.engine.region.rate_head import (
     _labels_share_rate_head,
@@ -77,6 +80,7 @@ from search.engine.retrieval.bound_values import (
     collapse_measure_families,
     elect_five_tuple_family,
     index_carries_shape,
+    other_families_properties,
     part_datasets,
     part_member_rows,
     price_basis_order,
@@ -116,7 +120,7 @@ _FLOW_FRAMING_RE = re.compile(r"\b(?:" + "|".join(_FLOW_FRAMING_WORDS) + r")\b",
 
 def _has_strong_rate_intent(variable: str) -> bool:
     """Whether an explicit rate term rules out an unnormalised raw count. The term is `rate`,
-    `rates` or a share term (`alternate_guard.STRONG_RATE_REQUEST_RE`), and no count term
+    `rates` or a share term (`quantity.STRONG_RATE_REQUEST_RE`), and no count term
     may appear."""
     return (
         STRONG_RATE_REQUEST_RE.search(variable) is not None
@@ -276,31 +280,53 @@ def _rank_key(shape: ShapeDraft) -> tuple[bool, float, int, str]:
     )
 
 
+async def _read_denominator_kinds(state: ResolveState, shapes: list[ShapeDraft]) -> None:
+    """Read the kinds of the shapes' StatVar denominators into ``state.denominator_kinds``,
+    in one batch, when the leg names a per-person form (`quantity.PER_PERSON_FORMS`).
+
+    Materialise and the alternate guard read the map: a series divided by
+    `Count_Person_15OrMoreYears` is per person, one divided by GNI is not. Nothing is read
+    for any other request. The menu keeps every shape: an off-topic per-capita series must
+    not displace the shape the query names ("teacher count per capita" keeps the teacher
+    count, which refuses ``denominator_not_available`` at materialise).
+    """
+    if not state.quantity_requirement.named & PER_PERSON_FORMS:
+        return
+    state.denominator_kinds = await asyncio.to_thread(
+        denominator_kinds,
+        [s.meas_denom_dcid for s in shapes if s.meas_denom_dcid is not None],
+        graph=state.graph,
+    )
+
+
 async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     """Build the ranked, capped candidate set. Return a terminal result if it is empty.
 
     Applies dataset candidacy (`_dataset_candidates`), the score floor, the measure-class
-    check (`shape_measure_class`), the two-ended prune, availability and measure pruning,
-    then reserves recalled shapes within the top-K menu. A part whose bound mention's
-    dataset publishes none of the recalled shapes refuses ``qualifier_not_bound``, naming
-    the mention, and so does one whose variable names a code no row of that dataset's
-    candidate shapes holds, naming the term (`_undeclared_qualifiers`). Both refusals
-    come before any role check. Falling through leaves ``_phase_bind`` to call the model.
+    check (`shape_measure_class`), the two-ended prune, the denominator-kind read
+    (`_read_denominator_kinds`), availability and measure pruning,
+    then reserves recalled shapes within the top-K menu. A part whose named dataset
+    (`ResolveState.named_dataset`) publishes none of the recalled shapes refuses
+    ``qualifier_not_bound``, naming the dataset, and so does one whose variable names a
+    code no row of that dataset's candidate shapes holds, naming the term
+    (`_undeclared_qualifiers`). Both refusals come before any role check. Falling through
+    leaves ``_phase_bind`` to call the model.
     """
-    state.dataset_mention = _read_mention(state.qualifiers)
-    candidates = _dataset_candidates(state.shapes_found, state.dataset_mention)
-    if not candidates and state.dataset_mention is not None:
+    candidates = _dataset_candidates(
+        state.shapes_found, state.named_dataset, state.excluded_datasets
+    )
+    if not candidates and state.named_dataset is not None:
         await _record_shape_step(state)
         return state.no_data(
             "qualifier_not_bound",
-            unbound_qualifiers=(_unbound_mention(state.dataset_mention),),
+            unbound_qualifiers=(_unbound_dataset(state.named_dataset),),
         )
     # Full spans retain ambiguous rows for final dispositions. Dropped phrases remain owned
     # by the raw-text path.
     state.variable_qualifier_spans = recognise_spans(
         state.variable, get_index(), get_measure_index()
     )
-    if state.dataset_mention is not None:
+    if state.named_dataset is not None:
         undeclared = _undeclared_qualifiers(state.variable_qualifier_spans, candidates)
         if undeclared:
             await _record_shape_step(state)
@@ -336,16 +362,32 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     # subject-only shape and its refusal flags the identity it elected.
     if subject_shapes_refused(state) and any(is_role_bearing(s) for s in eligible_shapes):
         eligible_shapes = [s for s in eligible_shapes if is_role_bearing(s)]
+    # A role-bearing shape that declares no role on an axis the query needs, a directed
+    # place's or an operation's (`lacks_query_axis`), is no candidate once another shape
+    # survives: "aid to Kenya" leaves a provider-only shape for one with a recipient. With
+    # none surviving, bind elects it and its refusal flags the identity it elected.
+    if any(not lacks_query_axis(state, s) for s in eligible_shapes):
+        eligible_shapes = [s for s in eligible_shapes if not lacks_query_axis(state, s)]
+    # An axis the query asks every member of is a preference among those shapes: a shape
+    # the index carries that declares no role on it leaves once a role-bearing shape that
+    # does survives (`without_open_axis_gaps`).
+    eligible_shapes = without_open_axis_gaps(state, eligible_shapes)
+    await _read_denominator_kinds(state, eligible_shapes)
     if _has_strong_rate_intent(state.variable):
         eligible_shapes = _prune_explicit_rate_raw_counts(eligible_shapes, state.variable)
     state.eligible_shapes = eligible_shapes
     # Share one recognition pass between the availability prune, query-aware measure
-    # collapse and bind admission.
+    # collapse and bind admission. A span tying codes of two index families' systems
+    # resolves here, per shape, against the eligible shapes' own slots
+    # (`qualifier_match._rows_per_shape`): "ODA" binds the CRS flow type on a CRS shape and
+    # the DAC1 aid type on a DAC1 shape.
+    shape_systems = tuple(frozenset(_constraint_property_dcids(s)) for s in eligible_shapes)
     query_qualifier_matches, variable_matched_qualifier_phrases = _match_query_qualifiers(
         state.variable,
         state.dropped_qualifier_phrases,
         query_text=state.query_text,
         qualifiers=state.qualifiers,
+        shape_systems=shape_systems,
     )
     state.query_qualifier_matches = query_qualifier_matches
     # Spans naming a code and a price basis ("PPP") are read per shape, so the prune, the
@@ -390,6 +432,8 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
         eligible_shapes,
         named_place=named_place,
         variable=state.variable,
+        quantity=state.quantity_requirement,
+        denominator_kinds=state.denominator_kinds,
         qualifier_matches=query_qualifier_matches,
         qualifier_readings=query_qualifier_readings,
     )
@@ -409,6 +453,7 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
         state.dropped_qualifier_phrases,
         query_text=state.query_text,
         qualifiers=state.qualifiers,
+        shape_systems=shape_systems,
     )
     state.query_qualifier_ties = query_qualifier_ties
     state.variable_matched_qualifier_phrases = (
@@ -485,37 +530,33 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
 
 
 async def _record_shape_step(state: ResolveState) -> None:
-    """Record the shape step as run, timed from the start of shape recall."""
+    """Record the shape timing from the start of shape recall and emit the shape step."""
     state.timing["shape"] = now_ms() - state.shape_t0
-    await _record_step(
-        state.pipeline_steps,
+    await _emit_step(
         state.emit,
         state.variable_index,
         "shape",
-        ran=True,
         ms=state.timing["shape"],
     )
-    state.ran_steps.add("shape")
 
 
 def _dataset_candidates(
-    shapes: Sequence[ShapeDraft], mention: DatasetMention | None
+    shapes: Sequence[ShapeDraft], source: str | None, excluded: frozenset[str]
 ) -> list[ShapeDraft]:
     """The shapes a part may answer from, by the datasets that publish each
-    (`shape_datasets`), each stamped with the datasets the part may answer it from
-    (`shape_for_part`).
+    (`shape_datasets`), each stamped with the datasets the part may answer it from and the
+    dataset it names (`shape_for_part`).
 
-    A part whose variable has a bound mention keeps the shapes whose five-tuple the
-    mentioned dataset publishes. A part without one keeps a shape the index does not
-    carry, and a shape whose five-tuple's eligible datasets
-    (`code_index.members.eligible_datasets`) include one that is not opt-in, since an
-    opt-in dataset answers only a request that names it (`DatasetDeclaration.opt_in`).
-    Every door that reads a question elects from what is left, so the default answer
-    never holds an opt-in dataset's rows and a named dataset's part never answers from
-    another.
+    A part that names the dataset `source` keeps the shapes of the families that dataset
+    publishes, so it never answers from another. A part that names none keeps a shape the
+    index does not carry and a shape with an eligible dataset less `excluded` among the
+    datasets publishing it (`part_datasets`, `code_index.members.eligible_among`). On a
+    family a dataset that is not opt-in publishes, the opt-in publishers are not eligible,
+    since they answer only a part that names them (`DatasetDeclaration.opt_in`). A family
+    only opt-in datasets publish is kept, and when one of them is eligible the shape names
+    it.
     """
     index = get_index()
-    source = mention.provenance if mention is not None else None
     if source is not None:
         kept = [shape for shape in shapes if source in shape_datasets(shape, index)]
     else:
@@ -523,19 +564,41 @@ def _dataset_candidates(
             shape
             for shape in shapes
             if not shape_datasets(shape, index)
-            or any(not is_opt_in(index, dataset) for dataset in part_datasets(shape, None, index))
+            or part_datasets(shape, None, index, excluded=excluded)
         ]
-    return [shape_for_part(shape, source, index) for shape in kept]
+    return [shape_for_part(shape, source, index, excluded=excluded) for shape in kept]
 
 
-def _unbound_mention(mention: DatasetMention) -> ResolvedQualifier:
-    """The record of a mention whose dataset publishes no shape the part recalled."""
+def _unbound_dataset(source: str) -> ResolvedQualifier:
+    """The record of a named dataset that publishes no shape the part recalled, under its
+    declared label."""
+    label = get_index().datasets[source].label
     return ResolvedQualifier(
-        text=mention.text,
-        named=[GraphRef(dcid=mention.provenance, label=mention.label(get_index()))],
-        slot=None,
-        disposition="unbound",
+        text=label, named=[GraphRef(dcid=source, label=label)], slot=None, disposition="unbound"
     )
+
+
+def _bound_code_records(bindings: Sequence[SlotBindingDraft]) -> tuple[ResolvedQualifier, ...]:
+    """Each code `bindings` bind on a what or how slot, as an unbound record under its
+    label: what a part cannot bind when no table it may answer from holds a row with all
+    of them."""
+    index = get_index()
+    records: list[ResolvedQualifier] = []
+    for binding in bindings:
+        if binding.axis not in ("what", "how") or binding.kind not in ("value", "set"):
+            continue
+        for dcid in binding.value_dcids:
+            row = index.code_by_dcid(dcid)
+            label = row.label if row is not None else dcid
+            records.append(
+                ResolvedQualifier(
+                    text=label,
+                    named=[GraphRef(dcid=dcid, label=label)],
+                    slot=None,
+                    disposition="unbound",
+                )
+            )
+    return tuple(records)
 
 
 def _undeclared_qualifiers(
@@ -551,8 +614,7 @@ def _undeclared_qualifiers(
     aid, whose rows carry no type of finance, or a sector only another publisher of the
     five-tuple reports. A shape the index does not carry holds any code of a code system it
     declares a slot for. A span holding a measure value is the measure's to read and is
-    left alone, as is a term the dataset's mention spans, which `recognise_spans` never
-    reads.
+    left alone.
     """
     index = get_index()
     readings = [(shape, _part_codes(shape, index)) for shape in shapes]
@@ -580,6 +642,50 @@ def _undeclared_qualifiers(
             )
         )
     return tuple(undeclared)
+
+
+def _unheld_bound_codes(
+    bindings: Sequence[SlotBindingDraft],
+    shape: ShapeDraft,
+    *,
+    excluded: frozenset[str] = frozenset(),
+) -> tuple[ResolvedQualifier, ...]:
+    """The codes `bindings` bind on `shape`'s what and how slots that no row of the
+    datasets its part answers from, less the datasets it excludes, holds, itself or as a
+    descendant (`_part_codes`), each as an unbound record under its label.
+
+    A part whose source slot names a table elects from that table's rows alone, so a code
+    the bind model chose from the unnamed part's menu that the table lacks can bind on none
+    of them, as a term `_undeclared_qualifiers` refuses for a part named at the seam. A
+    shape the index does not carry has no rows to check.
+    """
+    index = get_index()
+    if excluded and shape.datasets is not None:
+        shape = replace(
+            shape, datasets=tuple(dataset for dataset in shape.datasets if dataset not in excluded)
+        )
+    codes = _part_codes(shape, index)
+    if codes is None:
+        return ()
+    unheld: list[ResolvedQualifier] = []
+    for binding in bindings:
+        if binding.axis not in ("what", "how") or binding.property_dcid is None:
+            continue
+        held = codes.get(binding.property_dcid, frozenset())
+        for dcid in binding.value_dcids if binding.kind in ("value", "set") else ():
+            if held & frozenset(index.descendants(dcid)):
+                continue
+            row = index.code_by_dcid(dcid)
+            label = row.label if row is not None else dcid
+            unheld.append(
+                ResolvedQualifier(
+                    text=label,
+                    named=[GraphRef(dcid=dcid, label=label)],
+                    slot=None,
+                    disposition="unbound",
+                )
+            )
+    return tuple(unheld)
 
 
 def _default_reading_trace(
@@ -654,11 +760,13 @@ def _match_query_qualifiers(
     *,
     query_text: str | None = None,
     qualifiers: Sequence[CodedQualifier] | None = None,
+    shape_systems: Sequence[frozenset[str]] = (),
 ) -> tuple[tuple[QualifierMatch, ...], frozenset[str]]:
     """Collect raw qualifier matches and the phrases owned by this region path.
 
     Match ``variable``, optional ``query_text``, and each dropped phrase separately so a
-    match cannot span sources. Return matches before shape admission. The normalized second
+    match cannot span sources. ``shape_systems`` resolves a tie per shape
+    (`qualifier_match.match_qualifiers`). Return matches before shape admission. The normalized second
     value contains phrases from ``variable``/``query_text`` and the typed sidecar, but omits
     dropped phrases because the raw-text path already owns their warnings.
 
@@ -667,14 +775,16 @@ def _match_query_qualifiers(
     """
     index = get_index()
     measure_index = get_measure_index()
-    variable_matches = match_qualifiers(variable, index, measure_index)
+    variable_matches = match_qualifiers(variable, index, measure_index, shape_systems=shape_systems)
     matches = variable_matches
     query_text_matches: tuple[QualifierMatch, ...] = ()
     if query_text:
-        query_text_matches = match_qualifiers(query_text, index, measure_index)
+        query_text_matches = match_qualifiers(
+            query_text, index, measure_index, shape_systems=shape_systems
+        )
         matches += query_text_matches
     for phrase in dropped_qualifier_phrases:
-        matches += match_qualifiers(phrase, index, measure_index)
+        matches += match_qualifiers(phrase, index, measure_index, shape_systems=shape_systems)
     owned_matches = variable_matches + query_text_matches
     variable_matched_phrases = frozenset(_normalize(m.matched_text) for m in owned_matches)
     if qualifiers:
@@ -700,8 +810,11 @@ def _match_query_qualifier_ties(
     *,
     query_text: str | None = None,
     qualifiers: Sequence[CodedQualifier] | None = None,
+    shape_systems: Sequence[frozenset[str]] = (),
 ) -> tuple[tuple[QualifierTie, ...], frozenset[str]]:
     """Collect ambiguous qualifier ties from each text source and the typed sidecar.
+    ``shape_systems`` drops the ties it resolves per shape
+    (`qualifier_match.match_qualifier_ties`).
 
     Match ``variable``, optional ``query_text``, and dropped phrases separately. Return
     normalized ownership phrases only for ``variable``/``query_text`` and sidecar ties.
@@ -710,14 +823,18 @@ def _match_query_qualifier_ties(
     """
     index = get_index()
     measure_index = get_measure_index()
-    variable_ties = match_qualifier_ties(variable, index, measure_index)
+    variable_ties = match_qualifier_ties(
+        variable, index, measure_index, shape_systems=shape_systems
+    )
     ties = variable_ties
     query_text_ties: tuple[QualifierTie, ...] = ()
     if query_text:
-        query_text_ties = match_qualifier_ties(query_text, index, measure_index)
+        query_text_ties = match_qualifier_ties(
+            query_text, index, measure_index, shape_systems=shape_systems
+        )
         ties += query_text_ties
     for phrase in dropped_qualifier_phrases:
-        ties += match_qualifier_ties(phrase, index, measure_index)
+        ties += match_qualifier_ties(phrase, index, measure_index, shape_systems=shape_systems)
     owned_ties = variable_ties + query_text_ties
     owned_phrases = frozenset(_normalize(t.matched_text) for t in owned_ties)
     if qualifiers:
@@ -857,53 +974,43 @@ def _qualifier_disposition(
     return "unbound", None
 
 
-def _names_carried_per_head_rate(phrase: str, shape: ShapeDraft) -> bool:
+def _names_carried_per_head_rate(
+    phrase: str, shape: ShapeDraft, kinds: Mapping[str, DenominatorKind]
+) -> bool:
     """Whether `phrase` is a per-person rate base that `shape`'s denominator carries.
 
     No constraint slot holds a denominator, so the bind model can list "per 100 people" as
-    unplaced on a shape whose measurementDenominator is `Count_Person`.
+    unplaced on a shape whose measurementDenominator is a count of persons
+    (`quantity.normalisation_class` under the leg's `kinds`).
     """
     return (
-        shape.meas_denom_dcid in PER_PERSON_DENOMINATORS
-        and PER_HEAD_RATE_BASE_RE.fullmatch(phrase.strip()) is not None
-    )
-
-
-def _read_mention(qualifiers: Sequence[CodedQualifier] | None) -> DatasetMention | None:
-    """The dataset mention the request's reading bound to this variable, or `None`.
-
-    The entry hands it over as a sidecar phrase that is a mention alone
-    (`extract._with_mention_qualifiers`). No text scan of the variable, the query or a
-    dropped phrase stands in for it, so a mention nobody read binds nothing.
-    """
-    index = get_index()
-    return next(
-        (
-            mention
-            for coded in qualifiers or ()
-            if (mention := whole_mention(coded.phrase, index)) is not None
-        ),
-        None,
+        PER_HEAD_RATE_BASE_RE.fullmatch(phrase.strip()) is not None
+        and normalisation_class(shape, kinds=kinds) == "per_person"
     )
 
 
 def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
     """Build qualifier dispositions from final bindings without mutating state.
 
-    The dataset mention read for the variable has no record here. Candidacy refused the
-    part when its dataset published no recalled shape, and election bound the source to it
-    otherwise. Five sources contribute records:
+    The part's named dataset has no record here. Candidacy refused the part when that
+    dataset published no recalled shape, and election bound the source to it otherwise.
+    Five sources contribute records:
 
     1. Variable spans contribute their ``CodeRow`` values only when the elected shape
        declares the property. Measure-value-only spans are handled by measure warnings.
-       ``named`` keeps every CodeRow. Disposition uses ``_qualifier_disposition``.
+       ``named`` keeps every CodeRow but those of a system only another family of the
+       elected shape's five-tuple carries (`other_families_properties`), so a CRS answer's
+       "ODA" names the CRS flow type, not the DAC1 aid type of the same text. Disposition
+       uses ``_qualifier_disposition``.
     2. ``state.admitted_ties`` records model-offered ambiguities unresolved by the final
        bindings. Keep ties with a row property declared by the elected shape, apply the
        shared disposition rule, and deduplicate normalized phrases against variable spans.
-    3. An ``unplaced`` phrase must occur in ``variable`` outside recognised spans and outside
-       every dataset mention, and must not
-       be a per-person rate base the elected shape's denominator carries. Surviving phrases
-       get ``no_vocabulary`` with no named codes.
+    3. An ``unplaced`` phrase must occur in ``variable`` outside recognised spans, must not
+       be a per-person rate base the elected shape's denominator carries, and must not be, as
+       a whole, the declared plain name of a slot the elected shape declares, singular or
+       plural (`names_plain_name`): "sector" on a shape with `crsPurpose` names a distinction
+       the data records, and its slot stays as bound. A longer phrase holding the noun ("space sector", "by sector") still refuses.
+       Surviving phrases get ``no_vocabulary`` with no named codes.
     4. Match ``non-concessional`` in variable text and optional query text only when the
        shape declares ``crsTypeOfFlow``. Record ``no_vocabulary`` and refuse the qualifier.
     5. Typed-sidecar spans use the same admission and disposition rules, then deduplicate
@@ -912,6 +1019,7 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
     """
     index = get_index()
     declared = _constraint_property_dcids(state.shape_draft)
+    foreign = other_families_properties(state.shape_draft, index)
     # Each property's final value or set binding.
     bound_values: dict[str, Sequence[str]] = {
         b.property_dcid: b.value_dcids
@@ -925,13 +1033,10 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
     occupied_ranges: list[tuple[int, int]] = [
         (span.start, span.end) for span in state.variable_qualifier_spans
     ]
-    # A dataset's name inside the variable is read by the request's mention reading, so
-    # the bind model's echo of it is no qualifier without vocabulary.
-    occupied_ranges.extend(
-        (located.start, located.end) for located in dataset_mentions(state.variable, index)
-    )
     for span in state.variable_qualifier_spans:
-        code_rows = [row for row in span.rows if isinstance(row, CodeRow)]
+        code_rows = [
+            row for row in span.rows if isinstance(row, CodeRow) and row.code_system not in foreign
+        ]
         if not code_rows or not any(row.code_system in declared for row in code_rows):
             continue
         named = [GraphRef(dcid=row.dcid, label=row.label) for row in code_rows]
@@ -967,7 +1072,11 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
             normalized_phrase = _normalize(span.matched_text)
             if normalized_phrase in already_recorded:
                 continue
-            code_rows = [row for row in span.rows if isinstance(row, CodeRow)]
+            code_rows = [
+                row
+                for row in span.rows
+                if isinstance(row, CodeRow) and row.code_system not in foreign
+            ]
             if not code_rows or not any(row.code_system in declared for row in code_rows):
                 continue
             named = [GraphRef(dcid=row.dcid, label=row.label) for row in code_rows]
@@ -981,8 +1090,17 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
             )
             already_recorded.add(normalized_phrase)
 
+    slot_nouns = [
+        index.declarations[prop].plain_name for prop in declared if prop in index.declarations
+    ]
     for phrase in state.bind_result.unplaced:
-        if _names_carried_per_head_rate(phrase, state.shape_draft):
+        if _names_carried_per_head_rate(phrase, state.shape_draft, state.denominator_kinds):
+            continue
+        # A phrase as long as the noun that names it is the noun, singular or plural.
+        if any(
+            len(phrase.split()) == len(noun.split()) and names_plain_name(phrase, noun)
+            for noun in slot_nouns
+        ):
             continue
         phrase_ranges = _all_normalized_text_ranges(phrase, normalized_variable)
         if not phrase_ranges:
@@ -1129,34 +1247,13 @@ def _open_operation_slots(
     return result
 
 
-def _bind_variable(state: ResolveState) -> str:
-    """The part's variable less its bound mention. A variable that is the mention alone
-    binds the measure the mention carries (`mention_measure`). "imputed multilateral aid"
-    binds "aid", so the model reads the dataset's name as no qualifier. The variable stays
-    whole only when no name of the dataset carries a measure word."""
-    mention = state.dataset_mention
-    if mention is None:
-        return state.variable
-    index = get_index()
-    stripped = without_mention(state.variable, mention.provenance, index)
-    if stripped:
-        return stripped
-    own = next(
-        (m for m in dataset_mentions(state.variable, index) if m.provenance == mention.provenance),
-        mention,
-    )
-    return mention_measure(own, index) or state.variable
-
-
 async def _phase_bind(state: ResolveState) -> RegionResult | None:
     """Run one choose-and-bind call. Return a terminal result for ask or an invalid index.
 
     The call elects a shape and binds its slots. Admitted qualifiers become fixed context.
     Ties with one row become matches, while larger ties remain closed alternatives. Declared
     constraint-measure axes are withheld from index-sourced shapes for deterministic repair.
-    The variable reaches the call without its bound mention (`without_mention`): candidacy
-    has already used the mention up, and election binds its source. Election vetting checks
-    ``requested_all`` claims against the chosen shape.
+    Election vetting checks ``requested_all`` claims against the chosen shape.
     """
     reading_codes = tuple(
         readings.code
@@ -1179,7 +1276,7 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
     _bind_usage: dict | None
     bind_task = asyncio.create_task(
         bind_universal(
-            _bind_variable(state),
+            state.variable,
             state.capped_shapes,
             admitted_qualifiers=admitted_qualifiers,
             admitted_ties=admitted_ties,
@@ -1204,15 +1301,12 @@ async def _phase_bind(state: ResolveState) -> RegionResult | None:
             await asyncio.gather(bind_task, return_exceptions=True)
     _var_usage = state.var_usage = _bind_usage
     state.timing["bind"] = now_ms() - t0
-    await _record_step(
-        state.pipeline_steps,
+    await _emit_step(
         state.emit,
         state.variable_index,
         "bind",
-        ran=True,
         ms=state.timing["bind"],
     )
-    state.ran_steps.add("bind")
 
     # An ask or out-of-range index returns ``variable_not_resolved`` immediately.
     if bind_result.ask or not (0 <= bind_result.chosen_shape_index < len(state.capped_shapes)):

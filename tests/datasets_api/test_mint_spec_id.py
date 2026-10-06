@@ -14,11 +14,13 @@ import pytest
 from code_index.query import CodeIndex
 from code_index.types import IndexStamp
 from datasets_api.adapter import build_identity_document
+from datasets_api.config import DatasetsBuildSettings
 from datasets_api.mint_models import Scope
 from datasets_api.revision import SentinelRevisionReader
 from datasets_api.shape import resolve_shape
 from datasets_api.surgery import apply_scope_surgery
 from dc_sdmx import SdmxClient
+from graph_generation import FakeGeneration
 from materialise.graph import Facet, FacetDefaultPolicy
 from materialise.rate_tables import RateTableCache
 from series_coverage.schema import FacetMetadata, RoleNames
@@ -158,6 +160,7 @@ def _client(
     rate_cache: RateTableCache | None = None,
     code_index: CodeIndex | None = None,
     coverage: FakeCoverageService | None = None,
+    settings: DatasetsBuildSettings | None = None,
 ):
     store = store if store is not None else FakeDatasetStore()
     requests = sdmx_requests if sdmx_requests is not None else []
@@ -167,6 +170,8 @@ def _client(
         kwargs["rate_cache"] = rate_cache
     if code_index is not None:
         kwargs["code_index"] = code_index
+    if settings is not None:
+        kwargs["settings"] = settings
     return make_client(
         registry=LiveSpecRegistry(store=store),
         spec_reader=LiveSpecReader(store=store),
@@ -527,12 +532,12 @@ def test_an_unregistered_described_arm_spec_id_with_a_sidecar_mints_every_enumer
     assert spec_id in store.state.spec_registry
 
 
-def test_a_graph_write_between_two_mints_of_the_same_spec_id_is_visible_immediately():
-    """A registry hit re-enumerates members after the graph changes within a cache's TTL.
-
-    The second request must see both members without a clock advance.
-    """
+def test_a_graph_write_between_two_mints_reaches_the_next_graph_generation():
+    """Member groups are cached per graph generation, so a repeat mint under the same
+    generation serves the group it resolved, and the first mint after the generation moves
+    reads the write."""
     store = FakeDatasetStore()
+    generation = FakeGeneration(token="rev1")
     member_arcs = {
         "typeOf": ("StatisticalVariable",),
         "populationType": ("DevelopmentFinance",),
@@ -550,6 +555,7 @@ def test_a_graph_write_between_two_mints_of_the_same_spec_id_is_visible_immediat
             (_ODA_LOANS, "country/KEN"): [_FACET],
         },
         labels={"OECD_DAC2A": "OECD DAC2a", "country/KEN": "Kenya"},
+        generation=generation,
     )
     sdmx_requests: list[httpx.Request] = []
     client = make_client(
@@ -596,15 +602,18 @@ def test_a_graph_write_between_two_mints_of_the_same_spec_id_is_visible_immediat
 
     arcs[_ODA_LOANS] = {**member_arcs, "DevelopmentFinanceScheme": ("ODALoans",)}
 
-    second = client.post("/api/datasets", json=_spec_id_body(spec_id))
+    def mint_refs() -> set[str]:
+        response = client.post("/api/datasets", json=_spec_id_body(spec_id))
+        assert response.status_code == 200, response.text
+        return {entry["ref"] for entry in response.json()["trace"]["resolved_stat_vars"]}
 
-    assert second.status_code == 200, second.text
-    second_refs = {entry["ref"] for entry in second.json()["trace"]["resolved_stat_vars"]}
-    assert second_refs == {_ODA_GRANTS_REF, _ODA_LOANS_REF}
+    assert mint_refs() == {_ODA_GRANTS_REF}
+    generation.advance("rev2")
+    assert mint_refs() == {_ODA_GRANTS_REF, _ODA_LOANS_REF}
 
 
 def test_the_mint_doors_own_deps_are_built_once_not_rebuilt_per_request(monkeypatch):
-    """Each request gets a fresh `MemberEnumerator` while reusing the same `MintDeps`."""
+    """Each request reuses the same `MintDeps`."""
     store = FakeDatasetStore()
     client = _client(artifact_store=FakeArtifactStore(), store=store)
     base = client.post("/api/datasets", json=_STATVAR_SET_BODY)
@@ -649,12 +658,20 @@ def test_a_malformed_stat_var_ref_refuses_member_not_resolvable_not_a_500():
     assert problem["issues"][0]["pointer"] == "/input/spec_id"
 
 
-def test_a_malformed_sidecar_identity_on_a_miss_refuses_request_invalid_not_a_500():
+@pytest.mark.parametrize(
+    "identity",
+    [
+        {"slots": 1},
+        described_identity(entities={"creditor": ["country/CHN"]}, open_roles=["origin"]),
+    ],
+    ids=["slots-not-a-list", "role-bound-and-open-on-one-axis"],
+)
+def test_a_malformed_sidecar_identity_on_a_miss_refuses_request_invalid_not_a_500(identity):
     """A malformed sidecar identity is rejected by schema validation on a registry miss."""
     store = FakeDatasetStore()
     client = _client(artifact_store=FakeArtifactStore(), store=store)
     spec_id = "spec_" + "0" * 32
-    definition = {"schema_version": 1, "spec_id": spec_id, "identity": {"slots": 1}}
+    definition = {"schema_version": 1, "spec_id": spec_id, "identity": identity}
 
     resp = client.post("/api/datasets", json=_spec_id_body(spec_id, definition=definition))
 
@@ -977,6 +994,35 @@ def test_scope_surgery_clearing_entities_and_facets_together_registers_the_clear
     assert surgered_identity["requested_window"] == {"kind": "all"}
 
 
+@pytest.mark.parametrize(
+    ("scope_entities", "open_roles"),
+    [
+        ({"creditor": ["country/CHN"]}, None),
+        ({"origin": ["country/CHN"], "destination": ["country/GHA"]}, None),
+        ({"destination": ["country/GHA"]}, ["origin"]),
+        ({"debtor": ["country/GHA"]}, ["origin"]),
+        ({}, ["origin"]),
+    ],
+)
+def test_apply_scope_surgery_closes_an_open_role_the_scope_binds(scope_entities, open_roles):
+    """A role the scope binds leaves `open_roles`, matched by axis whatever the key's
+    spelling, and every other open role stays."""
+    identity = {
+        "identity_version": "spec1",
+        "shape": {"kind": "statvar_schema", "measured_property": "amount"},
+        "slots": [],
+        "entities": {"destination": ["country/NGA"]},
+        "open_roles": ["origin"],
+        "requested_window": {"kind": "all"},
+    }
+
+    surgered = apply_scope_surgery(identity, scope=Scope(entities=scope_entities))
+
+    assert surgered["entities"] == scope_entities
+    assert surgered.get("open_roles") == open_roles
+    recompute_identity(surgered)
+
+
 def test_apply_scope_surgery_clears_facets_by_deleting_the_key():
     """Clearing `facets` deletes the key, matching fresh identity documents.
 
@@ -1096,7 +1142,7 @@ def test_round_trip_a_surgered_specs_id_recomputes_identically_from_its_stored_c
 
 
 # More than the 4,000-candidate cap, with a set-bound slot that prevents the
-# truncated reverse-arc page from proving completeness.
+# truncated reverse-arc page from proving completeness, so the walk reads the whole set.
 _CRS_GRANTS = (
     "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_"
     "CRSCooperationModalityA01_CRSPurposeCode11330_Nominal"
@@ -1177,13 +1223,16 @@ def _no_index_coverage() -> CodeIndex:
 
 
 def test_three_identical_wide_crs_asks_converge_on_one_non_retryable_refusal():
-    """Three fresh enumerators return the same non-retryable candidate-window 422."""
+    """Three asks whose whole set exceeds the subject ceiling return the same non-retryable
+    candidate-window 422, which no cache holds."""
+    ceiling = CANDIDATE_CAP + 1
     store = FakeDatasetStore()
     client = _client(
         artifact_store=FakeArtifactStore(),
         store=store,
         graph=_wide_crs_graph(),
         code_index=_no_index_coverage(),
+        settings=DatasetsBuildSettings(member_subject_ceiling=ceiling),
     )
     identity = _wide_crs_identity()
     spec_id = recompute_identity(identity).spec_id
@@ -1196,8 +1245,8 @@ def test_three_identical_wide_crs_asks_converge_on_one_non_retryable_refusal():
         assert resp.status_code == 422, resp.text
         problem = resp.json()
         assert problem["ceiling_kind"] == "candidate_window"
-        assert problem["count"] == CANDIDATE_CAP
-        assert problem["cap"] == CANDIDATE_CAP
+        assert problem["count"] == ceiling
+        assert problem["cap"] == ceiling
         outcomes.append((problem["code"], problem["retryable"]))
 
     assert outcomes == [("over_ceiling", False)] * 3

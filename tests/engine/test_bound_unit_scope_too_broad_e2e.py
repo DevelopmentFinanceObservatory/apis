@@ -186,7 +186,6 @@ def _run():
         resolver=make_resolver(graph),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         llm=_set_bind_llm(),
-        base_steps=[],
         base_timing={},
         unit_text="US dollars",
         coverage=empty_coverage_snapshot(),

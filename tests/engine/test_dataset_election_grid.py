@@ -12,18 +12,21 @@ the family (`shape_member_facts`) and mints the identity from the bindings (`bui
 same identity with every pin bound. Each cell of the grid asserts the dataset, the members
 and the pins it expects, and that every door agrees with the first resolve on all three.
 
-The fixture index stands in for the aid tables: `_BROAD` (rank 0) has donor-and-recipient
-rows; `_DETAIL` (rank 1) shares the five-tuple and one row with it, alone carries the
-`channel` code system, and pins `flow`; `_DONORS` (rank 2) has donor-only rows on the same
-five-tuple. The opt-in `_BESIDE` publishes beside them, and the opt-in `_ALONE` alone
-publishes a second five-tuple. `_BROAD` alone publishes a third. On a fourth, `_BROAD`'s
-donor-and-recipient rows and `_DONORS`' donor-only rows differ on the measure axis
-`netting`. On a fifth, `_TOTALS` publishes donor-only rows without `sector` beside
-`_BROAD`'s rows by sector and channel. The perturbation tests show which cells the rank
-order, opt-in and the exact-role-set preference decide. The repair-phase tests drive
-`_phase_repair_bindings` from places the question names. The drill-down tests at the end
-read the answer's slot menus (`offers_slot`) and each option's coverage under the dataset
-its election serves (`option_families`) on the fifth five-tuple.
+The fixture index stands in for the aid tables. Datasets whose rows of a five-tuple carry one
+property set form one family there (`CodeIndex.family_of`), and the election runs among a
+family's datasets. On the shared five-tuple `_BROAD` (rank 0) has donor-and-recipient rows;
+`_DETAIL` (rank 1) shares one row with it, alone carries the `channel` codes K1 and K2, and
+pins `flow`; `_DONORS` (rank 2) has donor-only rows. The opt-in `_BESIDE` publishes beside
+them, and all four carry `basis`, `channel`, `flow` and `sector`, so they are one family. The
+opt-in `_ALONE` alone publishes a second five-tuple. `_BROAD` alone publishes a third. On a
+fourth, `_BROAD`'s donor-and-recipient rows and `_DONORS`' donor-only rows differ on the
+measure axis `netting`. On a fifth, `_TOTALS` publishes donor-only rows without `sector`
+beside `_BROAD`'s rows by sector and channel, so the two are separate families. The
+perturbation tests show which cells the rank order, opt-in and the exact-role-set preference
+decide. The repair-phase tests drive `_phase_repair_bindings` from places the question
+names. The drill-down tests read the answer's slot menus (`offers_slot`) and each option's
+coverage under the dataset its election serves (`option_families`) on the fifth five-tuple,
+for each of its families.
 """
 
 from __future__ import annotations
@@ -31,6 +34,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import itertools
+import random
 import sys
 from collections.abc import Mapping
 from types import SimpleNamespace
@@ -44,6 +48,7 @@ from code_index.members import (
     FamilyQuery,
     canonical_identity,
     elected_pins,
+    eligible_datasets,
     family_for_five_tuple,
     identity_family_query,
     invariant_bindings,
@@ -54,6 +59,7 @@ from code_index.types import (
     CodeRow,
     CodeSystemDeclaration,
     DatasetDeclaration,
+    DeclaredDefault,
     IndexStamp,
     MeasureAxis,
     MeasureIndex,
@@ -63,30 +69,38 @@ from datasets_api.adapter import resolve_definition_members
 from dfo_platform.roles import RoleAxis
 from entity_resolution import Admission, EntityResolver
 from materialise.facets import ElectedDataset
-from search.engine.bind import SlotBindingDraft, _build_universal_bind_prompt, _UniversalBindOutput
+from search.engine.bind import (
+    EXCLUDED_SOURCE_PREFIX,
+    SlotBindingDraft,
+    _build_universal_bind_prompt,
+    _offered_source_drafts,
+    _UniversalBindOutput,
+)
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
-from search.engine.dataset_mention import DatasetMention
 from search.engine.interpret import Recall
 from search.engine.options.population import options_population
-from search.engine.qualifier_match import recognise_spans
+from search.engine.qualifier_match import QualifierMatch, recognise_spans
+from search.engine.quantity import quantity_requirement
 from search.engine.region import option_coverage as option_coverage_module
 from search.engine.region import phase_election as phase_election_module
 from search.engine.region import phase_rank_bind as phase_rank_bind_module
 from search.engine.region import related_read as related_read_module
 from search.engine.region.alternate_guard import AlternateJudge, inadmissible_reason, query_pins
+from search.engine.region.candidates import walk_alternate
 from search.engine.region.grounding import _ground_answer
 from search.engine.region.option_coverage import (
     RoleServedFilter,
     _maybe_enrich_slot_options,
     option_axis_facts,
 )
-from search.engine.region.phase_election import _phase_repair_bindings
+from search.engine.region.phase_election import _phase_repair_bindings, _phase_vet_election
 from search.engine.region.phase_rank_bind import (
     _dataset_candidates,
     _phase_prune_and_rank,
     _undeclared_qualifiers,
+    _unheld_bound_codes,
 )
 from search.engine.region.place_context import empty_place_context
 from search.engine.region.place_roles import (
@@ -94,24 +108,33 @@ from search.engine.region.place_roles import (
     bind_place_roles,
     bound_after_election,
     capped_place_dcids,
+    lacks_query_axis,
 )
 from search.engine.region.related_read import start_elected_related_read
+from search.engine.region.result import RegionResult
 from search.engine.region.sentence_events import _build_shape_event
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.bound_values import (
+    PartNotServed,
+    RoleKeys,
     SeriesRows,
     bind_shared_values,
+    bound_source,
     canonical_pin_bindings,
     canonicalise_identity,
     elected_role_class_shape,
     entity_role_keys,
     identity_dataset,
     identity_query,
+    part_datasets,
+    part_source,
     refuse_source_outside_family,
+    shape_datasets,
     shape_invariants,
     shape_member_facts,
     shape_query,
     source_binding,
+    stated_members,
 )
 from search.engine.retrieval.member_facts import IndexMemberFacts, MemberFacts
 from search.engine.retrieval.read_plan import PairPlan
@@ -123,9 +146,13 @@ from search.engine.spec_id import build_spec_identity, mint_identity
 from search.models import (
     BaseIdentity,
     CoverageExact,
+    DatasetResubmitInput,
+    DefinitePart,
     Entity,
     GraphRef,
     IdentityBindingValue,
+    ResolveRequest,
+    ResubmitIdentityEntry,
     SlotKey,
     SlotOption,
     SlotOptions,
@@ -133,9 +160,14 @@ from search.models import (
     TimeWindow,
 )
 from search.models.entity import EntityRoleDirectional
-from statvar_members import FiveTuple, MemberEnumerator
+from search.models.spec import Spec
+from series_coverage.schema import FacetMetadata, RoleNames
+from statvar_members import FiveTuple, MemberEnumerator, member_digest
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
-from tests.engine._fake_coverage import empty_coverage_snapshot
+from tests.datasets_api._member_bounds import mint_bounds
+from tests.engine._fake_coverage import empty_coverage_snapshot, patch_coverage
+from tests.engine._harness import offline_resolve
+from tests.fixtures import FakeGraph
 from tests.materialise.conftest import FakeGraphReader
 from tests.statvar_members.conftest import FakeMemberArcReader
 
@@ -182,30 +214,44 @@ def _row(
 
 
 _ROWS = (
+    # Each dataset of the shared five-tuple carries `channel` on a row, K3 outside
+    # `_DETAIL`, so all four carry one property set and form one family.
     # `_BROAD` holds `basis` G on every row, so it declares `basis` as an invariant.
     _row("broad_a", {"basis": "G", "flow": "F1", "sector": "A"}, _BROAD),
     _row("broad_b", {"basis": "G", "flow": "F2", "sector": "B"}, _BROAD),
-    _row("both_c", {"basis": "G", "flow": "F3", "sector": "C"}, _BROAD, _DETAIL),
+    _row("both_c", {"basis": "G", "channel": "K3", "flow": "F3", "sector": "C"}, _BROAD, _DETAIL),
     # `_DETAIL` holds `flow` F3 on every row, so it declares `flow`; `channel` is its own.
     _row("detail_d_k1", {"basis": "H", "channel": "K1", "flow": "F3", "sector": "D"}, _DETAIL),
     _row("detail_d_k2", {"basis": "H", "channel": "K2", "flow": "F3", "sector": "D"}, _DETAIL),
     # `_DONORS` declares the donor alone and holds `basis` G and `flow` F1 on every row.
     _row("donors_a", {"basis": "G", "flow": "F1", "sector": "A"}, _DONORS, roles=_DONOR),
-    _row("donors_b", {"basis": "G", "flow": "F1", "sector": "B"}, _DONORS, roles=_DONOR),
+    _row(
+        "donors_b",
+        {"basis": "G", "channel": "K3", "flow": "F1", "sector": "B"},
+        _DONORS,
+        roles=_DONOR,
+    ),
     # The opt-in `_BESIDE` alone carries sector E.
     _row("beside_a", {"basis": "G", "flow": "F9", "sector": "A"}, _BESIDE),
-    _row("beside_e", {"basis": "G", "flow": "F9", "sector": "E"}, _BESIDE),
+    _row("beside_e", {"basis": "G", "channel": "K3", "flow": "F9", "sector": "E"}, _BESIDE),
     _row("alone_a", {"basis": "G", "sector": "A"}, _ALONE, five_tuple=_OPT_IN_ONLY),
     _row("alone_b", {"basis": "G", "sector": "B"}, _ALONE, five_tuple=_OPT_IN_ONLY),
     _row("sole_a", {"basis": "G", "sector": "A"}, _BROAD, five_tuple=_SOLE),
     _row("sole_b", {"basis": "G", "sector": "B"}, _BROAD, five_tuple=_SOLE),
     # `_BROAD` reports `netting` gross, the measure vote's preferred value, and `_DONORS`
-    # reports it net on its one row of the five-tuple.
+    # reports it net on its one row of the five-tuple. Both carry `flow`, so they are one
+    # family.
     _row(
-        "gross_a", {"basis": "G", "netting": "Gross", "sector": "A"}, _BROAD, five_tuple=_MEASURED
+        "gross_a",
+        {"basis": "G", "flow": "F1", "netting": "Gross", "sector": "A"},
+        _BROAD,
+        five_tuple=_MEASURED,
     ),
     _row(
-        "gross_b", {"basis": "G", "netting": "Gross", "sector": "B"}, _BROAD, five_tuple=_MEASURED
+        "gross_b",
+        {"basis": "G", "flow": "F2", "netting": "Gross", "sector": "B"},
+        _BROAD,
+        five_tuple=_MEASURED,
     ),
     _row(
         "net_a",
@@ -215,8 +261,8 @@ _ROWS = (
         five_tuple=_MEASURED,
     ),
     # `_TOTALS` publishes donor-only rows and carries no `sector`; `_BROAD` publishes the
-    # same five-tuple by sector and channel for donor and recipient, and both record the
-    # donor-only channel K3 row.
+    # same five-tuple by sector and channel for donor and recipient, so the two are separate
+    # families, and both record the donor-only channel K3 row.
     _row("total", {}, _TOTALS, roles=_DONOR, five_tuple=_DRILLED),
     _row("drill_a", {"basis": "G", "channel": "K1", "sector": "A"}, _BROAD, five_tuple=_DRILLED),
     _row("drill_b", {"basis": "G", "channel": "K2", "sector": "B"}, _BROAD, five_tuple=_DRILLED),
@@ -262,11 +308,16 @@ def _index(
     rows: tuple[StatVarRow, ...] = _ROWS,
     codes: Mapping[str, tuple[str, ...]] = _CODES,
     parents: Mapping[str, str] | None = None,
+    disjoint: bool = True,
+    defaults: Mapping[str, DeclaredDefault] | None = None,
 ) -> CodeIndex:
     """The fixture index over `rows`, declaring `codes`. A code system with a code in
-    `parents` is hierarchical, each such code a child of its parent. Each dataset declares
+    `parents` is hierarchical, each such code a child of its parent, and its parent rows
+    are apart from their children's when `disjoint` (`disjoint_from_children`), else
+    their totals. A code system in `defaults` declares that default. Each dataset declares
     as invariants the values every one of its rows holds (`_invariants`)."""
     parents = parents or {}
+    defaults = defaults or {}
     return CodeIndex(
         stamp=IndexStamp(
             graph_endpoint="test",
@@ -279,10 +330,11 @@ def _index(
             CodeSystemDeclaration(
                 code_system=prop,
                 hierarchical=any(code in parents for code in codes.get(prop, ())),
-                disjoint_from_children=False,
+                disjoint_from_children=disjoint,
                 summable=True,
                 absent_reading="not_declared",
                 plain_name=prop,
+                default=defaults.get(prop),
             )
             for prop in _PROPERTIES
         ),
@@ -303,7 +355,7 @@ def _index(
             DatasetDeclaration(
                 provenance=provenance,
                 label=provenance,
-                synonyms=(),
+                description="A test table.",
                 opt_in=provenance in opt_in,
                 absent_observation="zero",
                 rank=rank,
@@ -330,13 +382,25 @@ def index(monkeypatch: pytest.MonkeyPatch) -> CodeIndex:
 
 
 def _derived_shape(
-    five_tuple: tuple[str, str], *, index_rows: tuple[StatVarRow, ...] = _ROWS
+    five_tuple: tuple[str, str],
+    *,
+    index_rows: tuple[StatVarRow, ...] = _ROWS,
+    family_of: str | None = None,
 ) -> ShapeDraft:
-    """A shape as `derive_shapes` builds it on `five_tuple`: the slot keys and taxonomy of
-    every row of `index_rows` on the five-tuple, whatever dataset publishes it, and a source
-    slot."""
+    """A shape as `derive_shapes` builds it on `five_tuple` for one index family: the slot
+    keys and taxonomy of every row of that family among `index_rows`, whatever dataset of
+    the family publishes it, and a source slot. The family is the one `family_of` belongs
+    to, else the five-tuple's first (`CodeIndex.families_by_five_tuple`)."""
     population_type, measured_property = five_tuple
-    rows = [row for row in index_rows if (row.population_type, row.measured_property) == five_tuple]
+    families = _index(rows=index_rows).families_by_five_tuple[
+        FiveTuple(
+            population_type=population_type,
+            measured_property=measured_property,
+            stat_type="measuredValue",
+        )
+    ]
+    family = next((found for found in families if family_of in found.datasets), families[0])
+    rows = [row for row in index_rows if row in family.rows]
     props = sorted({prop for row in rows for prop in row.constraint_properties})
     return ShapeDraft(
         shape_id="_".join(five_tuple),
@@ -362,14 +426,6 @@ def _derived_shape(
         },
         slot_taxonomy_index_sourced=True,
         sv_arc_facts_complete=False,
-    )
-
-
-def _mention(source: str | None) -> DatasetMention | None:
-    if source is None:
-        return None
-    return DatasetMention(
-        provenance=source, start=0, end=len(source), text=source, name=source, measure_words=()
     )
 
 
@@ -422,10 +478,17 @@ def _first_resolve(
     model: Mapping[str, str],
     *,
     window: TimeWindow | None = None,
+    family_of: str | None = None,
+    index_rows: tuple[StatVarRow, ...] = _ROWS,
 ) -> Outcome:
-    """Run the first resolve of one part on `five_tuple`, naming `source` or none, about the
+    """Run the first resolve of one part on `five_tuple`'s shape of the family `family_of`
+    belongs to among `index_rows` (`_derived_shape`), naming `source` or none, about the
     entities of `roles`, where the bind model binds `model`."""
-    candidates = _dataset_candidates([_derived_shape(five_tuple)], _mention(source))
+    candidates = _dataset_candidates(
+        [_derived_shape(five_tuple, index_rows=index_rows, family_of=family_of)],
+        source,
+        frozenset(),
+    )
     if not candidates:
         return Outcome(datasets=None)
     (shape,) = candidates
@@ -437,12 +500,25 @@ def _first_resolve(
         SlotBindingDraft(axis="how", property_dcid=prop, kind="value", value_dcids=[value])
         for prop, value in model.items()
     ]
-    if source is not None:
-        drafted.append(source_binding(source))
+    # Vetting names the dataset the elected shape names (`_phase_vet_election`).
+    if shape.named_dataset is not None:
+        drafted.append(source_binding(shape.named_dataset))
+    return _minted(shape, drafted, roles, window=window)
+
+
+def _minted(
+    shape: ShapeDraft,
+    drafted: list[SlotBindingDraft],
+    roles: str,
+    *,
+    window: TimeWindow | None = None,
+) -> Outcome:
+    """Mint the identity of `shape` under the vetted `drafted` bindings, about the entities
+    of `roles`, as the first resolve does after vetting."""
     bindings, _shared = bind_shared_values(shape, drafted)
-    role_keys = entity_role_keys(shape, _ENTITIES[roles])
+    role_keys = entity_role_keys(_ENTITIES[roles], open_axes=())
     bindings = canonical_pin_bindings(shape, bindings, role_keys)
-    query = shape_query(shape, bindings, role_keys)
+    query = shape_query(shape, bindings, role_keys.bound)
     facts, index_sourced = shape_member_facts(shape, query)
     assert index_sourced
     members = {dcid: fact.read_dataset() for dcid, fact in facts.items()}
@@ -473,6 +549,7 @@ def _first_resolve(
         slots,
         entities=_identity_entities(roles),
         requested_window=window,
+        open_roles=(),
     )
     assert identity_query(identity) == query
     return Outcome(
@@ -494,8 +571,9 @@ def _mint(identity: BaseIdentity, index: CodeIndex) -> dict[str, ElectedDataset 
         identity.model_dump(mode="json", exclude_none=True),
         spec_id="spec_test",
         graph=graph,
-        enumerator=MemberEnumerator(graph=graph),
+        enumerator=MemberEnumerator(),
         code_index=index,
+        bounds=mint_bounds(),
     )
     assert sum(graph.calls.values()) == 0
     return {shape.stat_var.removeprefix("dcid:"): shape.dataset for shape in resolved.shapes}
@@ -571,6 +649,13 @@ class Scenario:
     datasets: tuple[str, ...] | None
     withheld: Mapping[str, str]
     by_roles: Mapping[str, Expected]
+    named_by_measure: str | None = None
+    """The opt-in dataset the elected shape names for a part that names none."""
+
+    @property
+    def names(self) -> str | None:
+        """The dataset the identity names."""
+        return self.source or self.named_by_measure
 
 
 _BROAD_PINS = {"basis": "G"}
@@ -618,9 +703,13 @@ _SCENARIOS: dict[tuple[str, str, str], Scenario] = {
         five_tuple=_OPT_IN_ONLY,
         source=None,
         sector="A",
-        datasets=None,
-        withheld={},
-        by_roles={},
+        datasets=(_ALONE,),
+        withheld=_BROAD_PINS,
+        by_roles={
+            "donor": Expected(_ALONE, {"alone_a": (_ALONE,)}, _BROAD_PINS),
+            "donor-recipient": Expected(_ALONE, {"alone_a": (_ALONE,)}, _BROAD_PINS),
+        },
+        named_by_measure=_ALONE,
     ),
     ("named", "two", "not-opt-in"): Scenario(
         five_tuple=_SHARED,
@@ -690,7 +779,10 @@ class Cell:
 
     def resolve(self) -> Outcome:
         return _first_resolve(
-            self.scenario.five_tuple, self.scenario.source, self.roles, self.model
+            self.scenario.five_tuple,
+            self.scenario.source,
+            self.roles,
+            self.model,
         )
 
 
@@ -724,7 +816,7 @@ def _assert_cell(cell: Cell, outcome: Outcome) -> None:
     assert outcome.identity is not None
     assert outcome.pins == expected.pins
     bound = _bound_slots(outcome.identity)
-    if cell.scenario.source is None:
+    if cell.scenario.names is None:
         # A part that names no dataset keeps the pins the model bound, and binds no other.
         assert {prop: bound.get(prop) for prop in expected.pins} == {
             prop: cell.model.get(prop) for prop in expected.pins
@@ -733,14 +825,15 @@ def _assert_cell(cell: Cell, outcome: Outcome) -> None:
         # The identity names the dataset, so it binds every invariant of it.
         assert {prop: bound.get(prop) for prop in expected.pins} == expected.pins
     facets = outcome.identity.model_dump(mode="json", exclude_none=True).get("facets", {})
-    # The identity binds the dataset only when the part names it.
-    assert facets.get("provenance", {}).get("ref") == cell.scenario.source
+    # The identity binds the dataset only when the part or the elected shape names it.
+    assert facets.get("provenance", {}).get("ref") == cell.scenario.names
 
 
 @pytest.mark.parametrize("cell", _CELLS.values(), ids=_CELLS.keys())
 def test_the_first_resolve_and_every_identity_door_elect_one_dataset(index, cell: Cell):
-    """An unnamed part never answers from an opt-in dataset beside a default one, and drops a
-    five-tuple only opt-in datasets publish. A donor-only question reads the donor-only
+    """An unnamed part never answers from an opt-in dataset beside a default one. On a
+    five-tuple only one opt-in dataset publishes, the shape names that dataset, so the part
+    mints the identity a part naming it mints. A donor-only question reads the donor-only
     dataset where it has the row, and the rank decides otherwise. A named part reads its
     dataset's rows, with that dataset's pins withheld from the model and left unbound."""
     outcome = cell.resolve()
@@ -756,15 +849,15 @@ def test_the_first_resolve_and_every_identity_door_elect_one_dataset(index, cell
     ids=lambda pair: "-".join((*pair[0], pair[1])),
 )
 def test_the_identity_is_one_whether_or_not_the_model_binds_the_pins(index, scenario_roles):
-    """A part that names its dataset mints one identity whether or not the model binds the
-    dataset's invariants. One that names none keeps what the model bound, so the two mint
+    """A part that names its dataset, or elects a shape that names one, mints one identity
+    whether or not the model binds the dataset's invariants. One that names none keeps what the model bound, so the two mint
     two identities that serve the same members."""
     key, roles = scenario_roles
     with_pins = _CELLS["-".join((*key, roles, "none"))].resolve()
     without = _CELLS["-".join((*key, roles, "pins"))].resolve()
 
     assert with_pins.members == without.members
-    assert (with_pins.spec_id == without.spec_id) is (_SCENARIOS[key].source is not None)
+    assert (with_pins.spec_id == without.spec_id) is (_SCENARIOS[key].names is not None)
 
 
 def test_a_code_only_the_second_dataset_carries_elects_it_at_every_door(index):
@@ -793,13 +886,496 @@ def test_a_named_part_refuses_a_code_its_table_does_not_carry(index, named, refu
     `_DONORS` keeps the shared shape, whose slot keys are the whole five-tuple's, yet its
     table holds no `channel` code, so the term refuses `qualifier_not_bound` before bind.
     The part naming `_DETAIL` can bind it."""
-    (shape,) = _dataset_candidates([_derived_shape(_SHARED)], _mention(named))
+    (shape,) = _dataset_candidates([_derived_shape(_SHARED)], named, frozenset())
     spans = recognise_spans("K1 aid", index, MeasureIndex(axes=(), values=(), partition_labels=()))
     assert [row.code_system for span in spans for row in span.rows] == ["channel"]
 
     undeclared = _undeclared_qualifiers(spans, [shape])
 
     assert [record.text for record in undeclared] == (["K1"] if refused else [])
+
+
+def test_a_part_excluding_a_dataset_answers_from_the_other_publishers(index):
+    """A part excluding the first-ranked publisher of `_SHARED` keeps the shape, stamped with
+    the other publishers that are not opt-in. A part excluding every one of them keeps
+    nothing of the shape, since an opt-in publisher answers only a part that names it."""
+    (unnamed,) = _dataset_candidates([_derived_shape(_SHARED)], None, frozenset())
+    first, *others = unnamed.datasets
+    assert others
+
+    (shape,) = _dataset_candidates([_derived_shape(_SHARED)], None, frozenset({first}))
+
+    assert shape.datasets == tuple(others)
+    assert _dataset_candidates([_derived_shape(_SHARED)], None, frozenset(unnamed.datasets)) == []
+
+
+# ---------------------------------------------------------------------------
+# The source slot
+# ---------------------------------------------------------------------------
+
+# `_BROAD` and the opt-in `_BESIDE` alone publish a five-tuple of their own, as one family.
+_SLOTTED = ("TestFlow", "slotAmount")
+_SLOTTED_ROWS = (
+    *_ROWS,
+    _row("slotted_broad", {"basis": "G", "flow": "F1", "sector": "A"}, _BROAD, five_tuple=_SLOTTED),
+    _row(
+        "slotted_beside",
+        {"basis": "G", "flow": "F9", "sector": "A"},
+        _BESIDE,
+        five_tuple=_SLOTTED,
+    ),
+)
+
+
+def _excluded(provenance: str) -> str:
+    return f"{EXCLUDED_SOURCE_PREFIX}{provenance}"
+
+
+def _slot_resolve(
+    five_tuple: tuple[str, str],
+    slot: str,
+    roles: str,
+    model: Mapping[str, str],
+    *,
+    index_rows: tuple[StatVarRow, ...] = _ROWS,
+    admitted: tuple[QualifierMatch, ...] = (),
+) -> Outcome | RegionResult:
+    """Run the first resolve of a part naming no dataset on `five_tuple`, where the bind
+    model binds `model` and the source slot to `slot`, and the query text matches the codes
+    `admitted`, through bind's source check (`_offered_source_drafts`) and vetting
+    (`_phase_vet_election`): the minted outcome, or vetting's refusal."""
+    (shape,) = _dataset_candidates(
+        [_derived_shape(five_tuple, index_rows=index_rows)], None, frozenset()
+    )
+    # The shape declares the flow roles, so vetting reads the role keys the identity binds.
+    shape = dataclasses.replace(
+        shape,
+        declared_roles=_DONOR_RECIPIENT,
+        optional_roles=frozenset({"financingRecipient"}),
+    )
+    state = _repair_state(shape, _PLACES[roles], model)
+    state.capped_shapes = [shape]
+    state.admitted_qualifiers = admitted
+    drafted = SlotBindingDraft(
+        axis="source", property_dcid="provenance", kind="value", value_dcids=[slot]
+    )
+    state.bind_result.bindings = _offered_source_drafts(
+        [*state.bind_result.bindings, drafted], shape
+    )
+    result = asyncio.run(_phase_vet_election(state))
+    if result is not None:
+        return result
+    return _minted(state.shape_draft, list(state.bind_result.bindings), roles)
+
+
+@pytest.mark.parametrize(
+    ("five_tuple", "family_of", "source", "options"),
+    [
+        (_SHARED, None, None, (_BROAD, _DETAIL, _DONORS, _BESIDE)),
+        (_SHARED, None, _DETAIL, ()),
+        (_SOLE, None, None, ()),
+        (_OPT_IN_ONLY, None, None, ()),
+        (_DRILLED, _TOTALS, None, ()),
+        (_DRILLED, _BROAD, None, ()),
+    ],
+    ids=[
+        "shared",
+        "shared-named",
+        "one-publisher",
+        "one-opt-in-publisher",
+        "two-families-total",
+        "two-families-breakdowns",
+    ],
+)
+def test_the_bind_menu_offers_a_source_slot_only_on_a_family_several_tables_publish(
+    index, five_tuple, family_of, source, options
+):
+    """An unnamed part's shape of a family several declared tables publish offers each of
+    them, the opt-in `_BESIDE` included, in the source slot, with each table's declared
+    label and description, and the prompt states the slot's rules. A named part, and a
+    family one table publishes, offer no slot and no rules, even where another family of
+    the same five-tuple has a table of its own (`_TOTALS` and `_BROAD` on `_DRILLED`, as
+    DAC1 and the CRS share theirs)."""
+    (shape,) = _dataset_candidates(
+        [_derived_shape(five_tuple, family_of=family_of)], source, frozenset()
+    )
+
+    prompt = _build_universal_bind_prompt("aid", [shape])
+
+    assert shape.source_options == options
+    assert ("axis=source" in prompt) is bool(options)
+    assert ("SOURCE SLOT" in prompt) is bool(options)
+    for provenance in options:
+        declared = index.datasets[provenance]
+        assert f"{provenance} = {declared.label}: {declared.description}" in prompt
+        assert f"'{_excluded(provenance)}'" in prompt
+
+
+def _resubmit_door(monkeypatch: pytest.MonkeyPatch, outcome: Outcome) -> Spec:
+    """The spec the dataset_resubmit door rebuilds from `outcome`'s identity, posted
+    unchanged, where each member of the outcome holds a series from Germany to Kenya under
+    the dataset that serves it."""
+    assert outcome.identity is not None
+    assert outcome.spec_id is not None
+    patch_coverage(
+        monkeypatch,
+        [
+            (dcid, served.provenance, _DCIDS["Germany"], _DCIDS["Kenya"], [2020, 2021])
+            for dcid, served in outcome.members.items()
+            if served is not None
+        ],
+        role_names=dict.fromkeys(
+            outcome.members,
+            RoleNames(donor="financingProvider", recipient="financingRecipient"),
+        ),
+        facet_metadata={
+            served.provenance: FacetMetadata(provenance_id=served.provenance, unit="USD")
+            for served in outcome.members.values()
+            if served is not None
+        },
+    )
+    nodes: dict[str, dict] = {
+        place: {"label": place, "type": "Country"} for place in _DCIDS.values()
+    }
+    for row in _ROWS:
+        nodes[row.dcid] = {
+            "label": row.dcid,
+            "type": "StatisticalVariable",
+            "arcs": {
+                **_arcs(row),
+                "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
+                "observationProperties": {
+                    "nodes": [{"dcid": prop} for prop in row.observation_properties]
+                },
+            },
+        }
+    entry = ResubmitIdentityEntry(
+        variable_text="aid",
+        identity=outcome.identity,
+    )
+    response = offline_resolve(
+        ResolveRequest(input=DatasetResubmitInput(entries=[entry])),
+        graph=FakeGraph(nodes=nodes, obs={}),
+        materialise_graph=FakeGraphReader(
+            arcs={
+                row.dcid: {
+                    "populationType": (row.population_type,),
+                    "measuredProperty": (row.measured_property,),
+                    "statType": (row.stat_type,),
+                    "constraintProperties": tuple(row.constraint_properties),
+                    **{prop: (value,) for prop, value in row.constraint_properties.items()},
+                }
+                for row in _ROWS
+            }
+        ),
+    )
+    (part,) = response.parts
+    assert isinstance(part, DefinitePart), part
+    return part.spec
+
+
+@pytest.mark.parametrize(
+    ("slot", "roles", "sector", "named"),
+    [
+        (_DETAIL, "donor-recipient", "C", _DETAIL),
+        (_BESIDE, "donor-recipient", "A", _BESIDE),
+        (_excluded(_BROAD), "donor-recipient", "C", _DETAIL),
+        (_excluded(_DONORS), "donor", "A", _BROAD),
+    ],
+    ids=["named", "opt-in-named", "excluded-rank", "excluded-roles"],
+)
+def test_the_source_slot_names_the_table_the_identity_binds(
+    index, monkeypatch, slot, roles, sector, named
+):
+    """A slot naming a table, the opt-in `_BESIDE` that candidacy withheld included, makes
+    the part a part naming it. A slot excluding a table names the one the election serves
+    among the others: `_DETAIL` for the shared sector C row once `_BROAD` is out, and the
+    rank's `_BROAD` for a donor-only question once the donor-only `_DONORS` is out. The
+    identity names the table, so it is the identity a part naming it mints, the
+    dataset_resubmit door rebuilds it under the same spec_id, and every door agrees."""
+    outcome = _slot_resolve(_SHARED, slot, roles, {"sector": sector})
+
+    assert isinstance(outcome, Outcome)
+    assert outcome.elected == named
+    assert outcome.datasets == (named,)
+    assert outcome.identity is not None
+    facets = outcome.identity.model_dump(mode="json", exclude_none=True)["facets"]
+    assert facets["provenance"]["ref"] == named
+    assert outcome.spec_id == _first_resolve(_SHARED, named, roles, {"sector": sector}).spec_id
+    resubmitted = _resubmit_door(monkeypatch, outcome)
+    assert resubmitted.spec_id == outcome.spec_id
+    assert identity_dataset(resubmitted.definition.identity) == named
+    assert resubmitted.resolved.shape.member_digest == member_digest(outcome.members)
+    _assert_doors_agree(outcome, index)
+
+
+@pytest.mark.parametrize(
+    ("slot", "roles", "sector"),
+    [
+        (_excluded(_DETAIL), "donor-recipient", "A"),
+        (_excluded(_BESIDE), "donor-recipient", "A"),
+        (_excluded(_DONORS), "donor-recipient", "A"),
+    ],
+    ids=["excluded-not-serving", "excluded-opt-in", "excluded-other-roles"],
+)
+def test_an_exclusion_that_changes_no_election_leaves_the_part_unnamed(
+    index, monkeypatch, slot, roles, sector
+):
+    """`_BROAD` serves the shared sector A row to a donor-and-recipient question, so
+    excluding `_DETAIL`, the opt-in `_BESIDE` or the donor-only `_DONORS` leaves the
+    election where it was. The part names no table and mints the plain question's identity,
+    which the dataset_resubmit door rebuilds under the same spec_id."""
+    outcome = _slot_resolve(_SHARED, slot, roles, {"sector": sector})
+    plain = _first_resolve(_SHARED, None, roles, {"sector": sector})
+
+    assert isinstance(outcome, Outcome)
+    assert outcome.elected == plain.elected == _BROAD
+    assert outcome.identity is not None
+    assert identity_query(outcome.identity).source is None
+    assert outcome.spec_id == plain.spec_id
+    resubmitted = _resubmit_door(monkeypatch, outcome)
+    assert resubmitted.spec_id == plain.spec_id
+    assert resubmitted.resolved.shape.member_digest == member_digest(outcome.members)
+    _assert_doors_agree(outcome, index)
+
+
+@pytest.mark.parametrize("slot", [_DETAIL, _excluded(_BROAD)], ids=["named", "excluded"])
+def test_the_source_slot_leaves_the_menu_the_part_naming_or_excluding_tables_is_offered(
+    index, slot
+):
+    """Bind elects the shared shape with sector C beside the alternates on `_PINNED`, which
+    `_BROAD` and `_DETAIL` publish, and on `_SOLE`, which `_BROAD` alone publishes. A slot
+    naming `_DETAIL` leaves the menu the parsed door's part naming `_DETAIL` is offered:
+    every shape stamped as naming it, and `_SOLE` gone. A slot excluding `_BROAD` names
+    `_DETAIL` on the elected shape, drops `_SOLE`, and keeps `_PINNED` as candidacy stamps
+    it for a part excluding `_BROAD`: with `_DETAIL` alone and the codes its rows hold, to
+    be named under its own bindings when it is walked."""
+    unnamed = [
+        dataclasses.replace(
+            _derived_shape(five_tuple),
+            declared_roles=_DONOR_RECIPIENT,
+            optional_roles=frozenset({"financingRecipient"}),
+        )
+        for five_tuple in (_SHARED, _PINNED, _SOLE)
+    ]
+    shapes = _dataset_candidates(unnamed, None, frozenset())
+    state = _repair_state(shapes[0], _PLACES["donor-recipient"], {"sector": "C"})
+    state.capped_shapes = list(shapes)
+    state.bind_result.also_plausible = [1, 2]
+    drafted = SlotBindingDraft(
+        axis="source", property_dcid="provenance", kind="value", value_dcids=[slot]
+    )
+    state.bind_result.bindings = _offered_source_drafts(
+        [*state.bind_result.bindings, drafted], shapes[0]
+    )
+
+    assert asyncio.run(_phase_vet_election(state)) is None
+
+    named = _dataset_candidates(unnamed, _DETAIL, frozenset())
+    excluding = _dataset_candidates(unnamed, None, frozenset({_BROAD}))
+    assert state.capped_shapes == (named if slot == _DETAIL else [named[0], excluding[1]])
+    assert state.bind_result.chosen_shape_index == 0
+    assert state.bind_result.also_plausible == [1]
+    assert state.shape_draft is state.capped_shapes[0]
+
+
+@pytest.mark.parametrize("excluded", [True, False], ids=["excluded", "not-excluded"])
+def test_an_alternate_under_a_slot_exclusion_mints_the_identity_a_fresh_question_mints(
+    index, excluded
+):
+    """Bind elects `_PINNED` and nominates `_SHARED` beside it, and the source slot excludes
+    `_BROAD`. With no bindings, `_DETAIL` would serve `_SHARED` to a donor-and-recipient
+    question once `_BROAD` is out, but the alternate's representative `donors_a` binds
+    sector A, which no `_DETAIL` row holds, so `_DONORS` serves it. The walked alternate
+    names `_DONORS` and mints the identity a fresh question electing `_SHARED` under the
+    same exclusion and bindings mints. Without the exclusion it names no table, as the
+    plain question does."""
+    roled = [
+        dataclasses.replace(
+            _derived_shape(five_tuple),
+            declared_roles=_DONOR_RECIPIENT,
+            optional_roles=frozenset({"financingRecipient"}),
+        )
+        for five_tuple in (_PINNED, _SHARED)
+    ]
+    pinned, shared = _dataset_candidates(roled, None, frozenset())
+    shared = dataclasses.replace(
+        shared,
+        sv_arc_facts={
+            row.dcid: _arcs(row)
+            for row in _ROWS
+            if (row.population_type, row.measured_property) == _SHARED
+        },
+    )
+    state = _repair_state(pinned, _PLACES["donor-recipient"], {})
+    state.capped_shapes = [pinned, shared]
+    state.bind_result.also_plausible = [1]
+    if excluded:
+        drafted = SlotBindingDraft(
+            axis="source", property_dcid="provenance", kind="value", value_dcids=[_excluded(_BROAD)]
+        )
+        state.bind_result.bindings = _offered_source_drafts([drafted], pinned)
+    assert asyncio.run(_phase_vet_election(state)) is None
+    alternate = state.capped_shapes[1]
+    roles = bind_place_roles(state, alternate, places=capped_place_dcids(state)[0])
+    assert isinstance(roles, PlaceRoles)
+
+    walked = walk_alternate(
+        alternate,
+        roles,
+        "donors_a",
+        graph=cast(EngineGraphClient, None),
+        excluded=state.excluded_datasets,
+    )
+
+    assert walked is not None
+    model = {"basis": "G", "flow": "F1", "sector": "A"}
+    outcome = _minted(walked.shape, list(walked.bindings), "donor-recipient")
+    fresh = (
+        _slot_resolve(_SHARED, _excluded(_BROAD), "donor-recipient", model)
+        if excluded
+        else _first_resolve(_SHARED, None, "donor-recipient", model)
+    )
+    assert isinstance(fresh, Outcome)
+    assert walked.shape.named_dataset == (_DONORS if excluded else None)
+    assert outcome.spec_id == fresh.spec_id
+
+
+@pytest.mark.parametrize(
+    ("slot", "refused"),
+    [(_excluded(_BROAD), [_BROAD]), (_BESIDE, None)],
+    ids=["excluded-none-left", "opt-in-named"],
+)
+def test_a_source_slot_that_leaves_no_table_refuses_naming_the_excluded_table(
+    monkeypatch, slot, refused
+):
+    """On a family `_BROAD` and the opt-in `_BESIDE` publish, excluding `_BROAD`
+    leaves no table an unnamed part may answer from, so the part refuses
+    `qualifier_not_bound` naming `_BROAD`. Naming `_BESIDE` answers from it."""
+    _use_index(monkeypatch, _index(rows=_SLOTTED_ROWS))
+
+    outcome = _slot_resolve(
+        _SLOTTED, slot, "donor-recipient", {"sector": "A"}, index_rows=_SLOTTED_ROWS
+    )
+
+    if refused is None:
+        assert isinstance(outcome, Outcome)
+        assert outcome.elected == _BESIDE
+        assert outcome.members == {
+            "slotted_beside": ElectedDataset(provenance=_BESIDE, member_provenances=(_BESIDE,))
+        }
+    else:
+        assert isinstance(outcome, RegionResult)
+        assert outcome.no_data_reason == "qualifier_not_bound"
+        assert [[ref.dcid for ref in record.named] for record in outcome.unbound_qualifiers] == [
+            refused
+        ]
+
+
+@pytest.mark.parametrize(
+    ("slot", "sector", "forced", "refused"),
+    [
+        (_DETAIL, "A", False, True),
+        (_BESIDE, "B", False, True),
+        (_DETAIL, "A", True, True),
+        (_DETAIL, "D", False, False),
+        (_DETAIL, "D", True, False),
+    ],
+    ids=[
+        "named-without-the-code",
+        "opt-in-named-without-the-code",
+        "named-without-the-forced-code",
+        "named-with-the-code",
+        "named-with-the-forced-code",
+    ],
+)
+def test_a_source_slot_naming_a_table_refuses_a_bound_code_the_table_lacks(
+    index, slot, sector, forced, refused
+):
+    """The unnamed part's menu offers every default publisher's sectors, so the model can
+    bind sector A or B beside a slot naming `_DETAIL`, or B beside one naming the opt-in
+    `_BESIDE`, though no row of the named table holds it. The part refuses
+    `qualifier_not_bound`, naming the sector, as a part naming the table at the seam
+    refuses the term before bind. A sector the query text names, which the engine forces
+    into the bindings after the model's (`_force_qualifier_bindings`), refuses alike. A
+    sector the named table holds binds."""
+    match = QualifierMatch(
+        code_system="sector", code_dcid=sector, label=sector, source="code", matched_text=sector
+    )
+    outcome = _slot_resolve(
+        _SHARED,
+        slot,
+        "donor-recipient",
+        {} if forced else {"sector": sector},
+        admitted=(match,) if forced else (),
+    )
+
+    if refused:
+        assert isinstance(outcome, RegionResult)
+        assert outcome.no_data_reason == "qualifier_not_bound"
+        assert [[ref.dcid for ref in record.named] for record in outcome.unbound_qualifiers] == [
+            [sector]
+        ]
+    else:
+        assert isinstance(outcome, Outcome)
+        assert outcome.elected == slot
+
+
+@pytest.mark.parametrize(
+    ("slot", "sector", "elected"),
+    [
+        (_excluded(_BROAD), "A", _DONORS),
+        (_excluded(_BROAD), "C", _DETAIL),
+        (_excluded(_DETAIL), "D", None),
+    ],
+    ids=["excluded-broad-sector-a", "excluded-broad-sector-c", "excluded-detail-sector-d"],
+)
+def test_an_exclusion_reads_a_forced_code_as_it_reads_a_drafted_one(index, slot, sector, elected):
+    """A sector the query text names reaches the bindings as a forced match
+    (`_force_qualifier_bindings`), and the exclusion reads it as it reads the same sector
+    the model drafts. Once `_BROAD` is out, sector A, which `_DETAIL` lacks, names
+    `_DONORS`, and the shared sector C names `_DETAIL`. Once `_DETAIL` is out, no remaining
+    table holds sector D, so the part refuses `qualifier_not_bound` naming the sector and
+    never answers from the excluded table."""
+    match = QualifierMatch(
+        code_system="sector", code_dcid=sector, label=sector, source="code", matched_text=sector
+    )
+
+    drafted = _slot_resolve(_SHARED, slot, "donor-recipient", {"sector": sector})
+    forced = _slot_resolve(_SHARED, slot, "donor-recipient", {}, admitted=(match,))
+
+    for outcome in (drafted, forced):
+        if elected is None:
+            assert isinstance(outcome, RegionResult)
+            assert outcome.no_data_reason == "qualifier_not_bound"
+            assert [
+                [ref.dcid for ref in record.named] for record in outcome.unbound_qualifiers
+            ] == [[sector]]
+        else:
+            assert isinstance(outcome, Outcome)
+            assert outcome.elected == elected
+            assert outcome.shape is not None
+            assert outcome.shape.named_dataset == elected
+    if elected is not None:
+        assert isinstance(drafted, Outcome)
+        assert isinstance(forced, Outcome)
+        assert forced.spec_id == drafted.spec_id
+
+
+@pytest.mark.parametrize(
+    ("excluded", "unheld"),
+    [(frozenset(), []), (frozenset({_DETAIL}), [["D"]])],
+    ids=["nothing-excluded", "excluded-detail"],
+)
+def test_the_code_check_reads_the_part_s_tables_less_the_excluded_ones(index, excluded, unheld):
+    """Only `_DETAIL` holds sector D on `_SHARED`. The unnamed part's shape lists every
+    default publisher, so the check holds sector D, unless the part excludes `_DETAIL`."""
+    (shape,) = _dataset_candidates([_derived_shape(_SHARED)], None, frozenset())
+    sector_d = SlotBindingDraft(axis="how", property_dcid="sector", kind="value", value_dcids=["D"])
+
+    refused = _unheld_bound_codes([sector_d], shape, excluded=excluded)
+
+    assert [[ref.dcid for ref in record.named] for record in refused] == unheld
 
 
 @pytest.mark.parametrize(
@@ -827,7 +1403,7 @@ def test_a_named_part_refuses_a_code_only_another_table_holds_before_bind(
     state = _repair_state(_derived_shape(_SHARED), {}, {})
     state.variable = variable
     state.shapes_found = [_derived_shape(_SHARED)]
-    monkeypatch.setattr(phase_rank_bind_module, "_read_mention", lambda _q: _mention(named))
+    state.named_dataset = named
     monkeypatch.setattr(phase_rank_bind_module, "_record_shape_step", _no_record)
 
     result = asyncio.run(_phase_prune_and_rank(state))
@@ -910,7 +1486,7 @@ def test_reversing_the_ranks_turns_the_rank_decided_cells_red(monkeypatch):
 
 def test_treating_every_dataset_as_not_opt_in_turns_the_unnamed_cells_red(monkeypatch):
     """Every unnamed part on the shared five-tuple would answer from `_BESIDE`'s rows too,
-    and an unnamed part would keep the five-tuple only `_ALONE` publishes."""
+    and the shape only `_ALONE` publishes would name no dataset."""
     _use_index(monkeypatch, _index(opt_in=frozenset()))
 
     red = _red_cells()
@@ -949,10 +1525,18 @@ _PLACES: dict[str, dict[str, RoleAxis]] = {
 _DCIDS = {"Germany": "country/DEU", "Kenya": "country/KEN"}
 
 
-def _flow_shape(five_tuple: tuple[str, str], *, roles: tuple[str, ...]) -> ShapeDraft:
-    """The unnamed part's candidate shape on `five_tuple`, declaring `roles`, of which the
-    recipient is optional."""
-    (shape,) = _dataset_candidates([_derived_shape(five_tuple)], None)
+def _flow_shape(
+    five_tuple: tuple[str, str],
+    *,
+    roles: tuple[str, ...],
+    index_rows: tuple[StatVarRow, ...] = _ROWS,
+    source: str | None = None,
+) -> ShapeDraft:
+    """The candidate shape of a part naming `source`, or none, on `five_tuple` among
+    `index_rows`, declaring `roles`, of which the recipient is optional."""
+    (shape,) = _dataset_candidates(
+        [_derived_shape(five_tuple, index_rows=index_rows)], source, frozenset()
+    )
     return dataclasses.replace(
         shape,
         declared_roles=roles,
@@ -989,7 +1573,6 @@ def _repair_state(
         source_text=None,
         materialise_graph=None,
         materialise_sdmx=None,
-        pipeline_steps=[],
         timing={},
         warnings=[],
         rcl=Recall(
@@ -1074,7 +1657,7 @@ def test_the_repair_keeps_the_models_pins_before_the_qualifier_dispositions(
         role_keys = set()
     else:
         assert isinstance(bound, PlaceRoles)
-        assert entity_role_keys(shape, bound.resolved_entities) == role_keys
+        assert entity_role_keys(bound.resolved_entities, open_axes=()).bound == role_keys
 
     bindings = _repair(monkeypatch, state)
 
@@ -1142,7 +1725,9 @@ def test_the_answer_reads_the_measure_partition_of_the_dataset_the_role_keys_ele
     bindings = _repair(monkeypatch, state, _NETTING)
     roles = bind_place_roles(state, shape, places=capped_place_dcids(state)[0])
     assert isinstance(roles, PlaceRoles)
-    query = shape_query(shape, bindings, entity_role_keys(shape, roles.resolved_entities))
+    query = shape_query(
+        shape, bindings, entity_role_keys(roles.resolved_entities, open_axes=()).bound
+    )
     assert query.role_keys == {"origin"}
     state.shape_draft = elected_role_class_shape(shape, query).value
     state.place = dataclasses.replace(empty_place_context(), roles=roles)
@@ -1209,6 +1794,7 @@ def _menus(outcome: Outcome) -> dict[str, set[str]]:
         sorted(outcome.members),
         {_DONOR_PLACE: "origin"},
         cast(EngineGraphClient, _Labels()),
+        open_axes=frozenset(),
     )
     slot_options = grounded[7]
     return {
@@ -1297,6 +1883,7 @@ def _option_points(
         place_dcids=[_DONOR_PLACE],
         include_option_coverage=True,
         facets_pinned=False,
+        open_axes=frozenset(),
     )
     assert warning is None
     return {
@@ -1309,22 +1896,36 @@ def _option_points(
     }
 
 
-def test_the_donor_total_offers_the_menus_of_the_table_a_bound_option_elects(index):
-    """An unnamed donor total elects `_TOTALS`, whose rows carry no sector. Its answer still
-    offers the sector menu, since `_BROAD` serves once a sector is bound."""
-    outcome = _first_resolve(_DRILLED, None, "donor", {})
+def test_a_donor_total_and_its_breakdowns_are_two_families(index):
+    """`_TOTALS` carries no sector on `_DRILLED`, so its rows form a family apart from
+    `_BROAD`'s breakdowns by sector and channel (`CodeIndex.family_of`), and derive builds a
+    shape of each. The donor total's shape elects `_TOTALS` and offers the channel menu
+    alone; the breakdowns' shape elects `_BROAD` and offers channel and sector. `shared_k3`,
+    which both tables record, is a member of each family."""
+    total = _first_resolve(_DRILLED, None, "donor", {}, family_of=_TOTALS)
 
-    assert outcome.elected == _TOTALS
-    assert set(outcome.members) == {"total", "shared_k3"}
-    assert _menus(outcome) == {"channel": set(_CODES["channel"]), "sector": set(_CODES["sector"])}
+    assert total.elected == _TOTALS
+    assert set(total.members) == {"total", "shared_k3"}
+    assert _menus(total) == {"channel": set(_CODES["channel"])}
+
+    breakdowns = _first_resolve(_DRILLED, None, "donor", {}, family_of=_BROAD)
+
+    assert breakdowns.elected == _BROAD
+    assert "shared_k3" in breakdowns.members
+    assert _menus(breakdowns) == {
+        "channel": set(_CODES["channel"]),
+        "sector": set(_CODES["sector"]),
+    }
 
 
 def test_a_named_donor_total_offers_no_menu_its_table_does_not_carry(index):
-    """Named, `_TOTALS` serves every value bound, and its rows carry channel alone."""
-    outcome = _first_resolve(_DRILLED, _TOTALS, "donor", {})
+    """Named, `_TOTALS` serves its own family, whose rows carry channel alone. A part naming
+    `_TOTALS` keeps no shape of `_BROAD`'s family, which `_TOTALS` does not publish."""
+    outcome = _first_resolve(_DRILLED, _TOTALS, "donor", {}, family_of=_TOTALS)
 
     assert outcome.elected == _TOTALS
     assert _menus(outcome) == {"channel": set(_CODES["channel"])}
+    assert _first_resolve(_DRILLED, _TOTALS, "donor", {}, family_of=_BROAD).datasets is None
 
 
 class _EchoLabels:
@@ -1335,16 +1936,22 @@ class _EchoLabels:
 
 
 @pytest.mark.parametrize(
-    ("source", "menus"),
-    [(None, {"channel", "sector"}), (_TOTALS, {"channel"})],
-    ids=["unnamed", "named"],
+    ("source", "family_of", "menus"),
+    [
+        (None, _BROAD, {"channel", "sector"}),
+        (None, _TOTALS, {"channel"}),
+        (_TOTALS, _TOTALS, {"channel"}),
+    ],
+    ids=["unnamed-breakdowns", "unnamed-total", "named-total"],
 )
 def test_the_shape_event_offers_the_menus_of_the_datasets_the_part_answers_from(
-    index, source, menus
+    index, source, family_of, menus
 ):
-    """Before bind, a part offers a menu when the datasets it may answer from carry the
-    slot's property."""
-    (shape,) = _dataset_candidates([_derived_shape(_DRILLED)], _mention(source))
+    """Before bind, a part offers a menu when the datasets of its shape's family it may
+    answer from carry the slot's property."""
+    (shape,) = _dataset_candidates(
+        [_derived_shape(_DRILLED, family_of=family_of)], source, frozenset()
+    )
 
     event = asyncio.run(
         _build_shape_event(shape, variable_index=0, graph=cast(EngineGraphClient, _EchoLabels()))
@@ -1358,24 +1965,23 @@ _TOTALS_K1 = _row("totals_k1", {"channel": "K1"}, _TOTALS, roles=_DONOR, five_tu
 
 
 @pytest.mark.parametrize(
-    ("extra", "k1"),
-    [((), 2), ((_TOTALS_K1,), 1)],
-    ids=["broad-serves-k1", "totals-serves-k1"],
+    "extra",
+    [(), (_TOTALS_K1,)],
+    ids=["broad-serves-k1", "totals-records-k1-in-its-own-family"],
 )
-def test_each_option_counts_the_facets_of_the_table_its_election_serves(monkeypatch, extra, k1):
-    """Each option of the donor total counts only the points of the table that serves it
-    once bound, `_BROAD`. Channel K3, which both tables record, counts `_BROAD`'s too, where
-    the answer's own family serves it from `_TOTALS`. Where `_TOTALS` records its own K1
-    row, K1 elects `_TOTALS` with that row alone, and `drill_a`, recalled with K1 but
-    outside the family, counts nothing."""
+def test_each_option_counts_the_facets_of_the_table_its_election_serves(monkeypatch, extra):
+    """Each option of the breakdowns' answer counts only the points of the table that serves
+    it once bound, `_BROAD`. Channel K3, which both tables record, counts `_BROAD`'s points.
+    A `_TOTALS` row of K1 belongs to the totals' own family, so the K1 option still elects
+    `_BROAD` and counts `drill_a` alone."""
     rows = (*_ROWS, *extra)
     _use_index(monkeypatch, _index(rows=rows))
-    outcome = _first_resolve(_DRILLED, None, "donor", {})
+    outcome = _first_resolve(_DRILLED, None, "donor", {}, family_of=_BROAD)
 
     assert _option_points(
         outcome, rows=rows, points={**_DRILLED_POINTS, "totals_k1": {_TOTALS: 1}}
     ) == {
-        ("channel", "K1"): k1,
+        ("channel", "K1"): 2,
         ("channel", "K2"): 4,
         ("channel", "K3"): 3,
         ("sector", "A"): 2,
@@ -1464,9 +2070,10 @@ def test_an_option_another_table_serves_under_another_pinned_value_elects_that_t
 
 
 # `_BROAD` and `_DETAIL` both publish `collide_shared`, a donor row. `_BROAD` alone
-# publishes `collide_broad`, a donor-and-recipient row of sector A, so a pick of flow F1
-# elects `_BROAD` and a pick of sector A elects `_DETAIL`, whose one role class places the
-# donor exactly.
+# publishes `collide_broad`, a row of sector A that places the donor under another role
+# beside a recipient. Neither role set holds the other, so `_BROAD`'s election of sector A
+# ties: a pick of flow F1 elects `_BROAD` and a pick of sector A elects `_DETAIL`, whose
+# one role class places the donor exactly.
 _COLLIDE = ("TestFlow", "collideAmount")
 _COLLIDE_ROWS = (
     _row(
@@ -1477,7 +2084,13 @@ _COLLIDE_ROWS = (
         roles=_DONOR,
         five_tuple=_COLLIDE,
     ),
-    _row("collide_broad", {"sector": "A"}, _BROAD, five_tuple=_COLLIDE),
+    _row(
+        "collide_broad",
+        {"sector": "A"},
+        _BROAD,
+        roles=("creditor", "financingRecipient"),
+        five_tuple=_COLLIDE,
+    ),
 )
 # The rows each dataset's facets hold of any series.
 _DATASET_ROWS = {_BROAD: 1, _DETAIL: 2}
@@ -1491,6 +2104,7 @@ class _DatasetRowsFilter:
     probe_entities: Mapping[str, list[str]] = dataclasses.field(
         default_factory=lambda: {"financingProvider": [_DONOR_PLACE]}
     )
+    open_axes: frozenset[RoleAxis] = frozenset()
 
     def served(self, member_facts: Mapping[str, MemberFacts]) -> dict:
         return {
@@ -1584,7 +2198,8 @@ _GUARDED = ("TestFlow", "guardAmount")
 
 
 # The elected shape reads sector alone. On its real-terms sibling `_BROAD` reports each
-# sector by channel, and a second table reports sector alone.
+# sector by channel, and a second table of the same family, which carries channel too,
+# reports sector A alone.
 def _guard_rows(second: str) -> tuple[StatVarRow, ...]:
     return (
         _row("guard_a", {"sector": "A"}, _BROAD, five_tuple=_GUARDED),
@@ -1596,6 +2211,9 @@ def _guard_rows(second: str) -> tuple[StatVarRow, ...]:
                     "guard_real_a_k1", {"channel": "K1", "sector": "A"}, _BROAD, five_tuple=_GUARDED
                 ),
                 _row("guard_real_a", {"sector": "A"}, second, five_tuple=_GUARDED),
+                _row(
+                    "guard_real_b_k2", {"channel": "K2", "sector": "B"}, second, five_tuple=_GUARDED
+                ),
             )
         ),
     )
@@ -1634,10 +2252,16 @@ def test_an_alternate_is_judged_by_the_rows_of_the_table_that_serves_it(
     refuses the alternate. Judged by every candidate table's rows, the second table's
     sector-only row would pass and admit it."""
     _use_index(monkeypatch, _index(rows=_ROWS + _guard_rows(second)))
-    elected, alternate = _dataset_candidates([_guard_shape(None), _guard_shape("RealValue")], None)
+    elected, alternate = _dataset_candidates(
+        [_guard_shape(None), _guard_shape("RealValue")], None, frozenset()
+    )
     assert alternate.datasets == stamped
 
-    reason = inadmissible_reason(query_pins("guard amount"), elected, alternate)
+    reason = inadmissible_reason(
+        query_pins("guard amount", quantity=quantity_requirement(["guard amount"])),
+        elected,
+        alternate,
+    )
 
     assert reason is not None
     assert reason.startswith("specialisation:channel")
@@ -1693,12 +2317,55 @@ def test_the_guard_judges_alternates_against_the_family_the_answer_serves(
     assert outcome.elected == _DETAIL
     bindings = [binding.model_copy(update={"evidence": evidence}) for binding in outcome.bindings]
     judge = AlternateJudge(
-        query_pins("amount", bindings=bindings), outcome.shape, role_keys=lambda _s: _FLOW_KEYS
+        query_pins("amount", quantity=quantity_requirement(["amount"]), bindings=bindings),
+        outcome.shape,
+        role_keys=lambda _s: RoleKeys(bound=_FLOW_KEYS),
     )
 
     reason = judge.verdict(_real_terms_alternate(constraints)).reason
 
     assert {member.dcid for member in judge.served} == set(outcome.members)
+    if refusal is None:
+        assert reason is None
+    else:
+        assert reason is not None
+        assert reason.startswith(refusal)
+
+
+@pytest.mark.parametrize(
+    ("disjoint", "refusal", "named"),
+    [(True, None, {"A", "A2"}), (False, "concept:sector", {"A"})],
+)
+def test_the_guard_widens_an_elected_code_as_its_binding_reads(
+    monkeypatch, disjoint, refusal, named
+):
+    """Sector A2 is a child of A, which `broad_a` holds. Where parent rows are apart from
+    their children's, A's reading spans A2 and an alternate on A2 is that reading. Where a
+    parent row is its children's total, A names A alone, and A2 is another concept. A
+    query naming A pins the same values."""
+    index = _index(
+        codes={**_CODES, "sector": (*_CODES["sector"], "A2")},
+        parents={"A2": "A"},
+        disjoint=disjoint,
+    )
+    _use_index(monkeypatch, index)
+    outcome = _first_resolve(_SHARED, None, "donor-recipient", {"sector": "A"})
+    assert outcome.shape is not None
+    judge = AlternateJudge(
+        query_pins("amount", quantity=quantity_requirement(["amount"]), bindings=outcome.bindings),
+        outcome.shape,
+        role_keys=lambda _s: RoleKeys(bound=_FLOW_KEYS),
+    )
+
+    reason = judge.verdict(_real_terms_alternate({"sector": "A2"})).reason
+
+    assert {member.dcid for member in judge.served} == {"broad_a"}
+    match = QualifierMatch(
+        code_system="sector", code_dcid="A", label="A", source="label", matched_text="A"
+    )
+    assert query_pins(
+        "amount", quantity=quantity_requirement(["amount"]), qualifier_matches=[match]
+    ).constraint_matches == {"sector": frozenset(named)}
     if refusal is None:
         assert reason is None
     else:
@@ -1782,7 +2449,7 @@ def test_every_binding_of_the_pins_that_elects_one_family_reaches_one_spec_id(mo
         SlotBindingDraft(axis="how", property_dcid=prop, kind="value", value_dcids=[value])
         for prop, value in bound.items()
     ] + [source_binding(source)]
-    answered = canonical_pin_bindings(shape, drafted, ())
+    answered = canonical_pin_bindings(shape, drafted, RoleKeys())
 
     assert family.provenance == _PAIRED
     assert [row.dcid for row in family.rows] == ["two_paired_a", "two_paired_b"]
@@ -1863,25 +2530,22 @@ def _canonical_query(index: CodeIndex, query: FamilyQuery) -> FamilyQuery:
 
 
 def test_the_canonical_form_depends_only_on_the_elected_family():
-    """Over every five-tuple of the fixture index, every binding of its properties, the named
-    datasets and three role-key sets, the canonical query elects the query's family and is
-    its own canonical form, and every variant that binds another subset of the elected
-    dataset's invariants and elects the same family has the same canonical form."""
+    """Over every index family of the fixture index, every binding of its properties, the
+    datasets publishing it and three role-key sets, the canonical query elects the query's
+    family and is its own canonical form, and every variant that binds another subset of
+    the elected dataset's invariants and elects the same family has the same canonical
+    form."""
     index = _index(rows=_ROWS + _TWO_PIN_ROWS, ranks=_TWO_PIN_RANKS)
     variants = 0
-    for population_type, measured_property in sorted(
-        {(row.population_type, row.measured_property) for row in index.statvars}
+    for five_tuple, index_family in sorted(
+        (
+            (five_tuple, found)
+            for five_tuple, families in index.families_by_five_tuple.items()
+            for found in families
+        ),
+        key=lambda item: (item[0].measured_property or "", item[1].datasets),
     ):
-        five_tuple = FiveTuple(
-            population_type=population_type,
-            measured_property=measured_property,
-            stat_type="measuredValue",
-        )
-        rows = [
-            row
-            for row in index.statvars
-            if (row.population_type, row.measured_property) == (population_type, measured_property)
-        ]
+        rows = index_family.rows
         values = {
             prop: sorted(
                 {
@@ -1892,7 +2556,7 @@ def test_the_canonical_form_depends_only_on_the_elected_family():
             )
             for prop in sorted({prop for row in rows for prop in row.constraint_properties})
         }
-        sources = (None, *index.datasets_by_five_tuple.get(five_tuple, ()))
+        sources = (None, *index_family.datasets)
         for choice, source, role_keys in itertools.product(
             itertools.product(*([None, *found] for found in values.values())),
             sources,
@@ -2008,7 +2672,9 @@ def test_the_wire_slots_and_the_identity_agree_when_the_role_class_election_rebi
 
     bound = bind_place_roles(state, shape)
     assert isinstance(bound, PlaceRoles)
-    role_query = shape_query(shape, bindings, entity_role_keys(shape, bound.resolved_entities))
+    role_query = shape_query(
+        shape, bindings, entity_role_keys(bound.resolved_entities, open_axes=()).bound
+    )
     elected = elected_role_class_shape(shape, role_query).value
     rebound = bound_after_election(state, shape, bound, elected)
     assert isinstance(rebound, PlaceRoles)
@@ -2039,6 +2705,7 @@ def test_the_wire_slots_and_the_identity_agree_when_the_role_class_election_rebi
         ),
         slots,
         entities=[],
+        open_roles=(),
     )
 
     wire = {
@@ -2055,7 +2722,7 @@ def test_a_constant_no_serving_dataset_declares_stays_in_the_bind_menu_and_the_i
     does not declare it, since its other rows hold H. The bind menu offers `basis`, and a
     question that binds it keeps it bound in the identity Search mints, so a later export
     that adds `_DETAIL` rows of basis H to the five-tuple still serves basis G alone."""
-    (shape,) = _dataset_candidates([_derived_shape(_PINNED)], _mention(None))
+    (shape,) = _dataset_candidates([_derived_shape(_PINNED)], None, frozenset())
 
     prompt = _build_universal_bind_prompt("pinned amount", [shape])
     outcome = _first_resolve(_PINNED, None, "donor-recipient", {"basis": "G", "flow": "F3"})
@@ -2112,3 +2779,791 @@ def test_a_resubmit_that_changes_the_roles_reaches_the_family_a_fresh_question_r
     assert fresh.elected == elected
     assert resubmitted == fresh.identity
     _assert_doors_agree(dataclasses.replace(fresh, identity=resubmitted), index)
+
+
+# ---------------------------------------------------------------------------
+# Role axes: each dataset of a family declares its own
+# ---------------------------------------------------------------------------
+
+_PARTIAL = "provenance/PartialLedger"
+_FULL = "provenance/FullLedger"
+
+# `_PARTIAL` ranks first and publishes a donor-only total beside one donor-and-recipient
+# flow, as DAC1's provider totals hold two flows to the West Bank and Gaza Strip. `_FULL`
+# publishes every row for donor and recipient. Both carry `sector`, so they are one family.
+_PARTIAL_ROWS = (
+    _row("partial_a", {"sector": "A"}, _PARTIAL, roles=_DONOR),
+    _row("partial_b", {"sector": "B"}, _PARTIAL),
+)
+_FULL_ROWS = (
+    _row("full_a", {"sector": "A"}, _FULL),
+    _row("full_b", {"sector": "B"}, _FULL),
+)
+
+
+# Rows no dataset publishes: an index export whose five-tuple has no coverage row.
+_UNPUBLISHED_ROWS = (
+    _row("unpublished_a", {"sector": "A"}),
+    _row("unpublished_b", {"sector": "B"}),
+)
+
+_THIRD = "provenance/ThirdLedger"
+_THIRD_ROWS = (_row("third_a", {"sector": "A"}, _THIRD),)
+
+
+def _axis_index(
+    monkeypatch: pytest.MonkeyPatch,
+    rows: tuple[StatVarRow, ...],
+    *,
+    opt_in: frozenset[str] = frozenset(),
+) -> CodeIndex:
+    index = _index(rows=rows, ranks={_PARTIAL: 0, _FULL: 1, _THIRD: 2}, opt_in=opt_in)
+    _use_index(monkeypatch, index)
+    return index
+
+
+@pytest.mark.parametrize(
+    ("rows", "named", "lacks"),
+    [
+        (_PARTIAL_ROWS + _FULL_ROWS, None, False),
+        (_PARTIAL_ROWS + _FULL_ROWS, _FULL, False),
+        (_PARTIAL_ROWS + _FULL_ROWS, _PARTIAL, True),
+        (_PARTIAL_ROWS, None, True),
+        (_UNPUBLISHED_ROWS, None, False),
+        (_PARTIAL_ROWS + _UNPUBLISHED_ROWS, None, True),
+    ],
+    ids=[
+        "beside-a-full-publisher",
+        "naming-the-full-publisher",
+        "naming-the-partial-publisher",
+        "partial-publisher-alone",
+        "no-publisher",
+        "partial-publisher-beside-unpublished-rows",
+    ],
+)
+def test_a_shape_declares_the_recipient_when_a_table_the_part_reads_holds_it_on_every_row(
+    monkeypatch, rows, named, lacks
+):
+    """ "aid to Kenya" needs the recipient. `_FULL` holds it on every row, so the unnamed
+    part keeps the shape though `_PARTIAL`'s total lacks it. Alone, `_PARTIAL` holds it on
+    one row only, and the shape lacks it, as DAC1's provider totals do. A part naming
+    `_PARTIAL` reads that table alone (`_dataset_candidates`), so its shape lacks the
+    recipient beside `_FULL`, as the election of its identity finds. A family no dataset
+    publishes declares what its rows hold. Beside `_PARTIAL` those rows serve no part, so
+    the shape lacks the recipient as `_PARTIAL` alone does."""
+    _axis_index(monkeypatch, rows)
+    shape = _flow_shape(_SHARED, roles=_DONOR_RECIPIENT, index_rows=rows, source=named)
+    state = _repair_state(shape, {"Kenya": "destination"}, {})
+
+    assert lacks_query_axis(state, shape) is lacks
+
+
+# `_PARTIAL` and `_FULL` carry `channel` on one row each and `_THIRD` carries `sector`
+# alone, so the first two form one family and `_THIRD` another. A shape of the first
+# family that keeps the `sector` slot alone selects `_THIRD`'s family by its keys.
+_SPLIT_ROWS = (
+    _row("partial_a", {"sector": "A"}, _PARTIAL),
+    _row("partial_k", {"sector": "A", "channel": "K1"}, _PARTIAL),
+    _row("full_a", {"sector": "A"}, _FULL),
+    _row("full_b", {"sector": "B"}, _FULL),
+    _row("full_k", {"sector": "B", "channel": "K1"}, _FULL),
+    _row("third_a", {"sector": "A"}, _THIRD),
+    _row("third_b", {"sector": "B"}, _THIRD),
+)
+# The same families, where `_PARTIAL` holds donor totals and `_FULL` each recipient.
+_SPLIT_TOTAL_ROWS = (
+    _row("partial_a", {"sector": "A"}, _PARTIAL, roles=_DONOR),
+    _row("partial_k", {"sector": "A", "channel": "K1"}, _PARTIAL, roles=_DONOR),
+    _row("full_a", {"sector": "A"}, _FULL),
+    _row("full_k", {"sector": "A", "channel": "K1"}, _FULL),
+    _row("third_a", {"sector": "A"}, _THIRD),
+)
+_THIRD_TOTAL = _row("third_total", {"sector": "A"}, _THIRD, roles=_DONOR)
+_PARTIAL_TOTAL = _row("partial_total", {"sector": "A"}, _PARTIAL, roles=_DONOR)
+# One family, since every row carries `channel`. `_PARTIAL` holds sector A and channel K2
+# on separate rows, and `_FULL` alone holds them on one.
+_JOINT_ROWS = (
+    _row("partial_a_k1", {"sector": "A", "channel": "K1"}, _PARTIAL),
+    _row("partial_b_k2", {"sector": "B", "channel": "K2"}, _PARTIAL),
+    _row("full_a_k2", {"sector": "A", "channel": "K2"}, _FULL),
+)
+# The same, where `_PARTIAL` holds sector A on a row with no channel.
+_JOINT_BARE_ROWS = (
+    _row("partial_a", {"sector": "A"}, _PARTIAL),
+    _row("partial_b_k2", {"sector": "B", "channel": "K2"}, _PARTIAL),
+    _row("full_a_k2", {"sector": "A", "channel": "K2"}, _FULL),
+)
+# `_PARTIAL` holds sector A only beside a channel, and `_THIRD`, a family of its own,
+# holds it alone. A shape of `_PARTIAL`'s family that keeps the `sector` slot alone
+# selects `_THIRD`'s family by its keys.
+_OTHER_FAMILY_ROWS = (
+    _row("partial_b", {"sector": "B"}, _PARTIAL),
+    _row("partial_a_k2", {"sector": "A", "channel": "K2"}, _PARTIAL),
+    _row("third_a", {"sector": "A"}, _THIRD),
+    _row("third_b", {"sector": "B"}, _THIRD),
+)
+
+
+@dataclasses.dataclass(frozen=True)
+class NamedPart:
+    """One part on `_SHARED` among `rows`, and the table its identity names and serves."""
+
+    rows: tuple[StatVarRow, ...]
+    sector: str
+    bound: frozenset[str]
+    names: str | None
+    members: frozenset[str]
+    """The members every door serves. Empty for a part no table of its own serves, which
+    refuses (`PartNotServed`)."""
+    open: frozenset[str] = frozenset()
+    excluded: frozenset[str] = frozenset()
+    recorded_in: str | None = None
+    """The row whose family the shape is built from, keeping the `sector` slot alone. A
+    shape with none is derived from the five-tuple's first family."""
+    channel: str | None = None
+    """The channel the part binds beside its sector, if any."""
+    opt_in: frozenset[str] = frozenset()
+
+    @property
+    def codes(self) -> dict[str, str]:
+        return {"sector": self.sector} | ({"channel": self.channel} if self.channel else {})
+
+
+_ROLE_PLACES = {"origin": "country/DEU", "destination": "country/KEN"}
+
+_NAMED_PARTS = {
+    "one-family": NamedPart(
+        rows=_PARTIAL_ROWS + _FULL_ROWS + _THIRD_ROWS,
+        sector="A",
+        bound=frozenset({"destination"}),
+        names=None,
+        members=frozenset({"full_a"}),
+    ),
+    "excluding-the-elected-table": NamedPart(
+        rows=_PARTIAL_ROWS + _FULL_ROWS + _THIRD_ROWS,
+        sector="A",
+        bound=frozenset({"destination"}),
+        excluded=frozenset({_FULL}),
+        names=_THIRD,
+        members=frozenset({"third_a"}),
+    ),
+    "no-table-holds-the-code": NamedPart(
+        rows=_PARTIAL_ROWS + _FULL_ROWS + _THIRD_ROWS,
+        sector="C",
+        bound=frozenset({"destination"}),
+        excluded=frozenset({_FULL}),
+        names=None,
+        members=frozenset(),
+    ),
+    "excluded-table-alone-holds-the-codes-together": NamedPart(
+        rows=_JOINT_ROWS,
+        sector="A",
+        channel="K2",
+        bound=frozenset({"destination"}),
+        excluded=frozenset({_FULL}),
+        names=None,
+        members=frozenset(),
+    ),
+    "excluded-table-alone-holds-the-codes-together-beside-a-bare-row": NamedPart(
+        rows=_JOINT_BARE_ROWS,
+        sector="A",
+        channel="K2",
+        bound=frozenset({"destination"}),
+        excluded=frozenset({_FULL}),
+        names=None,
+        members=frozenset(),
+    ),
+    "keys-select-a-default-family-that-alone-holds-the-code": NamedPart(
+        rows=_OTHER_FAMILY_ROWS,
+        sector="A",
+        bound=frozenset({"destination"}),
+        recorded_in="partial_b",
+        names=None,
+        members=frozenset(),
+    ),
+    "keys-select-an-opt-in-family-that-alone-holds-the-code": NamedPart(
+        rows=_OTHER_FAMILY_ROWS,
+        sector="A",
+        bound=frozenset({"destination"}),
+        recorded_in="partial_b",
+        opt_in=frozenset({_THIRD}),
+        names=None,
+        members=frozenset(),
+    ),
+    "keys-select-another-family": NamedPart(
+        rows=_SPLIT_ROWS,
+        sector="B",
+        bound=frozenset({"destination"}),
+        recorded_in="partial_a",
+        names=_FULL,
+        members=frozenset({"full_b"}),
+    ),
+    "open-role-keys-select-another-family": NamedPart(
+        rows=_SPLIT_TOTAL_ROWS,
+        sector="A",
+        bound=frozenset({"origin"}),
+        open=frozenset({"destination"}),
+        recorded_in="partial_a",
+        names=_FULL,
+        members=frozenset({"full_a"}),
+    ),
+    "open-role-excluding-the-table-that-lists-it": NamedPart(
+        rows=(*_FULL_ROWS, _THIRD_TOTAL),
+        sector="A",
+        bound=frozenset({"origin"}),
+        open=frozenset({"destination"}),
+        excluded=frozenset({_FULL}),
+        names=_THIRD,
+        members=frozenset({"third_total"}),
+    ),
+    "open-role-no-table-lists": NamedPart(
+        rows=(_PARTIAL_TOTAL, _THIRD_TOTAL),
+        sector="A",
+        bound=frozenset({"origin"}),
+        open=frozenset({"destination"}),
+        names=None,
+        members=frozenset({"partial_total"}),
+    ),
+}
+
+
+def _named_part_shape(part: NamedPart) -> ShapeDraft:
+    if part.recorded_in is None:
+        return _derived_shape(_SHARED, index_rows=part.rows)
+    recorded = next(row for row in part.rows if row.dcid == part.recorded_in)
+    shape = _derived_shape(_SHARED, index_rows=part.rows, family_of=recorded.provenances[0])
+    return dataclasses.replace(
+        shape,
+        slot_keys=tuple(key for key in shape.slot_keys if key.property_dcid != "channel"),
+        sv_arc_facts={recorded.dcid: _arcs(recorded)},
+    )
+
+
+def _rows_held(
+    rows: tuple[StatVarRow, ...],
+    tables: tuple[str, ...],
+    keys: frozenset[str],
+    codes: Mapping[str, str],
+) -> set[str]:
+    """The rows of `rows` that one of `tables` publishes, that declare only `keys`, and
+    that hold every code of `codes`: read from the rows themselves, with no election."""
+    return {
+        row.dcid
+        for row in rows
+        if set(row.provenances) & set(tables)
+        and row.constraint_properties.keys() <= keys
+        and all(row.constraint_properties.get(prop) == code for prop, code in codes.items())
+    }
+
+
+@pytest.mark.parametrize("part", _NAMED_PARTS.values(), ids=_NAMED_PARTS.keys())
+def test_the_table_search_serves_is_the_table_the_mint_elects_for_the_minted_identity(
+    monkeypatch, part: NamedPart
+):
+    """Search reads the part's members under the role keys it asks, from the shape as
+    `part_source` names it. The identity it mints states the bound keys, the open keys
+    those members serve and the named table, and the mint resolves it alone. Both read one
+    table of the part's own (`part_datasets`) and the same members, whichever table the
+    part excludes and whichever family its slot keys select. A part none of whose own
+    tables holds a row with its codes together has no such identity and is not served
+    (`PartNotServed`), though a table it excludes, or a table of the family its slot keys
+    select, holds one."""
+    index = _axis_index(monkeypatch, part.rows, opt_in=part.opt_in)
+    shape = _named_part_shape(part)
+    own = part_datasets(shape, None, index, excluded=part.excluded)
+    bindings = [
+        SlotBindingDraft(axis="how", property_dcid=prop, kind="value", value_dcids=[code])
+        for prop, code in part.codes.items()
+    ]
+    keys = frozenset(key.property_dcid for key in shape.slot_keys if key.property_dcid)
+    held = _rows_held(part.rows, own, keys, part.codes)
+    assert bool(held) is bool(part.members)
+
+    if not part.members:
+        with pytest.raises(PartNotServed):
+            part_source(
+                shape,
+                bindings,
+                lambda: RoleKeys(bound=part.bound, open=part.open),
+                excluded=part.excluded,
+            )
+        return
+    named = part_source(
+        shape,
+        bindings,
+        lambda: RoleKeys(bound=part.bound, open=part.open),
+        excluded=part.excluded,
+    )
+
+    assert named == part.names
+    if named is not None:
+        bindings.append(source_binding(named))
+    query = shape_query(shape, bindings, part.bound, open_role_keys=part.open)
+    served, index_sourced = shape_member_facts(shape, query)
+    assert index_sourced
+    assert served.keys() == part.members
+    tables = {dataset.provenance for fact in served.values() if (dataset := fact.read_dataset())}
+    assert tables <= set(own)
+    assert len(tables) == 1
+
+    family = members_module.index_family(index, query)
+    assert family is not None
+    document: dict = {
+        "identity_version": "spec1",
+        "shape": {
+            "kind": "statvar_schema",
+            "population_type": _SHARED[0],
+            "measured_property": _SHARED[1],
+            "stat_type": "measuredValue",
+        },
+        "slots": [
+            {"property": prop, "binding": {"state": "value", "ref": code}}
+            for prop, code in sorted(part.codes.items())
+        ],
+        "entities": {key: [_ROLE_PLACES[key]] for key in sorted(part.bound)},
+        "open_roles": sorted(family.role_keys - part.bound),
+        "requested_window": {"kind": "all"},
+    }
+    if named is not None:
+        document["facets"] = {"provenance": {"state": "value", "ref": named}}
+    minted = _mint(mint_identity(document)[1], index)
+
+    assert minted.keys() == part.members
+    assert {dataset.provenance for dataset in minted.values() if dataset} == tables
+
+
+def _unread_role_keys() -> RoleKeys:
+    raise AssertionError("the role keys decide nothing among fewer than two tables")
+
+
+def test_a_shape_the_index_does_not_carry_names_no_table(monkeypatch):
+    """`_PARTIAL` and `_FULL` publish two families of one five-tuple, and a series keyed
+    on `channel` alone covers no row of either, so the index does not carry its shape
+    though its key selects `_FULL`'s family. No table serves the part, and its identity
+    names none, the elected shape's and a walked alternate's alike."""
+    rows = (
+        _row("partial_a", {"sector": "A"}, _PARTIAL),
+        _row("full_a", {"channel": "K1", "sector": "A"}, _FULL),
+    )
+    index = _axis_index(monkeypatch, rows)
+    unindexed = _row("unindexed", {"channel": "K1"})
+    shape = dataclasses.replace(
+        _derived_shape(_SHARED, index_rows=rows, family_of=_FULL),
+        slot_keys=(SlotKeyDraft(axis="how", property_dcid="channel", label="channel"),),
+        slot_taxonomy={"how:channel": ["K1"]},
+        slot_taxonomy_index_sourced=False,
+        sv_arc_facts={unindexed.dcid: _arcs(unindexed)},
+    )
+    assert shape_datasets(shape, index) == ()
+    assert eligible_datasets(index, shape_query(shape, [], ())) == (_FULL,)
+
+    assert part_source(shape, [], _unread_role_keys) is None
+
+
+def test_the_role_keys_are_not_read_where_one_table_alone_could_serve(monkeypatch):
+    """One table publishes the shape and its slot keys select that family, so the part's
+    identity names none whatever places the part binds, and the place binding is not
+    read."""
+    _axis_index(monkeypatch, _FULL_ROWS)
+    shape = _flow_shape(_SHARED, roles=_DONOR_RECIPIENT, index_rows=_FULL_ROWS)
+
+    assert part_source(shape, [], _unread_role_keys) is None
+
+
+@pytest.mark.parametrize(
+    ("model", "members"),
+    [({}, {"full_a", "full_b"}), ({"sector": "B"}, {"full_b"})],
+    ids=["open", "sector-with-a-partial-flow"],
+)
+def test_a_recipient_question_never_reads_a_publisher_holding_the_recipient_on_some_rows(
+    monkeypatch, model, members
+):
+    """`_PARTIAL` ranks first and its sector B flow holds the recipient, but its total does
+    not, so it does not declare the recipient and `_FULL` serves at every door."""
+    index = _axis_index(monkeypatch, _PARTIAL_ROWS + _FULL_ROWS)
+
+    outcome = _first_resolve(
+        _SHARED, None, "donor-recipient", model, index_rows=_PARTIAL_ROWS + _FULL_ROWS
+    )
+
+    assert outcome.elected == _FULL
+    assert set(outcome.members) == members
+    _assert_doors_agree(outcome, index)
+
+
+# ---------------------------------------------------------------------------
+# A part no table of its own serves
+# ---------------------------------------------------------------------------
+
+# One family of `_SHARED`, since every row carries `channel`. `_BROAD` holds sector A and
+# channel K2 on separate rows, and `_DETAIL` alone holds them on one.
+_JOINT_LEDGER_ROWS = (
+    _row("broad_a_k1", {"sector": "A", "channel": "K1"}, _BROAD),
+    _row("broad_b_k2", {"sector": "B", "channel": "K2"}, _BROAD),
+    _row("detail_a_k2", {"sector": "A", "channel": "K2"}, _DETAIL),
+)
+
+
+def _part_state(
+    shape: ShapeDraft, roles: str, model: Mapping[str, str], *slots: str
+) -> ResolveState:
+    """The state vetting reads for a part electing `shape`, its one candidate, about the
+    entities of `roles`, where the bind model binds `model` and one source draft for each
+    of `slots`, checked as bind checks them (`_offered_source_drafts`)."""
+    state = _repair_state(shape, _PLACES[roles], model)
+    state.capped_shapes = [shape]
+    state.named_dataset = shape.named_dataset
+    drafts = [
+        SlotBindingDraft(
+            axis="source", property_dcid="provenance", kind="value", value_dcids=[slot]
+        )
+        for slot in slots
+    ]
+    state.bind_result.bindings = _offered_source_drafts(
+        [*state.bind_result.bindings, *drafts], shape
+    )
+    return state
+
+
+def _settle(monkeypatch: pytest.MonkeyPatch, state: ResolveState) -> RegionResult | None:
+    """Run vetting and binding repair on `state`, under no measure axis: the refusal of
+    either, or `None` once `state.shape_draft` and `state.bindings` are final."""
+    monkeypatch.setattr(
+        phase_election_module,
+        "get_measure_index",
+        lambda: MeasureIndex(axes=(), values=(), partition_labels=()),
+    )
+    monkeypatch.setattr(phase_election_module, "_resolve_query_qualifiers", lambda _state: [])
+    refused = asyncio.run(_phase_vet_election(state))
+    if refused is not None:
+        return refused
+    return asyncio.run(_phase_repair_bindings(state))
+
+
+def _refused_names(result: RegionResult | None) -> list[list[str]]:
+    assert result is not None
+    assert result.no_data_reason == "qualifier_not_bound"
+    return [[ref.dcid for ref in record.named] for record in result.unbound_qualifiers]
+
+
+@pytest.mark.parametrize(
+    ("rows", "source", "slots", "model", "refused", "elected"),
+    [
+        (_JOINT_LEDGER_ROWS, None, (_excluded(_DETAIL),), {"sector": "A", "channel": "K2"},
+         [[_DETAIL]], None),
+        (_JOINT_LEDGER_ROWS, None, (), {"sector": "A", "channel": "K2"}, None, _DETAIL),
+        (_JOINT_LEDGER_ROWS, None, (_excluded(_DETAIL),), {"sector": "A", "channel": "K1"},
+         None, _BROAD),
+        (_ROWS, None, (_DETAIL,), {"sector": "C", "channel": "K1"}, [[_DETAIL]], None),
+        (_ROWS, _DETAIL, (), {"sector": "C", "channel": "K1"}, [[_DETAIL]], None),
+        (_ROWS, _DETAIL, (), {"sector": "D", "channel": "K1"}, None, _DETAIL),
+    ],
+    ids=[
+        "excluded-table-alone-holds-the-codes-together",
+        "plain-question-reads-that-table",
+        "excluded-table-beside-one-that-holds-them",
+        "slot-named-table-lacks-the-codes-together",
+        "seam-named-table-lacks-the-codes-together",
+        "seam-named-table-holds-them",
+    ],
+)  # fmt: skip
+def test_a_part_none_of_whose_tables_holds_its_codes_together_refuses_naming_the_table(
+    monkeypatch, rows, source, slots, model, refused, elected
+):
+    """Each code the part binds is held by a row of a table it may answer from, so the
+    code check passes (`_unheld_bound_codes`), but no such table holds them on one row.
+    The part refuses `qualifier_not_bound` once its bindings are final: naming the table it
+    excludes, where that table alone holds the row, and the table it names, at the seam or
+    in the source slot, where that table lacks it. It answers from no other table. A part
+    one of whose tables holds the row answers from it."""
+    _use_index(monkeypatch, _index(rows=rows))
+    shape = _flow_shape(_SHARED, roles=_DONOR_RECIPIENT, index_rows=rows, source=source)
+    state = _part_state(shape, "donor-recipient", model, *slots)
+
+    result = _settle(monkeypatch, state)
+
+    if refused is not None:
+        assert _refused_names(result) == refused
+        return
+    assert result is None
+    outcome = _minted(state.shape_draft, state.bindings, "donor-recipient")
+    assert outcome.elected == elected
+    assert outcome.members
+
+
+def test_a_plain_part_with_one_table_is_left_alone_whatever_rows_the_table_holds(monkeypatch):
+    """`_BROAD` alone publishes the family and holds sector A and channel K2 on separate
+    rows. The part names and excludes no table and its keys select no other, so no other
+    table can serve it: settling refuses nothing, names no table, and leaves the shape and
+    the model's bindings as they were. Every door then resolves no member for it."""
+    rows = _JOINT_LEDGER_ROWS[:2]
+    index = _index(rows=rows)
+    _use_index(monkeypatch, index)
+    shape = _flow_shape(_SHARED, roles=_DONOR_RECIPIENT, index_rows=rows)
+    model = {"sector": "A", "channel": "K2"}
+    state = _part_state(shape, "donor-recipient", model)
+    assert eligible_datasets(index, shape_query(shape, [], ())) == shape.datasets == (_BROAD,)
+
+    assert _settle(monkeypatch, state) is None
+
+    assert state.shape_draft is shape
+    assert state.named_dataset is None
+    assert bound_source(state.bindings) is None
+    assert _values(state.bindings) == model
+    assert _minted(shape, state.bindings, "donor-recipient").members == {}
+
+
+def test_a_part_whose_keys_select_another_family_refuses_naming_its_codes(monkeypatch):
+    """`_PARTIAL`'s shape keeping the `sector` slot alone holds sector A on no row, and its
+    key selects the family of `_THIRD`, which holds it. The part names and excludes no
+    table, so it refuses `qualifier_not_bound` naming the sector, and `_THIRD` never
+    answers for it."""
+    part = _NAMED_PARTS["keys-select-a-default-family-that-alone-holds-the-code"]
+    index = _axis_index(monkeypatch, part.rows)
+    (shape,) = _dataset_candidates(
+        [dataclasses.replace(_named_part_shape(part), declared_roles=_DONOR_RECIPIENT)],
+        None,
+        frozenset(),
+    )
+    query = shape_query(shape, [], ())
+    assert eligible_datasets(index, query) == (_THIRD,)
+
+    result = _settle(monkeypatch, _part_state(shape, "donor-recipient", {"sector": "A"}))
+
+    assert _refused_names(result) == [["A"]]
+
+
+def test_an_excluded_table_does_not_serve_after_a_slot_default(monkeypatch):
+    """`sector` declares the default D, which only `_DETAIL` holds. A part excluding
+    `_DETAIL` carries the shape of the tables that remain and the codes their rows hold, so
+    the default finds no D to bind, and the family the final bindings elect is not
+    `_DETAIL`'s."""
+    rows = (
+        _row("a", {"basis": "G", "flow": "F1", "sector": "A"}, _BROAD),
+        _row("b", {"basis": "G", "flow": "F2", "sector": "B"}, _BROAD),
+        _row("d", {"basis": "H", "flow": "F3", "sector": "D"}, _DETAIL),
+        _row("e", {"basis": "H", "flow": "F3", "sector": "E"}, _DETAIL),
+    )
+    default = DeclaredDefault(code="D", when_bound_under=(), when_open=True, note="Default D")
+    index = _index(rows=rows, defaults={"sector": default})
+    _use_index(monkeypatch, index)
+    shape = _flow_shape(_SHARED, roles=_DONOR_RECIPIENT, index_rows=rows)
+    state = _part_state(shape, "donor-recipient", {}, _excluded(_DETAIL))
+    state.bind_result.bindings = [
+        *(
+            SlotBindingDraft(axis="how", property_dcid=key.property_dcid, kind="unbound")
+            for key in shape.slot_keys
+            if key.property_dcid
+        ),
+        *state.bind_result.bindings,
+    ]
+
+    assert asyncio.run(_phase_vet_election(state)) is None
+    assert state.excluded_datasets == {_DETAIL}
+    assert state.shape_draft.datasets == (_BROAD,)
+    bindings = _repair(monkeypatch, state)
+
+    elected = members_module.index_family(
+        index, shape_query(state.shape_draft, bindings, {"origin", "destination"})
+    )
+    assert elected is not None
+    assert elected.provenance == _BROAD
+
+
+@pytest.mark.parametrize(
+    ("slots", "refused", "elected"),
+    [
+        ((_BROAD, _excluded(_BROAD)), [[_BROAD]], None),
+        ((_DETAIL, _BROAD), [[_DETAIL], [_BROAD]], None),
+        ((_excluded(_BROAD), _excluded(_DETAIL)), None, _DONORS),
+        ((_DETAIL, _excluded(_BROAD)), None, _DETAIL),
+    ],
+    ids=["named-and-excluded", "two-named", "two-excluded", "named-beside-another-excluded"],
+)
+def test_source_drafts_that_contradict_each_other_refuse_naming_their_tables(
+    index, monkeypatch, slots, refused, elected
+):
+    """Two source drafts that name two tables, or name and exclude one table, state no
+    table the part can answer from, so the part refuses `qualifier_not_bound` naming the
+    tables they disagree on. Drafts excluding two tables, or naming one and excluding
+    another, agree and are applied."""
+    shape = _flow_shape(_SHARED, roles=_DONOR_RECIPIENT)
+    sector = "A" if elected == _DONORS else "C"
+    state = _part_state(shape, "donor-recipient", {"sector": sector}, *slots)
+
+    result = _settle(monkeypatch, state)
+
+    if refused is not None:
+        assert _refused_names(result) == refused
+        return
+    assert result is None
+    assert _minted(state.shape_draft, state.bindings, "donor-recipient").elected == elected
+
+
+# The property test's worlds: two or three default tables and, in some, an opt-in one,
+# publishing rows of `_SHARED` by sector, by channel, by both or by neither.
+_WORLD_TABLES = (_BROAD, _DETAIL, _DONORS)
+_WORLD_CODES = {"sector": ("A", "B"), "channel": ("K1", "K2")}
+_WORLD_FIVE_TUPLE = FiveTuple(
+    population_type=_SHARED[0], measured_property=_SHARED[1], stat_type="measuredValue"
+)
+
+
+def _world_rows(rng: random.Random) -> tuple[StatVarRow, ...]:
+    tables = rng.sample(_WORLD_TABLES, rng.choice((2, 3)))
+    if rng.random() < 0.35:
+        tables.append(_BESIDE)
+    rows: dict[tuple, StatVarRow] = {}
+    for number in range(rng.randint(3, 7)):
+        constraints = {
+            prop: rng.choice(codes)
+            for prop, codes in _WORLD_CODES.items()
+            if rng.random() < (0.85 if prop == "sector" else 0.4)
+        }
+        published = rng.sample(tables, 2 if rng.random() < 0.15 else 1)
+        roles = rng.choice((_DONOR, _DONOR_RECIPIENT, _DONOR_RECIPIENT))
+        rows[tuple(sorted(constraints.items())), roles, published[0]] = _row(
+            f"r{number}", constraints, *published, roles=roles
+        )
+    return tuple(rows.values())
+
+
+def _world_shapes(
+    index: CodeIndex, rows: tuple[StatVarRow, ...]
+) -> list[tuple[ShapeDraft, tuple[str, ...]]]:
+    """Each family of the world as a shape with every slot key of the family, and with one
+    key left out where a row of the family declares the others alone, beside the tables
+    publishing the family. A shape whose keys the index does not decide is left out, and
+    so is one the index reads as another family's (`shape_datasets`), as it does a shape
+    recorded in a row that tables of two families publish."""
+    shapes: list[tuple[ShapeDraft, tuple[str, ...]]] = []
+    for family in index.families_by_five_tuple[_WORLD_FIVE_TUPLE]:
+        full = dataclasses.replace(
+            _derived_shape(_SHARED, index_rows=rows, family_of=family.datasets[0]),
+            declared_roles=_DONOR_RECIPIENT,
+            optional_roles=frozenset({"financingRecipient"}),
+        )
+        variants = [full]
+        for left_out in sorted(family.properties):
+            kept = family.properties - {left_out}
+            recorded = next(
+                (row for row in family.rows if row.constraint_properties.keys() <= kept), None
+            )
+            if recorded is not None:
+                variants.append(
+                    dataclasses.replace(
+                        full,
+                        slot_keys=tuple(
+                            key for key in full.slot_keys if key.property_dcid != left_out
+                        ),
+                        sv_arc_facts={recorded.dcid: _arcs(recorded)},
+                    )
+                )
+        shapes.extend(
+            (shape, family.datasets)
+            for shape in variants
+            if members_module.index_decides(index, shape_query(shape, [], ()))
+            and shape_datasets(shape, index) == family.datasets
+        )
+    return shapes
+
+
+def test_no_door_serves_a_part_from_a_table_it_excludes_or_does_not_own(monkeypatch):
+    """Over seeded random worlds, each part is one shape, a choice of table (none, one
+    named at the seam, one named in the source slot, one excluded), codes for some of its
+    slots, and places. The rows the part may be served are read from the world itself: the
+    rows of the shape's own tables, the named one alone or the default ones less the
+    excluded, that declare only the shape's keys and hold every code (`_rows_held`).
+
+    Where there are none, the part refuses `qualifier_not_bound` and names what it cannot
+    bind, or `variable_not_resolved` when it names and excludes no table and binds no
+    code. A part that names and excludes no table, has at most one table of its own and
+    whose keys select no other table is the exception: no other table can serve it, so it
+    is not refused, and no door resolves a member for it. A part naming the one opt-in
+    table that alone publishes its shape mints that part's identity and is treated alike.
+    Where there are some, the first answer's members are among them, and the mint,
+    the resubmitted identity and the stated members read the identity back to the same
+    table and members."""
+    rng = random.Random(1165)
+    answered = refused = 0
+    for _world in range(200):
+        rows = _world_rows(rng)
+        with monkeypatch.context() as patched:
+            index = _index(rows=rows)
+            _use_index(patched, index)
+            published = index.datasets_by_five_tuple[_WORLD_FIVE_TUPLE]
+            for _part in range(12):
+                shapes = _world_shapes(index, rows)
+                if not shapes:
+                    break
+                base, family_tables = rng.choice(shapes)
+                kind = rng.choice(("plain", "seam", "slot", "excluded"))
+                table = rng.choice(published)
+                roles = rng.choice(("none", "donor", "donor-recipient"))
+                keys = frozenset(key.property_dcid for key in base.slot_keys if key.property_dcid)
+                model = {
+                    prop: rng.choice(_WORLD_CODES[prop])
+                    for prop in sorted(keys)
+                    if rng.random() < 0.6
+                }
+                candidates = _dataset_candidates(
+                    [base], table if kind == "seam" else None, frozenset()
+                )
+                if not candidates:
+                    continue
+                (shape,) = candidates
+                slot = {"slot": table, "excluded": _excluded(table)}.get(kind)
+                if slot is not None and slot.removeprefix(EXCLUDED_SOURCE_PREFIX) not in (
+                    shape.source_options
+                ):
+                    continue
+                default = tuple(t for t in family_tables if t not in _OPT_IN)
+                if kind in ("seam", "slot"):
+                    own = (table,) if table in family_tables else ()
+                else:
+                    own = tuple(
+                        t for t in default or family_tables if kind != "excluded" or t != table
+                    )
+                held = _rows_held(rows, own, keys, model)
+                state = _part_state(shape, roles, model, *([slot] if slot else []))
+
+                result = _settle(patched, state)
+
+                case = (rows, kind, table, roles, model, sorted(keys))
+                unnamed = default or family_tables
+                selected = eligible_datasets(index, shape_query(base, [], ()))
+                alone = (
+                    len(unnamed) <= 1
+                    and set(selected) <= set(unnamed)
+                    and (
+                        kind == "plain" or (kind == "seam" and table in _OPT_IN and own == unnamed)
+                    )
+                )
+                if not held and alone:
+                    assert result is None, case
+                    assert not _minted(state.shape_draft, state.bindings, roles).members, case
+                    continue
+                if not held:
+                    assert result is not None, case
+                    if kind == "plain" and not model:
+                        assert result.no_data_reason == "variable_not_resolved", case
+                    else:
+                        assert result.no_data_reason == "qualifier_not_bound", case
+                        assert result.unbound_qualifiers, case
+                    refused += 1
+                    continue
+                assert result is None, case
+                outcome = _minted(state.shape_draft, state.bindings, roles)
+                assert outcome.members, case
+                assert outcome.members.keys() <= held, case
+                assert outcome.elected in own, case
+                assert outcome.identity is not None
+                assert _mint(outcome.identity, index) == outcome.members, case
+                resubmitted = canonicalise_identity(outcome.identity)
+                assert identity_dataset(resubmitted) == outcome.elected, case
+                stated = stated_members(outcome.identity, None)
+                assert stated is not None, case
+                assert stated.digest == member_digest(outcome.members), case
+                answered += 1
+    assert answered > 800
+    assert refused > 400

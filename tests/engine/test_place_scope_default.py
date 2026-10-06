@@ -36,6 +36,7 @@ from search.models import CoverageExact, TimeWindow
 from search.render.plan import render_sentence_plan
 from search.render.tokens import sentence_from_plan
 from statvar_members import MemberEnumerator
+from tests.datasets_api._member_bounds import mint_bounds
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import materialise_double_from_obs, member_walk_reader
@@ -145,7 +146,6 @@ def _resolve(
         graph=graph,
         resolver=resolver if resolver is not None else make_resolver(graph),
         llm=llm if llm is not None else _FixedBindLLM(),
-        base_steps=[],
         base_timing={},
         sdmx=sdmx
         if sdmx is not None
@@ -405,7 +405,7 @@ def test_multiple_shapes_yield_candidates_with_probe_derived_has_data():
     spec = result.specs[0]
     assert isinstance(spec.resolved.coverage, CoverageExact)
     assert spec.resolved.coverage.has_data is True
-    assert any(sv.ref == _SV_A for sv in spec.resolved.stat_vars.items)
+    assert any(sv.ref.dcid == _SV_A for sv in spec.resolved.members)
 
 
 def test_multiple_shapes_both_with_real_data_yield_two_real_candidates():
@@ -547,7 +547,6 @@ def test_no_member_asserts_bound_property_reports_no_matching_slice_zero_probes(
             graph=graph,
             resolver=make_resolver(graph),
             llm=_BindFemaleLLM(),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
@@ -783,7 +782,7 @@ def test_a_placeless_relaxation_is_suggested_over_the_default_scope_of_its_own_m
     assert result.no_data_reason == "no_observations"
     suggested = {
         s.relaxation.property_dcid: (
-            [sv.ref for sv in s.resolved.stat_vars.items],
+            [sv.ref.dcid for sv in s.resolved.members],
             [d.label for d in s.resolved.coverage.dimensions or []],
         )
         for s in result.nearest_real or ()
@@ -817,7 +816,7 @@ def _scope_messages(result: RegionResult) -> dict[str | None, str]:
         for spec in (*result.specs, *((result.alternate_match,) if result.alternate_match else ()))
     }
     return {
-        (specs[w.spec_id].resolved.stat_vars.items[0].ref if w.spec_id else None): w.message
+        (specs[w.spec_id].resolved.members[0].ref.dcid if w.spec_id else None): w.message
         for w in result.warnings
         if w.code == PLACE_SCOPE_DEFAULTED
     }
@@ -866,7 +865,7 @@ def test_a_shape_with_a_total_and_its_part_is_scoped_over_the_total_its_mint_ser
 
     assert result.status == "definite", result.no_data_reason
     (spec,) = result.specs
-    assert [sv.ref for sv in spec.resolved.stat_vars.items] == [_SV]
+    assert [sv.ref.dcid for sv in spec.resolved.members] == [_SV]
     assert spec.resolved.scope is not None
     assert [entity.ref for entity in spec.resolved.scope.members] == ["country/A1"]
     assert _scope_messages(result) == {None: _EVERY_PLACE_MESSAGE}
@@ -896,10 +895,11 @@ def test_a_recalled_part_answers_as_the_total_its_mint_serves():
         spec.definition.identity.model_dump(mode="json", exclude_none=True),
         spec_id=spec.spec_id,
         graph=member_graph,
-        enumerator=MemberEnumerator(graph=member_graph),
+        enumerator=MemberEnumerator(),
         code_index=get_index(),
+        bounds=mint_bounds(),
     )
-    answered = [sv.ref for sv in spec.resolved.stat_vars.items]
+    answered = [sv.ref.dcid for sv in spec.resolved.members]
     assert answered == [shape.stat_var.removeprefix("dcid:") for shape in minted.shapes]
     assert answered == [_SV]
     assert MEMBERSHIP_UNVERIFIED not in [w.code for w in result.warnings]
@@ -993,8 +993,8 @@ def test_each_member_is_counted_and_grounded_at_its_own_scope(answer, monkeypatc
 
     definite = answer != "alternate"
     assert result.status == ("definite" if definite else "candidates"), result.no_data_reason
-    spec = next(spec for spec in result.specs if spec.resolved.stat_vars.items[0].ref == _U_FEMALE)
-    assert [sv.ref for sv in spec.resolved.stat_vars.items] == [_U_FEMALE]
+    spec = next(spec for spec in result.specs if spec.resolved.members[0].ref.dcid == _U_FEMALE)
+    assert [sv.ref.dcid for sv in spec.resolved.members] == [_U_FEMALE]
     coverage = spec.resolved.coverage
     assert isinstance(coverage, CoverageExact)
     assert coverage.observation_count == 1
@@ -1031,7 +1031,7 @@ def test_each_candidate_counts_the_places_of_its_own_scope():
     result = _run(graph=graph, llm=_CandidatesBindLLM(), sdmx=_scope_sdmx(graph))
 
     assert result.status == "candidates", result.no_data_reason
-    by_stat_var = {spec.resolved.stat_vars.items[0].ref: spec for spec in result.specs}
+    by_stat_var = {spec.resolved.members[0].ref.dcid: spec for spec in result.specs}
     assert {sv: spec.resolved.coverage.observation_count for sv, spec in by_stat_var.items()} == {
         _SV_A: 2,
         _SV_B: 2,
@@ -1077,7 +1077,7 @@ def test_an_alternate_that_answers_states_its_own_scope(monkeypatch):
     result = _alternate_only_run()
 
     assert result.status == "definite", result.no_data_reason
-    assert [sv.ref for sv in result.specs[0].resolved.stat_vars.items] == [_SV_B]
+    assert [sv.ref.dcid for sv in result.specs[0].resolved.members] == [_SV_B]
     assert _scope_messages(result) == {None: _EVERY_PLACE_MESSAGE}
 
 

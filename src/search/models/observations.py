@@ -10,7 +10,7 @@ from pydantic import (
 
 from .base import StrictModel
 from .grammar import DataCommonsRef, ProvenanceRef, SourceRef
-from .vocab import EntityRoleKey, ObservationsOmissionReason
+from .vocab import EntityRoleKey, ObservationsOmissionReason, PreviewOrder
 
 # ---------------------------------------------------------------------------
 # SpecObservations: the observation values behind a Spec's coverage
@@ -86,6 +86,19 @@ class SeriesEntityRef(StrictModel):
     )
 
 
+class SeriesAxisRef(StrictModel):
+    """One constraint of a series' StatVar (see ObservationSeries.axes)."""
+
+    property: str = Field(description="the constraint property's dcid, e.g. 'crsPurpose'")
+    ref: str = Field(description="the dcid of the value the StatVar holds on property")
+    label: str = Field(
+        description=(
+            "display label for ref: its graph label, else the dcid's tail split into "
+            "lower-case words"
+        )
+    )
+
+
 class SeriesConversionFallbackExample(StrictModel):
     """One entity a converted series' recipe substituted with its own
     fallback entity, because the substituted entity carried no row at all
@@ -143,6 +156,14 @@ class ObservationSeries(StrictModel):
             "single-role series (role='observationAbout'), two for a dev-finance "
             "bilateral series (role='origin' and role='destination')"
         )
+    )
+    axes: list[SeriesAxisRef] = Field(
+        default_factory=list,
+        description=(
+            "one entry per constraint the StatVar declares with a resolved value, ordered "
+            "by property dcid; empty for a StatVar with no constraints. A client names "
+            "each property from the Spec's slots"
+        ),
     )
     points: list[ObservationPoint] = Field(
         description=(
@@ -338,6 +359,17 @@ class SpecObservations(StrictModel):
         description=(
             "why this payload carries no series, when it doesn't; absent when series "
             "is genuinely populated. See ObservationsOmission's own docstring"
+        ),
+    )
+    order: PreviewOrder | None = Field(
+        default=None,
+        description=(
+            "how a role-bearing bulk preview chose the series it shows when it shows fewer "
+            "than the answer holds: 'ranked' when it read every series and shows the most "
+            "recent and largest (latest year, then latest value, then identity), 'fixed' "
+            "when it shows a selection made before any value was read, StatVars newest "
+            "year first and taken round-robin; absent when every series is shown or the "
+            "preview is not a role-bearing bulk one"
         ),
     )
 

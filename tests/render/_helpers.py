@@ -1,7 +1,8 @@
 """Shared builders for tests/render: minimal Spec/Slot/Entity construction and
 the round-trip assertion every rendered sentence must satisfy.
 
-``_spec`` is the minimal valid Spec every test in the package builds from;
+``_spec`` is the minimal valid Spec every test in the package builds from, and
+``recorded_spec`` rebuilds one recorded on the wire;
 ``_what_slot``/``_how_slot``/`_where_slot``/``_source_slot``/``_where_place_slot``
 and the entity/gender/residence-type builders cover the slot and entity shapes
 its tests bind. ``_gender_slot``, ``_residence_type_slot``, and
@@ -11,6 +12,10 @@ because more than one behaviour file constructs specs against them.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from typing import Any
+
+from scripts.sentence_golden import spec_stating_facts
 from search.engine.spec_build import _resolved_entities, _resolved_stat_vars
 from search.engine.spec_id import build_spec_identity
 from search.models import (
@@ -25,7 +30,6 @@ from search.models import (
     GraphRef,
     IdentityFacetBinding,
     OpenConstraintAxisFact,
-    PipelineStep,
     ProvenanceRef,
     RequestedWindow,
     ResolutionTrace,
@@ -55,6 +59,15 @@ def _rendered(spec: Spec) -> str:
     rendered = render_sentence(spec)
     assert_round_trip(render_sentence_plan(spec), rendered)
     return rendered
+
+
+def recorded_spec(raw: Mapping[str, Any]) -> Spec:
+    """A Spec recorded on the wire, stating the sentence facts stored beside it
+    (`sentence_facts`), as the engine stated them when it answered."""
+    spec = Spec.model_validate(
+        {key: value for key, value in raw.items() if key != "sentence_facts"}
+    )
+    return spec_stating_facts(spec, dict(raw))
 
 
 def _ref(dcid: str, label: str) -> GraphRef:
@@ -115,13 +128,11 @@ def _spec(
     )
     coverage = coverage if coverage is not None else CoverageBare(has_data=True, window=window)
     trace = ResolutionTrace(
-        resolved_stat_vars=[],
         resolved_entities=[],
         resolved_sources=[
             ProvenanceRef(dcid=ref.dcid, label=ref.label) for ref in resolved_sources or []
         ],
         slot_filters=[],
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
     )
     # test-spec-id is a readable placeholder; render tests exercise only the
     # rendered text. definition must still be a genuine, hashable projection of
@@ -134,6 +145,19 @@ def _spec(
         entities=entities,
         requested_window=requested_window,
         explicit_facets=identity_facets,
+        open_roles=(),
+    )
+    members = (
+        stat_vars
+        if stat_vars is not None
+        else [
+            StatVar(
+                ref=_ref("sv1", "SV1"),
+                shape_id="test-shape",
+                slot_values=[],
+                constraint_properties=[],
+            )
+        ]
     )
     return Spec(
         spec_id="test-spec-id",
@@ -142,17 +166,7 @@ def _spec(
             shape=shape,
             slots=slots or [],
             stat_vars=_resolved_stat_vars(
-                stat_vars
-                if stat_vars is not None
-                else [
-                    StatVar(
-                        ref=_ref("sv1", "SV1"),
-                        shape_id="test-shape",
-                        slot_values=[],
-                        constraint_properties=[],
-                    )
-                ],
-                cap=None,
+                members, member_count=None, member_count_exact=True, stated=None
             ),
             entities=_resolved_entities(entities or []),
             coverage=coverage,
@@ -164,7 +178,7 @@ def _spec(
             open_axis_facts=open_axis_facts,
             measure_label=measure_label,
             measure_label_axes=measure_label_axes or [],
-        ),
+        ).stating_members(members),
     )
 
 

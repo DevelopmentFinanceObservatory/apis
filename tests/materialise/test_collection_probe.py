@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import random
 import time
 from collections.abc import Sequence
@@ -14,7 +13,6 @@ from dc_sdmx import SdmxClient
 from materialise import (
     EnrichmentLookup,
     MaterialisationRequest,
-    materialise_collection,
     materialise_group,
     place_scope,
 )
@@ -645,85 +643,6 @@ def test_probe_collection_facets_role_bearing_without_coverage_raises_before_any
     assert graph.calls["observation_facets_batch_many"] == 0
 
 
-_MEMBER_CONCURRENCY = 4
-
-
-def _expected_lane_balanced_chunk_count(member_count: int, *, lanes: int) -> int:
-    """`generation._plan_collection_chunks`'s own lane-balanced target,
-    reproduced here so this test's own expectation can't silently drift
-    from the real formula: each request carries at most
-    `ceil(member_count / lanes)` members, so the group splits into
-    `ceil(member_count / target)` requests.
-    """
-    target = max(1, math.ceil(member_count / lanes))
-    return math.ceil(member_count / target)
-
-
-@pytest.mark.parametrize("member_count", [1, 5, 11, 12, 23])
-def test_materialise_collection_shared_scope_issues_one_probe_and_ceil_chunked_requests(
-    member_count: int,
-):
-    """Same-scope members issue one facet probe and lane-balanced data requests.
-    Each request names at most `ceil(member_count / _MEMBER_CONCURRENCY)` StatVars.
-    """
-    stat_vars = _member_stat_vars(member_count)
-    bare_stat_vars = [sv.removeprefix("dcid:") for sv in stat_vars]
-    graph = FakeGraphReader(
-        facets={
-            (bare, country): [_facet(f"facet-{bare}")]
-            for bare in bare_stat_vars
-            for country in _COUNTRIES
-        }
-    )
-
-    sdmx_requests: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        sdmx_requests.append(request)
-        requested_vars = str(request.url.params.get("c[variableMeasured]")).split(",")
-        header = (
-            "STRUCTURE,STRUCTURE_ID,ACTION,variableMeasured,observationAbout,unit,"
-            "measurementMethod,observationPeriod,provenance,TIME_PERIOD,OBS_VALUE,"
-            "scalingFactor,facetId\r\n"
-        )
-        rows = "".join(
-            f"dataflow,DC:DF_OBS(1.0.0),I,{var},{_COUNTRIES[0]},USD,GrantEquivalent,"
-            f"NotApplicable,OECD_DAC2A,2015,1000,,facet-{var}\r\n"
-            for var in requested_vars
-        )
-        return httpx.Response(
-            200,
-            text=header + rows,
-            headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
-        )
-
-    sdmx = SdmxClient(
-        base_url="https://datacommons.one.org/core/api", transport=httpx.MockTransport(handler)
-    )
-    reader = FakeRevisionReader([_SNAPSHOT, _SNAPSHOT])
-    requests = [(f"spec_{i:032d}", _shared_scope_request(sv)) for i, sv in enumerate(stat_vars)]
-
-    result = materialise_collection(
-        requests,
-        sdmx=sdmx,
-        graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=reader,
-        materialiser_build="build-123",
-        capability_version="cap-v1",
-        member_concurrency=_MEMBER_CONCURRENCY,
-    )
-
-    assert graph.calls["observation_facets_batch_many"] == 1
-    assert graph.calls["variable_facets_batch"] == 0
-    assert len(sdmx_requests) == _expected_lane_balanced_chunk_count(
-        member_count, lanes=_MEMBER_CONCURRENCY
-    )
-    assert len(result.members) == member_count
-    for _spec_id, member_result in result.members:
-        assert member_result.coverage.rows == 1
-
-
 def _single_variable_sdmx_client(bare_stat_var: str) -> SdmxClient:
     def handler(request: httpx.Request) -> httpx.Response:
         header = (
@@ -744,62 +663,6 @@ def _single_variable_sdmx_client(bare_stat_var: str) -> SdmxClient:
     return SdmxClient(
         base_url="https://datacommons.one.org/core/api", transport=httpx.MockTransport(handler)
     )
-
-
-def test_materialise_collection_precomputed_probe_skips_its_own_batched_probe():
-    """`precomputed_probe` reuses candidates from `probe_collection_facets`."""
-    stat_vars = _member_stat_vars(3)
-    bare_stat_vars = [sv.removeprefix("dcid:") for sv in stat_vars]
-    graph = FakeGraphReader(
-        facets={
-            (bare, country): [_facet(f"facet-{bare}")]
-            for bare in bare_stat_vars
-            for country in _COUNTRIES
-        }
-    )
-    requests = [(f"spec_{i:032d}", _shared_scope_request(sv)) for i, sv in enumerate(stat_vars)]
-    probe = probe_collection_facets(
-        [mr for _, mr in requests], availability=NO_SCOPE_READ, settle=True, graph=graph
-    )
-    assert graph.calls["observation_facets_batch_many"] == 1
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        requested_vars = str(request.url.params.get("c[variableMeasured]")).split(",")
-        header = (
-            "STRUCTURE,STRUCTURE_ID,ACTION,variableMeasured,observationAbout,unit,"
-            "measurementMethod,observationPeriod,provenance,TIME_PERIOD,OBS_VALUE,"
-            "scalingFactor,facetId\r\n"
-        )
-        rows = "".join(
-            f"dataflow,DC:DF_OBS(1.0.0),I,{var},{_COUNTRIES[0]},USD,GrantEquivalent,"
-            f"NotApplicable,OECD_DAC2A,2015,1000,,facet-{var}\r\n"
-            for var in requested_vars
-        )
-        return httpx.Response(
-            200,
-            text=header + rows,
-            headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
-        )
-
-    sdmx = SdmxClient(
-        base_url="https://datacommons.one.org/core/api", transport=httpx.MockTransport(handler)
-    )
-    reader = FakeRevisionReader([_SNAPSHOT, _SNAPSHOT])
-
-    result = materialise_collection(
-        requests,
-        sdmx=sdmx,
-        graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=reader,
-        materialiser_build="build-123",
-        capability_version="cap-v1",
-        precomputed_probe=probe,
-    )
-
-    assert graph.calls["observation_facets_batch_many"] == 1
-    assert graph.calls["variable_facets_batch"] == 0
-    assert len(result.members) == 3
 
 
 def test_materialise_group_single_member_precomputed_probe_skips_the_network_call():

@@ -16,7 +16,7 @@ def test_sdg03_never_grounds_empty_stat_vars_as_definite():
 
     for part in result.parts:
         if part.status == "definite":
-            assert part.spec.resolved.stat_vars.items, (
+            assert part.spec.resolved.members, (
                 "definite response must never carry empty stat_vars for a query with "
                 "no real candidates of its own (the sdg-03 'SDG 3.3.2' empty-breadth regression)"
             )

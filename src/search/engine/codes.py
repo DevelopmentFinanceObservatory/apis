@@ -46,11 +46,10 @@ SEARCH_REFUSAL_CODES: frozenset[str] = frozenset(
     {
         # Search API contract refusal table.
         "query_too_long",
-        "edit_incomplete",
-        "base_not_found",
-        "base_identity_mismatch",
         "shape_mismatch",
         "option_target_invalid",
+        # A resubmitted identity names an open role its elected members do not serve.
+        "open_role_unavailable",
         # A contract-defined door omitted from this deployment.
         "door_not_implemented",
         # The unit binder understood a request outside its typed form.
@@ -88,17 +87,10 @@ SEARCH_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
         "Query Too Long",
         "The query text exceeds this deployment's maximum length.",
     ),
-    "edit_incomplete": (
-        "Edit Incomplete",
-        "The posted edit did not supply enough information to re-materialise a spec.",
-    ),
-    "base_not_found": (
-        "Base Spec Not Found",
-        "The base spec named by this request does not exist.",
-    ),
-    "base_identity_mismatch": (
-        "Base Identity Mismatch",
-        "The posted edit does not match the identity of the base spec it names.",
+    "open_role_unavailable": (
+        "Open Role Unavailable",
+        "The resubmitted identity names an open role, and the StatVars it elects declare "
+        "no role on that axis.",
     ),
     "shape_mismatch": (
         "Shape Mismatch",

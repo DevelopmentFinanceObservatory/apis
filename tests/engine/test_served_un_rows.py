@@ -176,7 +176,6 @@ async def _gap_fill(options: EngineOptions) -> RegionResult:
         resolver=make_resolver(graph),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         llm=_ElectFirstLLM(),
-        base_steps=[],
         base_timing={},
         coverage=empty_coverage_snapshot(),
         options=options,
@@ -198,7 +197,7 @@ def test_the_buffered_gap_fill_embeds_un_rows_read_through_the_served_reader(
 
     assert result.status == "definite"
     (spec,) = result.specs
-    assert [sv.ref for sv in spec.resolved.stat_vars.items] == [UN_VARIABLE]
+    assert [sv.ref.dcid for sv in spec.resolved.members] == [UN_VARIABLE]
     assert spec.resolved.observations is not None
     (series,) = spec.resolved.observations.series
     assert [p.value for p in series.points] == [value for _, value in UN_SERIES[_KEN]]

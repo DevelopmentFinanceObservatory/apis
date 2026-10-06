@@ -13,7 +13,15 @@ from typing import Any
 import pytest
 
 from search.eval.checks import CHECKS, ScoreContext, Verdict
-from tests.eval.checks.conftest import IDS, make_case, panel
+from tests.eval.checks.conftest import (
+    IDS,
+    make_case,
+    no_members_door,
+    panel,
+    panel_members,
+    schema_listing_members,
+    serve,
+)
 
 PASS, FAIL, NA, U = Verdict.PASS, Verdict.FAIL, Verdict.NA, Verdict.UNVERIFIABLE
 
@@ -72,6 +80,15 @@ def with_ids_provenance(row_id: str) -> dict[str, Any]:
     return response
 
 
+def with_bound_provenance(response: dict[str, Any]) -> dict[str, Any]:
+    """``response`` with its first spec's identity binding the provenance its facets name."""
+    spec = response["parts"][0]["spec"]
+    ref = spec["resolved"]["facets"]["provenance"]["ref"]
+    facets = spec["definition"]["identity"].setdefault("facets", {})
+    facets["provenance"] = {"state": "value", "ref": ref}
+    return response
+
+
 def as_candidates(row_id: str, *, second_dataset: str | None = None) -> dict[str, Any]:
     """A recorded definite response recast as a candidates part: its spec, then a copy that
     serves only ``Other_StatVar``, carrying ``second_dataset`` as its provenance when given."""
@@ -79,8 +96,8 @@ def as_candidates(row_id: str, *, second_dataset: str | None = None) -> dict[str
     part = response["parts"][0]
     spec = part.pop("spec")
     second = copy.deepcopy(spec)
-    items = second["resolved"]["stat_vars"]["items"]
-    second["resolved"]["stat_vars"]["items"] = [{**items[0], "ref": "Other_StatVar"}]
+    second["spec_id"] = second["definition"]["spec_id"] = f"{spec['spec_id']}_other"
+    serve(second["spec_id"], ["Other_StatVar"])
     if second_dataset is not None:
         second["resolved"]["facets"]["provenance"]["ref"] = second_dataset
     part["status"] = response["status"] = "candidates"
@@ -556,6 +573,48 @@ ROWS = [
         unsupported("x"),
         NA,
     ),
+    # bound reads the identity's provenance facet; a block naming only bound keeps the
+    # family's origin and dataset.
+    (
+        "provenance",
+        {
+            "definite": {
+                "measure": {"family": "crs.disbursement_gross"},
+                "provenance": {"bound": False},
+            }
+        },
+        panel("crs-001"),
+        PASS,
+    ),
+    ("provenance", {"definite": {"provenance": {"bound": True}}}, panel("crs-001"), FAIL),
+    (
+        "provenance",
+        {
+            "definite": {
+                "measure": {"family": "crs.disbursement_gross"},
+                "provenance": {"bound": True},
+            }
+        },
+        with_bound_provenance(panel("crs-001")),
+        PASS,
+    ),
+    (
+        "provenance",
+        {"definite": {"provenance": {"origin": "dfo", "bound": False}}},
+        with_bound_provenance(panel("crs-001")),
+        FAIL,
+    ),
+    (
+        "provenance",
+        {
+            "definite": {
+                "measure": {"family": "crs.disbursement_gross"},
+                "provenance": {"bound": True},
+            }
+        },
+        with_bound_provenance(with_ids_provenance("crs-001")),
+        FAIL,
+    ),
     # A family whose slots are unconfirmed pairs as unverifiable.
     (
         "provenance",
@@ -800,6 +859,25 @@ ROWS = [
 )
 def test_check_verdicts(check, expect, response, verdict, ctx: ScoreContext):
     result = CHECKS[check](make_case(expect), response, ctx)
+    assert result.verdict == verdict, result.detail
+
+
+@pytest.mark.parametrize(("listed", "verdict"), [(True, PASS), (False, FAIL)])
+def test_an_app_listing_its_members_on_the_wire_is_scored_from_them(listed: bool, verdict):
+    """An app with no members door is scored from the StatVars its own wire lists, so the
+    base side of a paired run reads no door it lacks."""
+    response = panel("weo-033")
+    spec = response["parts"][0]["spec"]
+    served = panel_members(spec["spec_id"], spec["definition"])
+    spec["resolved"]["stat_vars"]["items"] = [
+        {"ref": stat_var} for stat_var in (served if listed else ["Count_Person"])
+    ]
+    ctx = ScoreContext(schema=schema_listing_members(), members=no_members_door)
+
+    result = CHECKS["measure"](
+        make_case({"definite": {"measure": {"stat_vars": served}}}), response, ctx
+    )
+
     assert result.verdict == verdict, result.detail
 
 

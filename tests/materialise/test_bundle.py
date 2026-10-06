@@ -35,7 +35,6 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 _SITE = "https://site.example"
 _SPEC_ID = "spec_00000000000000000000000000000011"
-_COLLECTION_ID = "col_7d41b2000000000000000000000000"
 _CONTENT_VERSION = "cv_5c9dfd37e657d3a3c7000cc6acf49c43"
 _CALL = ReproducingCall(path=f"/api/datasets/{_SPEC_ID}", options={"format": "csv", "bundle": True})
 
@@ -73,13 +72,6 @@ _COLUMNS = (
 _CODES = (
     CodeEntry(code="country/TGO", label="Togo", kind="place"),
     CodeEntry(code="country/FRA", label="France", kind="place"),
-)
-
-_COLLECTION_IDS = (
-    "spec_00000000000000000000000000000011",
-    "spec_00000000000000000000000000000012",
-    "spec_00000000000000000000000000000013",
-    "spec_00000000000000000000000000000014",
 )
 
 
@@ -140,27 +132,10 @@ def _standalone(
     )
 
 
-def _collection(*, codes: tuple[CodeEntry, ...] = _CODES) -> dict[str, bytes]:
-    """Four members: OECD alone, OECD and World Bank, World Bank alone, and an SDG member with
-    no licence, url or documentation."""
-    sources = ((_OECD,), (_OECD, _WORLD_BANK), (_WORLD_BANK,), (_SDG,))
-    members = [
-        _member(spec_id, sources=member_sources, path=f"data/{spec_id}/data.csv")
-        for spec_id, member_sources in zip(_COLLECTION_IDS, sources, strict=True)
-    ]
-    return assemble_bundle(
-        spec=_read_json("bundle-collection-spec.json"),
-        members=members,
-        reproducing_call=ReproducingCall(
-            path=f"/api/datasets/{_COLLECTION_ID}", options={"format": "csv", "bundle": True}
-        ),
-        context=_context(
-            heading="OECD Creditor Reporting System (CRS) and 2 more sources",
-            slug="oecd-creditor-reporting-system-and-2-more",
-            links=BundleLinks(version=f"{_SITE}/api/datasets/{_COLLECTION_ID}/{_CONTENT_VERSION}"),
-        ),
-        codes=codes,
-    )
+def _multi_source(*, codes: tuple[CodeEntry, ...] = _CODES) -> dict[str, bytes]:
+    """One member sourced from OECD, the World Bank, and an SDG source with no licence, url or
+    documentation."""
+    return _standalone(member=_member(sources=(_OECD, _WORLD_BANK, _SDG)), codes=codes)
 
 
 def _descriptor(files: dict[str, bytes]) -> dict:
@@ -307,7 +282,6 @@ def test_dfo_property_carries_the_version_links_and_an_absolute_reproducing_call
         "url": f"{_SITE}/api/datasets/{_SPEC_ID}",
         "options": {"format": "csv", "bundle": True},
     }
-    assert "members" not in dfo
 
 
 def test_site_link_appears_only_when_given_and_becomes_the_cff_url():
@@ -327,28 +301,8 @@ def test_absent_reproducing_call_is_omitted():
 # Collections
 
 
-def test_collection_carries_one_resource_per_member_and_names_its_members():
-    descriptor = _descriptor(_collection(codes=()))
-    assert [r["name"] for r in descriptor["resources"]] == [
-        f"{spec_id}-data" for spec_id in _COLLECTION_IDS
-    ]
-    assert descriptor["dfo"]["members"] == list(_COLLECTION_IDS)
-
-
-def test_single_member_collection_keeps_dfo_members():
-    collection_spec = {"schema_version": 1, "collection_id": _COLLECTION_ID, "members": [_SPEC_ID]}
-    files = assemble_bundle(
-        spec=collection_spec,
-        members=[_member()],
-        reproducing_call=_CALL,
-        context=_context(),
-        codes=(),
-    )
-    assert _descriptor(files)["dfo"]["members"] == [_SPEC_ID]
-
-
-def test_package_sources_and_licences_are_distinct_unions_and_resources_keep_their_own():
-    descriptor = _descriptor(_collection(codes=()))
+def test_package_sources_and_licences_are_distinct_unions_and_the_resource_carries_them():
+    descriptor = _descriptor(_multi_source(codes=()))
     oecd_licence = {
         "path": "https://www.oecd.org/en/about/terms-conditions.html",
         "title": "OECD Terms and Conditions",
@@ -365,10 +319,9 @@ def test_package_sources_and_licences_are_distinct_unions_and_resources_keep_the
         "World Development Indicators",
         "SDG Global Database",
     ]
-    resources = descriptor["resources"]
-    assert resources[1]["licenses"] == [oecd_licence, cc0_licence]
-    assert resources[3]["sources"] == [{"title": "SDG Global Database"}]
-    assert "licenses" not in resources[3]
+    (resource,) = descriptor["resources"]
+    assert resource["licenses"] == [oecd_licence, cc0_licence]
+    assert resource["sources"][2] == {"title": "SDG Global Database"}
     assert [c["title"] for c in descriptor["contributors"][1:]] == [
         "Organisation for Economic Co-operation and Development (OECD)",
         "World Bank",
@@ -377,7 +330,7 @@ def test_package_sources_and_licences_are_distinct_unions_and_resources_keep_the
 
 def test_datapackage_matches_golden():
     golden = (FIXTURES_DIR / "bundle-golden-datapackage.json").read_bytes()
-    assert _collection()["datapackage.json"] == golden
+    assert _multi_source()["datapackage.json"] == golden
 
 
 # Licences
@@ -491,33 +444,12 @@ def test_assemble_bundle_requires_at_least_one_member():
         ({"schema_version": 1, "spec_id": _SPEC_ID}, ["spec_00000000000000000000000000000099"]),
         ({"schema_version": 1, "spec_id": _SPEC_ID}, [_SPEC_ID, _SPEC_ID]),
         ({"schema_version": 1}, [_SPEC_ID]),
-        (
-            {"collection_id": _COLLECTION_ID, "members": list(_COLLECTION_IDS[:2])},
-            list(_COLLECTION_IDS[1::-1]),
-        ),
-        ({"collection_id": _COLLECTION_ID}, [_SPEC_ID]),
     ],
-    ids=["standalone-mismatch", "standalone-two", "standalone-no-id", "reordered", "no-members"],
+    ids=["standalone-mismatch", "standalone-two", "standalone-no-id"],
 )
 def test_assemble_bundle_refuses_identity_mismatches(spec, spec_ids):
     members = [_member(spec_id, path=f"data/{n}.csv") for n, spec_id in enumerate(spec_ids)]
     with pytest.raises(MaterialisationUsageError):
-        assemble_bundle(
-            spec=spec, members=members, reproducing_call=_CALL, context=_context(), codes=()
-        )
-
-
-def test_assemble_bundle_refuses_colliding_resource_names():
-    """`data/a.csv` and `data/a.parquet` give the same resource name."""
-    spec = {"collection_id": _COLLECTION_ID, "members": list(_COLLECTION_IDS[:2])}
-    members = [
-        _member(_COLLECTION_IDS[0], path="data/a.csv"),
-        dataclasses.replace(
-            _member(_COLLECTION_IDS[1]),
-            artifact=_artifact("bundle-artifact-parquet.json", path="data/a.parquet"),
-        ),
-    ]
-    with pytest.raises(MaterialisationUsageError, match="'a'"):
         assemble_bundle(
             spec=spec, members=members, reproducing_call=_CALL, context=_context(), codes=()
         )
@@ -538,13 +470,13 @@ def test_assemble_bundle_refuses_an_invalid_slug(slug):
 
 
 def test_citation_cff_is_valid_yaml_and_conforms_to_the_cff_1_2_0_schema():
-    citation = yaml.safe_load(_collection()["CITATION.cff"].decode())
+    citation = yaml.safe_load(_multi_source()["CITATION.cff"].decode())
     schema = json.loads((FIXTURES_DIR / "bundle-citation-cff-1.2.0-schema.json").read_text())
     jsonschema.validate(instance=citation, schema=schema)
 
 
 def test_citation_credits_the_dfo_and_each_publisher_with_a_dfo_fallback():
-    citation = yaml.safe_load(_collection()["CITATION.cff"])
+    citation = yaml.safe_load(_multi_source()["CITATION.cff"])
     dfo = {"name": "Development Finance Observatory", "website": _SITE, "email": "data@one.org"}
 
     assert citation["authors"] == [dfo]

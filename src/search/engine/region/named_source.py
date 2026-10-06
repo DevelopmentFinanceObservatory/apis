@@ -1,14 +1,14 @@
-"""Write the dataset a query asks for into the bindings a family is elected from.
+"""Write the dataset a shape names into the bindings a family is elected from.
 
-A variable asks for a dataset through the mention its request's reading bound to it
-(`dataset_mention.read_mentions`). The mention names the dataset as the source, through
-one source-axis value binding (`retrieval.bound_values.source_binding`), which
-`shape_query` reads into the family election and `spec_build.build_slot` binds into the
-source slot.
-The engine writes that binding here and nowhere else on a first resolve. Shape candidacy
-keeps only the shapes whose five-tuple the mentioned dataset publishes on a part with a
-bound mention (`phase_rank_bind._dataset_candidates`), so the elected shape is always one
-it publishes, whichever other datasets publish it too.
+Shape candidacy stamps each shape with the dataset it names (`ShapeDraft.named_dataset`,
+`retrieval.bound_values.shape_for_part`): the one its part names through
+`ResolveState.named_dataset` or its source slot (`phase_election._apply_source_slot`),
+else the one opt-in dataset that alone may answer it. The
+dataset becomes one source-axis value binding (`retrieval.bound_values.source_binding`),
+which `shape_query` reads into the family election and `spec_build.build_slot` binds into
+the source slot. The engine writes that binding here and nowhere else on a first resolve,
+for the elected shape and for each alternate alike, so an alternate's identity is the one a
+question electing its shape mints.
 """
 
 from __future__ import annotations
@@ -16,38 +16,29 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from search.engine.bind import SlotBindingDraft
-from search.engine.dataset_mention import DatasetMention
-from search.engine.retrieval.bound_values import shape_datasets, source_binding
+from search.engine.retrieval.bound_values import shape_named_source, source_binding
 from search.engine.shape import ShapeDraft
 
 
 def without_dataset_drafts(bindings: Sequence[SlotBindingDraft]) -> list[SlotBindingDraft]:
     """Return `bindings` less every draft on the source axis.
 
-    No model draft names a dataset: `with_mention` and `with_named_source` write the only
-    bindings that do.
+    No model draft names a dataset: `with_named_source` writes the only binding that does.
     """
     return [binding for binding in bindings if binding.axis != "source"]
 
 
 def with_named_source(
-    bindings: Sequence[SlotBindingDraft], shape: ShapeDraft, source: str | None
+    bindings: Sequence[SlotBindingDraft], shape: ShapeDraft
 ) -> list[SlotBindingDraft]:
-    """Return `bindings` naming the dataset `source` when it is among the datasets publishing
-    `shape`'s five-tuple (`shape_datasets`).
+    """Return `bindings` naming the dataset a part electing `shape` binds as its source
+    (`shape_named_source`).
 
     Every dataset draft in `bindings` is replaced, so the result holds one source binding
     or none.
     """
     kept = without_dataset_drafts(bindings)
-    if source is None or source not in shape_datasets(shape):
+    source = shape_named_source(shape)
+    if source is None:
         return kept
     return [*kept, source_binding(source)]
-
-
-def with_mention(
-    bindings: Sequence[SlotBindingDraft], mention: DatasetMention
-) -> list[SlotBindingDraft]:
-    """Return `bindings` asking for the mentioned dataset: every dataset draft replaced by
-    the source binding the mention names."""
-    return [*without_dataset_drafts(bindings), source_binding(mention.provenance)]

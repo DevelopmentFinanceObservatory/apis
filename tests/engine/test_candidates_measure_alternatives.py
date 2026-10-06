@@ -175,7 +175,6 @@ def _run(monkeypatch):
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_ElectGrantEquivalentAlsoPlausibleAidSpendingLLM(),
-            base_steps=[],
             base_timing={},
             coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
         )
@@ -184,7 +183,7 @@ def _run(monkeypatch):
 
 def _spec_for(specs: list[Spec], sv_dcid: str) -> Spec:
     return next(
-        spec for spec in specs if any(sv.ref == sv_dcid for sv in spec.resolved.stat_vars.items)
+        spec for spec in specs if any(sv.ref.dcid == sv_dcid for sv in spec.resolved.members)
     )
 
 
@@ -194,7 +193,7 @@ def test_the_role_bearing_candidate_publishes_a_label_and_no_real_alternatives(m
     # Both the elected and plausible members must reach the response.
     assert result.status == "candidates"
     assert len(result.specs) == 2
-    assert {sv.ref for spec in result.specs for sv in spec.resolved.stat_vars.items} == {
+    assert {sv.ref.dcid for spec in result.specs for sv in spec.resolved.members} == {
         _EXTRA_SV,
         _ALT_SV,
     }

@@ -93,8 +93,8 @@ Gated by `DFO_DATASETS_SURFACE=true` (or `1`). Requires PostgreSQL persistence (
 | Method | Endpoint                                   | Description                                                                                                  |
 | :----- | :----------------------------------------- | :----------------------------------------------------------------------------------------------------------- |
 | `POST` | `/api/datasets`                            | Mints a dataset definition and materialises observation tables to storage artifacts.                         |
-| `POST` | `/api/datasets/register`                   | Persists a canonical dataset definition or collection without materialisation.                               |
-| `GET`  | `/api/datasets/{id}`                       | Retrieves a registered dataset definition by its canonical subject ID (`spec_...` / `col_...`).              |
+| `POST` | `/api/datasets/register`                   | Persists a canonical dataset definition without materialisation.                                             |
+| `GET`  | `/api/datasets/{id}`                       | Retrieves a registered dataset definition by its canonical subject ID (`spec_...`).                          |
 | `GET`  | `/api/datasets/{id}/{content_version}`     | Fetches metadata and signed artifact download URLs (CSV, Parquet, Excel) for a versioned snapshot.           |
 | `POST` | `/api/datasets/{id}/{content_version}/pin` | Promotes a working-tier snapshot to pinned durability. Requires first-party principal authentication.        |
 | `GET`  | `/api/datasets/operations/{operation_id}`  | Operations poll route. Returns 404 `operation_not_found` while asynchronous background execution is dormant. |

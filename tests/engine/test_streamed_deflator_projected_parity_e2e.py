@@ -140,7 +140,6 @@ def _run_buffered():
             resolver=make_resolver(_graph()),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_FixedBindLLM(),
-            base_steps=[],
             base_timing={},
             unit_text="EUR",
             coverage=empty_coverage_snapshot(),
@@ -168,7 +167,6 @@ def _run_streamed():
                 resolver=make_resolver(_graph()),
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 llm=_FixedBindLLM(),
-                base_steps=[],
                 base_timing={},
                 unit_text="EUR",
                 coverage=empty_coverage_snapshot(),
@@ -219,7 +217,6 @@ def test_a_streamed_answer_states_projected_values_on_done_as_the_buffered_part_
         extra_warnings=[],
         start_ms=0,
         engine_build="test",
-        include_sentence=False,
         max_candidates=5,
         include_observations=True,
     ).parts
@@ -232,7 +229,6 @@ def test_a_streamed_answer_states_projected_values_on_done_as_the_buffered_part_
         extra_warnings=[],
         start_ms=0,
         engine_build="test",
-        include_sentence=False,
         max_candidates=5,
     )
     (streamed_part,) = response.parts

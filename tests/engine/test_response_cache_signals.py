@@ -133,7 +133,8 @@ def test_query_text_qualifier_match_against_the_real_index() -> None:
 
 
 def test_query_text_qualifier_tie_against_the_real_index() -> None:
-    """The index maps "budget support" to two codes in separate systems."""
+    """The index maps "budget support" to codes in separate systems: two CRS ones and two
+    DAC1 aid types. The cache signals read the index before any shape exists."""
     signals = compute_layer2_signals(
         query="budget support", entity_roles={}, query_text="budget support"
     )
@@ -143,6 +144,8 @@ def test_query_text_qualifier_tie_against_the_real_index() -> None:
     assert {row["code_dcid"] for row in tie["rows"]} == {
         "CRSCooperationModalityA",
         "CRSPurposeCode510",
+        "DAC1AidType1100",
+        "DAC1AidType2210",
     }
 
 

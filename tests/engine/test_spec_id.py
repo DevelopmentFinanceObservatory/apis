@@ -20,6 +20,7 @@ from search.engine.spec_id import (
 )
 from search.models import (
     Axis,
+    BaseIdentity,
     BindingSet,
     BindingUnbound,
     BindingValue,
@@ -128,7 +129,7 @@ _PIN_ENTITIES = [
 
 def test_pin_known_input_exact_hash() -> None:
     """The hash changes only when spec1's normalization, JCS, or SHA-256 rules rotate."""
-    result = compute_spec_id(DECLARING_SHAPE, _PIN_SLOTS, entities=_PIN_ENTITIES)
+    result = compute_spec_id(DECLARING_SHAPE, _PIN_SLOTS, entities=_PIN_ENTITIES, open_roles=())
     assert result == "spec_ecd79c14914a8d66bbf557969cdf3fa2"
 
 
@@ -142,9 +143,9 @@ def test_slot_order_independence() -> None:
     a = _value_slot("what", "PropA", "ValA")
     b = _value_slot("how", "PropB", "ValB")
     c = _value_slot("how", "PropC", "ValC")
-    id_abc = compute_spec_id(shape_for("shape"), [a, b, c])
-    id_cba = compute_spec_id(shape_for("shape"), [c, b, a])
-    id_bac = compute_spec_id(shape_for("shape"), [b, a, c])
+    id_abc = compute_spec_id(shape_for("shape"), [a, b, c], open_roles=())
+    id_cba = compute_spec_id(shape_for("shape"), [c, b, a], open_roles=())
+    id_bac = compute_spec_id(shape_for("shape"), [b, a, c], open_roles=())
     assert id_abc == id_cba == id_bac
 
 
@@ -155,7 +156,9 @@ def test_served_document_rfc8785_hash_reproduces_spec_id() -> None:
     """
     z_first = _value_slot("what", "ZLastProp", "ValZ")
     a_second = _value_slot("how", "AFirstProp", "ValA")
-    spec_id, base_identity = build_spec_identity(shape_for("shape"), [z_first, a_second])
+    spec_id, base_identity = build_spec_identity(
+        shape_for("shape"), [z_first, a_second], open_roles=()
+    )
 
     assert [s.property for s in base_identity.slots] == ["AFirstProp", "ZLastProp"]
 
@@ -180,7 +183,7 @@ def test_served_multi_dcid_entity_bucket_reproduces_spec_id() -> None:
         _directional_entity("country/KEN", "destination", "DevelopmentFinanceRecipient"),
     ]
     spec_id, base_identity = build_spec_identity(
-        shape_for("directional_roles"), slots, entities=entities
+        shape_for("directional_roles"), slots, entities=entities, open_roles=()
     )
     assert base_identity.entities["destination"] == ["country/ETH", "country/KEN", "country/USA"]
     _assert_served_document_reproduces_spec_id(spec_id, base_identity)
@@ -194,7 +197,7 @@ def test_served_multi_entity_request_reproduces_spec_id() -> None:
         _directional_entity("country/ETH", "destination", "DevelopmentFinanceRecipient"),
     ]
     spec_id, base_identity = build_spec_identity(
-        shape_for("directional_roles"), [], entities=entities
+        shape_for("directional_roles"), [], entities=entities, open_roles=()
     )
     assert base_identity.entities["destination"] == ["country/ETH", "country/USA"]
     assert base_identity.entities["origin"] == ["country/KEN"]
@@ -208,15 +211,61 @@ def test_entity_group_rides_on_the_identity_outside_the_hash() -> None:
         _directional_entity("country/FRA", "origin", "observationAbout"),
     ]
     group = IdentityEntityGroup(dcid="EuropeanUnion", label="EU member states")
-    plain_id, _ = build_spec_identity(shape_for("directional_roles"), [], entities=entities)
+    plain_id, _ = build_spec_identity(
+        shape_for("directional_roles"), [], entities=entities, open_roles=()
+    )
     spec_id, base_identity = build_spec_identity(
-        shape_for("directional_roles"), [], entities=entities, entity_groups={"origin": group}
+        shape_for("directional_roles"),
+        [],
+        entities=entities,
+        entity_groups={"origin": group},
+        open_roles=(),
     )
 
     assert spec_id == plain_id
     assert base_identity.entity_groups == {"origin": group}
     canonical = rfc8785.dumps(base_identity.core_document())
     assert spec_id == f"spec_{hashlib.sha256(canonical).hexdigest()[:32]}"
+
+
+@pytest.mark.parametrize("open_roles", [["origin"], ["origin", "origin"], []])
+def test_open_roles_round_trip_to_the_identity_cores_spec_id(open_roles: list[RoleAxis]) -> None:
+    """An identity with open roles hashes to the id the identity core gives its document, and
+    an empty list mints the id of an identity without the member."""
+    entities = [_directional_entity("country/NGA", "destination", "debtor")]
+    shape = shape_for("directional_roles")
+    spec_id, base_identity = build_spec_identity(
+        shape, [], entities=entities, open_roles=open_roles
+    )
+    document = base_identity.model_dump(mode="json", exclude_none=True)
+
+    assert spec_id == _identity_core.spec_id_from_value(_identity_core.build_projection(document))
+    _assert_served_document_reproduces_spec_id(spec_id, base_identity)
+    if open_roles:
+        assert document["open_roles"] == ["origin"]
+        assert spec_id != build_spec_identity(shape, [], entities=entities, open_roles=())[0]
+    else:
+        assert "open_roles" not in document
+
+
+@pytest.mark.parametrize(
+    ("entities", "shape", "message"),
+    [
+        ({"origin": ["country/CHN"]}, None, "entities also binds"),
+        ({}, {"kind": "stat_var", "id": "Debt_ByCreditor"}, "pinned shape"),
+    ],
+)
+def test_base_identity_refuses_an_open_role_bound_or_pinned(entities, shape, message) -> None:
+    _, base_identity = build_spec_identity(
+        shape_for("directional_roles"), [], entities=None, open_roles=()
+    )
+    document = base_identity.model_dump(mode="json", exclude_none=True)
+    document.update(entities=entities, open_roles=["origin"])
+    if shape is not None:
+        document.update(shape=shape, slots=[])
+
+    with pytest.raises(ValueError, match=message):
+        BaseIdentity.model_validate(document)
 
 
 def test_entity_group_label_is_bounded() -> None:
@@ -232,6 +281,7 @@ def test_entity_group_on_a_role_without_entities_refuses() -> None:
             [],
             entities=[_directional_entity("country/KEN", "destination")],
             entity_groups={"origin": IdentityEntityGroup(label="EU member states")},
+            open_roles=(),
         )
 
 
@@ -245,7 +295,9 @@ def test_served_multi_value_slot_reproduces_spec_id() -> None:
             ["DAC/Medicaleducationtraining", "DAC/Healtheducation"],
         ),
     ]
-    spec_id, base_identity = build_spec_identity(shape_for("directional_roles"), slots)
+    spec_id, base_identity = build_spec_identity(
+        shape_for("directional_roles"), slots, open_roles=()
+    )
     set_slot = next(s for s in base_identity.slots if s.property == "DevelopmentFinancePurpose")
     assert isinstance(set_slot.binding, IdentityBindingSet)
     assert set_slot.binding.refs == ["DAC/Healtheducation", "DAC/Medicaleducationtraining"]
@@ -261,6 +313,7 @@ def test_served_facet_set_reproduces_spec_id() -> None:
         explicit_facets={
             "measurementMethod": IdentityBindingSet(refs=["OECD_Estimate", "IMF_Estimate"])
         },
+        open_roles=(),
     )
     assert base_identity.facets is not None
     facet = base_identity.facets["measurementMethod"]
@@ -283,8 +336,9 @@ def test_a_null_method_ref_mints_its_own_id_matching_the_spec_kit_vector() -> No
         slots,
         entities=entities,
         explicit_facets={"measurementMethod": IdentityFacetValueAbsent(ref=None)},
+        open_roles=(),
     )
-    unpinned_id, _ = build_spec_identity(shape, slots, entities=entities)
+    unpinned_id, _ = build_spec_identity(shape, slots, entities=entities, open_roles=())
 
     assert spec_id == "spec_8972b8b9a034b8fa6754042c2fc02317"
     assert spec_id != unpinned_id
@@ -299,7 +353,7 @@ def test_served_duplicate_set_members_reproduce_spec_id() -> None:
     """#572. Served set bindings deduplicate duplicate DCIDs before hashing."""
     common = [_value_slot("what", "SomeProp", "SomeValue")]
     slots = [*common, _set_slot("source", None, ["OECD_DAC1", "OECD_DAC2A", "OECD_DAC1"])]
-    spec_id, base_identity = build_spec_identity(shape_for("shape"), slots)
+    spec_id, base_identity = build_spec_identity(shape_for("shape"), slots, open_roles=())
     assert base_identity.facets is not None
     provenance = base_identity.facets["provenance"]
     assert isinstance(provenance, IdentityBindingSet)
@@ -311,7 +365,7 @@ def test_served_singleton_set_collapses_and_reproduces_spec_id() -> None:
     """#572. A singleton set is served as a value before hashing."""
     common = [_value_slot("what", "SomeProp", "SomeValue")]
     slots = [*common, _set_slot("source", None, ["OECD_DAC1", "OECD_DAC1"])]
-    spec_id, base_identity = build_spec_identity(shape_for("shape"), slots)
+    spec_id, base_identity = build_spec_identity(shape_for("shape"), slots, open_roles=())
     assert base_identity.facets is not None
     provenance = base_identity.facets["provenance"]
     assert isinstance(provenance, IdentityBindingValue)
@@ -328,15 +382,15 @@ def test_set_binding_order_independent() -> None:
     set_ba = _set_slot(
         "how", "DevelopmentFinancePurpose", ["DAC/Medicaleducationtraining", "DAC/Healtheducation"]
     )
-    id_ab = compute_spec_id(shape_for("directional_roles"), [set_ab])
-    id_ba = compute_spec_id(shape_for("directional_roles"), [set_ba])
+    id_ab = compute_spec_id(shape_for("directional_roles"), [set_ab], open_roles=())
+    id_ba = compute_spec_id(shape_for("directional_roles"), [set_ba], open_roles=())
     assert id_ab == id_ba
 
 
 def test_different_shape_ids_produce_different_spec_ids() -> None:
     slots = [_value_slot("what", "SomeProp", "SomeValue")]
-    id_a = compute_spec_id(shape_for("shape_a"), slots)
-    id_b = compute_spec_id(shape_for("shape_b"), slots)
+    id_a = compute_spec_id(shape_for("shape_a"), slots, open_roles=())
+    id_b = compute_spec_id(shape_for("shape_b"), slots, open_roles=())
     assert id_a != id_b
 
 
@@ -353,9 +407,11 @@ def test_mint_identity_matches_build_spec_identity_for_the_equivalent_slots() ->
             ["DAC/Healtheducation", "DAC/Medicaleducationtraining"],
         ),
     ]
-    expected_spec_id, expected_definition = build_spec_identity(shape_for("shape"), slots)
+    expected_spec_id, expected_definition = build_spec_identity(
+        shape_for("shape"), slots, open_roles=()
+    )
 
-    projection = build_identity_projection(shape_for("shape"), slots)
+    projection = build_identity_projection(shape_for("shape"), slots, open_roles=())
     spec_id, definition = mint_identity(projection)
 
     assert spec_id == expected_spec_id
@@ -369,10 +425,14 @@ def test_unbound_and_absent_converge() -> None:
     """An absent helper and an unbound helper produce the same wire state."""
     base = [_value_slot("how", "DevelopmentFinancePurpose", "DAC/Health")]
     unbound_id = compute_spec_id(
-        shape_for("directional_roles"), [*base, _unbound_slot("what", "DevelopmentFinanceScheme")]
+        shape_for("directional_roles"),
+        [*base, _unbound_slot("what", "DevelopmentFinanceScheme")],
+        open_roles=(),
     )
     absent_id = compute_spec_id(
-        shape_for("directional_roles"), [*base, _absent_slot("what", "DevelopmentFinanceScheme")]
+        shape_for("directional_roles"),
+        [*base, _absent_slot("what", "DevelopmentFinanceScheme")],
+        open_roles=(),
     )
     assert unbound_id == absent_id
 
@@ -385,6 +445,7 @@ def test_unbound_sentinel_stable_across_other_changes() -> None:
             _value_slot("how", "DevelopmentFinancePurpose", "DAC/Health"),
             _unbound_slot("what", "DevelopmentFinanceScheme"),
         ],
+        open_roles=(),
     )
     id_b = compute_spec_id(
         shape_for("directional_roles"),
@@ -392,6 +453,7 @@ def test_unbound_sentinel_stable_across_other_changes() -> None:
             _value_slot("how", "DevelopmentFinancePurpose", "DAC/Malariacontrol"),
             _unbound_slot("what", "DevelopmentFinanceScheme"),
         ],
+        open_roles=(),
     )
     assert id_a != id_b
 
@@ -412,11 +474,13 @@ class TestWhereSlotNeverAffectsIdentity:
             shape_for("directional_roles"),
             [*common, _value_slot("where", "DevelopmentFinanceRecipient", "country/ETH")],
             entities=entities,
+            open_roles=(),
         )
         id_b = compute_spec_id(
             shape_for("directional_roles"),
             [*common, _value_slot("where", "DevelopmentFinanceRecipient", "country/KEN")],
             entities=entities,
+            open_roles=(),
         )
         assert id_a == id_b
 
@@ -437,8 +501,10 @@ class TestWhereSlotNeverAffectsIdentity:
                 ),
             ),
         ]
-        id_a = compute_spec_id(shape_for("shape"), slots_no_where, entities=entities)
-        id_b = compute_spec_id(shape_for("shape"), slots_with_where, entities=entities)
+        id_a = compute_spec_id(shape_for("shape"), slots_no_where, entities=entities, open_roles=())
+        id_b = compute_spec_id(
+            shape_for("shape"), slots_with_where, entities=entities, open_roles=()
+        )
         assert id_a == id_b
 
     def test_different_recipients_are_distinguished_via_entities_only(self) -> None:
@@ -453,6 +519,7 @@ class TestWhereSlotNeverAffectsIdentity:
             entities=[
                 _directional_entity("country/ETH", "destination", "DevelopmentFinanceRecipient")
             ],
+            open_roles=(),
         )
         id_ken = compute_spec_id(
             shape_for("directional_roles"),
@@ -460,6 +527,7 @@ class TestWhereSlotNeverAffectsIdentity:
             entities=[
                 _directional_entity("country/KEN", "destination", "DevelopmentFinanceRecipient")
             ],
+            open_roles=(),
         )
         assert id_eth != id_ken
 
@@ -471,14 +539,16 @@ class TestWhenSlotNeverAffectsIdentity:
     def test_when_slot_binding_ignored_regardless_of_value(self) -> None:
         slots_a = [_when_slot_value(2010, 2020)]
         slots_b = [_when_slot_value(2015, 2018)]
-        assert compute_spec_id(shape_for("shape"), slots_a) == compute_spec_id(
-            shape_for("shape"), slots_b
+        assert compute_spec_id(shape_for("shape"), slots_a, open_roles=()) == compute_spec_id(
+            shape_for("shape"), slots_b, open_roles=()
         )
 
     def test_when_slot_present_vs_absent_from_the_list_agrees(self) -> None:
         other = _value_slot("what", "SomeProp", "SomeValue")
-        id_without = compute_spec_id(shape_for("shape"), [other])
-        id_with = compute_spec_id(shape_for("shape"), [other, _when_slot_value(2015, 2018)])
+        id_without = compute_spec_id(shape_for("shape"), [other], open_roles=())
+        id_with = compute_spec_id(
+            shape_for("shape"), [other, _when_slot_value(2015, 2018)], open_roles=()
+        )
         assert id_without == id_with
 
 
@@ -503,9 +573,9 @@ class TestSourceSlotMapsToProvenanceFacet:
     )
     def test_bound_source_forms_produce_distinct_ids(self, source_a: Slot, source_b: Slot) -> None:
         common = [_value_slot("what", "SomeProp", "SomeValue")]
-        assert compute_spec_id(shape_for("shape"), [*common, source_a]) != compute_spec_id(
-            shape_for("shape"), [*common, source_b]
-        )
+        assert compute_spec_id(
+            shape_for("shape"), [*common, source_a], open_roles=()
+        ) != compute_spec_id(shape_for("shape"), [*common, source_b], open_roles=())
 
     @pytest.mark.parametrize(
         ("slots_a", "slots_b"),
@@ -521,17 +591,21 @@ class TestSourceSlotMapsToProvenanceFacet:
     def test_omitted_source_forms_converge(self, slots_a: list[Slot], slots_b: list[Slot]) -> None:
         """An inapplicable, omitted, or unbound source slot hashes identically."""
         common = [_value_slot("what", "SomeProp", "SomeValue")]
-        assert compute_spec_id(shape_for("shape"), [*common, *slots_a]) == compute_spec_id(
-            shape_for("shape"), [*common, *slots_b]
-        )
+        assert compute_spec_id(
+            shape_for("shape"), [*common, *slots_a], open_roles=()
+        ) == compute_spec_id(shape_for("shape"), [*common, *slots_b], open_roles=())
 
     def test_source_set_binding_order_independent(self) -> None:
         common = [_value_slot("what", "SomeProp", "SomeValue")]
         id_ab = compute_spec_id(
-            shape_for("shape"), [*common, _set_slot("source", None, ["OECD_DAC1", "OECD_DAC2A"])]
+            shape_for("shape"),
+            [*common, _set_slot("source", None, ["OECD_DAC1", "OECD_DAC2A"])],
+            open_roles=(),
         )
         id_ba = compute_spec_id(
-            shape_for("shape"), [*common, _set_slot("source", None, ["OECD_DAC2A", "OECD_DAC1"])]
+            shape_for("shape"),
+            [*common, _set_slot("source", None, ["OECD_DAC2A", "OECD_DAC1"])],
+            open_roles=(),
         )
         assert id_ab == id_ba
 
@@ -544,7 +618,7 @@ class TestSourceSlotMapsToProvenanceFacet:
             _value_slot("source", None, "OECD_DAC2A"),
         ]
         with pytest.raises(ValueError, match="at most one source-axis slot"):
-            compute_spec_id(shape_for("shape"), slots)
+            compute_spec_id(shape_for("shape"), slots, open_roles=())
 
 
 # Explicit measurementMethod and unit facets.
@@ -553,25 +627,29 @@ class TestSourceSlotMapsToProvenanceFacet:
 class TestExplicitFacetBindings:
     def test_measurement_method_ref_binding_changes_id(self) -> None:
         common = [_value_slot("what", "SomeProp", "SomeValue")]
-        id_unbound = compute_spec_id(shape_for("shape"), common)
+        id_unbound = compute_spec_id(shape_for("shape"), common, open_roles=())
         id_bound = compute_spec_id(
             shape_for("shape"),
             common,
             explicit_facets={"measurementMethod": IdentityBindingValue(ref="GrossDisbursement")},
+            open_roles=(),
         )
         assert id_unbound != id_bound
 
     def test_unit_ref_binding_changes_id(self) -> None:
         common = [_value_slot("what", "SomeProp", "SomeValue")]
-        id_unbound = compute_spec_id(shape_for("shape"), common)
+        id_unbound = compute_spec_id(shape_for("shape"), common, open_roles=())
         id_bound = compute_spec_id(
-            shape_for("shape"), common, explicit_facets={"unit": IdentityBindingValue(ref="USD")}
+            shape_for("shape"),
+            common,
+            explicit_facets={"unit": IdentityBindingValue(ref="USD")},
+            open_roles=(),
         )
         assert id_unbound != id_bound
 
     def test_unit_request_form_binding_changes_id(self) -> None:
         common = [_value_slot("what", "SomeProp", "SomeValue")]
-        id_unbound = compute_spec_id(shape_for("shape"), common)
+        id_unbound = compute_spec_id(shape_for("shape"), common, open_roles=())
         id_bound = compute_spec_id(
             shape_for("shape"),
             common,
@@ -580,6 +658,7 @@ class TestExplicitFacetBindings:
                     request=IdentityUnitRequest(currency="USD", prices="current")
                 )
             },
+            open_roles=(),
         )
         assert id_unbound != id_bound
 
@@ -589,22 +668,24 @@ class TestExplicitFacetBindings:
         Ignore explicit provenance to avoid hashing the same source twice.
         """
         common = [_value_slot("what", "SomeProp", "SomeValue")]
-        id_no_explicit = compute_spec_id(shape_for("shape"), common)
+        id_no_explicit = compute_spec_id(shape_for("shape"), common, open_roles=())
         id_with_ignored_provenance = compute_spec_id(
             shape_for("shape"),
             common,
             explicit_facets={"provenance": IdentityBindingValue(ref="OECD_DAC1")},
+            open_roles=(),
         )
         assert id_no_explicit == id_with_ignored_provenance
 
     def test_measurement_method_and_source_slot_provenance_both_apply(self) -> None:
         common = [_value_slot("what", "SomeProp", "SomeValue")]
         slots_with_source = [*common, _value_slot("source", None, "OECD_DAC1")]
-        id_source_only = compute_spec_id(shape_for("shape"), slots_with_source)
+        id_source_only = compute_spec_id(shape_for("shape"), slots_with_source, open_roles=())
         id_both = compute_spec_id(
             shape_for("shape"),
             slots_with_source,
             explicit_facets={"measurementMethod": IdentityBindingValue(ref="GrossDisbursement")},
+            open_roles=(),
         )
         assert id_source_only != id_both
 
@@ -639,6 +720,7 @@ class TestExplicitFacetBindings:
                 "measurementMethod": IdentityBindingValue(ref="GrossDisbursement"),
                 "unit": IdentityBindingValue(ref="USD"),
             },
+            open_roles=(),
         )
         assert base_identity.facets is not None
         assert base_identity.facets["measurementMethod"] == IdentityBindingValue(
@@ -655,6 +737,7 @@ class TestExplicitFacetBindings:
                 "measurementMethod": IdentityBindingValue(ref="GrossDisbursement"),
                 "unit": IdentityBindingValue(ref="USD"),
             },
+            open_roles=(),
         )
         assert spec_id_again == spec_id
 
@@ -667,7 +750,7 @@ class TestExplicitFacetBindings:
             _value_slot("what", "BoundProp", "BoundValue"),
             _unbound_slot("how", "UnboundProp"),
         ]
-        spec_id, base_identity = build_spec_identity(shape_for("shape"), slots)
+        spec_id, base_identity = build_spec_identity(shape_for("shape"), slots, open_roles=())
         assert any(s.binding.state == "unbound" for s in base_identity.slots)
         rehashed = _identity_core.spec_id_from_value(base_identity.model_dump(exclude_none=True))
         assert rehashed == spec_id
@@ -675,6 +758,7 @@ class TestExplicitFacetBindings:
         spec_id_without_unbound, _ = build_spec_identity(
             shape_for("shape"),
             [_value_slot("what", "BoundProp", "BoundValue")],
+            open_roles=(),
         )
         assert spec_id_without_unbound != spec_id
 
@@ -690,7 +774,7 @@ class TestFailLoudOnMalformedInput:
             binding=BindingValue(value=SlotValue(ref=None, value_kind="literal", literal="foo")),
         )
         with pytest.raises(ValueError, match="no ref"):
-            compute_spec_id(shape_for("shape"), [literal_slot])
+            compute_spec_id(shape_for("shape"), [literal_slot], open_roles=())
 
     def test_binding_set_member_with_no_ref_raises(self) -> None:
         set_slot = Slot(
@@ -703,12 +787,12 @@ class TestFailLoudOnMalformedInput:
             ),
         )
         with pytest.raises(ValueError, match="no ref"):
-            compute_spec_id(shape_for("shape"), [set_slot])
+            compute_spec_id(shape_for("shape"), [set_slot], open_roles=())
 
     def test_what_slot_with_no_property_raises(self) -> None:
         no_prop_slot = Slot(key=_slot_key("what", None, "label"), binding=BindingUnbound())
         with pytest.raises(ValueError, match="no constraint property"):
-            compute_spec_id(shape_for("shape"), [no_prop_slot])
+            compute_spec_id(shape_for("shape"), [no_prop_slot], open_roles=())
 
     def test_unknown_binding_type_raises_value_error(self) -> None:
         """An unknown binding type raises ValueError from the adapter helper."""
@@ -725,11 +809,11 @@ def test_entities_absent_none_and_empty_list_all_agree() -> None:
     """entities=None, entities=[], and omitting the kwarg entirely must all
     map to the same `{}` entities member."""
     slots = [_value_slot("what", "SomeProp", "SomeValue")]
-    assert compute_spec_id(shape_for("shape"), slots) == compute_spec_id(
-        shape_for("shape"), slots, entities=None
+    assert compute_spec_id(shape_for("shape"), slots, open_roles=()) == compute_spec_id(
+        shape_for("shape"), slots, entities=None, open_roles=()
     )
-    assert compute_spec_id(shape_for("shape"), slots) == compute_spec_id(
-        shape_for("shape"), slots, entities=[]
+    assert compute_spec_id(shape_for("shape"), slots, open_roles=()) == compute_spec_id(
+        shape_for("shape"), slots, entities=[], open_roles=()
     )
 
 
@@ -739,8 +823,8 @@ def test_entities_same_role_bucket_order_independent() -> None:
     slots = [_value_slot("what", "DevelopmentFinanceScheme", "ODAGrants")]
     e1 = _directional_entity("country/ETH", "destination", "DevelopmentFinanceRecipient")
     e2 = _directional_entity("country/KEN", "destination", "DevelopmentFinanceRecipient")
-    id_ab = compute_spec_id(shape_for("directional_roles"), slots, entities=[e1, e2])
-    id_ba = compute_spec_id(shape_for("directional_roles"), slots, entities=[e2, e1])
+    id_ab = compute_spec_id(shape_for("directional_roles"), slots, entities=[e1, e2], open_roles=())
+    id_ba = compute_spec_id(shape_for("directional_roles"), slots, entities=[e2, e1], open_roles=())
     assert id_ab == id_ba
 
 
@@ -777,9 +861,9 @@ def test_entity_role_buckets_remain_distinct(
     entities_b: list[Entity],
 ) -> None:
     """Entity identity distinguishes entity values and their role buckets."""
-    assert compute_spec_id(shape_for(shape_name), slots, entities=entities_a) != compute_spec_id(
-        shape_for(shape_name), slots, entities=entities_b
-    )
+    assert compute_spec_id(
+        shape_for(shape_name), slots, entities=entities_a, open_roles=()
+    ) != compute_spec_id(shape_for(shape_name), slots, entities=entities_b, open_roles=())
 
 
 def test_directional_role_dcid_does_not_affect_identity() -> None:
@@ -793,11 +877,13 @@ def test_directional_role_dcid_does_not_affect_identity() -> None:
                 "country/ETH", "destination", role_dcid="DevelopmentFinanceRecipient"
             ),
         ],
+        open_roles=(),
     )
     id_b = compute_spec_id(
         shape_for("directional_roles"),
         slots,
         entities=[_directional_entity("country/ETH", "destination", role_dcid="someOtherProperty")],
+        open_roles=(),
     )
     assert id_a == id_b
 
@@ -809,8 +895,12 @@ class TestRequestedWindow:
     _SLOTS: ClassVar[list[Slot]] = [_value_slot("what", "SomeProp", "SomeValue")]
 
     def test_none_maps_to_all_distinct_from_latest(self) -> None:
-        id_none = compute_spec_id(shape_for("shape"), self._SLOTS, requested_window=None)
-        id_latest = compute_spec_id(shape_for("shape"), self._SLOTS, requested_window="latest")
+        id_none = compute_spec_id(
+            shape_for("shape"), self._SLOTS, requested_window=None, open_roles=()
+        )
+        id_latest = compute_spec_id(
+            shape_for("shape"), self._SLOTS, requested_window="latest", open_roles=()
+        )
         assert id_none != id_latest
 
     @pytest.mark.parametrize(
@@ -853,8 +943,10 @@ class TestRequestedWindow:
         window_b: TimeWindow | str | None,
     ) -> None:
         assert compute_spec_id(
-            shape_for("shape"), self._SLOTS, requested_window=window_a
-        ) != compute_spec_id(shape_for("shape"), self._SLOTS, requested_window=window_b)
+            shape_for("shape"), self._SLOTS, requested_window=window_a, open_roles=()
+        ) != compute_spec_id(
+            shape_for("shape"), self._SLOTS, requested_window=window_b, open_roles=()
+        )
 
 
 def test_reversed_requested_window_raises_identity_error() -> None:
@@ -868,6 +960,7 @@ def test_reversed_requested_window_raises_identity_error() -> None:
             shape_for("shape"),
             slots,
             requested_window=TimeWindow(start_year=2020, end_year=2015),
+            open_roles=(),
         )
     assert exc_info.value.category == "reversed_range"
 
@@ -887,12 +980,14 @@ def test_mid_stream_and_final_ids_agree_despite_differing_when_slot_binding() ->
         [*slots, _when_slot_value(requested.start_year, requested.end_year)],
         entities=entities,
         requested_window=requested,
+        open_roles=(),
     )
     final_id = compute_spec_id(
         shape_for("shape"),
         [*slots, _when_slot_value(coverage.start_year, coverage.end_year)],
         entities=entities,
         requested_window=requested,
+        open_roles=(),
     )
     assert mid_stream_id == final_id
 

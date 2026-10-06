@@ -18,13 +18,16 @@ from search.models import QueryEcho, ResubmitIdentityEntry, Slot
 from tests.engine._axis_doubles import TOTAL_POPULATION_INDIA_FAMILY, axis_confirming_reader
 from tests.engine._base_identity import (
     GDP_SHAPE,
-    base_from_spec,
-    make_base,
     make_identity,
     subject_entity,
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import make_request, offline_resolve
+from tests.engine._harness import (
+    make_request,
+    member_walk_reader,
+    offline_resolve,
+    with_member_arcs,
+)
 from tests.engine._search_app import search_app
 from tests.engine.test_parts_shape import (
     _MIDDLE_FAILS_QUERY,
@@ -34,11 +37,17 @@ from tests.engine.test_parts_shape import (
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 
 
-def _client() -> TestClient:
+def _client(*, walk: bool = False) -> TestClient:
+    """A Search app over the shared fixture graph; with `walk`, a resubmit walks the mint's
+    member enumeration over its nodes."""
     graph = FakeGraph()
     return TestClient(
         search_app(
-            graph=graph, resolver=make_resolver(graph), llm=FakeLLM(), sdmx=FakeSdmxClient()
+            graph=graph,
+            resolver=make_resolver(graph),
+            llm=FakeLLM(),
+            sdmx=FakeSdmxClient(),
+            materialise_graph=member_walk_reader(graph) if walk else None,
         ),
         raise_server_exceptions=True,
     )
@@ -59,12 +68,8 @@ def _parse_sse(body: str) -> list[tuple[str, dict]]:
     return frames
 
 
-def _with_include_sentence(request: dict, include_sentence: bool) -> dict:
-    return {**request, "response_options": {"include_sentence": include_sentence}}
-
-
-def _assert_envelope_gate(client: TestClient, request: dict, *, present: bool) -> None:
-    """Assert the sentence fields are both present or absent in buffered and SSE responses."""
+def _assert_envelope_sentence(client: TestClient, request: dict) -> None:
+    """Assert the sentence fields are present in buffered and SSE responses."""
     buffered = client.post("/api/search/resolve", json=request)
     assert buffered.status_code == 200
     sse = client.post("/api/search/resolve", json=request, headers={"Accept": "text/event-stream"})
@@ -72,12 +77,8 @@ def _assert_envelope_gate(client: TestClient, request: dict, *, present: bool) -
     buffered_body = buffered.json()
     sse_response = next(d for ev, d in _parse_sse(sse.text) if ev == "response")["response"]
     for body in (buffered_body, sse_response):
-        if present:
-            assert body.get("rendered_sentence")
-            assert body.get("sentence_plan")
-        else:
-            assert "rendered_sentence" not in body
-            assert "sentence_plan" not in body
+        assert body.get("rendered_sentence")
+        assert body.get("sentence_plan")
 
 
 # One test per ResolveResponse construction site funnelling through
@@ -85,26 +86,23 @@ def _assert_envelope_gate(client: TestClient, request: dict, *, present: bool) -
 # single-part no-data shortcuts.
 
 
-def test_raw_text_n1_envelope_sentence_gated():
+def test_raw_text_n1_envelope_sentence():
     """conjoin.py's assemble_region, reached by the raw_text N=1 path."""
     client = _client()
     request = {"input": {"kind": "raw_text", "query": "total population India"}}
-    _assert_envelope_gate(client, _with_include_sentence(request, True), present=True)
-    _assert_envelope_gate(client, _with_include_sentence(request, False), present=False)
+    _assert_envelope_sentence(client, request)
 
 
-def test_raw_text_n_ge_2_envelope_sentence_gated():
+def test_raw_text_n_ge_2_envelope_sentence():
     """conjoin.py's combine_regions, reached by the raw_text N>=2 path."""
     client = _client()
     request = {"input": {"kind": "raw_text", "query": "population and GDP in Brazil"}}
-    _assert_envelope_gate(client, _with_include_sentence(request, True), present=True)
-    _assert_envelope_gate(client, _with_include_sentence(request, False), present=False)
+    _assert_envelope_sentence(client, request)
 
 
-def _gdp_resubmit_request(*, include_sentence: bool) -> dict:
-    """Build a definite GDP resubmit request with sentence output toggled."""
+def _gdp_resubmit_request() -> dict:
+    """Build a definite GDP resubmit request."""
     entities = [subject_entity("country/IND")]
-    base_spec_id, base_identity = make_base(GDP_SHAPE, entities=entities)
     return {
         "input": {
             "kind": "dataset_resubmit",
@@ -131,38 +129,31 @@ def _gdp_resubmit_request(*, include_sentence: bool) -> dict:
                         ],
                         entities=entities,
                     ).model_dump(mode="json"),
-                    "base_spec_id": base_spec_id,
-                    "base_identity": base_identity.model_dump(mode="json"),
-                    "resolved_stat_var_dcids": [
-                        "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
-                    ],
                 }
             ],
         },
-        "response_options": {"include_sentence": include_sentence},
+        "response_options": {},
     }
 
 
-def test_resubmit_envelope_sentence_gated():
+def test_resubmit_envelope_sentence():
     """Checks the resubmit sentence path."""
-    client = _client()
-    resp = client.post("/api/search/resolve", json=_gdp_resubmit_request(include_sentence=True))
+    client = _client(walk=True)
+    resp = client.post("/api/search/resolve", json=_gdp_resubmit_request())
     assert resp.status_code == 200
     assert resp.json()["status"] == "definite"
-    _assert_envelope_gate(client, _gdp_resubmit_request(include_sentence=True), present=True)
-    _assert_envelope_gate(client, _gdp_resubmit_request(include_sentence=False), present=False)
+    _assert_envelope_sentence(client, _gdp_resubmit_request())
 
 
-def test_empty_query_no_data_envelope_sentence_gated():
-    """Whitespace queries keep sentence fields gated on `include_sentence`."""
+def test_empty_query_no_data_envelope_sentence():
+    """Whitespace queries carry the envelope sentence."""
     client = _client()
     request = {"input": {"kind": "raw_text", "query": "   "}}
-    _assert_envelope_gate(client, _with_include_sentence(request, True), present=True)
-    _assert_envelope_gate(client, _with_include_sentence(request, False), present=False)
+    _assert_envelope_sentence(client, request)
 
 
-def test_no_variables_extracted_no_data_envelope_sentence_gated(monkeypatch):
-    """An empty extraction keeps sentence fields gated on `include_sentence`."""
+def test_no_variables_extracted_no_data_envelope_sentence(monkeypatch):
+    """An empty extraction carries the envelope sentence."""
 
     async def _empty_extraction(query: str, *, llm):
         return (
@@ -176,26 +167,16 @@ def test_no_variables_extracted_no_data_envelope_sentence_gated(monkeypatch):
     monkeypatch.setattr("search.engine.entry.raw_text.extract", _empty_extraction)
     client = _client()
     request = {"input": {"kind": "raw_text", "query": "asdf qwerty"}}
-    _assert_envelope_gate(client, _with_include_sentence(request, True), present=True)
-    _assert_envelope_gate(client, _with_include_sentence(request, False), present=False)
+    _assert_envelope_sentence(client, request)
 
 
-def test_quick_no_data_shortcut_envelope_sentence_gated():
-    """Directly checks sentence gating on the unreachable `_quick_no_data` fallback."""
-    for include_sentence, present in ((True, True), (False, False)):
-        response = _quick_no_data(
-            reason="variable_not_resolved",
-            query="",
-            engine_build="test",
-            start_ms=now_ms(),
-            include_sentence=include_sentence,
-        )
-        if present:
-            assert response.rendered_sentence
-            assert response.sentence_plan
-        else:
-            assert response.rendered_sentence is None
-            assert response.sentence_plan is None
+def test_quick_no_data_shortcut_envelope_sentence():
+    """The unreachable `_quick_no_data` fallback carries the envelope sentence."""
+    response = _quick_no_data(
+        reason="variable_not_resolved", query="", engine_build="test", start_ms=now_ms()
+    )
+    assert response.rendered_sentence
+    assert response.sentence_plan
 
 
 def test_single_part_no_data_still_names_variable_in_full_standalone_sentence():
@@ -204,7 +185,6 @@ def test_single_part_no_data_still_names_variable_in_full_standalone_sentence():
         "variable_not_resolved",
         variable_text="unemployment rate",
         warnings=[],
-        include_sentence=True,
     )
     assert part.rendered_sentence == (
         'Could not match "unemployment rate" to a supported indicator. Try a different wording '
@@ -249,7 +229,7 @@ def test_raw_text_three_variable_composed_sentence_names_middle_variable_once():
 
 _ETHIOPIA_REQUEST = {
     "input": {"kind": "raw_text", "query": "population and birth rate in Ethiopia"},
-    "response_options": {"include_sentence": True},
+    "response_options": {},
 }
 
 _ETHIOPIA_RENDERED_SENTENCE = (
@@ -311,7 +291,7 @@ def test_ethiopia_population_and_birth_rate_composed_sentence_sse():
 
 _FERTILITY_BRAZIL_REQUEST = {
     "input": {"kind": "raw_text", "query": "population and fertility rate in Brazil"},
-    "response_options": {"include_sentence": True},
+    "response_options": {},
 }
 
 _FERTILITY_BRAZIL_RENDERED_SENTENCE = (
@@ -358,7 +338,6 @@ def test_brazil_population_and_fertility_rate_composed_sentence_disagree():
 def _india_gdp_identity_entry() -> ResubmitIdentityEntry:
     """Build a definite India GDP identity with an unbound `activitySource` slot."""
     entities = [subject_entity("country/IND")]
-    base_spec_id, base_identity = make_base(GDP_SHAPE, entities=entities)
     identity = make_identity(
         GDP_SHAPE,
         [
@@ -378,9 +357,6 @@ def _india_gdp_identity_entry() -> ResubmitIdentityEntry:
     return ResubmitIdentityEntry(
         variable_text="GDP",
         identity=identity,
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=["Amount_EconomicActivity_GrossDomesticProduction_Nominal"],
     )
 
 
@@ -393,9 +369,6 @@ def test_two_agreeing_definite_parts_hoist_via_dataset_resubmit():
         ResubmitIdentityEntry(
             variable_text="population",
             identity=population.spec.definition.identity,
-            base_spec_id=base_from_spec(population.spec)[0],
-            base_identity=base_from_spec(population.spec)[1],
-            resolved_stat_var_dcids=[sv.ref for sv in population.spec.resolved.stat_vars.items],
         ),
         _india_gdp_identity_entry(),
     ]
@@ -404,7 +377,7 @@ def test_two_agreeing_definite_parts_hoist_via_dataset_resubmit():
             "kind": "dataset_resubmit",
             "entries": [e.model_dump(mode="json") for e in entries],
         },
-        "response_options": {"include_sentence": True},
+        "response_options": {},
     }
     graph = FakeGraph()
     client = TestClient(
@@ -413,7 +386,9 @@ def test_two_agreeing_definite_parts_hoist_via_dataset_resubmit():
             resolver=make_resolver(graph),
             llm=FakeLLM(),
             sdmx=FakeSdmxClient(),
-            materialise_graph=axis_confirming_reader(*TOTAL_POPULATION_INDIA_FAMILY),
+            materialise_graph=with_member_arcs(
+                axis_confirming_reader(*TOTAL_POPULATION_INDIA_FAMILY), graph
+            ),
         ),
         raise_server_exceptions=True,
     )

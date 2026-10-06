@@ -21,7 +21,6 @@ from materialise.errors import MaterialisationError
 from materialise.facets import FacetSelection
 from materialise.member_conversion import decide_member_conversion
 from materialise.recipes import RecipeNotDeclaredError
-from search.engine.bind import SlotBindingDraft
 from search.engine.region import candidate_grounding
 from search.engine.region.candidate_grounding import _prepare_candidate_context
 from search.engine.region.candidates import _Candidate
@@ -29,7 +28,6 @@ from search.engine.region.convertibility import survivor_declared_roles
 from search.engine.region.phase_answer import _decide_bound_unit_convertibility
 from search.engine.region.place_context import PlaceContext, place_context
 from search.engine.region.promote_ground import _decide_unit_convertibility
-from search.engine.region.promote_materialise import _phase_materialise
 from search.engine.region.promote_state import _PromoteState
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.member_facts import ArcsMemberFacts
@@ -152,7 +150,6 @@ def _resolve_state(shape: ShapeDraft, unit_request: IdentityUnitRequest) -> Reso
         source_text=None,
         materialise_graph=cast(Any, object()),
         materialise_sdmx=cast(Any, object()),
-        pipeline_steps=[],
         timing={},
         warnings=[],
         shape_draft=shape,
@@ -210,7 +207,6 @@ def test_promote_path_unit_decision_hands_sdmx_the_survivors_roles(
     state = _PromoteState(
         inp=cast(Any, inp),
         graph=cast(Any, None),
-        pipeline_steps=[],
         sdmx=cast(Any, None),
         deadline=None,
         include_option_coverage=False,
@@ -241,68 +237,8 @@ def test_candidate_path_unit_decision_hands_sdmx_the_survivors_roles(
 
     with pytest.raises(_StopAfterRequest):
         _prepare_candidate_context(
-            state, [_Candidate(twin_shape, [], total_result, _destination_place(twin_shape))]
+            state, [_Candidate(twin_shape, [], total_result, _destination_place(twin_shape), None)]
         )
-
-    assert [r.declared_roles for r in captured] == [_TOTAL_ROLES]
-
-
-def test_promote_fallback_carries_member_facts_into_the_unit_decision(
-    twin_shape: ShapeDraft,
-    total_result: Materialised,
-    unit_request: IdentityUnitRequest,
-    captured: list[MaterialisationRequest],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A winner silent on a bound property falls back to a flagged carrier with member facts.
-
-    The unit decision reads the carrier's roles, so a unit request over the fallback reaches
-    SDMX with the survivor's signature.
-    """
-    assert total_result.has_data
-    monkeypatch.setattr(
-        "search.engine.region.promote_materialise.run_materialise",
-        lambda *_, **__: total_result,
-    )
-    inp = SimpleNamespace(
-        identity=SimpleNamespace(facets={"unit": IdentityFacetValueRequest(request=unit_request)})
-    )
-    state = _PromoteState(
-        inp=cast(Any, inp),
-        graph=cast(Any, FakeGraph(raise_on_call=True)),
-        pipeline_steps=[],
-        sdmx=cast(Any, None),
-        deadline=None,
-        include_option_coverage=False,
-        stream_slot_options=False,
-        include_observations=False,
-        stream_observations=False,
-        materialise_graph=cast(Any, object()),
-        materialise_sdmx=cast(Any, object()),
-        coverage=empty_coverage_snapshot(),
-    )
-    state.shape_draft = twin_shape
-    state.entity_dcid = _DESTINATION
-    state.place = _destination_place(twin_shape)
-    state.identity_entities = {"destination": [_DESTINATION]}
-    # The total asserts no lendingType, so the bound value has no asserter.
-    state.bindings = [
-        SlotBindingDraft(
-            axis="how", property_dcid="lendingType", kind="value", value_dcids=["Concessional"]
-        )
-    ]
-    state.resolved_stat_var_dcids = [_TOTAL]
-    state.resolved_arcs = {_TOTAL: twin_shape.sv_arc_facts[_TOTAL]}
-    state.resolved_constraints_by_sv = {_TOTAL: {}}
-
-    assert _phase_materialise(state) is None
-    fallback = state.mat_result
-    assert isinstance(fallback, Materialised)
-    assert fallback.sv_dcids == [_TOTAL]
-    assert not fallback.has_data
-
-    with pytest.raises(_StopAfterRequest):
-        _decide_unit_convertibility(state, fallback)
 
     assert [r.declared_roles for r in captured] == [_TOTAL_ROLES]
 
@@ -328,7 +264,9 @@ def test_candidate_unit_decision_binds_the_candidates_own_probe_places(
     )
 
     with pytest.raises(_StopAfterRequest):
-        _prepare_candidate_context(state, [_Candidate(twin_shape, [], total_result, own_places)])
+        _prepare_candidate_context(
+            state, [_Candidate(twin_shape, [], total_result, own_places, None)]
+        )
 
     assert seen == [{"financingRecipient": [_DESTINATION, "country/UGA"]}]
 
@@ -401,7 +339,7 @@ def _role_currency_decision(
     state = _resolve_state(twin_shape, request)
     state.materialise_graph = graph
     prep = _prepare_candidate_context(
-        state, [_Candidate(twin_shape, [], total, _destination_place(twin_shape))]
+        state, [_Candidate(twin_shape, [], total, _destination_place(twin_shape), None)]
     )
     return prep.unit_refusals[0], graph
 

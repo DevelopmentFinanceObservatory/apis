@@ -101,7 +101,6 @@ def test_lone_also_plausible_survivor_refuses_qualifier_not_bound():
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_ElectShape0AlsoPlausibleShape1LLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
@@ -148,7 +147,6 @@ def test_two_survivors_candidates_carries_query_qualifier_dropped_warning():
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_ElectShape0AlsoPlausibleShape1LLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )

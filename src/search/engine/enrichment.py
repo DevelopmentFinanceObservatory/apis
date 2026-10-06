@@ -220,7 +220,8 @@ async def _stream_slot_options(
                     events, warns = t.result()
                 except GraphInfraError:
                     # A graph failure drops this probe. Unexpected errors propagate
-                    # to the route as a terminal failure.
+                    # to the route as a terminal failure. Trailing events reach no cache,
+                    # because a transport that streams them stores nothing (`CacheScope`).
                     logger.warning("trailing enrichment probe task failed", exc_info=True)
                     continue
                 warnings_out.extend(warns)

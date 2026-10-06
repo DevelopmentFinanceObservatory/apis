@@ -5,6 +5,7 @@ import pytest
 import dc_graph
 from search.engine.clients.graph import SubjectsCoverage, SubjectsPage
 from search.engine.clients.graph_client import LiveGraphClient
+from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import GraphInfraError
 from tests.fixtures import FakeGraph
 
@@ -162,29 +163,24 @@ def test_a_warm_resubmit_reads_no_group_members(monkeypatch) -> None:
     posting the same group, makes no graph request."""
     from search.engine.region.resubmit_request import resubmit_named_groups
     from search.engine.spec_id import build_spec_identity
-    from search.models import IdentityEntityGroup, ResubmitIdentityPayload
+    from search.models import IdentityEntityGroup
     from tests.engine._base_identity import PERSON_COUNT_SHAPE, subject_entity
 
     group = IdentityEntityGroup(dcid="complete/LEAD", label="posted label")
-    base_spec_id, identity = build_spec_identity(
+    _spec_id, identity = build_spec_identity(
         PERSON_COUNT_SHAPE,
         [],
         entities=[subject_entity("a")],
         entity_groups={"observationAbout": group},
-    )
-    inp = ResubmitIdentityPayload(
-        identity=identity,
-        base_spec_id=base_spec_id,
-        base_identity=identity,
-        resolved_stat_var_dcids=["Count_Person"],
+        open_roles=(),
     )
     posts: list[dict] = []
     client = LiveGraphClient(base="http://fake")
     monkeypatch.setattr(dc_graph.GraphClient, "post", _subjects_post(posts))
 
-    cold = resubmit_named_groups(inp, graph=client, deadline=None)
+    cold = resubmit_named_groups(identity, graph=client, deadline=None)
     cold_posts = len(posts)
-    warm = resubmit_named_groups(inp, graph=client, deadline=None)
+    warm = resubmit_named_groups(identity, graph=client, deadline=None)
 
     assert [(g.dcid, g.label, g.member_dcids) for g in cold] == [
         ("complete/LEAD", "complete/LEAD", frozenset({"a"}))
@@ -217,42 +213,65 @@ class _GroupGraph:
 
 
 @pytest.mark.parametrize(
-    ("members", "fail", "groups", "label_reads"),
+    ("members", "fail", "groups", "label_reads", "degraded"),
     [
-        (("a",), None, [("complete/LEAD", "graph label")], [["complete/LEAD"]]),
-        (("a",), "labels", [], [["complete/LEAD"]]),
-        (("a",), "members", [], []),
-        (("a", "b"), None, [], []),
+        (("a",), None, [("complete/LEAD", "graph label")], [["complete/LEAD"]], False),
+        (("a",), "labels", [], [["complete/LEAD"]], True),
+        (("a",), "members", [], [], True),
+        (("a", "b"), None, [], [], False),
     ],
     ids=["confirmed", "labels-fail", "members-fail", "members-differ"],
 )
 def test_resubmit_groups_read_labels_only_for_confirmed_members(
-    members, fail, groups, label_reads
+    members, fail, groups, label_reads, degraded
 ) -> None:
     """Labels are read only for groups whose graph members match the role's entities. A
-    failed members or labels read drops the group and the resubmit still answers."""
+    failed members or labels read drops the group, says the answer is degraded, and the
+    resubmit still answers."""
     from search.engine.region.resubmit_request import resubmit_named_groups
     from search.engine.spec_id import build_spec_identity
-    from search.models import IdentityEntityGroup, ResubmitIdentityPayload
+    from search.models import IdentityEntityGroup
     from tests.engine._base_identity import PERSON_COUNT_SHAPE, subject_entity
 
-    base_spec_id, identity = build_spec_identity(
+    _spec_id, identity = build_spec_identity(
         PERSON_COUNT_SHAPE,
         [],
         entities=[subject_entity("a")],
         entity_groups={
             "observationAbout": IdentityEntityGroup(dcid="complete/LEAD", label="posted label")
         },
-    )
-    inp = ResubmitIdentityPayload(
-        identity=identity,
-        base_spec_id=base_spec_id,
-        base_identity=identity,
-        resolved_stat_var_dcids=["Count_Person"],
+        open_roles=(),
     )
     graph = _GroupGraph(members, fail=fail)
 
-    result = resubmit_named_groups(inp, graph=graph, deadline=None)
+    with recording_degraded_reads() as lost:
+        result = resubmit_named_groups(identity, graph=graph, deadline=None)
 
     assert [(g.dcid, g.label) for g in result] == groups
     assert graph.label_reads == label_reads
+    # A failed read is lost to the answer, so no cache stores it.
+    assert lost.degraded is degraded
+
+
+def test_resubmit_groups_drop_a_group_naming_no_graph_node() -> None:
+    """A posted group with no dcid has nothing that ties its label to the role's entities,
+    so a resubmit drops it without a read."""
+    from search.engine.region.resubmit_request import resubmit_named_groups
+    from search.engine.spec_id import build_spec_identity
+    from search.models import IdentityEntityGroup
+    from tests.engine._base_identity import PERSON_COUNT_SHAPE, subject_entity
+
+    _spec_id, identity = build_spec_identity(
+        PERSON_COUNT_SHAPE,
+        [],
+        entities=[subject_entity("a")],
+        entity_groups={"observationAbout": IdentityEntityGroup(label="posted label")},
+        open_roles=(),
+    )
+    graph = _GroupGraph(("a",))
+
+    with recording_degraded_reads() as lost:
+        assert resubmit_named_groups(identity, graph=graph, deadline=None) == ()
+
+    assert graph.label_reads == []
+    assert not lost.degraded

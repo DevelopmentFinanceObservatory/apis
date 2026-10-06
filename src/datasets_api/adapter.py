@@ -17,7 +17,8 @@ from __future__ import annotations
 import dataclasses
 import logging
 import threading
-from collections.abc import Collection, Hashable, Mapping, Sequence
+import time
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, cast
 
@@ -27,9 +28,8 @@ from code_index.members import (
     FamilyQuery,
     SourceNotInFamily,
     antichain_minimal_rows,
-    canonical_identity,
     identity_family_query,
-    index_covers_slot_keys,
+    index_decides,
     index_family,
 )
 from code_index.query import CodeIndex
@@ -43,6 +43,7 @@ from datasets_api.codes_materialise import (
     RoleSignatureIncompatible,
     SpecNotExportable,
 )
+from datasets_api.config import DatasetsBuildSettings
 from datasets_api.currency import derive_signals
 from datasets_api.mint_models import (
     FacetRefBinding,
@@ -53,7 +54,7 @@ from datasets_api.mint_models import (
     WindowLatest,
     WindowRange,
 )
-from datasets_api.models import MAX_COLLECTION_MEMBERS, CanonicalDefinition
+from datasets_api.models import CanonicalDefinition
 from datasets_api.shape import StatVarShape, resolve_shape
 from datasets_api.timings import phase
 from datasets_api.versions import HeadReader, MemberSignal
@@ -81,17 +82,13 @@ from spec_registry.reader import StoredDefinition
 from statvar_members import (
     AbsentReading,
     DegenerateObservationProperties,
-    Member,
     MemberEnumerationTooLarge,
     MemberEnumerator,
     MemberQueryUnanchored,
     MemberRoleDisagreement,
     MultiValuedConstraint,
     NotAStatisticalVariable,
-    declares_only_placing_roles,
-    five_tuple_from_identity,
     member_digest,
-    root_can_prove_complete,
 )
 
 # Identity documents store bare dcids. Shapes carry the `dcid:` prefix.
@@ -112,7 +109,7 @@ _PROVENANCE_POINTER = f"/facets/{_PROVENANCE_AXIS}"
 # Probe role keys with `typeOf` to distinguish graph properties from other nodes.
 _ROLE_EXISTENCE_PROBE = "typeOf"
 
-# The count exceeds `statvar_set`'s cap. Narrowing the five-tuple requires
+# The member count exceeds `member_cap`. Narrowing the five-tuple requires
 # another slot binding. Scope and window leave that count unchanged.
 _MEMBER_CARDINALITY_OVER_CAP_REMEDY = (
     "Add another slot binding to the identity's own `slots` list to "
@@ -125,49 +122,39 @@ _MEMBER_CARDINALITY_OVER_CAP_REMEDY = (
     "definition.identity field."
 )
 
-# A truncated reverse query yields a candidate window. The member total is unmeasured.
-# `spec_id.resolved_stat_var_dcids` takes bare dcids, the form of a Search ref, and refuses a
-# `dcid:` prefix. `statvar_set.statvars` requires the prefix, mints one pinned spec per
-# StatVar, and accepts at most `MAX_COLLECTION_MEMBERS`. Wider sets need another slot.
-_CANDIDATE_WINDOW_SEED_REMEDY = (
-    "Post this same spec_id again with resolved_stat_var_dcids set to the StatVar dcid(s) "
-    "search already resolved, written bare as resolved.stat_vars.items[].ref gives them (no "
-    "dcid: prefix): a posted root, a member constrained by exactly the identity's bound "
-    "slots that declares only the roles its entities are bound under, proves the family "
-    "complete and this spec mints. Alternatively "
-)
-_CANDIDATE_WINDOW_STATVAR_SET_REMEDY = (
-    'POST /api/datasets with kind "statvar_set" and statvars set to the StatVar dcid(s) '
-    "search already resolved, each resolved.stat_vars.items[].ref written dcid:<ref>; that "
-    "mints a different, pinned spec per StatVar, and statvars caps at "
-    f"{MAX_COLLECTION_MEMBERS} per request. For a wider family, add another slot binding "
-    "to the identity's own `slots` list instead."
+# A walk refuses `candidate_window` when the whole filtered reverse set holds more subjects than
+# the walk reads. The member total is unmeasured. `statvar_set.statvars` requires the `dcid:`
+# prefix and names one StatVar, which it mints as a pinned spec.
+_CANDIDATE_WINDOW_REMEDY = (
+    "Add another slot binding to the identity's own `slots` list to narrow the set the walk "
+    "reads; a narrower identity hashes to a different spec_id. Alternatively "
+    'POST /api/datasets with kind "statvar_set" and statvars set to one StatVar dcid, '
+    "written dcid:<ref>; that mints a different, pinned spec for that StatVar, one request "
+    "per StatVar."
 )
 
 
-def _candidate_window_remedy(*, root_can_prove: bool, accepts_seed: bool) -> str:
-    """The remedy for a truncated, unproven page. The seed remedy keeps the caller's spec and
-    leads when a posted root can prove the family complete (`root_can_prove_complete` and
-    `_posted_root_can_elect`) and the refused subject is a spec, which `kind: "spec_id"`
-    mints with a seed. Otherwise no
-    posted StatVar clears the refusal, and `statvar_set` is the only direct mint: a collection
-    member takes no seed.
-    """
-    if root_can_prove and accepts_seed:
-        return f"{_CANDIDATE_WINDOW_SEED_REMEDY}{_CANDIDATE_WINDOW_STATVAR_SET_REMEDY}"
-    return f"Mint the StatVars directly instead: {_CANDIDATE_WINDOW_STATVAR_SET_REMEDY}"
+@dataclass(frozen=True)
+class MemberReadBounds:
+    """How far a described arm's member walk reads.
+
+    A first reverse page that truncates without a confirmed root makes the walk read the
+    whole filtered set, up to `subject_ceiling` subjects. Every graph read of the walk ends
+    by `deadline`, a `time.monotonic()` instant."""
+
+    subject_ceiling: int
+    deadline: float
 
 
-def _posted_root_can_elect(members: Sequence[Member], role_keys: frozenset[str]) -> bool:
-    """Whether a posted root of the family `members` were read from would elect its role
-    class (`statvar_members.declares_only_placing_roles`), so posting it can prove the
-    family complete. With no member read, a root can elect only under a bound role key:
-    with none, the root must be subject-only, which a role-bearing family has none of."""
-    if members:
-        return all(
-            declares_only_placing_roles(member.declared_roles, role_keys) for member in members
-        )
-    return bool(role_keys)
+def member_read_bounds(
+    settings: DatasetsBuildSettings, *, request_deadline: float | None
+) -> MemberReadBounds:
+    """The bounds of a walk starting now: `settings.member_subject_ceiling`, and
+    `settings.member_read_seconds` from now or `request_deadline`, whichever is earlier."""
+    deadline = time.monotonic() + settings.member_read_seconds
+    if request_deadline is not None:
+        deadline = min(deadline, request_deadline)
+    return MemberReadBounds(subject_ceiling=settings.member_subject_ceiling, deadline=deadline)
 
 
 def _absent_readings(index: CodeIndex) -> Mapping[str, AbsentReading]:
@@ -430,13 +417,13 @@ def to_materialisation_request(
         window=window,
         index_sourced=_identity_is_index_sourced(identity, code_index=code_index),
         dataset=shape.dataset,
-        family=_request_family(identity, shape),
+        family=admitted_family(identity, shape),
     )
 
 
-def _request_family(identity: Mapping[str, object], shape: StatVarShape) -> MemberFamily | None:
-    """Return the population `identity` admits, for the trace. A pinned identity admits its
-    one StatVar. A described identity admits the family member resolution stated on `shape`."""
+def admitted_family(identity: Mapping[str, object], shape: StatVarShape) -> MemberFamily | None:
+    """Return the population `identity` admits, as the trace states it. A pinned identity
+    admits its one StatVar. A described identity admits the family member resolution stated on `shape`."""
     if cast("Mapping[str, object]", identity.get("shape", {})).get("kind") == "stat_var":
         return _member_family(frozenset((shape.stat_var.removeprefix(_STAT_VAR_PREFIX),)))
     return shape.family
@@ -445,18 +432,13 @@ def _request_family(identity: Mapping[str, object], shape: StatVarShape) -> Memb
 def _identity_is_index_sourced(identity: Mapping[str, object], *, code_index: CodeIndex) -> bool:
     """Return whether `resolve_definition_members` resolves a described arm from `code_index`.
 
-    The test is `index_covers_slot_keys` on the identity's slot keys. Pinned arms resolve
-    against the graph.
+    The test is `index_decides` on the identity's query, the one `index_family` applies.
+    Pinned arms resolve against the graph.
     """
     shape_member = cast("Mapping[str, object]", identity.get("shape", {}))
     if shape_member.get("kind") == "stat_var":
         return False
-    slots = cast("Sequence[Mapping[str, object]]", identity.get("slots", ()))
-    return index_covers_slot_keys(
-        code_index,
-        five_tuple_from_identity(shape_member),
-        {cast(str, slot["property"]) for slot in slots},
-    )
+    return index_decides(code_index, identity_family_query(code_index, identity))
 
 
 def _unit_request_from_identity(
@@ -530,6 +512,14 @@ def pinned_member_ref(identity: Mapping[str, object]) -> str | None:
     return f"{_STAT_VAR_PREFIX}{shape_member['id']}"
 
 
+def shape_measurement_qualifier(identity: Mapping[str, object]) -> str | None:
+    """The `measurementQualifier` dcid a described identity's shape states, which every member
+    shares, or `None` when the shape states none or the identity is pinned."""
+    shape_member = cast("Mapping[str, object]", identity.get("shape", {}))
+    qualifier = shape_member.get("measurement_qualifier")
+    return qualifier if isinstance(qualifier, str) else None
+
+
 @dataclass(frozen=True)
 class ResolvedMembers:
     """The members an identity resolves to and the family they were reduced from."""
@@ -555,14 +545,15 @@ def _resolve_index_members(
 
     The family is one role class of one dataset's rows, elected by
     `code_index.members.elect_dataset`: the dataset the query names, else the one elected
-    among the five-tuple's publishers, and its rows whose roles cover the query's role keys
-    and declare the fewest roles. Return its antichain-minimal rows as shapes. Each shape
-    carries the elected dataset, every dataset the index records its row under, and the
-    dcids of every family row. Raise `SpecNotExportable` when none match,
-    `FacetNotAvailableError` when the query names a dataset that does not publish its
-    five-tuple, `RoleSignatureIncompatible` when the election ties between role sets, or
-    `MemberNotResolvable` for `observationAbout`. The in-memory path has no page
-    truncation or member-count ceiling.
+    among the five-tuple's publishers, and its rows of the role class the shared election
+    reads for the query's role keys (`statvar_members.elect_role_class`). Return its
+    antichain-minimal rows as shapes. Each shape carries the elected dataset, every dataset
+    the index records its row under, and the dcids of every family row. Raise
+    `SpecNotExportable` when none match, `FacetNotAvailableError` when the query names a
+    dataset that does not publish its five-tuple, `RoleSignatureIncompatible` when that
+    election ties (`DatasetFamily.tied`), naming the roles of the antichain-minimal rows
+    among those that place the role keys, or `MemberNotResolvable` for `observationAbout`.
+    The in-memory path has no page truncation or member-count ceiling.
     """
     five_tuple, slots = query.five_tuple, query.slots
     try:
@@ -591,7 +582,7 @@ def _resolve_index_members(
     roles_by_dcid = {
         row.dcid: row.observation_properties or (_OBSERVATION_ABOUT_ROLE,) for row in rows
     }
-    if len({frozenset(roles) for roles in roles_by_dcid.values()}) > 1:
+    if elected.tied:
         raise RoleSignatureIncompatible(spec_id=spec_id, roles_by_stat_var=roles_by_dcid)
     family_dcids = frozenset(row.dcid for row in family)
     # The index holds every row of the family, so the whole of it is stated.
@@ -614,28 +605,6 @@ def _resolve_index_members(
     return ResolvedMembers(shapes=shapes, family=family_dcids)
 
 
-def member_resolution_key(identity: Mapping[str, object], *, code_index: CodeIndex) -> Hashable:
-    """Return the inputs `resolve_definition_members` reads from `identity`, as one key.
-
-    A pinned arm's key is its StatVar. A described arm's key is the `FamilyQuery` of its
-    canonical form (`code_index.members.canonical_identity`): the five-tuple, the widened
-    slot bindings, the role keys its entities are bound under and the dataset the identity
-    names. Two identities with equal keys resolve the same members, so a resolved shape
-    serves another identity only under an equal key, and identities that bind different pins
-    of one family share a key. The entities bound under each role key,
-    the window and every facet that names no dataset stay out of the key."""
-    shape_member = cast("Mapping[str, object]", identity.get("shape", {}))
-    if shape_member.get("kind") == "stat_var":
-        return shape_member["id"]
-    query = identity_family_query(code_index, canonical_identity(code_index, identity))
-    return (
-        query.five_tuple,
-        tuple(sorted(query.slots.items())),
-        query.source,
-        tuple(sorted(query.role_keys)),
-    )
-
-
 def resolve_definition_members(
     identity: Mapping[str, object],
     *,
@@ -643,43 +612,38 @@ def resolve_definition_members(
     graph: GraphReader,
     enumerator: MemberEnumerator,
     code_index: CodeIndex,
-    seed: Sequence[str] | None = None,
-    accepts_seed: bool = True,
+    bounds: MemberReadBounds,
     role_keys: Collection[str] | None = None,
+    open_role_keys: Collection[str] | None = None,
 ) -> ResolvedMembers:
     """Resolve the members denoted by an identity's shape against the graph or code index.
 
     `ResolvedMembers.shapes` holds the antichain-minimal members and
     `ResolvedMembers.family` every member before that reduction: the pinned dcid,
-    every matching index row of the elected dataset, or every confirmed walked or seeded
-    candidate.
+    every matching index row of the elected dataset, or every confirmed walked candidate.
 
     `code_index` is the caller's resolved index, shared by enumeration and
     frame rendering so both use the same declarations.
 
-    `seed` adds bare caller-supplied dcids to described-arm candidates.
-    Empty seeds leave candidates unchanged. Pinned and index-backed paths
-    ignore seeds. Every seed uses the same confirmation and antichain
-    reduction as walked candidates. Only matching candidates survive. A root
-    seed can prove a page complete by dominating its candidates. Other seeds
-    confirm membership only.
+    `bounds` lets the graph walk settle a first page that truncates without a confirmed
+    root by reading the whole filtered set up to `bounds.subject_ceiling`, every read ending
+    by `bounds.deadline`. Every caller walks under the bounds of a mint
+    (`member_read_bounds`), on every door, so one identity resolves the same members
+    wherever it is read. Membership is a function of the identity, the graph and the code
+    index.
 
     `role_keys` replaces the role keys of the identity's own `entities` in the
-    role-class election, for a caller whose scope binds other entities. `None`
-    elects under the identity's own.
-
-    `accepts_seed` says whether the caller's door can take a seed for this
-    identity. A spec can: `kind: "spec_id"` mints it with
-    `resolved_stat_var_dcids`. A collection member cannot, so its
-    `candidate_window` refusal leaves the seed remedy out.
+    role-class election, for a caller whose scope binds other entities, and
+    `open_role_keys` replaces its own `open_roles`. `None` elects under the
+    identity's own.
 
     A pinned arm resolves to one `StatVarShape`. A described arm widens
     hierarchical `value` and `set` slots to the self-inclusive subtree via
-    `CodeIndex.descendants`. Leaves, flat systems, and unknown codes pass
-    through unchanged. The graph walk builds all shapes in one read.
+    `CodeIndex.expansion`. Leaves, flat systems, codes of a system whose parent row is
+    the total of its children, and unknown codes pass through unchanged. The graph walk builds all shapes in one read.
 
     If the identity's slot keys hold every constraint property of at least one
-    index row of the five-tuple (`index_covers_slot_keys`), resolve the elected
+    index row of the five-tuple (`index_decides`), resolve the elected
     dataset's minimal rows in memory; `facets.provenance` names the dataset when it
     binds one distinct ref (`code_index.members.named_dataset`). An identity whose keys cover a row and whose values match none
     refuses `SpecNotExportable` on this path. This bounded index path shares
@@ -690,10 +654,12 @@ def resolve_definition_members(
     The pinned arm maps `resolve_shape` refusals to `MemberNotResolvable` for `spec_id`.
     The described arm raises `SpecNotExportable` for an unanchored query or empty result.
     Enumeration over its member cap raises `OverCeilingError` with
-    the exact count. A truncated, unproven page raises `candidate_window`
-    with the count read and page cap. Membership beyond that window is
-    unmeasured. A proven-complete antichain is accepted. Same-keyset
-    duplicates beyond the window may be absent from the answer.
+    the exact count. A walk that ends truncated and unproven, past the first page's window
+    or past `bounds.subject_ceiling`, raises `candidate_window` with the count read and the
+    window it read. Membership beyond the window is unmeasured. A walk past
+    `bounds.deadline` raises `MemberReadDeadline`, a transient timeout. A
+    proven-complete antichain is accepted. Same-keyset duplicates beyond the first page may
+    be absent from the answer.
 
     Invalid candidate arcs raise `MemberNotResolvable` for `spec_id`.
     Inconsistent forward and reverse arcs raise it with up to 10 candidate
@@ -731,6 +697,8 @@ def resolve_definition_members(
     query = identity_family_query(code_index, identity)
     if role_keys is not None:
         query = dataclasses.replace(query, role_keys=frozenset(role_keys))
+    if open_role_keys is not None:
+        query = dataclasses.replace(query, open_role_keys=frozenset(open_role_keys))
     five_tuple, slots = query.five_tuple, query.slots
     resolved = _resolve_index_members(query, spec_id=spec_id, code_index=code_index)
     if resolved is not None:
@@ -744,11 +712,16 @@ def resolve_definition_members(
         return resolved
     try:
         group = enumerator.enumerate(
+            graph=graph,
+            stamp_key=graph.generation_stamp().key,
             five_tuple=five_tuple,
             slots=slots,
             readings=_absent_readings(code_index),
-            extra_candidates=seed or (),
             role_keys=query.role_keys,
+            open_role_keys=query.open_role_keys,
+            subject_ceiling=bounds.subject_ceiling,
+            deadline=bounds.deadline,
+            spec_id=spec_id,
         )
     except MemberQueryUnanchored as exc:
         raise SpecNotExportable(
@@ -780,14 +753,7 @@ def resolve_definition_members(
             f"{group.candidate_cap}-candidate reverse-arc window this deployment reads: "
             f"this read returned {group.candidates_considered} candidates of the "
             f"{group.candidate_cap} that window allows, and the member count past it is "
-            "unknown, not zero. "
-            + _candidate_window_remedy(
-                root_can_prove=root_can_prove_complete(
-                    slots=slots, readings=_absent_readings(code_index)
-                )
-                and _posted_root_can_elect(group.members, query.role_keys),
-                accepts_seed=accepts_seed,
-            ),
+            "unknown, not zero. " + _CANDIDATE_WINDOW_REMEDY,
             ceiling_kind="candidate_window",
             count=group.candidates_considered,
             cap=group.candidate_cap,
@@ -809,10 +775,7 @@ def resolve_definition_members(
         )
 
     walked = frozenset(group.family)
-    # A truncated page proven complete by a root leaves candidates past the window unread,
-    # and a member that duplicates another's keys can sit among them, so the walk states
-    # the family only when it read every candidate.
-    stated = None if group.truncated else _member_family(walked)
+    stated = _member_family(group.stated_family) if group.stated_family is not None else None
     shapes = tuple(
         StatVarShape(
             stat_var=f"{_STAT_VAR_PREFIX}{member.stat_var}",
@@ -835,23 +798,28 @@ def resolve_definition_members(
 def check_reproducible(
     identity: Mapping[str, object], *, spec_id: str, shape: StatVarShape
 ) -> None:
-    """Check identity role keys against the resolved shape without graph access.
+    """Check identity role keys and open roles against the resolved shape without graph
+    access.
 
     Keys may use raw graph roles or flow-axis aliases. `declared_role_for`
     maps both. Described members share one declared-role set. A pinned
     identity's hash follows its dcid, so roles are its reproducibility check.
-    Raises `DefinitionNotReproducible` with `spec_id` and unsupported roles.
+    An open role must be declared too, since the identity asks for every member
+    on it. Raises `DefinitionNotReproducible` with `spec_id` and unsupported roles.
     """
-    bound_entities = cast("Mapping[str, object]", identity.get("entities", {}))
+    roles = [
+        *cast("Mapping[str, object]", identity.get("entities", {})),
+        *cast("Sequence[str]", identity.get("open_roles", ())),
+    ]
     undeclared = sorted(
-        role for role in bound_entities if declared_role_for(role, shape.declared_roles) is None
+        role for role in roles if declared_role_for(role, shape.declared_roles) is None
     )
     if undeclared:
         raise DefinitionNotReproducible(
             spec_ids=(spec_id,),
             undeclared_roles=tuple(undeclared),
             detail=(
-                f"spec {spec_id!r} binds entity role(s) {', '.join(undeclared)} that "
+                f"spec {spec_id!r} binds or opens role(s) {', '.join(undeclared)} that "
                 f"{shape.stat_var!r} no longer declares"
             ),
         )
@@ -863,20 +831,15 @@ def rehydrate_definition(
     graph: GraphReader,
     enumerator: MemberEnumerator,
     code_index: CodeIndex,
-    seed: Sequence[str] | None = None,
-    accepts_seed: bool = True,
+    bounds: MemberReadBounds,
 ) -> tuple[tuple[StatVarShape, ...], tuple[MaterialisationRequest, ...]]:
     """Re-resolve a stored identity, check its roles, and build one request per shape.
 
     Pinned identities return one shape and request. Described identities
     return one pair per current member. `index_sourced` is shared across the
     requests and lets multi-member facet grouping accept shared provenance
-    and unit. Reuse the caller's `code_index`.
-
-    Pass the original `seed` when posted StatVar dcids proved completeness at
-    mint. Callers recover it from the stored head or from the operation that
-    carries it. A seedless re-read can exceed the candidate window and refuse
-    the identity. `accepts_seed` is `False` for a collection member.
+    and unit. Reuse the caller's `code_index`. `bounds` bounds the member walk as in
+    `resolve_definition_members`.
     """
     shapes = resolve_definition_members(
         stored.identity,
@@ -884,8 +847,7 @@ def rehydrate_definition(
         graph=graph,
         enumerator=enumerator,
         code_index=code_index,
-        seed=seed,
-        accepts_seed=accepts_seed,
+        bounds=bounds,
     ).shapes
     check_reproducible(stored.identity, spec_id=stored.spec_id, shape=shapes[0])
     requests = tuple(
@@ -924,7 +886,6 @@ def prime_head_signal(
     subject_id: str,
     graph: GraphReader,
     sdmx: SdmxClient,
-    combine: bool,
     head_store: HeadReader,
     materialise_wait_seconds: float,
     revision_reader: RevisionReader | None = None,
@@ -935,9 +896,8 @@ def prime_head_signal(
     """Read the head, probe facet candidates, and derive a signal from that probe.
 
     The returned content version predates the probe and anchors the later
-    head compare-and-set. `combine=True` returns one signal. `False` returns
-    one per request in order. A request that binds no place is probed at its
-    default place scope (`materialise.place_scope`), read through `sdmx`.
+    head compare-and-set. The signal holds one entry for the spec. A request that binds no place
+    is probed at its default place scope (`materialise.place_scope`), read through `sdmx`.
     `None` indicates a member facet failure or
     failure to find one facet for the whole set. It leaves the head unchanged,
     and materialisation runs and can raise its refusal.
@@ -966,7 +926,7 @@ def prime_head_signal(
                 deadline=deadline,
             )
     with phase("signal"):
-        signal = derive_signals(requests, probe, graph=graph, combine=combine)
+        signal = derive_signals(requests, probe, graph=graph)
     return HeadPriming(
         probe=probe,
         signal=signal,

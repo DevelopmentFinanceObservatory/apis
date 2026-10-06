@@ -62,7 +62,8 @@ from search.models.response import CandidatesPart, DefinitePart, NoDataPart, Par
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import FacetMetadata, RoleNames
 from series_coverage.shared import CoverageSnapshot
-from tests.engine._base_identity import base_from_spec
+from statvar_members import shared_enumerator
+from tests.engine._facet_option_builds import wrap_facet_option_builds
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.engine._fake_sdmx import FakeSdmxClient, scope_availability_of
 from tests.engine._harness import (
@@ -174,6 +175,10 @@ _RELAXATION_WALK: contextvars.ContextVar[bool] = contextvars.ContextVar(
 _ALTERNATE_WALK: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "answer_invariants_alternate_walk", default=False
 )
+# Set while a Spec's facet options are built (`log_facet_options`).
+_FACET_OPTIONS: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "answer_invariants_facet_options", default=False
+)
 RATE_TABLE_READ = " of the rate table"
 # A candidate cap above the two candidates a world holds, so a part keeps every Spec.
 _MAX_CANDIDATES = 10
@@ -198,7 +203,8 @@ class Recorder:
     each phase as the number of requests logged before it, and each unit decision the engine
     made. The requests a nearest-real relaxation's member walk made are also logged apart,
     with each walk's first and last tick, and so are the requests the member walks of the
-    alternates and re-election siblings made."""
+    alternates and re-election siblings made, and so are the requests each Spec's facet
+    options made (`log_facet_options`), with each build's first and last tick."""
 
     requests: list[tuple[str, str, int]] = field(default_factory=list)
     sentences: list[int] = field(default_factory=list)
@@ -207,6 +213,8 @@ class Recorder:
     relaxation_requests: list[str] = field(default_factory=list)
     relaxation_walks: list[tuple[int, int]] = field(default_factory=list)
     alternate_requests: list[str] = field(default_factory=list)
+    facet_requests: list[str] = field(default_factory=list)
+    facet_builds: list[tuple[int, int]] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def request(self, client: str, method: str) -> None:
@@ -218,6 +226,8 @@ class Recorder:
                 self.relaxation_requests.append(f"{client}.{method}")
             if _ALTERNATE_WALK.get():
                 self.alternate_requests.append(f"{client}.{method}")
+            if _FACET_OPTIONS.get():
+                self.facet_requests.append(f"{client}.{method}")
 
     def relaxation_walk(self) -> dict[str, Any] | None:
         """The requests the relaxations' member walks made, and the serial steps of the
@@ -235,6 +245,16 @@ class Recorder:
         if not self.alternate_requests:
             return None
         return {"requests": dict(sorted(Counter(self.alternate_requests).items()))}
+
+    def facet_options(self) -> dict[str, Any] | None:
+        """The requests the facet-option builds made, and the serial steps of the deepest
+        build; None when no build made a request."""
+        if not self.facet_requests:
+            return None
+        return {
+            "requests": dict(sorted(Counter(self.facet_requests).items())),
+            "depth": max(end - start for start, end in self.facet_builds),
+        }
 
     def counts(self) -> Counter[str]:
         """Requests by client and method. Reads of the rate table count once: previews that
@@ -553,6 +573,26 @@ def log_alternate_walks(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(phase_place_materialise, "walk_alternate", logged)
 
 
+def log_facet_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Log the requests each build of a Spec's facet options makes
+    (`option_coverage._maybe_build_facet_options`), and the ticks it starts and ends at."""
+
+    def logged(build):
+        def run(*args, **kwargs):
+            token, start = _FACET_OPTIONS.set(True), _CLOCK.get()
+            try:
+                return build(*args, **kwargs)
+            finally:
+                _FACET_OPTIONS.reset(token)
+                if _ACTIVE:
+                    with _ACTIVE[-1]._lock:
+                        _ACTIVE[-1].facet_builds.append((start, _CLOCK.get()))
+
+        return run
+
+    wrap_facet_option_builds(monkeypatch, logged)
+
+
 def log_phases(monkeypatch: pytest.MonkeyPatch) -> None:
     """Log, as each phase of either door begins, how many requests the answer has made
     (`Recorder.phases`). `resolve_candidates` stays as it is: the first door picks it out by
@@ -590,6 +630,9 @@ def log_phases(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @contextmanager
 def _recorded() -> Iterator[Recorder]:
+    # Each answer walks members cold, so the reads it records are its own and two answers
+    # the grid compares make the same walk.
+    shared_enumerator().clear()
     recorder = Recorder()
     token = _CLOCK.set(0)
     _ACTIVE.append(recorder)
@@ -646,7 +689,6 @@ class Answer:
             extra_warnings=[],
             start_ms=0,
             engine_build="answer-invariants",
-            include_sentence=True,
             max_candidates=_MAX_CANDIDATES,
         )
         return response.parts[0]
@@ -1032,7 +1074,6 @@ class World:
                 pre_resolved=pre_resolved,
                 llm=_Bind(self.also_plausible, bindings),
                 sdmx=self.sdmx,
-                base_steps=[],
                 base_timing={},
                 emit=emit,
                 unit_text=unit_text,
@@ -1058,7 +1099,6 @@ class World:
     ) -> Answer:
         """The second door: `spec`'s identity posted back, unchanged or with `facets` added
         to its facet bindings or `window` replacing its requested window."""
-        base_spec_id, base_identity = base_from_spec(spec)
         identity = spec.definition.identity
         if facets is not None or window is not None:
             payload = identity.model_dump(mode="python")
@@ -1072,9 +1112,6 @@ class World:
                 result = resolve_spec_resubmit(
                     inp=ResubmitIdentityPayload(
                         identity=identity,
-                        base_spec_id=base_spec_id,
-                        base_identity=base_identity,
-                        resolved_stat_var_dcids=[sv.ref for sv in spec.resolved.stat_vars.items],
                     ),
                     graph=self.graph(),
                     sdmx=self.sdmx,

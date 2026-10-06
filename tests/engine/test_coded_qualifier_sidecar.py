@@ -36,6 +36,7 @@ from search.engine.region.state import ResolveState
 from search.engine.response_cache_keys import layer2_key, scope_document
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from tests.engine._fake_coverage import empty_coverage_snapshot
+from tests.engine._index_slots import crs_shape_systems
 from tests.fixtures import FakeLLM
 from tests.fixtures.keys import fixture_key
 
@@ -138,7 +139,6 @@ def _vet_state(
         source_text=None,
         materialise_graph=None,
         materialise_sdmx=None,
-        pipeline_steps=[],
         timing={},
         warnings=[],
         capped_shapes=capped_shapes,
@@ -164,7 +164,11 @@ def test_sidecar_only_tie_left_unresolved_produces_query_qualifier_dropped():
         matches=(),
     )
     ties, owned_phrases = _match_query_qualifier_ties(
-        "ODA to Kenya", [], query_text=None, qualifiers=(coded,)
+        "ODA to Kenya",
+        [],
+        query_text=None,
+        qualifiers=(coded,),
+        shape_systems=crs_shape_systems(),
     )
     assert {t.matched_text for t in ties} == {"budget support"}
     assert "budget support" in owned_phrases
@@ -268,7 +272,6 @@ def _guard_state(
         source_text=None,
         materialise_graph=None,
         materialise_sdmx=None,
-        pipeline_steps=[],
         timing={},
         warnings=[],
         bind_result=_UniversalBindOutput(
@@ -403,7 +406,6 @@ def _run_qualifier_pipeline(
         source_text=None,
         materialise_graph=None,
         materialise_sdmx=None,
-        pipeline_steps=[],
         timing={},
         warnings=[],
         capped_shapes=[_EQUIVALENCE_SHAPE],
@@ -637,6 +639,8 @@ _KEY_SCOPE = scope_document(
     graph_generation="unknown",
     coverage_stamp="unknown",
     conversion_catalogue=None,
+    origin_catalogue="build-a",
+    un_system_enabled=True,
 )
 
 

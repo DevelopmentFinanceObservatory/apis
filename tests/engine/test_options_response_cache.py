@@ -163,7 +163,6 @@ def _peers_target() -> ResolvedOptionsTarget:
             stat_var_dcids=(_LIFE_EXPECTANCY_SV,),
             declared_roles=("observationAbout",),
             source="graph",
-            truncated=False,
         ),
         anchors=(),
         facets=None,

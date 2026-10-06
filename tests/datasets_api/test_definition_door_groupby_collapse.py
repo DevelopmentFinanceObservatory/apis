@@ -10,10 +10,12 @@ from typing import cast
 import httpx
 import pytest
 
+import datasets_api.render as render_module
 from artifact_store import LiveArtifactInventory
 from assembler.ports import FrameRef
 from code_index import CodeIndex
 from dataset_store.snapshot import LiveSnapshotReader
+from datasets_api.config import DatasetsBuildSettings
 from presentation_store.frame_store import LiveFrameStore
 from series_coverage.schema import FacetMetadata, RoleNames
 from spec_registry.identity import recompute_identity
@@ -598,3 +600,130 @@ def test_a_level_roll_up_frame_describes_its_own_columns_and_pivots(door: str):
         assert pivot["state"] == "available"
         # The period column plus one column per code.
         assert (pivot["width"], pivot["cells"]) == (3, 6)
+
+
+def _pivot_head_hit_client(
+    rows: list[tuple[str, str, int]], *, pivot_max_output_cells: int | None = None
+):
+    """Mints `(member, recipient, year)` rows under a two-member spec scoped to their recipients,
+    so the next GET for a pivot rendering is a head hit. Returns the client and spec id.
+    """
+    recipients = sorted({recipient for _, recipient, _ in rows})
+    csv_body = _CSV_HEADER + "".join(
+        f"dataflow,DC:DF_OBS(1.0.0),I,{member},{recipient},USD,GrantEquivalent,"
+        f"NotApplicable,OECD_DAC2A,{year},{1000 + i},,facet1\r\n"
+        for i, (member, recipient, year) in enumerate(rows)
+    )
+    years: dict[tuple[str, str], list[int]] = {}
+    for member, recipient, year in rows:
+        years.setdefault((member, recipient), []).append(year)
+    coverage = FakeCoverageService(
+        build_coverage_index(
+            [
+                (member, _FACET_ID, "country/USA", recipient, sorted(member_years))
+                for (member, recipient), member_years in years.items()
+            ],
+            role_names={
+                member: RoleNames(donor="provider", recipient="recipient")
+                for member in (_MEMBER_A, _MEMBER_B)
+            },
+            facet_metadata={
+                _FACET_ID: FacetMetadata(
+                    provenance_id=_PROVENANCE, measurement_method=_MEASUREMENT_METHOD, unit=_UNIT
+                )
+            },
+        )
+    )
+    version_store = FakeVersionRecordDatasetStore()
+    client = _client(
+        graph=_graph(),
+        sdmx_transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                text=csv_body,
+                headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
+            )
+        ),
+        version_store=version_store,
+        head_writer=_FakeHeadStore(),
+        artifact_store=_RenderableArtifactStore(
+            inventory=LiveArtifactInventory(store=version_store)
+        ),
+        code_index=_code_index(),
+        coverage=coverage,
+        settings=(
+            DatasetsBuildSettings(pivot_max_output_cells=pivot_max_output_cells)
+            if pivot_max_output_cells is not None
+            else None
+        ),
+    )
+    identity = {**_IDENTITY, "entities": {"recipient": recipients}}
+    spec_id = recompute_identity(identity).spec_id
+    sidecar = {"schema_version": 1, "spec_id": spec_id, "identity": identity}
+    _mint(client, spec_id=spec_id, sidecar=sidecar, options={"bundle": False})
+    return client, spec_id
+
+
+def _spy_on_row_reads(monkeypatch: pytest.MonkeyPatch) -> list[bool]:
+    """Wraps `render.fold_pivot_chunks`; each call appends whether it read any chunk's rows."""
+    rows_read: list[bool] = []
+    fold = render_module.fold_pivot_chunks
+
+    class _Proxy:
+        def __init__(self, chunk):
+            self.columns = chunk.columns
+            self._chunk = chunk
+
+        @property
+        def rows(self):
+            rows_read[-1] = True
+            return self._chunk.rows
+
+    def spied(chunks, **kwargs):
+        rows_read.append(False)
+        return fold((_Proxy(chunk) for chunk in chunks), **kwargs)
+
+    monkeypatch.setattr(render_module, "fold_pivot_chunks", spied)
+    return rows_read
+
+
+def test_a_head_hit_pivot_over_the_cell_cap_refuses_from_the_stored_shape_without_reading_rows(
+    monkeypatch,
+):
+    # A stat_var by time_period pivot is two rows by three columns, six cells over a cap of five.
+    client, spec_id = _pivot_head_hit_client(
+        [(member, _RECIPIENT, year) for member in (_MEMBER_A, _MEMBER_B) for year in (2020, 2021)],
+        pivot_max_output_cells=5,
+    )
+    rows_read = _spy_on_row_reads(monkeypatch)
+
+    got = client.get(
+        f"/api/datasets/{spec_id}?bundle=false&pivot.index=stat_var&pivot.columns=time_period"
+    )
+
+    assert got.status_code == 422, got.text
+    assert got.json()["code"] == "pivot_over_cell_cap"
+    assert rows_read == [False]
+
+
+def test_a_head_hit_duplicate_key_pivot_refusal_names_the_varying_column_as_an_axis():
+    # Both members report Kenya in 2020, so (time_period, recipient) repeats and stat_var varies.
+    client, spec_id = _pivot_head_hit_client(
+        [
+            (_MEMBER_A, _RECIPIENT, 2020),
+            (_MEMBER_B, _RECIPIENT, 2020),
+            (_MEMBER_A, "country/TGO", 2021),
+        ]
+    )
+
+    got = client.get(
+        f"/api/datasets/{spec_id}?bundle=false&pivot.index=time_period&pivot.columns=recipient"
+    )
+
+    assert got.status_code == 422, got.text
+    problem = got.json()
+    assert problem["code"] == "pivot_not_unique"
+    assert [(issue.get("member"), issue.get("axis")) for issue in problem["issues"]] == [
+        (f"('2020', '{_RECIPIENT}')", None),
+        (None, "stat_var"),
+    ]

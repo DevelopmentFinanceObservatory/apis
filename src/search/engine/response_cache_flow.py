@@ -1,7 +1,9 @@
-"""Compute raw-text signals and coordinate the two-layer response cache.
+"""Compute raw-text signals and coordinate the two-layer response cache and its part memo.
 
-`CacheScope` sequences lookups, writes, and release for eligible raw-text
-requests; callers do not re-check its `active` conditions. It looks up layer 1 before layer 2, preventing a lease-order cycle.
+`CacheScope` sequences lookups, writes, and release for eligible raw-text and parsed
+requests; callers do not re-check its `active` conditions. It looks up layer 1 before
+layer 2, preventing a lease-order cycle. `PartMemoScope` serves a `dataset_resubmit`
+request's identity entries from the part memo.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ from dataclasses import asdict, dataclass
 import search.engine.config as config  # module-attribute access for runtime-resolved values
 from code_index.shared import get_index, get_measure_index
 from graph_generation import UNKNOWN_GENERATION, GenerationProvider
+from origin_catalogue import current_catalogue
 from search.engine.bind_repair import declared_default_slots_named, declared_default_words_named
 from search.engine.deadline import _await_bounded
 from search.engine.envelope import now_ms
@@ -24,19 +27,31 @@ from search.engine.qualifier_match import (
     match_qualifiers,
     match_unsupported_qualifier_phrases,
 )
+from search.engine.region.promote_relaunch import without_relaunches
+from search.engine.region.result import RegionResult
+from search.engine.region.state import EngineOptions
 from search.engine.response_cache import Lease, ResponseCache
 from search.engine.response_cache_keys import (
     from_entry,
-    is_cacheable_request,
+    is_region_storable,
     is_storable,
     layer1_key,
     layer2_key,
+    parsed_key,
+    part_memo_key,
     scope_document,
     to_entry,
 )
+from search.engine.response_cache_memo import PartMemo
 from search.engine.role_text import DoorRole, contradicts
 from search.engine.unit.conversion_catalogue import current_conversion_catalogue
-from search.models import Operation, ResolveRequest, ResolveResponse
+from search.models import (
+    Operation,
+    ParsedInput,
+    ResolveRequest,
+    ResolveResponse,
+    ResubmitIdentityPayload,
+)
 from series_coverage.shared import CoverageSnapshot
 
 logger = logging.getLogger(__name__)
@@ -124,16 +139,24 @@ def compute_layer2_signals(
     )
 
 
+# What a hit spends: no model call runs.
+_NO_USAGE = {"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0}
+
+
 class CacheScope:
     """One request's access to the two-layer response cache.
 
-    `active` is fixed at construction; inactive methods return `None`. The
+    `active` is fixed at construction; inactive methods return `None`. A raw-text or
+    parsed request is active when the cache is enabled and its transport streams no
+    trailing events (`trailing`). Every enrichment it asked for is then in the response
+    event the scope stores, so a stored entry is complete by construction. The
     generation stamp is read once and sets both the key and entry lifetime.
     New stamps produce new keys, leaving old entries unreachable. The caller's
     coverage snapshot contributes its stamp to the same scope; this class does
-    not read the coverage service again. The revision of the conversion catalogue the
-    request bound joins the scope too, so an answer computed from one catalogue is never
-    served once another is live. Cache clearing belongs to app wiring.
+    not read the coverage service again. The revision of the conversion catalogue and the
+    build and UN System setting of the origin catalogue the request bound join the scope
+    too, so an answer computed under one catalogue is never served once another is live.
+    Cache clearing belongs to app wiring.
     """
 
     def __init__(
@@ -150,6 +173,7 @@ class CacheScope:
         max_candidates: int,
         seam_default: bool,
         coverage: CoverageSnapshot,
+        trailing: bool,
         generation: GenerationProvider = UNKNOWN_GENERATION,
     ) -> None:
         self._cache = cache
@@ -162,13 +186,14 @@ class CacheScope:
         # `_stamp.max_age_s` becomes every entry this request's `store()`
         # writes (see that method).
         self._stamp = generation.stamp()
-        # The catalogue this request's scope bound, which every answer it computes reads.
+        # The catalogues this request's scope bound, which every answer it computes reads.
         conversion = current_conversion_catalogue()
+        origin = current_catalogue()
         self.active = (
             cache is not None
             and config.settings().response_cache_enabled
-            and request.input.kind == "raw_text"
-            and is_cacheable_request(request.response_options)
+            and request.input.kind in ("raw_text", "parsed")
+            and not trailing
         )
         self._scope = (
             scope_document(
@@ -183,6 +208,8 @@ class CacheScope:
                 graph_generation=self._stamp.key,
                 coverage_stamp=coverage.stamp,
                 conversion_catalogue=conversion.revision if conversion is not None else None,
+                origin_catalogue=origin.build_id,
+                un_system_enabled=origin.un_system_enabled,
             )
             if self.active
             else None
@@ -214,21 +241,19 @@ class CacheScope:
         """
         return self._served_timed_out
 
-    async def lookup_raw(self, query: str) -> ResolveResponse | None:
-        """Look up layer 1 by normalised query.
+    async def _acquire(self, key: str) -> tuple[bytes | None, Lease | None]:
+        """Return `key`'s value, or `None` with the leader lease this request now holds.
 
-        A hit restores the response; the first miss gets the leader lease.
-        Followers wait within this request's deadline. If it expires, the
-        caller proceeds unleased and cannot publish this key. If the leader
-        abandons, the caller re-acquires and waits again under the same deadline.
+        A follower waits for its leader within this request's deadline and takes the
+        leader's verdict with its value. If the deadline expires, the caller proceeds
+        unleased (`(None, None)`) and cannot publish this key. If the leader abandons,
+        the caller re-bids and waits again under the same deadline, so one concurrent
+        caller still leads rather than every one of them redoing the pipeline.
         """
-        if not self.active:
-            return None
-        assert self._cache is not None and self._scope is not None
-        key = layer1_key(query=query, scope=self._scope)
+        assert self._cache is not None
         value, lease = await self._cache.acquire(key)
         if value is not None:
-            return self._hit(value, query=query)
+            return value, None
         assert lease is not None  # acquire() always returns a lease alongside a miss
         while not lease.is_leader:
             try:
@@ -236,19 +261,27 @@ class CacheScope:
                     self._cache.await_leader(lease), deadline=self._deadline
                 )
             except TimeoutError:
-                return None  # this request's own deadline is spent; proceed unleased
+                return None, None  # this request's own deadline is spent; proceed unleased
             if awaited is not None:
                 value, self._served_timed_out, self._served_storable = awaited
-                return self._hit(value, query=query)
-            # The leader raised rather than publishing; re-bid for the key
-            # instead of giving up outright, so one concurrent caller still
-            # leads rather than every one of them redoing the pipeline.
+                return value, None
             value, lease = await self._cache.acquire(key)
             if value is not None:
-                return self._hit(value, query=query)
+                return value, None
             assert lease is not None
-        self._layer1_lease = lease
-        return None
+        return None, lease
+
+    async def lookup_raw(self, query: str) -> ResolveResponse | None:
+        """Look up layer 1 by normalised query.
+
+        A hit restores the response; the first miss gets the leader lease
+        (`_acquire`).
+        """
+        if not self.active:
+            return None
+        assert self._scope is not None
+        value, self._layer1_lease = await self._acquire(layer1_key(query=query, scope=self._scope))
+        return self._hit(value, query=query) if value is not None else None
 
     def _hit(self, value: bytes, *, query: str) -> ResolveResponse:
         self._outcome = "hit layer1"
@@ -257,7 +290,7 @@ class CacheScope:
             query=query,
             extract_skipped=True,
             # A hit spends zero tokens; `None` means the model reported no usage metadata.
-            llm_usage={"input_tokens": 0, "output_tokens": 0, "cached_tokens": 0},
+            llm_usage=dict(_NO_USAGE),
             step="response_cache_layer1",
         )
 
@@ -278,9 +311,8 @@ class CacheScope:
         """Look up layer 2 by effective extraction and raw-text signals.
 
         `entity_roles`, `query_text`, and the parallel `variable_qualifiers` and
-        `operations` are required to build a complete key. Followers wait under this request's
-        deadline, re-acquiring after abandonment; this lookup never waits on a
-        layer-1 lease. The first miss owns the layer-2 lease.
+        `operations` are required to build a complete key. This lookup never waits on a
+        layer-1 lease. The first miss owns the layer-2 lease (`_acquire`).
 
         Hits record the leader's health verdict. `store()` can then cache the
         request's literal query at layer 1 using that verdict; layer-2 hits
@@ -288,7 +320,7 @@ class CacheScope:
         """
         if not self.active:
             return None
-        assert self._cache is not None and self._scope is not None
+        assert self._scope is not None
         signals = compute_layer2_signals(
             query=query, entity_roles=entity_roles, query_text=query_text
         )
@@ -309,32 +341,29 @@ class CacheScope:
             scope=self._scope,
         )
         self._layer2_key = key
-        value, lease = await self._cache.acquire(key)
-        if value is not None:
-            return self._hit_layer2(value, query=query, llm_usage=llm_usage)
-        assert lease is not None  # acquire() always returns a lease alongside a miss
-        while not lease.is_leader:
-            try:
-                awaited = await _await_bounded(
-                    self._cache.await_leader(lease), deadline=self._deadline
-                )
-            except TimeoutError:
-                return None  # this request's own deadline is spent; proceed unleased
-            if awaited is not None:
-                value, self._served_timed_out, self._served_storable = awaited
-                return self._hit_layer2(value, query=query, llm_usage=llm_usage)
-            # The leader raised rather than publishing; re-bid for the key
-            # instead of giving up outright, so one concurrent caller still
-            # leads rather than every one of them redoing the pipeline.
-            value, lease = await self._cache.acquire(key)
-            if value is not None:
-                return self._hit_layer2(value, query=query, llm_usage=llm_usage)
-            assert lease is not None
-        self._layer2_lease = lease
-        return None
+        value, self._layer2_lease = await self._acquire(key)
+        if value is None:
+            return None
+        return self._hit_layer2(value, query=query, llm_usage=llm_usage)
+
+    async def lookup_parsed_input(self, parsed: ParsedInput) -> ResolveResponse | None:
+        """Look up layer 2 by a parsed request's whole input (`parsed_key`).
+
+        A hit skips binding, keeps the stored echo and spends no
+        tokens. The first miss owns the layer-2 lease (`_acquire`).
+        """
+        if not self.active:
+            return None
+        assert self._scope is not None
+        value, self._layer2_lease = await self._acquire(
+            parsed_key(parsed=parsed, scope=self._scope)
+        )
+        if value is None:
+            return None
+        return self._hit_layer2(value, query=None, llm_usage=dict(_NO_USAGE))
 
     def _hit_layer2(
-        self, value: bytes, *, query: str, llm_usage: dict[str, int] | None
+        self, value: bytes, *, query: str | None, llm_usage: dict[str, int] | None
     ) -> ResolveResponse:
         self._outcome = "hit layer2"
         return self._restore(
@@ -422,7 +451,7 @@ class CacheScope:
         self,
         entry: bytes,
         *,
-        query: str,
+        query: str | None,
         extract_skipped: bool,
         llm_usage: dict[str, int] | None,
         step: str,
@@ -436,3 +465,82 @@ class CacheScope:
             llm_usage=llm_usage,
             timing_by_step={step: elapsed},
         )
+
+
+class PartMemoScope:
+    """One `dataset_resubmit` request's access to the part memo.
+
+    Active when an enabled memo is given and `SEARCH_RESPONSE_CACHE_ENABLED` is on; an
+    inactive scope looks up nothing and stores nothing. The generation stamp, the
+    conversion catalogue revision, and the origin catalogue's build and UN System setting
+    are read once, at construction, beside the build commit, coverage stamp and UTC day the
+    caller passes, and key every identity entry the request looks up
+    (`response_cache_keys.part_memo_key`). The stamp also sets each stored entry's
+    lifetime. `hits` and `misses` count this request's lookups.
+    """
+
+    def __init__(
+        self,
+        memo: PartMemo | None,
+        *,
+        build_commit: str,
+        today: str,
+        coverage: CoverageSnapshot,
+        generation: GenerationProvider = UNKNOWN_GENERATION,
+    ) -> None:
+        self._memo = (
+            memo
+            if memo is not None and memo.enabled and config.settings().response_cache_enabled
+            else None
+        )
+        self._stamp = generation.stamp()
+        conversion = current_conversion_catalogue()
+        self._build_commit = build_commit
+        self._today = today
+        self._coverage_stamp = coverage.stamp
+        self._conversion = conversion.revision if conversion is not None else None
+        origin = current_catalogue()
+        self._origin_catalogue = origin.build_id
+        self._un_system_enabled = origin.un_system_enabled
+        self.hits = 0
+        self.misses = 0
+
+    @property
+    def active(self) -> bool:
+        return self._memo is not None
+
+    def key(self, payload: ResubmitIdentityPayload, options: EngineOptions) -> str:
+        """The memo key of `payload` resolved under `options`' four enrichment flags."""
+        return part_memo_key(
+            payload=payload,
+            engine_flags={
+                "include_option_coverage": options.include_option_coverage,
+                "stream_slot_options": options.stream_slot_options,
+                "include_observations": options.include_observations,
+                "stream_observations": options.stream_observations,
+            },
+            build_commit=self._build_commit,
+            graph_generation=self._stamp.key,
+            coverage_stamp=self._coverage_stamp,
+            conversion_catalogue=self._conversion,
+            origin_catalogue=self._origin_catalogue,
+            un_system_enabled=self._un_system_enabled,
+            today=self._today,
+        )
+
+    def lookup(self, key: str) -> RegionResult | None:
+        """The stored region under `key`, holding no closure, or `None`."""
+        if self._memo is None:
+            return None
+        region = self._memo.get(self._stamp.key, key)
+        if region is None:
+            self.misses += 1
+        else:
+            self.hits += 1
+        return region
+
+    def store(self, key: str, region: RegionResult) -> None:
+        """Store `region` without its closures when `is_region_storable` accepts it."""
+        if self._memo is None or not is_region_storable(region):
+            return
+        self._memo.put(self._stamp.key, key, without_relaunches(region))

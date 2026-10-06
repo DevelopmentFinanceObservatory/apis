@@ -19,9 +19,10 @@ from search.engine.retrieval.retrieve import (
     materialise,
 )
 from search.engine.shape import ShapeDraft
-from search.models import BindingUnbound, CoverageBare, TimeWindow
+from search.models import CoverageBare, TimeWindow
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import walk_options
 from tests.fixtures import FakeGraph, make_resolver
 
 # Declaration-free standard shapes probe the subject role.
@@ -435,7 +436,6 @@ def _resolve_unemployment(
             resolver=make_resolver(graph),
             llm=_GenderLLM(),
             dropped_qualifier_phrases=list(dropped),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
@@ -449,7 +449,6 @@ def _departures(region):
         extra_warnings=[],
         start_ms=0,
         engine_build="test",
-        include_sentence=False,
         max_candidates=5,
     ).parts
     return [(d.code, d.binding_ref, d.asked) for d in part.departures]
@@ -539,21 +538,10 @@ class TestUnrealisableValuesUnbound:
             (None, "value"),
         ]
 
-    def test_a_resubmit_posting_a_value_no_member_holds_departs_and_answers(self, monkeypatch):
-        """An old share link posts gender=Male and residence=Rural, and no member
-        holds the residence. The resubmit unbinds it as a fresh request would, departing on
-        its token with nothing asked, and answers without it."""
-        from search.engine.region import materialise_step as materialise_step_module
-
-        read = materialise_step_module.materialise
-
-        def _no_member_holds_rural(shape, bindings, *args, **kwargs):
-            if any(b.property_dcid == "residence" and b.value_dcids for b in bindings):
-                return BoundValuesUnrealisable(conflicts=(_conflict("residence"),))
-            return read(shape, bindings, *args, **kwargs)
-
-        monkeypatch.setattr(materialise_step_module, "materialise", _no_member_holds_rural)
-
+    def test_a_resubmit_binding_values_no_member_holds_together_answers_no_data(self):
+        """An old share link posts gender=Male and residence=Rural, and no member holds both.
+        The resubmit elects the identity's members as the mint does, finds none, and
+        answers no_data(no_matching_slice)."""
         region = _resubmit_unemployment(
             {"gender": "Male", "residence": "Rural"},
             {
@@ -562,10 +550,7 @@ class TestUnrealisableValuesUnbound:
             },
         )
 
-        assert region.status == "definite", region.no_data_reason
-        assert isinstance(_bound_slot(region, "residence"), BindingUnbound)
-        # A resubmit holds no words of the request, so the part asks for nothing.
-        assert _departures(region) == [("measure_not_applied", "how:residence", None)]
+        assert (region.status, region.no_data_reason) == ("no_data", "no_matching_slice")
 
     def test_a_resubmit_keeps_the_posted_value_a_member_holds(self):
         """A resubmit posts gender=Male and residence=Urban over male-rural and
@@ -689,10 +674,10 @@ def _resubmit_unemployment(posted: dict[str, str], members: dict[str, dict]):
     over `members`."""
     from search.engine.region import resolve_spec_resubmit
     from search.models import ResubmitIdentityPayload
-    from tests.engine._base_identity import make_base, subject_entity
+    from tests.engine._base_identity import make_identity, subject_entity
     from tests.engine._builders import value_slot
 
-    spec_id, identity = make_base(
+    identity = make_identity(
         {
             "kind": "statvar_schema",
             "population_type": "Person",
@@ -705,19 +690,17 @@ def _resubmit_unemployment(posted: dict[str, str], members: dict[str, dict]):
     return resolve_spec_resubmit(
         inp=ResubmitIdentityPayload(
             identity=identity,
-            base_spec_id=spec_id,
-            base_identity=identity,
-            resolved_stat_var_dcids=list(members),
         ),
         graph=_two_axis_graph(members),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
+        options=walk_options(_two_axis_graph(members)),
     )
 
 
 def _served(region) -> list[str]:
     """The StatVars the first Spec serves."""
-    return [sv.ref for sv in region.specs[0].resolved.stat_vars.items]
+    return [sv.ref.dcid for sv in region.specs[0].resolved.members]
 
 
 def _bound_slot(region, prop: str):
@@ -1679,37 +1662,19 @@ class TestFamilyTotalAbsentWarning:
         )
 
         assert result.status == "definite"
-        assert [sv.ref for sv in result.spec.resolved.stat_vars.items] == [_UN_NEONATAL]
+        assert [sv.ref.dcid for sv in result.spec.resolved.members] == [_UN_NEONATAL]
         assert [w.message for w in result.warnings if w.code == FAMILY_TOTAL_ABSENT] == [
             "No total for this family of variables was found, so the answer shows "
             "Neonatal mortality rate."
         ]
 
-    @pytest.mark.parametrize(
-        ("walk_settles", "warned"),
-        [
-            pytest.param(False, [], id="the_posted_member_answers_alone"),
-            pytest.param(
-                True,
-                [
-                    "No total for this family of variables was found, so the answer shows "
-                    "Neonatal mortality rate."
-                ],
-                id="the_walked_family_elects_again",
-            ),
-        ],
-    )
-    def test_a_resubmit_warns_exactly_when_it_runs_the_election(self, walk_settles, warned):
-        """The warning belongs to the door that elects. A resubmit posts the member the
-        first answer shows. When the mint's walk settles, the resubmit holds the walked
-        family, elects again among it and warns as the first answer does. When the walk
-        fails, the posted member answers alone: one member is no election, so it warns
-        nothing."""
+    def test_a_resubmit_warns_exactly_when_it_runs_the_election(self):
+        """The warning belongs to the door that elects. The resubmit's walk settles the
+        family, so the resubmit elects again among it and warns as the first answer does."""
         from search.engine.region import resolve_spec_resubmit
         from search.engine.region.codes import FAMILY_TOTAL_ABSENT, MEMBERSHIP_UNVERIFIED
         from search.engine.region.state import EngineOptions
         from search.models import ResubmitIdentityPayload
-        from tests.datasets_api._graph_doubles import _FakeSubjectPage
         from tests.engine._harness import member_walk_reader
 
         members = _un_family_with_total()
@@ -1717,33 +1682,22 @@ class TestFamilyTotalAbsentWarning:
         graph = _chad_graph(members, with_data=with_data)
         first = _resolve_child_mortality_in_chad(members, with_data=with_data)
         identity = first.spec.definition.identity
-        walk = member_walk_reader(graph)
-        if not walk_settles:
-            # A reverse page reporting more members past its window settles no family.
-            read = walk.node_subjects
-
-            def truncated(dcid: str, **kwargs):
-                return _FakeSubjectPage(dcids=read(dcid, **kwargs).dcids, truncated=True)
-
-            walk.node_subjects = truncated  # ty: ignore[invalid-assignment]
-
         region = resolve_spec_resubmit(
-            inp=ResubmitIdentityPayload(
-                identity=identity,
-                base_spec_id=first.spec.spec_id,
-                base_identity=identity,
-                resolved_stat_var_dcids=[_UN_NEONATAL],
-            ),
+            inp=ResubmitIdentityPayload(identity=identity),
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
-            options=EngineOptions(materialise_graph=walk),
+            options=EngineOptions(materialise_graph=member_walk_reader(graph)),
         )
 
+        warned = [
+            "No total for this family of variables was found, so the answer shows "
+            "Neonatal mortality rate."
+        ]
         assert region.status == "definite"
-        assert [sv.ref for sv in region.specs[0].resolved.stat_vars.items] == [_UN_NEONATAL]
+        assert [sv.ref.dcid for sv in region.specs[0].resolved.members] == [_UN_NEONATAL]
         assert [w.message for w in region.warnings if w.code == FAMILY_TOTAL_ABSENT] == warned
-        assert (MEMBERSHIP_UNVERIFIED in [w.code for w in region.warnings]) is not walk_settles
+        assert MEMBERSHIP_UNVERIFIED not in [w.code for w in region.warnings]
         # The resubmit holds no words for the measure, so its closest match states only the
         # member shown, and the lead stays after an edit.
         (part,) = assemble_region(
@@ -1751,38 +1705,19 @@ class TestFamilyTotalAbsentWarning:
             extra_warnings=[],
             start_ms=0,
             engine_build="test",
-            include_sentence=False,
             max_candidates=5,
         ).parts
         closest = [(d.asked, d.text) for d in part.departures if d.code == "closest_match"]
-        assert closest == (
-            [(None, "This shows neonatal mortality rate, the closest measure the data holds.")]
-            if warned
-            else []
-        )
+        assert closest == [
+            (None, "This shows neonatal mortality rate, the closest measure the data holds.")
+        ]
 
-    @pytest.mark.parametrize(
-        ("walk_settles", "warned"),
-        [
-            pytest.param(
-                True,
-                [
-                    "No total for this family of variables was found, so the answer shows "
-                    "Under-five mortality rate, male."
-                ],
-                id="the_walked_family_elects_one_member",
-            ),
-            pytest.param(False, [], id="the_posted_member_answers_alone"),
-        ],
-    )
-    def test_a_resubmit_over_a_settled_family_of_one_admitted_member_warns(
-        self, walk_settles, warned
-    ):
+    def test_a_resubmit_over_a_settled_family_of_one_admitted_member_warns(self):
         """Age is bound to under 5 and sex to the set {male, female}. The family holds the
         male under-5 member and a female neonatal one, so the bindings admit the male member
-        alone, which states one value of the two the set names: the first answer warns. A
-        resubmit whose walk settles the family elects among it, one member admitted, and
-        warns as the first answer does; one whose walk settles nothing runs no election."""
+        alone, which states one value of the two the set names: the first answer warns. The
+        resubmit's walk settles the family, elects among it, one member admitted, and warns
+        as the first answer does."""
         import asyncio
 
         from search.engine.bind import _UniversalBindOutput
@@ -1790,7 +1725,6 @@ class TestFamilyTotalAbsentWarning:
         from search.engine.region.codes import FAMILY_TOTAL_ABSENT
         from search.engine.region.state import EngineOptions
         from search.models import ResubmitIdentityPayload
-        from tests.datasets_api._graph_doubles import _FakeSubjectPage
         from tests.engine._harness import member_walk_reader
 
         female_neonatal = "undata/unicef/CME_MR.AGE--M0__SEX--F"
@@ -1844,7 +1778,6 @@ class TestFamilyTotalAbsentWarning:
                 graph=graph,
                 resolver=make_resolver(graph),
                 llm=_BindLLM(),
-                base_steps=[],
                 base_timing={},
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 coverage=empty_coverage_snapshot(),
@@ -1855,31 +1788,20 @@ class TestFamilyTotalAbsentWarning:
             "Under-five mortality rate, male."
         ]
         identity = first.spec.definition.identity
-        walk = member_walk_reader(graph)
-        if not walk_settles:
-            read = walk.node_subjects
-
-            def truncated(dcid: str, **kwargs):
-                return _FakeSubjectPage(dcids=read(dcid, **kwargs).dcids, truncated=True)
-
-            walk.node_subjects = truncated  # ty: ignore[invalid-assignment]
-
         region = resolve_spec_resubmit(
-            inp=ResubmitIdentityPayload(
-                identity=identity,
-                base_spec_id=first.spec.spec_id,
-                base_identity=identity,
-                resolved_stat_var_dcids=[_UN_MALE_U5],
-            ),
+            inp=ResubmitIdentityPayload(identity=identity),
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
-            options=EngineOptions(materialise_graph=walk),
+            options=EngineOptions(materialise_graph=member_walk_reader(graph)),
         )
 
         assert region.status == "definite"
-        assert [sv.ref for sv in region.specs[0].resolved.stat_vars.items] == [_UN_MALE_U5]
-        assert [w.message for w in region.warnings if w.code == FAMILY_TOTAL_ABSENT] == warned
+        assert [sv.ref.dcid for sv in region.specs[0].resolved.members] == [_UN_MALE_U5]
+        assert [w.message for w in region.warnings if w.code == FAMILY_TOTAL_ABSENT] == [
+            "No total for this family of variables was found, so the answer shows "
+            "Under-five mortality rate, male."
+        ]
 
     @pytest.mark.parametrize(
         ("fact", "message"),
@@ -1990,7 +1912,6 @@ def _resolve_child_mortality_in_chad(members: dict[str, dict], *, with_data: tup
             graph=graph,
             resolver=make_resolver(graph),
             llm=_UnboundAgeAndSexLLM(),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),

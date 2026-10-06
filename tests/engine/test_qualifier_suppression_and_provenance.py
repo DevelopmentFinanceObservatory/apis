@@ -22,7 +22,7 @@ from search.engine.region.codes import QUERY_QUALIFIER_DROPPED, SLOT_DEFAULTED
 from search.engine.region.pipeline import resolve_variable
 from search.engine.same_shape import collapse_same_shape
 from search.engine.spec_build import build_spec
-from search.models import CoverageBare, PipelineStep, StatVar, Warning
+from search.models import CoverageBare, StatVar, Warning
 from tests.engine._builders import conjoin_spec as _spec
 from tests.engine._builders import gref as _gr
 from tests.engine._builders import shape_five_tuple as _shape
@@ -413,7 +413,6 @@ def test_same_shape_merge_states_a_shared_slot_default_once():
         merged.spec,
         variable_text=merged.variable_text,
         warnings=list(merged.warnings),
-        include_sentence=True,
     )
     assert [w.code for w in part.warnings].count(SLOT_DEFAULTED) == 1
     assert note not in (part.spec.resolved.rendered_sentence or "")
@@ -437,7 +436,7 @@ def test_spec_id_is_byte_identical_with_and_without_provenance_populated():
         "stat_vars": stat_vars,
         "entities": [],
         "coverage": CoverageBare(has_data=True),
-        "pipeline_trace": [PipelineStep(step="extract", ran=True)],
+        "open_roles": (),
     }
     without = build_spec(measure_elected_properties=frozenset(), **common)
     with_provenance = build_spec(
@@ -466,12 +465,12 @@ def test_measure_elected_properties_stamps_forced_slot_and_leaves_the_rest():
         StatVar(ref=_gr("sv"), shape_id=shape.shape_id, slot_values=[], constraint_properties=[])
     ]
     spec = build_spec(
+        open_roles=(),
         shape=shape,
         slots=slots,
         stat_vars=stat_vars,
         entities=[],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
         text_recognized_properties=frozenset({"textProp"}),
         measure_elected_properties=frozenset({"measureProp"}),
     )
@@ -500,12 +499,12 @@ def test_measure_elected_and_text_recognized_overlap_raises():
 
     with pytest.raises(ValueError, match="sharedProp"):
         build_spec(
+            open_roles=(),
             shape=shape,
             slots=slots,
             stat_vars=stat_vars,
             entities=[],
             coverage=CoverageBare(has_data=True),
-            pipeline_trace=[PipelineStep(step="extract", ran=True)],
             text_recognized_properties=frozenset({"sharedProp"}),
             measure_elected_properties=frozenset({"sharedProp"}),
         )
@@ -685,7 +684,6 @@ def test_e2e_forced_binding_carries_text_recognized_provenance_binder_elects_the
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_PartlyElectingLLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
@@ -801,7 +799,6 @@ def test_synthetic_code_system_admission_reaches_both_halves(monkeypatch):
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_SyntheticNoBindingLLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )

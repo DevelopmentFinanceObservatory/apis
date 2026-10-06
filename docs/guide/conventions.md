@@ -52,7 +52,7 @@ Each API publishes its own limits at `GET /api/{search,datasets,graph}/capabilit
 | Datasets | Estimated source requests per synchronous mint (`sync_budget_requests`)         | 40                            |
 | Datasets | Estimated rows a background operation accepts (`async_max_rows`)                | 2,000,000                     |
 | Datasets | Estimated source requests a background operation accepts (`async_max_requests`) | 800                           |
-| Datasets | Members of one collection (`max_collection_members`)                            | 100                           |
+| Datasets | StatVars a described definition's member walk reads, `definition_subject_ceiling` | 20,000                        |
 | Datasets | Cells in a pivoted table (`pivot_max_output_cells`)                             | 5,000,000                     |
 | Datasets | Days an operation stays pollable (`operation_retention_days`)                   | 30                            |
 | Datasets | Lifetime of a signed artifact URL                                               | 15 minutes                    |
@@ -119,7 +119,7 @@ The body includes optional fields only when they have values.
 | `issues`             | array   | optional            | One entry per failure when a code reports several at once.                                                             |
 | `cause`              | object  | optional            | Why the refusal fired. On `recipe_not_declared`, `rate_coverage_gap` and `operation_failed`.                           |
 | `constraint_id`      | string  | optional            | Machine-readable id of the violated constraint.                                                                        |
-| `ceiling_kind`       | string  | optional            | For `over_ceiling`, and for `operation_failed` whose `cause.code` is `over_ceiling`, identifies the crossed ceiling, such as `rows`, `bytes`, `sync_rows`, `sync_requests`, `operation_rows` or `operation_requests`. |
+| `ceiling_kind`       | string  | optional            | For `over_ceiling`, and for `operation_failed` whose `cause.code` is `over_ceiling`, identifies the crossed ceiling, such as `rows`, `bytes`, `operation_rows`, `operation_requests`, `member_cardinality` or `candidate_window`. |
 | `count`              | integer | optional            | For `over_ceiling`, and for `operation_failed` whose `cause.code` is `over_ceiling`, the observed count. |
 | `cap`                | integer | optional            | For `over_ceiling`, and for `operation_failed` whose `cause.code` is `over_ceiling`, the ceiling crossed. |
 
@@ -179,7 +179,7 @@ print(httpx.get(f"{DFO_API}/codes/node_not_held").text)
 | `facet_binding_unsupported`   | 501    | This deployment recognises the facet axis and lacks support for it.                                        |
 | `upstream_error`              | 502    | A call to an upstream data source failed.                                                                  |
 | `service_unavailable`         | 503    | The service is at capacity. A retry is expected to succeed.                                                |
-| `timeout`                     | 504    | The request exceeded its deadline.                                                                         |
+| `timeout`                     | 504    | The request exceeded its deadline. Search allows a `dataset_resubmit` that reads a whole StatVar family 90 seconds, and every other request 45. |
 
 `facet_not_available`, `role_incompatible`, `role_signature_incompatible` and `rate_coverage_gap` also arrive inside a `200` Search response, as a part's `no_data.reason`. `facet_binding_unsupported` and `recipe_not_declared` arrive there as a part's `unsupported.code`, as does the Search code `scope_too_broad`.
 
@@ -194,15 +194,12 @@ print(httpx.get(f"{DFO_API}/codes/node_not_held").text)
 | `unsupported_children_anchor_type`   | 400                                            | The children-scope anchor's type lacks a children mapping.                                                    |
 | `unsupported_peers_anchor_type`      | 400                                            | The peers-scope anchor's type lacks a peers mapping.                                                          |
 | `query_too_long`                     | 422                                            | The `raw_text` query exceeds 2,000 characters.                                                                |
-| `base_identity_mismatch`             | 422                                            | A resubmit's `base_identity` hashes to a value different from its `base_spec_id`.                             |
-| `base_not_found`                     | 422                                            | A resubmit names a `base_spec_id` absent from the registry and omits `base_identity`.                         |
-| `edit_incomplete`                    | 422                                            | A resubmit must list any facet axis or role removed from the base in `removed`.                               |
-| `shape_mismatch`                     | 422                                            | A resubmit's definition names a different shape from its base.                                                |
+| `shape_mismatch`                     | 422                                            | A resubmit's shape does not match the five-tuple of its members.                                              |
 | `option_target_invalid`              | 422                                            | The options request's `for` target names a role outside the resolved StatVar's declared roles.                |
 | `directional_children_unsupported`   | 422                                            | Flow roles lack a containment hierarchy, which makes them incompatible with children scope.                   |
 | `population_empty`                   | 422                                            | The shape resolves to zero StatVars.                                                                          |
 | `facet_probe_ceiling`                | 422                                            | The bound facet combinations would exceed the probe cap.                                                      |
-| `scope_too_broad`                    | 422 on `options`; 200, in a part, on `resolve` | The role scope exceeds the deployment's limits. Bind an entity, narrow the window, or bind a facet.           |
+| `scope_too_broad`                    | 422 on `options`; 200, in a part, on `resolve` | The role scope, or the StatVar family of a resubmitted identity, exceeds the deployment's limits. Bind an entity, narrow the window, or bind a facet. |
 | `door_not_implemented`               | 501                                            | The request uses a defined input kind outside this deployment's supported set.                                |
 | `exact_binding_unsupported`          | 501                                            | `state: "exact"` is outside this deployment's accepted slot bindings.                                         |
 | `no_member_asserts_bound_properties` | 200, in a part                                 | The request leaves place unbound, and zero StatVars match every bound property. The nearest match is offered. |
@@ -228,19 +225,18 @@ The last four arrive in a `200` response. The first three are a `no_data` part's
 | `snapshot_revoked`            | 410    | This snapshot is revoked.                                                                         |
 | `spec_id_mismatch`            | 422    | The sent definition hashes to a value different from the adjacent `spec_id`.                      |
 | `member_not_resolvable`       | 422    | A StatVar resolves to zero or multiple registered shapes.                                         |
-| `code_ambiguous`              | 422    | A source code matches more than one source or StatVar.                                            |
 | `definition_not_reproducible` | 422    | A registered definition fails to reproduce its id against the current graph.                      |
 | `entities_unbound`            | 422    | Registered with no raise site. A request with no entity scope covers every entity with data.      |
 | `default_facet_undefined`     | 422    | An unbound facet axis has zero default candidates.                                                |
-| `collection_probe_ceiling`    | 422    | A collection's facet probe would exceed its cap.                                                  |
-| `over_ceiling`                | 422    | The request exceeds a size ceiling. `ceiling_kind`, `count` and `cap` say which.                  |
+| `collection_probe_ceiling`    | 422    | The facet probe for a group of StatVars would exceed its cap.                                     |
+| `over_ceiling`                | 422    | The request exceeds a size ceiling. `ceiling_kind`, `count` and `cap` say which. A StatVar walk past 20,000 subjects is `candidate_window`; one past 60 seconds answers `timeout` (504, retryable). |
 | `excel_limit`                 | 422    | The table exceeds Excel's row, column or cell limits.                                             |
 | `excel_illegal_character`     | 422    | A cell holds a character Excel's file format forbids.                                             |
 | `parquet_size_bound`          | 422    | The Parquet file would exceed its size bound.                                                     |
 | `column_unknown`              | 422    | `columns`, `pivot` or an enrichment names a column absent from the table.                         |
 | `column_not_droppable`        | 422    | `columns` must retain each grain, unit and provenance column.                                     |
 | `rollup_not_summable`         | 422    | The `groupby` roll-up fails summability.                                                          |
-| `pivot_not_unique`            | 422    | The pivot produces duplicate cells.                                                               |
+| `pivot_not_unique`            | 422    | The pivot produces duplicate cells. `issues` name the columns that vary within them.              |
 | `pivot_not_homogeneous`       | 422    | The pivot would combine rows with different values in a dropped grain, unit or provenance column. |
 | `pivot_over_column_cap`       | 422    | The pivot is wider than the format allows.                                                        |
 | `pivot_over_cell_cap`         | 422    | The pivot exceeds 5,000,000 cells.                                                                |
@@ -248,7 +244,7 @@ The last four arrive in a `200` response. The first three are a `no_data` part's
 | `identity_quarantined`        | 500    | This id is quarantined after a collision.                                                         |
 | `operation_failed`            | 500    | The background operation failed. The poll returns this body in place of a manifest, with the operation's own refusal code in `cause.code`. When the operation ended on a refusal, `detail`, `pointer`, `alternatives`, `issues`, `constraint_id`, `ceiling_kind`, `count`, `cap` and `cause.entities` are that refusal's, as `GET /api/datasets/{id}` returns them. `retryable` is the stored operation's flag: polling again returns the same failure, and resubmitting the mint resets a retryable operation. |
 | `capability_unavailable`      | 501    | The requested format, reshape or conversion is disabled on this deployment.                       |
-| `upstream_version_changed`    | 503    | A source refresh during the mint left the retry unsettled.                                        |
+| `upstream_version_changed`    | 503    | A source refresh during the mint left the retry unsettled, or the graph changed a background operation's StatVars after submission. |
 
 ### Graph API codes
 

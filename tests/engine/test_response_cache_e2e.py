@@ -7,9 +7,13 @@ import time
 from datetime import date
 from unittest.mock import patch
 
+import pytest
+
 from graph_generation import UNKNOWN_GENERATION, FakeGeneration, GenerationProvider
 from search.engine.bind import _UniversalBindOutput
-from search.engine.core import resolve_async
+from search.engine.core import resolve_async, resolve_events
+from search.engine.degraded_reads import note_degraded_read
+from search.engine.errors import GraphInfraError
 from search.engine.extract import ExtractedEntity, Extraction
 from search.engine.response_cache import ResponseCache
 from search.models import (
@@ -130,21 +134,105 @@ def test_differently_worded_query_hits_layer2():
     assert r1.rendered_sentence == r2.rendered_sentence
 
 
-def test_include_observations_is_not_cached():
-    """A request setting include_observations is never cached, on either
-    layer: two identical such requests still cost four LLM calls."""
+def test_buffered_include_observations_is_cached():
+    """A buffered request carries its observations in the response it stores, so two
+    identical requests cost one extract and one bind, and the hit equals the fresh
+    answer except for its timing."""
     llm = _CountingLLM(FakeLLM())
     cache = ResponseCache()
     request = ResolveRequest(
         input=RawTextInput(query=_QUERY_A),
         response_options=ResolveOptions(include_observations=True),
     )
-    _run(request, llm=llm, cache=cache)
-    _run(request, llm=llm, cache=cache)
+    r1 = _run(request, llm=llm, cache=cache)
+    r2 = _run(request, llm=llm, cache=cache)
+    assert llm.calls == ["Extraction", "_UniversalBindOutput"]
+    assert r1.status == "definite"
+    assert r2.parts == r1.parts
+    assert set(r2.diagnostics.timing_ms.by_step or {}) == {"response_cache_layer1"}
+
+
+def test_a_transport_with_trailing_events_is_not_cached():
+    """Over SSE, observations stream after the response event, so the scope stays
+    inactive: two identical streamed requests both run the pipeline and store nothing."""
+    llm = _CountingLLM(FakeLLM())
+    cache = ResponseCache()
+    request = ResolveRequest(
+        input=RawTextInput(query=_QUERY_A),
+        response_options=ResolveOptions(include_observations=True),
+    )
+
+    async def _drain() -> list[str]:
+        return [
+            event.kind
+            async for event in resolve_events(
+                request,
+                graph=FakeGraph(),
+                llm=llm,
+                sdmx=EMPTY_SDMX,
+                response_cache=cache,
+                stream_slot_options=True,
+                materialise_graph=member_walk_reader(FakeGraph()),
+            )
+        ]
+
+    with patch("search.engine.extract.date") as mock_date:
+        mock_date.today.return_value = PINNED_DATE
+        mock_date.side_effect = lambda *args, **kwargs: date(*args, **kwargs)
+        asyncio.run(_drain())
+        kinds = asyncio.run(_drain())
+    assert "observations" in kinds
     assert llm.calls == ["Extraction", "_UniversalBindOutput", "Extraction", "_UniversalBindOutput"]
     stats = cache.stats()
-    assert stats.hits == 0
-    assert stats.entries == 0
+    assert stats.hits == stats.misses == stats.entries == 0
+
+
+def test_a_first_answer_that_swallowed_a_read_is_not_stored(monkeypatch):
+    """A read the pipeline swallows with no warning, here the withheld-registry re-read,
+    marks the part degraded, so neither layer stores the answer and the same request runs
+    the pipeline again. Without the lost read the second request is a hit."""
+    from search.engine.region import pipeline
+
+    async def _lost_re_read(result, graph, *, deadline):
+        note_degraded_read("withheld re-read")
+        return result
+
+    monkeypatch.setattr(pipeline, "with_withheld_warning", _lost_re_read)
+    llm = _CountingLLM(FakeLLM())
+    cache = ResponseCache()
+    r1 = _run(make_request(_QUERY_A), llm=llm, cache=cache)
+    r2 = _run(make_request(_QUERY_A), llm=llm, cache=cache)
+    assert r1.status == r2.status == "definite"
+    assert r1.diagnostics.warnings == r2.diagnostics.warnings == []
+    assert llm.calls == ["Extraction", "_UniversalBindOutput", "Extraction", "_UniversalBindOutput"]
+    assert cache.stats().entries == 0
+
+
+class _FailingRelatedSubjects(FakeGraph):
+    """The related-measures read's reverse read of the group fails."""
+
+    def node_subjects_many(self, *args, **kwargs):
+        raise GraphInfraError("the reverse read failed")
+
+
+@pytest.mark.parametrize(
+    ("graph_type", "entries"),
+    [(FakeGraph, 2), (_FailingRelatedSubjects, 0)],
+    ids=["related-read", "related-read-failed"],
+)
+def test_a_first_answer_whose_related_read_failed_is_not_stored(graph_type, entries):
+    """A failed related-measures read leaves the answer without related measures and no
+    warning, so it marks the part degraded and neither layer stores it."""
+    cache = ResponseCache()
+    response = _run(
+        make_request("population of Kenya"),
+        llm=FakeLLM(),
+        cache=cache,
+        graph=graph_type(),
+    )
+    assert response.status == "definite"
+    assert (response.parts[0].spec.resolved.related_group is None) is (entries == 0)
+    assert cache.stats().entries == entries
 
 
 def test_cache_disabled_by_config_behaves_as_uncached(search_settings):
@@ -170,25 +258,110 @@ def test_cache_disabled_by_config_behaves_as_uncached(search_settings):
     assert stats.entries == 0
 
 
-def test_non_raw_text_kind_is_unaffected():
-    """A parsed-kind request never touches the response cache: the shared
-    cache's counters stay at zero across two requests."""
+def test_identical_parsed_requests_hit_layer2():
+    """A parsed request keys layer 2 on its whole input: the second identical request
+    reads no model, keeps the parsed echo and equals the first."""
     cache = ResponseCache()
+    llm = _CountingLLM(FakeLLM())
     request = ResolveRequest(
         input=ParsedInput(
             parts=[
                 ParsedPart(variable_text="fertility rate", entities=[ParsedEntity(text="Kenya")])
-            ]
+            ],
+            raw_query="fertility rate in Kenya",
         )
     )
-    r1 = _run(request, llm=FakeLLM(), cache=cache)
-    r2 = _run(request, llm=FakeLLM(), cache=cache)
+    r1 = _run(request, llm=llm, cache=cache)
+    calls_after_first = list(llm.calls)
+    r2 = _run(request, llm=llm, cache=cache)
     assert r1.status == "definite"
-    assert r2.status == "definite"
+    assert llm.calls == calls_after_first
+    assert r2.parts == r1.parts
+    assert r2.query_echo == r1.query_echo
+    assert r2.query_echo.entry_path == "parsed"
+    assert set(r2.diagnostics.timing_ms.by_step or {}) == {"response_cache_layer2"}
     stats = cache.stats()
-    assert stats.hits == 0
-    assert stats.misses == 0
-    assert stats.entries == 0
+    assert (stats.hits, stats.entries) == (1, 1)
+
+
+def _streamed_kinds_and_response(request: ResolveRequest, *, cache: ResponseCache):
+    """Stream `request` over a transport with no trailing events; its event kinds and the
+    response event's response."""
+
+    async def _drain():
+        return [
+            event
+            async for event in resolve_events(
+                request,
+                graph=FakeGraph(),
+                llm=FakeLLM(),
+                sdmx=EMPTY_SDMX,
+                response_cache=cache,
+                stream_slot_options=True,
+                materialise_graph=member_walk_reader(FakeGraph()),
+            )
+        ]
+
+    with patch("search.engine.extract.date") as mock_date:
+        mock_date.today.return_value = PINNED_DATE
+        mock_date.side_effect = lambda *args, **kwargs: date(*args, **kwargs)
+        events = asyncio.run(_drain())
+    [response] = [event.response for event in events if event.kind == "response"]
+    return [event.kind for event in events], response
+
+
+@pytest.mark.parametrize(
+    "request_input",
+    [
+        RawTextInput(query=_QUERY_A),
+        ParsedInput(
+            parts=[
+                ParsedPart(variable_text="fertility rate", entities=[ParsedEntity(text="Kenya")])
+            ],
+            raw_query=_QUERY_A,
+        ),
+    ],
+    ids=["raw_text", "parsed"],
+)
+def test_a_streamed_hit_emits_the_answer_without_progress_events(request_input):
+    """A streamed hit sends the stored response and `done`, as a raw-text layer-1 hit
+    always has: the progress events (`interpretation`, `step`, `sentence`) describe a
+    resolution that did not run. The response carries every part, with its sentence plan,
+    as the fresh run's does, which is what a client renders the answer from."""
+    cache = ResponseCache()
+    request = ResolveRequest(input=request_input)
+
+    fresh_kinds, fresh = _streamed_kinds_and_response(request, cache=cache)
+    hit_kinds, hit = _streamed_kinds_and_response(request, cache=cache)
+
+    assert {"step", "sentence"} <= set(fresh_kinds)
+    assert hit_kinds == ["response", "done"]
+    assert hit.parts == fresh.parts
+    assert hit.sentence_plan == fresh.sentence_plan
+    assert cache.stats().hits == 1
+
+
+def test_parsed_requests_differing_in_one_field_miss_layer2():
+    """Two parsed requests that differ only in a part's unit text keep separate entries."""
+    cache = ResponseCache()
+
+    def _request(unit_text: str | None) -> ResolveRequest:
+        return ResolveRequest(
+            input=ParsedInput(
+                parts=[
+                    ParsedPart(
+                        variable_text="fertility rate",
+                        entities=[ParsedEntity(text="Kenya")],
+                        unit_text=unit_text,
+                    )
+                ]
+            )
+        )
+
+    _run(_request(None), llm=FakeLLM(), cache=cache)
+    _run(_request("percent"), llm=FakeLLM(), cache=cache)
+    stats = cache.stats()
+    assert (stats.hits, stats.entries) == (0, 2)
 
 
 # ---------------------------------------------------------------------------

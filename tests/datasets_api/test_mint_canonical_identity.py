@@ -2,7 +2,7 @@
 invariants of the dataset serving its family or leaves them unbound.
 
 The imputed multilateral table declares `crsTypeOfFlow` and `dac2aAidType` as invariants.
-A definition posted with both bound and one posted with both unbound mint, preview and
+A definition posted with both bound and one posted with both unbound mint and
 report one `spec_id`, the canonical identity's (`code_index.members.canonical_identity`),
 which binds both, when the definition names the table. One that names no table keeps the bindings it was
 posted with.
@@ -15,7 +15,7 @@ import pytest
 
 from code_index.shared import get_index
 from datasets_api.adapter import resolve_definition_members
-from spec_registry import mint_collection_id, recompute_identity
+from spec_registry import recompute_identity
 from statvar_members import MemberEnumerator
 from tests.code_index.aid_identity import (
     AID_TYPE,
@@ -25,6 +25,7 @@ from tests.code_index.aid_identity import (
 )
 
 from ._graph_doubles import FakeMintGraphReader
+from ._member_bounds import mint_bounds
 from .conftest import FakeDatasetStore
 from .test_definition_door import _client, _coverage_service
 
@@ -55,8 +56,9 @@ def _populated() -> tuple[str, ...]:
         _identity(pins_bound=True),
         spec_id="spec_test",
         graph=graph,
-        enumerator=MemberEnumerator(graph=graph),
+        enumerator=MemberEnumerator(),
         code_index=get_index(),
+        bounds=mint_bounds(),
     )
     assert len(resolved.shapes) == IMPUTED_MEMBER_COUNT
     return tuple(shape.stat_var.removeprefix("dcid:") for shape in resolved.shapes[:2])
@@ -113,76 +115,13 @@ def test_a_definition_mints_and_reports_its_canonical_spec_id(pins_bound: bool, 
         ),
     )
 
-    previewed = client.post(
-        "/api/datasets", json={"schema_version": 1, "input": posted, "preview": {"limit": 100}}
-    )
     minted = client.post(
         "/api/datasets", json={"schema_version": 1, "input": posted, "options": {"bundle": False}}
     )
 
-    assert previewed.status_code == 200, previewed.text
     assert minted.status_code == 200, minted.text
-    (entry,) = previewed.json()["members"]
     manifest = minted.json()
-    assert entry["stat_var"] == f"dcid:{canonical_spec_id}"
     assert manifest["definition"]["spec_id"] == canonical_spec_id
     assert manifest["definition"]["identity"] == recompute_identity(canonical).identity
-    assert entry["content_version"] == manifest["content_version"]
     assert manifest["coverage"]["rows"] == len(populated) * len(_YEARS)
-    assert canonical_spec_id in store.state.spec_registry
-
-
-@pytest.mark.parametrize("named", [True, False], ids=["named", "unnamed"])
-@pytest.mark.parametrize("pins_bound", [True, False], ids=["pins-bound", "pins-unbound"])
-def test_a_collection_member_mints_under_its_canonical_spec_id(pins_bound: bool, named: bool):
-    """A collection member resolves one StatVar, the imputed identity with its purpose
-    narrowed to the first populated member's. The collection registers and reports the
-    member's canonical spec_id, whether the member was posted with its invariants bound or
-    not."""
-    (member_dcid,) = _populated()[:1]
-    (row,) = (row for row in get_index().statvars if row.dcid == member_dcid)
-
-    def _member(*, bound: bool) -> dict:
-        identity = _identity(pins_bound=bound, named=named)
-        for slot in identity["slots"]:
-            if slot["property"] == "crsPurpose":
-                slot["binding"] = {"state": "value", "ref": row.constraint_properties["crsPurpose"]}
-        return identity
-
-    canonical_spec_id = recompute_identity(_member(bound=pins_bound or named)).spec_id
-    posted = _member(bound=pins_bound)
-    spec_id = recompute_identity(posted).spec_id
-    store = FakeDatasetStore()
-    client = _client(
-        graph=FakeMintGraphReader(labels={_PROVIDER: "France", _RECIPIENT: "Kenya"}),
-        store=store,
-        sdmx_transport=_sdmx_transport((member_dcid,)),
-        coverage=_coverage_service(
-            stat_vars=(member_dcid,),
-            donor_role="financingProvider",
-            donor=_PROVIDER,
-            recipient=_RECIPIENT,
-            provenance=IMPUTED_PROVENANCE,
-            years=_YEARS,
-        ),
-    )
-
-    minted = client.post(
-        "/api/datasets",
-        json={
-            "schema_version": 1,
-            "input": {
-                "kind": "collection_id",
-                "collection_id": mint_collection_id([spec_id]),
-                "members": [{"schema_version": 1, "spec_id": spec_id, "identity": posted}],
-            },
-            "options": {"bundle": False},
-        },
-    )
-
-    assert minted.status_code == 200, minted.text
-    manifest = minted.json()
-    assert [member["definition"]["spec_id"] for member in manifest["collection"]["members"]] == [
-        canonical_spec_id
-    ]
     assert canonical_spec_id in store.state.spec_registry

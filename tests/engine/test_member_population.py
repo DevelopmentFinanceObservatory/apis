@@ -287,7 +287,6 @@ def _run_population_query():
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_NoBindingLLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
@@ -296,8 +295,8 @@ def _run_population_query():
 
 def test_definite_standard_response_reports_the_confirmed_population_not_just_the_elected_winner():
     """Three unbound siblings have data, while the single-match branch ships
-    only the bare aggregate. The response counts all three and marks its one
-    shipped item as truncated, reproducing #893.
+    only the bare aggregate. The response counts all three and serves the one,
+    reproducing #893.
     """
     result = _run_population_query()
 
@@ -305,8 +304,7 @@ def test_definite_standard_response_reports_the_confirmed_population_not_just_th
     spec = result.specs[0]
     resolved = spec.resolved
 
-    assert [sv.ref for sv in resolved.stat_vars.items] == [_BARE_SV]
-    assert len(resolved.stat_vars.items) == 1
+    assert [sv.ref.dcid for sv in resolved.members] == [_BARE_SV]
+    assert len(resolved.members) == 1
     assert resolved.stat_vars.member_count == 3
-    assert resolved.stat_vars.truncated is True
     assert resolved.shape.member_count == 3

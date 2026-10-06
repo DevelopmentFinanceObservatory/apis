@@ -19,7 +19,6 @@ from search.engine.spec_build import build_spec
 from search.models import (
     BindingValue,
     CoverageBare,
-    PipelineStep,
     Slot,
     SlotKey,
     SlotValue,
@@ -83,7 +82,7 @@ def _rr(
     )
 
 
-def _combine(regions, *, include_sentence: bool = False):
+def _combine(regions):
     """Returns just the response -- combine_regions also returns the post-collapse
     region list, which this file's tests don't need."""
     response, _effective = combine_regions(
@@ -92,7 +91,6 @@ def _combine(regions, *, include_sentence: bool = False):
         extra_warnings=[],
         start_ms=now_ms(),
         engine_build="test",
-        include_sentence=include_sentence,
         max_candidates=10,
     )
     return response
@@ -133,14 +131,14 @@ def test_cross_shape_both_definite():
     population, fertility = result.parts
     assert population.status == "definite"
     assert population.variable_text == "population"
-    assert any(sv.ref == "Count_Person" for sv in population.spec.resolved.stat_vars.items)
+    assert any(sv.ref.dcid == "Count_Person" for sv in population.spec.resolved.members)
     codes = [w.code for w in population.warnings]
     assert BINDING_FOLDED not in codes
 
     assert fertility.status == "definite"
     assert fertility.variable_text == "fertility rate"
     assert any(
-        sv.ref == "FertilityRate_Person_Female" for sv in fertility.spec.resolved.stat_vars.items
+        sv.ref.dcid == "FertilityRate_Person_Female" for sv in fertility.spec.resolved.members
     )
     assert population.spec.spec_id != fertility.spec.spec_id
 
@@ -222,6 +220,7 @@ def test_same_shape_multislot_refusal_keeps_each_members_own_spec():
 
     def _two_slot_spec(val_a: str, val_b: str):
         return build_spec(
+            open_roles=(),
             measure_elected_properties=frozenset(),
             shape=shape_two_slots,
             slots=[
@@ -241,7 +240,6 @@ def test_same_shape_multislot_refusal_keeps_each_members_own_spec():
             ],
             entities=[],
             coverage=CoverageBare(has_data=True),
-            pipeline_trace=[PipelineStep(step="extract", ran=True)],
         )
 
     spec_1 = _two_slot_spec("A1", "B1")
@@ -373,7 +371,6 @@ def test_each_no_data_part_names_its_own_variable_text_regardless_of_list_order(
                 no_data_reason="variable_not_resolved",
             ),
         ],
-        include_sentence=True,
     )
     # Parts are always sorted by earliest_index, regardless of input order.
     first, second = response.parts
@@ -409,7 +406,6 @@ def test_each_no_data_part_names_its_own_unresolved_entity_names():
                 unresolved_entity_names=("European Union",),
             ),
         ],
-        include_sentence=True,
     )
     gdp_part, population_part = response.parts
     assert gdp_part.variable_text == "gdp"

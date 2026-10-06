@@ -49,7 +49,6 @@ def _state() -> ResolveState:
         source_text=None,
         materialise_graph=None,
         materialise_sdmx=None,
-        pipeline_steps=[],
         timing={},
         warnings=[],
         coverage=empty_coverage_snapshot(),

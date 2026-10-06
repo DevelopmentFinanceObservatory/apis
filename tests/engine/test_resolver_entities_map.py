@@ -15,6 +15,7 @@ from tests.engine._base_identity import (
 )
 from tests.engine._fake_coverage import FakeCoverageService, empty_coverage_snapshot, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import walk_options
 from tests.fixtures import FakeGraph
 
 
@@ -112,14 +113,10 @@ class TestBoundaryHelperMatchesReplacedLiterals:
             },
             "country/KEN": {"label": "Kenya", "type": "Country"},
         }
-        base_spec_id, base_identity = make_base(PERSON_COUNT_SHAPE)
         inp = ResubmitIdentityPayload(
             identity=make_base(
                 PERSON_COUNT_SHAPE, entities=[destination_entity("country/KEN", "Kenya")]
             )[1],
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[sv_dcid],
         )
 
         region = resolve_spec_resubmit(
@@ -127,6 +124,7 @@ class TestBoundaryHelperMatchesReplacedLiterals:
             graph=FakeGraph(nodes=nodes),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(FakeGraph(nodes=nodes)),
         )
 
         assert region.status == "no_data", f"expected no_data, got {region.status!r}: {region}"
@@ -152,14 +150,10 @@ class TestBoundaryHelperMatchesReplacedLiterals:
             },
             "country/KEN": {"label": "Kenya", "type": "Country"},
         }
-        base_spec_id, base_identity = make_base(PERSON_COUNT_SHAPE)
         inp = ResubmitIdentityPayload(
             identity=make_base(
                 PERSON_COUNT_SHAPE, entities=[destination_entity("country/KEN", "Kenya")]
             )[1],
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[sv_dcid],
         )
 
         _auto_coverage_index_1 = patch_coverage(
@@ -172,6 +166,7 @@ class TestBoundaryHelperMatchesReplacedLiterals:
             graph=FakeGraph(nodes=nodes),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
+            options=walk_options(FakeGraph(nodes=nodes)),
         )
 
         assert region.status == "definite", f"expected definite, got {region.status!r}: {region}"
@@ -196,14 +191,10 @@ class TestBoundaryHelperMatchesReplacedLiterals:
             },
             "country/KEN": {"label": "Kenya", "type": "Country"},
         }
-        base_spec_id, base_identity = make_base(PERSON_COUNT_SHAPE)
         inp = ResubmitIdentityPayload(
             identity=make_base(
                 PERSON_COUNT_SHAPE, entities=[destination_entity("country/KEN", "Kenya")]
             )[1],
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[sv_dcid],
         )
 
         region = resolve_spec_resubmit(
@@ -211,6 +202,7 @@ class TestBoundaryHelperMatchesReplacedLiterals:
             graph=FakeGraph(nodes=nodes),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(FakeGraph(nodes=nodes)),
         )
 
         assert region.status == "no_data", f"expected no_data, got {region.status!r}: {region}"

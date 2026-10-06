@@ -108,6 +108,7 @@ from search.eval.runner import (
     Sample,
     extend_run,
     fetch_schema,
+    members_door_reader,
     modal_sample,
     run_cases,
 )
@@ -135,13 +136,16 @@ class Reads:
     sdmx: EngineSdmxClient | None = None
     coverage: CoverageService | None = None
 
-    def context(self, schema: Mapping[str, Any], side: Side) -> ScoreContext:
+    def context(self, schema: Mapping[str, Any], side: Side, *, url: str) -> ScoreContext:
+        """The context scoring answers of the app at `url`, whose members door names the
+        StatVars its Specs serve."""
         return ScoreContext(
             schema=WireSchema.from_document(schema),
             graph=self.graph,
             sdmx=self.sdmx,
             coverage=self.coverage,
             side=side,
+            members=members_door_reader(url),
         )
 
 
@@ -419,7 +423,7 @@ async def run_paired(
         for case in cases
         if not ineligibility(case, implemented_checks=CHECKS)
     ]
-    head_ctx = reads.context(await fetch_schema(head_url, client=client), "head")
+    head_ctx = reads.context(await fetch_schema(head_url, client=client), "head", url=head_url)
     await _run_head(
         states, url=head_url, samples=samples, concurrency=concurrency, client=client, ctx=head_ctx
     )
@@ -427,7 +431,7 @@ async def run_paired(
     to_base = [s for s in states if s.waiting_for(Outcome.NEEDS_BASE)]
     if not to_base:
         return states
-    base_ctx = reads.context(await fetch_schema(base_url, client=client), "base")
+    base_ctx = reads.context(await fetch_schema(base_url, client=client), "base", url=base_url)
     runs = await run_cases(
         [s.case for s in to_base],
         url=base_url,
@@ -527,7 +531,7 @@ async def run_single(
         for case in stem_cases
         if not ineligibility(case, implemented_checks=CHECKS)
     ]
-    ctx = reads.context(await fetch_schema(url, client=client), "head")
+    ctx = reads.context(await fetch_schema(url, client=client), "head", url=url)
     await _run_head(
         states, url=url, samples=samples, concurrency=concurrency, client=client, ctx=ctx
     )

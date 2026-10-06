@@ -7,6 +7,7 @@ creditor. `RoleSignatureIncompatible` is left for role sets the election cannot 
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
 
 import pytest
@@ -14,17 +15,21 @@ import pytest
 from code_index.query import CodeIndex
 from code_index.shared import get_index
 from code_index.types import DatasetDeclaration, IndexStamp, StatVarRow
-from datasets_api.adapter import member_resolution_key, resolve_definition_members
+from datasets_api.adapter import (
+    MemberReadBounds,
+    check_reproducible,
+    resolve_definition_members,
+)
 from datasets_api.codes_materialise import DefinitionNotReproducible, RoleSignatureIncompatible
 from datasets_api.kinds.spec_id import _check_own_roles, _resolve_members
 from datasets_api.mint_models import Scope
-from statvar_members import MemberEnumerator
+from datasets_api.surgery import open_roles_left_open
+from statvar_members import MemberEnumerator, member_digest
 
-from ._graph_doubles import FakeMintGraphReader
+from ._graph_doubles import FakeMintGraphReader, FirstPageWithholdingGraphReader
 from .test_resolve_definition_members_guards import (
     _root_and_gendered_arcs,
     _unbound_gender_identity,
-    _WithheldFromWalkGraphReader,
 )
 
 _SPEC_ID = "spec_test"
@@ -58,8 +63,8 @@ _DEBT = {
 }
 
 
-def _identity(entities: Mapping[str, list[str]]) -> dict:
-    return {
+def _identity(entities: Mapping[str, list[str]], open_roles: tuple[str, ...] = ()) -> dict:
+    identity = {
         "identity_version": "spec1",
         "shape": {
             "kind": "statvar_schema",
@@ -75,18 +80,27 @@ def _identity(entities: Mapping[str, list[str]]) -> dict:
         "entities": dict(entities),
         "requested_window": {"kind": "all"},
     }
+    if open_roles:
+        identity["open_roles"] = list(open_roles)
+    return identity
 
 
 def _resolve(identity: Mapping[str, object], arcs=_DEBT, **kwargs: object):
+    """Resolve `identity` over `arcs`, under a mint's bounds unless `kwargs` names others."""
+    kwargs.setdefault("bounds", _bounds())
     graph = FakeMintGraphReader(arcs=arcs)
     return resolve_definition_members(
         identity,
         spec_id=_SPEC_ID,
         graph=graph,
-        enumerator=MemberEnumerator(graph=graph),
+        enumerator=MemberEnumerator(),
         code_index=get_index(),
         **kwargs,  # ty: ignore[invalid-argument-type]
     )
+
+
+def _bounds() -> MemberReadBounds:
+    return MemberReadBounds(subject_ceiling=20_000, deadline=time.monotonic() + 3_600)
 
 
 def _members(resolved) -> list[tuple[str, tuple[str, ...]]]:
@@ -131,18 +145,6 @@ def test_the_role_keys_argument_replaces_the_identitys_own():
     assert _members(resolved) == [("dcid:Debt_ByCreditor", _PAIR)]
 
 
-def test_the_role_keys_enter_the_member_resolution_key():
-    index = get_index()
-    recipient = member_resolution_key(_identity({"destination": ["country/KEN"]}), code_index=index)
-
-    assert recipient == member_resolution_key(
-        _identity({"destination": ["country/GHA"]}), code_index=index
-    )
-    assert recipient != member_resolution_key(
-        _identity({"destination": ["country/KEN"], "origin": ["country/CHN"]}), code_index=index
-    )
-
-
 def test_a_scope_that_names_a_creditor_resolves_the_by_creditor_rows():
     """Scope entities supply the role keys, so the request serves the members the surgered
     identity resolves."""
@@ -153,18 +155,119 @@ def test_a_scope_that_names_a_creditor_resolves_the_by_creditor_rows():
         _identity({"destination": ["country/KEN"]}),
         spec_id=_SPEC_ID,
         graph=graph,
-        enumerator=MemberEnumerator(graph=graph),
+        enumerator=MemberEnumerator(),
         code_index=get_index(),
+        bounds=_bounds(),
         scope=scope,
     )
 
     assert [shape.stat_var for shape in shapes] == ["dcid:Debt_ByCreditor"]
 
 
+def test_a_scope_binding_the_destination_keeps_an_open_origin_in_the_role_keys():
+    """An open creditor the scope leaves open stays open beside the scope's role keys, so
+    the scoped request serves the by-creditor rows the stored identity asks for."""
+    graph = FakeMintGraphReader(arcs=_DEBT)
+    identity = _identity({"destination": ["country/NGA"]}, open_roles=("origin",))
+    scope = Scope(entities={"destination": ["country/GHA"]})
+
+    assert open_roles_left_open(identity, scope.entities or {}) == ["origin"]
+    shapes = _resolve_members(
+        identity,
+        spec_id=_SPEC_ID,
+        graph=graph,
+        enumerator=MemberEnumerator(),
+        code_index=get_index(),
+        bounds=_bounds(),
+        scope=scope,
+    )
+    assert [shape.stat_var for shape in shapes] == ["dcid:Debt_ByCreditor"]
+
+
+def test_an_open_role_the_scope_leaves_open_stays_soft():
+    """A family no member of which declares both roles elects the recipient total under a
+    scope, as it does without one. The open creditor stays soft. Made a role key every
+    member must cover, it would leave both members standing and refuse the tie."""
+    graph = FakeMintGraphReader(arcs={"Debt": _arcs(_RECIPIENT), "Debt_Line": _arcs(_PROVIDER)})
+    identity = _identity({"destination": ["country/NGA"]}, open_roles=("origin",))
+
+    shapes = _resolve_members(
+        identity,
+        spec_id=_SPEC_ID,
+        graph=graph,
+        enumerator=MemberEnumerator(),
+        code_index=get_index(),
+        bounds=_bounds(),
+        scope=Scope(entities={"destination": ["country/GHA"]}),
+    )
+    assert [shape.stat_var for shape in shapes] == ["dcid:Debt"]
+
+
+@pytest.mark.parametrize(
+    ("role_keys", "expected"),
+    [
+        ({"destination"}, ["origin"]),
+        ({"origin"}, []),
+        ({"creditor"}, []),
+        ({"financingProvider", "destination"}, []),
+        ({}, ["origin"]),
+    ],
+)
+def test_a_scope_closes_an_open_role_it_binds_by_axis(role_keys, expected):
+    identity = _identity({"destination": ["country/NGA"]}, open_roles=("origin",))
+
+    assert open_roles_left_open(identity, role_keys) == expected
+
+
+def test_an_open_role_the_member_does_not_declare_is_not_reproducible():
+    identity = _identity({"destination": ["country/NGA"]}, open_roles=("origin",))
+    total, by_creditor = (
+        _resolve(_identity({"destination": ["country/NGA"]}, open_roles=roles)).shapes[0]
+        for roles in ((), ("origin",))
+    )
+
+    check_reproducible(identity, spec_id=_SPEC_ID, shape=by_creditor)
+    with pytest.raises(DefinitionNotReproducible) as exc_info:
+        check_reproducible(identity, spec_id=_SPEC_ID, shape=total)
+    assert exc_info.value.undeclared_roles == ("origin",)
+
+
+def test_one_enumerator_keeps_an_open_role_resolution_apart_from_the_total():
+    """The shared enumerator keys a walk by its open role keys. The identity that asks for
+    every creditor resolves the by-creditor family, the same identity without the open
+    role resolves the recipient-only family, each states its own family digest, and the
+    second total is served from the first total's entry."""
+    graph = FakeMintGraphReader(arcs=_DEBT)
+    enumerator = MemberEnumerator()
+
+    def served(open_roles: tuple[str, ...]):
+        (shape,) = resolve_definition_members(
+            _identity({"destination": ["country/NGA"]}, open_roles=open_roles),
+            spec_id=_SPEC_ID,
+            graph=graph,
+            enumerator=enumerator,
+            code_index=get_index(),
+            bounds=_bounds(),
+        ).shapes
+        assert shape.family is not None
+        return shape.stat_var, shape.family.count, shape.family.digest
+
+    total, by_creditor, total_again = served(()), served(("origin",)), served(())
+
+    assert total == ("dcid:Debt", 2, member_digest(["Debt", "Debt_Guaranteed"]))
+    assert by_creditor == (
+        "dcid:Debt_ByCreditor",
+        2,
+        member_digest(["Debt_ByCreditor", "Debt_Guaranteed_ByCreditor"]),
+    )
+    assert total_again == total
+    assert graph.calls["node_subjects"] == 2
+
+
 class _Deps:
     def __init__(self, arcs) -> None:
         self.graph = FakeMintGraphReader(arcs=arcs)
-        self.enumerator = MemberEnumerator(graph=self.graph)
+        self.enumerator = MemberEnumerator()
         self.code_index = get_index()
 
 
@@ -180,11 +283,19 @@ def test_an_identitys_own_roles_are_checked_against_its_own_role_class():
         graph=deps.graph,
         enumerator=deps.enumerator,
         code_index=deps.code_index,
+        bounds=_bounds(),
         scope=scope,
     )
     assert [shape.stat_var for shape in shapes] == ["dcid:Debt"]
 
-    _check_own_roles(identity, spec_id=_SPEC_ID, scope=scope, shapes=shapes, deps=deps)  # ty: ignore[invalid-argument-type]
+    _check_own_roles(
+        identity,
+        spec_id=_SPEC_ID,
+        scope=scope,
+        shapes=shapes,
+        deps=deps,  # ty: ignore[invalid-argument-type]
+        bounds=_bounds(),
+    )
 
     with pytest.raises(DefinitionNotReproducible):
         _check_own_roles(
@@ -193,19 +304,21 @@ def test_an_identitys_own_roles_are_checked_against_its_own_role_class():
             scope=scope,
             shapes=shapes,
             deps=deps,  # ty: ignore[invalid-argument-type]
+            bounds=_bounds(),
         )
 
 
 def _truncated_walk_deps(arcs) -> _Deps:
     deps = _Deps({})
-    deps.graph = _WithheldFromWalkGraphReader(arcs=arcs, withheld=frozenset({"Count_Person"}))
-    deps.enumerator = MemberEnumerator(graph=deps.graph)
+    deps.graph = FirstPageWithholdingGraphReader(arcs=arcs, withheld=frozenset({"Count_Person"}))
+    deps.enumerator = MemberEnumerator()
     return deps
 
 
-def test_a_place_less_identity_a_posted_root_proved_complete_mints_under_a_scope_that_binds_a_place():
+def test_a_place_less_identity_whose_root_sits_past_the_first_page_mints_under_a_place_scope():
     """The scope binds a subject and the identity binds nothing, so the identity's roles hold
-    against the scope's own members and nothing resolves a second time."""
+    against the scope's own members, settled by the full read, and nothing resolves a second
+    time."""
     deps = _truncated_walk_deps(_root_and_gendered_arcs())
     identity = _unbound_gender_identity()
     scope = Scope(entities={"observationAbout": ["country/KEN"]})
@@ -215,7 +328,7 @@ def test_a_place_less_identity_a_posted_root_proved_complete_mints_under_a_scope
         graph=deps.graph,
         enumerator=deps.enumerator,
         code_index=deps.code_index,
-        selection=("Count_Person",),
+        bounds=_bounds(),
         scope=scope,
     )
     walks = deps.graph.calls["node_subjects"]
@@ -226,7 +339,7 @@ def test_a_place_less_identity_a_posted_root_proved_complete_mints_under_a_scope
         scope=scope,
         shapes=shapes,
         deps=deps,  # ty: ignore[invalid-argument-type]
-        selection=("Count_Person",),
+        bounds=_bounds(),
     )
 
     assert [shape.stat_var for shape in shapes] == ["dcid:Count_Person"]
@@ -270,7 +383,7 @@ def _debt_index(*rows: StatVarRow) -> CodeIndex:
             DatasetDeclaration(
                 provenance=_PROVENANCE,
                 label="Debt",
-                synonyms=(),
+                description="A test table.",
                 opt_in=False,
                 absent_observation="zero",
                 rank=0,
@@ -285,8 +398,9 @@ def _resolve_index(identity: Mapping[str, object], index: CodeIndex):
         identity,
         spec_id=_SPEC_ID,
         graph=graph,
-        enumerator=MemberEnumerator(graph=graph),
+        enumerator=MemberEnumerator(),
         code_index=index,
+        bounds=_bounds(),
     )
 
 

@@ -303,14 +303,13 @@ class Shape(StrictModel):
         default=None,
         description=(
             "lowercase sha256 hex of the RFC 8785 (JCS) canonical JSON of the "
-            "sorted list of bare dcids (no 'dcid:' prefix) in the population "
-            "member_count names. Present only when that population is exact "
-            "(a true total, not a floor over a capped recall sample) and is "
-            "the family the code index resolves for the spec's identity; null "
-            "otherwise. /api/datasets states the same family for the minted "
-            "spec as trace.family_member_digest, so a caller compares the two "
-            "to verify the surfaces agree on membership -- see docs/"
-            "conformance-search-api-v1.md's clause next to C75."
+            "sorted list of bare dcids (no 'dcid:' prefix) of the family a Datasets "
+            "mint of this Spec's definition resolves, the mint's "
+            "trace.family_member_digest: every row of the family the code index "
+            "resolves, or every member the mint's member walk confirms when it read "
+            "every candidate. Null when Search did not settle that family for this "
+            "definition, and when its walk proved the members from a window it did not "
+            "read to the end, so it cannot name every member of the family"
         ),
     )
     refine_supported: bool = Field(

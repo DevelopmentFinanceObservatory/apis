@@ -13,8 +13,8 @@ rendering is servable. A groupby collapse (`base_content_version` set), a conver
 whose body stores no per-series conversion record for a converted series, and a version whose
 preview needs rows but which holds no servable frame1 refuse `observations_unavailable`. A graph
 read failure refuses retryable `service_unavailable`. The route takes `spec_` ids alone
-(`routing.SpecIdConvertor`), so a collection id matches no route and answers the platform's
-`not_found`.
+(`routing.SpecIdConvertor`), as every Datasets route does, so any other id matches no route and
+answers the platform's `not_found`.
 
 The preview mode comes from the stored version without reading frame bytes: role-bearing when
 no resolved StatVar declares `observationAbout`; places defaulted for a standard version that
@@ -111,6 +111,7 @@ from search.observations import (
     observations_too_large,
     observations_windowed_scope,
     preview_mode,
+    role_bulk_order,
     role_bulk_shown,
 )
 from spec_registry.reader import LiveSpecReader, SpecReader
@@ -447,15 +448,24 @@ def read_snapshot_observations(
 
     series = reads()
     labels = _IndexLabels(graph=deps.graph, index=deps.code_index)
-    shown = role_bulk_shown(series) if mode is PreviewMode.ROLE_BULK else series
+    # The frame holds the rows the answer keeps, the count the live read gates on. A
+    # converted bulk version was omitted above.
+    order = (
+        role_bulk_order(
+            rows=sum(read.total_rows for read in series.values()), converts_to_role_currency=False
+        )
+        if mode is PreviewMode.ROLE_BULK
+        else None
+    )
+    shown = series if order is None else role_bulk_shown(series, order=order)
     try:
         with phase("assemble"):
             constraints = _member_constraints(
                 (sv for sv, _roles in shown), index=deps.code_index, graph=deps.graph
             )
-            if mode is PreviewMode.ROLE_BULK:
+            if order is not None:
                 return assemble_role_bulk(
-                    series, label_source=labels, member_constraints=constraints
+                    series, label_source=labels, member_constraints=constraints, order=order
                 )
             if mode is PreviewMode.SCOPE_BULK:
                 return assemble_scope_bulk(
@@ -562,6 +572,7 @@ def build_observations_door(
                             base_url=live_settings.un_graph_base_url,
                             timeout=_settings.sdmx_timeout_seconds,
                         ),
+                        **live_settings.graph_cache_options(),
                     )
             except BaseException:
                 if pool_opened_here:

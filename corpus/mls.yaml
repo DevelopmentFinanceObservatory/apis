@@ -209,14 +209,15 @@
 
 - id: dq-mls-021
   query: Multilateral ODA from Norway to Kenya
-  why: '''Multilateral ODA'' does not opt into MLS; only ''imputed'' does, so the answer offers MLS among candidates.'
+  why: A donor's multilateral ODA reaching a recipient is what the imputed table measures, so bind elects its measure.
   reuse: panel/mls-032
   tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical, overlap: [crs]}
-  known_failure: {issue: 1156, checks: [disposition]}
+  known_failure: {issue: 1164, checks: [measure, provenance]}
   expect:
-    candidates:
+    definite:
+      measure: {family: mls.imputed}
+      provenance: {bound: true}
       entities: [{dcid: country/NOR, role: origin}, {dcid: country/KEN, role: destination}]
-      include_families: [mls.imputed]
 
 - id: dq-mls-022
   query: Norway's bilateral-only aid to Kenya, not counting what goes through multilaterals

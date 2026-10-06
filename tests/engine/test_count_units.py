@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import pytest
 
+from search.engine.quantity import quantity_requirement
 from search.engine.region.alternate_guard import inadmissible_alternates, query_pins
 from search.engine.region.phase_rank_bind import (
     _is_unnormalised_raw_count,
@@ -154,6 +155,10 @@ def test_explicit_rate_prunes_a_count_unit_series() -> None:
 
 def test_rate_query_rejects_a_count_unit_alternate() -> None:
     rejected = inadmissible_alternates(
-        query_pins("measles incidence rate"), _MORTALITY, [(1, _REPORTED_CASES)]
+        query_pins(
+            "measles incidence rate", quantity=quantity_requirement(["measles incidence rate"])
+        ),
+        _MORTALITY,
+        [(1, _REPORTED_CASES)],
     )
     assert rejected[1].startswith("pin:normalisation:")

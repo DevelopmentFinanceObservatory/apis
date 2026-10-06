@@ -146,7 +146,6 @@ def _run_standard(*, unit_text: str, sdmx: EngineSdmxClient | None = None):
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
             sdmx=sdmx if sdmx is not None else FakeSdmxClient(),
-            base_steps=[],
             base_timing={},
             unit_text=unit_text,
             coverage=empty_coverage_snapshot(),
@@ -181,7 +180,6 @@ def _run_role_bearing(*, unit_text: str):
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
             sdmx=sdmx,
-            base_steps=[],
             base_timing={},
             unit_text=unit_text,
             coverage=empty_coverage_snapshot(),
@@ -228,7 +226,6 @@ class TestBesidePhraseOnTwoBoundRolesRefuses:
             IdentityCurrencyRole(role="destination"),
             IdentityCurrencyRole(role="origin"),
         ]
-        assert result.unit_alternatives_truncated is False
 
     def test_donor_currency_beside_both_directional_roles_still_binds(self) -> None:
         # A fixed-role phrase is unaffected by how many roles are bound. It

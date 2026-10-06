@@ -3,7 +3,7 @@
 `derive_signals` reads the facet probe used for the fetch. For a multi-member combined group, it
 matches each member against the shared group selection and combines every dispatched facet.
 Choosing only one facet could miss a later update or trigger a rebuild for an unchanged facet.
-Single-member specs and collections use each request's own selected facets. Mint and later GETs
+A single-member spec uses its request's own selected facets. Mint and later GETs
 therefore compare signals derived by the same rule. A request whose window leaves its end unstated
 reads under the current year, so its signal also carries the window it read (`clock_window`).
 """
@@ -89,43 +89,6 @@ def _member_signal(
         observation_period=representative.observation_period,
         provenance_last_refresh=last_refresh,
         provenance_next_refresh=next_refresh,
-    )
-
-
-def _sum_obs_counts(a: int | None, b: int | None) -> int | None:
-    """Sum two signal counts. A stored signal can carry an unknown count (`None`), which makes the
-    sum unknown too."""
-    if a is None or b is None:
-        return None
-    return a + b
-
-
-def _combine_member_signals(signals: Sequence[MemberSignal]) -> MemberSignal:
-    """Combine per-request signals for a single-frame group.
-
-    The lowest dispatched `facet_id` wins. Its observation period and provenance dates are kept.
-    Counts and date ranges are combined. A single signal passes through unchanged.
-    """
-    obs_count: int | None = 0
-    earliest_date: str | None = None
-    latest_date: str | None = None
-    dispatch_facet_ids: set[str] = set()
-    for signal in signals:
-        obs_count = _sum_obs_counts(obs_count, signal.obs_count)
-        earliest_date = _earliest(earliest_date, signal.earliest_date)
-        latest_date = _latest(latest_date, signal.latest_date)
-        if signal.dispatch_facet_id is not None:
-            dispatch_facet_ids.add(signal.dispatch_facet_id)
-    winner_id = min(dispatch_facet_ids) if dispatch_facet_ids else None
-    winner = next((s for s in signals if s.dispatch_facet_id == winner_id), None)
-    return MemberSignal(
-        dispatch_facet_id=winner_id,
-        obs_count=obs_count,
-        earliest_date=earliest_date,
-        latest_date=latest_date,
-        observation_period=winner.observation_period if winner is not None else None,
-        provenance_last_refresh=winner.provenance_last_refresh if winner is not None else None,
-        provenance_next_refresh=winner.provenance_next_refresh if winner is not None else None,
     )
 
 
@@ -220,37 +183,27 @@ def derive_signals(
     probe: CollectionFacetProbe,
     *,
     graph: GraphReader,
-    combine: bool,
 ) -> tuple[MemberSignal, ...] | None:
-    """Return signals in request order, or `None` when selection or conversion fails.
+    """Return the spec's one signal, or `None` when selection or conversion fails.
 
-    Multi-member combined groups use `_group_signal` for all dispatched facets. Single-member
-    specs and collections use `_member_signal`. Combined specs return one signal. Collections retain
-    one per request. Each signal carries the window its requests read when that window's end is
-    unstated (`_clock_window`); a combined spec's requests share one window.
+    A multi-member group uses `_group_signal` for all dispatched facets. A single-member spec
+    uses `_member_signal`. The signal carries the window the requests read, which they share,
+    when that window's end is unstated (`_clock_window`).
     """
-    signals: tuple[MemberSignal, ...]
-    if combine and len(requests) > 1:
-        group = _group_signal(requests, probe, graph=graph)
-        if group is None:
+    if len(requests) > 1:
+        signal = _group_signal(requests, probe, graph=graph)
+        if signal is None:
             return None
-        signals = (group,)
     else:
+        (request,) = requests
+        (member,) = probe.members
         try:
-            per_request = tuple(
-                _member_signal(
-                    request, member, graph=graph, provenance_refresh=probe.provenance_refresh
-                )
-                for request, member in zip(requests, probe.members, strict=True)
+            signal = _member_signal(
+                request, member, graph=graph, provenance_refresh=probe.provenance_refresh
             )
         except (DefaultFacetUndefinedError, FacetNotAvailableError, NonCurrencyUnitError):
             return None
-        signals = (_combine_member_signals(per_request),) if combine else per_request
-    windows = [requests[0].window] if combine else [request.window for request in requests]
-    return tuple(
-        replace(signal, clock_window=_clock_window(window))
-        for signal, window in zip(signals, windows, strict=True)
-    )
+    return (replace(signal, clock_window=_clock_window(requests[0].window)),)
 
 
 def recheck_rate_provenance(

@@ -125,16 +125,11 @@ def test_a_transport_failure_raises_the_graph_client_s_own_error():
 
 
 class TestNoDataUnitAlternatives:
-    def test_alternatives_and_their_truncation_flag_travel_together(self):
-        with pytest.raises(ValueError, match="travel together"):
-            NoData(reason="unit_not_resolved", unit_alternatives=[])
-
     def test_alternatives_belong_to_unit_not_resolved_only(self):
         with pytest.raises(ValueError, match="unit_not_resolved"):
             NoData(
                 reason="no_observations",
                 unit_alternatives=[UnitAlternative(currency="CHF", label="Swiss franc")],
-                unit_alternatives_truncated=False,
             )
 
     def test_a_role_shape_serialises_as_the_object_a_caller_resubmits(self):
@@ -143,7 +138,6 @@ class TestNoDataUnitAlternatives:
             unit_alternatives=[
                 UnitAlternative(currency=IdentityCurrencyRole(role="origin"), label="provider")
             ],
-            unit_alternatives_truncated=False,
         )
         dumped = no_data.model_dump(mode="json", exclude_none=True)
         assert dumped["unit_alternatives"] == [

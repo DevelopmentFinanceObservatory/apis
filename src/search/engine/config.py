@@ -18,11 +18,17 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from dfo_platform.flags import lenient_bool
 from materialise.recipe_bodies import RECIPE_CLASSES as _MATERIALISE_RECIPE_CLASSES
-from origin_catalogue.graph import UN_BASE_URL, UN_BASE_URL_ENV
+from origin_catalogue.graph import (
+    ARCS_CACHE_SIZE,
+    OBS_CACHE_SIZE,
+    OBS_PROPERTIES_CACHE_SIZE,
+    UN_BASE_URL,
+    UN_BASE_URL_ENV,
+)
 from origin_catalogue.topic_walk import TOPIC_EXPAND_MAX_DEPTH, TOPIC_EXPAND_MAX_MEMBERS
-from search.engine.unit.lexicon import ISO_4217_CODES
-from search.models import _RESUBMIT_MAX_RESOLVED_STAT_VARS
+from search.currency_codes import ISO_4217_CODES
 from search.observations import observation_settings
+from statvar_members import DEFAULT_SUBJECT_CEILING
 
 # Accepted values for SEARCH boolean flags. Whitespace is significant.
 _SEARCH_BOOL_TRUTHY = frozenset({"1", "true", "yes"})
@@ -161,6 +167,12 @@ class SearchSettings(BaseSettings):
     # This worst case is small against the 150-266 MB process baseline on a 1 GiB instance.
     sdmx_facet_cache_size: int = 512
 
+    # Arrow bytes the materialise SDMX client keeps of completed observation reads, in total and
+    # per read. 0 disables caching. A read over the per-read cap is served and not kept, so one
+    # large preview cannot evict the rest.
+    materialise_sdmx_cache_max_bytes: int = 64 * 1024 * 1024
+    materialise_sdmx_cache_max_entry_bytes: int = 8 * 1024 * 1024
+
     # Row cap per series of a materialise_preview read, separate from the broad-read and
     # inline-display caps. A read of several series shares the cap times its series equally.
     obs_preview_max_rows: int = 20_000
@@ -198,6 +210,13 @@ class SearchSettings(BaseSettings):
     # Overall request deadline in seconds. asyncio.wait_for wraps resolve_async.
     # Prevents sequential graph rounds from stacking unbounded.
     request_timeout_s: float = 45
+
+    # Deadline from request start for a resubmit whose member walk reads the whole filtered
+    # set (`resubmit_subject_ceiling`). The full read of a deep-root family such as
+    # Person/count with gender=Female takes about 30 s on top of the capped walk, so 45 s
+    # leaves no room for grounding and observations. Every other resubmit keeps
+    # request_timeout_s.
+    resubmit_full_read_timeout_s: float = 90
 
     # -- Unit completion ---------------------------------------------------
     # ISO 4217 code a unit phrase that names no currency completes to.
@@ -277,14 +296,6 @@ class SearchSettings(BaseSettings):
     # siblings, so the neighbor-token check decides. Below 0.3, the match is ambiguous.
     near_label_similarity: float = 0.3
 
-    # Cap for resolved.stat_vars.items, so a client can list every served member of a
-    # large family. Internal specs may be uncapped. member_count reports the full
-    # population, and truncated marks partial items. An item is about 1 KB, so ODA from
-    # Germany (1,626 members) carries about 1.6 MB of items. The cap equals the
-    # resubmit ceiling on resolved_stat_var_dcids, so a client can post every item back.
-    # Ordinary recall caps at 40.
-    resolved_stat_vars_max: int = _RESUBMIT_MAX_RESOLVED_STAT_VARS
-
     # Maximum number of candidate specs returned in a CandidatesPart.
     # Clamped broadest-first when multiple five-tuple groups survive ranking.
     max_candidates: int = 6
@@ -359,12 +370,14 @@ class SearchSettings(BaseSettings):
     # Truncated pages may omit unconfirmed axes from slot_options. Posted keys remain valid.
     resubmit_axis_sample: int = 50
 
+    # Subjects a resubmit's or the options door's member walk reads when its first page
+    # truncates without proof. The Datasets mint shares the default, so all hit the same
+    # cached groups.
+    resubmit_subject_ceiling: int = DEFAULT_SUBJECT_CEILING
+
     # Presence-check cap for raw options candidates, separate from resolve fan-out.
     # At 500 it covers 256 Earth countries, 8 continents, and dozens of regions per country.
     max_options: int = 500
-
-    # Member cap for graph-based options population when no code index is available.
-    options_member_cap: int = 700
 
     # -- Variable pipeline concurrency ------------------------------------
     # Concurrent variable legs per request. The limit must cover max_variables.
@@ -373,18 +386,18 @@ class SearchSettings(BaseSettings):
 
     # -- Client-side caches (per-LiveGraphClient, cleared on restart) -----
     # Observation-facet LRU entries keyed by (stat_var, entity, needs_dates). Cleared on restart.
-    obs_cache_size: int = 512
+    obs_cache_size: int = OBS_CACHE_SIZE
 
     # detect_svs LRU entries use (generation stamp, catalogue build, UN setting, query,
     # resolve_target, detect_k) as the key.
     detect_cache_size: int = 256
 
     # node_arcs and node_arcs_batch share an LRU keyed by dcid. Cleared on restart.
-    arcs_cache_size: int = 4096
+    arcs_cache_size: int = ARCS_CACHE_SIZE
 
     # LRU entries for node_observation_properties_batch, separate from the full-arc cache.
     # Must cover role_refresh_max_members so a full refresh keeps its entries for repeat reads.
-    obs_properties_cache_size: int = 5000
+    obs_properties_cache_size: int = OBS_PROPERTIES_CACHE_SIZE
 
     # -- Response cache (process-wide, shared across requests) ------------------
     # Enable raw-text response caching. The deployed model/seed pin preserves behaviour.
@@ -395,6 +408,17 @@ class SearchSettings(BaseSettings):
 
     # Oversized responses are served without storage, protecting other entries from eviction.
     response_cache_max_entry_bytes: int = 2 * 1024 * 1024
+
+    # Bytes of resubmitted identity regions the part memo holds, in total and per region, each
+    # region weighed by the heap it holds (`response_cache_memo.region_bytes`). 0 disables
+    # the memo, which also follows response_cache_enabled. A region over the per-region cap
+    # is served and not kept, so one large part cannot evict the rest. On the dev graph a
+    # subject-only part weighs 0.07 to 4.4 MB, most of it its family's arcs, so the total
+    # holds about 15 to 900 parts. A role-bearing CRS part of 3,687 served members weighs
+    # about 75 MB, most of it its members' arcs, specs, read plans and option facts, so
+    # such a part is served and not kept.
+    response_cache_memo_max_bytes: int = Field(default=64 * 1024 * 1024, ge=0)
+    response_cache_memo_max_entry_bytes: int = Field(default=8 * 1024 * 1024, ge=0)
 
     # OptionsPopulation memo, one per search_surface(), keyed by (identity.shape, identity.slots).
     # Defaults on, like response_cache_enabled.
@@ -527,6 +551,7 @@ class SearchSettings(BaseSettings):
                 "max_variables": self.max_variables,
                 "obs_preview_points": observation_settings().obs_preview_points,
                 "obs_inline_max": observation_settings().obs_inline_max,
+                "role_bulk_rank_max_rows": observation_settings().role_bulk_rank_max_rows,
                 "max_options": self.max_options,
                 "max_parts": SEARCH_MAX_PARTS,
                 "max_part_entities": SEARCH_MAX_PART_ENTITIES,
@@ -536,7 +561,6 @@ class SearchSettings(BaseSettings):
                 "max_time_text_chars": SEARCH_MAX_TIME_TEXT_CHARS,
                 "max_unit_text_chars": SEARCH_MAX_UNIT_TEXT_CHARS,
                 "max_source_text_chars": SEARCH_MAX_SOURCE_TEXT_CHARS,
-                "resolved_stat_vars_max": self.resolved_stat_vars_max,
                 "region_max_members": self.region_max_members,
                 "scope_min_year": self.scope_min_year,
                 "scope_max_window_years": self.scope_max_window_years,
@@ -594,6 +618,16 @@ class SearchSettings(BaseSettings):
             raise ValueError(
                 f"SEARCH_SDMX_FACET_CACHE_SIZE must be >= 0; got {self.sdmx_facet_cache_size!r}"
             )
+        if self.materialise_sdmx_cache_max_bytes < 0:
+            raise ValueError(
+                "SEARCH_MATERIALISE_SDMX_CACHE_MAX_BYTES must be >= 0; got "
+                f"{self.materialise_sdmx_cache_max_bytes!r}"
+            )
+        if self.materialise_sdmx_cache_max_entry_bytes < 0:
+            raise ValueError(
+                "SEARCH_MATERIALISE_SDMX_CACHE_MAX_ENTRY_BYTES must be >= 0; got "
+                f"{self.materialise_sdmx_cache_max_entry_bytes!r}"
+            )
         if self.obs_preview_max_rows < 1:
             raise ValueError(
                 f"SEARCH_OBS_PREVIEW_MAX_ROWS must be >= 1; got {self.obs_preview_max_rows!r}"
@@ -641,30 +675,6 @@ class SearchSettings(BaseSettings):
             raise ValueError(
                 "SEARCH_NEAR_LABEL_SIMILARITY must be in [0, 1]; got "
                 f"{self.near_label_similarity!r}"
-            )
-        if self.resolved_stat_vars_max < 1:
-            raise ValueError(
-                f"SEARCH_RESOLVED_STAT_VARS_MAX must be >= 1; got {self.resolved_stat_vars_max!r}"
-            )
-        if self.resolved_stat_vars_max > _RESUBMIT_MAX_RESOLVED_STAT_VARS:
-            raise ValueError(
-                "SEARCH_RESOLVED_STAT_VARS_MAX must be <= "
-                "search.models._RESUBMIT_MAX_RESOLVED_STAT_VARS "
-                f"({_RESUBMIT_MAX_RESOLVED_STAT_VARS!r}), the request-side field ceiling on "
-                f"resolved_stat_var_dcids; got {self.resolved_stat_vars_max!r}. Raising this "
-                "env var above that literal would let the engine serve more resolved "
-                "StatVars than a resubmit could ever echo back, reproducing the exact "
-                "gap this guard closes -- raise the literal alongside it instead."
-            )
-        if self.max_confirm_candidates > self.resolved_stat_vars_max:
-            raise ValueError(
-                "SEARCH_MAX_CONFIRM_CANDIDATES must be <= SEARCH_RESOLVED_STAT_VARS_MAX; got "
-                f"{self.max_confirm_candidates!r} > {self.resolved_stat_vars_max!r}. A "
-                "catch-all identity's recall-sourced member set (shape_member_facts, "
-                "retrieval/bound_values.py) is bounded by SEARCH_MAX_CONFIRM_CANDIDATES, "
-                "which is what lets the serving cap always show its complete answer; "
-                "raising this env var above the serving cap would reopen the truncated-"
-                "seed-as-membership gap for catch-all shapes."
             )
         if self.max_candidates < 1:
             raise ValueError(f"SEARCH_MAX_CANDIDATES must be >= 1; got {self.max_candidates!r}")
@@ -759,12 +769,13 @@ class SearchSettings(BaseSettings):
             raise ValueError(
                 f"SEARCH_RESUBMIT_AXIS_SAMPLE must be >= 1; got {self.resubmit_axis_sample!r}"
             )
+        if self.resubmit_subject_ceiling < 1:
+            raise ValueError(
+                "SEARCH_RESUBMIT_SUBJECT_CEILING must be >= 1; got "
+                f"{self.resubmit_subject_ceiling!r}"
+            )
         if self.max_options < 1:
             raise ValueError(f"SEARCH_MAX_OPTIONS must be >= 1; got {self.max_options!r}")
-        if self.options_member_cap < 1:
-            raise ValueError(
-                f"SEARCH_OPTIONS_MEMBER_CAP must be >= 1; got {self.options_member_cap!r}"
-            )
 
     def _validate_timeout_and_preview_bounds(self) -> None:
         """Graph/LLM/request timeouts, Gemini and observation-preview concurrency."""
@@ -781,6 +792,11 @@ class SearchSettings(BaseSettings):
         if self.request_timeout_s <= 0:
             raise ValueError(
                 f"SEARCH_REQUEST_TIMEOUT_S must be > 0; got {self.request_timeout_s!r}"
+            )
+        if self.resubmit_full_read_timeout_s < self.request_timeout_s:
+            raise ValueError(
+                "SEARCH_RESUBMIT_FULL_READ_TIMEOUT_S must be >= SEARCH_REQUEST_TIMEOUT_S; got "
+                f"{self.resubmit_full_read_timeout_s!r} < {self.request_timeout_s!r}"
             )
         if self.un_resolve_timeout_s <= 0:
             raise ValueError(

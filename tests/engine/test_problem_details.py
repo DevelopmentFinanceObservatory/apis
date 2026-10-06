@@ -12,16 +12,13 @@ from fastapi.testclient import TestClient
 
 from search.engine.config import settings
 from tests.engine._base_identity import (
-    DECLARING_SHAPE,
     GDP_SHAPE,
-    destination_entity,
-    make_base,
     make_identity,
     subject_entity,
 )
 from tests.engine._builders import unbound_slot as _unbound_slot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import PINNED_DATE
+from tests.engine._harness import PINNED_DATE, member_walk_reader
 from tests.engine._search_app import search_app
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 
@@ -33,6 +30,7 @@ def make_client() -> TestClient:
         resolver=make_resolver(graph),
         llm=FakeLLM(),
         sdmx=FakeSdmxClient(observations={}, availability={}),
+        materialise_graph=member_walk_reader(graph),
     )
     return TestClient(app, raise_server_exceptions=False)
 
@@ -114,10 +112,6 @@ class TestRequestInvalid:
             [_unbound_slot("how", "activitySource", "activity source")],
             entities=entities,
         ).model_dump(mode="json")
-        base_spec_id, base_identity = make_base(GDP_SHAPE, entities=entities)
-        base_identity_dump = base_identity.model_dump(mode="json")
-        stat_var_dcids = ["Amount_EconomicActivity_GrossDomesticProduction_Nominal"]
-
         client = make_client()
         refused = client.post(
             "/api/search/resolve",
@@ -125,9 +119,6 @@ class TestRequestInvalid:
                 "input": {
                     "kind": "spec_resubmit",
                     "identity": identity,
-                    "base_spec_id": base_spec_id,
-                    "base_identity": base_identity_dump,
-                    "resolved_stat_var_dcids": stat_var_dcids,
                 }
             },
         )
@@ -145,9 +136,6 @@ class TestRequestInvalid:
                             "entry_kind": "identity",
                             "variable_text": "nominal GDP of India",
                             "identity": identity,
-                            "base_spec_id": base_spec_id,
-                            "base_identity": base_identity_dump,
-                            "resolved_stat_var_dcids": stat_var_dcids,
                         }
                     ],
                 }
@@ -175,8 +163,15 @@ class TestRequestInvalid:
         assert body["pointer"] == "/bogus_field"
         assert body["detail"] == "Extra inputs are not permitted"
 
-    def test_retired_promote_field_names_its_replacement(self):
-        # Retired fields name `base_spec_id` and `base_identity` in the error.
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("stat_var_dcids", ["Amount_EconomicActivity_GrossDomesticProduction_Nominal"]),
+            ("entity_dcids", ["country/IND"]),
+        ],
+    )
+    def test_a_removed_promote_field_is_refused_as_unknown(self, field: str, value: list[str]):
+        """A removed promote field refuses like any unknown field, with the platform detail."""
         resp = make_client().post(
             "/api/search/resolve",
             json={
@@ -187,20 +182,33 @@ class TestRequestInvalid:
                             "entry_kind": "identity",
                             "variable_text": "a resubmitted identity",
                             "identity": _identity(GDP_SHAPE),
-                            "stat_var_dcids": [
-                                "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
-                            ],
+                            field: value,
                         }
                     ],
                 }
             },
         )
         body = _assert_problem_shape(resp, status=400, code="request_invalid", retryable=False)
-        assert body["pointer"] == "/input/entries/0/stat_var_dcids"
-        assert body["detail"] == (
-            "'stat_var_dcids' is retired; post the candidate's spec_id as "
-            "base_spec_id, with its identity as base_identity, instead."
-        )
+        assert body["pointer"] == f"/input/entries/0/{field}"
+        assert body["detail"] == "Extra inputs are not permitted"
+
+    @pytest.mark.parametrize("option", ["max_candidates", "include_sentence"])
+    def test_a_removed_response_option_is_refused_as_unknown(self, option: str):
+        """Removed response options refuse like any unknown field, with the platform detail."""
+        value = {"max_candidates": 4, "include_sentence": True}[option]
+        entry = {
+            "entry_kind": "identity",
+            "variable_text": "a resubmitted identity",
+            "identity": _identity(GDP_SHAPE),
+        }
+        request = {
+            "input": {"kind": "dataset_resubmit", "entries": [entry]},
+            "response_options": {option: value},
+        }
+        resp = make_client().post("/api/search/resolve", json=request)
+        problem = _assert_problem_shape(resp, status=400, code="request_invalid", retryable=False)
+        assert problem["pointer"] == f"/response_options/{option}"
+        assert problem["detail"] == "Extra inputs are not permitted"
 
     def test_unknown_field_inside_input_is_request_invalid_400(self):
         # The pointer omits `raw_text`, which is a discriminator value, not a key.
@@ -319,42 +327,21 @@ class TestQueryTooLong:
 
 
 class TestResubmitIdentityRefusals:
-    def test_dropped_directional_role_reports_edit_incomplete_at_public_boundary(self):
-        base_spec_id, base_identity = make_base(
-            DECLARING_SHAPE,
-            entities=[destination_entity("country/ZMB")],
-        )
-        identity = base_identity.model_dump(mode="json")
-        identity["entities"] = {}
-
-        resp = make_client().post(
-            "/api/search/resolve",
-            json={
-                "input": {
-                    "kind": "dataset_resubmit",
-                    "entries": [
-                        {
-                            "entry_kind": "identity",
-                            "variable_text": "a resubmitted identity",
-                            "identity": identity,
-                            "base_spec_id": base_spec_id,
-                            "base_identity": base_identity.model_dump(mode="json"),
-                            "resolved_stat_var_dcids": [
-                                "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
-                            ],
-                        }
-                    ],
-                }
-            },
-        )
-
-        body = _assert_problem_shape(resp, status=422, code="edit_incomplete", retryable=False)
-        assert body["pointer"] == "/input/entries/0/identity/entities"
-        assert "destination" in body["detail"]
-
-    def test_missing_base_and_stat_var_dcids_points_at_base_identity_first(self):
-        """Both base_identity and resolved_stat_var_dcids are absent: the two
-        checks fire in a fixed order, so the pointer names base_identity."""
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("base_spec_id", "spec_" + "0" * 32),
+            ("base_identity", _identity(GDP_SHAPE)),
+            ("removed", {"entities": ["origin"]}),
+            (
+                "resolved_stat_var_dcids",
+                ["Amount_EconomicActivity_GrossDomesticProduction_Nominal"],
+            ),
+        ],
+    )
+    def test_a_removed_field_is_refused_at_its_pointer(self, field, value):
+        """The identity alone defines a resubmit. A posted base or member list is an unknown
+        field, refused before any read with the platform detail."""
         resp = make_client().post(
             "/api/search/resolve",
             json={
@@ -365,15 +352,18 @@ class TestResubmitIdentityRefusals:
                             "entry_kind": "identity",
                             "variable_text": "a resubmitted identity",
                             "identity": _identity(GDP_SHAPE),
+                            field: value,
                         }
                     ],
                 }
             },
         )
         body = _assert_problem_shape(resp, status=400, code="request_invalid", retryable=False)
-        assert body["pointer"] == "/input/entries/0/base_identity"
+        assert body["pointer"] == f"/input/entries/0/{field}"
+        assert body["detail"] == "Extra inputs are not permitted"
 
-    def test_missing_base_identity_points_at_base_identity(self):
+    def test_a_candidate_posting_members_is_refused_at_its_pointer(self):
+        candidate = {"identity": _identity(GDP_SHAPE)}
         resp = make_client().post(
             "/api/search/resolve",
             json={
@@ -381,11 +371,13 @@ class TestResubmitIdentityRefusals:
                     "kind": "dataset_resubmit",
                     "entries": [
                         {
-                            "entry_kind": "identity",
-                            "variable_text": "a resubmitted identity",
-                            "identity": _identity(GDP_SHAPE),
-                            "resolved_stat_var_dcids": [
-                                "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
+                            "entry_kind": "candidates",
+                            "variable_text": "GDP",
+                            "ordering": "intent_rank",
+                            "truncated": False,
+                            "candidates": [
+                                {**candidate, "resolved_stat_var_dcids": ["Count_Person"]},
+                                candidate,
                             ],
                         }
                     ],
@@ -393,70 +385,12 @@ class TestResubmitIdentityRefusals:
             },
         )
         body = _assert_problem_shape(resp, status=400, code="request_invalid", retryable=False)
-        assert body["pointer"] == "/input/entries/0/base_identity"
+        assert body["pointer"] == "/input/entries/0/candidates/0/resolved_stat_var_dcids"
+        assert body["detail"] == "Extra inputs are not permitted"
 
-    def test_missing_stat_var_dcids_points_at_stat_var_dcids(self):
-        base_spec_id, base_identity = make_base(
-            GDP_SHAPE,
-            entities=[subject_entity("country/IND")],
-        )
-        resp = make_client().post(
-            "/api/search/resolve",
-            json={
-                "input": {
-                    "kind": "dataset_resubmit",
-                    "entries": [
-                        {
-                            "entry_kind": "identity",
-                            "variable_text": "a resubmitted identity",
-                            "identity": _identity(GDP_SHAPE),
-                            "base_spec_id": base_spec_id,
-                            "base_identity": base_identity.model_dump(mode="json"),
-                        }
-                    ],
-                }
-            },
-        )
-        body = _assert_problem_shape(resp, status=400, code="request_invalid", retryable=False)
-        assert body["pointer"] == "/input/entries/0/resolved_stat_var_dcids"
+    # Malformed identities fail request validation with a 400 response.
 
-    def test_shape_mismatch_is_shape_mismatch_422(self):
-        wrong_shape = {"kind": "statvar_schema", "population_type": "completely_wrong_shape"}
-        base_spec_id, base_identity = make_base(
-            wrong_shape,
-            entities=[subject_entity("country/IND")],
-        )
-        resp = make_client().post(
-            "/api/search/resolve",
-            json={
-                "input": {
-                    "kind": "dataset_resubmit",
-                    "entries": [
-                        {
-                            "entry_kind": "identity",
-                            "variable_text": "a resubmitted identity",
-                            "identity": _identity(
-                                wrong_shape,
-                                entities={"observationAbout": ["country/IND"]},
-                            ),
-                            "base_spec_id": base_spec_id,
-                            "base_identity": base_identity.model_dump(mode="json"),
-                            "resolved_stat_var_dcids": [
-                                "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
-                            ],
-                        }
-                    ],
-                }
-            },
-        )
-        body = _assert_problem_shape(resp, status=422, code="shape_mismatch", retryable=False)
-        assert "shape" in body["detail"]
-        assert "shape_id" not in body["detail"]
-        assert body["pointer"] == "/input/entries/0/identity/shape"
-
-    # Malformed identity bases fail request validation with a 400 response.
-
-    def test_malformed_base_identity_missing_ref_is_request_invalid_400(self):
+    def test_malformed_identity_missing_ref_is_request_invalid_400(self):
         """A value binding requires a `ref`."""
         resp = make_client().post(
             "/api/search/resolve",
@@ -467,11 +401,7 @@ class TestResubmitIdentityRefusals:
                         {
                             "entry_kind": "identity",
                             "variable_text": "a resubmitted identity",
-                            "identity": _identity(
-                                {"kind": "statvar_schema", "population_type": "some_shape"}
-                            ),
-                            "base_spec_id": "spec_" + "0" * 32,
-                            "base_identity": {
+                            "identity": {
                                 "shape": {
                                     "kind": "statvar_schema",
                                     "population_type": "some_shape",
@@ -487,7 +417,7 @@ class TestResubmitIdentityRefusals:
         )
         _assert_problem_shape(resp, status=400, code="request_invalid", retryable=False)
 
-    def test_malformed_base_identity_missing_property_is_request_invalid_400(self):
+    def test_malformed_identity_missing_property_is_request_invalid_400(self):
         """An identity slot requires a property."""
         resp = make_client().post(
             "/api/search/resolve",
@@ -498,11 +428,7 @@ class TestResubmitIdentityRefusals:
                         {
                             "entry_kind": "identity",
                             "variable_text": "a resubmitted identity",
-                            "identity": _identity(
-                                {"kind": "statvar_schema", "population_type": "some_shape"}
-                            ),
-                            "base_spec_id": "spec_" + "0" * 32,
-                            "base_identity": {
+                            "identity": {
                                 "shape": {
                                     "kind": "statvar_schema",
                                     "population_type": "some_shape",
@@ -518,7 +444,7 @@ class TestResubmitIdentityRefusals:
         )
         _assert_problem_shape(resp, status=400, code="request_invalid", retryable=False)
 
-    def test_malformed_base_identity_unrecognised_facet_axis_is_request_invalid_400(self):
+    def test_malformed_identity_unrecognised_facet_axis_is_request_invalid_400(self):
         """BaseIdentity rejects facet axes outside its closed vocabulary."""
         resp = make_client().post(
             "/api/search/resolve",
@@ -529,11 +455,7 @@ class TestResubmitIdentityRefusals:
                         {
                             "entry_kind": "identity",
                             "variable_text": "a resubmitted identity",
-                            "identity": _identity(
-                                {"kind": "statvar_schema", "population_type": "some_shape"}
-                            ),
-                            "base_spec_id": "spec_" + "0" * 32,
-                            "base_identity": {
+                            "identity": {
                                 "shape": {
                                     "kind": "statvar_schema",
                                     "population_type": "some_shape",
@@ -595,7 +517,7 @@ class TestResubmitIdentityRefusals:
         body = _assert_problem_shape(resp, status=400, code="request_invalid", retryable=False)
         assert body["pointer"] == "/input/entries/0/identity/facets/provenance/bogus"
 
-    def test_malformed_base_identity_empty_entity_role_is_request_invalid_400(self):
+    def test_malformed_identity_empty_entity_role_is_request_invalid_400(self):
         """Each entity role needs at least one DCID before hashing."""
         resp = make_client().post(
             "/api/search/resolve",
@@ -606,11 +528,7 @@ class TestResubmitIdentityRefusals:
                         {
                             "entry_kind": "identity",
                             "variable_text": "a resubmitted identity",
-                            "identity": _identity(
-                                {"kind": "statvar_schema", "population_type": "some_shape"}
-                            ),
-                            "base_spec_id": "spec_" + "0" * 32,
-                            "base_identity": {
+                            "identity": {
                                 "shape": {
                                     "kind": "statvar_schema",
                                     "population_type": "some_shape",
@@ -626,7 +544,7 @@ class TestResubmitIdentityRefusals:
         )
         _assert_problem_shape(resp, status=400, code="request_invalid", retryable=False)
 
-    def test_malformed_base_identity_unbound_facet_binding_is_request_invalid_400(self):
+    def test_malformed_identity_unbound_facet_binding_is_request_invalid_400(self):
         """The sparse facet map omits unbound axes."""
         resp = make_client().post(
             "/api/search/resolve",
@@ -637,11 +555,7 @@ class TestResubmitIdentityRefusals:
                         {
                             "entry_kind": "identity",
                             "variable_text": "a resubmitted identity",
-                            "identity": _identity(
-                                {"kind": "statvar_schema", "population_type": "some_shape"}
-                            ),
-                            "base_spec_id": "spec_" + "0" * 32,
-                            "base_identity": {
+                            "identity": {
                                 "shape": {
                                     "kind": "statvar_schema",
                                     "population_type": "some_shape",
@@ -658,7 +572,7 @@ class TestResubmitIdentityRefusals:
         )
         _assert_problem_shape(resp, status=400, code="request_invalid", retryable=False)
 
-    def test_malformed_base_identity_unbound_facet_binding_pointer_is_exact(self):
+    def test_malformed_identity_unbound_facet_binding_pointer_is_exact(self):
         """An unbound facet error points to the facet path without a union tag."""
         resp = make_client().post(
             "/api/search/resolve",
@@ -669,11 +583,7 @@ class TestResubmitIdentityRefusals:
                         {
                             "entry_kind": "identity",
                             "variable_text": "a resubmitted identity",
-                            "identity": _identity(
-                                {"kind": "statvar_schema", "population_type": "some_shape"}
-                            ),
-                            "base_spec_id": "spec_" + "0" * 32,
-                            "base_identity": {
+                            "identity": {
                                 "shape": {
                                     "kind": "statvar_schema",
                                     "population_type": "some_shape",
@@ -689,15 +599,10 @@ class TestResubmitIdentityRefusals:
             },
         )
         body = _assert_problem_shape(resp, status=400, code="request_invalid", retryable=False)
-        assert body["pointer"] == "/input/entries/0/base_identity/facets/provenance"
+        assert body["pointer"] == "/input/entries/0/identity/facets/provenance"
 
     def test_reversed_requested_window_is_request_invalid_400(self):
         # Shape and StatVar match, so the reversed window determines validation.
-        entities = [subject_entity("country/IND")]
-        base_spec_id, base_identity = make_base(
-            GDP_SHAPE,
-            entities=entities,
-        )
         resp = make_client().post(
             "/api/search/resolve",
             json={
@@ -709,15 +614,8 @@ class TestResubmitIdentityRefusals:
                             "variable_text": "a resubmitted identity",
                             "identity": {
                                 "shape": GDP_SHAPE,
-                                # activitySource is this SV's only shape-declared what/how
-                                # slot key -- the schema-level missing-slot-key check
-                                # requires it present (unbound is fine) before the window
-                                # is even looked at, so it rides along here unbound to
-                                # isolate the reversed-window refusal this test targets.
-                                # The where-slot carries the subject entity: entity_dcid
-                                # is derived strictly from the posted where-slot, never
-                                # merged from the base, so it must ride along too or
-                                # edit_incomplete fires before the window is ever checked.
+                                # activitySource is this SV's only constraint, posted
+                                # unbound, so the reversed window is the only fault.
                                 "slots": [
                                     {
                                         "key": {
@@ -734,11 +632,6 @@ class TestResubmitIdentityRefusals:
                                 "entities": {"observationAbout": ["country/IND"]},
                                 "requested_window": {"start_year": 2025, "end_year": 2010},
                             },
-                            "base_spec_id": base_spec_id,
-                            "base_identity": base_identity.model_dump(mode="json"),
-                            "resolved_stat_var_dcids": [
-                                "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
-                            ],
                         }
                     ],
                 }
@@ -783,11 +676,7 @@ class TestResubmitIdentityRefusals:
                         {
                             "entry_kind": "identity",
                             "variable_text": "a resubmitted identity",
-                            "identity": _identity(
-                                {"kind": "statvar_schema", "population_type": "some_shape"}
-                            ),
-                            "base_spec_id": "spec_" + "0" * 32,
-                            "base_identity": {
+                            "identity": {
                                 "shape": {
                                     "kind": "statvar_schema",
                                     "population_type": "some_shape",
@@ -849,11 +738,7 @@ class TestResubmitIdentityRefusals:
                         {
                             "entry_kind": "identity",
                             "variable_text": "a resubmitted identity",
-                            "identity": _identity(
-                                {"kind": "statvar_schema", "population_type": "some_shape"}
-                            ),
-                            "base_spec_id": "spec_" + "0" * 32,
-                            "base_identity": {
+                            "identity": {
                                 "shape": {
                                     "kind": "statvar_schema",
                                     "population_type": "some_shape",
@@ -885,11 +770,7 @@ class TestResubmitIdentityRefusals:
                         {
                             "entry_kind": "identity",
                             "variable_text": "a resubmitted identity",
-                            "identity": _identity(
-                                {"kind": "statvar_schema", "population_type": "some_shape"}
-                            ),
-                            "base_spec_id": "spec_" + "0" * 32,
-                            "base_identity": {
+                            "identity": {
                                 "shape": {
                                     "kind": "statvar_schema",
                                     "population_type": "some_shape",
@@ -915,7 +796,7 @@ class TestResubmitIdentityRefusals:
 class TestIdentityFacetBindingUnion:
     """IdentityFacetBinding's callable discriminator (models._facet_binding_tag)
     resolves each of its three arms to the intended class -- pure model-level
-    coverage, no HTTP involved. See test_malformed_base_identity_unbound_facet_binding_pointer_is_exact
+    coverage, no HTTP involved. See test_malformed_identity_unbound_facet_binding_pointer_is_exact
     (above) for the malformed-input side of this same union.
     """
 
@@ -971,7 +852,7 @@ class TestIdentityUnitRequestBaseYearStrictness:
     `dfo_spec_kit.identity.core._require_integral_number`'s own exclusion
     of `bool` and numeric strings -- pure model-level coverage, then the
     wire-level door proving the resulting ValidationError reaches the same
-    problem-details shape every other malformed `base_identity` gets."""
+    problem-details shape every other malformed identity gets."""
 
     def test_bool_base_year_is_rejected(self):
         from pydantic import ValidationError
@@ -1009,11 +890,7 @@ class TestIdentityUnitRequestBaseYearStrictness:
                         {
                             "entry_kind": "identity",
                             "variable_text": "a resubmitted identity",
-                            "identity": _identity(
-                                {"kind": "statvar_schema", "population_type": "some_shape"}
-                            ),
-                            "base_spec_id": "spec_" + "0" * 32,
-                            "base_identity": {
+                            "identity": {
                                 "shape": {
                                     "kind": "statvar_schema",
                                     "population_type": "some_shape",

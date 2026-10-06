@@ -9,6 +9,7 @@ import time
 import pytest
 
 from graph_generation import UNKNOWN_GENERATION, FakeGeneration, GenerationProvider
+from origin_catalogue import bound_catalogue
 from search.engine.envelope import now_ms
 from search.engine.extract import ExtractedEntity
 from search.engine.response_cache import ResponseCache
@@ -18,16 +19,18 @@ from search.engine.unit.conversion_catalogue import (
     bound_conversion_catalogue,
 )
 from search.models import (
-    ParsedInput,
+    DatasetResubmitInput,
     ParsedPart,
     RawTextInput,
     ResolveOptions,
     ResolveRequest,
     ResolveResponse,
+    ResubmitParsedEntry,
 )
 from series_coverage.shared import CoverageSnapshot
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._harness import make_request, member_walk_reader, offline_resolve
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue
 
 _BUILD_COMMIT = "test-build"
 _MODEL = "test-model"
@@ -60,6 +63,7 @@ def _make_scope(
     deadline: float | None = None,
     generation: GenerationProvider = UNKNOWN_GENERATION,
     coverage: CoverageSnapshot = _COVERAGE_SNAPSHOT,
+    trailing: bool = False,
 ) -> CacheScope:
     return CacheScope(
         cache,
@@ -74,6 +78,7 @@ def _make_scope(
         seam_default=_SEAM_DEFAULT,
         generation=generation,
         coverage=coverage,
+        trailing=trailing,
     )
 
 
@@ -103,17 +108,21 @@ async def _test_inactive_when_cache_is_none(base: ResolveResponse):
     await _assert_inactive_noop(_make_scope(None), base)
 
 
-async def _test_inactive_for_a_non_raw_text_input_kind(base: ResolveResponse):
-    parsed_request = ResolveRequest(input=ParsedInput(parts=[ParsedPart(variable_text="gdp")]))
-    await _assert_inactive_noop(_make_scope(_new_cache(), request=parsed_request), base)
+async def _test_inactive_for_a_dataset_resubmit(base: ResolveResponse):
+    resubmit_request = ResolveRequest(
+        input=DatasetResubmitInput(
+            entries=[ResubmitParsedEntry(part=ParsedPart(variable_text="gdp"))]
+        )
+    )
+    await _assert_inactive_noop(_make_scope(_new_cache(), request=resubmit_request), base)
 
 
-async def _test_inactive_for_a_request_setting_include_observations(base: ResolveResponse):
+async def _test_inactive_on_a_transport_with_trailing_events(base: ResolveResponse):
     obs_request = ResolveRequest(
         input=RawTextInput(query="q"),
         response_options=ResolveOptions(include_observations=True),
     )
-    await _assert_inactive_noop(_make_scope(_new_cache(), request=obs_request), base)
+    await _assert_inactive_noop(_make_scope(_new_cache(), request=obs_request, trailing=True), base)
 
 
 async def _test_full_miss_then_store_then_layer1_hit_carries_the_new_wording(base: ResolveResponse):
@@ -612,12 +621,12 @@ def test_inactive_when_cache_is_none():
     asyncio.run(_test_inactive_when_cache_is_none(_base_response()))
 
 
-def test_inactive_for_a_non_raw_text_input_kind():
-    asyncio.run(_test_inactive_for_a_non_raw_text_input_kind(_base_response()))
+def test_inactive_for_a_dataset_resubmit():
+    asyncio.run(_test_inactive_for_a_dataset_resubmit(_base_response()))
 
 
-def test_inactive_for_a_request_setting_include_observations():
-    asyncio.run(_test_inactive_for_a_request_setting_include_observations(_base_response()))
+def test_inactive_on_a_transport_with_trailing_events():
+    asyncio.run(_test_inactive_on_a_transport_with_trailing_events(_base_response()))
 
 
 def test_full_miss_then_store_then_layer1_hit_carries_the_new_wording():
@@ -844,6 +853,43 @@ def test_an_answer_is_served_only_under_the_catalogue_it_was_computed_from(
     restored = asyncio.run(
         _test_an_answer_is_served_only_under_the_catalogue_it_was_computed_from(
             _base_response(), live_base_year
+        )
+    )
+
+    assert (restored is not None) is served
+
+
+async def _test_an_answer_is_served_only_under_the_origin_catalogue_it_was_admitted_by(
+    base: ResolveResponse, live: FakeCatalogue
+) -> ResolveResponse | None:
+    cache = _new_cache()
+    generation = FakeGeneration(token="gen-a")
+    query = "gdp kenya"
+    with bound_catalogue(FakeCatalogue()):
+        scope = _make_scope(cache, generation=generation)
+    assert await scope.lookup_raw(query) is None
+    await scope.store(base)
+
+    with bound_catalogue(live):
+        return await _make_scope(cache, generation=generation).lookup_raw(query)
+
+
+@pytest.mark.parametrize(
+    ("live", "served"),
+    [
+        pytest.param(FakeCatalogue(), True, id="same-catalogue"),
+        pytest.param(FakeCatalogue(build_id="build-b"), False, id="new-build"),
+        pytest.param(FakeCatalogue(un_system_enabled=False), False, id="un-system-off"),
+    ],
+)
+def test_an_answer_is_served_only_under_the_origin_catalogue_it_was_admitted_by(
+    live: FakeCatalogue, served: bool
+):
+    """The origin catalogue reloads by its build id without a new graph generation, and its
+    build and UN System setting decide what an answer admits, so both key the answer."""
+    restored = asyncio.run(
+        _test_an_answer_is_served_only_under_the_origin_catalogue_it_was_admitted_by(
+            _base_response(), live
         )
     )
 

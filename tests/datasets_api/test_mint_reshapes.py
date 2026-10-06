@@ -77,6 +77,15 @@ _SCOPE = {
 }
 
 
+_NAMED_NODES: dict[str, dict[str, tuple[str, ...]]] = {
+    "GrantEquivalent": {"name": ("Grant equivalent",)},
+}
+"""Names the facet's measurement method, which every long download's default
+`measurementMethod_label` reads."""
+
+_STAT_VAR_NAME = ("Malaria grant disbursements",)
+
+
 def _graph() -> FakeMintGraphReader:
     return FakeMintGraphReader(
         arcs={
@@ -84,6 +93,7 @@ def _graph() -> FakeMintGraphReader:
                 "typeOf": ("StatisticalVariable",),
                 "observationProperties": ("recipient",),
                 "measuredProperty": ("amount",),
+                "name": _STAT_VAR_NAME,
             },
             "country/KEN": {
                 "countryAlpha3Code": ("KEN",),
@@ -91,6 +101,7 @@ def _graph() -> FakeMintGraphReader:
                 "name": ("Kenya",),
                 "typeOf": ("Country",),
             },
+            **_NAMED_NODES,
         },
         facets={(_STAT_VAR, "country/KEN"): [_FACET]},
         labels={"OECD_DAC2A": "OECD DAC2a", "country/KEN": "Kenya"},
@@ -197,6 +208,7 @@ def test_a_pivot_mint_serves_a_wide_csv_from_a_signed_url():
         "format": "csv",
         "bundle": False,
         "pivot": {"index": "recipient", "columns": "time_period"},
+        render_module.LAYOUT_KEY: render_module.DATA_LAYOUT_VERSION,
     }
 
 
@@ -436,11 +448,31 @@ def test_pivot_over_cell_cap_refuses_when_the_cell_count_exceeds_the_cap_by_one(
     assert problem["pointer"] == "/options/pivot"
 
 
-def test_a_columns_selection_mint_preserves_the_requested_order():
-    # This order differs from the frame's order.
+_CANONICAL_SELECTION = [
+    "stat_var",
+    "stat_var_label",
+    "recipient",
+    "recipient_label",
+    "time_period",
+    "value",
+    "unit",
+    "unit_label",
+    "currency",
+    "price_basis",
+    "base_year",
+    "provenance",
+    "provenance_label",
+]
+"""`_SELECTION_KEEP` in the long layout's order (`materialise.projection`), each kept code
+column followed by its name and `unit` by its split."""
+_SELECTION_KEEP = ["value", "time_period", "recipient", "stat_var", "unit", "provenance"]
+"""A selection naming its columns out of the frame's order."""
+
+
+def test_a_columns_selection_mint_writes_the_canonical_order():
     artifact_store = FakeArtifactStore()
     client = _client(artifact_store=artifact_store)
-    keep = ["value", "time_period", "recipient", "stat_var", "unit", "provenance"]
+    keep = _SELECTION_KEEP
     body = _body(columns=keep)
 
     resp = client.post("/api/datasets", json=body)
@@ -449,16 +481,20 @@ def test_a_columns_selection_mint_preserves_the_requested_order():
     artifact = resp.json()["artifacts"][0]
     fetched = artifact_store.fetch(artifact["url"])
     rows = list(csv.reader(io.StringIO(fetched.decode("utf-8"))))
-    assert rows[0] == keep
+    assert rows[0] == _CANONICAL_SELECTION
     # Only requested reshape options appear in the rendering.
-    assert artifact["rendering"] == {"format": "csv", "bundle": False, "columns": keep}
+    assert artifact["rendering"] == {
+        "format": "csv",
+        "bundle": False,
+        "columns": keep,
+        render_module.LAYOUT_KEY: render_module.DATA_LAYOUT_VERSION,
+    }
 
 
-def test_a_columns_selection_mint_preserves_the_requested_order_in_xlsx():
+def test_a_columns_selection_mint_writes_the_canonical_order_in_xlsx():
     artifact_store = FakeArtifactStore()
     client = _client(artifact_store=artifact_store)
-    keep = ["value", "time_period", "recipient", "stat_var", "unit", "provenance"]
-    body = _body(columns=keep, format="xlsx")
+    body = _body(columns=_SELECTION_KEEP, format="xlsx")
 
     resp = client.post("/api/datasets", json=body)
 
@@ -467,14 +503,13 @@ def test_a_columns_selection_mint_preserves_the_requested_order_in_xlsx():
     fetched = artifact_store.fetch(artifact["url"])
     workbook = openpyxl.load_workbook(io.BytesIO(fetched))
     header = [cell.value for cell in next(workbook.active.iter_rows(max_row=1))]
-    assert header == keep
+    assert header == _CANONICAL_SELECTION
 
 
-def test_a_columns_selection_mint_preserves_the_requested_order_in_parquet():
+def test_a_columns_selection_mint_writes_the_canonical_order_in_parquet():
     artifact_store = FakeArtifactStore()
     client = _client(artifact_store=artifact_store)
-    keep = ["value", "time_period", "recipient", "stat_var", "unit", "provenance"]
-    body = _body(columns=keep, format="parquet")
+    body = _body(columns=_SELECTION_KEEP, format="parquet")
 
     resp = client.post("/api/datasets", json=body)
 
@@ -482,7 +517,7 @@ def test_a_columns_selection_mint_preserves_the_requested_order_in_parquet():
     artifact = resp.json()["artifacts"][0]
     fetched = artifact_store.fetch(artifact["url"])
     parquet_table = pq.read_table(io.BytesIO(fetched))
-    assert parquet_table.column_names == keep
+    assert parquet_table.column_names == _CANONICAL_SELECTION
 
 
 def test_a_duplicate_columns_entry_refuses_request_invalid_before_any_sdmx_call():
@@ -533,6 +568,39 @@ def test_a_groupby_level_the_deployment_cannot_roll_up_refuses_request_invalid(
     problem = resp.json()
     assert problem["code"] == "request_invalid"
     assert problem["pointer"] == pointer
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        pytest.param({"format": "parquet", "bundle": True, "layout": "frame"}, id="bundle"),
+        pytest.param({"format": "parquet", "layout": "frame"}, id="bundle-by-default"),
+        pytest.param({"format": "csv", "bundle": False, "layout": "frame"}, id="csv"),
+        pytest.param(
+            {
+                "format": "parquet",
+                "bundle": False,
+                "layout": "frame",
+                "pivot": {"index": "recipient", "columns": "time_period"},
+            },
+            id="pivot",
+        ),
+        pytest.param({"format": "parquet", "bundle": False, "layout": 2}, id="layout-version"),
+    ],
+)
+def test_a_frame_layout_outside_a_bare_unpivoted_parquet_file_refuses_request_invalid(
+    options: dict,
+):
+    client = _client()
+    body = _body()
+    body["options"] = options
+
+    resp = client.post("/api/datasets", json=body)
+
+    assert resp.status_code == 400, resp.text
+    problem = resp.json()
+    assert problem["code"] == "request_invalid"
+    assert problem["pointer"] == "/options/layout"
 
 
 def test_a_groupby_depth_past_the_integer_conversion_limit_refuses_on_both_doors():
@@ -687,8 +755,9 @@ def test_recipient_iso3_enriches_the_render_with_the_graph_declared_alpha3_code(
     artifact = manifest["artifacts"][0]
     fetched = artifact_store.fetch(artifact["url"])
     rows = list(csv.reader(io.StringIO(fetched.decode("utf-8"))))
-    assert rows[0][-1] == "recipient_iso3"
-    assert all(row[-1] == "KEN" for row in rows[1:])
+    position = rows[0].index("recipient_iso3")
+    assert rows[0][position - 2 : position] == ["recipient", "recipient_label"]
+    assert all(row[position] == "KEN" for row in rows[1:])
 
 
 def test_recipient_label_enriches_the_render_with_the_graph_declared_name():
@@ -712,8 +781,9 @@ def test_recipient_label_enriches_the_render_with_the_graph_declared_name():
     artifact = resp.json()["artifacts"][0]
     fetched = artifact_store.fetch(artifact["url"])
     rows = list(csv.reader(io.StringIO(fetched.decode("utf-8"))))
-    assert rows[0][-1] == "recipient_label"
-    assert all(row[-1] == "Kenya" for row in rows[1:])
+    position = rows[0].index("recipient_label")
+    assert rows[0][position - 1] == "recipient"
+    assert all(row[position] == "Kenya" for row in rows[1:])
 
 
 def test_recipient_type_enriches_the_render_with_the_place_type():
@@ -736,8 +806,9 @@ def test_recipient_type_enriches_the_render_with_the_place_type():
     assert resp.status_code == 200, resp.text
     artifact = resp.json()["artifacts"][0]
     rows = list(csv.reader(io.StringIO(artifact_store.fetch(artifact["url"]).decode("utf-8"))))
-    assert rows[0][-1] == "recipient_type"
-    assert all(row[-1] == "Country" for row in rows[1:])
+    position = rows[0].index("recipient_type")
+    assert rows[0][position - 2 : position] == ["recipient", "recipient_label"]
+    assert all(row[position] == "Country" for row in rows[1:])
 
 
 def test_an_entity_without_a_graph_declared_code_yields_an_empty_cell_and_an_info_warning():
@@ -756,7 +827,10 @@ def test_an_entity_without_a_graph_declared_code_yields_an_empty_cell_and_an_inf
                 "typeOf": ("StatisticalVariable",),
                 "observationProperties": ("recipient",),
                 "measuredProperty": ("amount",),
-            }
+                "name": _STAT_VAR_NAME,
+            },
+            "country/UGA": {"name": ("Uganda",)},
+            **_NAMED_NODES,
         },
         facets={(_STAT_VAR, "country/UGA"): [_FACET]},
         labels={"OECD_DAC2A": "OECD DAC2a"},
@@ -818,17 +892,19 @@ def test_an_entity_without_a_graph_declared_code_yields_an_empty_cell_and_an_inf
             "code": "enrichment_unavailable",
             "severity": "info",
             "message": (
-                "A requested enrichment column has no graph value for some rows; those "
-                "cells are left empty rather than fabricated. Column 'recipient_iso3' left "
-                "1 cell empty."
+                "A name, code, or requested enrichment column has no value for some rows: "
+                "the graph names nothing for the value, the name read failed, or two codes "
+                "of the column's code system share its label. Those cells are left empty "
+                "rather than fabricated. measurementMethod_label holds only a name that "
+                "differs from the method's dcid, and its empty cells never raise this "
+                "warning. Column 'recipient_iso3' left 1 cell empty."
             ),
         }
     ]
     artifact = manifest["artifacts"][0]
     fetched = artifact_store.fetch(artifact["url"])
     rows = list(csv.reader(io.StringIO(fetched.decode("utf-8"))))
-    assert rows[0][-1] == "recipient_iso3"
-    assert rows[1][-1] == ""
+    assert rows[1][rows[0].index("recipient_iso3")] == ""
 
 
 def test_two_requests_where_only_one_has_gaps_names_only_that_column():
@@ -848,8 +924,10 @@ def test_two_requests_where_only_one_has_gaps_names_only_that_column():
                 "typeOf": ("StatisticalVariable",),
                 "observationProperties": ("recipient", "provider"),
                 "measuredProperty": ("amount",),
+                "name": _STAT_VAR_NAME,
             },
-            "country/KEN": {"countryAlpha3Code": ("KEN",)},
+            "country/KEN": {"countryAlpha3Code": ("KEN",), "name": ("Kenya",)},
+            **_NAMED_NODES,
         },
         facets={(_STAT_VAR, "country/KEN"): [_FACET]},
         labels={"OECD_DAC2A": "OECD DAC2a"},
@@ -928,9 +1006,11 @@ def test_two_entity_columns_each_enrich_with_their_own_field_in_one_request():
                 "typeOf": ("StatisticalVariable",),
                 "observationProperties": ("recipient", "provider"),
                 "measuredProperty": ("amount",),
+                "name": _STAT_VAR_NAME,
             },
-            "country/KEN": {"countryAlpha3Code": ("KEN",)},
+            "country/KEN": {"countryAlpha3Code": ("KEN",), "name": ("Kenya",)},
             "country/USA": {"name": ("United States",)},
+            **_NAMED_NODES,
         },
         facets={(_STAT_VAR, "country/KEN"): [_FACET]},
         labels={"OECD_DAC2A": "OECD DAC2a"},
@@ -990,9 +1070,27 @@ def test_two_entity_columns_each_enrich_with_their_own_field_in_one_request():
     artifact = manifest["artifacts"][0]
     fetched = artifact_store.fetch(artifact["url"])
     rows = list(csv.reader(io.StringIO(fetched.decode("utf-8"))))
-    assert rows[0] == keep
-    assert rows[1][keep.index("provider_label")] == "United States"
-    assert rows[1][keep.index("recipient_iso3")] == "KEN"
+    # Each enrichment sits beside its entity column and that entity's name.
+    assert rows[0] == [
+        "stat_var",
+        "stat_var_label",
+        "recipient",
+        "recipient_label",
+        "recipient_iso3",
+        "provider",
+        "provider_label",
+        "time_period",
+        "value",
+        "unit",
+        "unit_label",
+        "currency",
+        "price_basis",
+        "base_year",
+        "provenance",
+        "provenance_label",
+    ]
+    assert rows[1][rows[0].index("provider_label")] == "United States"
+    assert rows[1][rows[0].index("recipient_iso3")] == "KEN"
 
 
 def test_a_genuine_label_role_column_selects_rather_than_colliding_with_the_enrichment_refusal():
@@ -1069,8 +1167,24 @@ def test_a_genuine_label_role_column_selects_rather_than_colliding_with_the_enri
     artifact = resp.json()["artifacts"][0]
     fetched = artifact_store.fetch(artifact["url"])
     rows = list(csv.reader(io.StringIO(fetched.decode("utf-8"))))
-    assert rows[0] == keep
-    assert rows[1][keep.index("label")] == "country/USA"
+    assert rows[0] == [
+        "stat_var",
+        "stat_var_label",
+        "recipient",
+        "recipient_label",
+        "label",
+        "label_label",
+        "time_period",
+        "value",
+        "unit",
+        "unit_label",
+        "currency",
+        "price_basis",
+        "base_year",
+        "provenance",
+        "provenance_label",
+    ]
+    assert rows[1][rows[0].index("label")] == "country/USA"
 
 
 def test_selection_runs_before_pivot_so_a_pivot_widened_column_is_not_selectable():
@@ -1130,3 +1244,164 @@ def test_selection_and_pivot_plans_never_produce_a_reshape_warning():
         ),
     )
     assert pivot_warnings == ()
+
+
+_ROLE_CSV_HEADER = (
+    "STRUCTURE,STRUCTURE_ID,ACTION,variableMeasured,recipient,donor,unit,"
+    "measurementMethod,observationPeriod,provenance,TIME_PERIOD,OBS_VALUE,"
+    "scalingFactor,facetId\r\n"
+)
+
+
+def _two_role_client(
+    rows: Sequence[tuple[str, str, str]], *, pivot_max_output_cells: int | None = None
+):
+    """A client over `(recipient, donor, year)` rows of one StatVar and facet."""
+    csv_body = _ROLE_CSV_HEADER + "".join(
+        f"dataflow,DC:DF_OBS(1.0.0),I,{_STAT_VAR},{recipient},{donor},USD,"
+        f"GrantEquivalent,NotApplicable,OECD_DAC2A,{year},{1000 + i},,facet1\r\n"
+        for i, (recipient, donor, year) in enumerate(rows)
+    )
+    recipients = sorted({recipient for recipient, _, _ in rows})
+    years_by_pair: dict[tuple[str, str], set[int]] = {}
+    for recipient, donor, year in rows:
+        years_by_pair.setdefault((donor, recipient), set()).add(int(year))
+    coverage = FakeCoverageService(
+        build_coverage_index(
+            [
+                (_STAT_VAR, "facet1", donor, recipient, sorted(years))
+                for (donor, recipient), years in years_by_pair.items()
+            ],
+            role_names={_STAT_VAR: RoleNames(donor="donor", recipient="recipient")},
+            facet_metadata={
+                "facet1": FacetMetadata(
+                    provenance_id="OECD_DAC2A", measurement_method="GrantEquivalent", unit="USD"
+                )
+            },
+        )
+    )
+    graph = FakeMintGraphReader(
+        arcs={
+            _STAT_VAR: {
+                "typeOf": ("StatisticalVariable",),
+                "observationProperties": ("recipient", "donor"),
+                "measuredProperty": ("amount",),
+            }
+        },
+        facets={(_STAT_VAR, recipient): [_FACET] for recipient in recipients},
+        labels={"OECD_DAC2A": "OECD DAC2a"},
+    )
+    store = FakeDatasetStore()
+    client = make_client(
+        registry=LiveSpecRegistry(store=store),
+        settings=(
+            DatasetsBuildSettings(pivot_max_output_cells=pivot_max_output_cells)
+            if pivot_max_output_cells is not None
+            else None
+        ),
+        spec_reader=LiveSpecReader(store=store),
+        graph=graph,
+        sdmx=SdmxClient(
+            base_url=_BASE_URL,
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(
+                    200,
+                    text=csv_body,
+                    headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
+                )
+            ),
+        ),
+        revision_reader=SentinelRevisionReader(),
+        artifact_store=FakeArtifactStore(),
+        snapshot_reader=FakeSnapshotReader(),
+        reference_writer=FakeArtifactReferenceWriter(),
+        coverage=coverage,
+    )
+    scope = {
+        "entities": {
+            "recipient": recipients,
+            "donor": sorted({donor for _, donor, _ in rows}),
+        },
+        "facets": _SCOPE["facets"],
+    }
+    return client, scope
+
+
+def _two_role_body(scope: dict, *, index: str, columns: str) -> dict:
+    return {
+        "schema_version": 1,
+        "input": {"kind": "statvar_set", "statvars": [_STAT_VAR_REF], "scope": scope},
+        "options": {"bundle": False, "pivot": {"index": index, "columns": columns}},
+    }
+
+
+class _RowReadSpy:
+    """Wraps `render.fold_pivot_chunks`, recording whether the fold read any chunk's rows."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.rows_read = False
+        self.calls = 0
+        fold = render_module.fold_pivot_chunks
+
+        def spied(chunks, **kwargs):
+            self.calls += 1
+            return fold((_RowReadProxy(chunk, self) for chunk in chunks), **kwargs)
+
+        monkeypatch.setattr(render_module, "fold_pivot_chunks", spied)
+
+
+class _RowReadProxy:
+    def __init__(self, chunk: Table, spy: _RowReadSpy) -> None:
+        self.columns = chunk.columns
+        self._chunk = chunk
+        self._spy = spy
+
+    @property
+    def rows(self) -> tuple[tuple[object, ...], ...]:
+        self._spy.rows_read = True
+        return self._chunk.rows
+
+
+def test_a_pivot_mint_over_the_cell_cap_refuses_from_the_stored_shape_without_reading_rows(
+    monkeypatch,
+):
+    # Two recipients by three output columns is six cells, over a cap of five.
+    rows = [
+        ("country/KEN", "country/USA", "2015"),
+        ("country/KEN", "country/USA", "2016"),
+        ("country/TGO", "country/USA", "2015"),
+        ("country/TGO", "country/USA", "2016"),
+    ]
+    client, scope = _two_role_client(rows, pivot_max_output_cells=5)
+    spy = _RowReadSpy(monkeypatch)
+
+    resp = client.post(
+        "/api/datasets", json=_two_role_body(scope, index="recipient", columns="time_period")
+    )
+
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["code"] == "pivot_over_cell_cap"
+    assert spy.calls == 1
+    assert spy.rows_read is False
+
+
+def test_a_duplicate_key_pivot_refusal_names_the_varying_column_as_an_axis():
+    # Two recipients share donor USA in 2015, so (donor, time_period) repeats and recipient varies.
+    rows = [
+        ("country/KEN", "country/USA", "2015"),
+        ("country/KEN", "country/TZA", "2016"),
+        ("country/TGO", "country/USA", "2015"),
+    ]
+    client, scope = _two_role_client(rows)
+
+    resp = client.post(
+        "/api/datasets", json=_two_role_body(scope, index="donor", columns="time_period")
+    )
+
+    assert resp.status_code == 422, resp.text
+    problem = resp.json()
+    assert problem["code"] == "pivot_not_unique"
+    assert [(issue.get("member"), issue.get("axis")) for issue in problem["issues"]] == [
+        ("('country/USA', '2015')", None),
+        (None, "recipient"),
+    ]

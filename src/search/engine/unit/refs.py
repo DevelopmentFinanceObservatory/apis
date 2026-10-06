@@ -17,9 +17,10 @@ from collections.abc import Callable
 
 import dc_graph
 from materialise.facets import native_currency_iso
+from search.currency_codes import ISO_4217_CODES
 from search.engine.clients.graph import EngineGraphClient
+from search.engine.degraded_reads import note_degraded_read
 from search.engine.errors import GraphInfraError
-from search.engine.unit.lexicon import ISO_4217_CODES
 from search.heading.unit_class import is_known_non_currency
 from search.models import IdentityCurrencyRole, IdentityUnitRequest
 
@@ -31,8 +32,8 @@ def _graph_currency(
 ) -> str | None:
     """The ISO 4217 code the graph's currency units map `unit_dcid` to, or None. A percent
     or PPP unit (`heading.unit_class.is_known_non_currency`) names none with no read. An
-    expired `deadline` raises; any other failed read names no currency and logs a warning
-    naming `unit_dcid`."""
+    expired `deadline` raises; any other failed read names no currency, logs a warning
+    naming `unit_dcid` and notes the lost read (`degraded_reads.note_degraded_read`)."""
     if is_known_non_currency(unit_dcid):
         return None
     try:
@@ -41,6 +42,7 @@ def _graph_currency(
         raise
     except GraphInfraError as exc:
         logger.warning("currency units read failed; unit %s names no currency: %s", unit_dcid, exc)
+        note_degraded_read("currency units")
         return None
 
 

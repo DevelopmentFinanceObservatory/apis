@@ -15,7 +15,6 @@ from search.models import (
     CoverageBare,
     IdentityFacetValueRequest,
     IdentityUnitRequest,
-    PipelineStep,
     Shape,
     SlotKey,
     StatVar,
@@ -97,6 +96,7 @@ def test_served_gross_rows_publish_a_composed_label_not_either_members_own_name(
     netting_slot = value_slot("how", "nettingBasis", "netting basis", "Gross", "gross")
 
     spec = build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
         slots=[netting_slot],
@@ -110,7 +110,6 @@ def test_served_gross_rows_publish_a_composed_label_not_either_members_own_name(
         ],
         entities=[],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
         measure_partition=gross_partition,
         measure_siblings=(net_partition,),
     )
@@ -168,6 +167,7 @@ def test_an_unlabelled_partition_with_nothing_to_compose_falls_back_to_a_served_
         values=(("measuredProperty", "grams"),), members=("SV_grams",)
     )
     spec = build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
         slots=[],
@@ -181,7 +181,6 @@ def test_an_unlabelled_partition_with_nothing_to_compose_falls_back_to_a_served_
         ],
         entities=[],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
         measure_partition=served_partition,
     )
 
@@ -210,6 +209,7 @@ def test_a_group_agreeing_on_an_open_axis_names_it_but_never_a_varying_one():
     donor_slot = value_slot("what", "syntheticDonor", "donor", "syntheticDonorValue")
 
     spec = build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
         slots=[donor_slot],
@@ -223,7 +223,6 @@ def test_a_group_agreeing_on_an_open_axis_names_it_but_never_a_varying_one():
         ],
         entities=[],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
         measure_partition=gross_partition,
         measure_siblings=(net_partition,),
         open_axis_facts=(
@@ -267,6 +266,7 @@ def test_a_unit_request_keeps_the_native_price_basis_in_the_axis_values():
     )
 
     spec = build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
         slots=[],
@@ -280,7 +280,6 @@ def test_a_unit_request_keeps_the_native_price_basis_in_the_axis_values():
         ],
         entities=[],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
         measure_partition=_real_partition(_GROSS_DCID),
         facet_bindings={"unit": unit},
     )
@@ -355,6 +354,7 @@ def test_near_neighbor_reads_the_same_shape_draft_before_and_after_build_spec_ru
         member_count=2,
     )
     spec = build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=wire_shape,
         slots=[],
@@ -368,7 +368,6 @@ def test_near_neighbor_reads_the_same_shape_draft_before_and_after_build_spec_ru
         ],
         entities=[],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
         measure_partition=gross_partition,
         measure_siblings=(net_partition,),
     )

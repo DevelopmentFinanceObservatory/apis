@@ -115,7 +115,7 @@ def test_relaxed_probe_confirms_an_index_only_member():
     suggestions, warnings, _reads, _presence = _run()
     assert warnings == []
     assert len(suggestions) == 1
-    assert [sv.ref for sv in suggestions[0].resolved.stat_vars.items] == [_EXTRA_SV]
+    assert [sv.ref.dcid for sv in suggestions[0].resolved.members] == [_EXTRA_SV]
 
 
 def test_relaxed_index_only_member_is_not_reported_inapplicable():

@@ -535,9 +535,12 @@ class TestUnitTextGate:
         assert result.status == "no_data"
         assert result.parts[0].no_data.reason == "unit_not_resolved"
 
-    def test_unrepresentable_unit_is_unsupported_not_definite(self):
-        """PPP terms are unrepresentable, so the request returns unsupported."""
-        result = _resolve_parsed([_fertility_kenya_part(unit_text="PPP dollars")])
+    @pytest.mark.parametrize("unit_text", ["PPP dollars", "per capita"], ids=["ppp", "per-capita"])
+    def test_unrepresentable_unit_is_unsupported_not_definite(self, unit_text):
+        """PPP terms are unrepresentable, so the request returns unsupported. So is a
+        per-capita unit (dq-crs-043): the unit gate answers it, not the denominator check
+        a per-capita variable meets at materialise."""
+        result = _resolve_parsed([_fertility_kenya_part(unit_text=unit_text)])
         assert result.status == "unsupported"
         assert result.parts[0].unsupported.code == "unit_request_unsupported"
         assert result.parts[0].unsupported.pointer == "/identity/facets/unit"
@@ -613,7 +616,7 @@ class TestUnitFacetNarrowsResponseMetadata:
         assert sources == {"dc/base/UsdSource"}
 
         # The date range follows the USD facet's 2018-2020 span.
-        date_range = resolved.stat_vars.items[0].data_date_range
+        date_range = resolved.members[0].data_date_range
         assert date_range is not None
         assert date_range.start == "2018"
         assert date_range.end == "2020"
@@ -635,7 +638,7 @@ class TestUnitFacetNarrowsResponseMetadata:
         sources = [s.dcid for s in resolved.trace.resolved_sources]
         assert sources == ["dc/base/UsdSource"]
 
-        date_range = resolved.stat_vars.items[0].data_date_range
+        date_range = resolved.members[0].data_date_range
         assert date_range is not None
         assert date_range.start == "2018"
         assert date_range.end == "2020"

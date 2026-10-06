@@ -41,6 +41,7 @@ from search.engine.retrieval.facet_election import (
     rank_role_candidates,
     role_n_obs,
 )
+from search.engine.retrieval.read_plan import PlanRoles
 from search.models import IdentityUnitRequest, TimeWindow
 from search.observations import (
     OBSERVATIONS_CONVERTED_SCOPE_UNSUPPORTED,
@@ -585,7 +586,9 @@ def test_merged_candidates_keep_or_drop_whole_and_preview_pairs_in_sorted_order(
         unit="EUR",
     )
     merged = merge_role_candidates({_SV: [usd_narrow, eur, usd_wide]}, [_SV])
-    preview = _preview_pairs(merged["F-A"], 10, years=lambda _sv: (None, None))
+    preview = _preview_pairs(
+        merged["F-A"], 10, years=lambda _sv: (None, None), member_year=lambda _sv: 2020
+    )
     assert [pair for pair, _n_obs in preview] == [(_SV, rt) for rt in sorted(role_tuples)]
 
     usd_filter = {"unit": FacetAxisFilter(predicate=lambda facet: facet.unit == "USD")}
@@ -863,7 +866,7 @@ def test_a_converted_role_read_whose_conversion_read_fails_omits_the_preview(
         facet_filter=None,
         coverage=coverage,
         # The conversion itself never runs: `convert_pairs` fails first.
-        conversion=object(),
+        conversion=SimpleNamespace(target_unit_ref="CurrencyUSD"),
     )
 
     assert observations.series == []
@@ -972,16 +975,39 @@ def test_narrowed_series_read_disagreeing_with_the_index_is_no_points():
     assert warn is None
 
 
-# Truncation ranks role pairs by identity because coverage has no values.
+# Under the row gate the read takes every series and ranks them. Over it, or converting
+# into each entity's own currency, coverage chooses a fixed selection before any value.
 
 
-def test_series_truncated_to_top_n_by_identity_order(monkeypatch):
-    recipients = [f"country/BRTrunc{i}" for i in range(1, 26)]  # 25 recipients
+def _identity_conversion(pair_points, *, facet, conversion):
+    return ConvertedPairs(points=dict(pair_points), conversions={}, left_out={}, omitted={})
+
+
+@pytest.mark.parametrize(
+    ("gate", "target_unit", "order"),
+    [
+        (25, "absent", "ranked"),
+        (25, "CurrencyUSD", "ranked"),
+        (24, "absent", "fixed"),
+        (25, None, "fixed"),
+    ],
+    ids=["ranked-at-the-gate", "ranked-converted", "fixed-over-the-gate", "fixed-role-currency"],
+)
+def test_series_truncated_to_the_order_the_row_gate_chooses(
+    monkeypatch, search_settings, gate: int, target_unit: str | None, order: str
+):
+    search_settings(role_bulk_rank_max_rows=gate)
+    recipients = [f"country/BRTrunc{i}" for i in range(1, 26)]  # 25 recipients, 25 rows
     coverage = _patch_role_coverage(monkeypatch, [("F1", _DONOR, r, [2020]) for r in recipients])
+    # Values rise with the recipient's position, so ranking keeps the last 20.
     obs = {
         _role_tuple(r): [_facet(dates=["2020"], value=float(i))] for i, r in enumerate(recipients)
     }
     sdmx = FakeSdmxClient(observations={_SV: obs})
+    conversion = None
+    if target_unit != "absent":
+        monkeypatch.setattr(bulk_role_series, "convert_pairs", _identity_conversion)
+        conversion = SimpleNamespace(target_unit_ref=target_unit)
     observations, warn = bulk_role_series_planned(
         [_SV],
         _obs_entities(recipients),
@@ -989,26 +1015,127 @@ def test_series_truncated_to_top_n_by_identity_order(monkeypatch):
         graph=_GRAPH,
         facet_filter=None,
         coverage=coverage,
+        conversion=conversion,
+        roles=PlanRoles(
+            bound={"donor": frozenset({_DONOR})},
+            role_names={"recipient": "recipient", "donor": "provider"},
+        ),
     )
+    shown = observation_settings().role_bulk_series_max
     assert observations is not None
-    assert len(observations.series) == observation_settings().role_bulk_series_max
-    # `total_obs` includes all 25 pairs, including unshipped pairs counted from coverage.
+    assert len(observations.series) == shown
+    # `total_obs` includes all 25 pairs, unshipped pairs counted from coverage.
     assert observations.total_obs == 25
     assert warn is not None
     assert warn.code == OBSERVATIONS_SERIES_TRUNCATED
-    assert str(observation_settings().role_bulk_series_max) in warn.message
-    assert "25" in warn.message
-    assert warn.params == {"shown": observation_settings().role_bulk_series_max, "total": 25}
-    # Coverage has no values for ranking, so the delivered pairs are first by dcid.
-    to_fetch = sorted(recipients)[: observation_settings().role_bulk_series_max]
-    delivered_recipients = {
+    assert warn.params == {"shown": shown, "total": 25, "order": order}
+    assert observations.order == order
+    assert f"showing {shown} of 25" in warn.message
+    assert ("not ranked by value" in warn.message) == (order == "fixed")
+    (call,) = sdmx.series_calls
+    delivered = [
         next(e.ref for e in s.entities if e.role == "destination") for s in observations.series
-    }
-    assert delivered_recipients == set(to_fetch)
+    ]
+    if order == "ranked":
+        # One read of every series, filtered on the bound provider alone.
+        assert call["entities"] == {"provider": [_DONOR]}
+        assert delivered == recipients[:4:-1]
+    else:
+        # The first 20 by identity, read pair by pair, shown largest first.
+        fixed = sorted(recipients)[:shown]
+        assert set(call["entities"]["recipient"]) == set(fixed)
+        assert set(delivered) == set(fixed)
+        assert delivered == sorted(fixed, key=recipients.index, reverse=True)
 
 
-def test_unshipped_pair_total_obs_selects_the_same_facet_as_the_shipped_ones(monkeypatch):
+def test_a_ranked_read_takes_every_stat_var_with_data_in_its_years():
+    """A StatVar whose role tuple holds no observation in the read's years takes no place in
+    a ranked read, however new its latest date, so every StatVar with data there is read
+    and shown, newest year first."""
+    late, newer, older = (f"TEST/BulkRoleObs_{name}" for name in ("Late", "Newer", "Older"))
+    # Counts are the observations in the read's years: the late StatVar's one tuple has none.
+    members = [
+        (late, "country/BR1", "2024", 0),
+        (newer, "country/BR2", "2018", 1),
+        (older, "country/BR3", "2017", 1),
+    ]
+    sdmx = FakeSdmxClient(
+        observations={
+            sv: {_role_tuple(recipient): [_facet(dates=[year])]}
+            for sv, recipient, year, _n_obs in members
+        }
+    )
+    observations, warn = bulk_role_series_planned(
+        [sv for sv, *_ in members],
+        _obs_entities([recipient for _sv, recipient, _year, _n_obs in members]),
+        sdmx=sdmx,
+        graph=_GRAPH,
+        facet_filter=None,
+        discovered_role_index={
+            sv: [
+                role_candidate(
+                    facet_id="F1", role_tuples={_role_tuple(recipient): n_obs}, latest_date=year
+                )
+            ]
+            for sv, recipient, year, n_obs in members
+        },
+        coverage=empty_coverage_snapshot(),
+    )
+    assert warn is None
+    assert [s.stat_var.ref for s in observations.series] == [newer, older]
+    assert observations.order is None
+
+
+def test_a_fixed_range_read_takes_only_series_with_data_in_the_range(search_settings):
+    """Over the row gate a range read selects only role tuples holding an observation in
+    the range, so a tuple sorting first with none there takes no place in the preview."""
+    search_settings(role_bulk_rank_max_rows=0)
+    shown = observation_settings().role_bulk_series_max
+    dataless = "country/BRFixed00"
+    with_data = [f"country/BRFixed{i:02d}" for i in range(1, shown + 2)]
+    sdmx = FakeSdmxClient(
+        observations={
+            _SV: {
+                _role_tuple(r): [_facet(dates=["2020"], value=float(i))]
+                for i, r in enumerate(with_data)
+            }
+        }
+    )
+    observations, warn = bulk_role_series_planned(
+        [_SV],
+        _obs_entities([dataless, *with_data]),
+        sdmx=sdmx,
+        graph=_GRAPH,
+        facet_filter=None,
+        discovered_role_index={
+            _SV: [
+                role_candidate(
+                    facet_id="F1",
+                    role_tuples={
+                        _role_tuple(dataless): 0,
+                        **{_role_tuple(r): 1 for r in with_data},
+                    },
+                    latest_date="2020",
+                )
+            ]
+        },
+        time_period=["2019", "2020"],
+        coverage=empty_coverage_snapshot(),
+    )
+    (call,) = sdmx.series_calls
+    assert dataless not in call["entities"]["recipient"]
+    assert len(observations.series) == shown
+    assert warn is not None
+    assert warn.params == {"shown": shown, "total": shown + 1, "order": "fixed"}
+    assert observations.order == "fixed"
+
+
+def test_unshipped_pair_total_obs_selects_the_same_facet_as_the_shipped_ones(
+    monkeypatch, search_settings
+):
     """An unshipped pair adds the selected facet's count to `total_obs`."""
+    # Over the row gate the preview reads a fixed selection, which leaves BRTrunc7 out.
+    search_settings(role_bulk_rank_max_rows=0)
     recipients = [f"country/BRTrunc{i}" for i in range(1, 26)]  # 25 recipients
     # BRTrunc7 is unshipped. Its F1 row has 2 points and F2 has 5.
     rows = [("F1", _DONOR, r, [2020]) for r in recipients if r != "country/BRTrunc7"]
@@ -1081,9 +1208,9 @@ def test_unshipped_pair_total_obs_for_a_one_role_shape(monkeypatch):
     assert warn.code == OBSERVATIONS_SERIES_TRUNCATED
 
 
-def test_preview_pairs_reads_stat_vars_in_sorted_order_and_stops_at_the_limit() -> None:
-    """Preview sorted `(StatVar, role_tuple)` pairs up to the limit.
-    StatVars after the limit are not read.
+def test_preview_pairs_takes_stat_vars_newest_year_first_round_robin_up_to_the_limit() -> None:
+    """Preview `(StatVar, role_tuple)` pairs StatVar by StatVar, newest member year first,
+    taking each StatVar's next role tuple in turn. StatVars past the limit are not read.
     """
 
     class _Unread:
@@ -1097,7 +1224,9 @@ def test_preview_pairs_reads_stat_vars_in_sorted_order_and_stops_at_the_limit() 
     index = {
         sv_b: [
             role_candidate(
-                facet_id="F1", role_tuples={_role_tuple("country/Z"): 4}, latest_date="2020"
+                facet_id="F1",
+                role_tuples={_role_tuple("country/Z"): 4, _role_tuple("country/V"): 1},
+                latest_date="2020",
             )
         ],
         sv_a: [
@@ -1118,15 +1247,19 @@ def test_preview_pairs_reads_stat_vars_in_sorted_order_and_stops_at_the_limit() 
     }
     merged = merge_role_candidates(index, [sv_b, sv_c, sv_a])
 
-    preview = _preview_pairs(merged["F1"], 3, years=lambda _sv: (None, None))
+    member_years = {sv_b: 2022, sv_a: 2021, sv_c: 2019}
+    preview = _preview_pairs(
+        merged["F1"], 2, years=lambda _sv: (None, None), member_year=member_years.get
+    )
 
+    # sv_b is newest, so it gives its first tuple. sv_a then gives its first before sv_b
+    # gives a second.
     assert preview == [
+        ((sv_b, _role_tuple("country/V")), 1),
         ((sv_a, _role_tuple("country/X")), 3),
-        ((sv_a, _role_tuple("country/Y")), 2),
-        ((sv_b, _role_tuple("country/Z")), 4),
     ]
-    assert merged["F1"].pair_count == 4
-    assert role_n_obs(merged["F1"], first_year=None, last_year=None) == 3 + 2 + 4 + 7
+    assert merged["F1"].pair_count == 5
+    assert role_n_obs(merged["F1"], first_year=None, last_year=None) == 3 + 2 + 4 + 1 + 7
 
 
 # Pipeline test for a bound-unit request at the preview ceiling.
@@ -1232,7 +1365,6 @@ def test_role_bearing_bound_unit_overflow_never_escalates_to_graph_infra_error(
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
             sdmx=sdmx,
-            base_steps=[],
             base_timing={},
             unit_text="US dollars",
             coverage=coverage,
@@ -1303,7 +1435,6 @@ def test_a_bulk_preview_keeps_the_exact_headline_of_every_confirmed_pair(
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
             sdmx=sdmx,
-            base_steps=[],
             base_timing={},
             coverage=FakeCoverageService(coverage_index).snapshot(),
             options=EngineOptions(include_observations=True),
@@ -1365,7 +1496,6 @@ def _bulk_answer_in(monkeypatch, window: TimeWindow) -> tuple[RegionResult, Fake
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
             sdmx=sdmx,
-            base_steps=[],
             base_timing={},
             coverage=FakeCoverageService(coverage_index).snapshot(),
             options=EngineOptions(include_observations=True),

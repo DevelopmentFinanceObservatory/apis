@@ -27,7 +27,6 @@ from search.models import (
     CandidatesPart,
     CoverageBare,
     NoDataPart,
-    PipelineStep,
     QueryEcho,
     SlotKey,
     SlotOptions,
@@ -52,7 +51,6 @@ def _assemble_kwargs(region: RegionResult, **overrides):
         "extra_warnings": [],
         "start_ms": now_ms(),
         "engine_build": "test",
-        "include_sentence": False,
         "max_candidates": 10,
     } | overrides
 
@@ -127,7 +125,6 @@ def test_combine_regions_default_echo_uses_raw_text():
         extra_warnings=[],
         start_ms=now_ms(),
         engine_build="test",
-        include_sentence=False,
         max_candidates=10,
     )
     assert response.query_echo.entry_path == "raw_text"
@@ -161,7 +158,6 @@ def test_combine_regions_no_data_part_carries_gate_and_alternate_match():
         extra_warnings=[],
         start_ms=now_ms(),
         engine_build="test",
-        include_sentence=False,
         max_candidates=10,
     )
 
@@ -173,7 +169,7 @@ def test_combine_regions_no_data_part_carries_gate_and_alternate_match():
 
 
 def _entity_terms_part(region: RegionResult) -> NoDataPart:
-    response = assemble_region(region, **_assemble_kwargs(region, include_sentence=True))
+    response = assemble_region(region, **_assemble_kwargs(region))
     part = response.parts[0]
     assert isinstance(part, NoDataPart)
     return part
@@ -303,7 +299,6 @@ def test_combine_regions_supplied_echo_used_verbatim():
         extra_warnings=[],
         start_ms=now_ms(),
         engine_build="test",
-        include_sentence=False,
         max_candidates=10,
         echo=supplied,
     )
@@ -328,7 +323,6 @@ def test_combine_regions_full_collapse_threads_echo():
         extra_warnings=[],
         start_ms=now_ms(),
         engine_build="test",
-        include_sentence=False,
         max_candidates=10,
         echo=supplied,
     )
@@ -437,7 +431,6 @@ def test_reconcile_after_collapse_relaunches_merged_region_against_its_own_spec_
             extra_warnings=[],
             start_ms=now_ms(),
             engine_build="test",
-            include_sentence=False,
             max_candidates=10,
         )
         # Sanity: A/B actually collapsed into one merged region distinct from both.
@@ -504,7 +497,6 @@ def test_stream_slot_options_never_yields_event_for_a_spec_id_absent_from_respon
             extra_warnings=[],
             start_ms=now_ms(),
             engine_build="test",
-            include_sentence=False,
             max_candidates=10,
         )
         streaming_regions, stale_tasks = _reconcile_after_collapse([r_a, r_b], effective)
@@ -541,6 +533,7 @@ def test_window_refusal_keeps_original_enrichment_tasks_joinable_to_visible_part
     async def _body():
         call_log: list[str] = []
         spec_a = build_spec(
+            open_roles=(),
             measure_elected_properties=frozenset(),
             shape=_PERSON_SHAPE,
             slots=[_value_slot("constraintProp", "ValA")],
@@ -554,10 +547,10 @@ def test_window_refusal_keeps_original_enrichment_tasks_joinable_to_visible_part
             ],
             entities=[],
             coverage=CoverageBare(has_data=True),
-            pipeline_trace=[PipelineStep(step="extract", ran=True)],
             requested_window=TimeWindow(start_year=2015, end_year=2020),
         )
         spec_b = build_spec(
+            open_roles=(),
             measure_elected_properties=frozenset(),
             shape=_PERSON_SHAPE,
             slots=[_value_slot("constraintProp", "ValB")],
@@ -571,7 +564,6 @@ def test_window_refusal_keeps_original_enrichment_tasks_joinable_to_visible_part
             ],
             entities=[],
             coverage=CoverageBare(has_data=True),
-            pipeline_trace=[PipelineStep(step="extract", ran=True)],
             requested_window=TimeWindow(start_year=2018, end_year=2020),
         )
         task_a = asyncio.create_task(_probe_coro(spec_a.spec_id))
@@ -594,7 +586,6 @@ def test_window_refusal_keeps_original_enrichment_tasks_joinable_to_visible_part
             extra_warnings=[],
             start_ms=now_ms(),
             engine_build="test",
-            include_sentence=False,
             max_candidates=10,
         )
         streaming_regions, stale_tasks = _reconcile_after_collapse([r_a, r_b], effective)

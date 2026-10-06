@@ -56,7 +56,14 @@ def test_the_packaged_index_loads_and_agrees_with_its_own_stamp():
     index = load_index(default_index_path())
 
     assert sum(index.stamp.code_counts.values()) == len(index.codes)
-    assert index.stamp.statvar_shape_counts["crsPurpose"] == len(index.statvars)
+    assert index.stamp.statvar_shape_counts == {
+        system: sum(system in row.constraint_properties for row in index.statvars)
+        for system in index.declarations
+    }
+    assert all(
+        any(system in row.constraint_properties for system in index.declarations)
+        for row in index.statvars
+    )
     assert index.codes
     assert index.statvars
 
@@ -228,6 +235,40 @@ def test_the_packaged_index_declares_the_crs_type_of_flow_default():
     assert default.code == "CRSTypeOfFlow10"
     assert default.when_bound_under == ("CRSTypeOfFinance100",)
     assert default.when_named == ("aid",)
+    assert default.when_open is False
+    assert default.note is None
+
+
+def test_the_packaged_index_declares_total_oda_as_the_open_dac1_aid_type_default():
+    """A DAC1 question that names no aid type reads total ODA, and the answer says so."""
+    default = load_index(default_index_path()).declarations["dac1AidType"].default
+    assert default is not None
+    assert default.code == "DAC1AidType1010"
+    assert default.when_open is True
+    assert default.note
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"when_open": True}, "fires on an open slot and carries no note"),
+        ({"when_open": "yes", "note": "n"}, "when_open 'yes' is not a boolean"),
+        ({"note": " "}, "note ' ' is not a non-empty string"),
+    ],
+    ids=["open-without-note", "open-not-boolean", "blank-note"],
+)
+def test_refuses_a_malformed_open_slot_default(tmp_path, fields, message):
+    payload = _payload_with_flow_default(
+        code="CRSTypeOfFlow10", when_bound_under=["CRSTypeOfFinance100"]
+    )
+    for row in payload["declarations"]:
+        if row["code_system"] == "crsTypeOfFlow":
+            row["default"].update(fields)
+    doc = tmp_path / "malformed_open_default.json"
+    doc.write_text(json.dumps(payload))
+
+    with pytest.raises(IndexFormatError, match=message):
+        load_index(doc)
 
 
 def test_refuses_a_declared_default_with_no_when_named_key_at_all(tmp_path):

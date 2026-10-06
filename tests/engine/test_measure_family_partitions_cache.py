@@ -11,7 +11,7 @@ from search.engine.retrieval.bound_values import (
     observed_measure_family,
 )
 from search.engine.shape import ShapeDraft
-from tests.engine._index_slots import query_for
+from tests.engine._index_slots import crs_flow_slot_keys, query_for
 from tests.engine.test_measure_observed import _members_for
 
 
@@ -26,7 +26,7 @@ def _crs_shape() -> ShapeDraft:
         stat_type_dcid=flow_row.stat_type,
         meas_qual_dcid="Nominal",
         meas_denom_dcid=None,
-        slot_keys=(),
+        slot_keys=crs_flow_slot_keys(),
     )
 
 

@@ -21,13 +21,6 @@ from code_index.shared import get_index, get_measure_index
 from dfo_platform.trace import get_trace_id
 from search.engine.clients.llm import SupportsLLM, for_stage, generate_structured_async
 from search.engine.config import settings
-from search.engine.dataset_mention import (
-    MentionReadingResult,
-    ReadMention,
-    apply_readings,
-    read_mentions,
-    unaccounted_words,
-)
 from search.engine.errors import EngineInputError
 from search.engine.qualifier_match import (
     CodedQualifier,
@@ -876,131 +869,6 @@ def _bound_extraction(
     return extraction, raw_variable_count, raw_dropped_qualifier_count, admitted_variables
 
 
-# A request that names a dataset has each mention read by `dataset_mention.read_mentions`.
-# `_apply_mention_readings` writes what the readings came to into the extraction.
-
-
-def _carry_operations(operations: list[ExtractedOperation], *, source: int, target: int) -> None:
-    """Give the variable at `target` each operation on `source` it does not hold yet.
-
-    The model records an operation on the measure alone when the dataset's variable holds
-    only a name ("top 5 donors of education aid as well as imputed multilateral aid"), and
-    on both when each names the measure.
-    """
-    held = {(op.verb, op.phrase, op.over) for op in operations if op.variable == target}
-    operations.extend(
-        op.model_copy(update={"variable": target})
-        for op in list(operations)
-        if op.variable == source and (op.verb, op.phrase, op.over) not in held
-    )
-
-
-def _apply_mention_readings(
-    extraction: Extraction, readings: Sequence[ReadMention]
-) -> tuple[Extraction, dict[str, str]]:
-    """Write what the mention readings came to into the extraction. Returns it with the
-    phrase each variable's leg reads its bound mention from, by variable text.
-
-    `dataset_mention.apply_readings` decides the variables, the bound mentions and the
-    readings that took no effect. Here an operation follows its variable to its final
-    position, a variable asking a measure of another dataset carries that measure's
-    operations, and an operation on a removed variable is removed.
-
-    A dropped phrase keeps the words its applied readings do not account for
-    (`dataset_mention.unaccounted_words`), and goes when none is left. A reading that took
-    no effect outside a kept phrase adds its mention's text, so every such reading is
-    reported as a dropped qualifier.
-    """
-    applied = apply_readings(extraction.variables, readings, index=get_index())
-    final = {old: new for new, old in enumerate(applied.origin) if old is not None}
-    operations = [
-        operation.model_copy(update={"variable": final[operation.variable]})
-        for operation in extraction.operations
-        if operation.variable in final
-    ]
-    for target, source in applied.operations_of.items():
-        _carry_operations(operations, source=source, target=target)
-
-    in_phrase: dict[int, list[ReadMention]] = {}
-    for read in readings:
-        if read.gated.phrase is not None:
-            in_phrase.setdefault(read.gated.phrase, []).append(read)
-    reported = set(map(id, applied.reported))
-    dropped: list[str] = []
-    for position, phrase in enumerate(extraction.dropped_qualifiers):
-        mentions = [
-            (read.mention, None if id(read) in reported else read.relation)
-            for read in in_phrase.get(position, ())
-        ]
-        left = unaccounted_words(phrase, mentions)
-        if left or position not in in_phrase:
-            dropped.append(left)
-    kept = [phrase.casefold() for phrase in dropped]
-    for read in applied.reported:
-        text = read.mention.text
-        if read.gated.phrase is None and not any(text.casefold() in phrase for phrase in kept):
-            dropped.append(text)
-            kept.append(text.casefold())
-    return (
-        extraction.model_copy(
-            update={
-                "variables": list(applied.variables),
-                "dropped_qualifiers": dropped,
-                "operations": operations,
-            }
-        ),
-        {
-            applied.variables[position].strip(): phrase
-            for position, phrase in applied.phrases.items()
-        },
-    )
-
-
-async def _read_dataset_mentions(
-    query: str, extraction: Extraction, *, llm: SupportsLLM
-) -> tuple[Extraction, dict[str, str], MentionReadingResult]:
-    """Read every dataset mention of the request and apply the readings.
-
-    With no mention the extraction is returned as it is and no model is asked
-    (`dataset_mention.read_mentions`).
-    """
-    result = await read_mentions(
-        query,
-        extraction.variables,
-        extraction.dropped_qualifiers,
-        index=get_index(),
-        llm=llm,
-    )
-    if not result.readings:
-        return extraction, {}, result
-    extraction, phrases = _apply_mention_readings(extraction, result.readings)
-    return extraction, phrases, result
-
-
-def _with_mention_qualifiers(
-    qualifiers: Mapping[str, tuple[CodedQualifier, ...]], phrases: Mapping[str, str]
-) -> Mapping[str, tuple[CodedQualifier, ...]]:
-    """Add each variable's bound mention to its qualifier sidecar, as a phrase with no code
-    spans. The variable's leg reads the mention back from that phrase
-    (`dataset_mention.whole_mention`)."""
-    if not phrases:
-        return qualifiers
-    merged = dict(qualifiers)
-    for variable, phrase in phrases.items():
-        merged[variable] = (
-            *merged.get(variable, ()),
-            CodedQualifier(phrase=phrase, spans=(), matches=()),
-        )
-    return merged
-
-
-def _sum_usage(first: dict | None, second: dict | None) -> dict | None:
-    """Add two token-usage records key by key. `None` stands for a call with no record."""
-    if first is None or second is None:
-        return first if second is None else second
-    return {key: first.get(key, 0) + second.get(key, 0) for key in first.keys() | second.keys()}
-
-
 # Reattach code-bearing qualifiers the model marked as dropped. The shared
 # `is_coded_only_phrase` predicate keeps extraction aligned with query matching.
 
@@ -1722,10 +1590,6 @@ class ExtractionResult:
     clamp warning. `raw_dropped_qualifier_count` records the model's phrase count
     before its cap, for the overflow warning. Both default to zero for manually
     constructed results.
-
-    `mention_reading_failed` says the dataset mentions were read by a call that failed
-    (`dataset_mention.read_mentions`), so no mention binds and the answer is kept out of
-    the response cache.
     """
 
     extraction: Extraction
@@ -1734,7 +1598,6 @@ class ExtractionResult:
     raw_dropped_qualifier_count: int = 0
     operations: Mapping[str, tuple[Operation, ...]] = field(default_factory=dict)
     dates_by_variable: Mapping[str, list[ExtractedDate]] = field(default_factory=dict)
-    mention_reading_failed: bool = False
 
 
 async def extract(
@@ -1745,9 +1608,7 @@ async def extract(
     """Extract structured fields and return the result with token usage.
 
     `result.extraction` has its kind enforced, the query's word order restored in
-    reordered variables, its entities bounded, its dataset mentions read and applied
-    (`_read_dataset_mentions`, a second model call made only when the query, a variable or
-    a dropped phrase names a dataset), its operations admitted (a forecast over a past
+    reordered variables, its entities bounded, its operations admitted (a forecast over a past
     year returns the year to `dates`), each admitted forecast's target year set on it
     (`_target_forecasts`) and then removed from its variable's dates (`dates`, or
     `result.dates_by_variable` when another variable keeps them), and its role spans
@@ -1768,7 +1629,6 @@ async def extract(
         schema=Extraction,
     )
     extraction = _bound_entities(_restore_query_word_order(query, _enforce_kind(extraction)))
-    extraction, mention_phrases, reading = await _read_dataset_mentions(query, extraction, llm=llm)
     today_year = date.today().year
     extraction, operations = _admit_operations(query, extraction, today_year=today_year)
     operations = _target_forecasts(extraction, operations, today_year=today_year)
@@ -1785,7 +1645,6 @@ async def extract(
         _bound_extraction(extraction)
     )
     extraction, qualifiers = _reattach_coded_qualifiers(query, extraction)
-    qualifiers = _with_mention_qualifiers(qualifiers, mention_phrases)
     extraction, qualifiers = _clamp_variables(extraction, qualifiers, admitted_variables)
     extraction = _truncate_dropped_qualifiers_for_display(extraction)
     return (
@@ -1796,7 +1655,6 @@ async def extract(
             raw_dropped_qualifier_count=raw_dropped_qualifier_count,
             operations=operations,
             dates_by_variable=dates_by_variable,
-            mention_reading_failed=reading.failed,
         ),
-        _sum_usage(usage, reading.usage),
+        usage,
     )

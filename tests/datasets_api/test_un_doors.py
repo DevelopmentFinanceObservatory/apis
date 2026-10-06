@@ -1,8 +1,8 @@
-"""Mints and previews of a UN System Data Commons variable through the datasets doors, over the
+"""Mints of a UN System Data Commons variable through the datasets doors, over the
 UN deployment double. The mint doors run the facet probe before `origin_reads` opens its record,
 so these tests post to the doors. A request that binds no entity carries the
 `un_system_unavailable` warning a request naming the same places carries, and a request with
-no candidate refuses the same way at the mint doors and the preview, naming the places the
+no candidate refuses the same way at every mint door, naming the places the
 warning names.
 """
 
@@ -21,7 +21,7 @@ from datasets_api.revision import SentinelRevisionReader
 from datasets_api.shape import resolve_shape
 from dc_sdmx import SdmxClient
 from origin_catalogue.graph import OriginGraphClient, build_graph_client
-from spec_registry import LiveSpecRegistry, mint_collection_id
+from spec_registry import LiveSpecRegistry
 from spec_registry.identity import recompute_identity
 from spec_registry.reader import LiveSpecReader
 from tests.materialise.test_observation_rows import _sdmx_never_called
@@ -112,29 +112,11 @@ def _spec_body(graph: OriginGraphClient, places: tuple[str, ...] = ()) -> dict:
     }
 
 
-def _collection_body(graph: OriginGraphClient, places: tuple[str, ...] = ()) -> dict:
-    members = [_sidecar(graph, stat_var, places) for stat_var in _VARIABLES]
-    return {
-        "schema_version": 1,
-        "input": {
-            "kind": "collection_id",
-            "collection_id": mint_collection_id([member["spec_id"] for member in members]),
-            "members": members,
-        },
-        "options": {"bundle": False},
-    }
-
-
-def _preview_body(graph: OriginGraphClient, places: tuple[str, ...] = ()) -> dict:
-    return {**_spec_body(graph, places), "preview": {"limit": 10}}
-
-
 def _through_the_worker(
     body: dict, graph: OriginGraphClient, monkeypatch: pytest.MonkeyPatch
 ) -> httpx.Response:
     """Submit `body` over budget and return the poll of the operation the worker ran."""
-    for kind in (kinds.spec_id, kinds.collection_id):
-        monkeypatch.setattr(kind, "within_sync_budget", lambda estimate, **_: False)
+    monkeypatch.setattr(kinds.spec_id, "within_sync_budget", lambda estimate, **_: False)
     api_client, _operation_store, forwarded = api_and_worker(
         graph=graph, sdmx=_sdmx_never_called, coverage=_coverage
     )
@@ -165,35 +147,13 @@ def test_the_spec_door_warns_of_the_place_the_un_refused(graph, places):
 
 
 @_BINDINGS
-def test_the_collection_door_warns_of_the_place_the_un_refused(graph, places):
-    resp = _client(graph).post("/api/datasets", json=_collection_body(graph, places))
-
-    assert resp.status_code == 200, resp.text
-    manifest = resp.json()
-    assert [m["coverage"]["rows"] for m in manifest["collection"]["members"]] == [_ROWS, _ROWS]
-    (warning,) = _un_warnings(manifest)
-    assert warning.endswith(_UNREAD_GREECE)
-
-
-@_BINDINGS
-@pytest.mark.parametrize("body", [_spec_body, _collection_body])
+@pytest.mark.parametrize("body", [_spec_body])
 def test_the_worker_warns_of_the_place_the_un_refused(graph, monkeypatch, body, places):
     polled = _through_the_worker(body(graph, places), graph, monkeypatch)
 
     assert polled.status_code == 200, polled.text
     assert polled.json()["operation"]["status"] == "done", polled.text
     (warning,) = _un_warnings(polled.json()["manifest"])
-    assert warning.endswith(_UNREAD_GREECE)
-
-
-@_BINDINGS
-def test_the_preview_warns_of_the_place_the_un_refused(graph, places):
-    resp = _client(graph).post("/api/datasets", json=_preview_body(graph, places))
-
-    assert resp.status_code == 200, resp.text
-    (member,) = resp.json()["members"]
-    assert member["total_rows"] == _ROWS
-    (warning,) = _un_warnings(member)
     assert warning.endswith(_UNREAD_GREECE)
 
 
@@ -206,7 +166,7 @@ def test_a_mint_binding_no_entity_reads_the_un_availability_once(graph, deployme
     assert len(deployments.availability_requests) == 1
 
 
-_DOORS = pytest.mark.parametrize("body", [_spec_body, _collection_body, _preview_body])
+_DOORS = pytest.mark.parametrize("body", [_spec_body])
 
 
 @_DOORS
@@ -242,7 +202,7 @@ def test_a_request_binding_no_entity_names_the_refused_place_in_its_no_data_refu
     )
 
 
-@pytest.mark.parametrize("body", [_spec_body, _collection_body])
+@pytest.mark.parametrize("body", [_spec_body])
 def test_the_worker_fails_a_request_binding_no_entity_with_no_un_data_as_no_data(
     graph, deployments, monkeypatch, body
 ):

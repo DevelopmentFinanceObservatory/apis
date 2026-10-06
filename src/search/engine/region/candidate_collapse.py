@@ -13,7 +13,7 @@ from materialise.facets import native_currency_iso
 from materialise.rate_tables import RateTableCache
 from search.engine.clients.graph import Facet
 from search.engine.departures import measure_not_applied, qualifier_property
-from search.engine.envelope import _record_step, now_ms
+from search.engine.envelope import _emit_step, now_ms
 from search.engine.reading_coverage import covers
 from search.engine.region.bound_unit_gate import bound_unit_gate_reason
 from search.engine.region.candidate_admission import _AlternatesAdmission
@@ -84,7 +84,7 @@ from search.engine.region.sentence_events import _build_definite_sentence_event
 from search.engine.region.state import ResolveState, raised_facts
 from search.engine.retrieval.read_plan import ReadPlan, plan_coverage, serves_nothing
 from search.engine.retrieval.retrieve import Materialised, NoDataDraft
-from search.engine.unit.bind import install_unit_facet
+from search.engine.unit.bind import with_unit_lexicon_version
 from search.models import (
     IdentityUnitRequest,
     Spec,
@@ -438,7 +438,7 @@ async def _assemble_definite(
             unbound_qualifiers=_survivor_unbound_qualifiers,
         )
     # A `has_data` result with no StatVars signals a missing series.
-    if not unique_specs[0].resolved.stat_vars.items:
+    if not unique_specs[0].resolved.members:
         return state.no_data("no_observations", llm_usage=state.var_usage)
     _survivor_spec = unique_specs[0]
     if (omitted := grounded.cand_unit_omitted.get(_survivor_spec.spec_id)) is not None:
@@ -454,19 +454,10 @@ async def _assemble_definite(
         arcs=grounded.cand_role_axis_facts[_survivor_id][0].sv_arc_facts,
     )
     if state.bound_unit_outcome is not None:
-        # Install the unit trace. A streamed answer also states its preview's facets and
-        # warning with its immediate response; a flagged-unavailable carrier holds nothing to
-        # read and states `_UNIT_CHECK_NOT_PROBED`.
-        _unit_installation = install_unit_facet(
-            state.bound_unit_outcome, warnings=(), trace=_survivor_spec.resolved.trace
-        )
-        _survivor_spec = _survivor_spec.model_copy(
-            update={
-                "resolved": _survivor_spec.resolved.model_copy(
-                    update={"trace": _unit_installation.trace}
-                )
-            }
-        )
+        # State the unit lexicon version. A streamed answer also states its preview's facets
+        # and warning with its immediate response; a flagged-unavailable carrier holds nothing
+        # to read and states `_UNIT_CHECK_NOT_PROBED`.
+        _survivor_spec = with_unit_lexicon_version(_survivor_spec, state.bound_unit_outcome)
         if state.stream_observations:
             # An inline preview states its own warning (`_resolve_spec_observations`).
             _streamed = (
@@ -606,22 +597,11 @@ async def _assemble_candidate_set(
                 asked=_unbound.text, property_dcid=qualifier_property(_unbound.named)
             ),
         )
-    # Stamp each candidate's unit trace. Its identity already carries the binding, and outcome
-    # warnings were merged earlier, so pass `warnings=()`.
+    # State each candidate's unit lexicon version. Its identity already carries the binding,
+    # and the outcome's warnings were merged earlier.
     if state.bound_unit_outcome is not None:
         unique_specs = [
-            s.model_copy(
-                update={
-                    "resolved": s.resolved.model_copy(
-                        update={
-                            "trace": install_unit_facet(
-                                state.bound_unit_outcome, warnings=(), trace=s.resolved.trace
-                            ).trace
-                        }
-                    )
-                }
-            )
-            for s in unique_specs
+            with_unit_lexicon_version(s, state.bound_unit_outcome) for s in unique_specs
         ]
     # Deduplication precedes option probes, so only surviving candidates incur those reads.
     unique_specs = list(
@@ -683,6 +663,7 @@ async def assemble_candidates(
                 state.bindings,
                 cast(Materialised, state.mat_result),
                 state.place,
+                state.walked,
             )
         )
     candidates.extend(admission.admitted)
@@ -696,7 +677,9 @@ async def assemble_candidates(
         # Retain the elected shape's flagged-unavailable carrier so sparse-survivor handling returns
         # the matching no-data response.
         candidates.append(
-            _Candidate(state.shape_draft, state.bindings, state.mat_result, state.place)
+            _Candidate(
+                state.shape_draft, state.bindings, state.mat_result, state.place, state.walked
+            )
         )
 
     # Grounding reads the graph synchronously for every scope member, so it runs off the event
@@ -736,15 +719,12 @@ async def assemble_candidates(
         return None
 
     state.timing["answer"] = now_ms() - grounded.answer_t0
-    await _record_step(
-        state.pipeline_steps,
+    await _emit_step(
         state.emit,
         state.variable_index,
         "answer",
-        ran=True,
         ms=state.timing["answer"],
     )
-    state.ran_steps.add("answer")
 
     unique_specs, near_neighbor_fired_spec_id, _served_twin_id = _apply_twin_diversion(
         state, unique_specs, grounded, grounded.near_neighbor_fired_spec_id

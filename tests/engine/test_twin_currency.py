@@ -29,6 +29,7 @@ from tests.engine._harness import (
     _csv_header,
     _csv_row,
     _facet_from_fixture,
+    walk_options,
 )
 from tests.engine.test_admissibility_table import (
     _GDP_SOLE_OPTION,
@@ -216,7 +217,6 @@ def _resolve(
             graph=graph,
             resolver=make_resolver(graph),
             llm=_SoleOptionLLM([1], bindings),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
@@ -230,7 +230,7 @@ def _resolve(
 
 def _reading(spec) -> tuple[str, str | None, object]:
     """A spec's StatVar, served unit and identity unit binding."""
-    (stat_var,) = [sv.ref for sv in spec.resolved.stat_vars.items]
+    (stat_var,) = [sv.ref.dcid for sv in spec.resolved.members]
     unit = spec.resolved.facets.get("unit")
     return (
         stat_var,
@@ -423,15 +423,13 @@ def test_a_cluster_currency_answer_serves_what_its_resubmit_serves(svs, bindings
     posted = resolve_spec_resubmit(
         inp=ResubmitIdentityPayload(
             identity=spec.definition.identity,
-            base_identity=spec.definition.identity,
-            base_spec_id=spec.spec_id,
-            resolved_stat_var_dcids=[_IMF_GDP_SV],
         ),
         graph=graph,
         sdmx=FakeSdmxClient(
             observations={}, availability={}, scope_availability=graph.scope_availability
         ),
         coverage=empty_coverage_snapshot(),
+        options=walk_options(graph),
     )
 
     assert posted.status == "definite", posted

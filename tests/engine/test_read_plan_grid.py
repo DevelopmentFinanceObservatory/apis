@@ -51,7 +51,6 @@ from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from tests._covering_array import Grid, uncovered
 from tests.engine import _grid_cells
 from tests.engine import test_role_bearing_pipeline_e2e as role_bearing
-from tests.engine._base_identity import base_from_spec
 from tests.engine._fake_coverage import (
     FakeCoverageService,
     empty_coverage_snapshot,
@@ -531,7 +530,6 @@ def test_a_pinned_resubmit_counts_the_points_its_preview_serves(
         return
     fresh_spec = fresh.specs[0]
     axis, value = _PINS[pin]
-    base_spec_id, base_identity = base_from_spec(fresh_spec)
     echo = ResubmitIdentityPayload(
         identity=BaseIdentity.model_validate(
             {
@@ -539,15 +537,13 @@ def test_a_pinned_resubmit_counts_the_points_its_preview_serves(
                 "facets": {axis: IdentityBindingValue(ref=value)},
             }
         ),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[sv.ref for sv in fresh_spec.resolved.stat_vars.items],
     )
     graph = FakeGraph(
         nodes={
             **{dcid: {"label": name, "type": "Country"} for name, dcid in _NAMES.items()},
             role_bearing._SV_DCID: {
                 "label": "Test flow",
+                "type": "StatisticalVariable",
                 "arcs": role_bearing._declaring_arcs(observation_properties=["debtor"]),
             },
             **{provenance: {"label": provenance} for provenance, _, _ in _FACETS.values()},
@@ -572,9 +568,11 @@ def test_a_pinned_resubmit_counts_the_points_its_preview_serves(
             graph=graph,
             sdmx=fixture.sdmx,
             coverage=fixture.coverage.snapshot(),
+            # The materialise graph holds the flow's StatVar, so the resubmit's member walk
+            # elects it.
             options=EngineOptions(
                 include_observations=True,
-                materialise_graph=FakeGraphReader(),
+                materialise_graph=FakeGraphReader(arcs=graph.member_arcs()),
                 materialise_sdmx=fixture.materialise_sdmx(),
             ),
         )

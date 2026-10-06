@@ -1,5 +1,6 @@
 """Tests that mint and definition doors pass `DATASETS_SDMX_TIMEOUT_SECONDS` to
-`SdmxClient`, using a recording fake with no network call.
+`SdmxClient`, and Search's graph cache sizes to `build_graph_client`, using recording fakes
+with no network call.
 """
 
 from __future__ import annotations
@@ -16,6 +17,12 @@ from datasets_api.doors.definition import build_definition_door
 from datasets_api.doors.mint import build_mint_door
 from datasets_api.operations.task_client import FakeTaskClient
 from datasets_api.versions import NullVersionRecordWriter
+from origin_catalogue.graph import (
+    ARCS_CACHE_SIZE,
+    LABEL_TYPE_CACHE_SIZE,
+    OBS_CACHE_SIZE,
+    OBS_PROPERTIES_CACHE_SIZE,
+)
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
 
@@ -41,6 +48,7 @@ class _RecordingSdmxClient:
 @pytest.fixture(autouse=True)
 def _reset_recordings():
     _RecordingSdmxClient.created.clear()
+    _RecordingGraphReader.created.clear()
     yield
 
 
@@ -58,13 +66,29 @@ class _RecordingGraphReader:
     is left uninjected so `SdmxClient`'s live construction path is what
     actually runs."""
 
-    def __init__(self, *, base_url: str, token: str | None = None, **_options: object) -> None:
+    created: ClassVar[list[_RecordingGraphReader]] = []
+
+    def __init__(self, *, base_url: str, token: str | None = None, **options: object) -> None:
         self.base_url = base_url
         self.token = token
+        self.options = options
         self.closed = False
+        type(self).created.append(self)
 
     def close(self) -> None:
         self.closed = True
+
+
+def _assert_search_cache_sizes() -> None:
+    (graph,) = _RecordingGraphReader.created
+    expected = {
+        "label_cache_size": LABEL_TYPE_CACHE_SIZE,
+        "type_cache_size": LABEL_TYPE_CACHE_SIZE,
+        "arcs_cache_size": ARCS_CACHE_SIZE,
+        "obs_properties_cache_size": OBS_PROPERTIES_CACHE_SIZE,
+        "obs_cache_size": OBS_CACHE_SIZE,
+    }
+    assert {name: graph.options.get(name) for name in expected} == expected
 
 
 def _enter_and_exit(door) -> None:
@@ -97,6 +121,7 @@ def test_mint_door_passes_configured_sdmx_timeout(monkeypatch: pytest.MonkeyPatc
     _enter_and_exit(door)
 
     assert _RecordingSdmxClient.created[0].kwargs["timeout"] == 42
+    _assert_search_cache_sizes()
 
 
 def test_definition_door_passes_configured_sdmx_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -120,3 +145,4 @@ def test_definition_door_passes_configured_sdmx_timeout(monkeypatch: pytest.Monk
     _enter_and_exit(door)
 
     assert _RecordingSdmxClient.created[0].kwargs["timeout"] == 42
+    _assert_search_cache_sizes()

@@ -23,11 +23,11 @@ def _by_text(spans: tuple[QualifierSpan, ...]) -> dict[str, QualifierSpan]:
 
 def test_recognise_spans_surfaces_the_budget_support_ambiguity_match_qualifiers_drops():
     # The real index maps "budget support" to CRSCooperationModalityA and
-    # CRSPurposeCode510. `recognise_spans` reports both; `match_qualifiers` refuses the tie.
+    # CRSPurposeCode510, and to two DAC1 aid types. `recognise_spans` reports every row;
+    # `match_qualifiers` refuses the tie.
     spans = _by_text(recognise_spans("ODA grants for budget support", _REAL_INDEX))
     budget_support = spans["budget support"]
-    assert len(budget_support.rows) == 2
-    assert {row.dcid for row in budget_support.rows} == {
+    assert {row.dcid for row in budget_support.rows if row.code_system != "dac1AidType"} == {
         "CRSCooperationModalityA",
         "CRSPurposeCode510",
     }
@@ -52,9 +52,10 @@ def test_recognise_spans_surfaces_the_ta_acronym_ambiguity():
 
 
 def test_recognise_spans_unambiguous_spans_carry_exactly_one_row():
+    """A span naming one code carries one row. "ODA" names a code of each of two families'
+    systems, so it carries both, which matching resolves per shape."""
     spans = _by_text(recognise_spans("ODA standard grants for health", _REAL_INDEX))
-    assert len(spans["ODA"].rows) == 1
-    assert spans["ODA"].rows[0].dcid == "CRSTypeOfFlow10"
+    assert {row.dcid for row in spans["ODA"].rows} == {"CRSTypeOfFlow10", "DAC1AidType1010"}
     assert len(spans["standard grants"].rows) == 1
     assert spans["standard grants"].rows[0].dcid == "CRSTypeOfFinance110"
     assert len(spans["health"].rows) == 1
@@ -96,15 +97,3 @@ def test_match_qualifiers_is_the_one_row_projection_with_a_measure_index():
 
 def test_recognise_spans_empty_query_yields_no_spans():
     assert recognise_spans("", _REAL_INDEX) == ()
-
-
-def test_a_dataset_mention_owns_its_words_against_every_code_label():
-    """ "imputed multilateral ODA" names the imputed table and is also the label of the aid
-    type its rows carry. The mention owns the span, so no qualifier is recognised inside it,
-    while "ODA" outside a mention still is."""
-    text = "education ODA excluding imputed multilateral ODA"
-
-    spans = recognise_spans(text, _REAL_INDEX, get_measure_index())
-
-    assert [span.matched_text for span in spans] == ["education", "ODA"]
-    assert all(span.end <= text.index("imputed") for span in spans)

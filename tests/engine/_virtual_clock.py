@@ -32,7 +32,7 @@ import functools
 import inspect
 import selectors
 import threading
-from collections.abc import Callable, Coroutine, Iterable, Iterator
+from collections.abc import Callable, Collection, Coroutine, Iterable, Iterator
 from concurrent.futures import Future
 from types import ModuleType
 from typing import Any
@@ -202,9 +202,14 @@ class VirtualRequests:
             if n == name and (argument is None or a == argument)
         )
 
-    def serial_depth(self) -> int:
-        """The longest chain of requests each starting once the previous one has ended."""
-        spans = sorted((start, end) for _, _, start, end in self.spans)
+    def serial_depth(self, *, excluding: Collection[int] = ()) -> int:
+        """The longest chain of requests each starting once the previous one has ended,
+        leaving out the spans at the indices `excluding` names."""
+        spans = sorted(
+            (start, end)
+            for index, (_, _, start, end) in enumerate(self.spans)
+            if index not in excluding
+        )
         chain: list[int] = []
         for index, (start, _end) in enumerate(spans):
             before = [chain[j] for j, (_s, end) in enumerate(spans[:index]) if start >= end]

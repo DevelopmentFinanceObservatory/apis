@@ -45,7 +45,7 @@ from search.engine.region.observations.fetch import (
     _build_observations,
 )
 from search.engine.region.result import FacetAxisFilter
-from search.engine.region.un_system import un_unavailable_warning
+from search.engine.region.un_system import member_labels, un_unavailable_warning
 from search.engine.retrieval.read_plan import ReadPlan
 from search.models import (
     CoverageExact,
@@ -81,12 +81,14 @@ def _observations_events(
     elected: Mapping[str, tuple[Mapping[str, FacetSelection], ...]] | None = None,
     coverage: CoverageSnapshot,
     plan: ReadPlan | None = None,
+    variable_labels: Mapping[str, str],
 ) -> _ObsProbeResult:
     """Build one trailing event. `_build_observations` encodes empty previews in its payload.
 
     Fetch options pass unchanged to `_build_observations`. Missing optional inputs disable
     their branches. The event runs after the answer's own warnings are built, so places the
-    UN front door refused during this read carry their own `un_system_unavailable` warning.
+    UN front door refused during this read carry their own `un_system_unavailable` warning,
+    its variables named from `variable_labels`, the names of the Spec's members.
     """
     with recording_un_blocked_places() as un_blocked:
         observations, warn = _build_observations(
@@ -115,7 +117,7 @@ def _observations_events(
     extra = _deflator_projected_warning(spec_id, observations)
     if extra is not None:
         warns.append(extra)
-    refused = un_unavailable_warning(un_blocked)
+    refused = un_unavailable_warning(un_blocked, labels=variable_labels)
     if refused is not None:
         warns.append(refused.model_copy(update={"spec_id": spec_id}))
     return events, tuple(warns)
@@ -139,6 +141,7 @@ def _launch_observations_task(
     elected: Mapping[str, tuple[Mapping[str, FacetSelection], ...]] | None = None,
     coverage: CoverageSnapshot,
     plan: ReadPlan | None = None,
+    variable_labels: Mapping[str, str],
 ) -> asyncio.Task[_ObsProbeResult]:
     """Schedule `_observations_events` in a worker thread and return its owned task."""
     return create_owned_task(
@@ -160,6 +163,7 @@ def _launch_observations_task(
             elected=elected,
             coverage=coverage,
             plan=plan,
+            variable_labels=variable_labels,
         )
     )
 
@@ -181,6 +185,7 @@ def _observations_relaunch_closure(
     elected: Mapping[str, tuple[Mapping[str, FacetSelection], ...]] | None = None,
     coverage: CoverageSnapshot,
     plan: ReadPlan | None = None,
+    variable_labels: Mapping[str, str],
 ) -> Callable[[str], asyncio.Task[_ObsProbeResult]]:
     """Capture request inputs in a closure that sync resubmit can call on the event loop.
 
@@ -207,6 +212,7 @@ def _observations_relaunch_closure(
             elected=elected,
             coverage=coverage,
             plan=plan,
+            variable_labels=variable_labels,
         )
 
     return _relaunch
@@ -346,6 +352,7 @@ async def _resolve_spec_observations(
             elected=elected,
             coverage=coverage,
             plan=plan,
+            variable_labels=member_labels((spec,)),
         )
         return spec, relaunch(spec.spec_id), relaunch
     if not include_observations:

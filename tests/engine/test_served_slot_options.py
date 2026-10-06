@@ -8,6 +8,7 @@ assertion below states the fixture rows behind it.
 
 from __future__ import annotations
 
+import functools
 from dataclasses import replace
 
 import pytest
@@ -18,10 +19,12 @@ from materialise.rate_tables import RateTableCache
 from search.engine.bind import SlotBindingDraft
 from search.engine.region import resolve_spec_resubmit
 from search.engine.region.option_coverage import (
+    _maybe_build_facet_options,
     _stream_slot_options_events,
     count_slot_options,
 )
 from search.engine.region.state import EngineOptions
+from search.engine.region.un_system import NO_LABELS
 from search.engine.retrieval.bound_values import OptionServedFact, SeriesRows
 from search.engine.same_shape import collapse_same_shape
 from search.engine.shape import ShapeDraft, SlotKeyDraft, identity_shape_for
@@ -55,6 +58,7 @@ from tests.engine._axis_doubles import axis_confirming_reader
 from tests.engine._base_identity import (
     destination_entity,
     make_base,
+    make_identity,
     origin_entity,
     subject_entity,
 )
@@ -66,7 +70,12 @@ from tests.engine._fake_coverage import (
     patch_coverage,
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import MATERIALISE_BASE_URL, materialise_double_from_obs
+from tests.engine._harness import (
+    MATERIALISE_BASE_URL,
+    materialise_double_from_obs,
+    walk_options,
+    with_member_arcs,
+)
 from tests.engine.test_conjoin_measure_merge import _recipient_only_shape, _where_bound_spec
 from tests.engine.test_resubmit_alternative_measure_round_trip import _arcs_for_row
 from tests.fixtures import FakeGraph, _load_json
@@ -207,14 +216,22 @@ def _resubmit(monkeypatch: pytest.MonkeyPatch, **bound: str) -> Spec:
     return region.specs[0]
 
 
+def _collapse(regions, coverage: CoverageIndex):
+    """`collapse_same_shape` judging the merged facet options over `coverage`."""
+    return collapse_same_shape(
+        regions,
+        facet_options_for=functools.partial(
+            _maybe_build_facet_options, graph=FakeGraph(), coverage=coverage, deadline=None
+        ),
+    )
+
+
 def _crs_region(
     monkeypatch: pytest.MonkeyPatch,
     *,
     bound: dict[str, str],
-    base_bound: dict[str, str] | None = None,
     origins: tuple[str, ...] = (_DEU,),
     rows: list = _ROWS,
-    posted: list[str] | None = None,
     coverage: CoverageIndex | None = None,
     window: RequestedWindow | None = None,
     facets: dict[str, IdentityFacetBinding] | None = None,
@@ -223,11 +240,10 @@ def _crs_region(
     catalogue: ConversionCatalogue = _CATALOGUE,
 ):
     """Resubmit gross ODA disbursements from `origins` to Guatemala with `bound` slots,
-    `window` and `facets`, edited from a base identity with `base_bound` slots (the same
-    when None), posting the members `posted` when given, against coverage `rows` and
-    `facet_metadata`, or against `coverage` when given, which a request's answers share.
-    `definition` posts that Spec's identity as its own base in place of the edit, as a
-    client posts a measure alternative. A unit request reads `catalogue`."""
+    `window` and `facets`, against coverage `rows` and `facet_metadata`, or against
+    `coverage` when given, which a request's answers share. `definition` posts that Spec's
+    identity in place of the edit, as a client posts a measure alternative. A unit request
+    reads `catalogue`."""
     shape = identity_shape_for(
         pop_type_dcid="FinancialFlow",
         meas_prop_dcid="amount",
@@ -254,7 +270,6 @@ def _crs_region(
     if facets:
         # A client posts its pins on the identity's facets, beside an unpinned base.
         edited = edited.model_copy(update={"facets": facets})
-    spec_id, base = identity_for(bound if base_bound is None else base_bound)
     members = list(dict.fromkeys(row[0] for row in rows))
     index = get_index()
     nodes = {
@@ -301,28 +316,36 @@ def _crs_region(
     with bound_conversion_catalogue(catalogue if converts else None):
         return resolve_spec_resubmit(
             inp=ResubmitIdentityPayload(
-                identity=definition.identity if definition is not None else edited,
-                base_spec_id=definition.spec_id if definition is not None else spec_id,
-                base_identity=definition.identity if definition is not None else base,
-                **({"resolved_stat_var_dcids": posted} if posted is not None else {}),
+                identity=definition.identity if definition is not None else edited
             ),
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=FakeCoverageService(coverage).snapshot(),
-            options=EngineOptions(
-                materialise_graph=axis_confirming_reader(
-                    *members,
-                    graph=graph,
-                    inner=FakeGraphReader(
-                        arcs={**dict.fromkeys(members, CONVERTIBLE_STAT_VAR_ARCS), **conversion}
+            options=walk_options(
+                graph,
+                EngineOptions(
+                    materialise_graph=with_member_arcs(
+                        axis_confirming_reader(
+                            *members,
+                            graph=graph,
+                            inner=FakeGraphReader(
+                                arcs={
+                                    **dict.fromkeys(members, CONVERTIBLE_STAT_VAR_ARCS),
+                                    **conversion,
+                                }
+                            ),
+                        ),
+                        graph,
                     ),
+                    # A unit request decides its unit before grounding, against the DAC recipe's
+                    # exchange rates.
+                    materialise_sdmx=RateTableServer(_RATE_BODIES).client(
+                        base_url=MATERIALISE_BASE_URL
+                    )
+                    if converts
+                    else None,
+                    rate_cache=RateTableCache() if converts else None,
                 ),
-                # A unit request decides its unit before grounding, against the DAC recipe's
-                # exchange rates.
-                materialise_sdmx=RateTableServer(_RATE_BODIES).client(base_url=MATERIALISE_BASE_URL)
-                if converts
-                else None,
-                rate_cache=RateTableCache() if converts else None,
             ),
         )
 
@@ -494,6 +517,8 @@ def _stream(monkeypatch, slot_options, bindings, probed: list) -> dict[str, list
         coverage=empty_coverage_snapshot().index,
         deadline=None,
         facets_pinned=False,
+        variable_labels=NO_LABELS,
+        open_axes=frozenset(),
     )
     return {
         ev.key.property.dcid: [(o.value.ref.dcid, o.served_rows) for o in ev.options]
@@ -634,8 +659,7 @@ def _ds_arcs(dcid: str) -> dict:
 
 
 def _debt_resubmit(monkeypatch: pytest.MonkeyPatch, **bound: str):
-    """Resubmit debt service from Germany to Guatemala, posting the total as the member
-    list, as a site echoes the members its answer listed, with `bound` slots."""
+    """Resubmit debt service from Germany to Guatemala with `bound` slots."""
     shape = identity_shape_for(
         pop_type_dcid="FinancialFlow",
         meas_prop_dcid="amount",
@@ -643,11 +667,7 @@ def _debt_resubmit(monkeypatch: pytest.MonkeyPatch, **bound: str):
         meas_qual_dcid="Nominal",
         meas_denom_dcid=None,
     )
-    base_slots = [
-        _slot(p, "ServicingPayment" if p == "financialFlowType" else None) for p in _DS_PROPS
-    ]
     entities = [origin_entity(_DEU), destination_entity(_GTM)]
-    spec_id, base = make_base(shape, base_slots, entities=entities)
     values = {"financialFlowType": "ServicingPayment", **bound}
     _edited_id, identity = make_base(
         shape, [_slot(p, values.get(p)) for p in _DS_PROPS], entities=entities
@@ -670,15 +690,17 @@ def _debt_resubmit(monkeypatch: pytest.MonkeyPatch, **bound: str):
     return resolve_spec_resubmit(
         inp=ResubmitIdentityPayload(
             identity=identity,
-            base_spec_id=spec_id,
-            base_identity=base,
-            resolved_stat_var_dcids=[_DS_TOTAL],
         ),
         graph=graph,
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=FakeCoverageService(coverage).snapshot(),
-        options=EngineOptions(
-            materialise_graph=axis_confirming_reader(*_DS_CONSTRAINTS, graph=graph)
+        options=walk_options(
+            graph,
+            EngineOptions(
+                materialise_graph=with_member_arcs(
+                    axis_confirming_reader(*_DS_CONSTRAINTS, graph=graph), graph
+                )
+            ),
         ),
     )
 
@@ -691,7 +713,7 @@ def test_a_walked_family_serving_its_total_counts_the_parts_a_pick_would_serve(m
     region = _debt_resubmit(monkeypatch)
     assert region.status == "definite", region.no_data_reason
     spec = region.specs[0]
-    assert [sv.ref for sv in spec.resolved.stat_vars.items] == [_DS_TOTAL]
+    assert [sv.ref.dcid for sv in spec.resolved.members] == [_DS_TOTAL]
 
     assert _menu(spec, "idsCreditorType") == {"IDSCreditorTypeOFFT": 1}
     assert _menu(spec, "idsDebtorType") == {"IDSDebtorTypeGG": 1}
@@ -704,14 +726,13 @@ def test_a_walked_family_serving_its_total_counts_the_parts_a_pick_would_serve(m
         ({"idsDebtorType": "IDSDebtorTypeGG"}, [_DS_OFFICIAL_GG]),
     ],
 )
-def test_a_pick_outside_the_posted_members_elects_the_edited_family(monkeypatch, bound, served):
-    """The site posts the members its answer listed, the total alone. A pick of a counted
-    option reads members the posted list lacks, so the server elects the edited identity's
-    family, as the Datasets mint does, and serves the series the option counted."""
+def test_a_pick_elects_the_edited_family(monkeypatch, bound, served):
+    """A pick of a counted option elects the edited identity's family, as the Datasets mint
+    does, and serves the series the option counted."""
     region = _debt_resubmit(monkeypatch, **bound)
 
     assert region.status == "definite", region.no_data_reason
-    assert [sv.ref for sv in region.specs[0].resolved.stat_vars.items] == served
+    assert [sv.ref.dcid for sv in region.specs[0].resolved.members] == served
 
 
 # ---------------------------------------------------------------------------
@@ -749,17 +770,16 @@ def test_a_menu_counts_each_statvar_once_per_donor_it_is_served_from(monkeypatch
 
 
 # ---------------------------------------------------------------------------
-# An edit counted from members the posted list lacks elects the edited family
+# An edit elects the edited family
 # ---------------------------------------------------------------------------
 
 
 def test_an_edit_the_index_decides_elects_the_index_family():
     """An edited identity the code index decides elects the index's family of it, as the
-    Datasets mint does. Here that is the non-export credit flow's members, whatever was
-    posted."""
+    Datasets mint does. Here that is the non-export credit flow's members."""
     from types import SimpleNamespace
 
-    from search.engine.region.promote_survivors import _elected_members
+    from search.engine.region.promote_reread import _elected_members
 
     shape = identity_shape_for(
         pop_type_dcid="FinancialFlow",
@@ -822,6 +842,89 @@ def test_only_a_menu_whose_options_members_carry_counts_as_drift(picks, drifted)
 
 
 # ---------------------------------------------------------------------------
+# Under an open flow axis, a pick whose members leave the axis undeclared counts nothing
+# ---------------------------------------------------------------------------
+
+_INSTRUMENT = "idsInstrument"
+
+
+def _instrument_pick(value: str, *roles: str):
+    from code_index.types import StatVarRow
+    from search.engine.region.option_coverage import _IndexPick
+    from search.engine.retrieval.member_facts import IndexMemberFacts
+
+    row = StatVarRow(
+        dcid=f"Debt_{value}",
+        population_type="FinancialFlow",
+        measured_property="amount",
+        stat_type="measuredValue",
+        measurement_qualifier=None,
+        measurement_denominator=None,
+        observation_properties=roles,
+        constraint_properties={_INSTRUMENT: value},
+    )
+    return _IndexPick(dataset="ids", members={row.dcid: IndexMemberFacts(row=row, dataset="ids")})
+
+
+@pytest.mark.parametrize(
+    ("open_axes", "counted"),
+    [
+        pytest.param(frozenset({"origin"}), {"Loans": 1}, id="open-creditor"),
+        pytest.param(frozenset(), {"Bonds": 1, "Loans": 1}, id="no-open-axis"),
+    ],
+)
+def test_a_pick_leaving_an_open_axis_undeclared_counts_no_series(monkeypatch, open_axes, counted):
+    """Debt owed by Kenya to every creditor, by instrument. The bonds pick elects a family
+    holding only the debtor-level total, whose resubmit refuses `open_role_unavailable`, so
+    it counts nothing. The loans pick elects a by-creditor twin and counts its series. With
+    no open axis both picks count."""
+    from typing import cast
+
+    from search.engine.region.option_coverage import RoleServedFilter, option_axis_facts
+    from search.engine.retrieval.read_plan import PairPlan
+
+    picks = {
+        "Bonds": _instrument_pick("Bonds", "debtor"),
+        "Loans": _instrument_pick("Loans", "creditor", "debtor"),
+    }
+    monkeypatch.setattr(
+        "search.engine.region.option_coverage._index_option_picks",
+        lambda query, prop, values: {value: picks[value] for value in values},
+    )
+    monkeypatch.setattr(
+        "search.engine.region.option_coverage.RoleServedFilter.served",
+        lambda self, member_facts: {sv: _served(**{sv: 1}) for sv in member_facts},
+    )
+    shape = ShapeDraft(
+        shape_id="debt",
+        label="debt",
+        pop_type_dcid="FinancialFlow",
+        meas_prop_dcid="amount",
+        stat_type_dcid="measuredValue",
+        meas_qual_dcid=None,
+        meas_denom_dcid=None,
+        slot_keys=(SlotKeyDraft(axis="what", property_dcid=_INSTRUMENT, label="instrument"),),
+    )
+
+    [fact] = option_axis_facts(
+        shape,
+        [],
+        menus={_INSTRUMENT: ["Bonds", "Loans"]},
+        plan=cast(PairPlan, object()),
+        member_facts={},
+        served_filter=RoleServedFilter(
+            probe_entities={"debtor": ["country/KEN"]},
+            open_axes=open_axes,
+            years="latest",
+            coverage=cast(CoverageIndex, None),
+        ),
+        facets_pinned=False,
+    )
+
+    assert {value: len(series) for value, series in fact.served.items() if series} == counted
+
+
+# ---------------------------------------------------------------------------
 # A merged answer recounts its alternatives and offers conversions over every member
 # ---------------------------------------------------------------------------
 
@@ -845,7 +948,7 @@ def test_a_merged_answer_counts_its_alternatives_and_offers_conversions_over_its
 
     monkeypatch.setattr("search.engine.same_shape.with_unit_conversion", record_offer)
 
-    [merged], residual = collapse_same_shape([education, health])
+    [merged], residual = _collapse([education, health], coverage)
 
     assert residual == []
     assert _alternatives(merged.spec) == {"commitments": 1}
@@ -884,7 +987,7 @@ def _pick(monkeypatch, *, bound: dict[str, str], option: tuple[str, str], **read
     base = _crs_region(monkeypatch, bound=bound, **read)
     assert base.status == "definite", base.no_data_reason
     prop, value = option
-    picked = _crs_region(monkeypatch, bound={**bound, prop: value}, base_bound=bound, **read)
+    picked = _crs_region(monkeypatch, bound={**bound, prop: value}, **read)
     assert picked.status == "definite", picked.no_data_reason
     found = _option(base.specs[0], prop, value)
     return found.served_rows, found.served_rows_exact, picked.specs[0]
@@ -1069,7 +1172,7 @@ def test_a_merged_options_rows_are_its_parts_download_rows_under_latest(monkeypa
     education = _crs_region(monkeypatch, bound={_PURPOSE: "CRSPurposeCode11110"}, **read)
     health = _crs_region(monkeypatch, bound={_PURPOSE: "CRSPurposeCode12220"}, **read)
 
-    [merged], _residual = collapse_same_shape([education, replace(health, earliest_index=1)])
+    [merged], _residual = _collapse([education, replace(health, earliest_index=1)], coverage)
 
     option = _option(merged.spec, _MODALITY, "CRSCooperationModalityC01")
     downloads = [part.specs[0].resolved.download for part in (education, health)]
@@ -1159,12 +1262,13 @@ def test_a_probed_options_rows_are_its_picks_download_rows():
         coverage=empty_coverage_snapshot().index,
         deadline=None,
         facets_pinned=False,
+        variable_labels=NO_LABELS,
+        open_axes=frozenset(),
     )
     [male] = [o for event in events for o in event.options if o.value.ref.dcid == "Male"]
 
-    # The men's answer a pick lands on, posted as its own base: a standard resubmit reads the
-    # posted members, so the women's seed cannot reach the men's StatVar.
-    spec_id, identity = make_base(
+    # The men's answer a pick lands on: the resubmit elects the men's StatVar.
+    identity = make_identity(
         _LIFE_EXPECTANCY_SHAPE,
         [_value_slot("how", "gender", "gender", "Male", "Male")],
         entities=[subject_entity(_KEN)],
@@ -1172,15 +1276,16 @@ def test_a_probed_options_rows_are_its_picks_download_rows():
     region = resolve_spec_resubmit(
         inp=ResubmitIdentityPayload(
             identity=identity,
-            base_spec_id=spec_id,
-            base_identity=identity,
-            resolved_stat_var_dcids=["LifeExpectancy_Person_Male"],
         ),
         graph=FakeGraph(obs=obs),
         sdmx=FakeSdmxClient(),
         coverage=empty_coverage_snapshot(),
-        options=EngineOptions(
-            materialise_graph=materialise_graph, materialise_sdmx=materialise_sdmx
+        options=walk_options(
+            FakeGraph(obs=obs),
+            EngineOptions(
+                materialise_graph=with_member_arcs(materialise_graph, FakeGraph(obs=obs)),
+                materialise_sdmx=materialise_sdmx,
+            ),
         ),
     )
 

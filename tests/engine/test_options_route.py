@@ -42,6 +42,21 @@ class TestOptionsRoute:
         assert resp.headers["content-type"].startswith("application/problem+json")
         assert resp.json()["code"] == "request_invalid"
 
+    def test_a_posted_member_list_is_refused_at_its_pointer(self):
+        """The identity alone decides the members, so a posted list is an unknown field,
+        refused before any read."""
+        body = _options_request(entities={"observationAbout": [_KENYA_DCID]}).model_dump(
+            by_alias=True, mode="json"
+        )
+        body["resolved_stat_var_dcids"] = ["LifeExpectancy_Person"]
+        resp = _options_client().post("/api/search/options", json=body)
+        assert resp.status_code == 400
+        payload = resp.json()
+        assert (payload["code"], payload["pointer"]) == (
+            "request_invalid",
+            "/resolved_stat_var_dcids",
+        )
+
     def test_elapsed_request_deadline_refuses_504(self, search_settings):
         """Both off-loop route steps share one request deadline.
 

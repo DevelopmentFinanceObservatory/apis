@@ -24,7 +24,6 @@ from search.models import (
 from tests.engine._axis_doubles import axis_confirming_reader
 from tests.engine._base_identity import (
     PERSON_COUNT_SHAPE,
-    make_base,
     subject_entity,
     where_slots_for,
 )
@@ -42,6 +41,7 @@ from tests.engine._builders import (
 )
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import walk_options
 from tests.fixtures import FakeGraph
 from tests.origin_catalogue.fake_catalogue import provenance_row, restrictive_catalogue
 
@@ -79,6 +79,7 @@ def _edited_identity(slots: list[Slot]):
         PERSON_COUNT_SHAPE,
         slots,
         entities=[subject_entity(_ENTITY_DCID)],
+        open_roles=(),
     )[1]
 
 
@@ -193,52 +194,41 @@ class TestPureNarrow:
         monkeypatch.setattr(related_read, "read_related", lambda **_kwargs: NO_RELATED)
 
     def test_narrow_to_single_in_set_value_resolves_requested_not_first_posted(self):
-        """Narrowing [Female, Male] to Male selects Male without sibling lookup."""
+        """A gender=Male identity elects Male and reads its arcs once."""
         edited_slot = _value_slot("how", "gender", "gender", "Male", "Male")
         graph = _narrow_graph()
-        base_spec_id, base_identity = make_base(
-            PERSON_COUNT_SHAPE,
-            entities=[subject_entity(_ENTITY_DCID)],
-        )
         inp = ResubmitIdentityPayload(
             identity=_edited_identity([edited_slot, *_WHERE_SLOTS]),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_PERSON_FEMALE_SV, _PERSON_MALE_SV],
         )
         region = resolve_spec_resubmit(
             inp=inp,
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(graph),
         )
         assert region.status == "definite"
-        assert [sv.ref for sv in region.specs[0].resolved.stat_vars.items] == [_PERSON_MALE_SV]
-        # Only the initial StatVar arc read runs; no sibling confirmation follows.
-        assert graph.node_arcs_batch_calls == [[_PERSON_FEMALE_SV, _PERSON_MALE_SV]]
+        assert [sv.ref.dcid for sv in region.specs[0].resolved.members] == [_PERSON_MALE_SV]
+        # The elected member's arcs are read once; no sibling confirmation follows.
+        assert graph.node_arcs_batch_calls == [[_PERSON_MALE_SV]]
 
     def test_narrow_to_two_of_three_in_set_values_resolves_exactly_those_two(self):
-        """Narrowing a three-member set to two keeps both SVs and the requested set binding."""
+        """A two-value gender set beside a third gender elects those two and keeps the set
+        binding."""
         binding_set_slot = _binding_set_slot("how", "gender", "gender", ["Female", "Male"])
         graph = _narrow_graph(include_nonbinary=True)
-        base_spec_id, base_identity = make_base(
-            PERSON_COUNT_SHAPE,
-            entities=[subject_entity(_ENTITY_DCID)],
-        )
         inp = ResubmitIdentityPayload(
             identity=_edited_identity([binding_set_slot, *_WHERE_SLOTS]),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_PERSON_FEMALE_SV, _PERSON_MALE_SV, _PERSON_NONBINARY_SV],
         )
         region = resolve_spec_resubmit(
             inp=inp,
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(graph),
         )
         assert region.status == "definite"
-        dcids = {sv.ref for sv in region.specs[0].resolved.stat_vars.items}
+        dcids = {sv.ref.dcid for sv in region.specs[0].resolved.members}
         assert dcids == {_PERSON_FEMALE_SV, _PERSON_MALE_SV}
         gender_slot = next(
             s
@@ -252,7 +242,7 @@ class TestPureNarrow:
         }
         # The second read grounds the requested values; it does not confirm siblings.
         assert graph.node_arcs_batch_calls == [
-            [_PERSON_FEMALE_SV, _PERSON_MALE_SV, _PERSON_NONBINARY_SV],
+            [_PERSON_FEMALE_SV, _PERSON_MALE_SV],
             ["Female", "Male"],
         ]
 
@@ -260,24 +250,18 @@ class TestPureNarrow:
         """An unchanged single-value binding keeps its posted SV without sibling lookup."""
         edited_slot = _value_slot("how", "gender", "gender", "Female", "Female")
         graph = _narrow_graph()
-        base_spec_id, base_identity = make_base(
-            PERSON_COUNT_SHAPE,
-            entities=[subject_entity(_ENTITY_DCID)],
-        )
         inp = ResubmitIdentityPayload(
             identity=_edited_identity([edited_slot, *_WHERE_SLOTS]),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_PERSON_FEMALE_SV],
         )
         region = resolve_spec_resubmit(
             inp=inp,
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(graph),
         )
         assert region.status == "definite"
-        assert [sv.ref for sv in region.specs[0].resolved.stat_vars.items] == [_PERSON_FEMALE_SV]
+        assert [sv.ref.dcid for sv in region.specs[0].resolved.members] == [_PERSON_FEMALE_SV]
         assert graph.node_arcs_batch_calls == [[_PERSON_FEMALE_SV]]
 
     def test_mixed_edit_with_any_out_of_set_value_elects_the_edited_family(self):
@@ -292,22 +276,15 @@ class TestPureNarrow:
             "Urban",
         )
         graph = _narrow_graph()
-        base_spec_id, base_identity = make_base(
-            PERSON_COUNT_SHAPE,
-            entities=[subject_entity(_ENTITY_DCID)],
-        )
         inp = ResubmitIdentityPayload(
             identity=_edited_identity([gender_slot, place_slot, *_WHERE_SLOTS]),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_PERSON_FEMALE_SV, _PERSON_MALE_SV],
         )
         region = resolve_spec_resubmit(
             inp=inp,
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
-            options=EngineOptions(materialise_graph=_family_reader(graph)),
+            options=walk_options(graph, EngineOptions(materialise_graph=_family_reader(graph))),
         )
         assert region.status == "no_data"
         assert region.no_data_reason == "no_matching_slice"
@@ -325,27 +302,15 @@ class TestPureNarrow:
         )
         graph = _narrow_graph(include_place=True)
 
-        base_spec_id, base_identity = make_base(
-            PERSON_COUNT_SHAPE,
-            entities=[subject_entity(_ENTITY_DCID)],
-        )
         inp = ResubmitIdentityPayload(
             identity=_edited_identity([gender_slot, place_slot, *_WHERE_SLOTS]),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[
-                _PERSON_FEMALE_SV,
-                _PERSON_MALE_SV,
-                _PERSON_URBAN_FEMALE_SV,
-                _PERSON_RURAL_FEMALE_SV,
-            ],
         )
         region = resolve_spec_resubmit(
             inp=inp,
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
-            options=EngineOptions(materialise_graph=_family_reader(graph)),
+            options=walk_options(graph, EngineOptions(materialise_graph=_family_reader(graph))),
         )
         assert region.status == "no_data"
         assert region.no_data_reason == "no_matching_slice"
@@ -363,24 +328,18 @@ class TestUnchangedSetSurvives:
         """An unchanged two-member set keeps both StatVars and the set binding."""
         binding_set_slot = _binding_set_slot("how", "gender", "gender", ["Female", "Male"])
         graph = _narrow_graph()
-        base_spec_id, base_identity = make_base(
-            PERSON_COUNT_SHAPE,
-            entities=[subject_entity(_ENTITY_DCID)],
-        )
         inp = ResubmitIdentityPayload(
             identity=_edited_identity([binding_set_slot, *_WHERE_SLOTS]),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_PERSON_FEMALE_SV, _PERSON_MALE_SV],
         )
         region = resolve_spec_resubmit(
             inp=inp,
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(graph),
         )
         assert region.status == "definite"
-        dcids = {sv.ref for sv in region.specs[0].resolved.stat_vars.items}
+        dcids = {sv.ref.dcid for sv in region.specs[0].resolved.members}
         assert dcids == {_PERSON_FEMALE_SV, _PERSON_MALE_SV}
         gender_slot = next(
             s
@@ -397,26 +356,20 @@ class TestUnchangedSetSurvives:
         """An unrelated time-window edit preserves the unchanged gender set."""
         binding_set_slot = _binding_set_slot("how", "gender", "gender", ["Female", "Male"])
         graph = _narrow_graph()
-        base_spec_id, base_identity = make_base(
-            PERSON_COUNT_SHAPE,
-            entities=[subject_entity(_ENTITY_DCID)],
-        )
         inp = ResubmitIdentityPayload(
             identity=_edited_identity(
                 [binding_set_slot, _when_slot_value(2005, 2015), *_WHERE_SLOTS]
             ),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_PERSON_FEMALE_SV, _PERSON_MALE_SV],
         )
         region = resolve_spec_resubmit(
             inp=inp,
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(graph),
         )
         assert region.status == "definite"
-        dcids = {sv.ref for sv in region.specs[0].resolved.stat_vars.items}
+        dcids = {sv.ref.dcid for sv in region.specs[0].resolved.members}
         assert dcids == {_PERSON_FEMALE_SV, _PERSON_MALE_SV}
         gender_slot = next(
             s
@@ -428,21 +381,15 @@ class TestUnchangedSetSurvives:
     def test_mixed_presence_folded_total_unaffected(self):
         """A posted-unbound slot stays unbound when one StatVar lacks that property."""
         graph = _narrow_graph()
-        base_spec_id, base_identity = make_base(
-            PERSON_COUNT_SHAPE,
-            entities=[subject_entity(_ENTITY_DCID)],
-        )
         inp = ResubmitIdentityPayload(
             identity=_edited_identity([_unbound_slot("how", "gender", "gender"), *_WHERE_SLOTS]),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_PERSON_FEMALE_SV, "Count_Person"],
         )
         region = resolve_spec_resubmit(
             inp=inp,
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(graph),
         )
         assert region.status == "definite"
         gender_slot = next(
@@ -460,21 +407,15 @@ class TestUnchangedSetSurvives:
         """A single StatVar retains a value binding."""
         edited_slot = _value_slot("how", "gender", "gender", "Female", "Female")
         graph = _narrow_graph()
-        base_spec_id, base_identity = make_base(
-            PERSON_COUNT_SHAPE,
-            entities=[subject_entity(_ENTITY_DCID)],
-        )
         inp = ResubmitIdentityPayload(
             identity=_edited_identity([edited_slot, *_WHERE_SLOTS]),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_PERSON_FEMALE_SV],
         )
         region = resolve_spec_resubmit(
             inp=inp,
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(graph),
         )
         assert region.status == "definite"
         gender_slot = next(
@@ -495,21 +436,15 @@ class TestShapeLabel:
         """Resubmitting Female keeps the label from its `name` arc (#629)."""
         edited_slot = _value_slot("how", "gender", "gender", "Female", "Female")
         graph = _narrow_graph()
-        base_spec_id, base_identity = make_base(
-            PERSON_COUNT_SHAPE,
-            entities=[subject_entity(_ENTITY_DCID)],
-        )
         inp = ResubmitIdentityPayload(
             identity=_edited_identity([edited_slot, *_WHERE_SLOTS]),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_PERSON_FEMALE_SV],
         )
         region = resolve_spec_resubmit(
             inp=inp,
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(graph),
         )
         assert region.status == "definite"
         shape = region.specs[0].resolved.shape
@@ -536,21 +471,15 @@ class TestShapeLabel:
         graph = _CountingGraph(nodes=nodes, obs=obs)
 
         edited_slot = _value_slot("how", "gender", "gender", "NonBinary", "NonBinary")
-        base_spec_id, base_identity = make_base(
-            PERSON_COUNT_SHAPE,
-            entities=[subject_entity(_ENTITY_DCID)],
-        )
         inp = ResubmitIdentityPayload(
             identity=_edited_identity([edited_slot, *_WHERE_SLOTS]),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_PERSON_NONBINARY_SV],
         )
         region = resolve_spec_resubmit(
             inp=inp,
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(graph),
         )
         assert region.status == "definite"
         shape = region.specs[0].resolved.shape
@@ -566,21 +495,15 @@ class TestShapeLabel:
             )
         )
         edited_slot = _value_slot("how", "gender", "gender", "Female", "Female")
-        base_spec_id, base_identity = make_base(
-            PERSON_COUNT_SHAPE,
-            entities=[subject_entity(_ENTITY_DCID)],
-        )
         inp = ResubmitIdentityPayload(
             identity=_edited_identity([edited_slot, *_WHERE_SLOTS]),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_PERSON_FEMALE_SV],
         )
         region = resolve_spec_resubmit(
             inp=inp,
             graph=_narrow_graph(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(_narrow_graph()),
         )
 
         assert region.status == "definite"
@@ -592,7 +515,7 @@ class TestShapeLabel:
 
 
 # ---------------------------------------------------------------------------
-# An edit narrows the posted members as the menu counted the option
+# A requested value narrows the elected members as the menu counted the option
 # ---------------------------------------------------------------------------
 
 
@@ -610,17 +533,17 @@ def _modality_arcs(code: str) -> dict:
             "CRSCooperationModalityA", ["sv_budget", "sv_general_budget"], id="rollup-and-leaf"
         ),
         pytest.param("CRSCooperationModalityA01", ["sv_general_budget"], id="leaf"),
-        pytest.param("CRSCooperationModalityB", [], id="carried-by-no-posted-member"),
+        pytest.param("CRSCooperationModalityB", [], id="carried-by-no-member"),
     ],
 )
-def test_an_edit_keeps_the_posted_members_carrying_the_value_or_a_descendant(edited, narrowed):
-    """Posted members carry budget support (A) itself, general budget support (A01, under
+def test_a_requested_value_keeps_the_members_carrying_it_or_a_descendant(edited, narrowed):
+    """Elected members carry budget support (A) itself, general budget support (A01, under
     A), and project-type interventions (C01). A pick of A keeps both A members, as the menu
-    counted A over its descendants. A value no posted member carries narrows to nothing,
-    and the edit elects its family."""
+    counted A over its descendants. A value no member carries narrows to nothing, and the
+    elected members stand."""
     from types import SimpleNamespace
 
-    from search.engine.region.promote_survivors import _narrowed_seed
+    from search.engine.region.promote_survivors import _narrowed_members
 
     arcs = {
         "sv_budget": _modality_arcs("CRSCooperationModalityA"),
@@ -635,4 +558,4 @@ def test_an_edit_keeps_the_posted_members_carrying_the_value_or_a_descendant(edi
         widened_props=set(),
     )
 
-    assert _narrowed_seed(state) == narrowed
+    assert _narrowed_members(state) == narrowed

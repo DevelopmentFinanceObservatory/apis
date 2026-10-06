@@ -48,6 +48,8 @@ from .test_pin_door import FakeArtifactReferenceWriter
 
 _BASE_URL = "https://datacommons.one.org/core/api"
 _SETTINGS = DatasetsBuildSettings()
+_MEMBERS = ["dcid:sv_a"]
+_MEMBER_DCIDS = ["sv_a"]
 
 
 def _sdmx_transport(requests: list[httpx.Request]):
@@ -64,7 +66,7 @@ def _sdmx_transport(requests: list[httpx.Request]):
 
 def _force_mint_over_budget(monkeypatch: pytest.MonkeyPatch) -> None:
     """Patches each mint kind's imported `within_sync_budget` binding."""
-    for module in (kinds.statvar_set, kinds.spec_id, kinds.collection_id):
+    for module in (kinds.statvar_set, kinds.spec_id):
         monkeypatch.setattr(module, "within_sync_budget", lambda estimate, **_: False)
 
 
@@ -276,6 +278,7 @@ def _submit(
             within_budget=False,
             async_max_rows=_SETTINGS.async_max_rows,
             async_max_requests=_SETTINGS.async_max_requests,
+            members=_MEMBERS,
         )
     return excinfo.value
 
@@ -396,7 +399,7 @@ def test_resubmit_of_a_never_dispatched_pending_row_enqueues_it() -> None:
     # Stand in for the row existing with no task ever enqueued for it, by
     # calling create_or_get directly rather than through submit_over_budget.
     operation = operation_store.create_or_get(
-        request_identity={"subject_id": "spec_abc"},
+        request_identity={"subject_id": "spec_abc", "member_dcids": _MEMBER_DCIDS},
         options=options.model_dump(mode="json"),
         coverage_stamp=stamp,
         origin_catalogue_build_id="fake-catalogue",
@@ -446,7 +449,7 @@ def test_resubmit_of_a_deterministically_failed_operation_stays_failed() -> None
     stamp = "cov_stamp_1"
 
     operation = operation_store.create_or_get(
-        request_identity={"subject_id": "spec_abc"},
+        request_identity={"subject_id": "spec_abc", "member_dcids": _MEMBER_DCIDS},
         options=options.model_dump(mode="json"),
         coverage_stamp=stamp,
         origin_catalogue_build_id="fake-catalogue",
@@ -467,6 +470,7 @@ def test_resubmit_of_a_deterministically_failed_operation_stays_failed() -> None
             within_budget=False,
             async_max_rows=_SETTINGS.async_max_rows,
             async_max_requests=_SETTINGS.async_max_requests,
+            members=_MEMBERS,
         )
 
     assert excinfo.value.operation.state == "failed"
@@ -476,7 +480,7 @@ def test_resubmit_of_a_deterministically_failed_operation_stays_failed() -> None
     assert task_client.enqueued == []
 
 
-def _submit_members(operation_store, *, members: list[str] | None):
+def _submit_members(operation_store, *, members: list[str]):
     with pytest.raises(OperationSubmitted) as excinfo:
         submit_over_budget(
             subject_id="spec_abc",
@@ -501,14 +505,10 @@ def test_a_failure_recorded_for_one_member_set_is_not_returned_to_another() -> N
     operation_store.fail(unseeded.id, attempt=1, refusal_code="over_ceiling", retryable=False)
 
     seeded = _submit_members(operation_store, members=["dcid:sv_root"])
-    subject_only = _submit_members(operation_store, members=None)
 
     assert seeded.id != unseeded.id
     assert seeded.state == "pending"
     assert seeded.request_identity == {"subject_id": "spec_abc", "member_dcids": ["sv_root"]}
-    # A row recorded with the subject alone has its own id as well.
-    assert subject_only.id not in {seeded.id, unseeded.id}
-    assert subject_only.request_identity == {"subject_id": "spec_abc"}
     assert _submit_members(operation_store, members=["dcid:sv_b", "dcid:sv_c"]).state == "failed"
 
 
@@ -524,7 +524,7 @@ def test_the_same_members_share_one_operation_in_any_order_or_form() -> None:
 
 def _operation_id(*, subject_id: str, stamp: str, options: MintOptions) -> str:
     return compute_operation_id(
-        request_identity={"subject_id": subject_id},
+        request_identity={"subject_id": subject_id, "member_dcids": _MEMBER_DCIDS},
         coverage_stamp=stamp,
         origin_catalogue_build_id="fake-catalogue",
         options=options.model_dump(mode="json"),
@@ -550,6 +550,7 @@ def test_over_row_ceiling_refuses_before_any_operation_or_enqueue() -> None:
             within_budget=False,
             async_max_rows=_SETTINGS.async_max_rows,
             async_max_requests=_SETTINGS.async_max_requests,
+            members=_MEMBERS,
         )
 
     assert excinfo.value.code == "over_ceiling"
@@ -581,6 +582,7 @@ def test_row_ceiling_at_the_cap_is_admitted() -> None:
             within_budget=False,
             async_max_rows=_SETTINGS.async_max_rows,
             async_max_requests=_SETTINGS.async_max_requests,
+            members=_MEMBERS,
         )
 
     operation = excinfo.value.operation
@@ -607,6 +609,7 @@ def test_over_request_ceiling_refuses_before_any_operation_or_enqueue() -> None:
             within_budget=False,
             async_max_rows=_SETTINGS.async_max_rows,
             async_max_requests=_SETTINGS.async_max_requests,
+            members=_MEMBERS,
         )
 
     assert excinfo.value.ceiling_kind == "operation_requests"
@@ -636,6 +639,7 @@ def test_request_ceiling_at_the_cap_is_admitted() -> None:
             within_budget=False,
             async_max_rows=_SETTINGS.async_max_rows,
             async_max_requests=_SETTINGS.async_max_requests,
+            members=_MEMBERS,
         )
 
     operation = excinfo.value.operation
@@ -659,6 +663,7 @@ def test_over_row_ceiling_takes_priority_over_request_ceiling_reporting() -> Non
             within_budget=False,
             async_max_rows=_SETTINGS.async_max_rows,
             async_max_requests=_SETTINGS.async_max_requests,
+            members=_MEMBERS,
         )
     assert excinfo.value.ceiling_kind == "operation_rows"
 

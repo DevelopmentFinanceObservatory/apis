@@ -47,7 +47,6 @@ def _part(result: RegionResult) -> Part:
         result,
         representative=result,
         folded=False,
-        include_sentence=True,
         max_candidates=5,
         include_observations=False,
         include_skills=False,
@@ -154,7 +153,6 @@ def _standard_answer(
             graph=graph,
             resolver=make_resolver(graph),
             llm=_BindLLM(also),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
@@ -335,7 +333,6 @@ def _two_place_answer(
                 graph=graph,
                 resolver=make_resolver(graph),
                 llm=_BindLLM(),
-                base_steps=[],
                 base_timing={},
                 sdmx=FakeSdmxClient(
                     observations={}, availability={}, scope_availability=graph.scope_availability
@@ -379,7 +376,7 @@ def test_at_two_places_the_window_note_names_the_span_the_dateless_answer_states
     removed: the years of the one source the variable serves across both places."""
     dateless = _two_place_answer(monkeypatch, search_settings, holdings, None, route=route)
     assert dateless.status == "definite", dateless.no_data_reason
-    (stat_var,) = dateless.specs[0].resolved.stat_vars.items
+    (stat_var,) = dateless.specs[0].resolved.members
     assert stat_var.data_date_range is not None
     start, end = stat_var.data_date_range.start, stat_var.data_date_range.end
 
@@ -442,6 +439,7 @@ def test_held_data_under_a_latest_or_dateless_read_makes_no_window_answer(
         member_population_exact=True,
         held_outside_years={_FLOW: held},
         dateless_plan=None,
+        open_axes=frozenset(),
     )
     standard_carrier = _no_data_in_years(
         (_PERSON, held, None),

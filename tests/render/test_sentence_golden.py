@@ -2,7 +2,8 @@
 
 `tests/fixtures/sentence_panel/<slice>.jsonl.gz` holds the panel's responses trimmed to what
 the renderer reads (`scripts/sentence_golden.py`, whose `--rerender` rewrites the recorded
-plans after a renderer change). Each query re-renders, with no graph and no LLM, the plan
+plans after a renderer change), each Spec with the sentence facts the engine holds off the
+wire (`golden_parts`). Each query re-renders, with no graph and no LLM, the plan
 of every definite and candidate Spec, every candidates part's plan and the envelope plan,
 and compares them with the recorded ones. A no-data part's own plan needs
 inputs the wire does not carry (the request's entity terms, bound roles and qualifiers), so
@@ -22,7 +23,7 @@ from typing import Any
 import pytest
 from pydantic import TypeAdapter
 
-from scripts.sentence_golden import rerendered_candidates
+from scripts.sentence_golden import golden_parts, rerendered_candidates
 from search.heading.words import content_words
 from search.models import (
     SOURCE_REF,
@@ -43,7 +44,6 @@ from search.render.tokens import plan_words
 
 GOLDEN_DIR = Path(__file__).parent.parent / "fixtures" / "sentence_panel"
 
-_PARTS = TypeAdapter(list[Part])
 _PLAN = TypeAdapter(list[SentenceToken])
 
 
@@ -68,7 +68,7 @@ def _assert_plan(
 
 @pytest.mark.parametrize("line", _golden_lines(), ids=lambda line: line["id"])
 def test_renderer_reproduces_the_recorded_panel(line: dict[str, Any]) -> None:
-    parts = _PARTS.validate_python(line["parts"])
+    parts = golden_parts(line["parts"])
     declarations = declared_axis_names()
     for index, part in enumerate(parts):
         if isinstance(part, DefinitePart):
@@ -108,7 +108,7 @@ def test_renderer_reproduces_the_recorded_panel(line: dict[str, Any]) -> None:
 def test_plan_words_are_the_recorded_sentences_content_words(line: dict[str, Any]) -> None:
     """The words a departure is checked against are those of the heading and byline the
     reader sees, connectives and possessive forms included."""
-    for part in _PARTS.validate_python(line["parts"]):
+    for part in golden_parts(line["parts"]):
         if isinstance(part, DefinitePart):
             shown, keep = [part.spec], frozenset[str]()
         elif isinstance(part, CandidatesPart):
@@ -177,7 +177,7 @@ def test_each_edit_target_is_stated_by_at_most_one_token(line: dict[str, Any]) -
     On the envelope a token with no part index stands for every part, so it counts for
     each. A folded part is stated by the tokens of the part it folded into.
     """
-    parts = _PARTS.validate_python(line["parts"])
+    parts = golden_parts(line["parts"])
     declarations = declared_axis_names()
     composed = compose_envelope_sentence(parts)
     envelope = composed[1] if composed is not None else []
@@ -229,7 +229,7 @@ def test_measure_token_states_what_its_noun_silences(
     """The measure token states the slots its noun leaves silent, and an open slot whose
     members vary stays in Refine."""
     line = next(line for line in _golden_lines() if line["id"] == query_id)
-    (part,) = _PARTS.validate_python(line["parts"])
+    (part,) = golden_parts(line["parts"])
     assert isinstance(part, DefinitePart)
     plan = render_sentence_plan(part.spec, axis_declarations=declared_axis_names())
     (noun,) = [token for token in plan if token.axis == "what" and token.text]

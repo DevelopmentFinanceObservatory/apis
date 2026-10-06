@@ -3,7 +3,8 @@
 Responses come from the sentence panel golden (`tests/fixtures/sentence_panel`), which
 keeps each part's status, warnings and specs but drops the envelope; `panel` restores the
 root `kind` and `status` the checks read. The schema is the one `GET /api/search/schema`
-serves.
+serves. A Spec's served StatVars are the members the golden stores beside it
+(`sentence_facts`), which `panel_members` answers as the members door would.
 """
 
 from __future__ import annotations
@@ -15,8 +16,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
+from scripts.sentence_golden import spec_dicts
 from search.eval.cases import Case, Family, Gl, validate_case
 from search.eval.checks import ScoreContext, WireSchema
 from search.models import RESOLVE_RESPONSE_ADAPTER
@@ -119,6 +122,31 @@ def _panel_rows() -> dict[str, dict[str, Any]]:
     return rows
 
 
+# The served StatVars of Specs a test builds beside the recorded ones, by spec id.
+_BUILT_MEMBERS: dict[str, list[str]] = {}
+
+
+@functools.cache
+def _recorded_members() -> dict[str, list[str]]:
+    return {
+        spec["spec_id"]: [member["dcid"] for member in spec["sentence_facts"]["members"]]
+        for row in _panel_rows().values()
+        for part in row["parts"]
+        for spec in spec_dicts(part)
+    }
+
+
+def serve(spec_id: str, members: list[str]) -> None:
+    """Have `panel_members` answer `spec_id`, a Spec a test built, with `members`."""
+    _BUILT_MEMBERS[spec_id] = members
+
+
+def panel_members(spec_id: str, definition: dict[str, Any]) -> list[str]:
+    """The StatVars a recorded Spec serves, or those `serve` gave a built one: a members
+    door over the golden."""
+    return _BUILT_MEMBERS.get(spec_id) or _recorded_members()[spec_id]
+
+
 def panel(row_id: str) -> dict[str, Any]:
     """The recorded response for a sentence-panel query, with its root restored."""
     parts = copy.deepcopy(_panel_rows()[row_id]["parts"])
@@ -142,6 +170,26 @@ def response_schema() -> dict[str, Any]:
     return RESOLVE_RESPONSE_ADAPTER.json_schema(mode="serialization")
 
 
+def schema_listing_members() -> WireSchema:
+    """The current response schema with an `items` array added to `ResolvedStatVars`, as an
+    app built before the members door lists the StatVars a Spec serves. The current wire
+    carries `member_count` and `served_count` there and no list."""
+    schema = copy.deepcopy(response_schema())
+    schema["$defs"]["ResolvedStatVars"]["properties"]["items"] = {
+        "type": "array",
+        "items": {"type": "object", "properties": {"ref": {"type": "string"}}},
+    }
+    return WireSchema.from_document({"response": schema})
+
+
+def no_members_door(spec_id: str, definition: dict[str, Any]) -> list[str]:
+    """The members door of an app built before it: every read answers 404."""
+    request = httpx.Request("POST", f"http://base/api/datasets/{spec_id}/members")
+    raise httpx.HTTPStatusError("404", request=request, response=httpx.Response(404))
+
+
 @pytest.fixture
 def ctx() -> ScoreContext:
-    return ScoreContext(schema=WireSchema.from_document({"response": response_schema()}))
+    return ScoreContext(
+        schema=WireSchema.from_document({"response": response_schema()}), members=panel_members
+    )

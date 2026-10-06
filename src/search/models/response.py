@@ -27,32 +27,6 @@ from .vocab import (
     _require_schema_version_int,
 )
 
-PartRestatementReason = Literal[
-    "no_phrase_inputs",
-    "direction_unnameable",
-    "inputs_exceed_caps",
-]
-"""Why a Part carries no `restatement` (see `_PartBase.restatement_reason`).
-
-`no_phrase_inputs`: the part was never resolved from a phrase, so it has no
-per-part resolution inputs to echo at all. The `dataset_resubmit` door's
-`identity`, `candidates` and `placeholder` entry kinds post an identity, a
-candidate set, or a stub outcome rather than a phrase, and an identity entry
-re-resolves an already-identified spec the same way.
-
-`direction_unnameable`: the leg's direction came from wording alone. Retrieval
-found the role wording in a leg's own role query, so the engine could not echo
-that leg's entities bare without reversing them, and no door-supplied role on
-the elected shape named the axis an echo would need.
-
-`inputs_exceed_caps`: one of the leg's own resolution inputs sits outside the
-field bounds `ParsedPart` accepts, so an echo could only be truncated and
-would misstate what was resolved.
-
-Defined here rather than in `.vocab` because no request-side model shares it:
-this vocabulary is the response's own account of a null `restatement`.
-"""
-
 
 class _PartBase(StrictModel):
     """Fields every part variant carries, whatever its status."""
@@ -96,8 +70,7 @@ class _PartBase(StrictModel):
     rendered_sentence: str | None = Field(
         default=None,
         description=(
-            "a human-readable string when response_options.include_sentence is set; null "
-            "or omitted otherwise. For candidates, a header naming how many readings "
+            "a human-readable string. For candidates, a header naming how many readings "
             "there are ('3 readings.'), then each shown candidate's heading and a byline "
             "led by the source and span that set it apart; for no_data, a heading in "
             "the same claim form naming the entity, measure, and counterpart that were "
@@ -110,8 +83,7 @@ class _PartBase(StrictModel):
     sentence_plan: list[SentenceToken] | None = Field(
         default=None,
         description=(
-            "the ordered token form of rendered_sentence, present under the same "
-            "condition (response_options.include_sentence); null or omitted otherwise. "
+            "the ordered token form of rendered_sentence, present whenever it is. "
             "For a definite part this stays null or omitted. spec.resolved.sentence_plan "
             "carries the confirmation sentence's own plan instead."
         ),
@@ -129,7 +101,7 @@ class _PartBase(StrictModel):
             "time grammar recognises (e.g. '2015 to 2020'), not the user's original "
             "words, since the engine's date extraction keeps only the structured "
             "window and discards the phrasing. Null whenever this part has no faithful "
-            "echo to give; restatement_reason names which case nulled it. On a "
+            "echo to give. On a "
             "dataset_resubmit entry's identity/candidates/placeholder kinds, which "
             "post an identity or stub rather than a phrase and have no per-part "
             "resolution inputs to echo -- a "
@@ -143,23 +115,6 @@ class _PartBase(StrictModel):
             "what was actually resolved."
         ),
     )
-    restatement_reason: PartRestatementReason | None = Field(
-        default=None,
-        description=(
-            "why this part carries no restatement, present exactly when restatement "
-            "is null and absent whenever it is present; the two fields are always "
-            "one-null-one-set, so a client reads restatement when it is there and "
-            "restatement_reason when it is not, and never has to guess at a bare "
-            "null. 'no_phrase_inputs': this part was never resolved from a phrase "
-            "(a dataset_resubmit identity/candidates/placeholder entry), so there "
-            "were no resolution inputs to echo. "
-            "'direction_unnameable': the leg's direction came from its own wording "
-            "alone and no door-supplied role named the axis, so echoing its entities "
-            "would have reversed them. 'inputs_exceed_caps': one of the leg's own "
-            "resolution inputs sits outside ParsedPart's own field bounds. A "
-            "dfo-apis wire field outside the spec-kit response contract."
-        ),
-    )
     operations: list[Operation] = Field(default_factory=list, description=_OPERATIONS_DESCRIPTION)
     departures: list[Departure] = Field(
         default_factory=list,
@@ -168,9 +123,8 @@ class _PartBase(StrictModel):
             "ordered by how much each changes the number: closest_match, "
             "measure_not_applied, operation_not_applied, breakdown_not_applied, "
             "entity_unavailable, year_unavailable, modelled_values, "
-            "group_read_as_members, direction_discarded, scope_limited. [] when the answer is what was asked. Present "
-            "whether or not include_sentence is set, so a client that renders its "
-            "own sentence still reads them; under include_sentence each one's text "
+            "group_read_as_members, direction_discarded, scope_limited. [] when the answer is what was asked. A "
+            "client that renders its own sentence reads them here; each one's text "
             "also closes the sentence that carries this part (see Departure.text). "
             "A warning on the same part reports run health and stays separate"
         ),
@@ -353,9 +307,7 @@ class Resolution(_AnswerBase):
         default=None,
         description=(
             "the envelope-level confirmation sentence describing the whole query, "
-            "composed across every part's own sentence in query order; present under "
-            "the same response_options.include_sentence condition each part's own "
-            "rendered_sentence observes, null or omitted otherwise. When every "
+            "composed across every part's own sentence in query order. When every "
             "contributing part is definite, their headings join into one sentence. A "
             "qualifier axis (where, when, or source, each a wire value of axis, "
             "plus origin, identified by role=='origin' instead since SentenceAxis "

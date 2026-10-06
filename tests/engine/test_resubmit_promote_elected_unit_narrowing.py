@@ -39,7 +39,7 @@ from search.models import (
     Warning,
 )
 from search.observations import OBSERVATIONS_PREVIEW_TOO_LARGE
-from tests.engine._base_identity import make_base, subject_entity
+from tests.engine._base_identity import make_identity, subject_entity
 from tests.engine._builders import binding_set_slot as _binding_set_slot
 from tests.engine._builders import value_slot
 from tests.engine._fake_coverage import empty_coverage_snapshot
@@ -50,6 +50,8 @@ from tests.engine._harness import (
     _csv_header,
     _csv_row,
     _facet_from_fixture,
+    walk_options,
+    with_member_arcs,
 )
 from tests.fixtures import FakeGraph
 from tests.materialise._rate_table_support import (
@@ -63,7 +65,8 @@ from tests.materialise.conftest import FakeGraphReader
 _ENTITY = "country/KEN"
 _SHAPE: dict = {
     "kind": "statvar_schema",
-    "population_type": "TestConvertMultiActivity",
+    # A population type the DAC recipe converts, which the materialise graph's arcs state.
+    "population_type": "FinancialFlow",
     "measured_property": "testConvertMultiExpenditure",
     "stat_type": "measuredValue",
     "measurement_qualifier": "Nominal",
@@ -81,7 +84,7 @@ _SDMX_CSV_CONTENT_TYPE = "application/vnd.sdmx.data+csv;version=2.0.0"
 
 _FIVE_TUPLE_ARCS = {
     "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-    "populationType": {"nodes": [{"dcid": "TestConvertMultiActivity"}]},
+    "populationType": {"nodes": [{"dcid": "FinancialFlow"}]},
     "measuredProperty": {"nodes": [{"dcid": "testConvertMultiExpenditure"}]},
     "statType": {"nodes": [{"dcid": "measuredValue"}]},
     "measurementQualifier": {"nodes": [{"dcid": "Nominal"}]},
@@ -218,28 +221,30 @@ def _run(
     )
     entities = [subject_entity(_ENTITY)]
     request = IdentityUnitRequest(currency="USD", prices="current")
-    base_spec_id, base_identity = make_base(_SHAPE, slots=[_HOW_SET_SLOT], entities=entities)
+    base_identity = make_identity(_SHAPE, slots=[_HOW_SET_SLOT], entities=entities)
     inp = ResubmitIdentityPayload(
         identity=base_identity.model_copy(
             update={"facets": {"unit": IdentityFacetValueRequest(request=request)}}
         ),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[_SV_A, _SV_B],
     )
     return resolve_spec_resubmit(
         inp=inp,
         graph=graph,
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
-        options=EngineOptions(
-            include_observations=(
-                not stream_observations if include_observations is None else include_observations
+        options=walk_options(
+            graph,
+            EngineOptions(
+                include_observations=(
+                    not stream_observations
+                    if include_observations is None
+                    else include_observations
+                ),
+                stream_observations=stream_observations,
+                materialise_graph=with_member_arcs(materialise_graph, graph),
+                materialise_sdmx=materialise_sdmx,
+                rate_cache=RateTableCache(),
             ),
-            stream_observations=stream_observations,
-            materialise_graph=materialise_graph,
-            materialise_sdmx=materialise_sdmx,
-            rate_cache=RateTableCache(),
         ),
     )
 
@@ -450,9 +455,7 @@ def test_a_null_method_pin_decides_the_unit_among_the_facets_with_no_method():
         }
     )
     slot = value_slot("how", _PROP, "financing source", _VAL_A)
-    base_spec_id, base_identity = make_base(
-        _SHAPE, slots=[slot], entities=[subject_entity(_ENTITY)]
-    )
+    base_identity = make_identity(_SHAPE, slots=[slot], entities=[subject_entity(_ENTITY)])
     inp = ResubmitIdentityPayload(
         identity=base_identity.model_copy(
             update={
@@ -464,9 +467,6 @@ def test_a_null_method_pin_decides_the_unit_among_the_facets_with_no_method():
                 }
             }
         ),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[_SV_A],
     )
     captured: list[object] = []
     real_build_observations = promote_finalize._build_observations
@@ -481,11 +481,14 @@ def test_a_null_method_pin_decides_the_unit_among_the_facets_with_no_method():
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
-            options=EngineOptions(
-                include_observations=True,
-                materialise_graph=materialise_graph,
-                materialise_sdmx=materialise_sdmx,
-                rate_cache=RateTableCache(),
+            options=walk_options(
+                graph,
+                EngineOptions(
+                    include_observations=True,
+                    materialise_graph=with_member_arcs(materialise_graph, graph),
+                    materialise_sdmx=materialise_sdmx,
+                    rate_cache=RateTableCache(),
+                ),
             ),
         )
 
@@ -519,29 +522,27 @@ def _resubmit_source_b(extra_facets: dict):
         }
     )
     slot = value_slot("how", _PROP, "financing source", _VAL_B)
-    base_spec_id, base_identity = make_base(
-        _SHAPE, slots=[slot], entities=[subject_entity(_ENTITY)]
-    )
+    base_identity = make_identity(_SHAPE, slots=[slot], entities=[subject_entity(_ENTITY)])
     request = IdentityUnitRequest(currency="USD", prices="current")
     inp = ResubmitIdentityPayload(
         identity=base_identity.model_copy(
             update={"facets": {"unit": IdentityFacetValueRequest(request=request), **extra_facets}}
         ),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[_SV_B],
     )
     return resolve_spec_resubmit(
         inp=inp,
         graph=graph,
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
-        options=EngineOptions(
-            include_observations=True,
-            include_option_coverage=True,
-            materialise_graph=materialise_graph,
-            materialise_sdmx=materialise_sdmx,
-            rate_cache=RateTableCache(),
+        options=walk_options(
+            graph,
+            EngineOptions(
+                include_observations=True,
+                include_option_coverage=True,
+                materialise_graph=with_member_arcs(materialise_graph, graph),
+                materialise_sdmx=materialise_sdmx,
+                rate_cache=RateTableCache(),
+            ),
         ),
     )
 

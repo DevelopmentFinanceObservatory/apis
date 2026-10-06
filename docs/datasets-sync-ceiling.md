@@ -36,20 +36,18 @@ mint door's own kind handlers and the definition door's re-materialise closures 
 `within_sync_budget` says no. An estimate over `DATASETS_ASYNC_MAX_ROWS` (2,000,000) or
 `DATASETS_ASYNC_MAX_REQUESTS` (800) refuses `over_ceiling` (`ceiling_kind` `operation_rows` or
 `operation_requests`) before any row is written. Otherwise the call computes the operation id from
-the request's own `subject_id` (a `spec_` or `col_` identifier a registry write or read has already
+the request's own `subject_id` (a `spec_` identifier a registry write or read has already
 resolved), the coverage stamp the estimate ran against, the origin catalogue build bound to the
 request, and the rendering key of the options, so a mint of `spec_x` and a later
 `GET /api/datasets/spec_x` asking for the same rendering land on the same row.
 
 A definition's operation also stores, and hashes into its id, `member_dcids`: the StatVars the
-submitting door resolved, as sorted bare dcids. The worker passes them to member resolution as its
-seed. A mint whose posted `resolved_stat_var_dcids` root proved a family complete past the
-candidate window therefore runs with that root in the worker, where a first mint has no head to
-recover it from. Two submissions of one spec share an operation only when their doors resolved the
-same members, so a failure recorded for one member set is never returned to a submission that
-resolved another. An operation that stored no members seeds from the spec's head, as
-`GET /api/datasets/{spec_id}` does. A collection's operation stores the `col_` identifier alone:
-its members are registered specs and take no seed.
+submitting door resolved, as sorted bare dcids. The worker resolves members again from the
+identity alone, as the door does, and compares them with `member_dcids`. When they differ, the
+graph changed after submission, and the row fails `upstream_version_changed`, retryable, so a
+resubmission resolves the new members under a new operation id. Two submissions of one spec share
+an operation only when their doors resolved the same members, so a failure recorded for one member
+set is never returned to a submission that resolved another.
 
 `datasets.operation` (migrations `0011_operation.sql`, `0013_operation_retryable_and_index.sql`,
 `0014_operation_dispatch.sql`, `0015_operation_origin_catalogue_build.sql` and
@@ -192,12 +190,12 @@ The API side needs `DFO_WORKER_URL`, `DFO_WORKER_INVOKER_SERVICE_ACCOUNT`, and `
 and for the operations poll. The worker needs `DFO_WORKER_URL` and
 `DFO_WORKER_INVOKER_SERVICE_ACCOUNT` to verify, plus the same `DATASETS_GRAPH_BASE_URL`/
 `DATASETS_SDMX_BASE_URL` the API doors read, since it materialises through the same
-`serve_definition`/`serve_collection` entry points the synchronous doors call.
+`serve_definition` entry point the synchronous doors call.
 
 ## The mid-fetch and post-fetch backstop
 
 The worker, and every synchronous door, still passes an explicit `ceiling` to each
-`materialise_group`/`materialise_collection` call, sized to the request's own estimate rather than
+`materialise_group` call, sized to the request's own estimate rather than
 a fixed number. `datasets_api.serve.raw_fetch_guard(estimate, floor=...)` returns
 `max(floor, ceil(estimate.rows * 1.5))`, 50% headroom over the estimate to absorb drift between
 the coverage snapshot and the live SDMX read, and not a second admission decision. `floor` covers a

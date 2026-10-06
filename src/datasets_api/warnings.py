@@ -6,19 +6,17 @@ This package reserves `enrichment_unavailable`, `deflator_projected`,
 `currency_unmapped_omitted` and `deflator_missing_omitted` without raising them here.
 
 `facet_default_selected` is built from the completed materialisation trace.
-The `materialise` package keeps its warning catalogue independent. `stat_vars_summed`
-reports the contributing-member count and family reference after a groupby
+The `materialise` package keeps its warning catalogue independent, except that
+`enrichment_unavailable` takes its title and detail from `materialise.reshape`, which raises it.
+`stat_vars_summed` reports the contributing-member count and family reference after a groupby
 collapse sums multiple member series.
 """
 
 from __future__ import annotations
 
+from materialise.reshape import RESHAPE_CODE_CATALOGUE
+
 DATASETS_WARNING_CATALOGUE: dict[str, tuple[str, str, str]] = {
-    "members_deduplicated": (
-        "Members Deduplicated",
-        "Scope surgery converged two or more collection members onto one spec_id.",
-        "info",
-    ),
     "revision_unavailable": (
         "Revision Unavailable",
         "No live revision endpoint is available; graph_revision and source_revisions "
@@ -26,12 +24,7 @@ DATASETS_WARNING_CATALOGUE: dict[str, tuple[str, str, str]] = {
         "upstream refresh mid-materialisation.",
         "info",
     ),
-    "enrichment_unavailable": (
-        "Enrichment Unavailable",
-        "A requested enrichment column has no graph value for some rows; those cells "
-        "are left empty rather than fabricated.",
-        "info",
-    ),
+    "enrichment_unavailable": (*RESHAPE_CODE_CATALOGUE["enrichment_unavailable"], "info"),
     "facet_default_selected": (
         "Facet Default Selected",
         "An unbound facet axis had more than one candidate value, DFO precedence did "

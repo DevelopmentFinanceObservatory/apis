@@ -37,12 +37,6 @@ FIXTURES_DIR = Path(__file__).parent / "fixtures"
 _SITE = "https://site.example"
 _CRS_SPEC_ID = "spec_24e7ab259dcf221c56d7e76edeb977fd"
 _CRS_VERSION = "cv_5c9dfd37e657d3a3c7000cc6acf49c43"
-_COLLECTION_ID = "col_7d41b2000000000000000000000000"
-_COLLECTION_MEMBERS = (
-    "spec_00000000000000000000000000000021",
-    "spec_00000000000000000000000000000022",
-    "spec_00000000000000000000000000000023",
-)
 _PREPARED_AT = datetime(2026, 10, 4, 9, 30, tzinfo=UTC)
 _CRS_REF = "provenance/OECDCreditorReportingSystem"
 
@@ -91,11 +85,6 @@ def _source(document: str, *, ref: str | None, licence_type: str | None = None) 
 
 
 _CRS = _source("provenance_OECDCreditorReportingSystem", ref=_CRS_REF)
-_WEO = _source("provenance_IMFWorldEconomicOutlook", ref="provenance/IMFWorldEconomicOutlook")
-_GDP = _source(
-    "dc_base_OECDQuarterlyGDP", ref="dc/base/OECDQuarterlyGDP", licence_type="PublicDomain"
-)
-_SDG = _source("undata_p_SDG", ref="undata/p/SDG")
 
 _CRS_COLUMNS = (
     ("stat_var", "string", "Variable", "The variable measured.", True, False),
@@ -223,81 +212,6 @@ def _crs_bundle(
     )
 
 
-def _collection_bundle(
-    *, members: list[MemberProvenance] | None = None, **changes: object
-) -> dict[str, bytes]:
-    """Three members: IMF WEO with OECD GDP, the SDG database, and a source whose
-    documentation read failed at mint. Two share the CRS columns; the third has its own."""
-    unread = SourceProvenance(
-        ref="dc/base/UnreadSource",
-        name="Unread Source",
-        url="https://unread.example/terms",
-        licence=Licence(
-            type_id="CreativeCommons0",
-            label="Creative Commons 0",
-            url="https://creativecommons.org/publicdomain/zero/1.0/",
-        ),
-    )
-    narrow = ArtifactEntry(
-        path="data/unread-source.csv",
-        bytes=120,
-        digest="sha256:" + "cd" * 32,
-        media_type="text/csv",
-        table_schema={
-            "fields": [
-                {"name": "time_period", "type": "string"},
-                {"name": "value", "type": "number"},
-            ]
-        },
-    )
-    default_members = [
-        _crs_member(
-            path="data/imf-world-economic-outlook-and-oecd-gdp.csv",
-            spec_id=_COLLECTION_MEMBERS[0],
-            title="IMF World Economic Outlook (WEO) and OECD GDP, 1980\u20132031",
-            sources=(_WEO, _GDP),
-            row_count=2_104,
-        ),
-        _crs_member(
-            path="data/sdg-global-database.csv",
-            spec_id=_COLLECTION_MEMBERS[1],
-            title="SDG Global Database",
-            sources=(_SDG,),
-        ),
-        MemberProvenance(
-            spec_id=_COLLECTION_MEMBERS[2],
-            title="Unread Source, 2020",
-            artifact=narrow,
-            sources=(unread,),
-            columns=(
-                ColumnDoc(name="time_period", title="Period", description="The period."),
-                ColumnDoc(name="value", title="Value", description="The value."),
-            ),
-            row_count=1,
-        ),
-    ]
-    context = _crs_context(
-        heading="IMF World Economic Outlook (WEO) and 3 more sources, 1980\u20132031",
-        summary="",
-        slug="imf-world-economic-outlook-and-3-more",
-        links=BundleLinks(
-            version=f"{_SITE}/api/datasets/{_COLLECTION_ID}/{_CRS_VERSION}",
-            latest=f"{_SITE}/api/datasets/{_COLLECTION_ID}",
-        ),
-        rebuild_request=None,
-    )
-    context = dataclasses.replace(context, **changes)
-    return assemble_bundle(
-        spec={"collection_id": _COLLECTION_ID, "members": list(_COLLECTION_MEMBERS)},
-        members=members or default_members,
-        reproducing_call=ReproducingCall(
-            path=f"/api/datasets/{_COLLECTION_ID}", options={"format": "csv", "bundle": "true"}
-        ),
-        context=context,
-        codes=(),
-    )
-
-
 def _card_bundle() -> dict[str, bytes]:
     route = "/api/presentation/components/cmp_0000000000000001/revisions/3/data"
     member = _crs_member(path="data/data.csv", title="German aid to Nigeria")
@@ -344,8 +258,6 @@ def _section(readme: str, heading: str) -> str:
         (_crs_bundle, "README.md", "bundle-golden-crs-readme.md"),
         (_crs_bundle, "SOURCES.md", "bundle-golden-crs-sources.md"),
         (_crs_bundle, "CITATION.cff", "bundle-golden-crs-citation.cff"),
-        (_collection_bundle, "README.md", "bundle-golden-collection-readme.md"),
-        (_collection_bundle, "SOURCES.md", "bundle-golden-collection-sources.md"),
     ],
 )
 def test_documents_match_golden(bundle, name, golden):
@@ -402,19 +314,6 @@ def test_site_and_rebuild_lines_appear_only_when_set(changes, site_line, rebuild
     assert "fetched only through the API are kept for 30 days from when they were made" in get_again
 
 
-def test_collection_readme_has_members_and_no_site_or_rebuild_line():
-    files = _collection_bundle(
-        links=BundleLinks(version=f"{_SITE}/v", latest=f"{_SITE}/l", site=f"{_SITE}/data?spec=col"),
-        rebuild_request={"input": {"kind": "spec_id"}},
-    )
-    readme = _text(files, "README.md")
-    get_again = _section(readme, "Get this data again")
-    assert "On the website" not in get_again
-    assert "rebuild" not in get_again
-    assert "dataset" not in _section(readme, "Version")
-    assert "collection definition " + _COLLECTION_ID in _section(readme, "Version")
-
-
 def test_card_readme_names_the_card_revision_and_its_frame():
     readme = _text(_card_bundle(), "README.md")
     route = f"{_SITE}/api/presentation/components/cmp_0000000000000001/revisions/3/data"
@@ -442,25 +341,10 @@ def test_card_readme_names_the_card_revision_and_its_frame():
 def test_curated_text_cannot_break_the_readme_structure():
     hostile = "Evil | Corp\n# fake heading `data`"
     source = dataclasses.replace(_CRS, name=hostile)
-    member = _crs_member(spec_id=_COLLECTION_MEMBERS[0], title=hostile, sources=(source,))
-    readme = _text(
-        _collection_bundle(
-            members=[
-                member,
-                *[
-                    _crs_member(spec_id=s, path=f"data/{n}.csv")
-                    for n, s in enumerate(_COLLECTION_MEMBERS[1:])
-                ],
-            ]
-        ),
-        "README.md",
-    )
+    member = _crs_member(description=hostile, sources=(source,))
+    readme = _text(_crs_bundle(member=member), "README.md")
     assert "\n# fake heading" not in readme
-    assert "| Evil \\| Corp # fake heading \\`data\\` |" in _section(readme, "Files")
-    assert (
-        "- Evil | Corp # fake heading \\`data\\`: `data/oecd-creditor-reporting-system.csv`"
-        in readme
-    )
+    assert "| The data. Evil \\| Corp # fake heading \\`data\\` |" in _section(readme, "Files")
 
 
 @pytest.mark.parametrize(
@@ -524,7 +408,17 @@ def test_open_the_data_follows_the_file_format(path, lines):
 
 
 def test_a_source_without_documentation_gets_its_name_licence_and_page_only():
-    sources = _text(_collection_bundle(), "SOURCES.md")
+    unread = SourceProvenance(
+        ref="dc/base/UnreadSource",
+        name="Unread Source",
+        url="https://unread.example/terms",
+        licence=Licence(
+            type_id="CreativeCommons0",
+            label="Creative Commons 0",
+            url="https://creativecommons.org/publicdomain/zero/1.0/",
+        ),
+    )
+    sources = _text(_crs_bundle(member=_crs_member(sources=(_CRS, unread))), "SOURCES.md")
     block = sources.split("## Unread Source\n", 1)[1]
     assert block.strip() == (
         "- Source page: https://unread.example/terms\n"
@@ -556,7 +450,7 @@ def test_citation_round_trips_through_yaml_with_the_cff_required_keys():
     assert reference["date-accessed"] == "2026-10-02"
 
     schema = _read_json("bundle-citation-cff-1.2.0-schema.json")
-    for files in (_crs_bundle(), _collection_bundle(), _card_bundle()):
+    for files in (_crs_bundle(), _card_bundle()):
         jsonschema.validate(instance=yaml.safe_load(_text(files, "CITATION.cff")), schema=schema)
 
 

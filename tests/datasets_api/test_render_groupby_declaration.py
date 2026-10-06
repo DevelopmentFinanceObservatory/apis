@@ -10,13 +10,11 @@ from __future__ import annotations
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, DatasetDeclaration, IndexStamp
 from code_index.types import StatVarRow
 from datasets_api.mint_models import GroupbyOptions, MintOptions
-from datasets_api.render import CollectionMemberRendering, _reshape, render_and_store_collection
+from datasets_api.render import _reshape
 from materialise.enrichment import EnrichmentLookup
 from materialise.reshape import RollupNotSummableError, Table
 
-from ._artifact_doubles import FakeArtifactStore
 from ._graph_doubles import FakeMintGraphReader
-from ._render_inputs import PREPARED_AT, SITE
 
 _STAMP = IndexStamp(
     graph_endpoint="https://example.test/core/api",
@@ -95,7 +93,7 @@ def _index(*, declares_crs_zero: bool) -> CodeIndex:
                 DatasetDeclaration(
                     provenance=_CRS_PROVENANCE,
                     label="OECD Creditor Reporting System (CRS)",
-                    synonyms=(),
+                    description="A test table.",
                     opt_in=False,
                     absent_observation="zero",
                     rank=0,
@@ -160,45 +158,6 @@ def test_a_zero_row_member_from_a_declared_zero_source_sums_and_publishes():
     value_pos = reshaped.table.columns.index("value")
     assert [row[stat_var_pos] for row in reshaped.table.rows] == ["dcid:SV_health"]
     assert [row[value_pos] for row in reshaped.table.rows] == [10.0]
-
-
-def _collection_member_digest(*, cited_refs: tuple[str, ...]) -> str:
-    member = CollectionMemberRendering(
-        spec_id="spec_crs",
-        frame_chunks=lambda: iter((_TABLE,)),
-        provenance_refs=(_CRS_PROVENANCE,),
-        cited_refs=cited_refs,
-        content_version="cv_member",
-        prepared_at=PREPARED_AT,
-        entity_columns=_ENTITY_COLUMNS,
-        resolved_stat_var_refs=_RESOLVED_REFS,
-    )
-    rendered = render_and_store_collection(
-        members=[member],
-        options=MintOptions(
-            bundle=False, groupby=GroupbyOptions(by=["crsCooperationModality"], op="sum")
-        ),
-        spec={"collection_id": "col_crs"},
-        citations={},
-        reproducing_call=None,
-        content_version="cv_collection",
-        prepared_at=PREPARED_AT,
-        site=SITE,
-        artifact_store=FakeArtifactStore(),
-        enrichment=_enrichment(),
-        pivot_max_output_cells=5_000_000,
-        code_index=_index(declares_crs_zero=True),
-    )
-    (artifact,) = rendered.artifacts
-    return artifact.artifact_digest
-
-
-def test_a_collection_member_with_no_cited_refs_sums_under_its_live_ref():
-    """A member whose stored entry carries no refs still reads its dataset's absent members as
-    zero, so its rows equal those of a member citing its live ref."""
-    assert _collection_member_digest(cited_refs=()) == _collection_member_digest(
-        cited_refs=(_CRS_PROVENANCE,)
-    )
 
 
 # --- The same frame under an undeclared provenance still refuses -----------

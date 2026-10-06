@@ -51,7 +51,6 @@ def test_twin_stays_nested_under_its_part_in_a_two_variable_combine():
         extra_warnings=[],
         start_ms=now_ms(),
         engine_build="test",
-        include_sentence=False,
         max_candidates=10,
     )
 

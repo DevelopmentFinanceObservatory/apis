@@ -37,6 +37,10 @@ from graph_generation import UNKNOWN_GENERATION, GenerationProvider, GenerationS
 from graph_generation.stamp import ttu_from_stamp_key
 from origin_catalogue.context import current_catalogue
 from origin_catalogue.graph import (
+    ARCS_CACHE_SIZE,
+    LABEL_TYPE_CACHE_SIZE,
+    OBS_CACHE_SIZE,
+    OBS_PROPERTIES_CACHE_SIZE,
     UN_BASE_URL,
     OriginGraphClient,
     UnAvailabilityClient,
@@ -65,12 +69,9 @@ from search.engine.errors import (
 
 logger = logging.getLogger(__name__)
 
-# Cache bounds label and type lookups across the deployment's referenced dcids.
-_LABEL_TYPE_CACHE_MAXSIZE: Final[int] = 50_000
-
 _ttu_from_stamp_key = ttu_from_stamp_key
 
-_SUBJECTS_CACHE_MAXSIZE: Final[int] = 4096
+_SUBJECTS_CACHE_MAXSIZE: Final[int] = ARCS_CACHE_SIZE
 """Complete subject pages kept, by lead, property and cap, the size of the default arcs cache.
 A resubmit checks each posted group's members against one, so a warm resubmit reads none."""
 
@@ -169,8 +170,8 @@ def _build_dc_graph_client(
         "user_agent": USER_AGENT,
         "generation": generation,
         "timer": timer,
-        "label_cache_size": _LABEL_TYPE_CACHE_MAXSIZE,
-        "type_cache_size": _LABEL_TYPE_CACHE_MAXSIZE,
+        "label_cache_size": LABEL_TYPE_CACHE_SIZE,
+        "type_cache_size": LABEL_TYPE_CACHE_SIZE,
         "arcs_cache_size": arcs_cache_size,
         "obs_properties_cache_size": obs_properties_cache_size,
         "obs_cache_size": obs_cache_size,
@@ -206,10 +207,10 @@ class LiveGraphClient:
         max_attempts: int = 1,
         generation: GenerationProvider = UNKNOWN_GENERATION,
         timer: Callable[[], float] | None = None,
-        obs_cache_size: int = 512,
+        obs_cache_size: int = OBS_CACHE_SIZE,
         detect_cache_size: int = 256,
-        arcs_cache_size: int = 4096,
-        obs_properties_cache_size: int = 5000,
+        arcs_cache_size: int = ARCS_CACHE_SIZE,
+        obs_properties_cache_size: int = OBS_PROPERTIES_CACHE_SIZE,
         node_arc_total_concurrency: int | None = None,
         node_arc_call_concurrency: int | None = None,
         detect_k: int = 80,

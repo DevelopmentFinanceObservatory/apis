@@ -15,7 +15,7 @@ from .grammar import TimeWindow
 class BreadthDim(StrictModel):
     """One breadth dimension with its cardinality."""
 
-    label: str = Field(description="the dimension, e.g. donors, years, methods, sources")
+    label: str = Field(description="the dimension, e.g. providers, years, methods, sources")
     count: int = Field(description="e.g. 36, 22, 3")
 
 

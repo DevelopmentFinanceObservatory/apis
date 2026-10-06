@@ -65,8 +65,7 @@ class ManifestTrace:
     # joined (the grammar's preimage keys), then `members` (each member's
     # bare StatVar ref and native unit, sorted by StatVar), and the members'
     # fallback/projected counts with sorted, deduplicated examples capped at
-    # 10. A definition has at most one entry; a collection mixing recipes or
-    # table versions has one per pair.
+    # 10. One entry per recipe and table-version pair.
     frame_grammar_version: str  # Semver label, e.g. "1.0.0".
     materialiser_build: str
     capability_version: str

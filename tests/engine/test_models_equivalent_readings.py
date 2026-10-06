@@ -68,17 +68,10 @@ def test_populated_entry_carries_everything_a_resubmit_identity_requires() -> No
     assert entry.spec_id
     assert entry.definition.identity is not None
     assert entry.resolved.slots
-    assert entry.resolved.stat_vars.items
+    assert entry.resolved.members
 
     resubmit_input = ResubmitIdentityPayload(
         identity=entry.definition.identity,
-        base_spec_id=entry.spec_id,
-        base_identity=entry.definition.identity,
-        resolved_stat_var_dcids=[sv.ref for sv in entry.resolved.stat_vars.items],
     )
 
-    assert resubmit_input.base_spec_id == entry.spec_id
-    assert resubmit_input.base_identity == entry.definition.identity
-    assert resubmit_input.resolved_stat_var_dcids == [
-        sv.ref for sv in entry.resolved.stat_vars.items
-    ]
+    assert resubmit_input.identity == entry.definition.identity

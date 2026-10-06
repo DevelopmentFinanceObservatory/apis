@@ -43,11 +43,14 @@ class PinnedResolved(Resolved):
 # GNI scores 0.6342 for GiniIndex_EconomicActivity; its full term finds the aggregate.
 # U5MR and IMR hit unrelated SVs, while their full terms find the mortality variables.
 # CO2's full term scores higher than the acronym. GDP recalls correctly without expansion.
+# PPG recalls no SV for "debt service for PPG debt" (variable_not_resolved); its full term
+# finds the public and publicly guaranteed debt service series.
 _ACRONYM_EXPANSIONS: dict[str, str] = {
     "gni": "gross national income",
     "co2": "carbon dioxide emissions",
     "u5mr": "under five mortality rate",
     "imr": "infant mortality rate",
+    "ppg": "public and publicly guaranteed",
 }
 _ACRONYM_RE = re.compile(r"\b(" + "|".join(_ACRONYM_EXPANSIONS) + r")\b", re.IGNORECASE)
 

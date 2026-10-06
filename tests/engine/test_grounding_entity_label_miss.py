@@ -46,13 +46,38 @@ def test_label_miss_keeps_entity_with_dcid_echo_label():
     graph = FakeGraph(nodes=nodes)
     roles = {"country/USA": "observationAbout", "country/ZZZ": "observationAbout"}
 
-    result = _ground_answer(SHAPE_DRAFT, bindings=[], sv_dcids=[], roles=roles, graph=graph)
+    result = _ground_answer(
+        SHAPE_DRAFT, bindings=[], sv_dcids=[], roles=roles, graph=graph, open_axes=frozenset()
+    )
     entity_objects_data = result[5]
 
     assert len(entity_objects_data) == 2
     by_dcid = {er.dcid: er for _rd, er, _etr in entity_objects_data}
     assert by_dcid["country/USA"].label == "United States"
     assert by_dcid["country/ZZZ"].label == "country/ZZZ"
+
+
+def test_label_miss_keeps_every_served_stat_var_with_a_dcid_echo_label():
+    """A served member with no name stays among the answer's members. Dropping it left a
+    definite answer whose one member had no name with no member (`assemble` refuses that)."""
+    nodes = {
+        "Count_Person": {"label": "Total population", "type": "StatisticalVariable"},
+        "dc/unnamed": {"type": "StatisticalVariable"},  # served, no ->name arc
+    }
+
+    result = _ground_answer(
+        SHAPE_DRAFT,
+        bindings=[],
+        sv_dcids=["dc/unnamed", "Count_Person"],
+        roles={},
+        open_axes=frozenset(),
+        graph=FakeGraph(nodes=nodes),
+    )
+
+    assert [(ref.dcid, ref.label) for ref in result[4]] == [
+        ("dc/unnamed", "dc/unnamed"),
+        ("Count_Person", "Total population"),
+    ]
 
 
 def test_label_miss_emits_exactly_one_warning_naming_the_dcid():
@@ -63,7 +88,9 @@ def test_label_miss_emits_exactly_one_warning_naming_the_dcid():
     graph = FakeGraph(nodes=nodes)
     roles = {"country/USA": "observationAbout", "country/ZZZ": "observationAbout"}
 
-    result = _ground_answer(SHAPE_DRAFT, bindings=[], sv_dcids=[], roles=roles, graph=graph)
+    result = _ground_answer(
+        SHAPE_DRAFT, bindings=[], sv_dcids=[], roles=roles, graph=graph, open_axes=frozenset()
+    )
     warnings = result[9]
 
     assert len(warnings) == 1
@@ -79,7 +106,9 @@ def test_no_warning_when_all_labels_resolve():
     graph = FakeGraph(nodes=nodes)
     roles = {"country/USA": "observationAbout", "country/ETH": "observationAbout"}
 
-    result = _ground_answer(SHAPE_DRAFT, bindings=[], sv_dcids=[], roles=roles, graph=graph)
+    result = _ground_answer(
+        SHAPE_DRAFT, bindings=[], sv_dcids=[], roles=roles, graph=graph, open_axes=frozenset()
+    )
     entity_objects_data = result[5]
     warnings = result[9]
 
@@ -93,10 +122,12 @@ def test_spec_id_distinguishes_two_different_missed_entities():
 
     def _spec_id_for(dcid: str) -> str:
         roles = {dcid: "observationAbout"}
-        result = _ground_answer(SHAPE_DRAFT, bindings=[], sv_dcids=[], roles=roles, graph=graph)
+        result = _ground_answer(
+            SHAPE_DRAFT, bindings=[], sv_dcids=[], roles=roles, graph=graph, open_axes=frozenset()
+        )
         entity_objects_data, role_refs = result[5], result[1]
         entities = [_build_entity(rd, er, etr, role_refs) for rd, er, etr in entity_objects_data]
-        return compute_spec_id(PERSON_COUNT_SHAPE, slots=[], entities=entities)
+        return compute_spec_id(PERSON_COUNT_SHAPE, slots=[], entities=entities, open_roles=())
 
     assert _spec_id_for("country/AAA") != _spec_id_for("country/BBB")
 
@@ -117,7 +148,12 @@ def test_where_slot_value_label_miss_keeps_dcid_echoed_binding():
     )
 
     result = _ground_answer(
-        _shape_with_where_slot(), bindings=[binding], sv_dcids=[], roles=roles, graph=graph
+        _shape_with_where_slot(),
+        bindings=[binding],
+        sv_dcids=[],
+        roles=roles,
+        graph=graph,
+        open_axes=frozenset(),
     )
     slot = result[2][0]
     entity_objects_data = result[5]
@@ -148,7 +184,12 @@ def test_where_slot_set_label_miss_retains_both_values():
     )
 
     result = _ground_answer(
-        _shape_with_where_slot(), bindings=[binding], sv_dcids=[], roles=roles, graph=graph
+        _shape_with_where_slot(),
+        bindings=[binding],
+        sv_dcids=[],
+        roles=roles,
+        graph=graph,
+        open_axes=frozenset(),
     )
     slot = result[2][0]
     entity_objects_data = result[5]
@@ -178,7 +219,12 @@ def test_where_value_not_in_roles_with_label_miss_stays_omitted():
     )
 
     result = _ground_answer(
-        _shape_with_where_slot(), bindings=[binding], sv_dcids=[], roles={}, graph=graph
+        _shape_with_where_slot(),
+        bindings=[binding],
+        sv_dcids=[],
+        roles={},
+        graph=graph,
+        open_axes=frozenset(),
     )
     slot = result[2][0]
     warnings = result[9]
@@ -217,7 +263,9 @@ def test_constraint_value_keeps_evidenced_unlabelled_provisional_dcid():
         value_dcids=[_PROVISIONAL_SCHEME],
     )
 
-    result = _ground_answer(shape, bindings=[binding], sv_dcids=[], roles={}, graph=graph)
+    result = _ground_answer(
+        shape, bindings=[binding], sv_dcids=[], roles={}, graph=graph, open_axes=frozenset()
+    )
     slot = result[2][0]
 
     assert isinstance(slot.binding, BindingValue)
@@ -261,6 +309,7 @@ def test_constraint_value_absent_from_recalled_arcs_stays_when_a_served_member_a
         roles={},
         graph=graph,
         member_facts={"ServedStatVar": ArcsMemberFacts(arcs=_scheme_arcs("UnrecalledScheme"))},
+        open_axes=frozenset(),
     )
     slot = result[2][0]
 
@@ -309,7 +358,9 @@ def test_constraint_value_uses_index_label_when_graph_omits_it(monkeypatch):
         value_dcids=[_PROVISIONAL_SCHEME],
     )
 
-    result = _ground_answer(shape, bindings=[binding], sv_dcids=[], roles={}, graph=graph)
+    result = _ground_answer(
+        shape, bindings=[binding], sv_dcids=[], roles={}, graph=graph, open_axes=frozenset()
+    )
     slot = result[2][0]
 
     assert isinstance(slot.binding, BindingValue)
@@ -331,7 +382,9 @@ def test_constraint_value_index_miss_still_echoes_dcid(monkeypatch):
         value_dcids=[_PROVISIONAL_SCHEME],
     )
 
-    result = _ground_answer(shape, bindings=[binding], sv_dcids=[], roles={}, graph=graph)
+    result = _ground_answer(
+        shape, bindings=[binding], sv_dcids=[], roles={}, graph=graph, open_axes=frozenset()
+    )
     slot = result[2][0]
 
     assert isinstance(slot.binding, BindingValue)
@@ -354,7 +407,12 @@ def test_constraint_set_keeps_labelled_and_evidenced_values_in_input_order():
     )
 
     result = _ground_answer(
-        _shape_with_constraint_slot(), bindings=[binding], sv_dcids=[], roles={}, graph=graph
+        _shape_with_constraint_slot(),
+        bindings=[binding],
+        sv_dcids=[],
+        roles={},
+        graph=graph,
+        open_axes=frozenset(),
     )
     slot = result[2][0]
 

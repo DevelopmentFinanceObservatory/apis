@@ -27,7 +27,6 @@ from search.models import (
     EntityRoleSubject,
     GraphRef,
     NearestRealSpec,
-    PipelineStep,
     QueryEcho,
     RawTextInput,
     Relaxation,
@@ -112,81 +111,58 @@ class TestLLMUsage:
         assert d.llm_usage is None
 
 
-class TestNRecalled:
-    def _minimal_spec(self, n_recalled: int | None):
-        shape_draft = ShapeDraft(
-            shape_id="test_n_recalled_shape",
-            label="test shape",
-            pop_type_dcid="DevelopmentFinance",
-            meas_prop_dcid="DevelopmentFinanceFlow",
-            stat_type_dcid="measuredValue",
-            meas_qual_dcid=None,
-            meas_denom_dcid=None,
-            slot_keys=(
-                SlotKeyDraft(axis="what", property_dcid="DevelopmentFinanceScheme", label="scheme"),
-            ),
-        )
-        five_tuple_refs = {
-            "DevelopmentFinance": GraphRef(dcid="DevelopmentFinance", label="Dev Finance"),
-            "DevelopmentFinanceFlow": GraphRef(dcid="DevelopmentFinanceFlow", label="Flow"),
-            "measuredValue": GraphRef(dcid="measuredValue", label="Measured Value"),
-        }
-        scheme_draft = SlotBindingDraft(
-            axis="what",
-            property_dcid="DevelopmentFinanceScheme",
-            kind="value",
-            value_dcids=["ODAGrants"],
-        )
-        prop_ref = GraphRef(dcid="DevelopmentFinanceScheme", label="DevelopmentFinanceScheme")
-        slot = build_slot(
-            shape_draft.slot_keys[0],
-            scheme_draft,
-            [GraphRef(dcid="ODAGrants", label="ODA Grants")],
-            property_ref=prop_ref,
-        )
-        shape_model = build_shape_model(
-            shape_draft, [slot.key], five_tuple_refs, member_count=1, members=None
-        )
-        sv_ref = GraphRef(dcid="TEST_SV", label="Test SV")
-        stat_vars = [
-            StatVar(
-                ref=sv_ref, shape_id=shape_draft.shape_id, slot_values=[], constraint_properties=[]
-            )
-        ]
-        entity = Entity(
-            ref=GraphRef(dcid="country/ETH", label="Ethiopia"),
-            entity_type=None,
-            role=EntityRoleSubject(),
-        )
-        return build_spec(
-            measure_elected_properties=frozenset(),
-            shape=shape_model,
-            slots=[slot],
-            stat_vars=stat_vars,
-            entities=[entity],
-            coverage=CoverageBare(has_data=True),
-            pipeline_trace=[PipelineStep(step="extract", ran=True)],
-            n_recalled=n_recalled,
-        )
-
-    def test_n_recalled_propagates_to_resolution_trace(self):
-        spec = self._minimal_spec(n_recalled=7)
-        assert spec.resolved.trace.n_recalled == 7
-
-    def test_n_recalled_none_by_default(self):
-        spec = self._minimal_spec(n_recalled=None)
-        assert spec.resolved.trace.n_recalled is None
-
-    def test_n_recalled_populated_in_e2e_golden(self):
-        """End-to-end: a definite golden yields n_recalled as int > 0."""
-        result = offline_resolve(
-            ResolveRequest(input=RawTextInput(query="fertility rate in Kenya")),
-            sdmx=FakeSdmxClient(),
-        )
-        assert result.parts[0].status == "definite"
-        spec = result.parts[0].spec
-        assert isinstance(spec.resolved.trace.n_recalled, int)
-        assert spec.resolved.trace.n_recalled > 0
+def _minimal_spec():
+    shape_draft = ShapeDraft(
+        shape_id="test_minimal_shape",
+        label="test shape",
+        pop_type_dcid="DevelopmentFinance",
+        meas_prop_dcid="DevelopmentFinanceFlow",
+        stat_type_dcid="measuredValue",
+        meas_qual_dcid=None,
+        meas_denom_dcid=None,
+        slot_keys=(
+            SlotKeyDraft(axis="what", property_dcid="DevelopmentFinanceScheme", label="scheme"),
+        ),
+    )
+    five_tuple_refs = {
+        "DevelopmentFinance": GraphRef(dcid="DevelopmentFinance", label="Dev Finance"),
+        "DevelopmentFinanceFlow": GraphRef(dcid="DevelopmentFinanceFlow", label="Flow"),
+        "measuredValue": GraphRef(dcid="measuredValue", label="Measured Value"),
+    }
+    scheme_draft = SlotBindingDraft(
+        axis="what",
+        property_dcid="DevelopmentFinanceScheme",
+        kind="value",
+        value_dcids=["ODAGrants"],
+    )
+    prop_ref = GraphRef(dcid="DevelopmentFinanceScheme", label="DevelopmentFinanceScheme")
+    slot = build_slot(
+        shape_draft.slot_keys[0],
+        scheme_draft,
+        [GraphRef(dcid="ODAGrants", label="ODA Grants")],
+        property_ref=prop_ref,
+    )
+    shape_model = build_shape_model(
+        shape_draft, [slot.key], five_tuple_refs, member_count=1, members=None
+    )
+    sv_ref = GraphRef(dcid="TEST_SV", label="Test SV")
+    stat_vars = [
+        StatVar(ref=sv_ref, shape_id=shape_draft.shape_id, slot_values=[], constraint_properties=[])
+    ]
+    entity = Entity(
+        ref=GraphRef(dcid="country/ETH", label="Ethiopia"),
+        entity_type=None,
+        role=EntityRoleSubject(),
+    )
+    return build_spec(
+        open_roles=(),
+        measure_elected_properties=frozenset(),
+        shape=shape_model,
+        slots=[slot],
+        stat_vars=stat_vars,
+        entities=[entity],
+        coverage=CoverageBare(has_data=True),
+    )
 
 
 class TestDataDateRangeAndDestination:
@@ -368,9 +344,7 @@ class TestBuildStatVarsSlotValuesArcDerived:
 class TestNearestReal:
     def test_nearest_real_passed_through_build_no_data_part(self):
         """build_no_data_part threads nearest_real into NoData.nearest_real."""
-        from tests.engine.test_observability import TestNRecalled
-
-        spec = TestNRecalled()._minimal_spec(n_recalled=None)
+        spec = _minimal_spec()
         part = build_no_data_part(
             "no_observations",
             variable_text="test",
@@ -395,9 +369,7 @@ class TestNearestReal:
 
     def test_nearest_real_preserved_through_assemble_region(self):
         """`nearest_real` survives assembly into the no-data response."""
-        from tests.engine.test_observability import TestNRecalled
-
-        spec = TestNRecalled()._minimal_spec(n_recalled=None)
+        spec = _minimal_spec()
         region = RegionResult(
             variable_text="test",
             status="no_data",
@@ -413,7 +385,6 @@ class TestNearestReal:
             extra_warnings=[],
             start_ms=now_ms(),
             engine_build="test-build",
-            include_sentence=False,
             max_candidates=6,
         )
         inner = response.parts[0]
@@ -474,7 +445,7 @@ class TestStatVarObservabilityNonFallbackPaths:
         """A standard subject probe derives a date range from the facets its plan serves."""
         result = offline_resolve(ResolveRequest(input=RawTextInput(query="total population India")))
         assert result.parts[0].status == "definite"
-        stat_vars = result.parts[0].spec.resolved.stat_vars.items
+        stat_vars = result.parts[0].spec.resolved.members
         assert stat_vars, "expected at least one resolved StatVar"
         sv = stat_vars[0]
         assert sv.data_date_range is not None, (
@@ -563,7 +534,6 @@ class TestNearestRealProbeFailureIsContained:
                 graph=graph,
                 resolver=make_resolver(graph),
                 llm=_ElectSingleShapeLLM(),
-                base_steps=[],
                 base_timing={},
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 coverage=empty_coverage_snapshot(),

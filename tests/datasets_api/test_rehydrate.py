@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from code_index.shared import get_index
-from datasets_api.adapter import build_identity_document, rehydrate_definition
+from datasets_api.adapter import MemberReadBounds, build_identity_document, rehydrate_definition
 from datasets_api.codes_materialise import (
     DefinitionNotReproducible,
     MemberNotResolvable,
@@ -13,13 +15,13 @@ from datasets_api.codes_materialise import (
 )
 from datasets_api.mint_models import Scope
 from datasets_api.shape import resolve_shape
-from materialise.errors import OverCeilingError
 from spec_registry import LiveSpecRegistry
 from spec_registry.identity import recompute_identity
 from spec_registry.reader import LiveSpecReader, StoredDefinition
 from statvar_members import MemberEnumerator
 
-from ._graph_doubles import FakeMintGraphReader
+from ._graph_doubles import FakeMintGraphReader, FirstPageWithholdingGraphReader
+from ._member_bounds import mint_bounds
 from .conftest import FakeDatasetStore
 
 _STAT_VAR_REF = "dcid:MalariaGrantDisbursements"
@@ -32,7 +34,7 @@ def _graph(**arcs: tuple[str, ...]) -> FakeMintGraphReader:
 
 
 def _enumerator(graph: FakeMintGraphReader) -> MemberEnumerator:
-    return MemberEnumerator(graph=graph)
+    return MemberEnumerator()
 
 
 def _stored(*, identity: dict[str, object], spec_id: str = "spec_test") -> StoredDefinition:
@@ -65,7 +67,11 @@ def test_round_trip_through_a_real_mint_agrees_with_the_original_shape():
     assert stored is not None
 
     (rehydrated_shape,), (request,) = rehydrate_definition(
-        stored, graph=graph, enumerator=_enumerator(graph), code_index=get_index()
+        stored,
+        graph=graph,
+        enumerator=_enumerator(graph),
+        code_index=get_index(),
+        bounds=mint_bounds(),
     )
 
     assert rehydrated_shape == shape
@@ -87,7 +93,11 @@ def test_an_unanchored_described_arm_identity_refuses_spec_not_exportable():
 
     with pytest.raises(SpecNotExportable) as exc_info:
         rehydrate_definition(
-            stored, graph=graph, enumerator=_enumerator(graph), code_index=get_index()
+            stored,
+            graph=graph,
+            enumerator=_enumerator(graph),
+            code_index=get_index(),
+            bounds=mint_bounds(),
         )
 
     assert exc_info.value.spec_id == "spec_test"
@@ -108,7 +118,11 @@ def test_a_pin_id_the_graph_does_not_hold_refuses_member_not_resolvable():
 
     with pytest.raises(MemberNotResolvable) as exc_info:
         rehydrate_definition(
-            stored, graph=graph, enumerator=_enumerator(graph), code_index=get_index()
+            stored,
+            graph=graph,
+            enumerator=_enumerator(graph),
+            code_index=get_index(),
+            bounds=mint_bounds(),
         )
 
     assert exc_info.value.members == ("spec_test",)
@@ -129,7 +143,11 @@ def test_resolve_shape_refusal_passes_through_as_member_not_resolvable():
 
     with pytest.raises(MemberNotResolvable) as exc_info:
         rehydrate_definition(
-            stored, graph=graph, enumerator=_enumerator(graph), code_index=get_index()
+            stored,
+            graph=graph,
+            enumerator=_enumerator(graph),
+            code_index=get_index(),
+            bounds=mint_bounds(),
         )
 
     assert exc_info.value.members == ("spec_test",)
@@ -157,6 +175,7 @@ def test_declared_role_drift_since_minting_refuses_definition_not_reproducible()
             graph=drifted_graph,
             enumerator=_enumerator(drifted_graph),
             code_index=get_index(),
+            bounds=mint_bounds(),
         )
 
     assert exc_info.value.spec_ids == (spec_id,)
@@ -176,7 +195,11 @@ def test_a_stored_entity_role_the_statvar_never_declares_refuses_definition_not_
 
     with pytest.raises(DefinitionNotReproducible) as exc_info:
         rehydrate_definition(
-            stored, graph=graph, enumerator=_enumerator(graph), code_index=get_index()
+            stored,
+            graph=graph,
+            enumerator=_enumerator(graph),
+            code_index=get_index(),
+            bounds=mint_bounds(),
         )
 
     assert exc_info.value.spec_ids == (spec_id,)
@@ -196,7 +219,11 @@ def test_a_flow_axis_alias_entity_role_rehydrates_against_the_matching_raw_decla
     stored = _stored(identity=document, spec_id=spec_id)
 
     (shape,), (request,) = rehydrate_definition(
-        stored, graph=graph, enumerator=_enumerator(graph), code_index=get_index()
+        stored,
+        graph=graph,
+        enumerator=_enumerator(graph),
+        code_index=get_index(),
+        bounds=mint_bounds(),
     )
 
     assert shape == minted_shape
@@ -220,7 +247,11 @@ def test_a_flow_axis_alias_naming_no_declared_role_still_refuses_definition_not_
 
     with pytest.raises(DefinitionNotReproducible) as exc_info:
         rehydrate_definition(
-            stored, graph=graph, enumerator=_enumerator(graph), code_index=get_index()
+            stored,
+            graph=graph,
+            enumerator=_enumerator(graph),
+            code_index=get_index(),
+            bounds=mint_bounds(),
         )
 
     assert exc_info.value.spec_ids == (spec_id,)
@@ -235,26 +266,15 @@ def test_no_drift_since_minting_rehydrates_cleanly():
     stored = _stored(identity=document, spec_id=spec_id)
 
     (shape,), (request,) = rehydrate_definition(
-        stored, graph=graph, enumerator=_enumerator(graph), code_index=get_index()
+        stored,
+        graph=graph,
+        enumerator=_enumerator(graph),
+        code_index=get_index(),
+        bounds=mint_bounds(),
     )
 
     assert shape == minted_shape
     assert request.stat_var == _STAT_VAR_REF
-
-
-class _WithheldFromWalkGraphReader(FakeMintGraphReader):
-    """A `FakeMintGraphReader` whose `node_subjects` walk always reports
-    `truncated=True` and never returns `_ROOT`, simulating a member sitting
-    past a truncated page's own window -- reachable only as `seed`, not
-    something the walk itself would ever read. Mirrors
-    `test_resolve_definition_members_guards._WithheldFromWalkGraphReader`.
-    """
-
-    def node_subjects(self, dcid, *, property, filters=None, max_results):
-        page = super().node_subjects(
-            dcid, property=property, filters=filters, max_results=max_results
-        )
-        return type(page)(dcids=tuple(d for d in page.dcids if d != _ROOT), truncated=True)
 
 
 _ROOT = "Count_Person"
@@ -295,20 +315,17 @@ def _unbound_gender_identity() -> dict:
     }
 
 
-def test_rehydrate_definition_threads_seed_through_to_resolve_definition_members():
-    """Forwarding the root seed lets a truncated page prove completeness; without it,
-    rehydration raises `OverCeilingError`.
-    """
+def test_rehydrate_definition_threads_its_bounds_through_to_resolve_definition_members():
+    """Bounds let the walk read past a first page that leaves out the root."""
     stored = _stored(identity=_unbound_gender_identity())
-    graph = _WithheldFromWalkGraphReader(arcs=_GENDERED_ARCS)
-
-    with pytest.raises(OverCeilingError):
-        rehydrate_definition(
-            stored, graph=graph, enumerator=_enumerator(graph), code_index=get_index()
-        )
+    graph = FirstPageWithholdingGraphReader(arcs=_GENDERED_ARCS, withheld=frozenset({_ROOT}))
 
     (shape,), (request,) = rehydrate_definition(
-        stored, graph=graph, enumerator=_enumerator(graph), code_index=get_index(), seed=(_ROOT,)
+        stored,
+        graph=graph,
+        enumerator=_enumerator(graph),
+        code_index=get_index(),
+        bounds=MemberReadBounds(subject_ceiling=20_000, deadline=time.monotonic() + 3_600),
     )
 
     assert shape.stat_var == f"dcid:{_ROOT}"

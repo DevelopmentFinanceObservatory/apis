@@ -17,7 +17,7 @@ from materialise import (
     UpstreamResponseError,
 )
 from search.engine.bind import _UniversalBindOutput
-from search.engine.errors import EngineInputError, GraphCapExceededError
+from search.engine.errors import GraphCapExceededError
 from search.engine.region import resolve_spec_resubmit, resolve_variable
 from search.engine.region.codes import OBSERVATIONS_NO_POINTS, OBSERVATIONS_PROBE_FAILED
 from search.engine.region.observations import fetch as region_fetch
@@ -41,6 +41,7 @@ from tests.engine._harness import (
     harness_reader,
     materialise_double_from_obs,
     stub_preview_result,
+    walk_options,
 )
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise.conftest import FakeGraphReader
@@ -442,21 +443,27 @@ def test_build_observations_rows_over_search_obs_preview_max_rows_now_truncates_
 
 
 def test_resolve_spec_resubmit_standard_without_origins_is_unaffected():
-    """A standard resubmit without origin refs fails on its unresolvable shape."""
+    """A standard resubmit without origin refs answers no data for a shape no StatVar
+    carries, with no role refusal."""
     inp = ResubmitIdentityPayload(
-        identity=make_identity({"kind": "statvar_schema", "population_type": "doesnt_matter"})
+        identity=make_identity(
+            {
+                "kind": "statvar_schema",
+                "population_type": "doesnt_matter",
+                "measured_property": "count",
+            }
+        )
     )
 
-    # Shape resolution supplies the input error for this fixture.
-    with pytest.raises(EngineInputError) as exc_info:
-        resolve_spec_resubmit(
-            inp=inp,
-            graph=_empty_fake_graph(),
-            sdmx=FakeSdmxClient(),
-            coverage=empty_coverage_snapshot(),
-        )
+    region = resolve_spec_resubmit(
+        inp=inp,
+        graph=_empty_fake_graph(),
+        sdmx=FakeSdmxClient(),
+        coverage=empty_coverage_snapshot(),
+        options=walk_options(_empty_fake_graph()),
+    )
 
-    assert exc_info.value.code != "role_incompatible"
+    assert (region.status, region.no_data_reason) == ("no_data", "no_matching_slice")
 
 
 # This standard-family fixture has no directional role declaration.
@@ -508,7 +515,6 @@ def test_directional_wording_with_no_declaring_shape_in_the_recall_does_not_refu
             resolver=make_resolver(graph),
             llm=_TextDoorFixedBindLLM(),
             sdmx=FakeSdmxClient(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
@@ -539,7 +545,6 @@ def test_standard_shape_without_directional_wording_is_unaffected():
             resolver=make_resolver(graph),
             llm=_TextDoorFixedBindLLM(),
             sdmx=FakeSdmxClient(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )

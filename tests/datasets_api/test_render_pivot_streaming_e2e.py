@@ -7,13 +7,18 @@ non-adjacent chunks.
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
+
+import pytest
+
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.types import StatVarRow
 from datasets_api.mint_models import GroupbyOptions, MintOptions, PivotOptions
 from datasets_api.render import render_and_store
 from materialise.enrichment import EnrichmentLookup
 from materialise.pipeline import ConcatenatedFrameChunks
-from materialise.reshape import Table
+from materialise.profile import OutputProfile, compute_output_profile
+from materialise.reshape import PivotNotUniqueError, PivotOverCellCapError, Table
 
 from ._artifact_doubles import FakeArtifactStore
 from ._graph_doubles import FakeMintGraphReader
@@ -24,7 +29,12 @@ _CONTENT_VERSION = "sha256:" + "0" * 64
 
 
 def _render(
-    chunks: tuple[Table, ...], *, options: MintOptions, code_index: CodeIndex | None = None
+    chunks: Iterable[Table],
+    *,
+    options: MintOptions,
+    code_index: CodeIndex | None = None,
+    output_profile: OutputProfile | None = None,
+    pivot_max_output_cells: int = 5_000_000,
 ):
     artifact_store = FakeArtifactStore()
     rendered = render_and_store(
@@ -40,7 +50,8 @@ def _render(
         enrichment=EnrichmentLookup(_GRAPH),
         code_index=code_index,
         resolved_stat_var_refs=(),
-        pivot_max_output_cells=5_000_000,
+        pivot_max_output_cells=pivot_max_output_cells,
+        output_profile=output_profile,
         prepared_at=PREPARED_AT,
         site=SITE,
     )
@@ -94,6 +105,55 @@ def test_a_bare_pivot_never_builds_a_concatenated_frame_chunks(monkeypatch):
 
     assert rendered.artifact.artifact_digest.startswith("sha256:")
     assert b"country/KEN" in fetched
+
+
+def _profile(rows: tuple[tuple[object, ...], ...]) -> OutputProfile:
+    return compute_output_profile(
+        Table(columns=_BARE_COLUMNS, rows=rows),
+        role_columns=("recipient",),
+        enrichment=EnrichmentLookup(_GRAPH),
+    )
+
+
+def test_a_stored_profile_over_the_cell_cap_refuses_before_reading_the_second_chunk():
+    def chunks() -> Iterator[Table]:
+        yield Table(columns=_BARE_COLUMNS, rows=_BARE_ROWS[:1])
+        raise AssertionError("the pivot read past the first chunk")
+
+    options = MintOptions(
+        format="csv", bundle=False, pivot=PivotOptions(index="recipient", columns="time_period")
+    )
+
+    # Two recipients by three output columns is six cells.
+    with pytest.raises(PivotOverCellCapError) as excinfo:
+        _render(
+            chunks(),
+            options=options,
+            output_profile=_profile(_BARE_ROWS),
+            pivot_max_output_cells=5,
+        )
+
+    assert excinfo.value.count == 6
+
+
+def test_a_non_unique_bare_pivot_names_the_stored_varying_column():
+    rows = (
+        ("dcid:SV_A", "country/KEN", "2020", 10.0),
+        ("dcid:SV_B", "country/KEN", "2020", 20.0),
+        ("dcid:SV_A", "country/TGO", "2021", 15.0),
+    )
+    options = MintOptions(
+        format="csv", bundle=False, pivot=PivotOptions(index="recipient", columns="time_period")
+    )
+
+    with pytest.raises(PivotNotUniqueError) as excinfo:
+        _render(
+            (Table(columns=_BARE_COLUMNS, rows=rows),),
+            options=options,
+            output_profile=_profile(rows),
+        )
+
+    assert excinfo.value.varying == (("stat_var", 2),)
 
 
 # --- Fixture 2: groupby (streamed collapse) then pivot. ---------------------

@@ -20,7 +20,7 @@ from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, Literal, get_args
+from typing import TYPE_CHECKING, Any, Literal, Protocol, get_args
 
 import httpx
 
@@ -193,6 +193,12 @@ class WireSchema:
         return self._branches(node["items"]) if "items" in node else []
 
 
+class MembersReader(Protocol):
+    """Reads the StatVars a Datasets mint of a Spec serves, as bare dcids."""
+
+    def __call__(self, spec_id: str, definition: Mapping[str, Any]) -> list[str]: ...
+
+
 @dataclass(frozen=True)
 class ScoreContext:
     schema: WireSchema
@@ -201,6 +207,41 @@ class ScoreContext:
     sdmx: EngineSdmxClient | None = None
     coverage: CoverageService | None = None
     side: Literal["head", "base"] = "head"
+    members: MembersReader | None = None
+    """The responding app's members door (``runner.members_door_reader``): the wire states
+    how many StatVars a Spec serves, and the door names them (``served_stat_vars``). None
+    leaves a check that needs them unverifiable on an app whose wire does not list them."""
+
+
+class SpecRead(Protocol):
+    """A Spec body in a response, read at its own schema path ``at``."""
+
+    @property
+    def at(self) -> str: ...
+
+    def read(self, path: str, ctx: ScoreContext) -> Any: ...
+
+
+# Where an app built before the members door lists the StatVars a Spec serves.
+_WIRE_MEMBERS = "resolved.stat_vars.items"
+
+
+def served_stat_vars(spec: SpecRead, ctx: ScoreContext) -> list[str] | None:
+    """The StatVars a mint of ``spec`` serves, as the responding app states them, or None
+    when it states them nowhere the check can read.
+
+    An app whose schema declares ``resolved.stat_vars.items`` lists them in the answer, and
+    its ``ref``s are read there. Any other app names them through its members door
+    (``ScoreContext.members``), so each side of a paired run is scored by its own wire.
+    A failed door read raises one of ``READ_ERRORS``.
+    """
+    items_at = join(spec.at, _WIRE_MEMBERS)
+    if ctx.schema.has(items_at):
+        items = spec.read(_WIRE_MEMBERS, ctx) or []
+        return [read_path(item, "ref", ctx, at=f"{items_at}[]") for item in items]
+    if ctx.members is None:
+        return None
+    return ctx.members(spec.read("spec_id", ctx), spec.read("definition", ctx))
 
 
 class Unverifiable(Exception):

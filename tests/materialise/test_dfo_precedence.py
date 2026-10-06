@@ -17,7 +17,6 @@ from dc_sdmx.errors import SdmxResponseError
 from materialise import (
     EnrichmentLookup,
     MaterialisationRequest,
-    materialise_collection,
     materialise_group,
     materialise_preview,
 )
@@ -444,32 +443,6 @@ def _two_variable_graph() -> FakeGraphReader:
 
 
 @pytest.mark.usefixtures("overlap")
-def test_a_collection_chunk_serves_each_member_only_where_its_own_probe_admitted_the_facet():
-    fetched: list[str] = []
-    graph = _two_variable_graph()
-
-    result = materialise_collection(
-        [
-            ("spec_" + "0" * 32, _request(_VARIABLE, provenance=_BOUND_BASE)),
-            ("spec_" + "1" * 32, _request(_OTHER, provenance=_BOUND_BASE)),
-        ],
-        sdmx=_admission_blind_sdmx(fetched),
-        graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
-        materialiser_build="build-123",
-        capability_version="cap-v1",
-        # One lane keeps both same-scope members in one shared chunk fetch.
-        member_concurrency=1,
-    )
-
-    assert len(fetched) == 1
-    (_, overlap), (_, other) = result.members
-    assert overlap.coverage.entity_refs["observationAbout"] == frozenset({_P2})
-    assert other.coverage.entity_refs["observationAbout"] == frozenset({_P1, _P2})
-
-
-@pytest.mark.usefixtures("overlap")
 def test_a_group_fetch_serves_each_member_only_where_its_own_probe_admitted_the_facet():
     graph = _two_variable_graph()
 
@@ -522,31 +495,6 @@ _NEWEST_AT_P1 = tuple(
 
 
 @pytest.mark.usefixtures("overlap")
-def test_a_withheld_row_does_not_set_a_collection_member_latest_period():
-    graph = _two_variable_graph()
-
-    result = materialise_collection(
-        [
-            ("spec_" + "0" * 32, _latest(_request(_VARIABLE, provenance=_BOUND_BASE))),
-            ("spec_" + "1" * 32, _latest(_request(_OTHER, provenance=_BOUND_BASE))),
-        ],
-        sdmx=_sdmx_serving(*_NEWEST_AT_P1),
-        graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
-        materialiser_build="build-123",
-        capability_version="cap-v1",
-        member_concurrency=1,
-    )
-
-    (_, overlap), (_, other) = result.members
-    assert overlap.coverage.entity_refs["observationAbout"] == frozenset({_P2})
-    assert overlap.coverage.entity_refs["years"] == frozenset({2023})
-    assert other.coverage.entity_refs["observationAbout"] == frozenset({_P1})
-    assert other.coverage.entity_refs["years"] == frozenset({2024})
-
-
-@pytest.mark.usefixtures("overlap")
 def test_a_withheld_row_does_not_set_a_group_member_latest_period():
     graph = _two_variable_graph()
 
@@ -581,28 +529,6 @@ _MALFORMED_AFTER_GOOD = {
     "observationAbout": _base_row("NotApplicable", "2023", variable=_OTHER),
     "facetId": _base_row(_P2, "2023", variable=_OTHER, facet_id=""),
 }
-
-
-@pytest.mark.usefixtures("overlap")
-@pytest.mark.parametrize("missing", sorted(_MALFORMED_AFTER_GOOD))
-def test_a_malformed_row_mid_stream_fails_a_collection_fetch(missing: str):
-    graph = _two_variable_graph()
-    good = [_base_row(_P2, "2023", variable=v) for v in (_VARIABLE, _OTHER)]
-
-    with pytest.raises(SdmxResponseError, match=f"carry no {missing}"):
-        materialise_collection(
-            [
-                ("spec_" + "0" * 32, _request(_VARIABLE, provenance=_BOUND_BASE)),
-                ("spec_" + "1" * 32, _request(_OTHER, provenance=_BOUND_BASE)),
-            ],
-            sdmx=_sdmx_serving(*good, _MALFORMED_AFTER_GOOD[missing]),
-            graph=graph,
-            enrichment=EnrichmentLookup(graph),
-            revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
-            materialiser_build="build-123",
-            capability_version="cap-v1",
-            member_concurrency=1,
-        )
 
 
 @pytest.mark.usefixtures("overlap")

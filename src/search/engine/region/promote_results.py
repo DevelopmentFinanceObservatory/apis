@@ -1,11 +1,19 @@
-"""Shared `no_data` result builder for the standard-promote phases."""
+"""Shared `no_data` and `scope_too_broad` result builders for the standard-promote phases."""
 
 from __future__ import annotations
 
 from dfo_platform import Cause
 from search.engine.region.result import RegionResult
 from search.heading.departure_fact import DepartureFact
-from search.models import GraphRef, NoDataGate, Spec, Warning
+from search.models import (
+    SCHEMA_VERSION,
+    BaseIdentity,
+    GraphRef,
+    NoDataGate,
+    Spec,
+    Unsupported,
+    Warning,
+)
 
 
 def _no_data_region(
@@ -43,4 +51,31 @@ def _no_data_region(
         elected_stat_vars=elected_stat_vars,
         window_gap_fact=window_gap_fact,
         cause=cause,
+    )
+
+
+def _scope_too_broad_region(
+    variable_text: str, identity: BaseIdentity, reason: str, *, warnings: tuple[Warning, ...] = ()
+) -> RegionResult:
+    """Build the `scope_too_broad` part for a family the mint refuses as too broad to
+    settle. It points at the posted identity, which its definition restates."""
+    return RegionResult(
+        variable_text=variable_text,
+        status="unsupported",
+        specs=(),
+        no_data_reason=None,
+        warnings=warnings,
+        timing_by_step={},
+        unsupported=Unsupported(
+            code="scope_too_broad",
+            pointer="/definition/identity",
+            detail=(
+                f"{reason}, past what this deployment settles; bind a what or how slot "
+                "to narrow the family"
+            ),
+            definition={
+                "schema_version": SCHEMA_VERSION,
+                "identity": identity.core_document(mode="json"),
+            },
+        ),
     )

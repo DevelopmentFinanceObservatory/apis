@@ -184,7 +184,6 @@ def test_buffered_latest_serves_the_recorded_point_and_names_its_year():
     assert coverage.evidence == "observed"
     when_slot = next(slot for slot in spec.resolved.slots if slot.key.axis == "when")
     assert when_slot.binding.value.time_window == served_year
-    assert spec.resolved.trace.applied_window == served_year
 
 
 def test_sse_response_event_names_the_recorded_year_before_the_points_arrive():
@@ -212,7 +211,6 @@ def test_sse_response_event_names_the_recorded_year_before_the_points_arrive():
     resolved = part["spec"]["resolved"]
     served_year = {"start_year": 2024, "end_year": 2024}
     assert resolved["coverage"]["window"] == served_year
-    assert resolved["trace"]["applied_window"] == served_year
     when_slot = next(slot for slot in resolved["slots"] if slot["key"]["axis"] == "when")
     assert when_slot["binding"]["value"]["time_window"] == served_year
     assert "in 2024" in resolved["rendered_sentence"]

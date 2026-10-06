@@ -1,8 +1,7 @@
 """Build the sources response's `usage` object. Both entries are null for every dcid.
 
 A runnable sample needs a StatVar, but no API maps a source dcid to its
-variables. Mint's `source_codes` input requires a known `source:code` key
-and at least one code. The graph's reverse `isPartOf` arc lists a Dataset's
+variables. The graph's reverse `isPartOf` arc lists a Dataset's
 Provenance children, not its StatVars. Finding those variables would need
 an observation-wide scan.
 

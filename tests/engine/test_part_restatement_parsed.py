@@ -16,6 +16,7 @@ def _a_parsed_part(**overrides) -> ParsedPart:
         "unit_text": "US dollars",
         "source_text": "World Bank",
         "operations": [Operation(verb="rank", phrase="top 5", over="place")],
+        "open_roles": ["donor"],
     }
     fields.update(overrides)
     return ParsedPart(**fields)
@@ -35,6 +36,7 @@ class TestTheOverrideEchoesTheLegsOwnInputs:
         assert restatement.unit_text == "US dollars"
         assert restatement.source_text == "World Bank"
         assert restatement.operations == [Operation(verb="rank", phrase="top 5", over="place")]
+        assert restatement.open_roles == ["donor"]
 
     def test_the_stripped_text_is_what_lands_in_the_echo(self):
         """The restatement echoes the stripped text passed to `resolve_variable`."""
@@ -73,7 +75,6 @@ class TestThroughTheRealParsedDoor:
         assert len(result.parts) == 2
         for part in result.parts:
             assert part.restatement is not None
-            assert part.restatement_reason is None
         assert [part.restatement.variable_text for part in result.parts] == ["population", "GDP"]
 
     def test_one_refused_echo_one_present_echo(self):
@@ -87,6 +88,4 @@ class TestThroughTheRealParsedDoor:
         assert len(result.parts) == 2
         refused, echoed = result.parts
         assert refused.restatement is None
-        assert refused.restatement_reason is not None
         assert echoed.restatement is not None
-        assert echoed.restatement_reason is None

@@ -213,7 +213,6 @@ def _run():
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_ChooseShape0AlsoPlausibleShapes12LLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
@@ -222,7 +221,7 @@ def _run():
 
 def _spec_for(specs, sv_dcid: str):
     return next(
-        spec for spec in specs if any(sv.ref == sv_dcid for sv in spec.resolved.stat_vars.items)
+        spec for spec in specs if any(sv.ref.dcid == sv_dcid for sv in spec.resolved.members)
     )
 
 

@@ -68,7 +68,6 @@ def _run(variable: str, role_query: str, entities: list[str]):
             graph=graph,
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),

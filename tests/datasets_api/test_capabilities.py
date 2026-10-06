@@ -15,7 +15,6 @@ from datasets_api.capabilities import (
     build_capabilities,
 )
 from datasets_api.config import DatasetsBuildSettings
-from datasets_api.models import MAX_COLLECTION_MEMBERS
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from dfo_platform.build import build_commit
 from materialise.facets import DEPLOYMENT_FACET_POLICY, DEPLOYMENT_FACET_POLICY_VERSION
@@ -37,7 +36,6 @@ def _capabilities() -> Capabilities:
 class TestPublishedCapsEqualEnforcedValues:
     def test_caps_equal_config_and_model_constants(self):
         caps = _capabilities().caps
-        assert caps.max_collection_members == MAX_COLLECTION_MEMBERS
         assert caps.definition_candidate_cap == CANDIDATE_CAP
         assert caps.sync_budget_rows == _SETTINGS.sync_budget_rows
         assert caps.sync_budget_requests == _SETTINGS.sync_budget_requests
@@ -67,12 +65,7 @@ class TestMintDoorLivenessMatchesWhatActuallyDispatches:
 
     def test_input_kind_liveness(self):
         kinds = {k.name: k.live for k in _capabilities().input_kinds}
-        assert kinds == {
-            "spec_id": True,
-            "collection_id": True,
-            "statvar_set": True,
-            "source_codes": True,
-        }
+        assert kinds == {"spec_id": True, "statvar_set": True}
 
     def test_format_liveness(self):
         formats = {f.name: f.live for f in _capabilities().formats}

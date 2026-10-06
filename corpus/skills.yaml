@@ -1,6 +1,6 @@
 - id: skills-grant-equivalent-france
   query: grant equivalent ODA from France
-  why: Grant equivalent ODA from France matches skills through the measuredProperty shape anchor and through the CRS source attachment.
+  why: Grant equivalent ODA from France is a donor total, which DAC1 answers with total ODA, and it matches skills through the measuredProperty shape anchor.
   tags:
     feature: skills
     directional_flow: na
@@ -15,7 +15,7 @@
           measurement_qualifier: Nominal
           measurement_denominator: null
         bound:
-          crsTypeOfFlow: CRSTypeOfFlow10
+          dac1AidType: DAC1AidType1010
           financialFlowType: Disbursement
       entities:
       - dcid: country/FRA
