@@ -529,9 +529,7 @@ def _ground_and_build_spec(
         bound_facet_axes(slots, state.inp.identity.facets), "bound"
     )
     state.unit_request_basis = _unit_request_basis_from_facets(state.inp.identity.facets)
-    named_groups = resubmit_named_groups(
-        state.inp.identity, graph=state.graph, deadline=state.deadline
-    )
+    named_groups = resubmit_named_groups(state.inp, graph=state.graph, deadline=state.deadline)
     spec = state.spec = build_spec(
         shape=shape_model,
         slots=slots,

@@ -31,7 +31,7 @@ from search.models import (
     UNIT_REF,
     Departure,
     DepartureCode,
-    IdentityEntityGroup,
+    EntityGroup,
     OperationVerb,
     SentenceToken,
 )
@@ -186,7 +186,7 @@ def _entity_unavailable(fact: DepartureFact, _family: FlowFamily | None, _shows_
     period = _latest_period(fact.latest_years)
     pronoun = "it" if len(fact.entities) == 1 else "them"
     if fact.group is not None and fact.group_size is not None:
-        group = IdentityEntityGroup(label=fact.group)
+        group = EntityGroup(label=fact.group)
         members = group_text(fact.group_size, group)
         text = f"The data holds no values{period} for {len(fact.entities)} of {members}."
     else:
@@ -354,7 +354,7 @@ def _group_read_as_members(
         return f"You asked for {_asked(fact)}. This {verb} its members, each on its own."
     if fact.group is None or fact.group_size is None:
         raise ValueError("group_read_as_members with nothing asked needs the group shown")
-    group = IdentityEntityGroup(label=fact.group)
+    group = EntityGroup(label=fact.group)
     members = group_text(fact.group_size, group)
     return f"This {verb} {members}, each on its own."
 

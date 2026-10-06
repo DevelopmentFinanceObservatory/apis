@@ -20,5 +20,5 @@ def identity_pinned_properties(identity: BaseIdentity) -> frozenset[str]:
     if not isinstance(identity.shape, IdentityShapeSchema):
         return frozenset()
     index = get_index()
-    query = identity_family_query(index, identity.core_document(mode="json"))
+    query = identity_family_query(index, identity.model_dump(mode="json", exclude_none=True))
     return frozenset(elected_pins(index, query))

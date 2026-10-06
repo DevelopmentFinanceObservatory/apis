@@ -240,18 +240,11 @@ def test_unregistered_spec_id_with_no_sidecar_refuses_spec_not_found():
     assert problem["pointer"] == "/input/spec_id"
 
 
-@pytest.mark.parametrize("grouped", [False, True], ids=["ungrouped", "grouped"])
-def test_unregistered_spec_id_with_a_matching_sidecar_mints_it_then_serves(grouped):
-    """A sidecar copied from a grouped Search answer carries `entity_groups`, which stays
-    outside the hash: it mints the same spec_id and the registry stores the identity core."""
+def test_unregistered_spec_id_with_a_matching_sidecar_mints_it_then_serves():
     store = FakeDatasetStore()
     graph = _graph()
     client = _client(artifact_store=FakeArtifactStore(), store=store, graph=graph)
     spec_id, definition = _sidecar_for(graph=graph)
-    core = definition["identity"]
-    if grouped:
-        groups = {"recipient": {"label": "recipient countries"}}
-        definition = {**definition, "identity": {**core, "entity_groups": groups}}
 
     resp = client.post("/api/datasets", json=_spec_id_body(spec_id, definition=definition))
 
@@ -260,9 +253,27 @@ def test_unregistered_spec_id_with_a_matching_sidecar_mints_it_then_serves(group
     assert manifest["definition"]["spec_id"] == spec_id
     assert spec_id in store.state.spec_registry
     assert store.state.spec_definition[(spec_id, 1)]["definition"]["identity"] == (
-        recompute_identity(core).identity
+        recompute_identity(definition["identity"]).identity
     )
     assert len(store.state.spec_registry) == 1
+
+
+def test_a_sidecar_identity_that_carries_entity_groups_is_refused():
+    """A named group is request context beside an identity, so the mint refuses a sidecar
+    whose identity holds one and writes no registry row."""
+    store = FakeDatasetStore()
+    graph = _graph()
+    client = _client(artifact_store=FakeArtifactStore(), store=store, graph=graph)
+    spec_id, definition = _sidecar_for(graph=graph)
+    groups = {"recipient": {"label": "recipient countries"}}
+    definition = {**definition, "identity": {**definition["identity"], "entity_groups": groups}}
+
+    resp = client.post("/api/datasets", json=_spec_id_body(spec_id, definition=definition))
+
+    assert resp.status_code == 400, resp.text
+    problem = resp.json()
+    assert (problem["code"], problem["pointer"]) == ("request_invalid", "/input/spec_id")
+    assert store.state.spec_registry == {}
 
 
 def test_a_sidecar_that_does_not_reproduce_against_the_graph_leaves_no_registry_row():

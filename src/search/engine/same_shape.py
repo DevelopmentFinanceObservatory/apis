@@ -34,7 +34,7 @@ from search.engine.spec_build import (
     RoleAxisFactInput,
     build_spec,
     entity_from_resolved,
-    identity_named_groups,
+    spec_named_groups,
 )
 from search.engine.unit.conversion import with_unit_conversion
 from search.models import (
@@ -1136,11 +1136,7 @@ def _merge_group(
         open_axis_facts=open_axis_facts,
         role_axis_facts=role_axis_facts,
         # A member's group survives on a role the merge leaves unchanged.
-        named_groups=[
-            named
-            for region in group
-            for named in identity_named_groups(region.spec.definition.identity)
-        ],
+        named_groups=[named for region in group for named in spec_named_groups(region.spec)],
         # The merged identity's alternatives read every member's entities.
         measure_served_rows=measure_served_counter(served_filter),
     )

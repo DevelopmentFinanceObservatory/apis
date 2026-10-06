@@ -30,12 +30,12 @@ from search.models import (
     CoverageExact,
     DateRange,
     Entity,
+    EntityGroup,
     EntityRoleDirectional,
     GraphRef,
     IdentityBindingSet,
     IdentityBindingValue,
     IdentityCurrencyRole,
-    IdentityEntityGroup,
     IdentityFacetValueAbsent,
     IdentityFacetValueRequest,
     IdentityUnitRequest,
@@ -398,7 +398,7 @@ def heading_from_parts(
     measure_label_axes: Sequence[str] = (),
     measure_label_named_values: Sequence[tuple[str, str]] = (),
     unit_request: IdentityUnitRequest | None = None,
-    entity_groups: Mapping[str, IdentityEntityGroup] | None = None,
+    entity_groups: Mapping[str, EntityGroup] | None = None,
     role_axis_facts: Sequence[RoleAxisFact] = (),
     member_constraints: Sequence[Mapping[str, str]] = (),
 ) -> HeadingPlan:
@@ -718,7 +718,7 @@ _ROLE_COVERAGE_LABELS: Mapping[str, RoleAxis] = {
 }
 
 
-def _entities_text(labels: list[str], *, group: IdentityEntityGroup | None, plural: str) -> str:
+def _entities_text(labels: list[str], *, group: EntityGroup | None, plural: str) -> str:
     """Name a role's entities: by group and count (`group_text`), by count past three,
     else by name."""
     if group is not None and len(labels) > 1:
@@ -771,7 +771,7 @@ def _role_phrases(
     *,
     wording: RoleWording,
     where_slot: Slot | None,
-    entity_groups: Mapping[str, IdentityEntityGroup],
+    entity_groups: Mapping[str, EntityGroup],
     role_axis_facts: Sequence[RoleAxisFact],
     scope: ResolvedScope | None,
     coverage: Coverage | None,
@@ -787,7 +787,7 @@ def _role_phrases(
     for axis in _ROLE_ORDER:
         noun = wording.noun(axis)
         entities = [entity for entity in norm_entities if entity.axis == axis]
-        group: IdentityEntityGroup | None = None
+        group: EntityGroup | None = None
         if entities:
             group = entity_groups.get(axis) if len(entities) > 1 else None
             labels = [_entity_name(e.dcid, e.label) for e in entities]
@@ -820,7 +820,7 @@ def _role_phrases(
 def _subject_phrase(
     where_slot: Slot | None,
     *,
-    group: IdentityEntityGroup | None,
+    group: EntityGroup | None,
     coverage: Coverage | None,
 ) -> RolePhrase | None:
     """Return the where slot's phrase for a heading with no destination, or None.

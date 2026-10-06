@@ -26,7 +26,7 @@ from search.engine.retrieval.member_facts import ArcsMemberFacts
 from search.models import (
     BaseIdentity,
     DatasetResubmitInput,
-    IdentityEntityGroup,
+    EntityGroup,
     ResolveOptions,
     ResolveRequest,
     ResolveResponse,
@@ -73,8 +73,13 @@ def _identity(slots: list) -> BaseIdentity:
     return make_identity(_SHAPE, slots, entities=[subject_entity("country/KEN")])
 
 
-def _payload(identity: BaseIdentity | None = None) -> ResubmitIdentityPayload:
-    return ResubmitIdentityPayload(identity=identity or _identity([_FEMALE]))
+def _payload(
+    identity: BaseIdentity | None = None,
+    entity_groups: dict[str, EntityGroup] | None = None,
+) -> ResubmitIdentityPayload:
+    return ResubmitIdentityPayload(
+        identity=identity or _identity([_FEMALE]), entity_groups=entity_groups
+    )
 
 
 _FLAGS = {
@@ -116,21 +121,13 @@ def _key(
     )
 
 
-def _grouped_identity() -> BaseIdentity:
-    identity = _payload().identity
-    return identity.model_copy(
-        update={
-            "entity_groups": {
-                "observationAbout": IdentityEntityGroup(dcid=None, label="East Africa")
-            }
-        }
-    )
+_GROUPS = {"observationAbout": EntityGroup(dcid=None, label="East Africa")}
 
 
 @pytest.mark.parametrize(
     "perturbed",
     [
-        pytest.param(lambda: _key(_payload(identity=_grouped_identity())), id="entity_groups"),
+        pytest.param(lambda: _key(_payload(entity_groups=_GROUPS)), id="entity_groups"),
         pytest.param(lambda: _key(_payload(identity=_identity([]))), id="identity_slots"),
         *(pytest.param(lambda flag=flag: _key(flag=flag), id=flag) for flag in _FLAGS),
         *(
@@ -197,13 +194,14 @@ def _edited_debt_resubmit(
             ],
         }
     )
-    if group_read_fails:
-        edited = edited.model_copy(
-            update={
-                "entity_groups": {"destination": IdentityEntityGroup(dcid="africa", label="Africa")}
-            }
-        )
-    payload = ResubmitIdentityPayload(identity=edited)
+    payload = ResubmitIdentityPayload(
+        identity=edited,
+        entity_groups=(
+            {"destination": EntityGroup(dcid="africa", label="Africa")}
+            if group_read_fails
+            else None
+        ),
+    )
     graph = (_GroupReadFails if group_read_fails else FakeGraph)(
         nodes={**_PLACES, **_DEBT_NODES},
         detect={},

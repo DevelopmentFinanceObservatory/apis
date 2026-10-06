@@ -289,8 +289,8 @@ def part_memo_key(
 ) -> str:
     """Key one resubmitted identity's region in the part memo.
 
-    The payload is the identity alone, and the whole of it enters, `entity_groups` included,
-    since each field changes the answer and the answer echoes the identity posted.
+    The payload is the identity and the named groups posted beside it, and the whole of it
+    enters, since each field changes the answer.
     `engine_flags` are the four enrichment flags of the call's `EngineOptions`. The build commit covers the
     code index, and the graph generation, coverage stamp, conversion catalogue revision,
     origin catalogue build with its UN System setting, and UTC day cover what the graph,
