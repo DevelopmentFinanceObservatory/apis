@@ -42,7 +42,6 @@ def test_population_with_a_bank_entity_refuses_entity_role_not_admitted():
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_FixedBindLLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
@@ -72,7 +71,6 @@ def test_ambiguous_entity_refuses_entity_ambiguous_before_admission_ever_runs():
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_FixedBindLLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
@@ -102,7 +100,6 @@ def test_unresolved_entity_alongside_not_admitted_entity_refuses_entity_not_reso
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_FixedBindLLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
@@ -127,7 +124,6 @@ def test_ambiguous_entity_alongside_not_admitted_entity_refuses_entity_ambiguous
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_FixedBindLLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
@@ -172,7 +168,6 @@ def test_crs_role_bearing_shape_admits_a_bank_on_the_provider_axis():
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_FixedBindLLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
@@ -198,7 +193,6 @@ def test_income_in_california_reaches_materialise_not_a_resolution_time_refusal(
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_FixedBindLLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
@@ -265,7 +259,6 @@ def test_pruning_keeps_only_the_role_bearing_shape():
         source_text=None,
         materialise_graph=None,
         materialise_sdmx=None,
-        pipeline_steps=[],
         timing={},
         warnings=[],
         rcl=Recall(

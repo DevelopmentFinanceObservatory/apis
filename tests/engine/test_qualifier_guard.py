@@ -94,7 +94,6 @@ def _state(
         source_text=None,
         materialise_graph=None,
         materialise_sdmx=None,
-        pipeline_steps=[],
         timing={},
         warnings=[],
         # Recall resolved no place, so the minted identity binds no role key.
@@ -207,6 +206,21 @@ def test_unplaced_per_person_rate_base_on_a_per_person_shape_is_not_refused(vari
     assert _resolve_query_qualifiers(state) == []
 
 
+def test_unplaced_per_person_rate_base_on_a_person_count_denominator_is_not_refused():
+    """A StatVar denominator the leg's kinds read as a count of persons carries the phrase
+    as `Count_Person` does."""
+    state = _state(
+        variable="mobile phone subscriptions per 100 people",
+        shape_draft=_per_person_shape("Count_Person_15OrMoreYears"),
+        bindings=[
+            _binding("productType", kind="value", value_dcids=["MobileCellularSubscription"])
+        ],
+        unplaced=["per 100 people"],
+    )
+    state.denominator_kinds = {"Count_Person_15OrMoreYears": "person"}
+    assert _resolve_query_qualifiers(state) == []
+
+
 def test_unplaced_per_person_rate_base_without_a_per_person_denominator_is_refused():
     state = _state(
         variable="mobile phone subscriptions per 100 people",
@@ -231,6 +245,69 @@ def test_unplaced_narrowing_phrase_on_a_per_person_shape_is_refused():
     )
     qualifiers = _resolve_query_qualifiers(state)
     assert [(q.text, q.disposition) for q in qualifiers] == [("prepaid", "no_vocabulary")]
+
+
+# ---------------------------------------------------------------------------
+# An unplaced phrase naming a declared slot of the elected shape is placed
+# ---------------------------------------------------------------------------
+
+_PURPOSE_SLOT = SlotKeyDraft(axis="how", property_dcid="crsPurpose", label="CRS purpose")
+
+
+@pytest.mark.parametrize(
+    ("variable", "slots", "phrase", "refused"),
+    [
+        pytest.param(
+            "ODA by sector", (_FLOW_SLOT, _PURPOSE_SLOT), "sector", [], id="declared-slot-noun"
+        ),
+        pytest.param(
+            "ODA by sectors", (_FLOW_SLOT, _PURPOSE_SLOT), "Sectors", [], id="plural-slot-noun"
+        ),
+        pytest.param(
+            "ODA by sector",
+            (_FLOW_SLOT, _PURPOSE_SLOT),
+            "by sector",
+            [("by sector", "no_vocabulary")],
+            id="phrase-holding-the-slot-noun",
+        ),
+        pytest.param(
+            "ODA to the space sector",
+            (_FLOW_SLOT, _PURPOSE_SLOT),
+            "space sector",
+            [("space sector", "no_vocabulary")],
+            id="value-the-slot-lacks",
+        ),
+        pytest.param(
+            "ODA by channel",
+            (_FLOW_SLOT, _PURPOSE_SLOT),
+            "channel",
+            [("channel", "no_vocabulary")],
+            id="undeclared-noun",
+        ),
+        pytest.param(
+            "ODA by sector",
+            (_FLOW_SLOT,),
+            "sector",
+            [("sector", "no_vocabulary")],
+            id="slot-noun-the-shape-does-not-declare",
+        ),
+    ],
+)
+def test_unplaced_slot_noun(variable, slots, phrase, refused):
+    """dataset-oda-kenya-by-sector: the bind model listed "sector" as unplaced on the CRS
+    shape, whose `crsPurpose` slot the index declares under the plain name "sector". Only
+    the bare noun is placed; a longer phrase holding it still refuses."""
+    state = _state(
+        variable=variable,
+        shape_draft=_shape(*slots),
+        bindings=[
+            _binding("crsTypeOfFlow", kind="value", value_dcids=["CRSTypeOfFlow10"]),
+            *([_binding("crsPurpose")] if _PURPOSE_SLOT in slots else []),
+        ],
+        unplaced=[phrase],
+    )
+    qualifiers = _resolve_query_qualifiers(state)
+    assert [(q.text, q.disposition) for q in qualifiers if q.text != "ODA"] == refused
 
 
 # ---------------------------------------------------------------------------
@@ -338,7 +415,14 @@ def test_ambiguous_span_with_no_covering_binding_is_unbound():
     q = qualifiers[0]
     assert q.disposition == "unbound"
     assert q.slot is None
-    assert {ref.dcid for ref in q.named} == {"CRSCooperationModalityA", "CRSPurposeCode510"}
+    # The index does not carry this shape's five-tuple, so it names every code the text
+    # names, the DAC1 aid types among them.
+    assert {ref.dcid for ref in q.named} == {
+        "CRSCooperationModalityA",
+        "CRSPurposeCode510",
+        "DAC1AidType1100",
+        "DAC1AidType2210",
+    }
     assert _has_miss(qualifiers)
 
 
@@ -470,7 +554,8 @@ def test_qualifier_not_bound_wire_no_data_assembles_with_gate_less_flagged_match
     by_text = {q.text: q for q in qualifiers}
     assert by_text["untied"].disposition == "no_vocabulary"
 
-    spec = Spec.model_validate(minimal_spec("s1"))
+    wire = Spec.model_validate(minimal_spec("s1"))
+    spec = wire.model_copy(update={"resolved": wire.resolved.stating_members([])})
 
     # No flagged match needs no gate.
     bare = NoData(reason="qualifier_not_bound", unbound_qualifiers=qualifiers)
@@ -492,7 +577,6 @@ def test_qualifier_not_bound_wire_no_data_assembles_with_gate_less_flagged_match
         region,
         representative=region,
         folded=False,
-        include_sentence=False,
         max_candidates=1,
         include_observations=False,
         include_skills=False,

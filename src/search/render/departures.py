@@ -28,7 +28,6 @@ from typing import Final
 from dfo_platform.roles import GENERIC_ROLE_WORDING, FlowFamily, role_wording
 from search.heading.departure_fact import DepartureFact, ordered_facts
 from search.models import (
-    SOURCE_REF,
     UNIT_REF,
     Departure,
     DepartureCode,
@@ -126,17 +125,14 @@ def _closest_match(fact: DepartureFact, _family: FlowFamily | None, shows_data: 
 
 
 def _measure_not_applied(fact: DepartureFact, _family: FlowFamily | None, shows_data: bool) -> str:
-    """A price basis (the unit token's ref) is stated without its leading preposition. A
-    dataset (the source token's ref) names the source shown. Any other dropped phrase is
-    the user's own words, quoted. A door that holds none (a resubmit, `asked` is `None`)
-    names the posted values left out (`DepartureFact.values`)."""
+    """A price basis (the unit token's ref) is stated without its leading preposition. Any
+    other dropped phrase is the user's own words, quoted. A door that holds none (a
+    resubmit, `asked` is `None`) names the posted values left out (`DepartureFact.values`)."""
     if fact.binding_ref == UNIT_REF:
         if fact.shown is None:
             raise ValueError("a price basis departure needs the price basis shown")
         verb = "shows" if shows_data else "checked"
         return f"You asked for {_without_preposition(_asked(fact))}. This {verb} {fact.shown}."
-    if fact.binding_ref == SOURCE_REF:
-        return _dataset_not_applied(fact, shows_data=shows_data)
     if fact.asked is None:
         if not fact.values:
             raise ValueError("measure_not_applied with nothing asked needs the values left out")
@@ -147,17 +143,6 @@ def _measure_not_applied(fact: DepartureFact, _family: FlowFamily | None, shows_
     asked = f'You asked for "{_asked(fact)}".'
     if shows_data:
         return f"{asked} This shows the measure without it."
-    return f"{asked} This check left it out."
-
-
-def _dataset_not_applied(fact: DepartureFact, *, shows_data: bool) -> str:
-    """The source shown (`shown`), or, when the part's readings come from several sources,
-    that none of them is the dataset asked for."""
-    asked = f"You asked for {_asked(fact)}."
-    if fact.shown is not None:
-        return f"{asked} This {'uses' if shows_data else 'checked'} {fact.shown}."
-    if shows_data:
-        return f"{asked} None of these readings comes from it."
     return f"{asked} This check left it out."
 
 
@@ -189,7 +174,7 @@ def _breakdown_not_applied(fact: DepartureFact, family: FlowFamily | None, shows
     return f"You asked for a breakdown by {noun}. {total}; name a {noun} to see one."
 
 
-def _entity_unavailable(fact: DepartureFact, family: FlowFamily | None, _shows_data: bool) -> str:
+def _entity_unavailable(fact: DepartureFact, _family: FlowFamily | None, _shows_data: bool) -> str:
     """The entities the data holds no values for, by name. On a role the request named as
     a group, a count of the group as the heading names it (`labels.group_text`), since the
     request named none of its members. The group's `group_read_as_members` departure
@@ -202,7 +187,7 @@ def _entity_unavailable(fact: DepartureFact, family: FlowFamily | None, _shows_d
     pronoun = "it" if len(fact.entities) == 1 else "them"
     if fact.group is not None and fact.group_size is not None:
         group = IdentityEntityGroup(label=fact.group)
-        members = group_text(fact.group_size, group, wording=role_wording(family))
+        members = group_text(fact.group_size, group)
         text = f"The data holds no values{period} for {len(fact.entities)} of {members}."
     else:
         text = (
@@ -358,7 +343,9 @@ def _modelled_values(fact: DepartureFact, _family: FlowFamily | None, _shows_dat
     )
 
 
-def _group_read_as_members(fact: DepartureFact, family: FlowFamily | None, shows_data: bool) -> str:
+def _group_read_as_members(
+    fact: DepartureFact, _family: FlowFamily | None, shows_data: bool
+) -> str:
     """The group asked for, read as its members. A door holding no words for the group (a
     resubmit, `asked` is `None`) states only the members shown, as the heading names them
     (`labels.group_text`)."""
@@ -368,7 +355,7 @@ def _group_read_as_members(fact: DepartureFact, family: FlowFamily | None, shows
     if fact.group is None or fact.group_size is None:
         raise ValueError("group_read_as_members with nothing asked needs the group shown")
     group = IdentityEntityGroup(label=fact.group)
-    members = group_text(fact.group_size, group, wording=role_wording(family))
+    members = group_text(fact.group_size, group)
     return f"This {verb} {members}, each on its own."
 
 

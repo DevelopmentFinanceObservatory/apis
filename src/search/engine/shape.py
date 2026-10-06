@@ -145,10 +145,16 @@ class ShapeDraft:
     # shape no candidacy kept, whose pre-bind readers read every dataset. It enters
     # equality and the hash, since a named and an unnamed part read different rows.
     datasets: tuple[str, ...] | None = None
-    # The dataset the part names, stamped by shape candidacy beside `datasets`; None for a
-    # part that names none. Only a named part's identity implies its dataset's invariants
+    # The dataset the part names, stamped by shape candidacy beside `datasets`: the one the
+    # part asks for, or the one opt-in dataset an unnamed part may answer the shape from;
+    # None otherwise. Only an identity naming a dataset implies its invariants
     # (`bound_values.shape_invariants`).
     named_dataset: str | None = None
+    # The declared datasets the bind menu's source slot offers, stamped by shape candidacy
+    # beside `datasets`: every declared publisher of the shape's family the part does not
+    # exclude, opt-in ones included, when the part names no dataset and two or more remain;
+    # empty otherwise. The model names or excludes one of them (`bind.drafted_source`).
+    source_options: tuple[str, ...] = ()
     # False for shapes rebuilt from a posted identity, which have no retrieval
     # score. Their place confidence uses data availability alone. Expansion-only
     # Expansion-only shapes count as retrieved, so a missing score caps confidence.

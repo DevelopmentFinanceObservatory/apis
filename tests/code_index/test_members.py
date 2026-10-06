@@ -6,10 +6,13 @@ parity with the graph walk.
 
 from __future__ import annotations
 
+import pytest
+
 from code_index.members import (
     FamilyQuery,
     antichain_minimal_rows,
     family_for_five_tuple,
+    identity_family_query,
     index_covers_slot_keys,
 )
 from code_index.query import CodeIndex
@@ -318,15 +321,63 @@ def test_index_role_twins_resolve_to_the_breakdown_when_the_creditor_is_bound():
     assert _twin_family(_ids_twin_index(), "origin", "destination") == ["PPG_ByCreditor"]
 
 
-def test_a_by_creditor_row_of_other_constraint_values_is_no_twin_of_the_total():
+@pytest.mark.parametrize(
+    ("open_roles", "expected"),
+    [((), ["PPG"]), (("origin",), ["PPG_ByCreditor"])],
+    ids=["unnamed-creditor", "open-creditor"],
+)
+def test_an_identitys_open_creditor_resolves_the_twins_to_the_breakdown(open_roles, expected):
+    """An open role joins the role keys the identity elects under, as a bound one does, so
+    a debtor with every creditor asked for reads the by-creditor twin."""
+    index = _ids_twin_index()
+    identity: dict[str, object] = {
+        "shape": {
+            "kind": "statvar_schema",
+            "population_type": _IDS_FIVE_TUPLE.population_type,
+            "measured_property": _IDS_FIVE_TUPLE.measured_property,
+            "stat_type": _IDS_FIVE_TUPLE.stat_type,
+            "measurement_qualifier": _IDS_FIVE_TUPLE.measurement_qualifier,
+        },
+        "slots": [{"property": name, "binding": {"state": "unbound"}} for name in _IDS_SLOTS],
+        "entities": {"destination": ["country/NGA"]},
+    }
+    if open_roles:
+        identity["open_roles"] = list(open_roles)
+
+    family = family_for_five_tuple(index, identity_family_query(index, identity))
+
+    assert [row.dcid for row in family.rows] == expected
+
+
+@pytest.mark.parametrize(
+    ("role_keys", "open_role_keys", "expected", "elected_keys"),
+    [
+        (("destination",), (), ["PPG"], {"destination"}),
+        (("destination",), ("origin",), ["PPG"], {"destination"}),
+        (("origin", "destination"), (), ["PPG_ByCreditor"], {"origin", "destination"}),
+    ],
+    ids=["unnamed-creditor", "open-creditor", "bound-creditor"],
+)
+def test_a_total_answers_beside_a_by_creditor_row_of_other_constraint_values(
+    role_keys, open_role_keys, expected, elected_keys
+):
     """Equal constraint keys with another value are a different population, so the total
-    does not displace it, and the two role sets tie."""
+    does not displace the by-creditor row as a twin. The row declares a creditor the
+    question does not ask for and leaves for the total, an open creditor no twin of the
+    total places is set aside, and a bound creditor reads the row."""
     index = _ids_twin_index(
         by_creditor_constraints={**_IDS_CONSTRAINTS, "guaranteeStatus": "Private"}
     )
-    query = FamilyQuery(_IDS_FIVE_TUPLE, _IDS_SLOTS, None, role_keys=frozenset({"destination"}))
+    query = FamilyQuery(
+        _IDS_FIVE_TUPLE,
+        _IDS_SLOTS,
+        None,
+        role_keys=frozenset(role_keys),
+        open_role_keys=frozenset(open_role_keys),
+    )
 
-    assert {row.dcid for row in family_for_five_tuple(index, query).rows} == {
-        "PPG",
-        "PPG_ByCreditor",
-    }
+    family = family_for_five_tuple(index, query)
+
+    assert [row.dcid for row in family.rows] == expected
+    assert family.role_keys == elected_keys
+    assert not family.tied

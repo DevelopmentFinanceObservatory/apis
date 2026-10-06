@@ -179,7 +179,7 @@ class TestDateRequestToTimeText:
 class TestLegRestatement:
     def test_builds_the_parsed_part_shape(self):
         date_request = DateRequest(window=TimeWindow(start_year=2015, end_year=2020), latest=False)
-        restatement, reason = _leg_restatement(
+        restatement = _leg_restatement(
             "GDP",
             entities=["Brazil", "Angola"],
             date_request=date_request,
@@ -193,10 +193,9 @@ class TestLegRestatement:
             unit_text="US dollars",
             source_text="World Bank",
         )
-        assert reason == "no_phrase_inputs"
 
     def test_no_entities_is_none_not_an_empty_list(self):
-        restatement, _reason = _leg_restatement(
+        restatement = _leg_restatement(
             "GDP", entities=[], date_request=None, unit_text=None, source_text=None
         )
         assert restatement is not None
@@ -204,15 +203,14 @@ class TestLegRestatement:
 
     def test_a_leg_input_ParsedPart_cannot_express_yields_no_restatement(self):
         # Empty variable text fails ParsedPart validation.
-        restatement, reason = _leg_restatement(
+        restatement = _leg_restatement(
             "", entities=[], date_request=None, unit_text=None, source_text=None
         )
         assert restatement is None
-        assert reason == "inputs_exceed_caps"
 
     def test_directional_leg_with_no_axis_for_the_entity_yields_no_restatement(self):
         # Directional wording without a door role cannot be represented in the echo.
-        restatement, reason = _leg_restatement(
+        restatement = _leg_restatement(
             "aid",
             entities=["France"],
             date_request=None,
@@ -221,11 +219,10 @@ class TestLegRestatement:
             directional=True,
         )
         assert restatement is None
-        assert reason == "direction_unnameable"
 
     def test_undirected_leg_with_entities_still_yields_one(self):
         # A subject-bound entity remains representable without a direction.
-        restatement, _reason = _leg_restatement(
+        restatement = _leg_restatement(
             "population",
             entities=["Brazil"],
             date_request=None,
@@ -330,7 +327,7 @@ class TestSuccessDirectional:
         )
         directional = _success_directional(region, role_query="aid from USA to Atlantis")
         assert directional is True
-        restatement, reason = _leg_restatement(
+        restatement = _leg_restatement(
             "aid",
             entities=["USA"],
             date_request=None,
@@ -339,7 +336,6 @@ class TestSuccessDirectional:
             directional=directional,
         )
         assert restatement is None
-        assert reason == "direction_unnameable"
 
     def test_no_spec_anywhere_still_carries_the_restatement_without_entities(self):
         # With no entities, there is no direction to misrepresent.
@@ -354,7 +350,7 @@ class TestSuccessDirectional:
         )
         directional = _success_directional(region, role_query="aid from USA to Atlantis")
         assert directional is True
-        restatement, _reason = _leg_restatement(
+        restatement = _leg_restatement(
             "aid",
             entities=[],
             date_request=None,
@@ -378,7 +374,7 @@ class TestSuccessDirectional:
         )
         directional = _success_directional(region, role_query="population of Brazil")
         assert directional is False
-        restatement, _reason = _leg_restatement(
+        restatement = _leg_restatement(
             "population",
             entities=["Brazil"],
             date_request=None,
@@ -408,7 +404,7 @@ class TestSuccessDirectional:
         )
         directional = _success_directional(region, role_query="aid from France")
         assert directional is True
-        restatement, reason = _leg_restatement(
+        restatement = _leg_restatement(
             "aid",
             entities=["France"],
             date_request=None,
@@ -417,7 +413,6 @@ class TestSuccessDirectional:
             directional=directional,
         )
         assert restatement is None
-        assert reason == "direction_unnameable"
 
     @pytest.mark.parametrize(
         ("status", "answered_roles", "echoes"),
@@ -449,7 +444,7 @@ class TestSuccessDirectional:
             answered_roles=answered_roles,
         )
 
-        restatement, reason = _leg_restatement(
+        restatement = _leg_restatement(
             "debt service",
             entities=["Ghana"],
             date_request=None,
@@ -463,7 +458,7 @@ class TestSuccessDirectional:
                 variable_text="debt service", entities=[ParsedEntity(text="Ghana")]
             )
         else:
-            assert (restatement, reason) == (None, "direction_unnameable")
+            assert restatement is None
 
 
 # ---------------------------------------------------------------------------
@@ -477,7 +472,6 @@ class TestPlaceholderNoDataDirectionalRule:
             "aid", 0, entities=["France"], role_query="how much aid comes from France"
         )
         assert region.restatement is None
-        assert region.restatement_reason == "direction_unnameable"
 
     def test_no_role_query_still_yields_a_restatement(self):
         region = _placeholder_no_data("population", 0, entities=["Brazil"], role_query=None)
@@ -550,7 +544,6 @@ def _assemble(region: RegionResult):
         extra_warnings=[],
         start_ms=now_ms(),
         engine_build="test",
-        include_sentence=False,
         max_candidates=10,
     )
 
@@ -618,7 +611,6 @@ class TestFoldedPartKeepsItsOwnRestatement:
             extra_warnings=[],
             start_ms=now_ms(),
             engine_build="test",
-            include_sentence=False,
             max_candidates=10,
         )
         first, second = response.parts

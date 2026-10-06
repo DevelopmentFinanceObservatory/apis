@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+from search.currency_codes import ISO_4217_CODES
 from search.engine.unit.lexicon import (
     AMBIGUOUS_CURRENCY_NAMES,
     AMBIGUOUS_ISO_CODES,
     CONNECTIVE_WORDS,
     CURRENCY_ALIASES,
     CURRENCY_DISPLAY_NAMES,
-    ISO_4217_CODES,
     MAX_PHRASE_WORDS,
     PRICE_BASIS_PHRASES,
     ROLE_CURRENCY_PHRASES,

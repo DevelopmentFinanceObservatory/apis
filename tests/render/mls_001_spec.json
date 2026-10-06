@@ -278,181 +278,12 @@
   ],
   "unresolved_slots": [],
   "stat_vars": {
-   "items": [
-    {
-     "ref": "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_CRSPurposeCode11110_Nominal",
-     "label": "Imputed multilateral ODA gross disbursements for education policy and administrative management",
-     "slot_values": [
-      {
-       "key": {
-        "axis": "how",
-        "property": {
-         "dcid": "crsTypeOfFlow",
-         "label": "CRS type of flow"
-        },
-        "label": "flow"
-       },
-       "value": {
-        "ref": {
-         "dcid": "CRSTypeOfFlow10",
-         "label": "official development assistance"
-        },
-        "value_kind": "enum_value"
-       }
-      },
-      {
-       "key": {
-        "axis": "how",
-        "property": {
-         "dcid": "dac2aAidType",
-         "label": "DAC 2a aid type"
-        },
-        "label": "aid type"
-       },
-       "value": {
-        "ref": {
-         "dcid": "DAC2aAidType106",
-         "label": "imputed multilateral ODA"
-        },
-        "value_kind": "enum_value"
-       }
-      },
-      {
-       "key": {
-        "axis": "how",
-        "property": {
-         "dcid": "financialFlowType",
-         "label": "financial flow type"
-        },
-        "label": "financial flow type"
-       },
-       "value": {
-        "ref": {
-         "dcid": "Disbursement",
-         "label": "disbursement"
-        },
-        "value_kind": "enum_value"
-       }
-      },
-      {
-       "key": {
-        "axis": "how",
-        "property": {
-         "dcid": "nettingBasis",
-         "label": "netting basis"
-        },
-        "label": "netting basis"
-       },
-       "value": {
-        "ref": {
-         "dcid": "Gross",
-         "label": "gross"
-        },
-        "value_kind": "enum_value"
-       }
-      }
-     ],
-     "constraint_properties": [
-      "crsPurpose",
-      "crsTypeOfFlow",
-      "dac2aAidType",
-      "financialFlowType",
-      "nettingBasis"
-     ],
-     "data_date_range": {
-      "start": "2011",
-      "end": "2024"
-     }
-    },
-    {
-     "ref": "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_CRSPurposeCode11120_Nominal",
-     "label": "Imputed multilateral ODA gross disbursements for education facility and training",
-     "slot_values": [
-      {
-       "key": {
-        "axis": "how",
-        "property": {
-         "dcid": "crsTypeOfFlow",
-         "label": "CRS type of flow"
-        },
-        "label": "flow"
-       },
-       "value": {
-        "ref": {
-         "dcid": "CRSTypeOfFlow10",
-         "label": "official development assistance"
-        },
-        "value_kind": "enum_value"
-       }
-      },
-      {
-       "key": {
-        "axis": "how",
-        "property": {
-         "dcid": "dac2aAidType",
-         "label": "DAC 2a aid type"
-        },
-        "label": "aid type"
-       },
-       "value": {
-        "ref": {
-         "dcid": "DAC2aAidType106",
-         "label": "imputed multilateral ODA"
-        },
-        "value_kind": "enum_value"
-       }
-      },
-      {
-       "key": {
-        "axis": "how",
-        "property": {
-         "dcid": "financialFlowType",
-         "label": "financial flow type"
-        },
-        "label": "financial flow type"
-       },
-       "value": {
-        "ref": {
-         "dcid": "Disbursement",
-         "label": "disbursement"
-        },
-        "value_kind": "enum_value"
-       }
-      },
-      {
-       "key": {
-        "axis": "how",
-        "property": {
-         "dcid": "nettingBasis",
-         "label": "netting basis"
-        },
-        "label": "netting basis"
-       },
-       "value": {
-        "ref": {
-         "dcid": "Gross",
-         "label": "gross"
-        },
-        "value_kind": "enum_value"
-       }
-      }
-     ],
-     "constraint_properties": [
-      "crsPurpose",
-      "crsTypeOfFlow",
-      "dac2aAidType",
-      "financialFlowType",
-      "nettingBasis"
-     ],
-     "data_date_range": {
-      "start": "2011",
-      "end": "2024"
-     }
-    }
-   ],
    "member_count": 222,
    "member_count_exact": true,
-   "truncated": true
+   "data_date_range": {
+    "start": "2011",
+    "end": "2024"
+   }
   },
   "entities": [
    {
@@ -1588,20 +1419,6 @@
   "rendered_sentence": null,
   "sentence_plan": null,
   "trace": {
-   "resolved_stat_vars": [
-    {
-     "dcid": "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_CRSPurposeCode11110_Nominal",
-     "label": "Imputed multilateral ODA gross disbursements for education policy and administrative management"
-    },
-    {
-     "dcid": "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_CRSPurposeCode11120_Nominal",
-     "label": "Imputed multilateral ODA gross disbursements for education facility and training"
-    },
-    {
-     "dcid": "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_CRSPurposeCode11130_Nominal",
-     "label": "Imputed multilateral ODA gross disbursements for teacher training"
-    }
-   ],
    "resolved_entities": [
     {
      "dcid": "country/NOR",
@@ -1686,26 +1503,7 @@
      "disposition": "bound"
     }
    ],
-   "pipeline_trace": [
-    {
-     "step": "extract",
-     "ran": true,
-     "ms": 1421
-    },
-    {
-     "step": "recall",
-     "ran": true,
-     "ms": 504
-    },
-    {
-     "step": "shape",
-     "ran": true,
-     "ms": 1409
-    }
-   ],
-   "n_recalled": 53,
-   "capability_version": "cap_cf45531f3692526f",
-   "declaration_version": "cd58c9f98431d4bdcaecfeeb84f2675cd0fcb3d70c05c964a39511eaaf6b5aeb"
+   "capability_version": "cap_cf45531f3692526f"
   },
   "confidence": "high",
   "available_at_place": true,
@@ -1732,6 +1530,27 @@
     "member_count": 175,
     "members_available": true
    }
+  ]
+ },
+ "sentence_facts": {
+  "members": [
+   {
+    "dcid": "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_CRSPurposeCode11110_Nominal",
+    "label": "Imputed multilateral ODA gross disbursements for education policy and administrative management"
+   },
+   {
+    "dcid": "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_CRSPurposeCode11120_Nominal",
+    "label": "Imputed multilateral ODA gross disbursements for education facility and training"
+   }
+  ],
+  "constraint_properties": [
+   [
+    "crsPurpose",
+    "crsTypeOfFlow",
+    "dac2aAidType",
+    "financialFlowType",
+    "nettingBasis"
+   ]
   ]
  }
 }

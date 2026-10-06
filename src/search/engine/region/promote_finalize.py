@@ -2,38 +2,30 @@
 
 from __future__ import annotations
 
-import asyncio
-from collections.abc import Callable
 from typing import cast
 
-from materialise import GraphReader
 from materialise.recipes import RateCoverageGapError, cause_from_recipe_error
-from search.engine.concurrency import create_owned_task
 from search.engine.departures import window_gap_fact
 from search.engine.envelope import now_ms
-from search.engine.events import PlaceOptionsEvent
 from search.engine.region.bound_unit_gate import bound_unit_gate_reason
-from search.engine.region.codes import _ObsProbeResult, _OptionProbeResult
 from search.engine.region.convertibility import option_pins
 from search.engine.region.facet_probe import FacetProbe, facet_probe
 from search.engine.region.observations.bulk_scope import bulk_scope_for
-from search.engine.region.observations.dispatch import (
-    _attach_observations,
-    _observations_relaunch_closure,
-)
+from search.engine.region.observations.dispatch import _attach_observations
 from search.engine.region.observations.fetch import _build_observations
 from search.engine.region.option_coverage import (
     _build_and_enrich_entity_options,
-    _launch_slot_options_task,
     _maybe_build_facet_options,
     _maybe_enrich_slot_options,
 )
 from search.engine.region.promote_ground import unit_refusal_input_error
+from search.engine.region.promote_relaunch import PromoteRelaunch, bind_relaunches
 from search.engine.region.promote_results import _no_data_region
 from search.engine.region.promote_state import _PromoteState
 from search.engine.region.related_read import joined_related, stating_related
 from search.engine.region.result import RegionResult, answered_roles
-from search.engine.region.state import _elected_stat_vars
+from search.engine.region.state import EngineOptions, _elected_stat_vars
+from search.engine.region.un_system import member_labels
 from search.engine.retrieval.elected_dataset import elected_datasets
 from search.engine.retrieval.member_facts import ArcsMemberFacts
 from search.engine.retrieval.read_plan import plan_window_gap, serves_nothing
@@ -57,81 +49,6 @@ def _promote_facet_probe(state: _PromoteState, mat_result: Materialised) -> Face
         pins=option_pins(state.inp.identity.facets, state.elected_unit),
         datasets=elected_datasets(mat_result.member_facts),
     )
-
-
-def _build_slot_options_relaunch(
-    state: _PromoteState, mat_result: Materialised
-) -> Callable[..., asyncio.Task[_OptionProbeResult]]:
-    """The trailing SSE slot-options relaunch closure, over `state`/`mat_result`."""
-
-    def _relaunch_slot_options(
-        spec_id: str, opts: list, facet_probe: FacetProbe | None = None
-    ) -> asyncio.Task[_OptionProbeResult]:
-        """Carry raw entity options into the trailing event; finalisation populates them first.
-
-        A facet probe override lets a merged result judge its options over every member."""
-        return _launch_slot_options_task(
-            spec_id,
-            state.shape_draft,
-            state.bindings,
-            opts,
-            entities=state.place.roles.resolved_entities,
-            date_request=state.date_request,
-            graph=state.graph,
-            sdmx=state.sdmx,
-            materialise_graph=state.materialise_graph,
-            place_dcids=state.flat_probe_entities,
-            entity_options=state.entity_options_raw,
-            facet_probe=(
-                facet_probe if facet_probe is not None else _promote_facet_probe(state, mat_result)
-            ),
-            coverage=state.coverage.index,
-            deadline=state.deadline,
-            facets_pinned=bool(state.inp.identity.facets),
-        )
-
-    return _relaunch_slot_options
-
-
-def _build_place_options_relaunch(
-    state: _PromoteState, spec: Spec
-) -> tuple[Callable[[str], asyncio.Task[list[PlaceOptionsEvent]]], bool]:
-    """Build the place-options relaunch closure and report whether it can stream.
-
-    Without `state.materialise_graph` the resubmit gets no place-options relaunch.
-    """
-    _place_options_materialise_graph = state.materialise_graph
-
-    def _relaunch_place_options(spec_id: str) -> asyncio.Task[list[PlaceOptionsEvent]]:
-        """Run on the event loop after resolution returns from its worker thread.
-
-        The builder reads only identity and spec id, so same-shape merges need no new inputs.
-        A local import defers builder loading until region initialisation finishes. Create the
-        coroutine task directly on the event loop."""
-        from search.engine.region.place_options import build_place_options_events
-
-        assert state.place_options_pool is not None
-        return create_owned_task(
-            build_place_options_events(
-                spec_id,
-                spec.definition.identity,
-                graph=state.graph,
-                sdmx=state.sdmx,
-                materialise_graph=cast(GraphReader, _place_options_materialise_graph),
-                materialise_sdmx=state.materialise_sdmx,
-                pool=state.place_options_pool,
-                coverage=state.coverage,
-                population_memo=state.population_memo,
-                start_ms=now_ms(),
-            )
-        )
-
-    _stream_place_options = (
-        state.stream_slot_options
-        and _place_options_materialise_graph is not None
-        and state.place_options_pool is not None
-    )
-    return _relaunch_place_options, _stream_place_options
 
 
 def _request_form_unit(state: _PromoteState) -> IdentityUnitRequest | None:
@@ -224,7 +141,9 @@ def _enrich_finalize_options(
     spec: Spec,
     resubmit_warnings: tuple[Warning, ...],
 ) -> tuple[Spec, tuple[Warning, ...]]:
-    """Probe option coverage only after both phases confirm a definite result.
+    """Probe option coverage and build facet options only after both phases confirm a
+    definite result. A streamed request with option coverage reads facet options in its
+    trailing probe instead.
 
     Always record an `options` timing entry. Entity options return raw counts without coverage
     probes when labels are disabled."""
@@ -235,6 +154,7 @@ def _enrich_finalize_options(
             state.bindings,
             state.slot_options,
             entities=state.place.roles.resolved_entities,
+            open_axes=state.place.roles.open_axes,
             date_request=state.date_request,
             materialise_graph=state.materialise_graph,
             place_dcids=state.flat_probe_entities,
@@ -246,11 +166,14 @@ def _enrich_finalize_options(
                 *resubmit_warnings,
                 _coverage_warn.model_copy(update={"spec_id": spec.spec_id}),
             )
+        spec = state.spec = spec.model_copy(
+            update={"resolved": spec.resolved.model_copy(update={"slot_options": _slot_options})}
+        )
+    if not state.stream_slot_options:
         _facet_options, _facet_coverage_warn = _maybe_build_facet_options(
             _promote_facet_probe(state, mat_result),
             graph=state.graph,
             coverage=state.coverage.index,
-            include_option_coverage=True,
             deadline=state.deadline,
         )
         if _facet_coverage_warn is not None:
@@ -259,11 +182,7 @@ def _enrich_finalize_options(
                 _facet_coverage_warn.model_copy(update={"spec_id": spec.spec_id}),
             )
         spec = state.spec = spec.model_copy(
-            update={
-                "resolved": spec.resolved.model_copy(
-                    update={"slot_options": _slot_options, "facet_options": _facet_options}
-                )
-            }
+            update={"resolved": spec.resolved.model_copy(update={"facet_options": _facet_options})}
         )
     if state.role_axis_facts:
         # Reusing role-axis facts from grounding avoids a materialise read.
@@ -297,16 +216,13 @@ def _enrich_finalize_options(
 
 def _attach_finalize_observations(
     state: _PromoteState,
-    mat_result: Materialised,
     spec: Spec,
     fetched_obs: SpecObservations | None,
-    unit_request: IdentityUnitRequest | None,
     resubmit_warnings: tuple[Warning, ...],
-) -> tuple[Spec, tuple[Warning, ...], Callable[[str], asyncio.Task[_ObsProbeResult]] | None]:
-    """Attach the requested preview and build a streaming observations relaunch if needed.
+) -> tuple[Spec, tuple[Warning, ...]]:
+    """Attach the requested preview. Streamed points arrive in the trailing event.
 
-    Return the updated Spec, warnings, and relaunch closure."""
-    _observations_relaunch_fn = None
+    Return the updated Spec and warnings."""
     if fetched_obs is not None and (state.stream_observations or state.include_observations):
         # Fetch warnings precede refusal; streamed points arrive in the trailing event.
         _resubmit_warnings_list = list(resubmit_warnings)
@@ -317,24 +233,39 @@ def _attach_finalize_observations(
             include_points=state.include_observations and not state.stream_observations,
         )
         resubmit_warnings = tuple(_resubmit_warnings_list)
-    if state.stream_observations:
-        _observations_relaunch_fn = _observations_relaunch_closure(
-            list(mat_result.sv_dcids),
-            state.obs_entities,
-            graph=state.graph,
-            materialise_graph=state.materialise_graph,
-            materialise_sdmx=state.materialise_sdmx,
-            facet_filter=state.facet_filter,
-            scope=bulk_scope_for(state.place, mat_result, sdmx=state.sdmx),
-            sdmx=state.sdmx,
-            deadline=state.deadline,
-            rate_cache=state.rate_cache,
-            unit_request=unit_request,
-            elected=state.elected_unit,
-            coverage=state.coverage,
-            plan=state.narrowed_plan,
-        )
-    return spec, resubmit_warnings, _observations_relaunch_fn
+    return spec, resubmit_warnings
+
+
+def _promote_relaunch(
+    state: _PromoteState,
+    mat_result: Materialised,
+    spec: Spec,
+    unit_request: IdentityUnitRequest | None,
+) -> PromoteRelaunch:
+    """The facts the definite answer's trailing probes read, apart from the request's clients.
+    Built after options are enriched, since the slot-options probe carries the raw entity
+    options finalisation fills."""
+    bulk = bulk_scope_for(state.place, mat_result, sdmx=state.sdmx)
+    return PromoteRelaunch(
+        shape_draft=state.shape_draft,
+        bindings=state.bindings,
+        entities=state.place.roles.resolved_entities,
+        open_axes=state.place.roles.open_axes,
+        date_request=state.date_request,
+        place_dcids=state.flat_probe_entities,
+        entity_options=state.entity_options_raw,
+        facet_probe=_promote_facet_probe(state, mat_result),
+        facets_pinned=bool(state.inp.identity.facets),
+        identity=spec.definition.identity,
+        sv_dcids=list(mat_result.sv_dcids),
+        obs_entities=state.obs_entities,
+        facet_filter=state.facet_filter,
+        bulk_places=bulk.places if bulk is not None else None,
+        unit_request=unit_request,
+        elected=state.elected_unit,
+        plan=state.narrowed_plan,
+        variable_labels=member_labels((spec,)),
+    )
 
 
 def _phase_finalize(state: _PromoteState) -> RegionResult:
@@ -345,9 +276,6 @@ def _phase_finalize(state: _PromoteState) -> RegionResult:
     (`read_plan.plan_window_gap`)."""
     mat_result = cast(Materialised, state.mat_result)
     spec = state.spec
-
-    _relaunch_slot_options = _build_slot_options_relaunch(state, mat_result)
-    _relaunch_place_options, _stream_place_options = _build_place_options_relaunch(state, spec)
 
     # A resubmit whose narrowed plan serves no point in its years, under its window or its
     # facet pins, answers `no_observations` (`read_plan.serves_nothing`) before any preview
@@ -384,12 +312,12 @@ def _phase_finalize(state: _PromoteState) -> RegionResult:
             )
 
     spec, resubmit_warnings = _enrich_finalize_options(state, mat_result, spec, resubmit_warnings)
-    spec, resubmit_warnings, _observations_relaunch_fn = _attach_finalize_observations(
-        state, mat_result, spec, _fetched_obs, _unit_request, resubmit_warnings
+    spec, resubmit_warnings = _attach_finalize_observations(
+        state, spec, _fetched_obs, resubmit_warnings
     )
     spec = stating_related(spec, joined_related(state.related_read))
 
-    return RegionResult(
+    region = RegionResult(
         variable_text=state.variable_text,
         status="definite",
         specs=(spec,),
@@ -397,9 +325,7 @@ def _phase_finalize(state: _PromoteState) -> RegionResult:
         warnings=resubmit_warnings,
         timing_by_step=dict(state.timing),
         facet_probe=_promote_facet_probe(state, mat_result),
-        slot_options_relaunch=_relaunch_slot_options if state.stream_slot_options else None,
-        place_options_relaunch=_relaunch_place_options if _stream_place_options else None,
-        observations_relaunch=_observations_relaunch_fn,
+        promote_relaunch=_promote_relaunch(state, mat_result, spec, _unit_request),
         observation_entities=state.obs_entities,
         facet_filter=state.facet_filter,
         measure_partition=state.measure_partition,
@@ -412,4 +338,22 @@ def _phase_finalize(state: _PromoteState) -> RegionResult:
         role_axis_facts=state.role_axis_facts,
         member_population=mat_result.population,
         answered_roles=answered_roles(state.shape_draft),
+    )
+    return bind_relaunches(
+        region,
+        graph=state.graph,
+        sdmx=state.sdmx,
+        coverage=state.coverage,
+        options=EngineOptions(
+            include_option_coverage=state.include_option_coverage,
+            stream_slot_options=state.stream_slot_options,
+            include_observations=state.include_observations,
+            stream_observations=state.stream_observations,
+            materialise_graph=state.materialise_graph,
+            materialise_sdmx=state.materialise_sdmx,
+            rate_cache=state.rate_cache,
+            population_memo=state.population_memo,
+            place_options_pool=state.place_options_pool,
+            deadline=state.deadline,
+        ),
     )

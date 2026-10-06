@@ -27,23 +27,13 @@ from spec_registry import (
 )
 
 
-def test_classify_datasets_exception_maps_spec_id_mismatch_without_position():
-    exc = SpecIdMismatch(supplied="urn:spec:supplied", computed="urn:spec:computed", position=None)
+def test_classify_datasets_exception_maps_spec_id_mismatch():
+    exc = SpecIdMismatch(supplied="urn:spec:supplied", computed="urn:spec:computed")
     spec = classify_datasets_exception(exc)
     assert spec is not None
     assert spec.status == 422
     assert spec.code == "spec_id_mismatch"
     assert spec.retryable is False
-    assert "position" not in spec.detail
-
-
-def test_classify_datasets_exception_maps_spec_id_mismatch_with_position():
-    exc = SpecIdMismatch(supplied="urn:spec:supplied", computed="urn:spec:computed", position=2)
-    spec = classify_datasets_exception(exc)
-    assert spec is not None
-    assert spec.status == 422
-    assert spec.code == "spec_id_mismatch"
-    assert "member at position 2" in spec.detail
 
 
 def test_classify_datasets_exception_maps_identity_collision():

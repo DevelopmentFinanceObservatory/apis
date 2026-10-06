@@ -30,6 +30,7 @@ from dfo_platform.executor import submit_with_context
 from materialise import GraphReader
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
+from search.engine.config import settings
 from search.engine.errors import EngineInfraError, EngineInputError
 from search.engine.events import PlaceOptionsEvent
 from search.engine.options.population_memo import OptionsPopulationMemo, PopulationInFlight
@@ -180,12 +181,13 @@ async def build_place_options_events(
                 graph=graph,
                 materialise_graph=materialise_graph,
                 population_memo=population_memo,
+                deadline=start_ms / 1000.0 + settings().request_timeout_s,
                 join_inflight=False,
             )
         except PopulationInFlight:
             logger.info("place_options: prefetch dropped, population key already in flight")
             return None
-        except (EngineInputError, EngineInfraError):
+        except (EngineInputError, EngineInfraError, TimeoutError):
             return None
 
     target = await _run_admitted(pool, _resolve_target)

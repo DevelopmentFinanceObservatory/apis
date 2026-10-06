@@ -8,7 +8,7 @@ from typing import cast
 from entity_resolution import Ambiguous, Group, Resolved
 from search.engine.clients.graph import force_full_facets
 from search.engine.config import settings
-from search.engine.envelope import _record_step, now_ms
+from search.engine.envelope import _emit_step, now_ms
 from search.engine.errors import RoleSignatureError
 from search.engine.interpret import Recall, recall
 from search.engine.place import expand_places
@@ -21,7 +21,6 @@ from search.engine.region.result import (
 )
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.derive import derive_shapes
-from search.engine.retrieval.topics import is_topic_candidate
 from search.engine.shape import ShapeDraft, is_role_bearing
 from search.models import RoleAxis, Warning
 
@@ -43,12 +42,10 @@ async def _phase_recall(state: ResolveState) -> None:
     )
     state.rcl = rcl
     state.timing["recall"] = now_ms() - t0
-    await _record_step(
-        state.pipeline_steps,
+    await _emit_step(
         state.emit,
         state.variable_index,
         "recall",
-        ran=True,
         ms=state.timing["recall"],
     )
 
@@ -271,9 +268,6 @@ async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
     pool = rcl.candidates if state.pool == "ours" else rcl.un_candidates
     pool_svs = [c.dcid for c in pool]
 
-    # Count non-Topic recalls before derivation. Topic expansions contribute their members.
-    state.n_recalled = sum(1 for c in pool if not is_topic_candidate(c.dcid, c.type_of))
-
     # Confirm candidates and derive shapes off the event loop.
     t0 = state.shape_t0 = now_ms()
     sv_scores_map = {c.dcid: c.score for c in pool}
@@ -301,29 +295,23 @@ async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
     except RoleSignatureError:
         # No candidate group has a consistent entity-role signature.
         state.timing["shape"] = now_ms() - t0
-        await _record_step(
-            state.pipeline_steps,
+        await _emit_step(
             state.emit,
             state.variable_index,
             "shape",
-            ran=True,
             ms=state.timing["shape"],
         )
-        state.ran_steps.add("shape")
         return _unresolved_entity_terminal(state) or state.no_data("role_signature_incompatible")
 
     # No confirmed StatVar means there is no shape to bind.
     if not shapes_found:
         state.timing["shape"] = now_ms() - t0
-        await _record_step(
-            state.pipeline_steps,
+        await _emit_step(
             state.emit,
             state.variable_index,
             "shape",
-            ran=True,
             ms=state.timing["shape"],
         )
-        state.ran_steps.add("shape")
         return _unresolved_entity_terminal(state) or state.no_data("variable_not_resolved")
 
     # Prune before ranking so every later count sees only compatible shapes. Unresolved
@@ -332,15 +320,12 @@ async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
     state.shapes_found = shapes_found
     if not shapes_found:
         state.timing["shape"] = now_ms() - t0
-        await _record_step(
-            state.pipeline_steps,
+        await _emit_step(
             state.emit,
             state.variable_index,
             "shape",
-            ran=True,
             ms=state.timing["shape"],
         )
-        state.ran_steps.add("shape")
         return _unresolved_entity_terminal(state) or state.no_data(
             "entity_role_not_admitted", role_not_admitted_entities=tuple(never_admitted)
         )

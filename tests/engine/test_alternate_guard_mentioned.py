@@ -14,6 +14,7 @@ import asyncio
 import pytest
 
 from search.engine.bind import DraftBindingEvidence, SlotBindingDraft, _UniversalBindOutput
+from search.engine.quantity import quantity_requirement
 from search.engine.region import resolve_variable
 from search.engine.region.alternate_guard import inadmissible_alternates, query_pins
 from search.engine.shape import ShapeDraft
@@ -106,7 +107,10 @@ def test_alternate_contradicting_the_elected_concept_is_refused(
     Normalisation cannot separate the pair: both carry the per-capita denominator and
     differ only in qualifier and activitySource.
     """
-    for pins in (query_pins(variable), query_pins(variable, bindings=bindings)):
+    for pins in (
+        query_pins(variable, quantity=quantity_requirement([variable])),
+        query_pins(variable, quantity=quantity_requirement([variable]), bindings=bindings),
+    ):
         result = inadmissible_alternates(pins, elected, [(1, alternate)])
         assert result.keys() == {1}
         assert _code(result[1]) == "concept:activitySource", result
@@ -121,7 +125,13 @@ def test_alternate_holding_the_mentioned_value_is_kept():
     )
     assert (
         inadmissible_alternates(
-            query_pins("GDP per capita", bindings=_GDP_MENTIONED), _ELECTED, [(1, gdp_ppp)]
+            query_pins(
+                "GDP per capita",
+                quantity=quantity_requirement(["GDP per capita"]),
+                bindings=_GDP_MENTIONED,
+            ),
+            _ELECTED,
+            [(1, gdp_ppp)],
         )
         == {}
     )
@@ -141,7 +151,13 @@ def test_alternate_holding_a_property_the_elected_reading_leaves_open_is_refused
         },
     )
     result = inadmissible_alternates(
-        query_pins("GDP per capita", bindings=_GDP_MENTIONED), _ELECTED, [(1, gdp_by_sector)]
+        query_pins(
+            "GDP per capita",
+            quantity=quantity_requirement(["GDP per capita"]),
+            bindings=_GDP_MENTIONED,
+        ),
+        _ELECTED,
+        [(1, gdp_by_sector)],
     )
     assert _code(result[1]) == "specialisation:naics", result
 
@@ -152,6 +168,7 @@ def test_alternate_refused_on_member_values_whatever_the_binding_evidence(eviden
     as a mentioned one does."""
     pins = query_pins(
         "GDP per capita",
+        quantity=quantity_requirement(["GDP per capita"]),
         bindings=[_binding("activitySource", ["GrossDomesticProduction"], evidence=evidence)],
     )
     result = inadmissible_alternates(pins, _ELECTED, [(1, _GNI_ALTERNATE)])
@@ -170,7 +187,13 @@ def test_alternate_with_a_member_silent_on_the_mentioned_property_is_kept():
     )
     assert (
         inadmissible_alternates(
-            query_pins("GDP per capita", bindings=_GDP_MENTIONED), _ELECTED, [(1, mixed)]
+            query_pins(
+                "GDP per capita",
+                quantity=quantity_requirement(["GDP per capita"]),
+                bindings=_GDP_MENTIONED,
+            ),
+            _ELECTED,
+            [(1, mixed)],
         )
         == {}
     )
@@ -224,7 +247,12 @@ def test_a_property_named_by_the_query_admits_its_specialisation(binding, engine
     """A mentioned value or set, or a request for every value, names a property.
     A sole-option or unbound draft and a property the engine authored (a measure election or
     a declared default) name nothing, so a member holding it specialises the reading."""
-    pins = query_pins("GDP per capita", bindings=[binding], engine_authored=engine_authored)
+    pins = query_pins(
+        "GDP per capita",
+        quantity=quantity_requirement(["GDP per capita"]),
+        bindings=[binding],
+        engine_authored=engine_authored,
+    )
     result = inadmissible_alternates(pins, _ELECTED, [(1, _GDP_BY_GENDER)])
     assert (_code(result[1]) if result else None) == ("specialisation:gender" if refused else None)
 
@@ -239,9 +267,20 @@ def test_elected_values_widen_to_code_index_descendants():
     health = _shape(
         "Aid to health", "Nominal", {"Amount_Aid_Health": {"crsPurposeCode": "CRSPurposeCode120"}}
     )
-    pins = query_pins("health aid", bindings=[_binding("crsPurposeCode", ["CRSPurposeCode120"])])
+    pins = query_pins(
+        "health aid",
+        quantity=quantity_requirement(["health aid"]),
+        bindings=[_binding("crsPurposeCode", ["CRSPurposeCode120"])],
+    )
     assert inadmissible_alternates(pins, health, [(1, basic_health)]) == {}
-    assert inadmissible_alternates(query_pins("health aid"), health, [(1, basic_health)]) == {}
+    assert (
+        inadmissible_alternates(
+            query_pins("health aid", quantity=quantity_requirement(["health aid"])),
+            health,
+            [(1, basic_health)],
+        )
+        == {}
+    )
 
 
 # The pipeline pair runs the recorded bind output of gdp-per-capita-vietnam-2023.
@@ -316,7 +355,6 @@ def _resolve_gdp_per_capita(evidence: DraftBindingEvidence):
             graph=graph,
             resolver=make_resolver(graph),
             llm=_GdpBindLLM(evidence),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
@@ -325,7 +363,7 @@ def _resolve_gdp_per_capita(evidence: DraftBindingEvidence):
 
 
 def _served(result) -> list[set[str]]:
-    return [{sv.ref for sv in spec.resolved.stat_vars.items} for spec in result.specs]
+    return [{sv.ref.dcid for sv in spec.resolved.members} for spec in result.specs]
 
 
 def test_pipeline_mentioned_gdp_refuses_the_gni_nomination():
@@ -361,5 +399,9 @@ def test_a_registry_twin_in_another_vocabulary_survives_a_mentioned_value():
         {"sdg/SH_DYN_MORT.AGE--Y0T4": {"age": "SDG_AgeEnum_Y0T4"}},
     )
 
-    pins = query_pins("under-five mortality", bindings=[_binding("age", ["YearsUpto4"])])
+    pins = query_pins(
+        "under-five mortality",
+        quantity=quantity_requirement(["under-five mortality"]),
+        bindings=[_binding("age", ["YearsUpto4"])],
+    )
     assert inadmissible_alternates(pins, elected, [(1, twin)]) == {}

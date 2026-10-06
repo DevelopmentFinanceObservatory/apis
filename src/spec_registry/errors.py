@@ -14,21 +14,14 @@ class SpecIdMismatch(SpecRegistryError):
     """Supplied and recomputed ids differ.
 
     Wire error is `spec_id_mismatch` (422).
-
-    `position` is the failing collection member's zero-based index, or `None` for a
-    standalone registration.
     """
 
-    def __init__(self, *, supplied: str, computed: str, position: int | None = None) -> None:
-        detail = (
+    def __init__(self, *, supplied: str, computed: str) -> None:
+        super().__init__(
             f"supplied spec_id {supplied!r} does not match the server-recomputed id {computed!r}"
         )
-        if position is not None:
-            detail += f" (member at position {position})"
-        super().__init__(detail)
         self.supplied = supplied
         self.computed = computed
-        self.position = position
 
 
 class IdentityCollision(SpecRegistryError):
@@ -58,10 +51,6 @@ class IdentityQuarantined(SpecRegistryError):
         )
         self.subject_id = subject_id
         self.id_kind = id_kind
-
-
-class EmptyCollectionMembers(SpecRegistryError):
-    """Raised when a collection has no member spec ids."""
 
 
 class SpecRegistryStoreError(SpecRegistryError):

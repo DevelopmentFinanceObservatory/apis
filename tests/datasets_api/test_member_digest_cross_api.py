@@ -1,9 +1,11 @@
-"""Search and the Datasets mint state one admitted population by one digest.
+"""Search and the Datasets mint state one family by one digest and one served count.
 
-Search's `resolved.shape.member_digest` hashes the population its bindings admit. The mint's
-`trace.family_member_digest` hashes the family its member resolution admits, before antichain
-reduction, and `trace.resolved_stat_vars` lists the members it serves after it. Both digests
-come from `statvar_members.member_digest`.
+The mint's `trace.family_member_digest` hashes the family its member resolution admits,
+before antichain reduction, and `trace.resolved_stat_vars` lists the members it serves after
+it. Search states the same two facts (`bound_values.stated_members`) as
+`resolved.shape.member_digest` and `resolved.stat_vars.served_count`: from the same index
+rows for a family the code index decides, and from the same `MemberGroup` for a walked one
+(`MemberGroup.stated_family`). Both digests come from `statvar_members.member_digest`.
 """
 
 from __future__ import annotations
@@ -12,19 +14,17 @@ import httpx
 import pytest
 
 import search.engine.retrieval.bound_values as bound_values_module
+from code_index.members import FamilyQuery
 from code_index.shared import get_index
 from datasets_api.adapter import resolve_definition_members, to_materialisation_request
-from search.engine.retrieval.retrieve import Materialised, materialise
-from search.engine.shape import ShapeDraft, SlotKeyDraft
-from search.engine.spec_build import compute_member_digest
-from statvar_members import MemberEnumerator, member_digest
-from tests.engine._fake_coverage import empty_coverage_snapshot
-from tests.engine._fake_sdmx import FakeSdmxClient
+from search.engine.retrieval.bound_values import StatedMembers, WalkedMembers, stated_members
+from search.models import BaseIdentity
+from statvar_members import MemberEnumerator, MemberGroup, member_digest
 from tests.engine.test_crs_family_member_digest import _EXTRA_SV, _RECALLED_SV
 from tests.engine.test_crs_family_member_digest import _run as _search_resolve
-from tests.fixtures import FakeGraph
 
 from ._graph_doubles import FakeMintGraphReader
+from ._member_bounds import mint_bounds
 from .test_definition_door import _SCOPE, _STAT_VAR_REF, _client, _coverage_service
 from .test_definition_door import _graph as _pinned_graph
 from .test_resolve_definition_members_index import (
@@ -131,85 +131,71 @@ def test_the_mints_family_digest_equals_the_digest_of_the_search_resolve_it_mint
     }
 
 
-def _person_shape() -> ShapeDraft:
-    """The shape Search derives for the person family: one slot key and a recall sample of
-    one member."""
-    return ShapeDraft(
-        shape_id="count_person",
-        label="population",
-        pop_type_dcid="Person",
-        meas_prop_dcid="count",
-        stat_type_dcid="measuredValue",
-        meas_qual_dcid=None,
-        meas_denom_dcid=None,
-        slot_keys=(SlotKeyDraft(axis="how", property_dcid="gender", label="gender"),),
-        sv_arc_facts={"Person_Male": {}},
-        sv_arc_facts_complete=False,
-    )
-
-
 def test_a_family_with_a_dominated_member_has_one_digest_and_a_reduced_served_set(monkeypatch):
-    """The root `Person` dominates the two gendered members. Search admits all three, and
-    the mint admits all three and serves the root alone, so a digest over the members served
-    differs from Search's and the family digest equals it."""
+    """The root `Person` dominates the two gendered members. The code index decides the
+    identity, and Search and the mint both state the family of three and serve the root
+    alone."""
     index = _person_family_index()
     monkeypatch.setattr(bound_values_module, "get_index", lambda: index)
-    place = "country/KEN"
-    searched = materialise(
-        _person_shape(),
-        [],
-        {"observationAbout": [place]},
-        graph=FakeGraph(
-            nodes={},
-            obs={
-                f"Person|{place}": [{"earliestDate": "2020", "latestDate": "2020", "obsCount": 1}]
-            },
-            detect={},
-            resolve={},
-        ),
-        sdmx=FakeSdmxClient(observations={}, availability={}),
-        coverage=empty_coverage_snapshot(),
-    )
-    assert isinstance(searched, Materialised)
-    search_digest = compute_member_digest(searched.population)
-    assert search_digest == member_digest(_PERSON_FAMILY)
-
     identity = _gender_family_identity()
-    graph = FakeMintGraphReader(arcs={})
+
+    stated = stated_members(BaseIdentity.model_validate(identity), None)
     resolved = resolve_definition_members(
         identity,
         spec_id="spec_person",
-        graph=graph,
-        enumerator=MemberEnumerator(graph=graph),
+        graph=FakeMintGraphReader(arcs={}),
+        enumerator=MemberEnumerator(),
         code_index=index,
+        bounds=mint_bounds(),
     )
     (served,) = resolved.shapes
     request = to_materialisation_request(identity, shape=served, code_index=index)
 
     assert served.stat_var == "dcid:Person"
     assert request.family is not None
-    assert request.family.digest == search_digest
-    assert request.family.count == 3
-    assert member_digest(["Person"]) != search_digest
+    assert (request.family.digest, request.family.count) == (member_digest(_PERSON_FAMILY), 3)
+    assert stated == StatedMembers(served_count=1, digest=request.family.digest)
+
+
+class _RecordingEnumerator(MemberEnumerator):
+    """An enumerator that keeps every group it returns."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.groups: list[MemberGroup] = []
+
+    def enumerate(self, **kwargs) -> MemberGroup:  # type: ignore[override]
+        group = super().enumerate(**kwargs)
+        self.groups.append(group)
+        return group
 
 
 def test_a_graph_walk_that_reads_every_candidate_states_the_same_family():
+    """Search states what the mint states of one walk's group: its antichain-minimal members
+    served and its whole family digested."""
     identity = _gender_family_identity()
     graph = _person_family_graph()
+    enumerator = _RecordingEnumerator()
 
     resolved = resolve_definition_members(
         identity,
         spec_id="spec_person",
         graph=graph,
-        enumerator=MemberEnumerator(graph=graph),
+        enumerator=enumerator,
         code_index=_empty_code_index(),
+        bounds=mint_bounds(),
     )
 
     (served,) = resolved.shapes
+    (group,) = enumerator.groups
+    walked = WalkedMembers.of(FamilyQuery(group.five_tuple, slots={}, source=None), group)
     assert served.stat_var == "dcid:Person"
     assert served.family is not None
     assert served.family.digest == member_digest(_PERSON_FAMILY)
     assert served.family.count == 3
+    assert walked.stated == StatedMembers(
+        served_count=len(resolved.shapes), digest=served.family.digest
+    )
 
 
 @pytest.mark.parametrize("stat_var", ["Person", "Person_Male"])
@@ -226,8 +212,9 @@ def test_a_pinned_identity_admits_its_one_stat_var(stat_var: str):
         identity,
         spec_id="spec_pinned",
         graph=graph,
-        enumerator=MemberEnumerator(graph=graph),
+        enumerator=MemberEnumerator(),
         code_index=_empty_code_index(),
+        bounds=mint_bounds(),
     ).shapes
 
     request = to_materialisation_request(identity, shape=shape, code_index=_empty_code_index())

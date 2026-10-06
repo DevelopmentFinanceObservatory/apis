@@ -413,7 +413,6 @@ def test_prime_head_signal_reads_the_revision_before_its_own_probe() -> None:
         subject_id="spec_test",
         graph=_graph(),
         sdmx=SdmxClient(base_url=_BASE_URL, transport=httpx.MockTransport(_SdmxProbeHook())),
-        combine=True,
         head_store=_FakeHeadStore(),
         materialise_wait_seconds=30,
         revision_reader=_OrderRecordingRevisionReader(snapshot),

@@ -42,8 +42,8 @@ class CapabilityCaps(BaseModel):
     )
     max_candidates: int = Field(
         description=(
-            "server ceiling enforced two ways: response_options.max_candidates "
-            "clamps a resolved candidate set to this length, while a dataset_resubmit "
+            "server ceiling enforced two ways: a resolved candidate set is clamped to "
+            "this length, while a dataset_resubmit "
             "candidates entry posting more candidates than this refuses "
             "request_invalid at /input/entries/{i}/candidates rather than being clamped"
         )
@@ -56,6 +56,13 @@ class CapabilityCaps(BaseModel):
     )
     obs_inline_max: int = Field(
         description="total observation points above which every series switches to preview mode"
+    )
+    role_bulk_rank_max_rows: int = Field(
+        description=(
+            "rows a role-bearing bulk preview may read whole and rank, most recent and "
+            "largest first; above this it shows a fixed selection, and its "
+            "observations_series_truncated warning says so with params.order"
+        )
     )
     max_options: int = Field(
         description=(
@@ -243,6 +250,7 @@ def build_capabilities() -> Capabilities:
             max_variables=settings().max_variables,
             obs_preview_points=observation_settings().obs_preview_points,
             obs_inline_max=observation_settings().obs_inline_max,
+            role_bulk_rank_max_rows=observation_settings().role_bulk_rank_max_rows,
             max_options=settings().max_options,
             max_parts=SEARCH_MAX_PARTS,
             max_part_entities=SEARCH_MAX_PART_ENTITIES,

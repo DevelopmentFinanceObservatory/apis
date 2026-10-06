@@ -423,7 +423,7 @@ def test_the_final_sentence_event_states_no_slot_default():
             async for event in resolve_events(
                 ResolveRequest(
                     input=RawTextInput(query="aid flows to Kenya"),
-                    response_options=ResolveOptions(include_sentence=True),
+                    response_options=ResolveOptions(),
                 ),
                 graph=_e2e_graph_for("aid flows"),
                 llm=_OpenFlowAndSectorBindLLM(
@@ -455,7 +455,7 @@ def test_a_first_answer_warns_slot_defaulted_and_its_resubmit_does_not():
     first = offline_resolve(
         ResolveRequest(
             input=RawTextInput(query="aid flows to Kenya"),
-            response_options=ResolveOptions(include_sentence=True),
+            response_options=ResolveOptions(),
         ),
         graph=graph,
         llm=_OpenFlowAndSectorBindLLM(
@@ -479,13 +479,10 @@ def test_a_first_answer_warns_slot_defaulted_and_its_resubmit_does_not():
                     ResubmitIdentityEntry(
                         variable_text="aid flows",
                         identity=spec.definition.identity,
-                        base_spec_id=spec.spec_id,
-                        base_identity=spec.definition.identity,
-                        resolved_stat_var_dcids=[sv.ref for sv in spec.resolved.stat_vars.items],
                     )
                 ]
             ),
-            response_options=ResolveOptions(include_sentence=True),
+            response_options=ResolveOptions(),
         ),
         graph=graph,
         llm=_OpenFlowAndSectorBindLLM(Extraction(kind="resolution", variables=[], entities=[])),
@@ -853,7 +850,7 @@ def _ambiguous_congo_llm() -> _ScriptedLLM:
 def _ambiguous_request() -> ResolveRequest:
     return ResolveRequest(
         input={"kind": "raw_text", "query": "top 5 donors for standard grants to Congo, Kenya"},
-        response_options=ResolveOptions(include_sentence=True),
+        response_options=ResolveOptions(),
     )
 
 
@@ -955,7 +952,6 @@ def test_an_ambiguous_part_without_a_restatement_still_carries_a_data_query():
     assert isinstance(part, NoDataPart)
     assert part.no_data.reason == "entity_ambiguous"
     assert part.restatement is None
-    assert part.restatement_reason == "direction_unnameable"
     data_query = part.no_data.data_query
     assert data_query is not None
     (query_part,) = data_query.parts

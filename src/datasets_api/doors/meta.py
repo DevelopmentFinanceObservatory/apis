@@ -1,7 +1,7 @@
 """The meta door serves health, schema, capabilities, and operation polling.
 
 Its static routes mount before other doors. Subject routes accept only `spec_`
-or `col_` ids, which occupy a separate route shape.
+ids, which occupy a separate route shape.
 
 `GET /api/datasets/operations/{operation_id}` reads `datasets.operation`.
 Unknown ids return `operation_not_found` (404). Pending and running operations

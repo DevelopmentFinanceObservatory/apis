@@ -4,12 +4,13 @@ A collision serves one query's cached answer to a different query."""
 
 from __future__ import annotations
 
+import pytest
+
 from search.engine.config import settings
 from search.engine.extract import ExtractedDate, ExtractedEntity
 from search.engine.qualifier_match import CodedQualifier, QualifierMatch, recall_text
 from search.engine.response_cache_flow import compute_layer2_signals
 from search.engine.response_cache_keys import (
-    is_cacheable_request,
     layer1_key,
     layer2_key,
     normalise_query,
@@ -31,6 +32,8 @@ def _scope(
     graph_generation: str = "gen-a",
     coverage_stamp: str = "coverage-a",
     conversion_catalogue: str | None = "catalogue-a",
+    origin_catalogue: str = "build-a",
+    un_system_enabled: bool = True,
 ) -> dict:
     return scope_document(
         schema_version=schema_version,
@@ -44,13 +47,9 @@ def _scope(
         graph_generation=graph_generation,
         coverage_stamp=coverage_stamp,
         conversion_catalogue=conversion_catalogue,
+        origin_catalogue=origin_catalogue,
+        un_system_enabled=un_system_enabled,
     )
-
-
-def _effective_max_candidates(raw: int | None) -> int:
-    """Mirrors core's fallback, floor of 2, and server ceiling."""
-    cap = raw if raw else settings().max_candidates
-    return max(2, min(cap, settings().max_candidates))
 
 
 def _entity(**overrides: object) -> ExtractedEntity:
@@ -505,24 +504,12 @@ def test_include_skills_changes_key() -> None:
     assert off != on
 
 
-def test_different_effective_max_candidates_changes_key() -> None:
-    """The key folds in the caller's EFFECTIVE, already server-clamped
-    candidates ceiling (what `core.py` computes and passes in), not the
-    raw `response_options.max_candidates` request field."""
+def test_different_max_candidates_changes_key() -> None:
+    """The key folds in the server's candidate cap (`SEARCH_MAX_CANDIDATES`), which
+    changes answers without moving the build commit."""
     lower = layer1_key(query="gdp kenya", scope=_scope(max_candidates=2))
     higher = layer1_key(query="gdp kenya", scope=_scope(max_candidates=settings().max_candidates))
     assert lower != higher
-
-
-def test_raw_max_candidates_values_clamping_to_the_same_effective_value_share_a_key() -> None:
-    """Requests clamped to the same effective candidate limit share a key."""
-    over_ceiling = _effective_max_candidates(settings().max_candidates + 100)
-    at_ceiling = _effective_max_candidates(settings().max_candidates)
-    assert over_ceiling == at_ceiling  # sanity: the clamp itself agrees
-
-    key_over = layer1_key(query="gdp kenya", scope=_scope(max_candidates=over_ceiling))
-    key_at = layer1_key(query="gdp kenya", scope=_scope(max_candidates=at_ceiling))
-    assert key_over == key_at
 
 
 def test_different_seam_default_changes_key() -> None:
@@ -532,19 +519,6 @@ def test_different_seam_default_changes_key() -> None:
     on = layer1_key(query="gdp kenya", scope=_scope(seam_default=True))
     off = layer1_key(query="gdp kenya", scope=_scope(seam_default=False))
     assert on != off
-
-
-def test_include_sentence_none_and_true_share_a_key() -> None:
-    """A defaulted `include_sentence` and explicit `true` share a key."""
-    absent = layer1_key(
-        query="gdp kenya",
-        scope=_scope(options=ResolveOptions(include_sentence=None)),
-    )
-    explicit_true = layer1_key(
-        query="gdp kenya",
-        scope=_scope(options=ResolveOptions(include_sentence=True)),
-    )
-    assert absent == explicit_true
 
 
 def test_different_today_changes_key() -> None:
@@ -589,6 +563,20 @@ def test_different_coverage_stamp_changes_key() -> None:
     assert a != b
 
 
+@pytest.mark.parametrize(
+    "changed",
+    [{"origin_catalogue": "build-b"}, {"un_system_enabled": False}],
+    ids=["origin_catalogue", "un_system_enabled"],
+)
+def test_a_different_origin_catalogue_changes_both_keys(changed: dict) -> None:
+    """The origin catalogue decides which provenances an answer admits, and it reloads
+    without a new graph generation, so its build and UN System setting key both layers."""
+    assert layer1_key(query="gdp kenya", scope=_scope(**changed)) != layer1_key(
+        query="gdp kenya", scope=_scope()
+    )
+    assert _layer2_key(scope=_scope(**changed)) != _layer2_key(scope=_scope())
+
+
 def test_layer1_and_layer2_keys_never_collide_for_the_same_scope() -> None:
     scope = _scope()
     l1 = layer1_key(query="gdp kenya", scope=scope)
@@ -602,7 +590,7 @@ def test_keys_are_stable_across_independently_built_equal_inputs() -> None:
     """Equal scope documents hash identically despite nested dictionary order."""
     scope_forward = scope_document(
         schema_version=1,
-        options=ResolveOptions(max_candidates=5, include_sentence=True),
+        options=ResolveOptions(include_skills=True),
         max_candidates=5,
         seam_default=True,
         build_commit="commit-a",
@@ -612,6 +600,8 @@ def test_keys_are_stable_across_independently_built_equal_inputs() -> None:
         graph_generation="gen-a",
         coverage_stamp="coverage-a",
         conversion_catalogue="catalogue-a",
+        origin_catalogue="build-a",
+        un_system_enabled=True,
     )
     scope_reversed = scope_document(
         today="2026-09-20",
@@ -620,33 +610,14 @@ def test_keys_are_stable_across_independently_built_equal_inputs() -> None:
         build_commit="commit-a",
         seam_default=True,
         max_candidates=5,
-        options=ResolveOptions(include_sentence=True, max_candidates=5),
+        options=ResolveOptions(include_skills=True),
         schema_version=1,
         graph_generation="gen-a",
         coverage_stamp="coverage-a",
         conversion_catalogue="catalogue-a",
+        origin_catalogue="build-a",
+        un_system_enabled=True,
     )
     key_forward = layer1_key(query="gdp kenya", scope=scope_forward)
     key_reversed = layer1_key(query="gdp kenya", scope=scope_reversed)
     assert key_forward == key_reversed
-
-
-def test_is_cacheable_request_refuses_option_coverage() -> None:
-    assert is_cacheable_request(ResolveOptions(include_option_coverage=True)) is False
-
-
-def test_is_cacheable_request_refuses_observations() -> None:
-    assert is_cacheable_request(ResolveOptions(include_observations=True)) is False
-
-
-def test_is_cacheable_request_accepts_none() -> None:
-    assert is_cacheable_request(None) is True
-
-
-def test_is_cacheable_request_accepts_other_options() -> None:
-    assert (
-        is_cacheable_request(
-            ResolveOptions(include_skills=True, include_sentence=False, max_candidates=3)
-        )
-        is True
-    )

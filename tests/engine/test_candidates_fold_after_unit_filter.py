@@ -227,7 +227,6 @@ def _run(monkeypatch):
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations=_SDMX_OBS, availability={}),
             llm=_ElectGrantEquivalentAlsoPlausibleAmountLLM(),
-            base_steps=[],
             base_timing={},
             unit_text="USD",
             coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
@@ -248,9 +247,9 @@ def test_the_unit_incompatible_survivor_is_dropped_before_the_fold_can_hide_its_
     assert result.status == "definite", result
     assert len(result.specs) == 1
     survivor = result.specs[0]
-    assert any(sv.ref == _ALT_SV for sv in survivor.resolved.stat_vars.items), (
+    assert any(sv.ref.dcid == _ALT_SV for sv in survivor.resolved.members), (
         f"expected the unit-compatible sibling {_ALT_SV!r} to answer, "
-        f"got {[sv.ref for sv in survivor.resolved.stat_vars.items]!r}"
+        f"got {[sv.ref.dcid for sv in survivor.resolved.members]!r}"
     )
 
 
@@ -279,7 +278,7 @@ def test_lone_survivor_carries_its_own_member_population(monkeypatch):
     result = _run(monkeypatch)
     assert result.status == "definite", result
     survivor = result.specs[0]
-    assert any(sv.ref == _ALT_SV for sv in survivor.resolved.stat_vars.items)
+    assert any(sv.ref.dcid == _ALT_SV for sv in survivor.resolved.members)
 
     assert result.member_population is not None
     assert result.member_population.admitted_dcids == (_ALT_SV,)

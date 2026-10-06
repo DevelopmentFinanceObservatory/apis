@@ -123,6 +123,7 @@ class TestPublishedCapsEqualEnforcedValues:
         assert caps["max_variables"] == settings().max_variables
         assert caps["obs_preview_points"] == observation_settings().obs_preview_points
         assert caps["obs_inline_max"] == observation_settings().obs_inline_max
+        assert caps["role_bulk_rank_max_rows"] == observation_settings().role_bulk_rank_max_rows
         assert caps["max_options"] == settings().max_options
         assert caps["max_parts"] == SEARCH_MAX_PARTS
         assert caps["max_part_entities"] == SEARCH_MAX_PART_ENTITIES
@@ -199,9 +200,10 @@ class TestCapabilityVersionPerturbation:
             perturbed = perturbed_settings._compute_capability_version()
             assert perturbed != baseline, f"{field} is not wired into the capability_version hash"
 
-    def test_changing_an_observation_cap_moves_the_capability_version(self, search_settings):
+    @pytest.mark.parametrize("cap", ["obs_inline_max", "role_bulk_rank_max_rows"])
+    def test_changing_an_observation_cap_moves_the_capability_version(self, search_settings, cap):
         original = config.settings().capability_version
-        search_settings(obs_inline_max=observation_settings().obs_inline_max + 1)
+        search_settings(**{cap: getattr(observation_settings(), cap) + 1})
         assert config.settings().capability_version != original
 
     def test_changing_the_unit_ref_source_marker_moves_the_capability_version(self, monkeypatch):

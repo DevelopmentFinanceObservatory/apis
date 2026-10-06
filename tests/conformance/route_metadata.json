@@ -135,6 +135,15 @@
     "surface": "datasets"
   },
   {
+    "has_description": true,
+    "method": "POST",
+    "name": "post_definition_members",
+    "operation_id": "post_definition_members_api_datasets__id__members_post",
+    "path": "/api/datasets/{id}/members",
+    "summary": "Post Definition Members",
+    "surface": "datasets"
+  },
+  {
     "has_description": false,
     "method": "DELETE",
     "name": "refuse_malformed_id",

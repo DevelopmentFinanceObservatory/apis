@@ -235,7 +235,6 @@ def _run(monkeypatch):
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
             sdmx=sdmx,
-            base_steps=[],
             base_timing={},
             unit_text="USD",
             coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
@@ -251,8 +250,8 @@ def _run(monkeypatch):
 def _date_range_ends(result) -> dict[str, str | None]:
     spec = result.specs[0]
     return {
-        sv.ref: (sv.data_date_range.end if sv.data_date_range is not None else None)
-        for sv in spec.resolved.stat_vars.items
+        sv.ref.dcid: (sv.data_date_range.end if sv.data_date_range is not None else None)
+        for sv in spec.resolved.members
     }
 
 

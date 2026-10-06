@@ -183,7 +183,6 @@ def _run(monkeypatch, detect: dict, llm=None) -> RegionResult:
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations=_ROLE_OBS, availability={}),
             llm=llm or _NoAlsoPlausibleBindLLM(),
-            base_steps=[],
             base_timing={},
             coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
         )
@@ -191,7 +190,7 @@ def _run(monkeypatch, detect: dict, llm=None) -> RegionResult:
 
 
 def _sv_dcids(result: RegionResult) -> set[str]:
-    return {sv.ref for spec in result.specs for sv in spec.resolved.stat_vars.items}
+    return {sv.ref.dcid for spec in result.specs for sv in spec.resolved.members}
 
 
 def test_guard_rejecting_the_fired_index_retracts_the_ordering_flag(monkeypatch):

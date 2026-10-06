@@ -6,7 +6,7 @@ and aggregates, Earth, administrative areas, cities, organisations and any other
 `/availability` lists for its `observationAbout`. Search's default scope and the datasets mint
 both read it here (`read_default_presence`), so the two agree by construction. The scope is a
 function of the StatVar, the graph generation and the backends read: a StatVar gets the same
-scope minted alone, in a group, in a collection, and in Search, which probes, counts and
+scope minted alone, in a group, and in Search, which probes, counts and
 fetches each member it answers with at that member's own scope. Places are in `scope_places`
 order, by dcid with Earth last.
 
@@ -102,7 +102,7 @@ DEFAULT_SCOPE_CHILD_TYPE: Final = "Country"
 
 MAX_EVERY_PLACE: Final = 5_000
 """The most places a StatVar's unfiltered read returns before its scope falls back to countries.
-It admits GDP (1,996 places on dev) and life expectancy (1,846). A collection's facet probe
+It admits GDP (1,996 places on dev) and life expectancy (1,846). A group's facet probe
 counts each member's own places against `facets._MAX_COLLECTION_PROBE_PAIRS` (200,000), so 40
 members at a full 5,000-place scope fit."""
 

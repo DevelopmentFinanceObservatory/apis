@@ -18,7 +18,6 @@ from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import EngineOptions
 from search.models import CoverageBreadth, DateRange, ResubmitIdentityPayload, TimeWindow
 from series_coverage.schema import FacetMetadata, RoleNames
-from tests.engine._base_identity import base_from_spec
 from tests.engine._fake_coverage import (
     CoverageRow,
     FakeCoverageService,
@@ -26,7 +25,7 @@ from tests.engine._fake_coverage import (
     patch_coverage,
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import door_roles_for_test_query
+from tests.engine._harness import door_roles_for_test_query, walk_options
 from tests.fixtures import FakeGraph, make_resolver
 
 _SV_DCID = "TESTFIXTURE/RoleScopePipelineE2E/Flow"
@@ -186,7 +185,6 @@ def _run(
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
             sdmx=sdmx,
-            base_steps=[],
             base_timing={},
             unit_text=unit_text,
             coverage=coverage_snapshot,
@@ -241,7 +239,6 @@ def _run_streamed(
                 resolver=make_resolver(graph),
                 llm=_FixedBindLLM(),
                 sdmx=sdmx,
-                base_steps=[],
                 base_timing={},
                 coverage=coverage_snapshot,
                 options=EngineOptions(stream_observations=True),
@@ -304,7 +301,7 @@ def test_no_entity_named_discovers_the_recipient_scope(monkeypatch):
         messages
     )
     # The plan serves each pair's 2020 point, so the StatVar is dated 2020 to 2020.
-    assert spec.resolved.stat_vars.items[0].data_date_range == DateRange(start="2020", end="2020")
+    assert spec.resolved.members[0].data_date_range == DateRange(start="2020", end="2020")
 
 
 def test_origin_bound_and_recipient_open_discovers_the_recipient_scope(monkeypatch):
@@ -390,7 +387,6 @@ def test_resubmit_selected_open_destination_uses_destination_identity_role(monke
     edited_identity_payload = spec.definition.identity.model_dump(mode="json")
     edited_identity_payload["entities"]["destination"] = [_KEN]
     edited_identity = type(spec.definition.identity).model_validate(edited_identity_payload)
-    base_spec_id, base_identity = base_from_spec(spec)
     graph = _graph_for(
         sv_dcid=_SV_DCID,
         sv_arcs=_declaring_arcs(observation_properties=["creditor", "debtor"]),
@@ -406,13 +402,11 @@ def test_resubmit_selected_open_destination_uses_destination_identity_role(monke
     region = resolve_spec_resubmit(
         inp=ResubmitIdentityPayload(
             identity=edited_identity,
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[item.ref for item in spec.resolved.stat_vars.items],
         ),
         graph=graph,
         sdmx=FakeSdmxClient(observations=observations, availability={}),
         coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
+        options=walk_options(graph),
     )
 
     assert region.status == "definite", region
@@ -550,13 +544,9 @@ def test_resubmit_names_every_bound_origin_in_the_role_scope_warning(
     coverage_snapshot = FakeCoverageService(
         patch_coverage(monkeypatch, rows, role_names=role_names)
     ).snapshot()
-    base_spec_id, base_identity = base_from_spec(spec)
     region = resolve_spec_resubmit(
         inp=ResubmitIdentityPayload(
             identity=spec.definition.identity,
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[item.ref for item in spec.resolved.stat_vars.items],
         ),
         graph=_graph_for(
             sv_dcid=_SV_DCID,
@@ -567,6 +557,15 @@ def test_resubmit_names_every_bound_origin_in_the_role_scope_warning(
         ),
         sdmx=FakeSdmxClient(observations=observations, availability={}),
         coverage=coverage_snapshot,
+        options=walk_options(
+            _graph_for(
+                sv_dcid=_SV_DCID,
+                sv_arcs=sv_arcs,
+                resolve=resolve,
+                role_query="unused",
+                sv_score=0.9,
+            )
+        ),
     )
 
     assert region.status == "definite", region
@@ -649,13 +648,9 @@ def test_role_scope_footnote_looks_up_labels_only_for_the_named_origins(
     coverage_snapshot = FakeCoverageService(
         patch_coverage(monkeypatch, rows, role_names=role_names)
     ).snapshot()
-    base_spec_id, base_identity = base_from_spec(spec)
     region = resolve_spec_resubmit(
         inp=ResubmitIdentityPayload(
             identity=spec.definition.identity,
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[item.ref for item in spec.resolved.stat_vars.items],
         ),
         graph=_graph_for(
             sv_dcid=_SV_DCID,
@@ -666,6 +661,15 @@ def test_role_scope_footnote_looks_up_labels_only_for_the_named_origins(
         ),
         sdmx=FakeSdmxClient(observations=observations, availability={}),
         coverage=coverage_snapshot,
+        options=walk_options(
+            _graph_for(
+                sv_dcid=_SV_DCID,
+                sv_arcs=sv_arcs,
+                resolve=resolve,
+                role_query="unused",
+                sv_score=0.9,
+            )
+        ),
     )
     assert region.status == "definite", region
     assert lookups == ([sorted(dcid for _, dcid in origins)] if expects_lookup else [])
@@ -1075,7 +1079,7 @@ def test_resubmit_of_a_discovered_scope_definite_rediscovers_with_the_same_spec_
     )
     assert fresh.status == "definite", fresh
     spec = fresh.specs[0]
-    assert spec.resolved.stat_vars.items[0].data_date_range == DateRange(start="2020", end="2020")
+    assert spec.resolved.members[0].data_date_range == DateRange(start="2020", end="2020")
 
     graph = FakeGraph(
         nodes={
@@ -1093,25 +1097,22 @@ def test_resubmit_of_a_discovered_scope_definite_rediscovers_with_the_same_spec_
     coverage_snapshot = FakeCoverageService(
         patch_coverage(monkeypatch, rows, role_names=role_names)
     ).snapshot()
-    base_spec_id, base_identity = base_from_spec(spec)
     echo = ResubmitIdentityPayload(
         identity=spec.definition.identity,
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[sv.ref for sv in spec.resolved.stat_vars.items],
     )
     region = resolve_spec_resubmit(
         inp=echo,
         graph=graph,
         sdmx=FakeSdmxClient(observations=observations, availability={}),
         coverage=coverage_snapshot,
+        options=walk_options(graph),
     )
 
     assert region.status == "definite", region.no_data_reason
     assert region.specs[0].spec_id == spec.spec_id
     assert region.specs[0].resolved.scope is not None
     assert region.specs[0].resolved.scope.axis == "destination"
-    assert region.specs[0].resolved.stat_vars.items[0].data_date_range == DateRange(
+    assert region.specs[0].resolved.members[0].data_date_range == DateRange(
         start="2020", end="2020"
     )
 
@@ -1206,7 +1207,6 @@ def test_candidates_path_buffered_discovered_scope_single_survivor_reuses_the_in
             resolver=make_resolver(graph),
             llm=_RoleBearingCandidateBindLLM(),
             sdmx=sdmx,
-            base_steps=[],
             base_timing={},
             coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
             options=EngineOptions(include_observations=True),

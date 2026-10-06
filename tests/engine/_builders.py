@@ -21,7 +21,6 @@ from search.models import (
     CoverageBare,
     EntityRoleKey,
     GraphRef,
-    PipelineStep,
     Shape,
     Slot,
     SlotKey,
@@ -154,6 +153,7 @@ def conjoin_spec(
     """
     slot = constraint_value_slot("constraintProp", constraint_val)
     return build_spec(
+        open_roles=(),
         shape=shape,
         slots=[slot],
         stat_vars=[
@@ -163,7 +163,6 @@ def conjoin_spec(
         ],
         entities=entities if entities is not None else [],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
         slot_options=slot_options,
         entity_options=entity_options,
         inapplicable_slots=inapplicable_slots,

@@ -12,7 +12,7 @@ from search.engine.region import resolve_spec_resubmit
 from search.engine.region.codes import DEFLATOR_PROJECTED
 from search.engine.region.state import EngineOptions
 from search.models import IdentityFacetValueRequest, IdentityUnitRequest, ResubmitIdentityPayload
-from tests.engine._base_identity import make_base, subject_entity
+from tests.engine._base_identity import make_identity, subject_entity
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import (
@@ -21,6 +21,8 @@ from tests.engine._harness import (
     _csv_header,
     _csv_row,
     _facet_from_fixture,
+    walk_options,
+    with_member_arcs,
 )
 from tests.fixtures import FakeGraph
 from tests.materialise._rate_table_support import (
@@ -34,7 +36,8 @@ from tests.materialise.conftest import FakeGraphReader
 _ENTITY = "country/KEN"
 _SHAPE: dict = {
     "kind": "statvar_schema",
-    "population_type": "TestPromoteDeflatorActivity",
+    # A population type the DAC recipe converts, which the materialise graph's arcs state.
+    "population_type": "FinancialFlow",
     "measured_property": "testPromoteDeflatorExpenditure",
     "stat_type": "measuredValue",
     "measurement_qualifier": "Nominal",
@@ -48,7 +51,7 @@ _SDMX_CSV_CONTENT_TYPE = "application/vnd.sdmx.data+csv;version=2.0.0"
 
 _FIVE_TUPLE_ARCS = {
     "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
-    "populationType": {"nodes": [{"dcid": "TestPromoteDeflatorActivity"}]},
+    "populationType": {"nodes": [{"dcid": "FinancialFlow"}]},
     "measuredProperty": {"nodes": [{"dcid": "testPromoteDeflatorExpenditure"}]},
     "statType": {"nodes": [{"dcid": "measuredValue"}]},
     "measurementQualifier": {"nodes": [{"dcid": "Nominal"}]},
@@ -123,25 +126,25 @@ def _run(*, eur_projected: bool):
     entities = [subject_entity(_ENTITY)]
     # Preview native EUR data in USD using its sole elected facet.
     request = IdentityUnitRequest(currency="USD", prices="current")
-    base_spec_id, base_identity = make_base(_SHAPE, slots=[], entities=entities)
+    base_identity = make_identity(_SHAPE, slots=[], entities=entities)
     inp = ResubmitIdentityPayload(
         identity=base_identity.model_copy(
             update={"facets": {"unit": IdentityFacetValueRequest(request=request)}}
         ),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[_SV],
     )
     return resolve_spec_resubmit(
         inp=inp,
         graph=graph,
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
-        options=EngineOptions(
-            include_observations=True,
-            materialise_graph=materialise_graph,
-            materialise_sdmx=materialise_sdmx,
-            rate_cache=RateTableCache(),
+        options=walk_options(
+            graph,
+            EngineOptions(
+                include_observations=True,
+                materialise_graph=with_member_arcs(materialise_graph, graph),
+                materialise_sdmx=materialise_sdmx,
+                rate_cache=RateTableCache(),
+            ),
         ),
     )
 

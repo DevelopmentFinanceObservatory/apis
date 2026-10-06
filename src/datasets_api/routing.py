@@ -1,5 +1,4 @@
-"""Registers case-sensitive `spec_`/`col_` path convertors and fallback routes for malformed IDs.
-The observations route takes `spec_` ids alone, so a `col_` id there matches no route.
+"""Registers the case-sensitive `spec_` path convertor and fallback routes for malformed IDs.
 Each fallback excludes literals reserved by its route shape, then returns a grammar-naming 404 for
 every HTTP method. Starlette's dispatcher treats this like any other routing 404. Import this module
 before building routes. Repeat registration uses the same process-global keys.
@@ -9,21 +8,6 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 from starlette.convertors import Convertor, register_url_convertor
-
-
-class SubjectIdConvertor(Convertor[str]):
-    """Matches one `spec_`- or `col_`-prefixed path segment, verbatim."""
-
-    regex = r"(?:spec_|col_)[^/]+"
-
-    def convert(self, value: str) -> str:
-        return value
-
-    def to_string(self, value: str) -> str:
-        return value
-
-
-register_url_convertor("dfo_subject_id", SubjectIdConvertor())
 
 
 class SpecIdConvertor(Convertor[str]):
@@ -49,7 +33,7 @@ class MalformedSubjectIdConvertor(Convertor[str]):
         exclude_reserved = (
             r"(?!(?:" + "|".join(reserved_segments) + r")(?:/|$))" if reserved_segments else ""
         )
-        self.regex: str = exclude_reserved + r"(?!(?:spec_|col_)[^/]+(?:/|$))" r"[^/]+"
+        self.regex: str = exclude_reserved + r"(?!spec_[^/]+(?:/|$))" r"[^/]+"
 
     def convert(self, value: str) -> str:
         return value
@@ -73,7 +57,7 @@ register_url_convertor(
 
 
 def _grammar_refusal_detail(segment: str) -> str:
-    return f"{segment!r} is not a valid dataset id: an id is `spec_`- or `col_`-prefixed, case-sensitive"
+    return f"{segment!r} is not a valid dataset id: an id is `spec_`-prefixed, case-sensitive"
 
 
 _ALL_METHODS: tuple[str, ...] = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS")

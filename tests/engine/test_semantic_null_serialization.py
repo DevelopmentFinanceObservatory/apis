@@ -306,9 +306,9 @@ def test_slot_option_coverage_omitted_without_sse_context():
 
 
 def test_genuinely_absent_optional_stays_omitted_on_both_boundaries():
-    """With sentences disabled, both fields stay absent from buffered and SSE responses."""
+    """With skills off, `skills` stays absent from buffered and SSE responses."""
     client = _client()
-    request = {**_FERTILITY_REQUEST, "response_options": {"include_sentence": False}}
+    request = {**_FERTILITY_REQUEST, "response_options": {}}
     buffered = client.post("/api/search/resolve", json=request)
     sse = client.post(
         "/api/search/resolve",
@@ -318,18 +318,16 @@ def test_genuinely_absent_optional_stays_omitted_on_both_boundaries():
     assert buffered.status_code == 200
     assert sse.status_code == 200
     buffered_body = buffered.json()
-    assert "rendered_sentence" not in buffered_body
-    assert "sentence_plan" not in buffered_body
+    assert "skills" not in buffered_body
 
     sse_response = next(d for ev, d in _parse_sse(sse.text) if ev == "response")["response"]
-    assert "rendered_sentence" not in sse_response
-    assert "sentence_plan" not in sse_response
+    assert "skills" not in sse_response
 
 
 def test_sentence_token_distinguishes_omitted_when_not_marked():
     """Definite part-level tokens omit `distinguishes` and `part_index` on both transports."""
     client = _client()
-    request = {**_FERTILITY_REQUEST, "response_options": {"include_sentence": True}}
+    request = {**_FERTILITY_REQUEST, "response_options": {}}
     buffered = client.post("/api/search/resolve", json=request)
     sse = client.post(
         "/api/search/resolve",
@@ -373,7 +371,7 @@ _FERTILITY_KENYA_1950_TO_1965_REQUEST = {
             }
         ],
     },
-    "response_options": {"include_sentence": True},
+    "response_options": {},
 }
 
 
@@ -425,7 +423,7 @@ def test_a_window_without_points_answers_no_data_naming_the_span_the_series_runs
                 }
             ],
         },
-        "response_options": {"include_sentence": True},
+        "response_options": {},
     }
     client = _client()
     buffered = client.post("/api/search/resolve", json=request)

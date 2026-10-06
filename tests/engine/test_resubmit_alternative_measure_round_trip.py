@@ -15,6 +15,7 @@ from search.models import IdentityBindingUnbound, IdentitySlot, ResubmitIdentity
 from tests.engine._axis_doubles import axis_confirming_reader
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import walk_options
 from tests.engine.test_candidates_measure_alternatives import (
     _EXTRA_SV,
     _ROLE_RECIPIENT,
@@ -113,15 +114,13 @@ def test_an_identity_padded_with_never_asserted_measure_axes_resolves_with_inapp
     graph = _family_graph(member_rows)
     materialise_graph = axis_confirming_reader(*(row.dcid for row in member_rows), graph=graph)
 
-    inp = ResubmitIdentityPayload(
-        identity=padded_identity, base_spec_id=padded_spec_id, base_identity=padded_identity
-    )
+    inp = ResubmitIdentityPayload(identity=padded_identity)
     region = resolve_spec_resubmit(
         inp=inp,
         graph=graph,
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
-        options=EngineOptions(materialise_graph=materialise_graph),
+        options=walk_options(graph, EngineOptions(materialise_graph=materialise_graph)),
     )
     assert region.status == "no_data"
     assert region.no_data_reason == "no_observations"

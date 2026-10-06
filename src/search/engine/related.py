@@ -57,12 +57,12 @@ type _IdentityKey = tuple[FiveTuple, tuple[tuple[str, str], ...]]
 
 @dataclass(frozen=True, slots=True)
 class RelatedMember:
-    """One kept identity of the related group: the facts it is minted from, and every
-    member of the group that holds them, in dcid order, which a mint of the identity reads
-    together."""
+    """One kept identity of the related group: the facts it is minted from, every member of
+    the group that holds them, in dcid order, which a mint of the identity reads together,
+    and the first of them, labelled, as the StatVar the measure reads."""
 
     dcids: tuple[str, ...]
-    label: str
+    stat_var: GraphRef
     five_tuple: FiveTuple
     constraints: Mapping[str, str]
 
@@ -174,7 +174,7 @@ def read_related(
             continue
         member = RelatedMember(
             dcids=tuple(dcids),
-            label=" / ".join(dict.fromkeys(labels[dcid] for dcid in dcids)),
+            stat_var=GraphRef(dcid=dcids[0], label=labels[dcids[0]]),
             five_tuple=five_tuple,
             constraints=dict(constraints),
         )
@@ -195,10 +195,13 @@ def related_measures(related: Related, elected: BaseIdentity) -> list[RelatedMea
     A member's identity is built from its five-tuple (`identity_shape_for`) and its
     constraint values as bound what/how slots, with `elected`'s entities and requested
     window, and its entity groups outside the hash. `elected`'s facets are dropped, since a
-    unit or source the elected measure pins says nothing about another measure.
+    unit or source the elected measure pins says nothing about another measure. Its open
+    roles are dropped too, since they name roles of the elected family that another
+    member's family need not declare, so a related identity carries no open role.
     """
     base = elected.core_document()
     base.pop("facets", None)
+    base.pop("open_roles", None)
     measures: list[RelatedMeasure] = []
     for member in related.members:
         five_tuple = member.five_tuple
@@ -218,8 +221,7 @@ def related_measures(related: Related, elected: BaseIdentity) -> list[RelatedMea
         )
         measures.append(
             RelatedMeasure(
-                label=member.label,
-                resolved_stat_var_dcids=list(member.dcids),
+                stat_var=member.stat_var,
                 definition=SpecDefinition(spec_id=spec_id, identity=identity),
             )
         )

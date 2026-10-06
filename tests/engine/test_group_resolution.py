@@ -92,7 +92,6 @@ def _run(
             resolver=make_resolver(graph),
             sdmx=sdmx if sdmx is not None else FakeSdmxClient(observations={}, availability={}),
             llm=llm if llm is not None else FakeLLM(),
-            base_steps=[],
             base_timing={},
             pre_resolved=pre_resolved,
             coverage=coverage if coverage is not None else empty_coverage_snapshot(),

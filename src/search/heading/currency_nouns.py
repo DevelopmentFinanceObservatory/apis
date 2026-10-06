@@ -4,7 +4,7 @@ quetzales", "Japanese yen".
 The graph names a currency in the singular and in title case ("Quetzal", "Brazilian Real"),
 which reads wrong after an amount's price basis ("constant 2024 Quetzal"), so the nouns are
 authored here for every ISO 4217 code the unit binder accepts
-(`search.engine.unit.lexicon.ISO_4217_CODES`). A code outside the table reads as the
+(`search.currency_codes.ISO_4217_CODES`). A code outside the table reads as the
 graph's label, then as the code itself (`currency_noun`).
 """
 

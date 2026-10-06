@@ -84,8 +84,8 @@ def test_the_stand_in_id_door_still_answers_for_an_unrecognized_segment() -> Non
 
 
 def test_get_not_an_id_refuses_not_found_naming_the_grammar() -> None:
-    """`SubjectIdConvertor` routes malformed ids to the platform's `not_found` response, which
-    explains the `spec_` and `col_` prefixes.
+    """`SpecIdConvertor` routes malformed ids to the platform's `not_found` response, which
+    explains the `spec_` prefix.
     """
     client = _client(graph=_graph())
 
@@ -95,8 +95,7 @@ def test_get_not_an_id_refuses_not_found_naming_the_grammar() -> None:
     body = resp.json()
     assert body["code"] == "not_found"
     assert body["detail"] == (
-        "'not_an_id' is not a valid dataset id: an id is `spec_`- or `col_`-prefixed, "
-        "case-sensitive"
+        "'not_an_id' is not a valid dataset id: an id is `spec_`-prefixed, case-sensitive"
     )
 
 
@@ -114,7 +113,7 @@ def test_get_unregistered_spec_id_refuses_spec_not_found() -> None:
 
 def test_operations_route_precedes_the_snapshot_doors_two_segment_pattern() -> None:
     """`operations/op_123` reaches the meta route because the snapshot door accepts only
-    `spec_` and `col_` ids. The client leaves the meta lifespan inactive, so the response is
+    `spec_` ids. The client leaves the meta lifespan inactive, so the response is
     `operation_not_found`.
     """
     client = make_client(registry=LiveSpecRegistry(store=FakeDatasetStore()))

@@ -5,8 +5,6 @@ The fixture has three members; their values sum to 22 under the family StatVar.
 
 from __future__ import annotations
 
-import csv
-import io
 from typing import cast
 
 import dfo_frame_grammar
@@ -16,18 +14,14 @@ from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.types import StatVarRow
 from datasets_api.mint_models import GroupbyOptions, MintOptions
 from datasets_api.render import (
-    CollectionMemberRendering,
     StatVarsSummedWarning,
     _reshape,
-    render_and_store_collection,
 )
 from materialise.content_version import MintPreimage
 from materialise.enrichment import EnrichmentLookup
-from materialise.reshape import RollupNotSummableError, Table
+from materialise.reshape import Table
 
-from ._artifact_doubles import FakeArtifactStore
 from ._graph_doubles import FakeMintGraphReader
-from ._render_inputs import PREPARED_AT, SITE
 
 _STAMP = IndexStamp(
     graph_endpoint="https://example.test/core/api",
@@ -382,116 +376,3 @@ class TestFullCollapseEmpty:
                 groupby_preimage=_PREIMAGE,
                 pivot_max_output_cells=5_000_000,
             )
-
-
-class TestCollectionMemberFullCollapseRefusal:
-    """Collection rendering records one collection version. Multi-member full collapses raise
-    `rollup_not_summable`; a sum that keeps a code axis returns the summed table.
-    """
-
-    def test_a_member_whose_full_collapse_merges_more_than_one_contributor_refuses(self):
-        member = CollectionMemberRendering(
-            spec_id="spec_family",
-            frame_chunks=lambda: iter((_TABLE,)),
-            provenance_refs=("p1",),
-            cited_refs=("p1",),
-            content_version="cv_member_raw",
-            prepared_at=PREPARED_AT,
-            entity_columns=_ENTITY_COLUMNS,
-            resolved_stat_var_refs=(),
-        )
-        with pytest.raises(RollupNotSummableError) as exc_info:
-            render_and_store_collection(
-                members=[member],
-                options=MintOptions(
-                    bundle=False, groupby=GroupbyOptions(by=["financingProvider"], op="sum")
-                ),
-                spec={"schema_version": 1, "collection_id": "col_family"},
-                citations={},
-                reproducing_call=None,
-                content_version="cv_collection",
-                artifact_store=FakeArtifactStore(),
-                enrichment=_enrichment(),
-                code_index=_INDEX,
-                pivot_max_output_cells=5_000_000,
-                prepared_at=PREPARED_AT,
-                site=SITE,
-            )
-        assert exc_info.value.axis == "stat_var"
-        assert exc_info.value.precondition == "collection_member_family_collapse"
-        assert "spec_family" in str(exc_info.value)
-
-    @pytest.mark.parametrize("levels", [None, {"crsPurpose": 0}], ids=["by", "levels"])
-    def test_a_member_whose_sum_keeps_a_code_axis_returns_the_summed_table(
-        self, levels: dict[str, int] | None
-    ):
-        member = CollectionMemberRendering(
-            spec_id="spec_family",
-            frame_chunks=lambda: iter((_TABLE,)),
-            provenance_refs=("p1",),
-            cited_refs=("p1",),
-            content_version="cv_member_raw",
-            prepared_at=PREPARED_AT,
-            entity_columns=_ENTITY_COLUMNS,
-            resolved_stat_var_refs=(),
-        )
-        artifact_store = FakeArtifactStore()
-        rendered = render_and_store_collection(
-            members=[member],
-            options=MintOptions(
-                bundle=False,
-                groupby=GroupbyOptions(by=["crsPurpose"], op="sum", levels=levels),
-            ),
-            spec={"schema_version": 1, "collection_id": "col_family"},
-            citations={},
-            reproducing_call=None,
-            content_version="cv_collection",
-            artifact_store=artifact_store,
-            enrichment=_enrichment(),
-            code_index=_INDEX,
-            pivot_max_output_cells=5_000_000,
-            prepared_at=PREPARED_AT,
-            site=SITE,
-        )
-        (artifact,) = rendered.artifacts
-        rows = list(csv.DictReader(io.StringIO(artifact_store.fetch(artifact.url).decode())))
-        assert {row["stat_var_crsPurpose"]: float(row["value"]) for row in rows} == {
-            "Basic health care": 15.0,
-            "Malaria control": 7.0,
-        }
-        assert "stat_var" not in rows[0]
-
-    def test_a_sole_contributor_member_does_not_refuse(self):
-        sole_table = Table(
-            columns=_TABLE_COLUMNS,
-            rows=(("dcid:SV_A", "country/USA", "country/KEN", "2022", 10.0, "USD", "p1"),),
-        )
-        member = CollectionMemberRendering(
-            spec_id="spec_family",
-            frame_chunks=lambda: iter((sole_table,)),
-            provenance_refs=("p1",),
-            cited_refs=("p1",),
-            content_version="cv_member_raw",
-            prepared_at=PREPARED_AT,
-            entity_columns=_ENTITY_COLUMNS,
-            resolved_stat_var_refs=(),
-        )
-        rendered = render_and_store_collection(
-            members=[member],
-            options=MintOptions(
-                bundle=False, groupby=GroupbyOptions(by=["financingProvider"], op="sum")
-            ),
-            spec={"schema_version": 1, "collection_id": "col_family"},
-            citations={},
-            reproducing_call=None,
-            content_version="cv_collection",
-            artifact_store=FakeArtifactStore(),
-            enrichment=_enrichment(),
-            code_index=_INDEX,
-            pivot_max_output_cells=5_000_000,
-            prepared_at=PREPARED_AT,
-            site=SITE,
-        )
-        artifacts, warnings = rendered.artifacts, rendered.warnings
-        assert len(artifacts) == 1
-        assert warnings == ()

@@ -1,4 +1,4 @@
-"""Tests the raw-fetch guard for one member and aggregate materialisation limits for collections.
+"""Tests the raw-fetch guard for one member.
 
 The composed mint path uses real registry and materialisation code with fake graph and SDMX
 responses. Tests lower `_MATERIALISE_RAW_FETCH_GUARD_ROWS` to exercise early refusal.
@@ -6,7 +6,6 @@ responses. Tests lower `_MATERIALISE_RAW_FETCH_GUARD_ROWS` to exercise early ref
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Iterator
 from contextlib import contextmanager
 
@@ -101,7 +100,7 @@ def _sdmx_transport(
     `c[variableMeasured]` bare, so that is what a real request's own query
     value matches against. `c[variableMeasured]` may name more than one
     stat_var at once (`materialise.generation._generate_chunk`'s combined
-    SDMX request for a collection whose members share an identical entity
+    SDMX request for a group whose members share an identical entity
     scope, `_SCOPE` below). Each requested stat_var's own data rows are
     concatenated under one header, splitting the combined query value back
     into its individual stat_vars first.
@@ -124,23 +123,8 @@ def _sdmx_transport(
     return httpx.MockTransport(handler)
 
 
-def _csv_body_for(*, stat_var: str, recipient: str, num_rows: int) -> str:
-    """Builds SDMX rows for a member and recipient, preserving the entity filter."""
-    rows = "".join(
-        f"dataflow,DC:DF_OBS(1.0.0),I,{stat_var.removeprefix('dcid:')},{recipient},USD,"
-        f"GrantEquivalent,NotApplicable,OECD_DAC2A,{2000 + i},1000,,facet1\r\n"
-        for i in range(num_rows)
-    )
-    return _CSV_HEADER + rows
-
-
-def _aggregate_ceiling_spec_id(stat_var: str) -> str:
-    """Returns a deterministic spec id in the required `spec_` plus 32-hex form."""
-    return "spec_" + hashlib.sha256(stat_var.encode()).hexdigest()[:32]
-
-
 def _aggregate_ceiling_request(*, stat_var: str, recipient: str) -> MaterialisationRequest:
-    """Builds a pinned request for direct tests with distinct recipient scopes."""
+    """Builds a pinned request bound to `recipient`."""
     return MaterialisationRequest(
         stat_var=stat_var,
         role_bindings={"recipient": [recipient]},
@@ -299,174 +283,6 @@ def test_counted_early_refusal_wire_shape_matches_the_raw_guard_refusal(
     assert "was not measured" in problem["detail"]
     # The read stopped well short of every chunk of the body.
     assert transport.chunks_yielded < transport.total_chunks
-
-
-@pytest.mark.parametrize("member_concurrency", [1, 4, 8])
-def test_collection_aggregate_over_ceiling_refuses_before_every_member_is_read(
-    member_concurrency: int,
-):
-    """Three members contribute 2 rows each, exceeding the ceiling of 3 with 6 rows.
-    Distinct recipients create separate SDMX chunks, so this test calls `materialise_collection`
-    directly. The mint door uses a shared scope.
-
-    Concurrency 1 reads two members. Concurrency 4 or 8 may fetch extras. The refusal reports
-    the same request-order prefix and row count.
-    """
-    members = [
-        ("dcid:BoundsTestAggregateA", "country/KEN"),
-        ("dcid:BoundsTestAggregateB", "country/UGA"),
-        ("dcid:BoundsTestAggregateC", "country/TZA"),
-    ]
-    ceiling = 3
-    requests: list[httpx.Request] = []
-    from materialise import materialise_collection
-
-    # Each member alone carries 2 rows, comfortably under the ceiling of
-    # 3, but any two members together already carry 4, over it.
-    bodies = {
-        stat_var.removeprefix("dcid:"): _csv_body_for(
-            stat_var=stat_var, recipient=recipient, num_rows=2
-        )
-        for stat_var, recipient in members
-    }
-    graph = FakeGraphReader(
-        facets={
-            (stat_var.removeprefix("dcid:"), recipient): [_FACET] for stat_var, recipient in members
-        }
-    )
-    sdmx = SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport(bodies, requests))
-    snapshot = RevisionSnapshot(graph_revision="rev-1", source_revisions=())
-    reader = FakeRevisionReader([snapshot, snapshot])
-
-    with pytest.raises(OverCeilingError) as excinfo:
-        materialise_collection(
-            [
-                (
-                    _aggregate_ceiling_spec_id(stat_var),
-                    _aggregate_ceiling_request(stat_var=stat_var, recipient=recipient),
-                )
-                for stat_var, recipient in members
-            ],
-            sdmx=sdmx,
-            graph=graph,
-            enrichment=EnrichmentLookup(graph),
-            revision_reader=reader,
-            ceiling=ceiling,
-            materialiser_build="test-build",
-            capability_version="cap-v1",
-            member_concurrency=member_concurrency,
-            coverage=_coverage_index(members),
-        )
-
-    assert excinfo.value.code == "over_ceiling"
-    assert excinfo.value.detail == (
-        "collection's aggregate materialised coverage of 4 rows across 2 member(s) "
-        f"exceeds the sync materialisation ceiling of {ceiling} rows"
-    )
-    # Coverage supplies each distinct-recipient facet candidate.
-    # Data fetches reach the transport.
-    if member_concurrency == 1:
-        # The second member crosses the ceiling, so only two SDMX reads run.
-        assert len(requests) == 2
-    else:
-        assert len(requests) <= 3
-
-
-def test_collection_aggregate_over_ceiling_shared_scope_fetches_one_combined_chunk(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """All three members share `_SCOPE`, so one SDMX request returns 6 rows across 3 members.
-    The coverage estimate is 3 rows. With a raw-guard floor of 3, the effective ceiling is
-    `ceil(3 * 1.5) = 5`.
-
-    Concurrency is pinned to 1 to keep the members in one combined chunk.
-    """
-    stat_vars = [
-        "dcid:BoundsTestAggregateA",
-        "dcid:BoundsTestAggregateB",
-        "dcid:BoundsTestAggregateC",
-    ]
-    ceiling = 3
-    effective_ceiling = 5
-    requests: list[httpx.Request] = []
-
-    # Each member carries 2 rows, and the shared scope puts all 3 in one chunk.
-    # Their 6 rows exceed the effective ceiling of 5.
-    bodies = {
-        stat_var.removeprefix("dcid:"): _csv_body(stat_var=stat_var, num_rows=2)
-        for stat_var in stat_vars
-    }
-    sdmx = SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport(bodies, requests))
-    client = _client(
-        monkeypatch=monkeypatch,
-        ceiling=ceiling,
-        graph=_graph_for(stat_vars),
-        sdmx=sdmx,
-        coverage=_coverage_service([(stat_var, _RECIPIENT) for stat_var in stat_vars]),
-        member_concurrency=1,
-    )
-
-    resp = client.post("/api/datasets", json=_mint_body(statvars=stat_vars))
-
-    assert resp.status_code == 422, resp.text
-    problem = resp.json()
-    assert problem["code"] == "over_ceiling"
-    assert problem["detail"] == (
-        "collection's aggregate materialised coverage of 6 rows across 3 member(s) "
-        f"exceeds the sync materialisation ceiling of {effective_ceiling} rows"
-    )
-    # The shared scope produces one combined fetch. Coverage supplies the facet candidates.
-    assert len(requests) == 1
-
-
-def test_collection_aggregate_exactly_at_ceiling_succeeds():
-    """Two members contribute 2 rows each, exactly meeting the ceiling of 4. Their distinct
-    recipient scopes produce separate SDMX chunks.
-    """
-    members = [
-        ("dcid:BoundsTestExactCeilingA", "country/KEN"),
-        ("dcid:BoundsTestExactCeilingB", "country/UGA"),
-    ]
-    ceiling = 4
-    requests: list[httpx.Request] = []
-    from materialise import materialise_collection
-
-    bodies = {
-        stat_var.removeprefix("dcid:"): _csv_body_for(
-            stat_var=stat_var, recipient=recipient, num_rows=2
-        )
-        for stat_var, recipient in members
-    }
-    graph = FakeGraphReader(
-        facets={
-            (stat_var.removeprefix("dcid:"), recipient): [_FACET] for stat_var, recipient in members
-        }
-    )
-    sdmx = SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport(bodies, requests))
-    snapshot = RevisionSnapshot(graph_revision="rev-1", source_revisions=())
-    reader = FakeRevisionReader([snapshot, snapshot])
-
-    result = materialise_collection(
-        [
-            (
-                _aggregate_ceiling_spec_id(stat_var),
-                _aggregate_ceiling_request(stat_var=stat_var, recipient=recipient),
-            )
-            for stat_var, recipient in members
-        ],
-        sdmx=sdmx,
-        graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=reader,
-        ceiling=ceiling,
-        materialiser_build="test-build",
-        capability_version="cap-v1",
-        coverage=_coverage_index(members),
-    )
-
-    assert len(result.members) == 2
-    # Each distinct-recipient group produces one fetch. Coverage supplies each facet candidate.
-    assert len(requests) == 2
 
 
 class _AlwaysCapExceededSdmxClient:

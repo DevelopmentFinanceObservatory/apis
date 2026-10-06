@@ -77,6 +77,7 @@ class _RecordingGraphReader(_RecordingClient):
         generation: object | None = None,
         un_base_url: str | None = None,
         un_availability: _RecordingClient | None = None,
+        **_cache_sizes: int,
     ) -> None:
         super().__init__(base_url=base_url, token=token)
         self.generation = generation

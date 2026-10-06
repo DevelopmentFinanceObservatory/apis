@@ -11,11 +11,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 import search.observations
+import tests.fixtures
 from artifact_store import Tier
 from code_index import CodeIndex, CodeRow, IndexStamp, StatVarRow
 from dataset_store.snapshot import WORKING_TIER_RETENTION, Revocation, StoredVersion
 from datasets_api.codes import DATASETS_CODE_CATALOGUE
-from datasets_api.doors.observations import build_observations_door
+from datasets_api.doors.observations import build_observations_door, observations_body
 from datasets_api.doors.pin import pin_artifact
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from dfo_platform.app import Surface, create_app
@@ -23,7 +24,15 @@ from materialise.formats import FRAME1_MEDIA_TYPE
 from materialise.graph import GraphReadError
 from materialise.series_conversion import SeriesConversion, encode_series_conversions
 from origin_catalogue import DFO, bound_catalogue
+from search.engine.clients.graph import Facet
+from search.engine.retrieval.member_facts import ArcsMemberFacts, IndexMemberFacts
+from search.models import TimeWindow
 from search.observations import ObservationSettings
+from series_coverage.schema import RoleNames
+from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
+from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import build_observations_planned
+from tests.fixtures import FakeGraph
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
 from ._artifact_doubles import FakeArtifactStore
@@ -241,7 +250,7 @@ class _World:
 
     def client(self) -> TestClient:
         door = build_observations_door(
-            spec_reader=FakeSpecReader(spec_ids=[_SPEC], collection_ids=["col_a"]),
+            spec_reader=FakeSpecReader(spec_ids=[_SPEC]),
             snapshot_reader=self.reader,
             artifact_store=self.store,
             graph=self.graph,
@@ -357,7 +366,7 @@ def _graph_down(world: _World) -> str:
         (_revoked, 410, "snapshot_revoked"),
         (_expired, 410, "artifact_expired"),
         (_only_a_superseded_bundle, 410, "artifact_expired"),
-        # The route serves definitions alone, so a collection id matches no route.
+        # A retired `col_` id is outside the id grammar, so it matches no route.
         (_collection, 404, "not_found"),
         (_graph_down, 503, "service_unavailable"),
     ],
@@ -617,13 +626,16 @@ def test_a_role_bulk_version_whose_frame_holds_no_rows_returns_the_bare_empty_re
     assert response.json() == {"series": [], "total_obs": 0, "truncated": False}
 
 
+_FLOW_POINTS = (
+    (_HEALTH_SV, "country/KEN", "2021", 3.0),
+    (_HEALTH_SV, "country/GHA", "2021", 9.0),
+    (_EDU_SV, "country/KEN", "2020", 1.0),
+    (_EDU_SV, "country/KEN", "2021", 2.0),
+)
+
+
 def _flow_rows() -> list[tuple]:
-    return [
-        _flow_row(_HEALTH_SV, "country/KEN", "2021", 3.0),
-        _flow_row(_HEALTH_SV, "country/GHA", "2021", 9.0),
-        _flow_row(_EDU_SV, "country/KEN", "2020", 1.0),
-        _flow_row(_EDU_SV, "country/KEN", "2021", 2.0),
-    ]
+    return [_flow_row(*point) for point in _FLOW_POINTS]
 
 
 def _flow_body(*, series_count: int) -> dict[str, object]:
@@ -636,18 +648,27 @@ def _flow_body(*, series_count: int) -> dict[str, object]:
     )
 
 
-def test_a_role_bearing_version_over_the_cap_shows_its_first_series_in_key_order(small_caps):
+# The flow frame holds four rows. At a gate of four the door ranks every series and shows
+# health's two 2021 points, the largest first. Below it the door takes one series from each
+# StatVar in turn, both dated 2021 so education leads by dcid, and shows them largest first.
+_ROLE_BULK_ORDERS = [
+    pytest.param(4, [(_HEALTH_SV, "country/GHA"), (_HEALTH_SV, "country/KEN")], id="ranked"),
+    pytest.param(3, [(_HEALTH_SV, "country/GHA"), (_EDU_SV, "country/KEN")], id="fixed"),
+]
+
+
+@pytest.mark.parametrize(("gate", "expected"), _ROLE_BULK_ORDERS)
+def test_a_role_bearing_version_over_the_cap_shows_the_series_its_row_gate_selects(
+    small_caps, search_settings, gate: int, expected: list[tuple[str, str]]
+):
+    search_settings(role_bulk_rank_max_rows=gate)
     payload = _World(_flow_body(series_count=3), _frame(_COLUMNS_FLOW, _flow_rows())).get().json()
 
-    # Key order is (StatVar, role tuple), so education comes before health and Ghana before Kenya.
     assert [
-        (series["stat_var"]["ref"], [e["ref"] for e in series["entities"]])
-        for series in payload["series"]
-    ] == [
-        (_EDU_SV, ["country/FRA", "country/KEN"]),
-        (_HEALTH_SV, ["country/FRA", "country/GHA"]),
-    ]
+        (series["stat_var"]["ref"], series["entities"][1]["ref"]) for series in payload["series"]
+    ] == expected
     assert (payload["total_obs"], payload["truncated"]) == (4, False)
+    assert payload["order"] == ("ranked" if gate == 4 else "fixed")
 
 
 def test_member_labels_compose_from_index_rows_and_graph_arcs():
@@ -663,6 +684,154 @@ def test_member_labels_compose_from_index_rows_and_graph_arcs():
         _HEALTH_SV: "Basic health",
         _EDU_SV: "Education, level unspecified (CRS Purpose)",
     }
+
+
+def _wire_series(series: Sequence[Mapping]) -> list[dict[str, object]]:
+    """Each series' StatVar, role entities, axes and points: what the StatVar's constraints
+    and the label batch decide."""
+    return [{key: s[key] for key in ("stat_var", "entities", "axes", "points")} for s in series]
+
+
+# Under a 2019-2020 window the door's frame holds the three rows inside it. Health's Ghana
+# series has its one point in 2021, so the fixed selection passes over it and takes health's
+# Kenya series beside education's newer Ghana series.
+_WINDOWED_FLOW_POINTS = (
+    (_HEALTH_SV, "country/GHA", "2021", 9.0),
+    (_HEALTH_SV, "country/KEN", "2019", 3.0),
+    (_EDU_SV, "country/GHA", "2020", 2.0),
+    (_EDU_SV, "country/KEN", "2020", 1.0),
+)
+
+# Under `latest` each StatVar keeps its own latest year: health's two 2021 series and
+# education's 2020 Kenya series, three rows of the five. A gate of three ranks them.
+_LATEST_FLOW_POINTS = (
+    (_HEALTH_SV, "country/GHA", "2021", 9.0),
+    (_HEALTH_SV, "country/KEN", "2020", 1.0),
+    (_HEALTH_SV, "country/KEN", "2021", 3.0),
+    (_EDU_SV, "country/GHA", "2019", 2.0),
+    (_EDU_SV, "country/KEN", "2020", 1.0),
+)
+
+_PARITY_CASES = [
+    *(
+        pytest.param(param.values[0], None, _FLOW_POINTS, *param.values[1:], id=param.id)
+        for param in _ROLE_BULK_ORDERS
+    ),
+    pytest.param(
+        2,
+        TimeWindow(start_year=2019, end_year=2020),
+        _WINDOWED_FLOW_POINTS,
+        [(_EDU_SV, "country/GHA"), (_HEALTH_SV, "country/KEN")],
+        id="fixed-range",
+    ),
+    pytest.param(
+        3,
+        "latest",
+        _LATEST_FLOW_POINTS,
+        [(_HEALTH_SV, "country/GHA"), (_HEALTH_SV, "country/KEN")],
+        id="ranked-latest",
+    ),
+]
+
+
+def _kept_rows(
+    flow_points: Sequence[tuple[str, str, str, float]], window: TimeWindow | str | None
+) -> list[tuple]:
+    """The frame rows a mint under `window` keeps: the rows inside a range, each StatVar's
+    own latest year under `latest`."""
+    if isinstance(window, TimeWindow):
+        kept = [p for p in flow_points if window.start_year <= int(p[2]) <= window.end_year]
+    elif window == "latest":
+        latest = {}
+        for sv, _recipient, year, _value in flow_points:
+            latest[sv] = max(latest.get(sv, year), year)
+        kept = [p for p in flow_points if p[2] == latest[p[0]]]
+    else:
+        kept = list(flow_points)
+    return [_flow_row(*point) for point in kept]
+
+
+@pytest.mark.parametrize(("gate", "window", "flow_points", "expected"), _PARITY_CASES)
+def test_the_door_and_the_live_role_bulk_preview_agree_on_each_series_axes(
+    small_caps,
+    search_settings,
+    monkeypatch,
+    gate: int,
+    window: TimeWindow | str | None,
+    flow_points: Sequence[tuple[str, str, str, float]],
+    expected: list[tuple[str, str]],
+):
+    """The live role-bulk read and the door over the rows its mint keeps select and give
+    the same series and state the same order, ranked or fixed, on every window. The live
+    path takes constraints from member facts (the health index row, the education graph
+    arcs); the door from its code index, else graph arcs. Both label through one code
+    index, as both read the packaged index in production."""
+    search_settings(role_bulk_rank_max_rows=gate)
+    monkeypatch.setattr(tests.fixtures, "get_index", _index)
+    points: dict[tuple[str, str], list[tuple[str, float]]] = {}
+    for sv, recipient, year, value in flow_points:
+        points.setdefault((sv, recipient), []).append((year, value))
+    coverage = patch_coverage(
+        monkeypatch,
+        [
+            (sv, "F1", "country/FRA", recipient, [int(year) for year, _ in series])
+            for (sv, recipient), series in points.items()
+        ],
+        role_names={
+            sv: RoleNames(donor="provider", recipient="recipient") for sv in (_HEALTH_SV, _EDU_SV)
+        },
+    )
+    sdmx_points: dict[str, dict[tuple[tuple[str, str], ...], list[Facet]]] = {}
+    for (sv, recipient), series in points.items():
+        role_tuple = (("provider", "country/FRA"), ("recipient", recipient))
+        sdmx_points.setdefault(sv, {})[role_tuple] = [
+            Facet(
+                earliest_date=series[0][0],
+                latest_date=series[-1][0],
+                obs_count=len(series),
+                dates=[year for year, _ in series],
+                values=[value for _, value in series],
+                facet_id="F1",
+            )
+        ]
+    live, warn = build_observations_planned(
+        [_HEALTH_SV, _EDU_SV],
+        {"provider": ["country/FRA"], "recipient": ["country/GHA", "country/KEN"]},
+        window=window,
+        graph=FakeGraph(nodes={dcid: {"label": label} for dcid, label in _LABELS.items()}),
+        materialise_graph=None,
+        materialise_sdmx=None,
+        sdmx=FakeSdmxClient(observations=sdmx_points),
+        coverage=FakeCoverageService(coverage).snapshot(),
+        member_facts={
+            _HEALTH_SV: IndexMemberFacts(row=_index().statvars[0]),
+            _EDU_SV: ArcsMemberFacts(
+                arcs={
+                    "constraintProperties": {"nodes": [{"dcid": "crsPurpose"}]},
+                    "crsPurpose": {"nodes": [{"dcid": "CRSPurposeCode111"}]},
+                }
+            ),
+        },
+    )
+    door = (
+        _World(_flow_body(series_count=3), _frame(_COLUMNS_FLOW, _kept_rows(flow_points, window)))
+        .get()
+        .json()
+    )
+
+    assert _wire_series(observations_body(live)["series"]) == _wire_series(door["series"])
+    assert [(s["stat_var"]["ref"], s["entities"][1]["ref"]) for s in door["series"]] == expected
+    assert warn is not None and warn.params is not None
+    assert live.order == door["order"] == warn.params["order"]
+    axes = {
+        _HEALTH_SV: {"property": "crsPurpose", "ref": "CRSPurposeCode121", "label": "Basic health"},
+        _EDU_SV: {
+            "property": "crsPurpose",
+            "ref": "CRSPurposeCode111",
+            "label": "Education, level unspecified (CRS Purpose)",
+        },
+    }
+    assert [s["axes"] for s in door["series"]] == [[axes[sv]] for sv, _recipient in expected]
 
 
 def test_a_converted_per_series_version_carries_each_series_conversion():

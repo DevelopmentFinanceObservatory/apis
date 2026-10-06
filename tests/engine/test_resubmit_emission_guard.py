@@ -8,15 +8,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from materialise.place_scope import DefaultPlaceScope
-from search.engine.region import promote_ground, promote_materialise, resolve_spec_resubmit
+from search.engine.region import resolve_spec_resubmit
 from search.engine.region.codes import NO_MEMBER_HAS_DATA_AT_PLACE
-from search.engine.retrieval.retrieve import Materialised
 from search.models import (
     BindingSet,
     BindingValue,
-    CoverageBare,
-    IdentityWindowRange,
     ResubmitIdentityPayload,
     Slot,
     SlotKey,
@@ -24,7 +20,7 @@ from search.models import (
 )
 from tests.engine._base_identity import (
     PERSON_COUNT_SHAPE,
-    make_base,
+    make_identity,
     subject_entity,
 )
 from tests.engine._builders import gref as _gref
@@ -32,6 +28,7 @@ from tests.engine._builders import prop_node as _prop_node
 from tests.engine._builders import sv_arcs as _sv_arcs
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import walk_options
 from tests.fixtures import FakeGraph
 
 _PROP_GENDER = "gender"
@@ -101,16 +98,13 @@ def _resubmit_input() -> ResubmitIdentityPayload:
         key=SlotKey(axis="how", property=_gref(_PROP_GENDER), label="gender"),
         binding=BindingValue(value=SlotValue(ref=_gref(_VAL_FEMALE), value_kind="enum_value")),
     )
-    base_spec_id, base_identity = make_base(
+    base_identity = make_identity(
         _SHAPE,
         slots=[gender_bound_slot],
         entities=entities,
     )
     return ResubmitIdentityPayload(
         identity=base_identity,
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[_SV_FEMALE, _SV_BARE],
     )
 
 
@@ -122,6 +116,7 @@ def test_bound_gender_with_only_bare_aggregate_data_returns_no_data():
         graph=_guard_graph(),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
+        options=walk_options(_guard_graph()),
     )
     assert region.status == "no_data"
     assert region.no_data_reason == "no_observations"
@@ -136,10 +131,11 @@ def test_no_data_response_flags_the_explicit_member_as_the_match():
         graph=_guard_graph(),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
+        options=walk_options(_guard_graph()),
     )
     assert region.flagged_match is not None
     flagged_spec = region.flagged_match[0]
-    assert [sv.ref for sv in flagged_spec.resolved.stat_vars.items] == [_SV_FEMALE]
+    assert [sv.ref.dcid for sv in flagged_spec.resolved.members] == [_SV_FEMALE]
     # outcomes.py's documented flagged_match contract: "its available_at_place is
     # False and confidence is low" -- the carrier Spec must actually carry those
     # fields, not ship the None/None "not assessed" default.
@@ -155,13 +151,14 @@ def test_no_data_anywhere_still_returns_no_data():
         graph=_guard_graph(with_obs=False),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
+        options=walk_options(_guard_graph(with_obs=False)),
     )
     assert region.status == "no_data"
     assert region.no_data_reason == "no_observations"
     assert region.specs == ()
     assert region.flagged_match is not None
     flagged_spec = region.flagged_match[0]
-    assert [sv.ref for sv in flagged_spec.resolved.stat_vars.items] == [_SV_FEMALE]
+    assert [sv.ref.dcid for sv in flagged_spec.resolved.members] == [_SV_FEMALE]
 
 
 # ---------------------------------------------------------------------------
@@ -276,27 +273,25 @@ def test_mixed_presence_asserting_coanswer_with_data_returns_definite():
             ]
         ),
     )
-    base_spec_id, base_identity = make_base(
+    base_identity = make_identity(
         PERSON_COUNT_SHAPE,
         slots=[age_slot, gender_slot, residence_slot],
         entities=entities,
     )
     inp = ResubmitIdentityPayload(
         identity=base_identity,
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
         # Unedited echo of the original mint's own confirmed set.
-        resolved_stat_var_dcids=[_URBAN_SV, _RURAL_SV, _RURAL_ADULT_SV],
     )
     region = resolve_spec_resubmit(
         inp=inp,
         graph=_mixed_presence_graph(),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
+        options=walk_options(_mixed_presence_graph()),
     )
     assert region.status == "definite", region.no_data_reason
     spec = region.specs[0]
-    served = {sv.ref for sv in spec.resolved.stat_vars.items}
+    served = {sv.ref.dcid for sv in spec.resolved.members}
     assert served == {_URBAN_SV, _RURAL_ADULT_SV}, (
         f"expected the answer backed only by the members asserting every bound "
         f"claim (age + residence), got {served!r}. Count_Person_Rural_Female must "
@@ -382,10 +377,9 @@ _PARTIAL_OBS = {
 }
 
 
-def test_no_edits_three_property_partial_match_names_the_best_partial_matcher():
-    """SV_HIGH asserts two of three bound properties; SV_LOW asserts one. LOW is
-    posted first to expose ordering errors. The flagged no_data carrier must name
-    SV_HIGH, the best partial match."""
+def test_no_member_asserting_every_bound_property_answers_no_matching_slice():
+    """SV_HIGH asserts two of three bound properties; SV_LOW asserts one. Neither is a
+    member of the identity's family, so the election settles nothing, as the mint's does."""
     entities = [subject_entity(_KEN_DCID)]
     gender_slot = Slot(
         key=SlotKey(axis="how", property=_gref(_PROP_GENDER), label="gender"),
@@ -403,19 +397,12 @@ def test_no_edits_three_property_partial_match_names_the_best_partial_matcher():
         key=SlotKey(axis="how", property=_gref(_PROP_AGE), label="age"),
         binding=BindingValue(value=SlotValue(ref=_gref(_VAL_ADULT), value_kind="enum_value")),
     )
-    base_spec_id, base_identity = make_base(
+    base_identity = make_identity(
         _PARTIAL_SHAPE,
         slots=[gender_slot, residence_slot, age_slot],
         entities=entities,
     )
-    inp = ResubmitIdentityPayload(
-        identity=base_identity,
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        # LOW-first posted order: exposes the guard's naive posted-order
-        # fallback were the has_data short-circuit not in place.
-        resolved_stat_var_dcids=[_SV_LOW, _SV_HIGH],
-    )
+    inp = ResubmitIdentityPayload(identity=base_identity)
     graph = FakeGraph(nodes=_PARTIAL_NODES, obs=_PARTIAL_OBS)
     region = resolve_spec_resubmit(
         inp=inp,
@@ -424,166 +411,7 @@ def test_no_edits_three_property_partial_match_names_the_best_partial_matcher():
             observations={}, availability={}, scope_availability=graph.scope_availability
         ),
         coverage=empty_coverage_snapshot(),
+        options=walk_options(graph),
     )
 
-    assert region.status == "no_data"
-    assert region.no_data_reason == "no_observations"
-    assert region.flagged_match is not None
-    flagged_spec = region.flagged_match[0]
-    assert [sv.ref for sv in flagged_spec.resolved.stat_vars.items] == [_SV_HIGH]
-
-
-_AGE_SLOT = Slot(
-    key=SlotKey(axis="how", property=_gref("age"), label="age"),
-    binding=BindingValue(value=SlotValue(ref=_gref("Years18Onwards"), value_kind="enum_value")),
-)
-_GENDER_SLOT = Slot(
-    key=SlotKey(axis="how", property=_gref("gender"), label="gender"),
-    binding=BindingValue(value=SlotValue(ref=_gref("Female"), value_kind="enum_value")),
-)
-_RESIDENCE_SLOT = Slot(
-    key=SlotKey(
-        axis="how",
-        property=_gref("placeOfResidenceClassification", "place of residence"),
-        label="place of residence",
-    ),
-    binding=BindingSet(
-        values=[
-            SlotValue(ref=_gref("Urban"), value_kind="enum_value"),
-            SlotValue(ref=_gref("Rural"), value_kind="enum_value"),
-        ]
-    ),
-)
-
-
-def _point_years(years: range) -> list[dict]:
-    return [
-        {
-            "earliestDate": str(years[0]),
-            "latestDate": str(years[-1]),
-            "obsCount": len(years),
-            "provenanceId": "dc/base/test",
-            "dates": [str(y) for y in years],
-            "values": [1.0] * len(years),
-        }
-    ]
-
-
-def test_asserting_members_with_data_only_outside_the_years_answer_for_the_window(
-    monkeypatch,
-):
-    """The first probe's winner, Rural_Female, is silent on the bound age, so the resubmit
-    re-runs over Urban_Female and Rural_Adult, which assert every bound property and hold
-    2001 to 2005 alone. Their re-run is a window carrier: the answer is for the window and
-    names their span, never "no member has data at the place"."""
-    real = promote_materialise.run_materialise
-    calls: list[int] = []
-
-    def _first_probe_finds_only_the_silent_member(shape, *args, **kwargs):
-        # Both resolvers serve only asserting members, so the first probe's answer stands in
-        # for an edit-reshaped survivor set whose winner is the silent member.
-        calls.append(1)
-        if len(calls) == 1:
-            return Materialised(
-                sv_dcids=[_RURAL_SV],
-                has_data=True,
-                coverage=CoverageBare(has_data=True),
-            )
-        return real(shape, *args, **kwargs)
-
-    monkeypatch.setattr(
-        promote_materialise, "run_materialise", _first_probe_finds_only_the_silent_member
-    )
-    graph = _mixed_presence_graph()
-    graph._obs[f"{_URBAN_SV}|{_IND_DCID}"] = _point_years(range(2001, 2006))
-    graph._obs[f"{_RURAL_ADULT_SV}|{_IND_DCID}"] = _point_years(range(2001, 2006))
-    base_spec_id, base_identity = make_base(
-        PERSON_COUNT_SHAPE,
-        slots=[_AGE_SLOT, _GENDER_SLOT, _RESIDENCE_SLOT],
-        entities=[subject_entity(_IND_DCID)],
-    )
-    region = resolve_spec_resubmit(
-        inp=ResubmitIdentityPayload(
-            identity=base_identity.model_copy(
-                update={"requested_window": IdentityWindowRange(start_year=2019, end_year=2021)}
-            ),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_URBAN_SV, _RURAL_SV, _RURAL_ADULT_SV],
-        ),
-        graph=graph,
-        sdmx=FakeSdmxClient(
-            observations={}, availability={}, scope_availability=graph.scope_availability
-        ),
-        coverage=empty_coverage_snapshot(),
-    )
-
-    assert len(calls) == 2
-    assert region.no_data_reason == "no_observations"
-    assert region.gate is None
-    assert region.window_gap_fact is not None
-    assert (region.window_gap_fact.asked, region.window_gap_fact.data_years) == (
-        "2019 to 2021",
-        (2001, 2005),
-    )
-
-
-def test_asserting_members_answer_over_their_own_default_scope(monkeypatch):
-    """No place is posted. The first probe's winner, Rural_Female, is silent on the bound age
-    and holds data in India and Kenya; Urban_Female and Rural_Adult assert every bound
-    property and hold data in India alone. The resubmit re-runs over those two, and the
-    answer's reads are built over the default scope of the members it serves: India,
-    without the country only the silent member has data in."""
-    real = promote_materialise.run_materialise
-    calls: list[int] = []
-
-    def _first_probe_finds_only_the_silent_member(shape, *args, **kwargs):
-        # Both resolvers serve only asserting members, so the first probe's answer stands in
-        # for an edit-reshaped survivor set whose winner is the silent member.
-        calls.append(1)
-        if len(calls) == 1:
-            return Materialised(
-                sv_dcids=[_RURAL_SV],
-                has_data=True,
-                coverage=CoverageBare(has_data=True),
-                default_scope=DefaultPlaceScope(places=(_IND_DCID, _KEN_DCID), every_place=False),
-            )
-        return real(shape, *args, **kwargs)
-
-    monkeypatch.setattr(
-        promote_materialise, "run_materialise", _first_probe_finds_only_the_silent_member
-    )
-    real_entities = promote_ground._observation_entities
-    read_over: list[dict[str, list[str]]] = []
-
-    def _recorded_entities(shape, **kwargs):
-        entities, warning = real_entities(shape, **kwargs)
-        read_over.append(entities)
-        return entities, warning
-
-    monkeypatch.setattr(promote_ground, "_observation_entities", _recorded_entities)
-    graph = _mixed_presence_graph()
-    graph._obs[f"{_RURAL_SV}|{_KEN_DCID}"] = graph._obs[f"{_RURAL_SV}|{_IND_DCID}"]
-    graph._children = {"Earth": {"Country": [_IND_DCID, _KEN_DCID]}}
-    base_spec_id, base_identity = make_base(
-        PERSON_COUNT_SHAPE, slots=[_AGE_SLOT, _GENDER_SLOT, _RESIDENCE_SLOT], entities=[]
-    )
-    region = resolve_spec_resubmit(
-        inp=ResubmitIdentityPayload(
-            identity=base_identity,
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_URBAN_SV, _RURAL_SV, _RURAL_ADULT_SV],
-        ),
-        graph=graph,
-        sdmx=FakeSdmxClient(
-            observations={}, availability={}, scope_availability=graph.scope_availability
-        ),
-        coverage=empty_coverage_snapshot(),
-    )
-
-    assert len(calls) == 2
-    assert region.status == "definite", region.no_data_reason
-    (spec,) = region.specs
-    assert {sv.ref for sv in spec.resolved.stat_vars.items} == {_URBAN_SV, _RURAL_ADULT_SV}
-    assert read_over == [{"observationAbout": [_IND_DCID]}]
+    assert (region.status, region.no_data_reason) == ("no_data", "no_matching_slice")

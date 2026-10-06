@@ -11,9 +11,19 @@ from search.engine.region.resubmit_request import (
     _date_request_for_resubmit,
     _reject_reversed_resubmit_window,
 )
-from search.engine.region.resubmit_seed import _distinct_asserted_values
 from search.engine.retrieval.bound_values import _expand_values, identity_query, source_binding
 from search.engine.retrieval.facts import read_constraints
+
+
+def _distinct_asserted_values(
+    stat_var_dcids: list[str], constraints_by_sv: dict[str, dict[str, str]], prop: str
+) -> list[str]:
+    """Return distinct asserted values in SV order, skipping members without `prop`."""
+    return list(
+        dict.fromkeys(
+            constraints_by_sv[sv][prop] for sv in stat_var_dcids if prop in constraints_by_sv[sv]
+        )
+    )
 
 
 def _covered_by_posted_binding(posted: list[str], vals: list[str]) -> bool:
@@ -27,7 +37,7 @@ def _covered_by_posted_binding(posted: list[str], vals: list[str]) -> bool:
 
 
 def _phase_build_bindings(state: _PromoteState) -> None:
-    """Build where and constraint bindings from the resolved StatVars and posted edits.
+    """Build where and constraint bindings from the resolved StatVars and posted bindings.
 
     Preserve multi-place sets, rebuild unedited constraints from final survivors, apply
     explicit widenings, and resolve the requested window. Validation runs before graph reads."""
@@ -60,7 +70,7 @@ def _phase_build_bindings(state: _PromoteState) -> None:
 
         # Multi-value edits use requested order, filtered to values asserted by final survivors.
         # Other constraints are reconstructed from those survivors' own arcs below.
-        resolved_constraints_by_sv = state.resolved_constraints_by_sv = {
+        resolved_constraints_by_sv = {
             sv: read_constraints(state.resolved_arcs[sv]) for sv in state.resolved_stat_var_dcids
         }
         multi_value_edits = {prop: vals for prop, vals in state.edits.items() if len(vals) > 1}
@@ -84,8 +94,8 @@ def _phase_build_bindings(state: _PromoteState) -> None:
                         b.value_dcids = filtered_vals
 
         # Rebuild unedited constraints from final survivors; correlated axes can lose values
-        # after a narrow or refine. Members assert rollup leaves, so preserve a posted rollup
-        # only when survivors assert its full value set and descendants cover those values.
+        # after a narrow. Members assert rollup leaves, so preserve a posted rollup only when
+        # survivors assert its full value set and descendants cover those values.
         for b in bindings:
             prop = b.property_dcid
             if prop is None or prop in state.edits:

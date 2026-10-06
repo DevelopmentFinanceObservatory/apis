@@ -12,18 +12,23 @@ from search.engine.assemble import build_unsupported_part
 from search.engine.envelope import make_diagnostics, make_query_echo
 from search.engine.spec_build import build_unsupported_definition
 from search.models import NoData, NoDataReason, Resolution, Slot
-from tests.engine._base_identity import GDP_SHAPE, make_base, make_identity, subject_entity
+from tests.engine._base_identity import GDP_SHAPE, make_identity, subject_entity
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import member_walk_reader
 from tests.engine._search_app import search_app
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 
 
-def _client() -> TestClient:
+def _client(*, walk: bool = False) -> TestClient:
+    """A Search app over the shared fixture graph; with `walk`, a resubmit walks the mint's
+    member enumeration over its nodes."""
+    graph = FakeGraph()
     app = search_app(
-        graph=FakeGraph(),
-        resolver=make_resolver(FakeGraph()),
+        graph=graph,
+        resolver=make_resolver(graph),
         llm=FakeLLM(),
         sdmx=FakeSdmxClient(),
+        materialise_graph=member_walk_reader(graph) if walk else None,
     )
     return TestClient(app, raise_server_exceptions=True)
 
@@ -129,8 +134,10 @@ def test_unsupported_response_validates_against_schema(response_schema, monkeypa
         place_options_pool=None,
         shared_skills_index=None,
         response_cache=None,
+        part_memo=None,
         generation=None,
         health=None,
+        caller=None,
     ):
         echo = make_query_echo("price of X in PPP terms", extract_skipped=True)
         diag = make_diagnostics("test-build", [], {}, 0)
@@ -167,12 +174,8 @@ def test_observation_series_definition_pins_role_tuple_shape(response_schema):
 
 
 def test_resubmit_door_response_validates_against_schema(response_schema):
-    client = _client()
+    client = _client(walk=True)
     entities = [subject_entity("country/IND")]
-    base_spec_id, base_identity = make_base(
-        GDP_SHAPE,
-        entities=entities,
-    )
     resp = client.post(
         "/api/search/resolve",
         json={
@@ -201,11 +204,6 @@ def test_resubmit_door_response_validates_against_schema(response_schema):
                             ],
                             entities=entities,
                         ).model_dump(mode="json"),
-                        "base_spec_id": base_spec_id,
-                        "base_identity": base_identity.model_dump(mode="json"),
-                        "resolved_stat_var_dcids": [
-                            "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
-                        ],
                     }
                 ],
             }

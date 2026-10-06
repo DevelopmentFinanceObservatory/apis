@@ -13,9 +13,12 @@ from search.observations import (
     ObservationSettings,
     as_entity_role_key,
     currency_unit_ref,
-    latest_value_rank,
+    fixed_selection,
     member_row_label,
+    member_year_order,
     observation_settings,
+    role_bulk_order,
+    series_rank,
 )
 
 _ORIGIN_ROLES = [role for role in _ROLE_AXES if axis_for_role(role) == "origin"]
@@ -105,9 +108,49 @@ def test_member_row_label_synthetic_property_no_crs_system_declares():
     assert member_row_label("sv1", constraints, labels) == "Blue"
 
 
-def test_latest_value_rank_orders_descending_with_no_data_last():
-    ranked = sorted([5.0, None, 10.0, 0.0], key=latest_value_rank)
-    assert ranked == [10.0, 5.0, 0.0, None]
+def test_series_rank_orders_by_latest_year_then_value_then_identity():
+    latest: dict[tuple[str, tuple[tuple[str, str], ...]], tuple[str, float | None] | None] = {
+        ("sv/B", ()): ("2023", 10.0),
+        ("sv/A", ()): ("2023", 10.0),  # identity breaks the value tie
+        ("sv/C", ()): ("2023-06", 50.0),  # the year, not the full date, ranks
+        ("sv/D", ()): ("2022", 999.0),  # an older year loses to any value in a newer one
+        ("sv/E", ()): ("2023", None),  # no value follows the valued points of its year
+        ("sv/F", ()): None,  # no point comes last
+    }
+    ranked = sorted(latest, key=lambda key: series_rank(key, latest[key]))
+    assert [sv for sv, _roles in ranked] == ["sv/C", "sv/A", "sv/B", "sv/E", "sv/D", "sv/F"]
+
+
+def test_fixed_selection_takes_columns_round_robin_in_column_order():
+    columns = [["a1", "a2", "a3"], ["b1"], [], ["c1", "c2"]]
+    assert fixed_selection(columns, 5) == ["a1", "b1", "c1", "a2", "c2"]
+    assert fixed_selection(columns, 2) == ["a1", "b1"]
+    assert fixed_selection(columns, 10) == ["a1", "b1", "c1", "a2", "c2", "a3"]
+
+
+def test_member_year_order_puts_the_newest_year_first_and_undated_last():
+    assert member_year_order({"sv/b": 2022, "sv/a": 2022, "sv/c": 2024, "sv/d": None}) == [
+        "sv/c",
+        "sv/a",
+        "sv/b",
+        "sv/d",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("rows", "role_currency", "order"),
+    [
+        (0, False, "ranked"),
+        (10_000, False, "ranked"),
+        (10_001, False, "fixed"),
+        (1, True, "fixed"),
+    ],
+)
+def test_role_bulk_order_ranks_at_or_under_the_row_gate_and_never_a_role_currency(
+    search_settings, rows: int, role_currency: bool, order: str
+):
+    search_settings(role_bulk_rank_max_rows=10_000)
+    assert role_bulk_order(rows=rows, converts_to_role_currency=role_currency) == order
 
 
 class TestAsEntityRoleKey:

@@ -19,9 +19,6 @@ class EntryParams:
     # It uses the same clock as now_ms(), so every stage compares it directly.
     deadline: float
 
-    # From request.response_options.include_sentence. Defaults to True when unset.
-    include_sentence: bool
-
     # Shared candidate cap for raw_text and dataset_resubmit.
     max_candidates: int
 

@@ -14,7 +14,7 @@ from search.engine.retrieval.bound_values import (
 )
 from search.engine.retrieval.member_facts import ArcsMemberFacts, IndexMemberFacts
 from search.engine.shape import ShapeDraft
-from tests.engine._index_slots import query_for
+from tests.engine._index_slots import crs_flow_slot_keys, query_for
 
 
 def _crs_shape() -> ShapeDraft:
@@ -28,7 +28,7 @@ def _crs_shape() -> ShapeDraft:
         stat_type_dcid=flow_row.stat_type,
         meas_qual_dcid="Nominal",
         meas_denom_dcid=None,
-        slot_keys=(),
+        slot_keys=crs_flow_slot_keys(),
     )
 
 

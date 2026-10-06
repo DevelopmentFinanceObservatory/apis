@@ -81,17 +81,20 @@ def test_a_capped_sample_missing_a_property_still_declares_the_index_populations
 
 
 def test_a_crs_sample_declares_the_slots_of_its_own_five_tuples_rows_alone():
-    """The slot keys describe the whole five-tuple and nothing beyond it. An identity built
-    from a CRS sample carries every property the CRS rows of the aid five-tuple carry, and
-    none that only the imputed multilateral rows, on their own five-tuple, carry."""
+    """The slot keys describe the sample's whole family and nothing beyond it. An identity
+    built from a CRS sample carries every property the CRS rows of the aid five-tuple carry,
+    none that only the DAC1 rows of the same five-tuple carry, and none that only the
+    imputed multilateral rows, on their own five-tuple, carry."""
     index = get_index()
     row = next(r for r in index.statvars if r.dcid == _BARE_SV)
     five_tuple_properties = {
         prop
         for other in index.statvars
         if row_five_tuple(other) == row_five_tuple(row)
+        and set(other.provenances) == set(row.provenances)
         for prop in other.constraint_properties
     }
+    assert "dac1AidType" not in five_tuple_properties
     graph = FakeGraph(
         nodes={
             _BARE_SV: {

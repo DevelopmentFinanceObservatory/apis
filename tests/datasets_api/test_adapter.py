@@ -26,6 +26,7 @@ from spec_registry.identity import recompute_identity
 from statvar_members import MemberEnumerator
 
 from ._graph_doubles import FakeMintGraphReader
+from ._member_bounds import mint_bounds
 
 _SHAPE = StatVarShape(
     stat_var="dcid:MalariaGrantDisbursements",
@@ -147,8 +148,9 @@ def test_resolve_definition_members_refuses_spec_not_exportable_for_an_unanchore
             identity,
             spec_id="spec_test",
             graph=graph,
-            enumerator=MemberEnumerator(graph=graph),
+            enumerator=MemberEnumerator(),
             code_index=get_index(),
+            bounds=mint_bounds(),
         )
 
     assert exc_info.value.spec_id == "spec_test"
@@ -171,8 +173,9 @@ def test_resolve_definition_members_refuses_loudly_on_a_dcid_prefixed_pin_id():
             identity,
             spec_id="spec_test",
             graph=graph,
-            enumerator=MemberEnumerator(graph=graph),
+            enumerator=MemberEnumerator(),
             code_index=get_index(),
+            bounds=mint_bounds(),
         )
 
     assert exc_info.value.category == "schema_violation"
@@ -196,8 +199,9 @@ def test_resolve_definition_members_round_trips_the_dcid_prefix_stripped_at_mint
         document,
         spec_id="spec_test",
         graph=graph,
-        enumerator=MemberEnumerator(graph=graph),
+        enumerator=MemberEnumerator(),
         code_index=get_index(),
+        bounds=mint_bounds(),
     ).shapes
 
     assert [shape.stat_var for shape in resolved_shapes] == ["dcid:MalariaGrantDisbursements"]
@@ -549,9 +553,8 @@ def test_to_materialisation_request_refuses_a_role_shaped_currency_the_shape_lac
     with pytest.raises(CurrencyRoleUndeclared) as exc_info:
         to_materialisation_request(identity, shape=_SHAPE, code_index=get_index())
 
-    # Direct adapter calls leave `pointer` and `member_spec_id` unset; mint doors attach them later.
+    # Direct adapter calls leave `pointer` unset; mint doors attach it later.
     assert exc_info.value.pointer is None
-    assert exc_info.value.member_spec_id is None
     assert exc_info.value.role == "origin"
     assert exc_info.value.declared_roles == ("recipient",)
 

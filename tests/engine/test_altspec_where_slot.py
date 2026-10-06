@@ -66,7 +66,7 @@ class TestAlternateSpecSentencesIncludePlace:
     def test_every_candidate_sentence_mentions_kenya(self):
         req = ResolveRequest(
             input=RawTextInput(query=_QUERY),
-            response_options=ResolveOptions(include_sentence=True),
+            response_options=ResolveOptions(),
         )
         part = offline_resolve(req).parts[0]
         assert isinstance(part, CandidatesPart)
@@ -110,6 +110,7 @@ class TestFixDoesNotPerturbSpecIdentity:
                 pre_fix_slots,
                 entities=[entity_from_resolved(e) for e in spec.resolved.entities],
                 requested_window=spec.resolved.trace.requested_window,
+                open_roles=(),
             )
             assert pre_fix_id == spec.spec_id, (
                 f"spec {spec.spec_id!r}: binding the where-slot perturbed spec_id "
@@ -125,7 +126,7 @@ class TestStatVarSlotValuesExcludeWhereSlot:
         """
         resp = _candidates()
         for spec in resp.candidates.specs:
-            for sv in spec.resolved.stat_vars.items:
+            for sv in spec.resolved.members:
                 assert not any(
                     slot_value.key.axis == "where" and slot_value.key.property is None
                     for slot_value in sv.slot_values

@@ -1,6 +1,7 @@
-"""`GET /api/datasets/schema` publishes contract-stable schemas with immutable `$id`s. Register
-and mint schemas reuse their runtime models. The manifest, options, preview, pin, and operation
-schemas define the fields their doors enforce. Nested graph-dependent shapes remain open.
+"""`GET /api/datasets/schema` publishes contract-stable schemas with immutable `$id`s. Register,
+mint, and members request schemas reuse their runtime models, and the members door serves
+`MembersEnvelope` itself. The manifest, options, pin, and operation schemas define the fields
+their doors enforce. Nested graph-dependent shapes remain open.
 Problem details embeds the platform-owned schema without a datasets `$id`.
 """
 
@@ -11,27 +12,21 @@ from typing import Literal
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from datasets_api.mint_models import (
+    DefinitionMembersRequest,
     DefinitionOptionsRequest,
     MintInput,
     MintOptions,
-    PreviewRequest,
 )
-from datasets_api.models import (
-    CollectionResponse,
-    DefinitionResponse,
-    RegisterRequest,
-)
+from datasets_api.models import DefinitionResponse, RegisterRequest
 from dfo_platform.problem import ProblemDetails
 
 _SCHEMA_BASE = "https://schemas.dfo.one.org/datasets/v1"
 
 
 class MintRequest(BaseModel):
-    """`POST /api/datasets`'s body: one of the four `input` kinds
-    (`spec_id`, `collection_id`, `statvar_set`, `source_codes`) plus a
-    rendering-only `options` block, never hashed into identity, and an
-    optional `preview` block. `preview` set asks for a `PreviewEnvelope`
-    instead of a `Manifest`; `options` has no effect on that response.
+    """`POST /api/datasets`'s body: one of the two `input` kinds
+    (`spec_id`, `statvar_set`) plus a rendering-only `options` block,
+    never hashed into identity.
     """
 
     model_config = ConfigDict(
@@ -41,13 +36,11 @@ class MintRequest(BaseModel):
     schema_version: Literal[1] = 1
     input: MintInput
     options: MintOptions = Field(default_factory=MintOptions)
-    preview: PreviewRequest | None = None
 
 
 class Manifest(BaseModel):
-    """The manifest every materialising door returns: exactly one of
-    `definition` or `collection`, plus the immutable version record
-    (`content_version`, `coverage`, `citation`, `trace`, `warnings`), the
+    """The manifest every materialising door returns: the `definition`, the immutable version
+    record (`content_version`, `coverage`, `citation`, `trace`, `warnings`), the
     live artifact inventory (`artifacts`), and the number of distinct
     series this definition resolves (`series_count`, `null` on a version
     record minted before this field existed). The per-series detail itself
@@ -73,8 +66,7 @@ class Manifest(BaseModel):
     )
 
     schema_version: Literal[1] = 1
-    definition: dict[str, object] | None = None
-    collection: dict[str, object] | None = None
+    definition: dict[str, object]
     content_version: str = Field(pattern=r"^cv_")
     prepared_at: AwareDatetime
     coverage: dict[str, object]
@@ -85,12 +77,6 @@ class Manifest(BaseModel):
     series_count: int | None = None
     output_options: dict[str, object] | None = None
     series_coverage_stamp: str | None = None
-
-    @model_validator(mode="after")
-    def _definition_xor_collection(self) -> Manifest:
-        if (self.definition is None) == (self.collection is None):
-            raise ValueError("exactly one of 'definition' or 'collection' must be present")
-        return self
 
 
 class OptionsEnvelope(BaseModel):
@@ -110,67 +96,49 @@ class OptionsEnvelope(BaseModel):
     )
 
     schema_version: Literal[1] = 1
-    definition: dict[str, object] | None = None
-    collection: dict[str, object] | None = None
+    definition: dict[str, object]
     content_version: str = Field(pattern=r"^cv_")
     coverage: dict[str, object]
     output_options: dict[str, object] | None = None
     warnings: list[dict[str, object]] = Field(default_factory=list)
     trace: dict[str, object]
 
-    @model_validator(mode="after")
-    def _definition_xor_collection(self) -> OptionsEnvelope:
-        if (self.definition is None) == (self.collection is None):
-            raise ValueError("exactly one of 'definition' or 'collection' must be present")
-        return self
 
-
-class PreviewMember(BaseModel):
-    """One preview entry: a definition, or one resolved
-    `(stat_var, entity/role-tuple)` pair of a collection. A `spec_id` preview
-    reports one entry for the whole definition; when the definition resolves
-    to a family of StatVars, `stat_var` is the family reference
-    `dcid:<spec_id>` and `sample` holds rows of its members.
-    `content_version` and `total_rows` are those a mint of the same
-    definition reports: both run the same generation over the same full
-    survivor set, so a client holding a preview can compare the token against
-    a mint's directly and skip a re-materialisation it already holds. Nested
-    shapes (`coverage`/`citation`/`sample`) are left as open objects here,
-    the same convention `Manifest` uses.
-    """
+class ServedMember(BaseModel):
+    """One StatVar a definition serves: its `dcid:`-prefixed `ref`, as the manifest trace's
+    `resolved_stat_vars` names it, its graph `label` (`null` when the graph holds none), the
+    `roles` it declares, and its `constraints`, each constraint property with its value
+    (`null` when the StatVar leaves it unbound)."""
 
     model_config = ConfigDict(extra="forbid")
 
-    stat_var: str
-    content_version: str | None
-    coverage: dict[str, object]
-    citation: dict[str, object]
-    warnings: list[dict[str, object]] = Field(default_factory=list)
-    sample: dict[str, object]
-    total_rows: int
-    truncated: bool
+    ref: str = Field(pattern=r"^dcid:")
+    label: str | None
+    roles: list[str]
+    constraints: dict[str, str | None]
 
 
-class PreviewEnvelope(BaseModel):
-    """`POST /api/datasets`'s response to a `preview`-set `MintRequest`,
-    never a `Manifest`: no top-level `content_version`, no `artifacts`, no
-    `definition`/`collection` identity block, and never written to the
-    registry, the artifact store, or a version/head record. `members`
-    carries one entry for a `spec_id` preview, covering every StatVar the
-    definition resolves to, and one entry per resolved
-    `(stat_var, entity/role-tuple)` pair for a `statvar_set`,
-    `source_codes` or `collection_id` preview, whose mint serves each pair
-    alone. A single entry is still a one-entry list, never a bare top-level
-    member. Each entry carries its own `content_version`; no aggregate spans
-    them.
+class MembersEnvelope(BaseModel):
+    """`POST /api/datasets/{id}/members`'s response: the members a mint of the spec serves,
+    resolved without materialising a frame.
+
+    `members` lists them sorted by `ref`, and `served_count` counts them.
+    `family_member_count` and `family_member_digest` state the whole population the identity
+    admits, before a broader member's dominated members are dropped, as a mint's
+    `trace.family_member_count` and `trace.family_member_digest` state it; both are `null`
+    when member resolution cannot state that population.
     """
 
     model_config = ConfigDict(
-        extra="forbid", json_schema_extra={"$id": f"{_SCHEMA_BASE}/preview-envelope.json"}
+        extra="forbid", json_schema_extra={"$id": f"{_SCHEMA_BASE}/members-envelope.json"}
     )
 
     schema_version: Literal[1] = 1
-    members: list[PreviewMember] = Field(min_length=1)
+    spec_id: str = Field(pattern=r"^spec_")
+    members: list[ServedMember]
+    served_count: int
+    family_member_count: int | None
+    family_member_digest: str | None
 
 
 class PinRequest(BaseModel):
@@ -283,14 +251,12 @@ def build_schema_document() -> dict[str, object]:
         "schema_version": 1,
         "mint_request": MintRequest.model_json_schema(),
         "register_request": RegisterRequest.model_json_schema(),
-        "register_response": {
-            "definition": DefinitionResponse.model_json_schema(),
-            "collection": CollectionResponse.model_json_schema(),
-        },
+        "register_response": DefinitionResponse.model_json_schema(),
         "manifest": Manifest.model_json_schema(),
         "definition_options_request": DefinitionOptionsRequest.model_json_schema(),
         "options_envelope": OptionsEnvelope.model_json_schema(),
-        "preview_envelope": PreviewEnvelope.model_json_schema(),
+        "definition_members_request": DefinitionMembersRequest.model_json_schema(),
+        "members_envelope": MembersEnvelope.model_json_schema(),
         "pin_request": PinRequest.model_json_schema(),
         "pin_response": PinResponse.model_json_schema(),
         "operation_resource": OperationResource.model_json_schema(),

@@ -30,10 +30,10 @@ import rfc8785
 import search.engine.config as config  # module-attribute access for runtime-resolved values
 from dfo_platform.single_flight_cache import AlreadyInFlight, SingleFlightCache
 from graph_generation import UNKNOWN_GENERATION, GenerationProvider
+from materialise import GraphReader
 from search.engine.options.population import OptionsPopulation, options_population
 from search.engine.retrieval.bound_values import identity_query
 from search.models import BaseIdentity
-from statvar_members import MemberArcReader
 
 _FOLLOWER_DEADLINE_EXCEEDED_DETAIL = (
     "population memo: follower deadline elapsed while the owner was still deriving"
@@ -42,7 +42,7 @@ _FOLLOWER_DEADLINE_EXCEEDED_DETAIL = (
 
 def _population_key(identity: BaseIdentity) -> str:
     """sha256 of the RFC 8785 (JCS) canonical JSON of `identity`'s shape, slots, and the
-    role keys and dataset its `identity_query` names -- the fields `options_population`
+    bound and open role keys and dataset its `identity_query` names -- the fields `options_population`
     reads. Deliberately excludes the entities bound under each role key: see the module
     docstring. An identity that binds no entity keys as it does without role keys."""
     document: dict[str, object] = {
@@ -54,6 +54,8 @@ def _population_key(identity: BaseIdentity) -> str:
         document["source"] = query.source
     if query.role_keys:
         document["role_keys"] = sorted(query.role_keys)
+    if query.open_role_keys:
+        document["open_role_keys"] = sorted(query.open_role_keys)
     canonical = rfc8785.dumps(document)
     return hashlib.sha256(canonical).hexdigest()
 
@@ -103,7 +105,7 @@ class OptionsPopulationMemo:
     def get_or_derive(
         self,
         identity: BaseIdentity,
-        graph: MemberArcReader,
+        graph: GraphReader,
         *,
         deadline: float | None = None,
         join_inflight: bool = True,
@@ -111,19 +113,20 @@ class OptionsPopulationMemo:
         """Return the cached population or derive it on a miss.
 
         Derivation refusals and infrastructure errors propagate and are never
-        stored. `deadline` bounds only a follower's wait; expiry raises
-        `asyncio.TimeoutError`, while the owner completes. With
+        stored. `deadline` bounds the owner's graph walk and a follower's wait; a
+        follower's expiry raises `asyncio.TimeoutError` while the owner completes, and
+        the owner's raises `MemberReadDeadline`. With
         `join_inflight=False`, a cache hit returns normally, a free key can be
         claimed, and an occupied key raises `PopulationInFlight` without
         waiting. Place-options prefetch uses this to preserve worker capacity.
         """
         if not self._enabled:
-            return options_population(identity, graph)
+            return options_population(identity, graph, deadline=deadline)
 
         try:
             return self._cache.get_or_fetch(
                 _population_key(identity),
-                lambda: options_population(identity, graph),
+                lambda: options_population(identity, graph, deadline=deadline),
                 deadline=deadline,
                 join_inflight=join_inflight,
             )

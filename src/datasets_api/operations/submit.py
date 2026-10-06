@@ -6,13 +6,11 @@ bound to the submitting request. Options stay on the row. Their rendering key
 sets the id. Different renderings get separate operations and isolate rendering-specific
 failures such as `excel_limit`.
 
-A definition's `request_identity` also holds `member_dcids`, the StatVars the submitting door
-resolved. The worker passes them to member resolution as its seed, so it resolves the family
-the door resolved, including one a posted `resolved_stat_var_dcids` root proved complete past
-the candidate window. The members are part of the operation id: two submissions share an
-operation only when their doors resolved the same members, and a failure recorded for one
-member set is never returned to a submission that resolved another. A collection's members are
-registered specs that take no seed, so its identity holds the `subject_id` alone.
+`request_identity` also holds `member_dcids`, the StatVars the submitting door resolved. The
+members are part of the operation id: two submissions share an operation only when their doors
+resolved the same members, and a failure recorded for one member set is never returned to a
+submission that resolved another. The worker resolves the members again and fails the operation
+when they differ from `member_dcids`, so a row never records one member set and mints another.
 """
 
 from __future__ import annotations
@@ -56,12 +54,12 @@ def submit_over_budget(
     within_budget: bool,
     async_max_rows: int,
     async_max_requests: int,
-    members: Sequence[str] | None = None,
+    members: Sequence[str],
 ) -> None:
     """Returns when the caller's sync-budget decision allows inline work.
 
-    `members` are the StatVar refs a definition's door resolved, `dcid:`-prefixed or bare. The
-    operation stores them as `member_dcids`. A collection passes none.
+    `members` are the StatVar refs a door resolved, `dcid:`-prefixed or bare. The operation
+    stores them as `member_dcids`.
 
     Otherwise, async row or request limits raise `OverCeilingError` before a row or task exists.
     `OperationBacklogFull` also propagates. The function records or reuses the operation,
@@ -93,15 +91,16 @@ def submit_over_budget(
 _STAT_VAR_REF_PREFIX = "dcid:"
 
 
-def _request_identity(subject_id: str, members: Sequence[str] | None) -> dict[str, object]:
-    """The operation's identity: the subject and, for a definition, its resolved members as
-    sorted bare dcids, so the id is independent of resolution order."""
-    if members is None:
-        return {"subject_id": subject_id}
-    return {
-        "subject_id": subject_id,
-        "member_dcids": sorted({ref.removeprefix(_STAT_VAR_REF_PREFIX) for ref in members}),
-    }
+def _request_identity(subject_id: str, members: Sequence[str]) -> dict[str, object]:
+    """The operation's identity: the subject and its resolved members as sorted bare dcids, so
+    the id is independent of resolution order."""
+    return {"subject_id": subject_id, "member_dcids": list(member_dcids(members))}
+
+
+def member_dcids(members: Sequence[str]) -> tuple[str, ...]:
+    """`members`, StatVar refs `dcid:`-prefixed or bare, as sorted distinct bare dcids, the form
+    `member_dcids` stores them in."""
+    return tuple(sorted({ref.removeprefix(_STAT_VAR_REF_PREFIX) for ref in members}))
 
 
 def request_identity_subject_id(request_identity: Mapping[str, object]) -> str:
@@ -113,8 +112,7 @@ def request_identity_subject_id(request_identity: Mapping[str, object]) -> str:
 
 
 def request_identity_member_dcids(request_identity: Mapping[str, object]) -> tuple[str, ...] | None:
-    """Returns the stored `member_dcids`, or `None` for a collection and for an operation
-    recorded before definitions stored them."""
+    """Returns the stored `member_dcids`, or `None` for an operation recorded without them."""
     member_dcids = request_identity.get("member_dcids")
     if member_dcids is None:
         return None
@@ -139,6 +137,7 @@ def operation_submitted_resource(submitted: OperationSubmitted) -> OperationReso
 __all__ = [
     "OPERATION_SUBMIT_RETRY_AFTER_MS",
     "OperationSubmitted",
+    "member_dcids",
     "operation_submitted_resource",
     "request_identity_member_dcids",
     "request_identity_subject_id",

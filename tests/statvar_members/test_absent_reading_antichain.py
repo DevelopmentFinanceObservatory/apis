@@ -204,13 +204,21 @@ def test_synthetic_system_opposite_of_the_real_crs_declarations_still_dominates(
 def test_cache_serves_a_different_group_for_the_same_key_under_different_readings():
     """Different `readings` values need separate cache entries because they change reduction."""
     reader = _purpose_modality_reader()
-    enumerator = MemberEnumerator(graph=reader)
+    enumerator = MemberEnumerator()
 
     not_declared = enumerator.enumerate(
-        five_tuple=_FIVE_TUPLE, slots=_SLOTS, readings={"modality": "not_declared"}
+        graph=reader,
+        stamp_key="rev1",
+        five_tuple=_FIVE_TUPLE,
+        slots=_SLOTS,
+        readings={"modality": "not_declared"},
     )
     aggregate = enumerator.enumerate(
-        five_tuple=_FIVE_TUPLE, slots=_SLOTS, readings={"modality": "aggregate"}
+        graph=reader,
+        stamp_key="rev1",
+        five_tuple=_FIVE_TUPLE,
+        slots=_SLOTS,
+        readings={"modality": "aggregate"},
     )
 
     assert {member.stat_var for member in not_declared.members} == {

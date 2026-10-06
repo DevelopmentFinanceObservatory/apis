@@ -11,7 +11,6 @@ from search.engine.assemble import build_no_data_part, part_departure_facts
 from search.engine.clients.graph import Facet
 from search.engine.departures import (
     breakdown_not_applied,
-    dataset_not_applied,
     measure_not_applied,
     merged_entity_facts,
     price_basis_not_applied,
@@ -64,16 +63,13 @@ def _spec(
     measurementMethod and `groups` as its entity groups. Its data holds `data_years`, by
     default the years `served` spans, as an unclipped read serves them."""
     spec = _make_spec(sv_dcid="Count_Person", purpose_dcid="DAC/Health", place_dcid="country/ETH")
-    items = [
-        spec.resolved.stat_vars.items[0].model_copy(
+    members = [
+        spec.resolved.members[0].model_copy(
             update={"data_date_range": DateRange(start=start, end=end)}
         )
         for start, end in served
     ]
-    resolved_update: dict[str, object] = {
-        "stat_vars": spec.resolved.stat_vars.model_copy(update={"items": items}),
-        "entity_groups": groups,
-    }
+    resolved_update: dict[str, object] = {"entity_groups": groups}
     if method is not None:
         resolved_update["facets"] = {
             "measurementMethod": ResolvedFacet(basis="fallback", ref=method, label=method.lower())
@@ -89,9 +85,9 @@ def _spec(
     return spec.model_copy(
         update={
             "definition": spec.definition.model_copy(update={"identity": identity}),
-            "resolved": spec.resolved.model_copy(update=resolved_update).stating_data_years(
-                data_years
-            ),
+            "resolved": spec.resolved.model_copy(update=resolved_update)
+            .stating_data_years(data_years)
+            .stating_members(members),
         }
     )
 
@@ -146,9 +142,7 @@ def test_year_unavailable_states_where_the_data_starts_unclipped(start, served, 
         data_years=data_years(plan),
     )
 
-    assert spec.resolved.stat_vars.items[0].data_date_range == DateRange(
-        start=served[0], end=served[1]
-    )
+    assert spec.resolved.members[0].data_date_range == DateRange(start=served[0], end=served[1])
     assert spec_departure_facts(spec, operations=()) == expected
 
 
@@ -488,13 +482,10 @@ def test_an_entity_unserved_inside_a_group_counts_toward_the_group_alone():
 
 
 def test_breakdown_over_a_flow_axis_is_cleared_by_that_role():
-    by_creditor = Operation(verb="report", phrase="by creditor", over="origin")
-    by_recipient = Operation(verb="report", phrase="by recipient", over="destination")
-
-    assert breakdown_not_applied(by_creditor) == DepartureFact(
+    assert breakdown_not_applied("origin", asked="by creditor") == DepartureFact(
         code="breakdown_not_applied", binding_ref="origin:", asked="by creditor", over="origin"
     )
-    assert breakdown_not_applied(by_recipient).binding_ref == "where:"
+    assert breakdown_not_applied("destination", asked=None).binding_ref == "where:"
 
 
 def test_ordered_facts_follow_precedence_and_drop_repeats():
@@ -603,7 +594,6 @@ def test_a_no_data_part_states_its_scope_limit_as_its_last_departure():
         "no_observations",
         variable_text="grants",
         warnings=[],
-        include_sentence=True,
         flagged_match=_crs_010_flagged(),
         gate="no_member_has_data_at_place",
         operations=[Operation(verb="share_of", phrase="share of grants")],
@@ -677,8 +667,6 @@ def _asks(phrase: str) -> DepartureFact:
             "in constant 2022 dollars",
             price_basis_not_applied(asked="in constant 2022 dollars", shown=None),
         ),
-        # A dataset, cleared by the source token.
-        ("CRS", dataset_not_applied("CRS")),
     ],
 )
 def test_a_dropped_phrase_departs_unless_it_is_operation_wording(phrase, fact):
@@ -732,8 +720,6 @@ _MLS_030 = (
             ["GDP."],
             [dataclasses.replace(_CURRENT_PRICES, shown="current US dollars")],
         ),
-        # A dataset the sentence happens to name still departs on the source token.
-        ([dataset_not_applied("CRS")], ["CRS aid."], [dataset_not_applied("CRS")]),
     ],
 )
 def test_a_part_states_only_the_facts_its_heading_and_byline_do_not(facts, sentences, stated):

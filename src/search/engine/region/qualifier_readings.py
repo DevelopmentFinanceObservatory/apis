@@ -100,8 +100,7 @@ def match_query_readings(
 
     Sources are matched separately, as `_match_query_qualifiers` matches them. The second
     value holds the normalised phrases of `variable` and `query_text` readings, and the
-    raw-text path owns dropped phrases. A span inside a dataset mention is never a reading,
-    since `match_qualifier_readings` leaves the mention's words unread.
+    raw-text path owns dropped phrases.
     """
     index = get_index()
     measure_index = get_measure_index()

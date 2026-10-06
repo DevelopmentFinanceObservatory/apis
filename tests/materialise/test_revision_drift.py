@@ -9,7 +9,6 @@ from dc_sdmx import SdmxClient
 from materialise import (
     EnrichmentLookup,
     MaterialisationRequest,
-    materialise_collection,
     materialise_group,
 )
 from materialise.errors import UpstreamVersionChangedError
@@ -192,30 +191,6 @@ def _single_variable_sdmx_client() -> SdmxClient:
     return SdmxClient(
         base_url="https://datacommons.one.org/core/api", transport=httpx.MockTransport(handler)
     )
-
-
-def test_materialise_collection_precomputed_probe_stale_revision_retries_and_reprobes():
-    graph = FakeGraphReader(facets={(_BARE_STAT_VAR, _COUNTRY): [_drift_facet()]})
-    probe = _drift_probe(revision=_A)
-    # The probe has revision A; the post-attempt read B triggers a retry that converges on B.
-    reader = FakeRevisionReader([_B, _B])
-    sdmx = _single_variable_sdmx_client()
-
-    assert graph.calls["observation_facets_batch_many"] == 0
-
-    result = materialise_collection(
-        [(f"spec_{0:032d}", _drift_request())],
-        sdmx=sdmx,
-        graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=reader,
-        materialiser_build="build-123",
-        capability_version="cap-v1",
-        precomputed_probe=probe,
-    )
-
-    assert graph.calls["observation_facets_batch_many"] == 1
-    assert len(result.members) == 1
 
 
 def test_materialise_group_single_member_precomputed_probe_stale_revision_retries_and_reprobes():

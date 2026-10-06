@@ -80,7 +80,7 @@ _INDEX = CodeIndex(
         DatasetDeclaration(
             provenance=_PROVENANCE,
             label="Lines",
-            synonyms=(),
+            description="A test table.",
             opt_in=False,
             absent_observation="zero",
             rank=0,

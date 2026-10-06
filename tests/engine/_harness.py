@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import itertools
 import json
 import math
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date
+from typing import cast
 from unittest.mock import patch
 
 import httpx
@@ -19,6 +21,7 @@ from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from materialise import GraphReader, PreviewResult
 from materialise.facets import FacetSelection, probe_facets
 from materialise.graph import Facet as MaterialiseFacet
+from materialise.graph import SubjectPage
 from materialise.rate_tables import RateTableCache
 from materialise.window import Coverage as MaterialisePreviewCoverage
 from search.engine import config
@@ -35,11 +38,14 @@ from search.engine.region.observations.bulk_role_series import _bulk_role_series
 from search.engine.region.observations.bulk_scope import BulkScope, _bulk_scope_series
 from search.engine.region.observations.fetch import _build_observations
 from search.engine.region.result import FacetAxisFilter
+from search.engine.region.state import EngineOptions
+from search.engine.response_cache_memo import PartMemo
 from search.engine.retrieval.facet_election import merge_role_candidates, select_role_candidate
 from search.engine.retrieval.member_facts import MemberFacts
 from search.engine.retrieval.read_plan import (
     BulkPlan,
     PairPlan,
+    PlanRoles,
     PlanSeries,
     PlanYears,
     ReadPlan,
@@ -303,11 +309,12 @@ def bulk_role_series_planned(
     discovered_role_index: RoleFacetIndex | None = None,
     time_period: Sequence[str] | None = None,
     latest: bool = False,
+    roles: PlanRoles | None = None,
     **kwargs,
 ) -> tuple[SpecObservations, Warning | None]:
     """`_bulk_role_series` over the bulk plan a resolver records for these inputs
     (`bulk_plan`): `latest`, a range over `time_period`, or every year, narrowed by
-    `facet_filter`."""
+    `facet_filter`, with the plan's bound `roles` when given."""
     window: PlanYears = (
         "latest"
         if latest
@@ -323,6 +330,8 @@ def bulk_role_series_planned(
         discovered_role_index=discovered_role_index,
         read_years=time_period,
     )
+    if roles is not None:
+        plan = replace(plan, roles=roles)
     if facet_filter:
         plan = plan.narrowed(lambda _sv, candidate: facet_admitted(facet_filter, candidate))
     return _bulk_role_series(plan, sv_dcids, facet_filter=facet_filter, **kwargs)
@@ -791,10 +800,131 @@ def dimensions_of(coverage: Coverage) -> list[BreadthDim]:
     return coverage.dimensions
 
 
-def member_walk_reader(graph: FakeGraph | None = None) -> FakeMintGraphReader:
+def member_walk_reader(
+    graph: FakeGraph | None = None, *, stat_vars: Sequence[str] | None = None
+) -> FakeMintGraphReader:
     """The mint's member walk over every node `graph` holds (the shared fixture graph by
-    default), as production walks the graph Search reads."""
-    return FakeMintGraphReader(arcs=(_FAKE_GRAPH if graph is None else graph).member_arcs())
+    default), as production walks the graph Search reads. `stat_vars`, when given, are the
+    only StatVars it holds, so the walk settles a family of exactly them."""
+    arcs = _walk_arcs(_FAKE_GRAPH if graph is None else graph)
+    if stat_vars is not None:
+        arcs = {sv: arcs[sv] for sv in stat_vars}
+    return FakeMintGraphReader(arcs=arcs)
+
+
+def _walk_arcs(graph: FakeGraph) -> dict[str, dict[str, tuple[str, ...]]]:
+    """`graph`'s nodes as the member walk reads them, less stale recordings."""
+    return {
+        dcid: node_arcs
+        for dcid, node_arcs in graph.member_arcs().items()
+        if not _stale_recording(node_arcs)
+    }
+
+
+def _stale_recording(arcs: Mapping[str, tuple[str, ...]]) -> bool:
+    """Whether a recorded node states two values on a five-tuple arc, which the live graph
+    never does: `Count_BirthEvent_LiveBirth` was recorded with populationType `Person` beside
+    `BirthEvent`, which the dev graph no longer holds, and a walk reading it would leave it
+    undismissed."""
+    return any(
+        len(arcs.get(prop, ())) > 1 for prop in ("populationType", "measuredProperty", "statType")
+    )
+
+
+class MemberArcsOverlay:
+    """`inner` with the StatVar arcs of `arcs` beneath it, so the mint's member walk reads
+    a fixture graph's family through a materialise double built for facets alone. A reverse
+    read returns `inner`'s subjects then those `arcs` adds; an arcs read takes each property
+    from `inner` where it holds the node and the property, else from `arcs`; every other
+    read is `inner`'s."""
+
+    def __init__(self, inner: GraphReader, arcs: Mapping[str, Mapping[str, tuple[str, ...]]]):
+        self._inner = inner
+        self._arcs = arcs
+
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
+
+    def node_subjects(
+        self,
+        dcid: str,
+        *,
+        property: str,
+        filters: Mapping[str, str] | None = None,
+        max_results: int,
+        deadline: float | None = None,
+    ) -> SubjectPage:
+        inner = self._inner.node_subjects(
+            dcid, property=property, filters=filters, max_results=max_results, deadline=deadline
+        )
+        matches = list(
+            dict.fromkeys(
+                [
+                    *inner.dcids,
+                    *(
+                        subject
+                        for subject, node in self._arcs.items()
+                        if dcid in node.get(property, ())
+                        and all(
+                            value in node.get(key, ()) for key, value in (filters or {}).items()
+                        )
+                    ),
+                ]
+            )
+        )
+        return SubjectPage(
+            dcids=tuple(matches[:max_results]),
+            truncated=inner.truncated or len(matches) > max_results,
+        )
+
+    def node_arcs_many(
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        individual_probe_budget: int | None = None,
+        deadline: float | None = None,
+    ) -> dict[str, dict[str, tuple[str, ...]] | None]:
+        found = self._inner.node_arcs_many(
+            dcids,
+            properties=properties,
+            individual_probe_budget=individual_probe_budget,
+            deadline=deadline,
+        )
+        result: dict[str, dict[str, tuple[str, ...]] | None] = {}
+        for dcid in dcids:
+            inner, below = found.get(dcid), self._arcs.get(dcid)
+            if below is None:
+                result[dcid] = inner
+                continue
+            result[dcid] = {
+                prop: (inner or {}).get(prop) or below.get(prop, ()) for prop in properties
+            }
+        return result
+
+
+def with_member_arcs(reader: GraphReader | None, graph: FakeGraph) -> GraphReader:
+    """`reader` with `graph`'s StatVar arcs beneath it (`MemberArcsOverlay`), or the walk
+    over `graph` alone (`member_walk_reader`) with no reader."""
+    if reader is None:
+        return member_walk_reader(graph)
+    arcs = {
+        dcid: node_arcs
+        for dcid, node_arcs in _walk_arcs(graph).items()
+        if "StatisticalVariable" in node_arcs.get("typeOf", ())
+    }
+    return cast(GraphReader, MemberArcsOverlay(reader, arcs))
+
+
+def walk_options(graph: EngineGraphClient, options: EngineOptions | None = None) -> EngineOptions:
+    """`options` for a resubmit over `graph`: a resubmit elects its members from the
+    identity by the mint's member walk, so with no materialise graph of its own it walks
+    `graph`'s nodes (`member_walk_reader`). A test whose materialise graph holds no StatVar
+    arcs lays `graph`'s beneath it (`with_member_arcs`)."""
+    options = options if options is not None else EngineOptions()
+    if options.materialise_graph is not None or not isinstance(graph, FakeGraph):
+        return options
+    return dataclasses.replace(options, materialise_graph=member_walk_reader(graph))
 
 
 def make_request(query: str) -> ResolveRequest:
@@ -811,6 +941,7 @@ def offline_resolve(
     materialise_graph: GraphReader | None = None,
     materialise_sdmx: MaterialiseSdmxClient | None = None,
     rate_cache: RateTableCache | None = None,
+    part_memo: PartMemo | None = None,
 ) -> ResolveResponse:
     """Run `resolve_async` with fake clients and a fixed extraction date.
 
@@ -827,9 +958,19 @@ def offline_resolve(
     without network access.
 
     Pass `rate_cache` for request-form unit conversion; that path raises before
-    fetching without it.
+    fetching without it. Pass `part_memo` to serve resubmitted identities from it.
+
+    A dataset_resubmit over a fixture graph with no `materialise_graph` walks the mint's
+    member enumeration over that graph's nodes (`member_walk_reader`), as a resubmit elects
+    its members from the identity.
     """
     graph = _FAKE_GRAPH if graph is None else graph
+    if (
+        materialise_graph is None
+        and request.input.kind == "dataset_resubmit"
+        and isinstance(graph, FakeGraph)
+    ):
+        materialise_graph = member_walk_reader(graph)
     llm = _FAKE_LLM if llm is None else llm
     sdmx = _FAKE_SDMX if sdmx is None else sdmx
     with patch("search.engine.extract.date") as mock_date:
@@ -846,6 +987,7 @@ def offline_resolve(
                     materialise_graph=materialise_graph,
                     materialise_sdmx=materialise_sdmx,
                     rate_cache=rate_cache,
+                    part_memo=part_memo,
                 )
             )
         base = config.settings().model_dump(
@@ -862,5 +1004,6 @@ def offline_resolve(
                     materialise_graph=materialise_graph,
                     materialise_sdmx=materialise_sdmx,
                     rate_cache=rate_cache,
+                    part_memo=part_memo,
                 )
             )

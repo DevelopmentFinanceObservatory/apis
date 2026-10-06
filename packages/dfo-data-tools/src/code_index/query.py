@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
+from collections.abc import Set as AbstractSet
+from dataclasses import dataclass
 
 from code_index.types import (
     AbsentObservation,
@@ -81,6 +83,92 @@ def _datasets_by_five_tuple(
         for five_tuple, provenances in publishers.items()
         if provenances
     }
+
+
+@dataclass(frozen=True, slots=True)
+class IndexFamily:
+    """The rows of one five-tuple that one property set describes, and the datasets
+    publishing them.
+
+    The datasets publishing a five-tuple form one family when their rows there carry the same
+    constraint properties (`properties`, the union over each dataset's rows), and separate
+    families when they do not: the CRS and DAC1 both publish ODA disbursements, under
+    `crs*` and `dac1AidType` codes, and so are two families. A family is what an election
+    elects among (`code_index.members.elect_dataset`), what a Search shape is built from,
+    and what an identity's named dataset or slot keys select
+    (`code_index.members.query_family`). A row no dataset publishes joins the one family
+    whose properties hold its own, else a family of its own with no dataset."""
+
+    five_tuple: FiveTuple
+    properties: frozenset[str]
+    """The constraint properties the family's rows carry."""
+    datasets: tuple[str, ...]
+    """The datasets publishing the family's rows, in serving order
+    (`DatasetDeclaration.rank`)."""
+    rows: tuple[StatVarRow, ...]
+    """The family's rows, in index order."""
+    key_sets: frozenset[frozenset[str]]
+    """The distinct constraint-property sets of `rows`."""
+
+    def covers(self, keys: AbstractSet[str]) -> bool:
+        """Whether `keys` holds every constraint property of one of the family's rows."""
+        return any(row_keys <= keys for row_keys in self.key_sets)
+
+
+def _families_by_five_tuple(
+    statvars: Iterable[StatVarRow], datasets: Mapping[str, DatasetDeclaration]
+) -> dict[FiveTuple, tuple[IndexFamily, ...]]:
+    """Groups each five-tuple's rows into its families (`IndexFamily`), in the serving order
+    of each family's first dataset, a family with no dataset last."""
+    rows_by_five_tuple: dict[FiveTuple, list[StatVarRow]] = defaultdict(list)
+    for row in statvars:
+        rows_by_five_tuple[row_five_tuple(row)].append(row)
+
+    def serving_order(provenance: str) -> tuple[bool, int, str]:
+        declaration = datasets.get(provenance)
+        return (declaration is None, declaration.rank if declaration else 0, provenance)
+
+    families: dict[FiveTuple, tuple[IndexFamily, ...]] = {}
+    for five_tuple, rows in rows_by_five_tuple.items():
+        carried: dict[str, set[str]] = defaultdict(set)
+        unpublished: set[str] = set()
+        for row in rows:
+            for provenance in row.provenances:
+                carried[provenance].update(row.constraint_properties)
+            if not row.provenances:
+                unpublished.update(row.constraint_properties)
+        groups: dict[frozenset[str], list[str]] = defaultdict(list)
+        for provenance, properties in carried.items():
+            groups[frozenset(properties)].append(provenance)
+        # Rows no dataset publishes join the one family whose properties hold theirs.
+        holding = [properties for properties in groups if unpublished <= properties]
+        home = holding[0] if len(holding) == 1 else frozenset(unpublished)
+        if any(not row.provenances for row in rows):
+            groups.setdefault(home, [])
+        built: list[IndexFamily] = []
+        for properties, provenances in groups.items():
+            members = tuple(
+                row
+                for row in rows
+                if set(row.provenances) & set(provenances)
+                or (not row.provenances and properties == home)
+            )
+            built.append(
+                IndexFamily(
+                    five_tuple=five_tuple,
+                    properties=properties,
+                    datasets=tuple(sorted(provenances, key=serving_order)),
+                    rows=members,
+                    key_sets=frozenset(frozenset(row.constraint_properties) for row in members),
+                )
+            )
+        built.sort(
+            key=lambda family: (
+                serving_order(family.datasets[0]) if family.datasets else (True, 0, "~")
+            )
+        )
+        families[five_tuple] = tuple(built)
+    return families
 
 
 def _dataset_pins(
@@ -205,6 +293,8 @@ class CodeIndex:
         "datasets",
         "datasets_by_five_tuple",
         "declarations",
+        "families_by_five_tuple",
+        "family_by_dcid",
         "stamp",
         "statvars",
     )
@@ -267,7 +357,22 @@ class CodeIndex:
             self.statvars, self.datasets
         )
         """The provenances of the datasets publishing each five-tuple's rows, in serving
-        order (`DatasetDeclaration.rank`)."""
+        order (`DatasetDeclaration.rank`), across the five-tuple's families."""
+        self.families_by_five_tuple: dict[FiveTuple, tuple[IndexFamily, ...]] = (
+            _families_by_five_tuple(self.statvars, self.datasets)
+        )
+        """Each five-tuple's families (`IndexFamily`), in serving order."""
+        self.family_by_dcid: dict[str, IndexFamily] = {
+            row.dcid: family
+            for families in self.families_by_five_tuple.values()
+            for family in reversed(families)
+            for row in family.rows
+        }
+        """The family each row belongs to, by StatVar dcid, as the row's provenances
+        assign it. A row two datasets of different families publish belongs to the first
+        of them in serving order. Search groups an index row under this family whatever
+        its constraint properties would select (`family_of`), so a dataset's rows stay in
+        its own family when another dataset's family holds fewer properties."""
         self.dataset_pins: dict[tuple[str, FiveTuple], dict[str, str]] = _dataset_pins(
             self.statvars, self.declarations
         )
@@ -282,6 +387,35 @@ class CodeIndex:
         self._codes_by_normalized_text = {k: tuple(v) for k, v in normalized_text_index.items()}
 
     # --- Lookup ---
+
+    def family_of(self, five_tuple: FiveTuple, keys: AbstractSet[str]) -> IndexFamily | None:
+        """The family of `five_tuple` that constraint properties `keys` select: the one
+        family one of whose rows declares only properties among `keys`. When several or
+        none have such a row, it is the one of those, or of all families, whose properties
+        hold every key and are fewest: a family whose properties extend another's is told
+        apart from it by the keys the extension adds. The constraint properties of a StatVar
+        the index does not hold and a shape's slot properties select their family through
+        this method; an index row's family is `family_by_dcid`, and an identity's is
+        `code_index.members.query_family`, which reads the dataset it names and which of
+        its slots it binds. Whether `keys` cover a row of the family, so that the index
+        decides membership, is `IndexFamily.covers`.
+
+        `None` when no family of `five_tuple` is selected, as for a debt series beside CRS
+        flows, whose keys neither cover a CRS row nor lie among the CRS properties, and
+        when `keys` fit two families neither of whose properties hold the other's: no
+        StatVar carries both families' codes, so such keys name no population the index
+        describes, and the graph walk resolves them."""
+        families = self.families_by_five_tuple.get(five_tuple, ())
+        covered = [family for family in families if family.covers(keys)]
+        if len(covered) == 1:
+            return covered[0]
+        holding = [family for family in covered or families if keys <= family.properties]
+        fewest = [
+            family
+            for family in holding
+            if not any(other.properties < family.properties for other in holding)
+        ]
+        return fewest[0] if len(fewest) == 1 else None
 
     def code_by_dcid(self, dcid: str) -> CodeRow | None:
         """The code row for `dcid`, or `None` if this index holds no such
@@ -317,6 +451,18 @@ class CodeIndex:
         return dataset.absent_observation if dataset is not None else "unknown"
 
     # --- Descendants ---
+
+    def expansion(self, dcid: str) -> tuple[str, ...]:
+        """The codes a binding of `dcid` reads: `dcid` and its descendants (`descendants`)
+        in a system declared `disjoint_from_children`, whose parent-coded records are apart
+        from its children's, so the parent's total spans them all; `dcid` alone in a system
+        whose parent row is already the total of its children (DAC1 aid types), so a bound
+        parent names its own StatVar."""
+        row = self._codes_by_dcid.get(dcid)
+        declaration = self.declarations.get(row.code_system) if row is not None else None
+        if declaration is not None and not declaration.disjoint_from_children:
+            return (dcid,)
+        return self.descendants(dcid)
 
     def descendants(self, dcid: str) -> tuple[str, ...]:
         """Returns `dcid` and its descendants breadth-first.

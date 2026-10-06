@@ -36,6 +36,7 @@ from scripts.export_code_index import (
     CodeSystemConfig,
     CoverageJoin,
     _MeasureValueText,
+    _minimal_system_sets,
     _validate_declared_defaults,
     _verify_axis_coverage,
     _verify_measure_label_named_values,
@@ -139,7 +140,7 @@ _TEST_DATASETS = (
     DatasetDeclaration(
         provenance=_TEST_PROVENANCE,
         label="Test dataset",
-        synonyms=(),
+        description="A test table.",
         opt_in=False,
         absent_observation="zero",
         rank=0,
@@ -1751,6 +1752,8 @@ def test_export_index_stamps_a_declared_default_and_it_round_trips(tmp_path: Pat
         "code": "SysHierChild",
         "when_bound_under": ["SysFlatA"],
         "when_named": [],
+        "when_open": False,
+        "note": None,
     }
     # A system with no configured default stamps None, not a missing key.
     assert by_system["sysFlat"]["default"] is None
@@ -1979,7 +1982,7 @@ _OPT_IN_PROVENANCE = "provenance/OptInDataset"
 _OPT_IN = DatasetDeclaration(
     provenance=_OPT_IN_PROVENANCE,
     label="Opt-in dataset",
-    synonyms=("opt-in", "an opt-in table"),
+    description="A test table.",
     opt_in=True,
     absent_observation="unknown",
     rank=10,
@@ -2043,7 +2046,7 @@ def test_export_index_writes_dataset_declarations_and_they_round_trip(tmp_path: 
         {
             "provenance": _OPT_IN_PROVENANCE,
             "label": "Opt-in dataset",
-            "synonyms": ["an opt-in table", "opt-in"],
+            "description": "A test table.",
             "opt_in": True,
             "absent_observation": "unknown",
             "rank": 10,
@@ -2053,9 +2056,7 @@ def test_export_index_writes_dataset_declarations_and_they_round_trip(tmp_path: 
     out = tmp_path / "with_datasets.json"
     out.write_text(json.dumps(document))
     index = load_index(out)
-    assert index.datasets[_OPT_IN_PROVENANCE] == dataclasses.replace(
-        _OPT_IN, synonyms=("an opt-in table", "opt-in")
-    )
+    assert index.datasets[_OPT_IN_PROVENANCE] == _OPT_IN
     assert {row.provenances for row in index.statvars} == {(_OPT_IN_PROVENANCE,)}
 
 
@@ -2215,8 +2216,8 @@ def test_a_dataset_no_code_system_lists_refuses_enumeration():
 
 
 def test_the_packaged_configuration_lists_each_system_under_the_datasets_that_always_declare_it():
-    crs, imputed = (dataset.provenance for dataset in DATASETS)
-    assert [dataset.opt_in for dataset in DATASETS] == [False, True]
+    crs, imputed, dac1 = (dataset.provenance for dataset in DATASETS)
+    assert [dataset.opt_in for dataset in DATASETS] == [False, True, False]
 
     assert {
         config.code_system: set(config.declared_by_every_statvar_of) for config in CODE_SYSTEMS
@@ -2226,6 +2227,7 @@ def test_the_packaged_configuration_lists_each_system_under_the_datasets_that_al
         "crsCooperationModality": set(),
         "crsTypeOfFlow": {crs, imputed},
         "dac2aAidType": {imputed},
+        "dac1AidType": {dac1},
     }
 
 
@@ -2314,6 +2316,32 @@ def test_export_passes_an_unexported_statvar_the_index_would_not_decide(arcs):
 
     assert "SV_Unexported" not in {row["dcid"] for row in blocks["statvars"]}
     assert ("amount", "measuredProperty") in {(dcid, prop) for dcid, prop, _ in graph.calls}
+
+
+@pytest.mark.parametrize(
+    ("key_sets", "expected"),
+    [
+        pytest.param(
+            {frozenset({"sysHier", "sysFlat"}), frozenset({"sysHier", "sysFlat", "sysOther"})},
+            [frozenset({"sysHier", "sysFlat"})],
+            id="optional-system-folds-into-the-smaller-set",
+        ),
+        pytest.param(
+            {frozenset({"sysHier", "financialFlowType"}), frozenset({"sysFlat", "nettingBasis"})},
+            [frozenset({"sysFlat"}), frozenset({"sysHier"})],
+            id="two-datasets-with-disjoint-systems-read-apart",
+        ),
+        pytest.param(
+            {frozenset({"financialFlowType"}), frozenset({"sysFlat"})},
+            [frozenset()],
+            id="a-row-with-no-system-reads-unsplit",
+        ),
+    ],
+)
+def test_five_tuple_reads_split_on_each_minimal_system_set(key_sets, expected):
+    code_rows_by_system = {system: [] for system in ("sysHier", "sysFlat", "sysOther")}
+
+    assert _minimal_system_sets(key_sets, code_rows_by_system) == expected
 
 
 def test_export_refuses_a_five_tuple_subject_the_graph_holds_no_node_for():

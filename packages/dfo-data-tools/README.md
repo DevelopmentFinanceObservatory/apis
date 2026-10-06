@@ -70,7 +70,7 @@ Modules separate network-dependent operations from offline data transformations.
 These operations require network connectivity or active client sessions to upstream Data Commons instances. Each names the extra it needs:
 
 - **SDMX Ingestion** (`sdmx`): `dc_sdmx.SdmxClient` performs HTTP queries against Data Commons mixer endpoints.
-- **Pipeline Execution** (`sdmx`): `materialise.pipeline` functions (`materialise_spec`, `materialise_collection`, `materialise_preview`, `materialise_group`) orchestrate SDMX queries, entity graph resolution, and revision verification.
+- **Pipeline Execution** (`sdmx`): `materialise.pipeline` functions (`materialise_spec`, `materialise_preview`, `materialise_group`) orchestrate SDMX queries, entity graph resolution, and revision verification.
 - **Live Graph Resolution** (`sdmx`): `dc_graph.GraphClient` queries remote graph endpoints, and `statvar_members.cache.MemberEnumerator` does the same when given a `GraphClient` as its reader. `statvar_members` itself imports without extras.
 - **Graph Generation Read** (`generation`): `graph_generation.CloudRunGenerationSource` reads the Data Commons Cloud Run service's own serving revision through the Cloud Run Admin API v2, on a request-triggered background thread.
 

@@ -91,7 +91,7 @@ def api_and_worker(
         capability_version="dset_test",
         ceiling=1_000_000,
         member_concurrency=4,
-        enumerator=MemberEnumerator(graph=graph),
+        enumerator=MemberEnumerator(),
         enrichment=EnrichmentLookup(graph),
         code_index=get_index(),
         rate_cache=RateTableCache(),

@@ -59,13 +59,14 @@ from tests.code_index.aid_identity import (
     imputed_education_aid_identity,
 )
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
+from tests.datasets_api._member_bounds import mint_bounds
 from tests.engine._fake_coverage import (
     FakeCoverageService,
     build_coverage_index,
     empty_coverage_snapshot,
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._index_slots import query_for
+from tests.engine._index_slots import index_slot_keys, query_for
 from tests.fixtures import FakeGraph
 
 # A real CRS five-tuple this deployment's index carries hundreds of members
@@ -117,6 +118,7 @@ def _crs_rows() -> list[StatVarRow]:
             row.measurement_denominator,
         )
         == target
+        and "provenance/OECDCreditorReportingSystem" in row.provenances
     ]
 
 
@@ -335,8 +337,9 @@ def _mint_family(identity: dict) -> set[str]:
         identity,
         spec_id=mint_identity(identity)[0],
         graph=graph,
-        enumerator=MemberEnumerator(graph=graph),
+        enumerator=MemberEnumerator(),
         code_index=get_index(),
+        bounds=mint_bounds(),
     )
     return {shape.stat_var.removeprefix("dcid:") for shape in resolved.shapes}
 
@@ -530,13 +533,24 @@ def test_the_measure_family_holds_one_datasets_rows():
     assert provenances == {(CRS_PROVENANCE,)}
 
 
-def test_five_tuple_member_facts_reads_every_row_of_the_five_tuple():
+def test_five_tuple_member_facts_reads_every_row_of_the_shapes_family():
+    """A shape with the CRS slot keys reads every CRS row of its five-tuple, and no DAC1 row
+    of the same five-tuple."""
     shape, _ = _education_shape(education_aid_identity())
+    shape = dataclasses.replace(
+        shape,
+        slot_keys=index_slot_keys(
+            population_type="FinancialFlow",
+            measured_property="amount",
+            measurement_qualifier="Nominal",
+        ),
+    )
     five_tuple_rows = {
         row.dcid
         for row in get_index().statvars
         if (row.population_type, row.measured_property, row.measurement_qualifier)
         == ("FinancialFlow", "amount", "Nominal")
+        and CRS_PROVENANCE in row.provenances
     }
 
     member_facts, index_sourced = five_tuple_member_facts(shape)
@@ -675,7 +689,7 @@ def _plain_aid_identity() -> BaseIdentity:
 def _index_with_an_edited_dataset_declaration():
     document = json.loads(gzip.decompress(default_index_path().read_bytes()))
     imputed = next(d for d in document["datasets"] if d["provenance"] == IMPUTED_PROVENANCE)
-    imputed["synonyms"] = [*imputed["synonyms"], "imputed sectors"]
+    imputed["label"] = f"{imputed['label']} (edited)"
     blocks = {key: value for key, value in document.items() if key != "stamp"}
     document["stamp"]["content_hash"] = content_hash(blocks)
     return parse_index(document)

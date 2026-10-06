@@ -23,7 +23,6 @@ from search.models import (
     EntityRoleSubject,
     Expansion,
     NearestRealSpec,
-    PipelineStep,
     QueryEcho,
     Relaxation,
     ResolvedFacet,
@@ -88,13 +87,13 @@ def _spec_with(
     equivalent_readings: list[Spec] | None = None,
 ) -> Spec:
     return build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
         slots=slots or [],
         stat_vars=stat_vars,
         entities=entities or [],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
         facets=facets,
         equivalent_readings=equivalent_readings,
     )
@@ -147,7 +146,6 @@ def _assemble_kwargs(**overrides):
         "extra_warnings": [],
         "start_ms": now_ms(),
         "engine_build": "test",
-        "include_sentence": False,
         "max_candidates": 10,
     } | overrides
 
@@ -345,11 +343,10 @@ class TestProjectSpecDcids:
 
 # ---------------------------------------------------------------------------
 # The attach: every position with_sentence reaches, guarded on include_skills
-# alone -- deliberately exercised with include_sentence OFF, pinning the trap
 # ---------------------------------------------------------------------------
 
 
-class TestSkillsAttachWithSentenceOff:
+class TestSkillsAttach:
     def test_definite_spec_gets_skills(self):
         shape = shape_five_tuple("PopType", "measuredProp")
         spec = _spec_with(shape=shape, stat_vars=[_stat_var("sv/1")])
@@ -365,13 +362,12 @@ class TestSkillsAttachWithSentenceOff:
         region = _region(spec, "population")
         response = assemble_region(
             region,
-            **_assemble_kwargs(include_sentence=False, include_skills=True, skills_index=index),
+            **_assemble_kwargs(include_skills=True, skills_index=index),
         )
 
         part = response.parts[0]
         assert isinstance(part, DefinitePart)
         assert part.spec.resolved.skills == ["skill-a"]
-        assert part.spec.resolved.rendered_sentence is None
         assert response.skills is not None
         assert set(response.skills) == {"skill-a"}
         skill = response.skills["skill-a"]
@@ -404,14 +400,13 @@ class TestSkillsAttachWithSentenceOff:
         )
         response = assemble_region(
             region,
-            **_assemble_kwargs(include_sentence=False, include_skills=True, skills_index=index),
+            **_assemble_kwargs(include_skills=True, skills_index=index),
         )
 
         part = response.parts[0]
         assert isinstance(part, CandidatesPart)
         for candidate in part.candidates.specs:
             assert candidate.resolved.skills == ["skill-a"]
-            assert candidate.resolved.rendered_sentence is None
         assert response.skills is not None
         assert list(response.skills) == ["skill-a"]
 
@@ -432,7 +427,6 @@ class TestSkillsAttachWithSentenceOff:
             "no_observations",
             variable_text="population",
             warnings=[],
-            include_sentence=False,
             nearest_real=[near],
             flagged_match=flagged,
             gate="no_member_has_data_at_place",
@@ -442,10 +436,8 @@ class TestSkillsAttachWithSentenceOff:
 
         assert part.no_data.nearest_real is not None
         assert part.no_data.nearest_real[0].resolved.skills == ["skill-a"]
-        assert part.no_data.nearest_real[0].resolved.rendered_sentence is None
         assert part.no_data.flagged_match is not None
         assert part.no_data.flagged_match.resolved.skills == ["skill-a"]
-        assert part.no_data.flagged_match.resolved.rendered_sentence is None
 
     def test_alternate_match_gets_skills(self):
         shape = shape_five_tuple("PopType", "measuredProp")
@@ -463,7 +455,6 @@ class TestSkillsAttachWithSentenceOff:
             "no_observations",
             variable_text="population",
             warnings=[],
-            include_sentence=False,
             alternate_match=alternate,
             gate="only_alternate_has_data",
             include_skills=True,
@@ -472,7 +463,6 @@ class TestSkillsAttachWithSentenceOff:
 
         assert part.no_data.alternate_match is not None
         assert part.no_data.alternate_match.resolved.skills == ["skill-a"]
-        assert part.no_data.alternate_match.resolved.rendered_sentence is None
 
     def test_twin_gets_its_own_positions_and_parent_rebuilds_equivalent_readings(self):
         parent_shape = shape_five_tuple("ParentPop", "measuredProp")
@@ -496,7 +486,7 @@ class TestSkillsAttachWithSentenceOff:
         region = _region(parent, "population")
         response = assemble_region(
             region,
-            **_assemble_kwargs(include_sentence=False, include_skills=True, skills_index=index),
+            **_assemble_kwargs(include_skills=True, skills_index=index),
         )
 
         part = response.parts[0]
@@ -552,7 +542,6 @@ class TestSkillsFieldTwoValueContract:
             "variable_not_resolved",
             variable_text="unemployment rate",
             warnings=[],
-            include_sentence=False,
             include_skills=True,
             skills_index=index,
         )

@@ -92,6 +92,7 @@ def _slot_options(*, property_dcid: str, bound_dcid: str | None, nodes: dict):
         sv_dcids=[],
         roles={},
         graph=FakeGraph(nodes=nodes),
+        open_axes=frozenset(),
     )
     slot_options = result[7]
     assert len(slot_options) == 1

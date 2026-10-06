@@ -407,7 +407,6 @@ class TestPlaceExpansionEndToEnd:
                 resolver=make_resolver(self._graph(obs)),
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 llm=FakeLLM(),
-                base_steps=[],
                 base_timing={},
                 coverage=empty_coverage_snapshot(),
             )
@@ -415,7 +414,7 @@ class TestPlaceExpansionEndToEnd:
 
         assert result.status == "definite"
         spec = result.specs[0]
-        assert spec.resolved.stat_vars.items[0].ref == _GDP_SV
+        assert spec.resolved.members[0].ref.dcid == _GDP_SV
         # The response names the region. Coverage counts member countries.
         assert [e.ref for e in spec.resolved.entities] == ["testonia"]
         assert isinstance(spec.resolved.coverage, CoverageExact)
@@ -461,7 +460,6 @@ class TestPlaceExpansionEndToEnd:
                 resolver=make_resolver(self._graph(obs)),
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 llm=FakeLLM(),
-                base_steps=[],
                 base_timing={},
                 coverage=empty_coverage_snapshot(),
             )
@@ -487,7 +485,6 @@ class TestPlaceExpansionEndToEnd:
                 resolver=make_resolver(self._graph(obs={})),
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 llm=FakeLLM(),
-                base_steps=[],
                 base_timing={},
                 coverage=empty_coverage_snapshot(),
             )
@@ -508,7 +505,6 @@ class TestPlaceExpansionEndToEnd:
                 resolver=make_resolver(self._graph(obs={})),
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 llm=FakeLLM(),
-                base_steps=[],
                 base_timing={},
                 coverage=empty_coverage_snapshot(),
             )
@@ -543,7 +539,6 @@ class TestPlaceExpansionEndToEnd:
                     resolver=make_resolver(graph),
                     sdmx=FakeSdmxClient(observations={}, availability={}),
                     llm=_FixedBindLLM(),
-                    base_steps=[],
                     base_timing={},
                     coverage=empty_coverage_snapshot(),
                 )
@@ -590,7 +585,6 @@ class TestPlaceExpansionEndToEnd:
                 resolver=make_resolver(graph),
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 llm=_FixedBindLLM(),
-                base_steps=[],
                 base_timing={},
                 coverage=empty_coverage_snapshot(),
             )
@@ -614,7 +608,6 @@ class TestPlaceExpansionEndToEnd:
                 resolver=make_resolver(graph),
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 llm=FakeLLM(),
-                base_steps=[],
                 base_timing={},
                 coverage=empty_coverage_snapshot(),
             )
@@ -657,7 +650,6 @@ class TestPlaceExpansionEndToEnd:
                 resolver=make_resolver(graph),
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 llm=FakeLLM(),
-                base_steps=[],
                 base_timing={},
                 coverage=empty_coverage_snapshot(),
             )
@@ -706,7 +698,6 @@ class TestPlaceExpansionEndToEnd:
                 resolver=make_resolver(graph),
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 llm=FakeLLM(),
-                base_steps=[],
                 base_timing={},
                 coverage=empty_coverage_snapshot(),
             )
@@ -730,7 +721,6 @@ class TestPlaceExpansionEndToEnd:
                 resolver=make_resolver(graph),
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 llm=FakeLLM(),
-                base_steps=[],
                 base_timing={},
                 coverage=empty_coverage_snapshot(),
             )
@@ -764,7 +754,6 @@ class TestPlaceExpansionEndToEnd:
                 resolver=make_resolver(graph),
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 llm=FakeLLM(),
-                base_steps=[],
                 base_timing={},
                 coverage=empty_coverage_snapshot(),
             )
@@ -787,7 +776,6 @@ class TestPlaceExpansionEndToEnd:
                 resolver=make_resolver(graph),
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 llm=FakeLLM(),
-                base_steps=[],
                 base_timing={},
                 coverage=empty_coverage_snapshot(),
             )
@@ -820,7 +808,6 @@ class TestPlaceExpansionEndToEnd:
                 resolver=make_resolver(graph),
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 llm=FakeLLM(),
-                base_steps=[],
                 base_timing={},
                 coverage=empty_coverage_snapshot(),
             )
@@ -871,7 +858,6 @@ class TestMultiPlaceSetBatching:
                 resolver=make_resolver(graph),
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 llm=FakeLLM(),
-                base_steps=[],
                 base_timing={},
                 coverage=empty_coverage_snapshot(),
             )
@@ -896,7 +882,6 @@ class TestMultiPlaceSetBatching:
                 resolver=make_resolver(graph),
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 llm=FakeLLM(),
-                base_steps=[],
                 base_timing={},
                 coverage=empty_coverage_snapshot(),
             )
@@ -942,7 +927,6 @@ class TestMultiPlaceSetBatching:
                 resolver=make_resolver(graph),
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 llm=FakeLLM(),
-                base_steps=[],
                 base_timing={},
                 coverage=empty_coverage_snapshot(),
             )
@@ -986,7 +970,6 @@ class TestMultiPlaceSetBatching:
                 resolver=make_resolver(graph),
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 llm=FakeLLM(),
-                base_steps=[],
                 base_timing={},
                 coverage=empty_coverage_snapshot(),
             )
@@ -1012,7 +995,6 @@ class TestMultiPlaceSetBatching:
                 resolver=make_resolver(graph),
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 llm=FakeLLM(),
-                base_steps=[],
                 base_timing={},
                 coverage=empty_coverage_snapshot(),
             )

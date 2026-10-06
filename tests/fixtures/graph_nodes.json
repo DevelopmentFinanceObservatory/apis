@@ -110432,7 +110432,81 @@
   },
   "Count_Person_15OrMoreYears": {
     "label": "Population Aged 15 Years or Older",
-    "type": null
+    "type": null,
+    "arcs": {
+      "typeOf": {
+        "nodes": [
+          {
+            "name": "StatisticalVariable",
+            "types": [
+              "Class"
+            ],
+            "dcid": "StatisticalVariable",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "populationType": {
+        "nodes": [
+          {
+            "name": "Person",
+            "types": [
+              "Class"
+            ],
+            "dcid": "Person",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "measuredProperty": {
+        "nodes": [
+          {
+            "name": "count",
+            "types": [
+              "Property"
+            ],
+            "dcid": "count",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "statType": {
+        "nodes": [
+          {
+            "name": "measuredValue",
+            "types": [
+              "Property"
+            ],
+            "dcid": "measuredValue",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "age": {
+        "nodes": [
+          {
+            "name": "Years15Onwards",
+            "types": [
+              "QuantityRange"
+            ],
+            "dcid": "Years15Onwards",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      },
+      "constraintProperties": {
+        "nodes": [
+          {
+            "name": "age",
+            "types": [
+              "Property"
+            ],
+            "dcid": "age",
+            "provenanceId": "dc/base/Schema"
+          }
+        ]
+      }
+    }
   },
   "WorldHealthOrganizationEstimates": {
     "label": "WorldHealthOrganizationEstimates",

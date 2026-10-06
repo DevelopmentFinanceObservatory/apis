@@ -177,7 +177,7 @@ def judge(
         return "not_a_resolution", ()
     definite = [part for part in response.parts if isinstance(part, DefinitePart)]
     elected = tuple(
-        dict.fromkeys(item.ref for part in definite for item in part.spec.resolved.stat_vars.items)
+        dict.fromkeys(sv.ref.dcid for part in definite for sv in part.spec.resolved.members)
     )
     if len(response.parts) > 1:
         return "multiple_parts", elected

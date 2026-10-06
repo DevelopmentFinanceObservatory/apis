@@ -1,7 +1,7 @@
 """Refusal codes raised by the mint and definition doors.
 
 Materialise and format codes reuse their source catalogues' text. Shared platform codes cover
-facet, role, currency-conversion, and code-lookup refusals. Redeclaring them would raise
+facet, role, and currency-conversion refusals. Redeclaring them would raise
 `CodeCollision`. `SpecNotFound` and reshape refusals are registered here because this package
 raises their exception classes.
 
@@ -38,10 +38,6 @@ MATERIALISE_DOOR_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
         "Definition Not Reproducible",
         "This registered definition no longer reproduces its own id against the "
         "graph's current account of its StatVar.",
-    ),
-    "code_ambiguous": (
-        "Code Ambiguous",
-        "A source code matches more than one source or StatVar.",
     ),
     "spec_not_exportable": (
         "Spec Not Exportable",
@@ -136,7 +132,7 @@ class MemberNotResolvable(Exception):
     """Raised when StatVars resolve to zero or multiple registered shapes.
 
     This maps to `member_not_resolvable`, 422, with one issue per member. `pointer` is set by
-    `kinds.spec_id` or `kinds.collection_id`. Other kinds use `/input/statvars`. `truncated` marks
+    `kinds.spec_id`. `kinds.statvar_set` uses `/input/statvars`. `truncated` marks
     a capped list of disagreeing members.
     """
 
@@ -151,30 +147,11 @@ class MemberNotResolvable(Exception):
         super().__init__(detail)
 
 
-class MemberSelectionMismatch(Exception):
-    """Raised when a posted `resolved_stat_var_dcids` names a StatVar outside its identity's
-    family, the members before antichain reduction.
-
-    This maps to `member_not_resolvable`, 422, with one issue per dcid at `<pointer>/<index>`.
-    `foreign` pairs each posted dcid outside the family with its index in the posted list. The
-    dcids are bare, as the field carries them. `pointer` names the posted list, the mint
-    body's by default, and the options route sets its own.
-    """
-
-    pointer: str = "/input/resolved_stat_var_dcids"
-
-    def __init__(self, *, foreign: tuple[tuple[int, str], ...]) -> None:
-        self.foreign = foreign
-        super().__init__(
-            "resolved_stat_var_dcids names StatVar(s) that are not members of the identity: "
-            f"{[dcid for _, dcid in foreign]!r}"
-        )
-
-
 class DefinitionNotReproducible(Exception):
     """A stored identity fails against the graph's current StatVar shape.
 
-    `undeclared_roles` lists bound roles the shape lacks. It is empty without a role-level cause.
+    `undeclared_roles` lists bound or open roles the shape lacks. It is empty without a
+    role-level cause.
     """
 
     def __init__(
@@ -203,12 +180,10 @@ class InvalidRoleRef(Exception):
     """`scope.entities` names a role absent from the shape or a graph node whose type differs from
     `Property`. This maps to `invalid_role_ref`, 422, with one issue per role.
 
-    Collection raises attach `member_spec_id`. `declared_roles` carries the shape's role list, or
-    is empty when no shape is available. A custom `message` can describe an ambiguous-axis binding.
-    `role` and `declared_roles` remain available to the wire mapper.
+    `declared_roles` carries the shape's role list, or is empty when no shape is available. A
+    custom `message` can describe an ambiguous-axis binding. `role` and `declared_roles` remain
+    available to the wire mapper.
     """
-
-    member_spec_id: str | None = None
 
     def __init__(
         self,
@@ -233,11 +208,9 @@ class RoleIncompatible(Exception):
     value. This also covers `observationAbout` on shapes with other roles and graph properties
     absent from the shape. It maps to `role_incompatible`, 422, with one issue per role.
 
-    Collection raises attach `member_spec_id`. `declared_roles` carries the shape's roles. A custom
-    `message` describes colliding spellings or ambiguous axes. The wire fields remain set.
+    `declared_roles` carries the shape's roles. A custom `message` describes colliding spellings
+    or ambiguous axes. The wire fields remain set.
     """
-
-    member_spec_id: str | None = None
 
     def __init__(
         self,
@@ -269,14 +242,13 @@ class CurrencyRoleUndeclared(Exception):
     that shares its axis with another role. `graph_role_for_spec_role` raises `role_undeclared`,
     which this exception maps to `request_invalid`, 400.
 
-    Request kinds attach `pointer` and collection members attach `member_spec_id`. Stored-spec
-    retrieval leaves `pointer` unset. A custom message can name conflicting roles. This concerns
-    a role inside the unit value. `InvalidRoleRef` and `RoleIncompatible` cover `scope.entities`.
-    Roles outside `_CURRENCY_ROLES` fail identity validation first.
+    Request kinds attach `pointer`. Stored-spec retrieval leaves `pointer` unset. A custom message
+    can name conflicting roles. This concerns a role inside the unit value. `InvalidRoleRef` and
+    `RoleIncompatible` cover `scope.entities`. Roles outside `_CURRENCY_ROLES` fail identity
+    validation first.
     """
 
     pointer: str | None = None
-    member_spec_id: str | None = None
 
     def __init__(
         self,
@@ -313,39 +285,6 @@ class RoleSignatureIncompatible(Exception):
         )
 
 
-class CodeAmbiguous(Exception):
-    """Source codes match multiple sources or StatVars.
-
-    This maps to `code_ambiguous`, 422, with candidates per code. `indices` gives each code's
-    request position when attached by the mint kind.
-    """
-
-    indices: tuple[int, ...] | None = None
-
-    def __init__(self, *, ambiguous: tuple[tuple[str, tuple[tuple[str, str], ...]], ...]) -> None:
-        self.ambiguous = ambiguous
-        codes = [code for code, _candidates in ambiguous]
-        super().__init__(f"code(s) match more than one source/StatVar: {codes!r}")
-
-
-class CodeNotFoundError(Exception):
-    """The source index returns zero matches under the optional qualifier.
-
-    This maps to `code_not_found`, 404. `index` records its request position when attached by the
-    mint kind.
-    """
-
-    index: int | None = None
-
-    def __init__(self, *, code: str, source: str | None) -> None:
-        self.code = code
-        self.source = source
-        detail = f"code {code!r} matches nothing"
-        if source is not None:
-            detail += f" under source {source!r}"
-        super().__init__(detail)
-
-
 class CapabilityUnavailable(Exception):
     """The request uses a disabled format, reshape, or conversion capability. It maps to
     `capability_unavailable`, 501. `pointer` identifies a disabled enrichment field. `groupby`
@@ -361,7 +300,7 @@ class CapabilityUnavailable(Exception):
 class SpecNotFound(Exception):
     """The registry and request sidecar lack this definition. It maps to `spec_not_found`, 404.
 
-    The raising kind sets `pointer` to `/input/spec_id` or `/input/collection_id`.
+    The raising kind sets `pointer` to `/input/spec_id`.
     """
 
     def __init__(self, *, subject_id: str, pointer: str) -> None:
@@ -372,15 +311,11 @@ class SpecNotFound(Exception):
 
 class MalformedSidecarIdentity(Exception):
     """A sidecar fails identity-core validation. It maps to `request_invalid`, 400, with a
-    request pointer and optional collection-member id.
-
-    The raising kind sets `pointer` to `/input/spec_id` or `/input/collection_id`. Collection
-    validation also sets `member_spec_id` for the failing member.
+    request pointer, which the raising kind sets.
     """
 
-    def __init__(self, *, detail: str, pointer: str, member_spec_id: str | None = None) -> None:
+    def __init__(self, *, detail: str, pointer: str) -> None:
         self.pointer = pointer
-        self.member_spec_id = member_spec_id
         super().__init__(detail)
 
 

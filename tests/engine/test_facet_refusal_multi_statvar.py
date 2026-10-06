@@ -12,18 +12,16 @@ from search.engine.errors import EngineInputError
 from search.engine.region import resolve_spec_resubmit
 from search.engine.region.state import EngineOptions
 from search.models import IdentityBindingValue, ResubmitIdentityPayload
-from tests.engine._base_identity import make_base, subject_entity
+from tests.engine._base_identity import make_identity, subject_entity
 from tests.engine._builders import binding_set_slot as _binding_set_slot
 from tests.engine._builders import value_slot as _value_slot
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import materialise_double_from_obs
+from tests.engine._harness import materialise_double_from_obs, walk_options
 from tests.fixtures import FakeGraph
 
 _ENTITY = "country/USA"
-# Mirrors _FIVE_TUPLE_ARCS below -- resolve_spec_resubmit's standard path
-# re-derives the shape from the posted resolved_stat_var_dcids' real arcs and
-# requires it to match the posted shape structurally.
+# Mirrors _FIVE_TUPLE_ARCS below, the five-tuple the resubmit's member walk filters on.
 _SHAPE: dict = {
     "kind": "statvar_schema",
     "population_type": "TestExpenditureActivity",
@@ -111,22 +109,22 @@ def _resubmit(obs: dict, facets: dict):
         ("testExpenditure", "measuredProperty"): SubjectPage(dcids=(_SV_A, _SV_B), truncated=False),
     }
     entities = [subject_entity(_ENTITY)]
-    base_spec_id, base_identity = make_base(_SHAPE, slots=[_HOW_SET_SLOT], entities=entities)
+    base_identity = make_identity(_SHAPE, slots=[_HOW_SET_SLOT], entities=entities)
     inp = ResubmitIdentityPayload(
         identity=base_identity.model_copy(update={"facets": facets}),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[_SV_A, _SV_B],
     )
     return resolve_spec_resubmit(
         inp=inp,
         graph=graph,
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
-        options=EngineOptions(
-            include_observations=True,
-            materialise_graph=materialise_graph,
-            materialise_sdmx=materialise_sdmx,
+        options=walk_options(
+            graph,
+            EngineOptions(
+                include_observations=True,
+                materialise_graph=materialise_graph,
+                materialise_sdmx=materialise_sdmx,
+            ),
         ),
     )
 
@@ -146,7 +144,7 @@ def test_binding_satisfied_by_every_stat_var_answers_definite_with_all_series():
     region = _resubmit(obs, {"measurementMethod": IdentityBindingValue(ref="GrossDisbursement")})
     assert region.status == "definite", f"expected definite, got {region.status!r}"
     spec = region.specs[0]
-    assert {sv.ref for sv in spec.resolved.stat_vars.items} == {_SV_A, _SV_B}
+    assert {sv.ref.dcid for sv in spec.resolved.members} == {_SV_A, _SV_B}
     assert spec.resolved.observations is not None
     assert {s.stat_var.ref for s in spec.resolved.observations.series} == {_SV_A, _SV_B}
 
@@ -156,21 +154,18 @@ def test_single_stat_var_behavior_unaffected_by_the_per_sv_check():
     graph = FakeGraph(nodes=_NODES, obs=_obs(method_a="GrossDisbursement", method_b="Commitment"))
     entities = [subject_entity(_ENTITY)]
     value_slot_a = _value_slot("how", _PROP, "financing source", _VAL_A, _VAL_A)
-    base_spec_id, base_identity = make_base(_SHAPE, slots=[value_slot_a], entities=entities)
+    base_identity = make_identity(_SHAPE, slots=[value_slot_a], entities=entities)
     inp = ResubmitIdentityPayload(
         identity=base_identity.model_copy(
             update={"facets": {"measurementMethod": IdentityBindingValue(ref="GrossDisbursement")}}
         ),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[_SV_A],
     )
     region = resolve_spec_resubmit(
         inp=inp,
         graph=graph,
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
-        options=EngineOptions(include_observations=True),
+        options=walk_options(graph, EngineOptions(include_observations=True)),
     )
     assert region.status == "definite", f"expected definite, got {region.status!r}"
-    assert {sv.ref for sv in region.specs[0].resolved.stat_vars.items} == {_SV_A}
+    assert {sv.ref.dcid for sv in region.specs[0].resolved.members} == {_SV_A}

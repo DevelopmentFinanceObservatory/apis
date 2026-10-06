@@ -882,7 +882,10 @@ def standard_resolve(
 
     place_dcid = next(iter(entities.get("observationAbout", ())), None)
 
-    admitted = _admit_standard_members(shape, bindings, entity_role_keys(shape, entities))
+    # A standard shape declares no flow role, so it leaves no axis open.
+    admitted = _admit_standard_members(
+        shape, bindings, entity_role_keys(entities, open_axes=()).bound
+    )
     if not isinstance(admitted, _AdmittedStandardMembers):
         return admitted
     bound_values = admitted.bound_values

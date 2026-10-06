@@ -31,7 +31,7 @@ _GRAPH_ENV_VARS = (
     "GRAPH_NODE_TIMEOUT_SECONDS",
 )
 
-# Starlette keeps converters on routes, while OpenAPI strips `{id:dfo_subject_id}` to `{id}`.
+# Starlette keeps converters on routes, while OpenAPI strips `{id:dfo_spec_id}` to `{id}`.
 _CONVERTER_SUFFIX_RE = re.compile(r"\{([^:}]+):[^}]+\}")
 
 
@@ -127,7 +127,7 @@ def test_fixture_route_count_per_surface():
         counts[row["surface"]] = counts.get(row["surface"], 0) + 1
     assert counts == {
         "search": 6,
-        "datasets": 48,
+        "datasets": 49,
         "graph": 7,
         "presentation": 8,
         "skills": 4,

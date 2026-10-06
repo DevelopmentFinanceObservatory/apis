@@ -22,10 +22,11 @@ from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import EngineGraphClient, force_full_facets
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import SEARCH_MAX_UNIT_ALTERNATIVES, settings
-from search.engine.envelope import _record_step, now_ms
+from search.engine.envelope import _emit_step, now_ms
 from search.engine.errors import FamilyNotResolvableError, GraphInfraError, RoleSignatureError
 from search.engine.interpret import PinnedResolved, Recall
 from search.engine.place import earth_countries, read_default_presence
+from search.engine.quantity import PER_PERSON_FORMS, fulfils
 from search.engine.region.alternate_guard import AlternateJudge, query_pins
 from search.engine.region.availability import _shape_group_key
 from search.engine.region.candidate_options import _elected_sibling_warning
@@ -74,6 +75,7 @@ from search.engine.region.place_context import (
     install_place_warnings,
     place_context,
     settle_place,
+    settled_shape,
     stamp_offered_place_warnings,
     takes_default_scope,
 )
@@ -90,7 +92,7 @@ from search.engine.region.sentence_events import _build_sentence_event
 from search.engine.region.state import AlternateUnevaluatedReason, ResolveState, served_stat_vars
 from search.engine.region.unrealisable import unbind_unrealisable
 from search.engine.retrieval.bound_values import (
-    bound_source,
+    RoleKeys,
     bound_values_from_bindings,
     elected_role_class_shape,
     entity_role_keys,
@@ -248,10 +250,9 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
     # step reads the shape narrowed to it. The mint's walk settles the members off the
     # event loop, for any shape with a member graph to walk. Members it does not settle
     # still answer, under a warning.
+    role_keys = entity_role_keys(bound.resolved_entities, open_axes=bound.open_axes)
     role_query = shape_query(
-        state.shape_draft,
-        state.bindings,
-        entity_role_keys(state.shape_draft, bound.resolved_entities),
+        state.shape_draft, state.bindings, role_keys.bound, open_role_keys=role_keys.open
     )
     recalled = state.shape_draft
     resolution = elected_role_class_shape(state.shape_draft, role_query)
@@ -282,6 +283,7 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
         state.shape_draft = resolution.value
     if not resolution.authority.settled:
         state.warnings.append(membership_unverified_warning())
+    state.walked = resolution.walked
     # The place context below is built for the shape the election returned.
     bound = bound_after_election(state, recalled, bound, state.shape_draft)
     if bound == "role_incompatible":
@@ -525,7 +527,9 @@ def _bind_alternates(
 def _guard_judge(state: ResolveState, *, elected_has_data: bool) -> AlternateJudge:
     """The alternate guard's judge of the elected shape under this leg's pins: its phrase,
     its bindings, the properties the engine authored, its qualifier matches, whether a
-    price-basis phrase went unread, and whether the elected shape has data. A judge this
+    price-basis phrase went unread, whether the elected shape has data, the leg's quantity
+    requirement (`state.quantity_requirement`, which the materialise check also reads) and
+    the kinds of the denominators read before bind (`state.denominator_kinds`). A judge this
     pass built for the same elected shape under equal pins is reused
     (`state.alternate_judges`)."""
     pins = query_pins(
@@ -536,6 +540,8 @@ def _guard_judge(state: ResolveState, *, elected_has_data: bool) -> AlternateJud
         qualifier_readings=state.query_qualifier_readings,
         unread_price_basis=state.unread_price_basis,
         elected_has_data=elected_has_data,
+        denominator_kinds=state.denominator_kinds,
+        quantity=state.quantity_requirement,
     )
     for judge in state.alternate_judges:
         if judge.elected is state.shape_draft and judge.pins == pins:
@@ -545,20 +551,21 @@ def _guard_judge(state: ResolveState, *, elected_has_data: bool) -> AlternateJud
     return judge
 
 
-def _place_role_keys(state: ResolveState) -> Callable[[ShapeDraft], frozenset[str]]:
-    """The role keys each shape's identity binds the query's places under
-    (`entity_role_keys`), by shape id: the elected shape's as admitted and each bound
-    alternate's (`state.alternate_place_roles`). A shape with no binding reads none. The
-    guard elects the dataset that serves each shape under them."""
+def _place_role_keys(state: ResolveState) -> Callable[[ShapeDraft], RoleKeys]:
+    """The role keys each shape's identity binds the query's places under and the axes they
+    leave open (`entity_role_keys`), by shape id: the elected shape's as admitted and each
+    bound alternate's (`state.alternate_place_roles`). A shape with no binding reads none.
+    The guard elects the dataset that serves each shape under them."""
     bound = [
         (state.capped_shapes[index], roles) for index, roles in state.alternate_place_roles.items()
     ]
     if state.elected_place_roles is not None:
         bound.append((state.shape_draft, state.elected_place_roles))
     keys = {
-        shape.shape_id: entity_role_keys(shape, roles.resolved_entities) for shape, roles in bound
+        shape.shape_id: entity_role_keys(roles.resolved_entities, open_axes=roles.open_axes)
+        for shape, roles in bound
     }
-    return lambda shape: keys.get(shape.shape_id, frozenset())
+    return lambda shape: keys.get(shape.shape_id, RoleKeys())
 
 
 def _offered_shapes(state: ResolveState, shapes: Mapping[int, ShapeDraft]) -> dict[int, ShapeDraft]:
@@ -654,20 +661,22 @@ class _WalkedAlternate:
         return self.alternate.shape
 
 
-_WalkKey = tuple[int, tuple[str, ...], tuple[object, ...], str, str | None]
+_WalkKey = tuple[int, tuple[str, ...], tuple[object, ...], str]
 
 
 def _walk_key(state: ResolveState, index: int, shape: ShapeDraft, rep_sv: str) -> _WalkKey:
     """The memo key of a walk: everything `walk_alternate` reads from the request. That is
-    the alternate, by capped-shape index, its members and the places bound to it, the
-    representative its bindings come from, and the dataset the shape in play's bindings name
-    (`bound_source`), which an adopted sibling's bindings can change."""
+    the alternate, by capped-shape index, its members and the places bound to it, and the
+    representative its bindings come from. The dataset it names is its shape's
+    (`ShapeDraft.named_dataset`), or the one the part's exclusions leave serving under those
+    bindings, whatever bindings the shape in play holds; the exclusions are the leg's, fixed
+    once vetting runs."""
     roles = state.alternate_place_roles[index]
     places = (
         tuple(roles.where_dcids),
         tuple((role, tuple(dcids)) for role, dcids in sorted(roles.resolved_entities.items())),
     )
-    return (index, tuple(shape.sv_arc_facts or {}), places, rep_sv, bound_source(state.bindings))
+    return (index, tuple(shape.sv_arc_facts or {}), places, rep_sv)
 
 
 def _walk_args(state: ResolveState, index: int, shape: ShapeDraft, rep_sv: str) -> dict:
@@ -675,10 +684,10 @@ def _walk_args(state: ResolveState, index: int, shape: ShapeDraft, rep_sv: str) 
         "shape": shape,
         "roles": state.alternate_place_roles[index],
         "rep_sv": rep_sv,
-        "elected_bindings": state.bindings,
         "graph": state.graph,
         "deadline": state.deadline,
         "role_class_walks": state.role_class_walks,
+        "excluded": state.excluded_datasets,
     }
 
 
@@ -962,15 +971,13 @@ async def _phase_facet_requests(state: ResolveState) -> RegionResult | None:
                 )
             )
         if unit_outcome.code == "unit_not_resolved":
-            alternatives = unit_outcome.alternatives
             return state.no_data(
                 "unit_not_resolved",
                 llm_usage=state.var_usage,
                 unit_alternatives=tuple(
                     UnitAlternative(currency=a.currency, label=a.label)
-                    for a in alternatives[:SEARCH_MAX_UNIT_ALTERNATIVES]
+                    for a in unit_outcome.alternatives[:SEARCH_MAX_UNIT_ALTERNATIVES]
                 ),
-                unit_alternatives_truncated=len(alternatives) > SEARCH_MAX_UNIT_ALTERNATIVES,
             )
         if unit_outcome.code == "unit_request_unsupported":
             return _unsupported(
@@ -1046,6 +1053,7 @@ def _materialise_task(
                 deadline=state.deadline,
                 place_dcids=state.place.probe_places,
                 default_presence=state.place.presence_for(state.default_presence),
+                open_axes=state.place.roles.open_axes,
                 coverage=state.coverage,
             )
         )
@@ -1073,6 +1081,7 @@ async def _run_materialise_task(
                 state.place.roles.roles,
                 variable_index=state.variable_index,
                 date_request=state.date_request,
+                open_axes=state.place.roles.open_axes,
                 graph=state.graph,
                 query_entity_text_by_dcid=state.entity_label_text_by_dcid,
                 measure_partition=state.measure_elected_partition,
@@ -1101,15 +1110,12 @@ async def _run_materialise_task(
             materialise_task.cancel()
             await asyncio.gather(materialise_task, return_exceptions=True)
     state.timing["materialise"] = now_ms() - t0
-    await _record_step(
-        state.pipeline_steps,
+    await _emit_step(
         state.emit,
         state.variable_index,
         "materialise",
-        ran=True,
         ms=state.timing["materialise"],
     )
-    state.ran_steps.add("materialise")
     return mat_result
 
 
@@ -1279,6 +1285,7 @@ async def _reelect_zero_observation_sibling(
         (_winner,) = _reelectable
         _no_data_label = state.shape_draft.label
         _install_shape(state, _winner.shape, _winner.bindings, _winner.place)
+        state.walked = _winner.walked
         state.mat_result = _winner.mat
         mat_result = _winner.mat
         state.warnings.append(
@@ -1335,8 +1342,11 @@ async def _phase_materialise(state: ResolveState) -> RegionResult | None:
     # Read the answer over the context its result settles: every later probe and the preview
     # bind a discovered scope's members, on the axis the scope reports, including origin-only
     # scopes, or the default scope of the StatVars the answer serves.
+    # The open axes narrow to those the elected members serve, and the shape declares their
+    # roles.
     if isinstance(mat_result, Materialised):
         state.place = settle_place(state.place, mat_result, state.warnings)
+        state.shape_draft = settled_shape(state.shape_draft, mat_result)
 
     # A place-less empty probe proves a missing joint slice only when each same-head shape
     # loses at least two named qualifiers. Use the single-shape mint and retract near-neighbour
@@ -1362,12 +1372,11 @@ async def _phase_materialise(state: ResolveState) -> RegionResult | None:
         state.force_single_shape_path = True
 
     # Preserve no-data precedence. ``no_matching_slice`` and ``variable_not_resolved`` win.
-    # Otherwise a missing per-capita denominator outranks ``no_observations`` or base-measure data.
-    if (
-        "per capita" in state.variable.lower()
-        and state.shape_draft.meas_denom_dcid is None
-        and not state.shape_draft.meas_denom_unresolved
-    ):
+    # Otherwise an elected shape that does not divide by the count of persons the leg names
+    # (`quantity.fulfils`: an amount, or a share of GNI, for "aid per capita") outranks
+    # ``no_observations`` or base-measure data.
+    per_person = state.quantity_requirement.narrowed(PER_PERSON_FORMS)
+    if per_person.named and not fulfils(per_person, state.shape_draft, state.denominator_kinds):
         # Defer place-less, no-data materialised results so the pipeline can mint
         # ``no_matching_slice`` with its flagged match.
         _slice_mint_pending = (
@@ -1462,7 +1471,7 @@ async def _nearest_real_for(state: ResolveState) -> tuple[NearestRealSpec, ...] 
             asyncio.to_thread(
                 _build_observations,
                 near_reads[near_specs[index].spec_id].plan,
-                [sv.ref for sv in near_specs[index].resolved.stat_vars.items],
+                [sv.ref.dcid for sv in near_specs[index].resolved.members],
                 obs_entities,
                 graph=state.graph,
                 materialise_graph=state.materialise_graph,
@@ -1491,7 +1500,6 @@ async def _phase_no_data_answer(state: ResolveState) -> RegionResult | None:
     mat_result = state.mat_result
 
     if isinstance(mat_result, NoDataDraft):
-        state.mark_remaining_not_ran()
         # Relax constraint bindings to suggest nearby data when observations are missing.
         nearest_real: tuple[NearestRealSpec, ...] | None = None
         if mat_result.reason == "no_observations":
@@ -1504,6 +1512,7 @@ async def _phase_no_data_answer(state: ResolveState) -> RegionResult | None:
             warnings=tuple(state.warnings),
             departure_facts=dict(state.departure_facts),
             timing_by_step=dict(state.timing),
+            settled_dataset=state.settled_dataset(),
             nearest_real=nearest_real,
             llm_usage=state.var_usage,
             no_data_role_axis=(

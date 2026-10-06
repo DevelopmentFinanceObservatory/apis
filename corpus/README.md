@@ -35,7 +35,7 @@ Each `corpus/*.yaml` file is a YAML list of cases. Measure families live in `cor
 | `id`                   | Lower-case letters, digits and hyphens; unique across all files.                                                                 |
 | `query`                | The question text.                                                                                                               |
 | `door`                 | `raw_text` (default), `parsed` with a `parsed` list of `search.models.ParsedPart`, or `dataset_resubmit` with a `resubmit` body. |
-| `resubmit`             | `variable_text`, `shape`, `slots`, and optional `stat_var_dcids`, `entity_dcids`, `origin_dcids` and `facets`.                   |
+| `resubmit`             | `variable_text`, `shape`, `slots`, and optional `entity_dcids`, `origin_dcids` and `facets`.                                     |
 | `include_observations` | Asks for the observation preview on the request.                                                                                 |
 | `slice`                | `main` (default) or `holdout`. Holdout cases never gate.                                                                         |
 | `activation`           | `live` (default) or `pending_data:<dataset>` for data not yet imported.                                                          |
@@ -55,7 +55,7 @@ The status keys `definite`, `candidates`, `no_data`, `unsupported` and `mixed` a
 | ---------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | `measure`                    | shared or status | `family` (one id or a list, any matching) or an inline `shape`; plus `bound`, `open` and `stat_vars`.                               |
 | `entities`                   | shared or status | The exact set of `{dcid, role}`, role `origin`, `destination` or `observationAbout`; `expands: true` marks a group read as members. |
-| `provenance`                 | shared or status | `{origin, dataset}` overriding the family's: the Data Commons (`dfo`, `base`, `un_system`) and the provenance dcid.                 |
+| `provenance`                 | shared or status | `{origin, dataset, bound}`: the Data Commons and provenance dcid, replacing the family's, and whether the identity binds it.        |
 | `window`                     | shared or status | `{kind: all}`, `{kind: latest}`, or `{kind: range, start, end}` with either end open.                                               |
 | `unit`                       | shared or status | `{currency, prices, base_year}` as the identity's unit request, or `none`.                                                          |
 | `operations`                 | shared or status | `[{verb, over, target_year}]` in query order; `[]` asserts none.                                                                    |
@@ -67,6 +67,8 @@ The status keys `definite`, `candidates`, `no_data`, `unsupported` and `mixed` a
 | `parts`                      | top level        | One status-keyed block per part, in query order. Exclusive with top-level status keys and shared fields.                            |
 
 A measure's `shape` keys are `population_type`, `measured_property`, `stat_type`, `measurement_qualifier` and `measurement_denominator`. An omitted key is not asserted and `null` asserts absence. `bound` maps a slot to a value, or to a list for a set binding. `open` lists slots that must stay unbound. `stat_vars` pins exact StatVars only where the StatVar is the answer.
+
+A `provenance` names the Data Commons (`dfo`, `base`, `un_system`) and the provenance dcid the answer's facets carry; naming either replaces the family's pair. `bound: true` asserts that `definition.identity.facets.provenance` is a value binding, which an answer carries when the part names a dataset or bind elects a shape only an opt-in dataset publishes, which names that table, and `bound: false` asserts that it is not. Written alone, `bound` keeps the family's pair.
 
 `{gl: "..."}` in place of a value marks it unconfirmed: the text says what the grounding pass must read from the graph.
 

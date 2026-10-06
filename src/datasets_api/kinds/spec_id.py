@@ -6,16 +6,15 @@ reproducibility are checked before the sidecar hash and registry write, so refus
 row. Hash mismatches raise `SpecIdMismatch`. A registry hit serves stored data. The kind checks
 supplied sidecars for hash consistency. Missing definitions raise `SpecNotFound`.
 
-`resolved_stat_var_dcids` asserts that each posted StatVar is a member of the identity's
-family, dominated or not. Member resolution takes the list as extra candidates, so a posted root
-can prove a truncated page complete, and `_resolve_members` then refuses
-`MemberSelectionMismatch` when a posted dcid is outside the family. The mint serves the
-antichain-minimal members, posted or omitted. Every mint and preview path resolves through
-`_resolve_members` before a registry write, so a refused selection leaves no row. Scope surgery
-replaces supplied members, preserves the rest, and rehashes the document. `scope.facets` can bind
-the provenance that names a family's dataset, so members resolve under the facets the scope
-installs. Invalid roles refuse as
-`InvalidRoleRef` or `RoleIncompatible` before a write. The mint and the preview then serve the
+Members are a function of the identity, the graph and the code index. No request field adds or
+names one. A described arm's walk reads the whole filtered reverse set, up to
+`DatasetsBuildSettings.member_subject_ceiling` subjects, when its first page truncates without a
+confirmed root (`adapter.member_read_bounds`). The mint serves the antichain-minimal members.
+Every mint resolves through `_resolve_members` before a registry write, so a refusal leaves no
+row. Scope surgery replaces supplied members, preserves the rest, and rehashes the document.
+`scope.facets` can bind the provenance that names a family's dataset, so members resolve under
+the facets the scope installs. Invalid roles refuse as `InvalidRoleRef` or `RoleIncompatible`
+before a write. The mint then serves the
 identity in canonical form (`code_index.members.canonical_identity`): each slot an invariant
 of the dataset the identity names fixes binds the invariant's value, so definitions naming one
 dataset that differ only in whether they bind an invariant or leave it unbound serve and
@@ -32,8 +31,10 @@ from dfo_spec_kit.identity import IdentityError
 from code_index.members import canonical_identity
 from code_index.query import CodeIndex
 from datasets_api.adapter import (
+    MemberReadBounds,
     build_identity_document,
     check_reproducible,
+    member_read_bounds,
     prime_head_signal,
     resolve_definition_members,
     to_materialisation_request,
@@ -45,19 +46,17 @@ from datasets_api.codes_materialise import (
     DefinitionNotReproducible,
     MalformedSidecarIdentity,
     MemberNotResolvable,
-    MemberSelectionMismatch,
     SpecNotFound,
 )
+from datasets_api.config import DatasetsBuildSettings
 from datasets_api.manifest_models import Manifest
 from datasets_api.mint_deps import MintDeps
 from datasets_api.mint_models import MintOptions, Scope
 from datasets_api.models import CanonicalDefinition
 from datasets_api.operations.submit import submit_over_budget
-from datasets_api.preview import preview_definition
-from datasets_api.preview_models import PreviewEnvelope
 from datasets_api.serve import raw_fetch_guard, serve_definition
 from datasets_api.shape import StatVarShape
-from datasets_api.surgery import apply_scope_surgery
+from datasets_api.surgery import apply_scope_surgery, open_roles_left_open
 from datasets_api.timings import phase
 from materialise.graph import GraphReader
 from spec_registry import RecomputedIdentity, SpecIdMismatch, recompute_identity
@@ -68,12 +67,20 @@ _STAT_VAR_PREFIX = "dcid:"
 
 
 class MemberResolutionDeps(Protocol):
-    """The graph reads sidecar admission makes. `MintDeps` and the definition door's
-    `DefinitionDeps` both carry them."""
+    """The graph reads sidecar admission makes, the settings that bound its member walk, and
+    the request's deadline. `MintDeps` and the definition door's `DefinitionDeps` both carry
+    them."""
 
     graph: GraphReader
     enumerator: MemberEnumerator
     code_index: CodeIndex
+    settings: DatasetsBuildSettings
+    deadline: float | None
+
+
+def _walk_bounds(deps: MemberResolutionDeps) -> MemberReadBounds:
+    """The bounds of a request's member walks, counted from now."""
+    return member_read_bounds(deps.settings, request_deadline=deps.deadline)
 
 
 def _resolve_members(
@@ -83,20 +90,17 @@ def _resolve_members(
     graph: GraphReader,
     enumerator: MemberEnumerator,
     code_index: CodeIndex,
-    selection: Sequence[str] | None = None,
+    bounds: MemberReadBounds,
     scope: Scope | None = None,
 ) -> tuple[StatVarShape, ...]:
     """Resolves an identity and attaches `/input/spec_id` to `MemberNotResolvable`.
 
     Accepts a registered identity or an unregistered sidecar. A `scope` that supplies `facets`
     replaces the identity's own before resolution, as scope surgery does, and one that supplies
-    `entities` supplies the role keys the role class is elected under, so the family is the
-    one the surgered identity resolves. `selection` is the request's
-    `resolved_stat_var_dcids`. It seeds member resolution, and each posted dcid must be in the
-    family before antichain reduction, whichever path resolved it: the pinned arm, the code
-    index, or the graph walk. A member a broader member dominates passes and is not served.
-    Raises `MemberSelectionMismatch` naming each posted dcid outside the family. Returns the
-    antichain-minimal shapes, so `None` and an empty list check nothing.
+    `entities` supplies the role keys the role class is elected under, and the open roles
+    the scope leaves open (`open_roles_left_open`), so the family is the one the surgered
+    identity resolves. `bounds` bounds the graph walk
+    (`adapter.resolve_definition_members`). Returns the antichain-minimal shapes.
     """
     if scope is not None and scope.facets is not None:
         identity = apply_scope_surgery(
@@ -109,9 +113,14 @@ def _resolve_members(
             graph=graph,
             enumerator=enumerator,
             code_index=code_index,
-            seed=selection,
+            bounds=bounds,
             role_keys=(
                 frozenset(scope.entities)
+                if scope is not None and scope.entities is not None
+                else None
+            ),
+            open_role_keys=(
+                open_roles_left_open(identity, scope.entities)
                 if scope is not None and scope.entities is not None
                 else None
             ),
@@ -119,12 +128,6 @@ def _resolve_members(
     except MemberNotResolvable as exc:
         exc.pointer = _POINTER
         raise
-    if selection:
-        foreign = tuple(
-            (index, dcid) for index, dcid in enumerate(selection) if dcid not in resolved.family
-        )
-        if foreign:
-            raise MemberSelectionMismatch(foreign=foreign)
     return resolved.shapes
 
 
@@ -135,23 +138,31 @@ def _check_own_roles(
     scope: Scope | None,
     shapes: Sequence[StatVarShape],
     deps: MemberResolutionDeps,
-    selection: Sequence[str] | None = None,
+    bounds: MemberReadBounds,
 ) -> None:
-    """Checks `identity`'s own bound roles against the shape `identity` resolves to
+    """Checks `identity`'s own bound and open roles against the shape `identity` resolves to
     (`check_reproducible`).
 
-    `shapes` are the request's, resolved under `scope`. A scope that binds entities under
-    other role keys can elect another role class, so when the identity's roles fail against
-    `shapes` under such a scope, the identity resolves again under its own role keys and
-    the scope's facets, and is checked against that shape. An identity whose roles hold
-    against `shapes` resolves once, so a truncated walk that a posted member proved complete
-    is not walked again without it. `selection` seeds the second resolution and is not
-    checked against its family, which is not the one served."""
-    own_roles = frozenset(cast("Mapping[str, object]", identity.get("entities", {})))
+    `shapes` are the request's, resolved under `scope`. A scope that elects under other bound
+    or open role keys (`_resolve_members`) can elect another role class, so when the
+    identity's roles fail against `shapes` under such a scope, the identity resolves again
+    under its own role keys and the scope's facets, and is checked against that shape. An
+    identity whose roles hold against `shapes` resolves once. The second resolution runs
+    under the same `bounds`."""
     try:
         check_reproducible(identity, spec_id=spec_id, shape=shapes[0])
     except DefinitionNotReproducible:
-        if scope is None or scope.entities is None or frozenset(scope.entities) == own_roles:
+        if scope is None or scope.entities is None:
+            raise
+        own_keys = (
+            frozenset(cast("Mapping[str, object]", identity.get("entities", {}))),
+            frozenset(cast("Sequence[str]", identity.get("open_roles", ()))),
+        )
+        scoped_keys = (
+            frozenset(scope.entities),
+            frozenset(open_roles_left_open(identity, scope.entities)),
+        )
+        if scoped_keys == own_keys:
             raise
     else:
         return
@@ -165,7 +176,7 @@ def _check_own_roles(
             graph=deps.graph,
             enumerator=deps.enumerator,
             code_index=deps.code_index,
-            seed=selection,
+            bounds=bounds,
         )
     except MemberNotResolvable as exc:
         exc.pointer = _POINTER
@@ -179,20 +190,21 @@ def admit_sidecar(
     spec_id: str,
     scope: Scope | None,
     deps: MemberResolutionDeps,
-    selection: Sequence[str] | None,
 ) -> tuple[RecomputedIdentity, tuple[StatVarShape, ...]]:
     """Checks an unregistered sidecar and returns its recomputed identity (the canonical
     document, its bytes and digest) and resolved shapes.
 
     `recompute_identity` canonicalises the posted identity once. Member resolution, the scope
     role check and the reproducibility check read that canonical document, the one a
-    registration stores, so a mint and a preview of one sidecar resolve and materialise the
-    same identity whichever spelling the caller posted. Nothing is written.
+    registration stores, so a mint of one sidecar resolves and materialises the same identity
+    whichever spelling the caller posted. Its member walks share one set of bounds counted from
+    this call (`_walk_bounds`). Nothing is written.
 
     Raises `MalformedSidecarIdentity` for an identity the identity core refuses, each member
     resolution refusal, `InvalidRoleRef` or `RoleIncompatible` for a scope role, `SpecIdMismatch`
     when the identity does not hash to `spec_id`, and `DefinitionNotReproducible`, in that order.
     """
+    bounds = _walk_bounds(deps)
     try:
         recomputed = recompute_identity(definition.identity)
         identity = recomputed.identity
@@ -202,7 +214,7 @@ def admit_sidecar(
             graph=deps.graph,
             enumerator=deps.enumerator,
             code_index=deps.code_index,
-            selection=selection,
+            bounds=bounds,
             scope=scope,
         )
     except IdentityError as exc:
@@ -213,7 +225,7 @@ def admit_sidecar(
     if recomputed.spec_id != spec_id:
         raise SpecIdMismatch(supplied=spec_id, computed=recomputed.spec_id)
     _check_own_roles(
-        identity, spec_id=spec_id, scope=scope, shapes=shapes, deps=deps, selection=selection
+        identity, spec_id=spec_id, scope=scope, shapes=shapes, deps=deps, bounds=bounds
     )
     return recomputed, shapes
 
@@ -236,7 +248,6 @@ def mint_spec_id(
     scope: Scope | None,
     options: MintOptions,
     deps: MintDeps,
-    resolved_stat_var_dcids: Sequence[str] | None = None,
     trace_id: str | None = None,
 ) -> Manifest:
     with phase("resolve"):
@@ -247,13 +258,7 @@ def mint_spec_id(
             if definition is None:
                 raise SpecNotFound(subject_id=spec_id, pointer="/input/spec_id")
             # Resolve and validate the sidecar before writing. Refusals leave no registry row.
-            _recomputed, shapes = admit_sidecar(
-                definition,
-                spec_id=spec_id,
-                scope=scope,
-                deps=deps,
-                selection=resolved_stat_var_dcids,
-            )
+            _recomputed, shapes = admit_sidecar(definition, spec_id=spec_id, scope=scope, deps=deps)
             deps.registry.register_definition(
                 identity_definition=definition.identity,
                 schema_version=definition.schema_version,
@@ -270,13 +275,14 @@ def mint_spec_id(
                     verify_sidecar_definition(definition, spec_id=spec_id)
                 except IdentityError as exc:
                     raise MalformedSidecarIdentity(detail=str(exc), pointer=_POINTER) from exc
+            bounds = _walk_bounds(deps)
             shapes = _resolve_members(
                 stored.identity,
                 spec_id=stored.spec_id,
                 graph=deps.graph,
                 enumerator=deps.enumerator,
                 code_index=deps.code_index,
-                selection=resolved_stat_var_dcids,
+                bounds=bounds,
                 scope=scope,
             )
             _check_own_roles(
@@ -285,7 +291,7 @@ def mint_spec_id(
                 scope=scope,
                 shapes=shapes,
                 deps=deps,
-                selection=resolved_stat_var_dcids,
+                bounds=bounds,
             )
             if scope is not None and scope.entities is not None:
                 for shape in shapes:
@@ -344,7 +350,6 @@ def mint_spec_id(
         subject_id=stored.spec_id,
         graph=deps.graph,
         sdmx=deps.sdmx,
-        combine=True,
         head_store=deps.head_store,
         materialise_wait_seconds=deps.settings.materialise_wait_seconds,
         revision_reader=deps.revision_reader,
@@ -367,83 +372,3 @@ def mint_spec_id(
         coverage_index=coverage_snapshot.index,
     )
     return manifest
-
-
-def preview_spec_id(
-    spec_id: str,
-    *,
-    definition: CanonicalDefinition | None,
-    scope: Scope | None,
-    limit: int,
-    deps: MintDeps,
-    resolved_stat_var_dcids: Sequence[str] | None = None,
-) -> PreviewEnvelope:
-    """Write-free counterpart to `mint_spec_id` with the same resolution and validation.
-
-    It materialises the canonical form of the sidecar or surgered identity, the document a mint
-    registers and reads, without registering a definition or reporting a minted `spec_id`. The
-    members preview as the one group the mint serves (`preview.preview_definition`), so the
-    envelope holds one entry with the mint's `total_rows` and `content_version`.
-    """
-    with phase("resolve"):
-        stored = deps.spec_reader.read_definition(spec_id)
-        identity: Mapping[str, object]
-        if stored is None:
-            if definition is None:
-                raise SpecNotFound(subject_id=spec_id, pointer="/input/spec_id")
-            # The canonical identity is the document a mint of this sidecar registers and reads.
-            recomputed, shapes = admit_sidecar(
-                definition,
-                spec_id=spec_id,
-                scope=scope,
-                deps=deps,
-                selection=resolved_stat_var_dcids,
-            )
-            identity = recomputed.identity
-        else:
-            if definition is not None:
-                try:
-                    verify_sidecar_definition(definition, spec_id=spec_id)
-                except IdentityError as exc:
-                    raise MalformedSidecarIdentity(detail=str(exc), pointer=_POINTER) from exc
-            identity = stored.identity
-            shapes = _resolve_members(
-                identity,
-                spec_id=spec_id,
-                graph=deps.graph,
-                enumerator=deps.enumerator,
-                code_index=deps.code_index,
-                selection=resolved_stat_var_dcids,
-                scope=scope,
-            )
-            _check_own_roles(
-                identity,
-                spec_id=spec_id,
-                scope=scope,
-                shapes=shapes,
-                deps=deps,
-                selection=resolved_stat_var_dcids,
-            )
-            if scope is not None and scope.entities is not None:
-                for shape in shapes:
-                    build_identity_document(shape, scope=scope, graph=deps.graph)
-
-        # Surgery replaces `entities`, `requested_window`, and `facets`, leaving `slots` and
-        # `shape` intact. The shapes resolved under the scope's facets and entities are those
-        # of the surgered identity, and its canonical form resolves the same family. The
-        # preview reads the identity a mint of this request registers and reports.
-        served = _served_identity(identity, scope=scope, code_index=deps.code_index)
-        if served is not None:
-            identity, spec_id = served.identity, served.spec_id
-
-        try:
-            requests = tuple(
-                to_materialisation_request(identity, shape=shape, code_index=deps.code_index)
-                for shape in shapes
-            )
-        except CurrencyRoleUndeclared as exc:
-            exc.pointer = _POINTER
-            raise
-    return preview_definition(
-        requests, family_ref=f"{_STAT_VAR_PREFIX}{spec_id}", deps=deps, limit=limit
-    )

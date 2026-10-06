@@ -19,15 +19,18 @@ from search.eval.checks.answers import Answer, answers
 from search.eval.checks.base import (
     NA,
     PASS,
+    READ_ERRORS,
     PartView,
     Result,
     ScoreContext,
     all_of,
     any_of,
     fail,
+    infra_error,
     pairs_one_to_one,
     read_path,
     register_part,
+    served_stat_vars,
     unconfirmed,
     unverifiable,
 )
@@ -94,13 +97,6 @@ def _bound(
     return PASS
 
 
-def _served(answer: Answer, ctx: ScoreContext) -> list[str]:
-    """The StatVars a spec serves."""
-    at = f"{answer.at}.resolved.stat_vars.items[]"
-    items = answer.read("resolved.stat_vars.items", ctx) or []
-    return [read_path(item, "ref", ctx, at=at) for item in items]
-
-
 def _stat_vars(form: MeasureForm, answer: Answer, ctx: ScoreContext) -> Result:
     expected = form.stat_vars
     if expected is None:
@@ -109,7 +105,13 @@ def _stat_vars(form: MeasureForm, answer: Answer, ctx: ScoreContext) -> Result:
         return unverifiable("stat_vars are unconfirmed")
     if not answer.is_spec:
         return fail("stat_vars: an unsupported part resolves no StatVar")
-    got = sorted(_served(answer, ctx))
+    try:
+        served = served_stat_vars(answer, ctx)
+    except READ_ERRORS as exc:
+        return infra_error(f"stat_vars: the members read failed: {exc}")
+    if served is None:
+        return unverifiable("stat_vars: no members door to name the served StatVars")
+    got = sorted(served)
     want = sorted(map(str, expected))
     if got != want:
         return fail(f"stat_vars: got {got}, expected {want}")
@@ -124,7 +126,13 @@ def _stat_vars_paired(form: MeasureForm, found: list[Answer], ctx: ScoreContext)
     if unconfirmed(expected):
         return unverifiable("stat_vars are unconfirmed")
     want = list(map(str, expected))
-    held = [set(_served(answer, ctx)) for answer in found]
+    try:
+        served = [served_stat_vars(answer, ctx) for answer in found]
+    except READ_ERRORS as exc:
+        return infra_error(f"stat_vars: the members read failed: {exc}")
+    if any(stat_vars is None for stat_vars in served):
+        return unverifiable("stat_vars: no members door to name the served StatVars")
+    held = [set(stat_vars or ()) for stat_vars in served]
     if pairs_one_to_one(len(want), len(held), lambda sv, spec: want[sv] in held[spec]):
         return PASS
     unserved = [sv for sv in want if not any(sv in refs for refs in held)]

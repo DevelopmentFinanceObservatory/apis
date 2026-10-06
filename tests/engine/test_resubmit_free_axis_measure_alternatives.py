@@ -24,9 +24,10 @@ from search.models import (
     SlotValue,
 )
 from series_coverage.schema import RoleNames
-from tests.engine._base_identity import destination_entity, make_base
+from tests.engine._base_identity import destination_entity, make_identity
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
-from tests.engine._index_slots import query_for
+from tests.engine._harness import walk_options
+from tests.engine._index_slots import crs_flow_slot_keys, query_for
 from tests.engine.test_candidates_measure_alternatives import _ROLES
 from tests.engine.test_resubmit_alternative_measure_round_trip import (
     _KEN,
@@ -68,7 +69,7 @@ def _purpose_scoped_partitions() -> tuple[tuple, tuple[MeasurePartition, ...]]:
         stat_type_dcid="measuredValue",
         meas_qual_dcid="Nominal",
         meas_denom_dcid=None,
-        slot_keys=(),
+        slot_keys=crs_flow_slot_keys(),
     )
     partitions = measure_family_partitions(
         shape, get_index(), axes, query_for(shape, {_PURPOSE_PROP: [_PURPOSE]})
@@ -166,7 +167,7 @@ def _round_trip(
         meas_qual_dcid=measurement_qualifier,
         meas_denom_dcid=None,
     )
-    spec_id, identity = make_base(shape, slots, entities=[destination_entity(_KEN)])
+    identity = make_identity(shape, slots, entities=[destination_entity(_KEN)])
 
     graph = _family_graph(member_rows)
     sdmx = _sibling_sdmx(member_rows[0].dcid)
@@ -176,12 +177,13 @@ def _round_trip(
         role_names={member_rows[0].dcid: _ROLE_NAMES},
     )
 
-    inp = ResubmitIdentityPayload(identity=identity, base_spec_id=spec_id, base_identity=identity)
+    inp = ResubmitIdentityPayload(identity=identity)
     region = resolve_spec_resubmit(
         inp=inp,
         graph=graph,
         sdmx=sdmx,
         coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
+        options=walk_options(graph),
     )
 
     assert region.status == "definite", region.no_data_reason

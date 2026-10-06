@@ -23,7 +23,6 @@ from search.models import (
     ResubmitIdentityEntry,
 )
 from tests.engine._axis_doubles import TOTAL_POPULATION_INDIA_FAMILY, axis_confirming_reader
-from tests.engine._base_identity import base_from_spec
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import (
     PINNED_DATE,
@@ -533,16 +532,12 @@ def test_resubmit_part_echoes_the_entry_variable_text():
     assert base.status == "definite"
     spec = base.spec
 
-    base_spec_id, base_identity = base_from_spec(spec)
     resubmit_req = ResolveRequest(
         input=DatasetResubmitInput(
             entries=[
                 ResubmitIdentityEntry(
                     variable_text="total population of India",
                     identity=spec.definition.identity,
-                    base_spec_id=base_spec_id,
-                    base_identity=base_identity,
-                    resolved_stat_var_dcids=[sv.ref for sv in spec.resolved.stat_vars.items],
                 )
             ]
         ),

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 
-from code_index import CodeIndex
+import pytest
+
+from code_index import CodeIndex, default_index_path, load_index
 
 
 def _bounded(fn, /, *args, timeout: float = 3.0, **kwargs):
@@ -44,6 +46,23 @@ def test_expansion_over_a_flat_system_is_a_genuine_no_op(code_index: CodeIndex):
         row.parent is not None for row in code_index.codes if row.code_system == "crsTypeOfFlow"
     )
     assert has_any_parent is False
+
+
+@pytest.mark.parametrize(
+    ("code", "expands"),
+    [
+        pytest.param("CRSPurposeCode120", True, id="disjoint-parent-expands"),
+        pytest.param("DAC1AidType1010", False, id="total-parent-binds-itself"),
+    ],
+)
+def test_a_binding_expands_only_a_parent_disjoint_from_its_children(code: str, expands: bool):
+    """A CRS purpose parent's records are apart from its children's, so a binding reads the
+    subtree. A DAC1 aid type parent is the total of its children, so a binding reads the
+    parent alone."""
+    index = load_index(default_index_path())
+
+    assert len(index.descendants(code)) > 1
+    assert index.expansion(code) == (index.descendants(code) if expands else (code,))
 
 
 def test_a_dcid_this_index_does_not_carry_as_a_code_expands_to_only_itself(

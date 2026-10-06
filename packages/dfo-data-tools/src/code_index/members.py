@@ -21,16 +21,19 @@ from collections.abc import Set as AbstractSet
 from dataclasses import asdict, dataclass, field, replace
 from typing import TYPE_CHECKING, cast
 
-from code_index.query import CodeIndex, row_five_tuple
+from code_index.query import CodeIndex, IndexFamily, row_five_tuple
 from dfo_platform.roles import declared_role_for
 from statvar_members import (
     AbsentReading,
     FiveTuple,
     RoleClass,
+    RoleClassElection,
     RoleClassFacts,
     SlotBinding,
+    admitting_roles,
     antichain_minimal_ids,
     elect_role_class_of,
+    electing_role_keys,
     five_tuple_from_identity,
     role_class_covers,
     role_class_facts,
@@ -66,6 +69,9 @@ _memo_lock = threading.Lock()
 _five_tuple_facts_cache: dict[
     int, dict[Hashable, tuple[RoleClassFacts, Mapping[str, StatVarRow]]]
 ] = {}
+# Per-index memo of the roles each dataset declares in each family the index carries
+# (`_declared_roles`), at most one entry per family and dataset publishing it.
+_declared_roles_cache: dict[int, dict[Hashable, frozenset[tuple[str, ...]]]] = {}
 
 
 @dataclass(slots=True)
@@ -125,13 +131,9 @@ class _FiveTupleRows:
     """The constraint properties each dataset's rows of each five-tuple carry."""
 
 
-# Per-index cache of `_FiveTupleRows`, keyed and finalised as `_index_key_sets_cache` is.
+# Per-index cache of `_FiveTupleRows`, keyed by the `CodeIndex` instance's identity. A
+# weakref finalizer removes each entry before Python can reuse its id.
 _five_tuple_rows_cache: dict[int, _FiveTupleRows] = {}
-
-# Per-index cache of the distinct constraint-key sets under each `FiveTuple` the
-# index carries, keyed by the `CodeIndex` instance's identity. A weakref
-# finalizer removes each entry before Python can reuse its id.
-_index_key_sets_cache: dict[int, Mapping[FiveTuple, frozenset[frozenset[str]]]] = {}
 
 
 class SourceNotInFamily(Exception):
@@ -157,6 +159,10 @@ class FamilyQuery:
     role_keys: frozenset[str] = frozenset()
     """The role keys the identity binds entities under: `observationAbout`, `origin`,
     `destination`, or a declared role name. The entities themselves stay out."""
+    open_role_keys: frozenset[str] = frozenset()
+    """The flow axes the identity asks every member of (its `open_roles`). Every election
+    reads them softly beside `role_keys` (`statvar_members.electing_role_keys`), and
+    `DatasetFamily.role_keys` holds the ones that joined."""
     excluded: frozenset[str] = frozenset()
     """The provenances of the datasets the query excludes. An unnamed query elects among
     the others."""
@@ -185,19 +191,21 @@ def identity_family_query(index: CodeIndex, identity: Mapping[str, object]) -> F
     """Returns the `FamilyQuery` of a described identity document.
 
     The five-tuple comes from `shape`, the bindings from `slots` widened to their
-    descendants in `index`, the role keys from the keys of `entities`, and the dataset from
+    expansion in `index` (`CodeIndex.expansion`), the role keys from the keys of `entities`,
+    the open role keys from `open_roles`, and the dataset from
     `facets` (`named_dataset`). The Datasets mint and Search both read an identity through
     this function, so they elect over the same inputs."""
     return FamilyQuery(
         five_tuple=five_tuple_from_identity(cast("Mapping[str, object]", identity["shape"])),
         slots=slot_bindings_from_identity(
             cast("Sequence[Mapping[str, object]]", identity.get("slots", ())),
-            widen=index.descendants,
+            widen=index.expansion,
         ),
         source=named_dataset(
             cast("Mapping[str, Mapping[str, object]]", identity.get("facets", {}))
         ),
         role_keys=frozenset(cast("Mapping[str, object]", identity.get("entities", {}))),
+        open_role_keys=frozenset(cast("Sequence[str]", identity.get("open_roles") or ())),
     )
 
 
@@ -209,35 +217,118 @@ class DatasetFamily:
     """The elected dataset's provenance, or `None` when no row survives."""
     rows: tuple[StatVarRow, ...]
     """The elected dataset's rows of the elected role class before antichain reduction, in
-    the order given. They declare one role set unless the election tied
-    (`statvar_members.RoleClassElection.tied`), which the caller refuses."""
-
-
-def _index_key_sets(index: CodeIndex) -> Mapping[FiveTuple, frozenset[frozenset[str]]]:
-    key = id(index)
-    cached = _index_key_sets_cache.get(key)
-    if cached is None:
-        key_sets: dict[FiveTuple, set[frozenset[str]]] = defaultdict(set)
-        for row in index.statvars:
-            key_sets[row_five_tuple(row)].add(frozenset(row.constraint_properties))
-        cached = {five_tuple: frozenset(keys) for five_tuple, keys in key_sets.items()}
-        _index_key_sets_cache[key] = cached
-        weakref.finalize(index, _index_key_sets_cache.pop, key, None)
-    return cached
+    the order given. They declare one role set unless the election tied (`tied`)."""
+    role_keys: frozenset[str] = frozenset()
+    """The role keys the election ran under: the query's role keys and those of its open
+    ones that joined them (`statvar_members.RoleClassElection.role_keys`). The query's
+    role keys when no row survives."""
+    tied: bool = False
+    """Whether the role-class election tied (`statvar_members.RoleClassElection.tied`),
+    which the caller refuses. `rows` then hold every row that places `role_keys`."""
 
 
 def index_covers_slot_keys(
     index: CodeIndex, five_tuple: FiveTuple, slot_keys: AbstractSet[str]
 ) -> bool:
-    """Returns whether `slot_keys` holds every constraint property of at least one index
-    row of `five_tuple`.
+    """Returns whether `slot_keys` select a family of `five_tuple` (`CodeIndex.family_of`)
+    and hold every constraint property of one of its rows (`IndexFamily.covers`).
 
     This is the key test `family_for_five_tuple` applies to each row, asked before any
-    binding. An identity that passes resolves from the index, and one whose values match no
+    binding. `index_decides` asks it of a query, on the slot keys that decide its family.
+    An identity that passes resolves from the index, and one whose values match no
     row resolves to nothing there. An identity that fails names a population the index rows
     of its five-tuple do not describe, and the graph walk resolves it. Exported rows carry
     resolved denominators, so an unresolved-denominator five-tuple is never covered."""
-    return key_sets_cover(_index_key_sets(index), five_tuple, slot_keys)
+    family = index.family_of(five_tuple, slot_keys)
+    return family is not None and family.covers(slot_keys)
+
+
+def index_decides(index: CodeIndex, query: FamilyQuery) -> bool:
+    """Returns whether the index decides `query`'s membership: `index_covers_slot_keys`
+    for the slot keys that decide its family (`_deciding_keys`), whatever dataset it names.
+    Every door asks this of an identity or a shape's query, so each resolves from the
+    index, or leaves it to the graph walk, for the same queries."""
+    return _decides(index, query.five_tuple, query.slots.keys(), query.bound)
+
+
+def _decides(
+    index: CodeIndex, five_tuple: FiveTuple, keys: AbstractSet[str], bound: AbstractSet[str]
+) -> bool:
+    return index_covers_slot_keys(index, five_tuple, _deciding_keys(index, five_tuple, keys, bound))
+
+
+def _deciding_keys(
+    index: CodeIndex, five_tuple: FiveTuple, keys: AbstractSet[str], bound: AbstractSet[str]
+) -> AbstractSet[str]:
+    """The slot keys `keys`, of which `bound` are bound, that decide a query's family: the
+    bound ones, and the unbound ones some row of `five_tuple` declares.
+
+    An unbound slot matches every row, so one no row of the five-tuple declares names no
+    population: it covers no row the other keys leave uncovered and tells no family from
+    another. A bound slot requires its rows to declare a value, so it always decides."""
+    if len(bound) == len(keys):
+        return keys
+    families = index.families_by_five_tuple.get(five_tuple, ())
+    declared = frozenset().union(*(family.properties for family in families))
+    return {key for key in keys if key in bound or key in declared}
+
+
+def query_family(index: CodeIndex, query: FamilyQuery) -> IndexFamily | None:
+    """The family `query` asks of the index. Every election, publisher list and row read of
+    an identity resolves its family here.
+
+    A query naming a dataset takes the family of its five-tuple that dataset publishes when
+    that family carries every key the query binds and either has a row declaring only the
+    query's deciding keys (`_deciding_keys`, `IndexFamily.covers`), or no family of the
+    five-tuple has such a row and it carries every deciding key. The family then holds the
+    rows the query describes, whichever family the keys alone select, and a slot the query
+    leaves unbound that only another dataset's rows carry does not change it. `None`
+    otherwise: when the dataset publishes no family of the five-tuple, when the query binds
+    a property the family's rows do not carry, and when the keys describe rows of another
+    family and none of this one, as CRS slot keys do for a query naming DAC1. `publishers`
+    then lists the datasets the keys select and the named one refuses, or, when the keys
+    select no family, lists every dataset of the five-tuple and the query goes to the graph
+    walk.
+
+    A query naming none asks for the family its deciding slot keys select
+    (`CodeIndex.family_of`)."""
+    return _family(index, query.five_tuple, query.slots.keys(), query.bound, query.source)
+
+
+def _family(
+    index: CodeIndex,
+    five_tuple: FiveTuple,
+    keys: AbstractSet[str],
+    bound: AbstractSet[str],
+    source: str | None,
+) -> IndexFamily | None:
+    """`query_family` for a query on `five_tuple` naming `source` with slot keys `keys`, of
+    which `bound` are bound."""
+    deciding = _deciding_keys(index, five_tuple, keys, bound)
+    if source is None:
+        return index.family_of(five_tuple, deciding)
+    published = _dataset_family(index, five_tuple, source)
+    if published is None or not bound <= published.properties:
+        return None
+    if published.covers(deciding):
+        return published
+    families = index.families_by_five_tuple[five_tuple]
+    if deciding <= published.properties and not any(f.covers(deciding) for f in families):
+        return published
+    return None
+
+
+def publishers(index: CodeIndex, query: FamilyQuery) -> tuple[str, ...]:
+    """The datasets publishing `query`'s family (`query_family`), in serving order. When the
+    named dataset publishes no family holding the query's rows, the datasets of the family
+    the slot keys select, so a named dataset outside it refuses (`_refuse_non_publisher`).
+    Else every dataset publishing the five-tuple, for slot keys that select no family."""
+    family = query_family(index, query)
+    if family is None and query.source is not None:
+        family = query_family(index, replace(query, source=None))
+    if family is not None:
+        return family.datasets
+    return index.datasets_by_five_tuple.get(query.five_tuple, ())
 
 
 def key_sets_cover[K](
@@ -274,71 +365,218 @@ def absent_readings(index: CodeIndex) -> Mapping[str, AbsentReading]:
     }
 
 
+def dataset_declares_roles(
+    index: CodeIndex, family: IndexFamily, dataset: str | None, role_keys: AbstractSet[str]
+) -> bool:
+    """Whether `dataset` declares `role_keys` in `family`: a row the rows it publishes
+    there read with no role key bound, or a row it publishes there with the constraint map
+    of one, its role twin, places every key (`statvar_members.role_class_covers`). With no
+    key, a row places them when it declares the subject alone. `None` names the family's
+    rows no dataset publishes, which form a group of their own. False when the group holds
+    no row of `family`.
+
+    The rows read with no key bound are those the shared election elects among the
+    dataset's rows (`statvar_members.admitting_roles`), under the index's absent readings.
+    A role only rows outside that reading hold marks those series, not the dataset: DAC1's
+    provider totals stand beside two flows to the West Bank and Gaza Strip at other
+    constraint values, so DAC1 declares no recipient there, and "aid to Kenya" is not one
+    of those flows. A total published beside its by-creditor twin is one series read two
+    ways, so a dataset holding such a pair declares the creditor."""
+    return any(
+        role_class_covers(roles, role_keys) for roles in _declared_roles(index, family, dataset)
+    )
+
+
+def _declared_roles(
+    index: CodeIndex, family: IndexFamily, dataset: str | None
+) -> frozenset[tuple[str, ...]]:
+    """The role tuples `dataset` declares in `family` (`statvar_members.admitting_roles`
+    of the rows it publishes there, with no role key), memoised for a family `index`
+    carries."""
+    carried = index.families_by_five_tuple.get(family.five_tuple, ())
+    position = next((at for at, found in enumerate(carried) if found is family), None)
+    memo = _per_index(_declared_roles_cache, index, dict)
+    key = (family.five_tuple, position, dataset)
+    if position is not None and (cached := memo.get(key)) is not None:
+        return cached
+    rows = tuple(
+        row
+        for row in family.rows
+        if (dataset in row.provenances if dataset is not None else not row.provenances)
+    )
+    declared = frozenset(
+        admitting_roles(
+            _rows_facts(index, family.five_tuple, rows),
+            [row.dcid for row in rows],
+            role_keys=(),
+            readings=absent_readings(index),
+        )
+    )
+    if position is not None:
+        memo[key] = declared
+    return declared
+
+
+def family_declares_roles(
+    index: CodeIndex,
+    family: IndexFamily,
+    role_keys: AbstractSet[str],
+    *,
+    datasets: Iterable[str],
+) -> bool:
+    """Whether some dataset of `datasets` declares `role_keys` in `family`
+    (`dataset_declares_roles`). A family no dataset publishes is read from the rows no
+    dataset publishes, whatever `datasets` holds, since it has no other row. Beside a
+    publisher those rows serve no query (`elect_dataset`) and declare nothing here."""
+    groups = datasets if family.datasets else (None,)
+    return any(dataset_declares_roles(index, family, dataset, role_keys) for dataset in groups)
+
+
+def _dataset_family(index: CodeIndex, five_tuple: FiveTuple, dataset: str) -> IndexFamily | None:
+    """The family of `five_tuple` that `dataset` publishes, if any: a dataset publishes one
+    family of each five-tuple."""
+    families = index.families_by_five_tuple.get(five_tuple, ())
+    return next((family for family in families if dataset in family.datasets), None)
+
+
+def _declaring_datasets(
+    index: CodeIndex,
+    five_tuple: FiveTuple,
+    datasets: Iterable[str],
+    role_keys: AbstractSet[str],
+) -> tuple[str, ...]:
+    """The datasets of `datasets` that declare `role_keys` in the family of `five_tuple`
+    they publish (`dataset_declares_roles`), in the order given."""
+    return tuple(
+        dataset
+        for dataset in datasets
+        if (family := _dataset_family(index, five_tuple, dataset)) is not None
+        and dataset_declares_roles(index, family, dataset, role_keys)
+    )
+
+
 def elect_dataset(
-    index: CodeIndex, rows: Sequence[StatVarRow], query: FamilyQuery
+    index: CodeIndex,
+    rows: Sequence[StatVarRow],
+    query: FamilyQuery,
+    *,
+    among: Sequence[str] | None = None,
 ) -> DatasetFamily:
     """Returns the dataset that serves `query`'s family and its rows of the elected role
     class.
 
     `rows` already match `query`. A query that names a dataset (`FamilyQuery.source`)
-    elects it. Otherwise the candidates are the datasets publishing the five-tuple
-    (`CodeIndex.datasets_by_five_tuple`) that are not `opt_in`, or its `opt_in` publishers
-    when it has no other, less those in `FamilyQuery.excluded`. `opt_in` decides which
+    elects it. Otherwise the candidates are the datasets publishing the query's family
+    (`publishers`) that are not `opt_in`, or its `opt_in` publishers when it has no other,
+    less those in `FamilyQuery.excluded`. `opt_in` decides which
     shapes a question may answer from, so an identity on a five-tuple only `opt_in`
-    datasets publish still elects one. Each candidate's role class is elected among the rows it
-    publishes (`elect_role_class`), reading the query's role keys. A candidate none of
-    whose rows covers the role keys drops out when another candidate's rows do, since
-    `elect_role_class` keeps every row when none covers. Of the rest, a candidate whose
-    family declares exactly the roles the keys place serves before one whose family
-    declares more, and then the lowest rank serves. No candidate with a published row
-    gives a family with no provenance and no rows, as does a named dataset that publishes
-    none of `rows`.
+    datasets publish still elects one. A caller that holds the candidates passes them in
+    rank order as `among` (`family_among`), and the election runs among those alone.
+
+    Each candidate's role class is elected among the rows it publishes
+    (`elect_role_class`) under the query's role keys and its open ones, and the election
+    returns the keys it ran under: the open keys join where the candidate holds a series by
+    them. A candidate whose election ties serves only when every candidate's does, so an
+    unnamed question refuses only where no publisher answers it. The family is read under
+    the largest set of keys the remaining candidates ran under (`_serving_role_keys`), by
+    those whose own election ran under it: a table of provider totals does not serve "aid
+    from France to every recipient" beside one that holds each recipient.
+
+    The open keys that joined are the only ones the election may depend on, so while they
+    differ from the open keys asked, every candidate is elected again with them alone. A
+    question and the same question asked with only the open keys of
+    `DatasetFamily.role_keys` therefore elect the same dataset, rows, keys and tie.
+
+    A serving candidate that does not declare the keys in the family it publishes
+    (`dataset_declares_roles`) drops out when another does, since `elect_role_class` keeps
+    every row when none covers: a dataset only some of whose rows hold a recipient does not
+    serve "aid to Kenya" beside one that declares it. Of the rest, a candidate whose family
+    declares exactly the roles the keys place serves before one whose family declares
+    more, and then the lowest rank serves. `DatasetFamily.role_keys` and
+    `DatasetFamily.tied` state the election of the family returned. No candidate with a
+    published row gives a family with no provenance and no rows, as does a named dataset
+    that publishes none of `rows`.
 
     Raises `SourceNotInFamily` when the named dataset does not publish the five-tuple and
     another dataset does (`_refuse_non_publisher`)."""
     _refuse_non_publisher(index, query)
-    if not rows:
-        return DatasetFamily(provenance=None, rows=())
     facts = _rows_facts(index, query.five_tuple, rows)
     published = {
         dataset: dataset_rows
-        for dataset in eligible_datasets(index, query)
+        for dataset in (eligible_datasets(index, query) if among is None else among)
         if (dataset_rows := tuple(row for row in rows if dataset in row.provenances))
     }
-    covering = {
-        dataset
-        for dataset, dataset_rows in published.items()
-        if any(
-            role_class_covers(role_class.roles, query.role_keys)
-            for role_class in _classes(facts, dataset_rows)
+    if not published:
+        return DatasetFamily(provenance=None, rows=(), role_keys=query.role_keys)
+    open_role_keys = query.open_role_keys - query.role_keys
+    while True:
+        elections = {
+            dataset: _elect(
+                index,
+                facts,
+                dataset_rows,
+                role_keys=query.role_keys,
+                open_role_keys=open_role_keys,
+            )
+            for dataset, dataset_rows in published.items()
+        }
+        answering = {
+            dataset: election for dataset, election in elections.items() if not election.tied
+        } or elections
+        role_keys = _serving_role_keys(
+            query.role_keys, (election.role_keys for election in answering.values())
         )
-    }
-    families = [
-        (dataset, _elect_rows(index, facts, dataset_rows, query.role_keys))
-        for dataset, dataset_rows in published.items()
-        if not covering or dataset in covering
+        if role_keys - query.role_keys == open_role_keys:
+            break
+        open_role_keys = role_keys - query.role_keys
+    serving = [
+        dataset for dataset, election in answering.items() if election.role_keys == role_keys
     ]
-    # `sorted` is stable, so candidates whose roles match alike keep their rank order.
-    for dataset, family in sorted(
-        families, key=lambda elected: not _places_exactly(facts, elected[1], query.role_keys)
-    ):
-        if family:
-            return DatasetFamily(provenance=dataset, rows=family)
-    return DatasetFamily(provenance=None, rows=())
+    covering = _declaring_datasets(index, query.five_tuple, serving, role_keys)
+    families = {
+        dataset: _family_rows(published[dataset], answering[dataset])
+        for dataset in covering or serving
+    }
+    # `min` returns the first of equals, so candidates whose roles match alike keep their
+    # rank order.
+    elected = min(
+        families, key=lambda dataset: not _places_exactly(facts, families[dataset], role_keys)
+    )
+    return DatasetFamily(
+        provenance=elected,
+        rows=families[elected],
+        role_keys=role_keys,
+        tied=answering[elected].tied,
+    )
+
+
+def _serving_role_keys(
+    role_keys: frozenset[str], elected: Iterable[frozenset[str]]
+) -> frozenset[str]:
+    """The role keys a query's family is read under, given the keys each candidate
+    dataset's own election ran under (`statvar_members.RoleClassElection.role_keys`): the
+    largest of them. When candidates ran under two or more different sets of that size, no
+    open key outranks another, and the keys are the query's `role_keys` alone, as they are
+    with no candidate."""
+    distinct = set(elected)
+    size = max(map(len, distinct), default=0)
+    largest = [keys for keys in distinct if len(keys) == size]
+    return largest[0] if len(largest) == 1 else role_keys
 
 
 def _refuse_non_publisher(index: CodeIndex, query: FamilyQuery) -> None:
     """Raises `SourceNotInFamily` when `query` names a dataset that does not publish its
     five-tuple and another dataset does. The test reads no row."""
-    publishers = index.datasets_by_five_tuple.get(query.five_tuple, ())
-    if query.source is not None and publishers and query.source not in publishers:
-        raise SourceNotInFamily(source=query.source, candidates=publishers)
+    serving = publishers(index, query)
+    if query.source is not None and serving and query.source not in serving:
+        raise SourceNotInFamily(source=query.source, candidates=serving)
 
 
 def bind_slot_value(index: CodeIndex, query: FamilyQuery, prop: str, value: str) -> FamilyQuery:
-    """Returns `query` with `prop` bound to `value` widened to its descendants, as an identity
-    that binds the value states it (`identity_family_query`)."""
-    refs = index.descendants(value)
+    """Returns `query` with `prop` bound to `value` widened to its expansion
+    (`CodeIndex.expansion`), as an identity that binds the value states it
+    (`identity_family_query`)."""
+    refs = index.expansion(value)
     binding: SlotBinding = ("set", refs) if len(refs) > 1 else ("value", value)
     return replace(query, slots={**query.slots, prop: binding})
 
@@ -388,15 +626,18 @@ def _satisfies(row: StatVarRow, allowed: Mapping[str, AbstractSet[str]]) -> bool
 
 
 def _slot_open_rows(index: CodeIndex, query: FamilyQuery, prop: str) -> tuple[StatVarRow, ...]:
-    """The rows of `query`'s five-tuple that satisfy every binding but `prop`'s and declare
-    only `query`'s slot keys and `prop`, in index order: the rows `family_for_five_tuple`
-    reads for `query` with any value bound to `prop`."""
+    """The rows of the family `query`'s slot keys and `prop` select that satisfy every
+    binding but `prop`'s and declare only those keys, in index order: the rows
+    `family_for_five_tuple` reads for `query` with any value bound to `prop`."""
     others = _allowed_values({other: b for other, b in query.slots.items() if other != prop})
     keys = query.slots.keys() | {prop}
+    family = _family(index, query.five_tuple, keys, query.bound | {prop}, query.source)
+    if family is None:
+        return ()
     class_of = _five_tuple_facts(index, query.five_tuple)[0].class_of
     return tuple(
         row
-        for row in _five_tuple_rows(index).rows.get(query.five_tuple, ())
+        for row in family.rows
         if class_of[row.dcid].keys <= keys and (not others or _satisfies(row, others))
     )
 
@@ -407,21 +648,41 @@ def offers_slot(index: CodeIndex, query: FamilyQuery, prop: str) -> bool:
     serves.
 
     The datasets that can serve are those of `eligible_datasets` (the named one alone for a
-    query that names one) that publish a row matching every other binding of `query`, and of
-    those the ones with such a row covering `query.role_keys` when any has one, as
-    `elect_dataset` reads coverage. When none publishes a matching row, every eligible
-    dataset can. On a five-tuple one dataset publishes, this holds exactly when that
-    dataset's rows carry `prop`, and no row is read. A five-tuple the index does not carry
-    offers every slot (`datasets_carry`)."""
+    query that names one) that publish a row matching every other binding of `query`,
+    whatever its value of `prop`. The role keys are the largest set those datasets' rows
+    elect under (`_serving_role_keys` of `statvar_members.electing_role_keys`), read once
+    over the rows of every value, and of those datasets the ones with a matching row that
+    places the keys can serve when any has one. This is a wider test than
+    `elect_dataset`'s, which elects per value, drops a tied candidate and reads coverage
+    from the roles each dataset declares in its family. The datasets publishing one family
+    carry the same properties (`IndexFamily`), so the two tests differ only for slot keys
+    that select no family. When none publishes a matching row, every eligible dataset can. On a five-tuple one dataset publishes, this
+    holds exactly when that dataset's rows carry `prop`, and no row is read. A five-tuple
+    the index does not carry offers every slot (`datasets_carry`)."""
     serving = eligible_datasets(index, query)
     if len(serving) > 1:
         rows = _slot_open_rows(index, query, prop)
         matching = [d for d in serving if any(d in row.provenances for row in rows)]
+        facts = _rows_facts(index, query.five_tuple, rows)
+        readings = absent_readings(index)
+        role_keys = _serving_role_keys(
+            query.role_keys,
+            (
+                electing_role_keys(
+                    facts,
+                    [row.dcid for row in rows if d in row.provenances],
+                    role_keys=query.role_keys,
+                    open_role_keys=query.open_role_keys,
+                    readings=readings,
+                )
+                for d in matching
+            ),
+        )
         covering = [
             d
             for d in matching
             if any(
-                d in row.provenances and role_class_covers(_row_roles(row), query.role_keys)
+                d in row.provenances and role_class_covers(_row_roles(row), role_keys)
                 for row in rows
             )
         ]
@@ -456,15 +717,15 @@ def option_families(
 ) -> dict[str, DatasetFamily] | None:
     """Returns the family `family_for_five_tuple` elects for `query` with `prop` bound to
     each of `values` (`bind_slot_value`), or `None` when the index does not decide those
-    queries (`index_covers_slot_keys`).
+    queries (`index_decides`).
 
     The rows are read once per query and `prop` and bucketed by their value of `prop`; each
-    value elects over the buckets of its descendants. Both the buckets and each value's
+    value elects over the buckets of its expansion (`CodeIndex.expansion`). Both the buckets and each value's
     family are memoised per index, query less `prop`'s binding, and `prop`, since every
     option menu of one answer reads them.
 
     Raises `SourceNotInFamily` as `elect_dataset` does."""
-    if not index_covers_slot_keys(index, query.five_tuple, query.slots.keys() | {prop}):
+    if not _decides(index, query.five_tuple, query.slots.keys() | {prop}, query.bound | {prop}):
         return None
     memo = _per_index(_slot_options_cache, index, lambda: _LruMemo(budget=_SLOT_OPTIONS_REFS))
     key, options = _slot_options(memo, index, query, prop)
@@ -472,7 +733,7 @@ def option_families(
     for value in values:
         family = options.families.get(value)
         if family is None:
-            refs = dict.fromkeys(index.descendants(value))
+            refs = dict.fromkeys(index.expansion(value))
             positions = sorted(p for ref in refs for p in options.buckets.get(ref, ()))
             family = options.families[value] = elect_dataset(
                 index,
@@ -520,14 +781,32 @@ def _slot_options(
 
 def eligible_datasets(index: CodeIndex, query: FamilyQuery) -> tuple[str, ...]:
     """Returns the datasets `elect_dataset` elects among, in rank order: the named one,
-    else the non-`opt_in` publishers of the five-tuple, or its `opt_in` ones when it has no
-    other, less the excluded. Search's shape candidacy and its pre-bind readers read a
-    part's datasets through this function, so they and every door's election agree."""
-    if query.source is not None:
-        return (query.source,)
-    publishers = index.datasets_by_five_tuple.get(query.five_tuple, ())
-    default = tuple(dataset for dataset in publishers if not is_opt_in(index, dataset))
-    return tuple(dataset for dataset in default or publishers if dataset not in query.excluded)
+    else the non-`opt_in` publishers of the query's family (`publishers`), or its `opt_in`
+    ones when it has no other, less the excluded: the filter `eligible_among` applies to
+    the publishers of the family the query's slot keys select. Search's shape candidacy
+    and its pre-bind readers hold a shape's own tables and apply the same filter to them
+    (`eligible_among`), so they and every door's election keep one rule."""
+    return eligible_among(
+        index, publishers(index, query), source=query.source, excluded=query.excluded
+    )
+
+
+def eligible_among(
+    index: CodeIndex,
+    datasets: Sequence[str],
+    *,
+    source: str | None,
+    excluded: AbstractSet[str] = frozenset(),
+) -> tuple[str, ...]:
+    """Returns the datasets of `datasets` a query that names `source`, or names none, and
+    excludes `excluded` elects among, in the order given: `source` when it names one,
+    whether or not `datasets` holds it; else those that are not `opt_in`, or the `opt_in`
+    ones when `datasets` holds no other, less the excluded. A caller that holds a family's
+    datasets filters them here without selecting the family again."""
+    if source is not None:
+        return (source,)
+    default = tuple(dataset for dataset in datasets if not is_opt_in(index, dataset))
+    return tuple(dataset for dataset in default or datasets if dataset not in excluded)
 
 
 def is_opt_in(index: CodeIndex, dataset: str) -> bool:
@@ -558,14 +837,27 @@ def _row_roles(row: StatVarRow) -> tuple[str, ...]:
     return row.observation_properties or _SUBJECT_ROLES
 
 
-def _elect_rows(
-    index: CodeIndex, facts: RoleClassFacts, rows: Sequence[StatVarRow], role_keys: frozenset[str]
-) -> tuple[StatVarRow, ...]:
+def _elect(
+    index: CodeIndex,
+    facts: RoleClassFacts,
+    rows: Sequence[StatVarRow],
+    *,
+    role_keys: frozenset[str],
+    open_role_keys: frozenset[str] = frozenset(),
+) -> RoleClassElection:
     """Runs `elect_role_class` over `rows`, whose facts `facts` holds, under the index's
-    declared absent readings, and returns the rows of its family in the order given."""
-    election = elect_role_class_of(
-        facts, [row.dcid for row in rows], role_keys=role_keys, readings=absent_readings(index)
+    declared absent readings."""
+    return elect_role_class_of(
+        facts,
+        [row.dcid for row in rows],
+        role_keys=role_keys,
+        open_role_keys=open_role_keys,
+        readings=absent_readings(index),
     )
+
+
+def _family_rows(rows: Sequence[StatVarRow], election: RoleClassElection) -> tuple[StatVarRow, ...]:
+    """The rows of `rows` in `election`'s family, in the order given."""
     if len(election.family) == len(rows):
         return tuple(rows)
     family = frozenset(election.family)
@@ -616,53 +908,76 @@ def _five_tuple_facts(
 def family_for_five_tuple(index: CodeIndex, query: FamilyQuery) -> DatasetFamily:
     """Returns the dataset elected for `query`, with its rows before reduction.
 
-    Rows match all five fields, satisfy every binding, and declare only keys in
-    `query.slots`. `elect_dataset` then keeps the rows of the elected dataset. Rows
+    Rows are those of the family the query's slot keys select (`query_family`), satisfy
+    every binding, and declare only keys in `query.slots`. `elect_dataset` then keeps the rows of the elected dataset. Rows
     keep index order, as `CodeIndex.filter` does. No match returns a family with no
     provenance and no rows, including when the index carries no such five-tuple.
 
     Raises `SourceNotInFamily` as `elect_dataset` does."""
+    return elect_dataset(index, _matching_rows(index, query), query)
+
+
+def _matching_rows(index: CodeIndex, query: FamilyQuery) -> tuple[StatVarRow, ...]:
+    """The rows of `query`'s family (`query_family`) that satisfy every binding and declare
+    only keys in `query.slots`, in index order."""
     allowed = _allowed_values(query.slots)
-    matched = tuple(
+    family = query_family(index, query)
+    return tuple(
         row
-        for row in _five_tuple_rows(index).rows.get(query.five_tuple, ())
+        for row in (family.rows if family is not None else ())
         if _satisfies(row, allowed) and row.constraint_properties.keys() <= query.slots.keys()
     )
-    return elect_dataset(index, matched, query)
+
+
+def family_among(
+    index: CodeIndex, query: FamilyQuery, datasets: Sequence[str]
+) -> DatasetFamily | None:
+    """Returns the family `elect_dataset` elects for `query`, which names no dataset, among
+    `datasets` alone, or `None` when the index does not decide the query's membership
+    (`index_decides`).
+
+    `datasets` publish one family of the query's five-tuple and come in rank order. The
+    rows are the ones a query naming one of them reads (`query_family`): that family's,
+    whichever family the slot keys alone select. So the dataset elected is one whose own
+    rows match the query, and none is elected when no dataset of `datasets` holds a
+    matching row, whatever another dataset of the five-tuple holds. Search elects a part's
+    dataset here among the tables the part may answer from."""
+    if not datasets or not index_decides(index, query):
+        return None
+    rows = _matching_rows(index, replace(query, source=datasets[0]))
+    return elect_dataset(index, rows, query, among=datasets)
 
 
 def index_family(index: CodeIndex, query: FamilyQuery) -> DatasetFamily | None:
     """Returns the family the index resolves for `query`, or `None` when the index does
     not decide its membership.
 
-    The index decides membership when `index_covers_slot_keys` holds for the query's slot
-    keys; the family is then `family_for_five_tuple`'s. The Datasets mint and Search both
-    resolve a family through this function.
+    The index decides membership when `index_decides` holds; the family is then
+    `family_for_five_tuple`'s. The Datasets mint and Search both resolve a family through
+    this function.
 
     Raises `SourceNotInFamily` as `elect_dataset` does, whether or not the index decides
     membership, so a named dataset that does not publish the five-tuple refuses whatever
     slots the identity declares."""
     _refuse_non_publisher(index, query)
-    if not index_covers_slot_keys(index, query.five_tuple, query.slots.keys()):
+    if not index_decides(index, query):
         return None
     return family_for_five_tuple(index, query)
 
 
 def deciding_query(index: CodeIndex, query: FamilyQuery) -> FamilyQuery:
-    """Returns `query` without the unbound slots no index row of its five-tuple declares.
+    """Returns `query` with only the slots that decide its family (`_deciding_keys`): less
+    the unbound slots no row of its five-tuple declares.
 
-    `index_family` resolves both queries to the same family. An unbound slot matches every
-    row (`Open`), and the key tests (`index_covers_slot_keys` and the row filter of
-    `family_for_five_tuple`) compare slot keys against the keys rows declare, so a key no
-    row of the five-tuple declares changes neither. A bound slot stays, as it requires the
-    rows to declare its value."""
-    declared = frozenset().union(*_index_key_sets(index).get(query.five_tuple, ()))
-    slots = {
-        prop: binding
-        for prop, binding in query.slots.items()
-        if binding != ("unbound",) or prop in declared
-    }
-    return query if len(slots) == len(query.slots) else replace(query, slots=slots)
+    `index_family` resolves both queries to the same family: `index_decides` and
+    `query_family` read the deciding keys alone, and the row filter of
+    `family_for_five_tuple` compares slot keys against the keys rows declare. Search keys
+    its memo of resolved families by this query, so the queries one family answers share
+    an entry."""
+    keys = _deciding_keys(index, query.five_tuple, query.slots.keys(), query.bound)
+    if len(keys) == len(query.slots):
+        return query
+    return replace(query, slots={prop: query.slots[prop] for prop in query.slots if prop in keys})
 
 
 def elected_pins(index: CodeIndex, query: FamilyQuery) -> dict[str, str]:
@@ -682,8 +997,7 @@ def elected_pins(index: CodeIndex, query: FamilyQuery) -> dict[str, str]:
 
 
 def _elected_pins(index: CodeIndex, query: FamilyQuery) -> Mapping[str, str]:
-    publishers = index.datasets_by_five_tuple.get(query.five_tuple, ())
-    if query.source is not None and query.source not in publishers:
+    if query.source is not None and query.source not in publishers(index, query):
         return {}
     elected = family_for_five_tuple(index, query).provenance
     eligible = (elected,) if elected is not None else eligible_datasets(index, query)
@@ -694,7 +1008,7 @@ def elected_invariants(index: CodeIndex, query: FamilyQuery) -> dict[str, str]:
     """Returns the invariants the dataset `query` names declares
     (`DatasetDeclaration.invariants`), or none when `query` names no dataset, names one that
     does not publish its five-tuple, or declares slot keys that leave membership to the
-    graph walk (`index_covers_slot_keys`). The loader's guarantee covers index rows alone,
+    graph walk (`index_decides`). The loader's guarantee covers index rows alone,
     so where the graph walk decides membership nothing is implied.
 
     An invariant holds on every row the dataset publishes in every export, so an identity
@@ -704,9 +1018,9 @@ def elected_invariants(index: CodeIndex, query: FamilyQuery) -> dict[str, str]:
     for it nothing is implied. The result reads the declaration alone and runs no
     election."""
     source = query.source
-    if source is None or source not in index.datasets_by_five_tuple.get(query.five_tuple, ()):
+    if source is None or source not in publishers(index, query):
         return {}
-    if not index_covers_slot_keys(index, query.five_tuple, query.slots.keys()):
+    if not index_decides(index, query):
         return {}
     declaration = index.datasets.get(source)
     return dict(declaration.invariants) if declaration is not None else {}
@@ -790,7 +1104,7 @@ def _memoised[V](
 
 def _per_index[M](cache: dict[int, M], index: CodeIndex, new: Callable[[], M]) -> M:
     """Returns `index`'s memo in `cache`, made by `new` and keyed and finalised as
-    `_index_key_sets_cache` is."""
+    `_five_tuple_rows_cache` is."""
     memo = cache.get(id(index))
     if memo is None:
         memo = cache[id(index)] = new()
@@ -813,6 +1127,7 @@ def family_query_digest(query: FamilyQuery) -> bytes:
             "slots": sorted(query.slots.items()),
             "source": query.source,
             "role_keys": sorted(query.role_keys),
+            "open_role_keys": sorted(query.open_role_keys),
             "excluded": sorted(query.excluded),
         },
         separators=(",", ":"),
@@ -871,16 +1186,21 @@ __all__ = [
     "bind_slot_value",
     "canonical_identity",
     "carried_properties",
+    "dataset_declares_roles",
     "datasets_carry",
     "deciding_query",
     "elect_dataset",
     "elected_invariants",
     "elected_pins",
+    "eligible_among",
     "eligible_datasets",
+    "family_among",
+    "family_declares_roles",
     "family_for_five_tuple",
     "family_query_digest",
     "identity_family_query",
     "index_covers_slot_keys",
+    "index_decides",
     "index_family",
     "invariant_bindings",
     "is_opt_in",
@@ -888,5 +1208,7 @@ __all__ = [
     "named_dataset",
     "offers_slot",
     "option_families",
+    "publishers",
+    "query_family",
     "shared_pins",
 ]

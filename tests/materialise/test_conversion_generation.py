@@ -12,7 +12,6 @@ from dc_sdmx import SdmxClient
 from materialise import (
     ConcatenatedFrameChunks,
     MaterialisationRequest,
-    materialise_collection,
     materialise_group,
     materialise_preview,
     materialise_spec,
@@ -57,8 +56,6 @@ _TABLE_PROVENANCE = RECIPE_BODIES[_DAC_RECIPE].table_provenance
 _EXCHANGE_VAR = RECIPE_BODIES[_DAC_RECIPE].exchange_rate_variable
 _DEFLATOR_VAR = RECIPE_BODIES[_DAC_RECIPE].deflator_variable
 
-_SPEC_ID_A = "spec_" + "a" * 32
-_SPEC_ID_B = "spec_" + "b" * 32
 
 _SNAPSHOT = RevisionSnapshot(
     graph_revision="graph-rev-2024-01",
@@ -294,10 +291,10 @@ def test_member_loads_both_tables_for_constant_prices():
 
 
 def _constant_usd_member(
-    entry: str, *, years: tuple[str, ...], deflator_years: tuple[str, ...], ceiling: int
+    *, years: tuple[str, ...], deflator_years: tuple[str, ...], ceiling: int
 ) -> int:
-    """Materialises one constant-USD member with a row per year in `years` and a France
-    deflator for `deflator_years` only, through `entry`, and returns its served row count. A
+    """Mints one constant-USD member with a row per year in `years` and a France
+    deflator for `deflator_years` only, and returns its served row count. A
     row whose year has no deflator is left out in conversion."""
     request = _request(
         unit=FacetBinding(state="request", request=UnitRequest("USD", "constant", base_year=2024))
@@ -322,18 +319,6 @@ def _constant_usd_member(
     )
     graph = _graph()
     coverage = _coverage_for([(_BARE_STAT_VAR, "country/KEN")])
-    if entry == "preview":
-        preview = materialise_preview(
-            request,
-            sdmx=sdmx,
-            graph=graph,
-            coverage=coverage,
-            limit=10,
-            rate_cache=RateTableCache(),
-            ceiling=ceiling,
-            refuse_over_ceiling=True,
-        )
-        return preview.total_rows
     mint_kwargs = {
         "sdmx": sdmx,
         "graph": graph,
@@ -345,28 +330,21 @@ def _constant_usd_member(
         "ceiling": ceiling,
         "coverage": coverage,
     }
-    if entry == "collection":
-        result = materialise_collection([(_SPEC_ID_A, request)], **mint_kwargs)
-        return only_chunk(dict(result.members)[_SPEC_ID_A]).table.num_rows
     return only_chunk(materialise_spec(request, **mint_kwargs)).table.num_rows
 
 
-@pytest.mark.parametrize("entry", ["spec", "collection", "preview"])
-def test_the_ceiling_counts_rows_served_after_deflator_omissions(entry: str) -> None:
+def test_the_ceiling_counts_rows_served_after_deflator_omissions() -> None:
     # Two rows arrive; 2023 has no deflator, so one row is served under a ceiling of one.
-    served = _constant_usd_member(
-        entry, years=("2023", "2024"), deflator_years=("2024",), ceiling=1
-    )
+    served = _constant_usd_member(years=("2023", "2024"), deflator_years=("2024",), ceiling=1)
 
     assert served == 1
 
 
-@pytest.mark.parametrize("entry", ["spec", "collection", "preview"])
-def test_served_rows_past_the_ceiling_after_deflator_omissions_still_refuse(entry: str) -> None:
+def test_served_rows_past_the_ceiling_after_deflator_omissions_still_refuse() -> None:
     # Three rows arrive and 2022 has no deflator, so two rows are served under a ceiling of one.
     with pytest.raises(OverCeilingError) as exc_info:
         _constant_usd_member(
-            entry, years=("2022", "2023", "2024"), deflator_years=("2023", "2024"), ceiling=1
+            years=("2022", "2023", "2024"), deflator_years=("2023", "2024"), ceiling=1
         )
 
     assert (exc_info.value.count, exc_info.value.cap) == (2, 1)
@@ -508,28 +486,6 @@ def test_member_with_request_unit_binding_and_no_rate_cache_raises_before_any_sd
     assert requests == []  # no SDMX call at all: refused before any fetch
 
 
-def test_collection_member_with_request_unit_binding_and_no_rate_cache_raises_before_any_sdmx_request():
-    graph = _subject_only_graph((_BARE_STAT_VAR, _BARE_STAT_VAR_B))
-    sdmx, requests = _router_sdmx(role_bodies={})
-    eur_request = FacetBinding(state="request", request=UnitRequest("EUR", "current"))
-    member_a = _subject_only_request(_STAT_VAR, unit=eur_request)
-    member_b = _subject_only_request(_STAT_VAR_B, unit=eur_request)
-
-    with pytest.raises(MaterialisationUsageError):
-        materialise_collection(
-            [(_SPEC_ID_A, member_a), (_SPEC_ID_B, member_b)],
-            sdmx=sdmx,
-            graph=graph,
-            revision_reader=_reader(),
-            materialiser_build="test-build",
-            capability_version="v1",
-            enrichment=EnrichmentLookup(graph),
-        )
-    # Facet selection and conversion planning run before chunk submission.
-    # The first member's refusal prevents every SDMX call.
-    assert requests == []
-
-
 # ---------------------------------------------------------------------------
 # LATEST windows use the chosen year.
 # ---------------------------------------------------------------------------
@@ -586,65 +542,6 @@ def test_latest_window_refuses_rate_coverage_gap_on_the_chosen_year_only():
 # ---------------------------------------------------------------------------
 # Collection: a chunk converts each of its own routed members
 # ---------------------------------------------------------------------------
-
-
-def test_collection_chunk_converts_each_routed_member():
-    arcs = _base_arcs(bare_stat_vars=(_BARE_STAT_VAR, _BARE_STAT_VAR_B))
-    sdmx, _requests = _router_sdmx(
-        role_bodies={
-            _BARE_STAT_VAR: _ROLE_HEADER + _role_row(year="2022", value="100"),
-            _BARE_STAT_VAR_B: (
-                _ROLE_HEADER + _role_row(stat_var=_BARE_STAT_VAR_B, year="2022", value="200")
-            ),
-        },
-        subject_bodies={
-            _EXCHANGE_VAR: (
-                _SUBJECT_HEADER
-                + _rate_row(stat_var=_EXCHANGE_VAR, entity="CurrencyUSD", year="2022", value="1.0")
-                + _rate_row(
-                    stat_var=_EXCHANGE_VAR,
-                    entity="CurrencyEUR",
-                    year="2022",
-                    value="0.9",
-                )
-            )
-        },
-    )
-
-    member_a = _request(
-        stat_var=_STAT_VAR,
-        unit=FacetBinding(state="request", request=UnitRequest("EUR", "current")),
-    )
-    member_b = _request(
-        stat_var=_STAT_VAR_B,
-        unit=FacetBinding(state="request", request=UnitRequest("USD", "current")),
-    )
-
-    graph = _graph(arcs)
-    coverage = _coverage_for([(_BARE_STAT_VAR, "country/KEN"), (_BARE_STAT_VAR_B, "country/KEN")])
-    result = materialise_collection(
-        [(_SPEC_ID_A, member_a), (_SPEC_ID_B, member_b)],
-        sdmx=sdmx,
-        graph=graph,
-        revision_reader=_reader(),
-        materialiser_build="test-build",
-        capability_version="v1",
-        enrichment=EnrichmentLookup(graph),
-        rate_cache=RateTableCache(),
-        coverage=coverage,
-    )
-
-    by_spec = dict(result.members)
-    frame_a = only_chunk(by_spec[_SPEC_ID_A])
-    frame_b = only_chunk(by_spec[_SPEC_ID_B])
-    assert frame_a.table["value"].to_pylist() == [pytest.approx(100.0 * 0.9 / 1.0)]
-    assert _unit_cells(frame_a) == [
-        FrameUnitRequest(currency="EUR", prices="current", base_year=None)
-    ]
-    assert frame_b.table["value"].to_pylist() == [200.0]
-    assert _unit_cells(frame_b) == [
-        FrameUnitRequest(currency="USD", prices="current", base_year=None)
-    ]
 
 
 # ---------------------------------------------------------------------------
@@ -1462,38 +1359,6 @@ def _exchange_data_requests(requests: list[httpx.Request]) -> list[httpx.Request
         and dict(httpx.QueryParams(request.url.query.decode())).get("c[variableMeasured]")
         == _EXCHANGE_VAR
     ]
-
-
-def test_collection_members_share_one_table_when_the_refresh_date_moves_between_loads():
-    sdmx, requests, graph = _refreshing_fixture()
-    eur_request = FacetBinding(state="request", request=UnitRequest("EUR", "current"))
-
-    result = materialise_collection(
-        [
-            (_SPEC_ID_A, _request(stat_var=_STAT_VAR, unit=eur_request)),
-            (_SPEC_ID_B, _request(stat_var=_STAT_VAR_B, unit=eur_request)),
-        ],
-        sdmx=sdmx,
-        graph=graph,
-        revision_reader=_reader(),
-        materialiser_build="test-build",
-        capability_version="v1",
-        enrichment=EnrichmentLookup(graph),
-        rate_cache=RateTableCache(),
-        coverage=_coverage_for(
-            [(_BARE_STAT_VAR, "country/KEN"), (_BARE_STAT_VAR_B, "country/KEN")]
-        ),
-    )
-
-    by_spec = dict(result.members)
-    records = [by_spec[spec_id].conversion_record for spec_id in (_SPEC_ID_A, _SPEC_ID_B)]
-    assert all(record is not None for record in records)
-    assert len({record.exchange_rate_table_version for record in records if record}) == 1
-    assert {record.table_refresh_date for record in records if record} == {"2026-01-01"}
-    assert only_chunk(by_spec[_SPEC_ID_A]).table["value"].to_pylist() == [pytest.approx(90.0)]
-    assert only_chunk(by_spec[_SPEC_ID_B]).table["value"].to_pylist() == [pytest.approx(180.0)]
-    assert len(_exchange_data_requests(requests)) == 1
-    assert graph.refresh_reads == 2
 
 
 def test_group_members_share_one_table_when_the_refresh_date_moves_between_loads():

@@ -2,7 +2,7 @@
 ``dfo_spec_kit.identity``. Canonicalisation, validation, and hashing live in that
 package. A spec id is 37 characters: ``spec_`` plus 32 lowercase SHA-256 hex digits.
 
-The adapter maps ``shape``, ``slots``, ``entities``, ``facets``, and
+The adapter maps ``shape``, ``slots``, ``entities``, ``open_roles``, ``facets``, and
 ``requested_window``. The rules below explain which model fields feed each member.
 
 The caller's requested window represents the ``when`` axis separately from the
@@ -19,11 +19,18 @@ and excluded from identity.
 Subject entities use the ``observationAbout`` role. Directional entities use their
 ``origin`` or ``destination`` axis as the role key. The directional role property
 records provenance. Identity normalisation sorts and deduplicates entity dcids. Absent
-entities map to ``{}``.
+entities map to ``{}``. ``open_roles`` names the flow axes asked for member by member, and
+the member is omitted when none is.
 
 The source slot supplies ``facets.provenance``. Explicit facets supply
 ``measurementMethod`` and ``unit``. Explicit ``provenance`` entries are ignored.
 The facets member is omitted when empty.
+
+An identity records the resolved selection. A part that names a table binds that table as
+``facets.provenance``. An exclusion is not an identity facet. When excluding a table changes
+which table serves, the identity binds the table that serves. When it changes nothing, the
+identity is the plain question's and mints the same spec_id, so the exclusion does not persist
+if the serving order later changes.
 
 A missing requested window maps to ``{"kind": "all"}``, ``"latest"`` maps to that
 kind, and a ``TimeWindow`` maps to a range with its bounds. Empty ranges raise
@@ -43,7 +50,7 @@ normalised it and stays out of the hash: the id hashes
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 
 from dfo_spec_kit import identity
 
@@ -63,6 +70,7 @@ from search.models import (
     IdentityFacetValueAbsent,
     IdentityFacetValueRequest,
     RequestedWindow,
+    RoleAxis,
     Slot,
     TimeWindow,
 )
@@ -217,12 +225,14 @@ def build_identity_projection(
     slots: list[Slot],
     *,
     entities: list[Entity] | None = None,
+    open_roles: Collection[RoleAxis],
     requested_window: RequestedWindow | None = None,
     explicit_facets: Mapping[str, IdentityFacetBinding] | None = None,
 ) -> dict:
     """Build the canonical spec1 identity document without minting a hash.
 
-    ``shape`` is an identity-core wire member. ``explicit_facets`` adds posted
+    ``shape`` is an identity-core wire member. ``open_roles`` are the axes asked for member
+    by member, written sorted and omitted when empty. ``explicit_facets`` adds posted
     measurementMethod/unit bindings beside source-slot provenance. Each slot an invariant of
     the dataset the identity names fixes, left unbound, binds the invariant's value
     (`code_index.members.canonical_identity`). The
@@ -237,6 +247,8 @@ def build_identity_projection(
         "entities": _entities_member(entities),
         "requested_window": _requested_window_member(requested_window),
     }
+    if open_roles:
+        projection["open_roles"] = sorted(set(open_roles))
     facets = _facets_member(slots, explicit_facets)
     if facets:
         projection["facets"] = facets
@@ -248,6 +260,7 @@ def compute_spec_id(
     slots: list[Slot],
     *,
     entities: list[Entity] | None = None,
+    open_roles: Collection[RoleAxis],
     requested_window: RequestedWindow | None = None,
     explicit_facets: Mapping[str, IdentityFacetBinding] | None = None,
 ) -> str:
@@ -261,6 +274,7 @@ def compute_spec_id(
         shape,
         slots,
         entities=entities,
+        open_roles=open_roles,
         requested_window=requested_window,
         explicit_facets=explicit_facets,
     )
@@ -283,8 +297,12 @@ def mint_identity(
     if entity_groups:
         normalised = {**normalised, "entity_groups": dict(entity_groups)}
     definition = BaseIdentity.model_validate(normalised)
-    spec_id = identity.spec_id_from_value(definition.core_document())
-    return spec_id, definition
+    return identity_spec_id(definition), definition
+
+
+def identity_spec_id(definition: BaseIdentity) -> str:
+    """The spec id of `definition`'s core document, which omits `entity_groups`."""
+    return identity.spec_id_from_value(definition.core_document())
 
 
 def build_spec_identity(
@@ -292,6 +310,7 @@ def build_spec_identity(
     slots: list[Slot],
     *,
     entities: list[Entity] | None = None,
+    open_roles: Collection[RoleAxis],
     requested_window: RequestedWindow | None = None,
     explicit_facets: Mapping[str, IdentityFacetBinding] | None = None,
     entity_groups: Mapping[str, IdentityEntityGroup] | None = None,
@@ -307,6 +326,7 @@ def build_spec_identity(
         shape,
         slots,
         entities=entities,
+        open_roles=open_roles,
         requested_window=requested_window,
         explicit_facets=explicit_facets,
     )

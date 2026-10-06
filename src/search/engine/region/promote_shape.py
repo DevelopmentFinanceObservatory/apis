@@ -11,18 +11,16 @@ from search.engine.envelope import now_ms
 from search.engine.errors import (
     EngineInfraError,
     FamilyNotResolvableError,
+    MembershipTooBroadError,
     RoleSignatureError,
 )
 from search.engine.region.arcs import declared_props_from_arcs
 from search.engine.region.grounding import _shape_with_taxonomy, membership_unverified_warning
-from search.engine.region.promote_results import _no_data_region
+from search.engine.region.promote_results import _no_data_region, _scope_too_broad_region
 from search.engine.region.promote_state import _PromoteState
 from search.engine.region.result import RegionResult
-from search.engine.retrieval.bound_values import (
-    elected_role_class_shape,
-    identity_query,
-    posted_members_outside_role_class,
-)
+from search.engine.retrieval.bound_values import elected_role_class_shape, identity_query
+from search.engine.retrieval.derive import index_shape_label
 from search.engine.retrieval.facts import (
     FiveTuple,
     group_roles,
@@ -86,13 +84,11 @@ def _phase_build_shape(state: _PromoteState) -> RegionResult | None:
     taxonomy values. Confirm them against the five-tuple family with one `node_subjects` and
     one `node_arcs_many` read. That batch read follows `nextToken`; EngineGraphClient's batch
     read does not. The lookup is skipped when `measuredProperty` is absent; a missing materialise
-    client otherwise raises `EngineInfraError`. Only confirmed axes receive sampled taxonomy. A
-    posted member outside the family the identity resolves to returns
-    `no_data(no_matching_slice)`, and role sets the election cannot order return
-    `no_data(role_signature_incompatible)`; otherwise build the shape with observed-union
-    taxonomy. The shape holds the family the mint resolves with the posted members as seeds
-    (`elected_role_class_shape`), whose arcs join `resolved_arcs`; a family the mint's walk
-    does not settle leaves the posted members, under a warning."""
+    client otherwise raises `EngineInfraError`. Only confirmed axes receive sampled taxonomy.
+    Role sets the election cannot order return `no_data(role_signature_incompatible)`.
+    Otherwise build the shape with observed-union taxonomy. The shape holds the family the
+    mint resolves (`elected_role_class_shape`), whose arcs join `resolved_arcs`. A family
+    the mint's walk does not settle stays as elected, under a warning."""
     t0 = now_ms()
     try:
         # All warnings for this phase accumulate here, including any returned with no_data.
@@ -182,8 +178,12 @@ def _phase_build_shape(state: _PromoteState) -> RegionResult | None:
 
         constraint_props = list(prop_observed_values.keys())
 
-        # Read slot-property labels from the graph.
-        prop_label_map = state.graph.node_labels_batch(constraint_props) if constraint_props else {}
+        # Read slot-property labels from the graph, with the population type's when the
+        # index family labels the shape.
+        label_dcids = constraint_props.copy()
+        if state.index_family is not None:
+            label_dcids.append(state.ft.pop_type_dcid)
+        prop_label_map = state.graph.node_labels_batch(label_dcids) if label_dcids else {}
         prop_labels = {p: prop_label_map.get(p, p) for p in constraint_props}
 
         sv_arc_facts = state.sv_arc_facts = {
@@ -191,29 +191,8 @@ def _phase_build_shape(state: _PromoteState) -> RegionResult | None:
         }
 
         # A five-tuple omits observationProperties, so the role class is elected separately.
-        # The mint elects one role class for the identity and refuses a posted member
-        # outside its family, so a posted set that holds one names no slice of the identity.
-        # A check the mint's walk did not settle still answers, under a warning.
         query = identity_query(state.inp.identity)
         walks = state.role_class_walks
-        try:
-            resolution = posted_members_outside_role_class(
-                sv_arc_facts, query, walks=walks, deadline=state.deadline
-            )
-        except RoleSignatureError:
-            return _no_data_region(
-                state.variable_text, "role_signature_incompatible", warnings=tuple(warnings)
-            )
-        except FamilyNotResolvableError:
-            return _no_data_region(
-                state.variable_text, "variable_not_resolved", warnings=tuple(warnings)
-            )
-        if not resolution.authority.settled:
-            warnings.append(membership_unverified_warning())
-        if resolution.value:
-            return _no_data_region(
-                state.variable_text, "no_matching_slice", warnings=tuple(warnings)
-            )
         try:
             roles = group_roles(sv_arc_facts)
         except RoleSignatureError:
@@ -221,9 +200,16 @@ def _phase_build_shape(state: _PromoteState) -> RegionResult | None:
                 state.variable_text, "role_signature_incompatible", warnings=tuple(warnings)
             )
 
-        # Use the representative's name arc, with the standard label as fallback. The shape
-        # id carries identity; `_shape_with_taxonomy` supplies slot options.
-        shape_label = read_name(sv_arc_facts[state.rep_sv]) or STANDARD_SHAPE_LABEL
+        # Label an index shape as derive does, else by the representative's name arc with the
+        # standard label as fallback. The shape id carries identity; `_shape_with_taxonomy`
+        # supplies slot options.
+        if state.index_family is not None:
+            pop_type = state.ft.pop_type_dcid
+            shape_label = index_shape_label(
+                state.index_family, population_type_label=prop_label_map.get(pop_type, pop_type)
+            )
+        else:
+            shape_label = read_name(sv_arc_facts[state.rep_sv]) or STANDARD_SHAPE_LABEL
 
         state.shape_draft = _shape_with_taxonomy(
             shape_draft_from(
@@ -239,20 +225,19 @@ def _phase_build_shape(state: _PromoteState) -> RegionResult | None:
                 prop_labels=prop_labels,
                 prop_observed_values=prop_observed_values,
                 sv_arc_facts=sv_arc_facts,
-                # These arcs form the complete caller-posted resolved set.
+                # These arcs form the complete elected family.
                 sv_arc_facts_complete=True,
                 declared_roles=roles.declared,
                 optional_roles=roles.optional,
-                # The client selected these members, so no recall or phrase score applies.
+                # The identity elected these members, so no recall or phrase score applies.
                 recalled=False,
                 representative_score=None,
                 retrieved=False,
             )
         )
 
-        # The mint serves the antichain-minimal members of the family its walk resolves with
-        # the posted members as seeds, posted or omitted, so the shape holds that family. The
-        # posted members still bind the identity.
+        # The mint serves the antichain-minimal members of the family its walk resolves, so
+        # the shape holds that family.
         try:
             served = elected_role_class_shape(
                 state.shape_draft,
@@ -269,10 +254,15 @@ def _phase_build_shape(state: _PromoteState) -> RegionResult | None:
             return _no_data_region(
                 state.variable_text, "variable_not_resolved", warnings=tuple(warnings)
             )
-        if resolution.authority.settled and not served.authority.settled:
+        except MembershipTooBroadError as exc:
+            return _scope_too_broad_region(
+                state.variable_text, state.inp.identity, str(exc), warnings=tuple(warnings)
+            )
+        if not served.authority.settled:
             warnings.append(membership_unverified_warning())
         state.shape_draft = served.value
         state.family_settled = served.authority.settled
+        state.walked = served.walked
         state.resolved_arcs = {**(served.value.sv_arc_facts or {}), **state.resolved_arcs}
 
         # Merge family samples for axes absent from the resolved members into slot taxonomy.

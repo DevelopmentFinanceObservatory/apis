@@ -5,8 +5,8 @@ slice (`crs`, `mls`, `ids`, `weo`). Each query carries an id, the axes it exerci
 intent behind it, and optionally the edge case it tests. `scripts/sentence_panel/rubric.md`
 is the rubric for scoring a run.
 
-For each slice the script posts every query to `/api/search/resolve` with `include_sentence`
-and writes three files to `--out`:
+For each slice the script posts every query to `/api/search/resolve` and writes three files to
+`--out`:
 
 - `raw-<slice>.jsonl`: the full response per query.
 - `digest-<slice>.jsonl`: one structured row per query.
@@ -20,9 +20,16 @@ queries file is empty or every query in a slice fails at transport level.
 `--redigest` rebuilds the digests from the saved raw files in `--out` without calling the
 resolver, which is how to pick up a change to the digest code or to a query's metadata.
 
+`--in-process` answers the panel with a Search app this process builds from the environment
+(the composed app's env: graph, LLM, catalogue and coverage settings) in place of `--base`, and
+adds to each raw row the sentence facts of every Spec its response holds (`sentence_facts`, by
+spec id). The wire carries no member list, so the sentence golden
+(`scripts/sentence_golden.py`) records a panel run this way.
+
 Usage:
     just sentence-panel
     just sentence-panel crs ids
+    just sentence-panel --in-process
     just sentence-panel --redigest --out runs/sentence-panel
 
 Equivalent without `just`:
@@ -36,6 +43,8 @@ import asyncio
 import json
 import sys
 from collections import Counter
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -51,10 +60,7 @@ ATTEMPTS = 2
 
 
 async def resolve(client: httpx.AsyncClient, base: str, query: str) -> dict[str, Any]:
-    body = {
-        "input": {"kind": "raw_text", "query": query},
-        "response_options": {"include_sentence": True},
-    }
+    body = {"input": {"kind": "raw_text", "query": query}}
     last_error: Exception | None = None
     for _ in range(ATTEMPTS):
         try:
@@ -135,21 +141,14 @@ def digest_spec(spec: dict) -> dict:
         },
         "provenance": _label(facets.get("provenance")),
         "unit": _label(facets.get("unit")),
-        "stat_var_count": len((res.get("stat_vars") or {}).get("items") or []),
+        "stat_var_count": (res.get("stat_vars") or {}).get("member_count"),
         "confidence": res.get("confidence"),
         "available_at_place": res.get("available_at_place"),
     }
 
 
 def slim_no_data(nd: dict) -> dict:
-    out = {
-        k: v
-        for k, v in nd.items()
-        if k not in ("flagged_match", "alternate_match", "elected_stat_vars")
-    }
-    svs = nd.get("elected_stat_vars") or []
-    if svs:
-        out["elected_stat_vars"] = _cap([sv.get("label") or sv.get("dcid") for sv in svs], 3)
+    out = {k: v for k, v in nd.items() if k not in ("flagged_match", "alternate_match")}
     for key in ("flagged_match", "alternate_match"):
         match = nd.get(key)
         if match:
@@ -282,16 +281,90 @@ def report(name: str, rows: list[dict]) -> int:
     return errors
 
 
+@asynccontextmanager
+async def in_process_client() -> AsyncIterator[tuple[httpx.AsyncClient, dict[str, Any]]]:
+    """A client for a Search app built in this process, and the sentence facts of every Spec
+    its answers hold, by spec id, filled as it answers.
+
+    The app reads its dependencies from the environment as the deployed one does. Its
+    `resolve_async` is wrapped for the run, so the facts the engine holds off the wire
+    (`ResolvedSpec.sentence_facts`) are read before the answer is written. An answer the
+    response cache restores states none. The miss that stored it recorded them.
+    """
+    from search.engine import app as search_app
+    from search.models import CandidatesPart, DefinitePart, MembersNotStated
+
+    facts: dict[str, Any] = {}
+    resolve_async = search_app.resolve_async
+
+    async def recording(*args: Any, **kwargs: Any) -> Any:
+        response = await resolve_async(*args, **kwargs)
+        for part in response.parts:
+            if isinstance(part, DefinitePart):
+                specs = [part.spec]
+            elif isinstance(part, CandidatesPart):
+                specs = part.candidates.specs
+            else:
+                specs = []
+            for spec in specs:
+                try:
+                    stated = spec.resolved.sentence_facts
+                except MembersNotStated:
+                    continue
+                facts[spec.spec_id] = stated.model_dump(mode="json")
+        return response
+
+    app = search_app.create_app()
+    search_app.resolve_async = recording
+    try:
+        async with (
+            app.router.lifespan_context(app),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://in-process"
+            ) as client,
+        ):
+            yield client, facts
+    finally:
+        search_app.resolve_async = resolve_async
+
+
+def _with_facts(result: dict[str, Any], facts: dict[str, Any]) -> dict[str, Any]:
+    """`result` with the sentence facts of each Spec its body holds, from `facts`."""
+    body = result.get("body")
+    if not isinstance(body, dict) or body.get("kind") != "resolution":
+        return result
+    ids = [
+        spec["spec_id"]
+        for part in body["parts"]
+        for spec in (
+            [part["spec"]]
+            if part["status"] == "definite"
+            else part["candidates"]["specs"]
+            if part["status"] == "candidates"
+            else []
+        )
+    ]
+    return result | {"sentence_facts": {i: facts[i] for i in ids if i in facts}}
+
+
 async def run_slice(
-    path: Path, *, out: Path, base: str, concurrency: int, client: httpx.AsyncClient
+    path: Path,
+    *,
+    out: Path,
+    base: str,
+    concurrency: int,
+    client: httpx.AsyncClient,
+    facts: dict[str, Any] | None = None,
 ) -> bool:
-    """Run one slice and return False when every query failed at transport level."""
+    """Run one slice and return False when every query failed at transport level. `facts`,
+    from `in_process_client`, adds each Spec's sentence facts to its raw row."""
     items = load_queries(path)
     sem = asyncio.Semaphore(concurrency)
 
     async def one(item: dict) -> dict:
         async with sem:
-            return await resolve(client, base, item["query"])
+            result = await resolve(client, base, item["query"])
+        return result if facts is None else _with_facts(result, facts)
 
     async with asyncio.TaskGroup() as tg:
         tasks = [tg.create_task(one(item)) for item in items]
@@ -329,6 +402,20 @@ def slice_path(arg: str) -> Path:
     return QUERIES_DIR / f"{arg}.yaml"
 
 
+@asynccontextmanager
+async def _client(
+    *, in_process: bool
+) -> AsyncIterator[tuple[httpx.AsyncClient, str | None, dict[str, Any] | None]]:
+    """The client the panel posts through, the base URL it overrides, and the facts map an
+    in-process run fills."""
+    if in_process:
+        async with in_process_client() as (client, facts):
+            yield client, "http://in-process", facts
+        return
+    async with httpx.AsyncClient() as client:
+        yield client, None, None
+
+
 async def run(args: argparse.Namespace) -> int:
     paths = [slice_path(s) for s in args.slices] or sorted(QUERIES_DIR.glob("*.yaml"))
     if not paths:
@@ -339,10 +426,15 @@ async def run(args: argparse.Namespace) -> int:
             redigest_slice(path, out=args.out)
         return 0
     failed = []
-    async with httpx.AsyncClient() as client:
+    async with _client(in_process=args.in_process) as (client, base, facts):
         for path in paths:
             ok = await run_slice(
-                path, out=args.out, base=args.base, concurrency=args.concurrency, client=client
+                path,
+                out=args.out,
+                base=base or args.base,
+                concurrency=args.concurrency,
+                client=client,
+                facts=facts,
             )
             if not ok:
                 failed.append(path.stem)
@@ -366,6 +458,11 @@ def main() -> int:
         "--redigest",
         action="store_true",
         help="rebuild the digests in --out from saved raw files without calling the resolver",
+    )
+    parser.add_argument(
+        "--in-process",
+        action="store_true",
+        help="answer with a Search app built in this process and record sentence facts",
     )
     return asyncio.run(run(parser.parse_args()))
 

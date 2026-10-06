@@ -43,7 +43,6 @@ def test_get_malformed_id_refuses_not_found_naming_the_grammar():
     body = resp.json()
     assert body["code"] == "not_found"
     assert "spec_" in body["detail"]
-    assert "col_" in body["detail"]
 
 
 def test_post_to_malformed_id_refuses_404_not_found():
@@ -70,14 +69,28 @@ def test_uppercase_prefixed_segment_still_fails_the_grammar():
     assert "spec_" in body["detail"]
 
 
-def test_malformed_id_refuses_on_every_id_taking_route_shape():
+@pytest.mark.parametrize(
+    "subject_id",
+    # A `col_` id names a retired collection: its stored version records stay, and the grammar
+    # refuses it before any door reads them.
+    [_MALFORMED_ID, "col_" + "0" * 32],
+    ids=["malformed", "retired-collection"],
+)
+def test_an_id_outside_the_grammar_refuses_on_every_id_taking_route_shape(subject_id: str):
     client = _client(graph=_graph())
 
     responses = {
-        "GET /api/datasets/{id}/options": client.get(f"/api/datasets/{_MALFORMED_ID}/options"),
-        "GET /api/datasets/{id}/{content_version}": client.get(f"/api/datasets/{_MALFORMED_ID}/v1"),
+        "GET /api/datasets/{id}": client.get(f"/api/datasets/{subject_id}"),
+        "GET /api/datasets/{id}/options": client.get(f"/api/datasets/{subject_id}/options"),
+        "POST /api/datasets/{id}/options": client.post(
+            f"/api/datasets/{subject_id}/options", json={}
+        ),
+        "GET /api/datasets/{id}/{content_version}": client.get(f"/api/datasets/{subject_id}/v1"),
         "POST /api/datasets/{id}/{content_version}/pin": client.post(
-            f"/api/datasets/{_MALFORMED_ID}/v1/pin", json=_PIN_BODY
+            f"/api/datasets/{subject_id}/v1/pin", json=_PIN_BODY
+        ),
+        "GET /api/datasets/{id}/{content_version}/observations": client.get(
+            f"/api/datasets/{subject_id}/v1/observations"
         ),
     }
     for route, resp in responses.items():
@@ -169,7 +182,6 @@ def test_meta_literal_used_off_its_own_shape_still_fails_the_grammar(method, pat
     body = resp.json()
     assert body["code"] == "not_found", f"{method} {path}: {resp.text}"
     assert "spec_" in body["detail"]
-    assert "col_" in body["detail"]
 
 
 def test_get_known_operations_shape_still_reaches_the_operations_door():

@@ -26,6 +26,7 @@ from search.engine.region import OPTION_COVERAGE_PROBE_FAILED, RegionResult
 from search.engine.region.facet_probe import facet_pins, facet_probe, merge_facet_probes
 from search.engine.region.option_coverage import _facet_options, _maybe_build_facet_options
 from search.engine.region.relaunch import _relaunch_slot_options
+from search.engine.region.un_system import NO_LABELS
 from search.engine.same_shape import collapse_same_shape
 from search.engine.spec_build import build_spec
 from search.models import (
@@ -41,10 +42,10 @@ from search.models import (
     IdentityBindingValue,
     IdentityFacetValueRequest,
     IdentityUnitRequest,
-    PipelineStep,
     ResolvedEntity,
     ResolvedFacet,
     ResolvedScope,
+    RoleAxis,
     Shape,
     Slot,
     SlotKey,
@@ -68,10 +69,12 @@ def _spec_with_facet(
     constraint_val: str,
     sv_dcid: str,
     facet_bindings: dict,
+    open_roles: tuple[RoleAxis, ...] = (),
 ):
-    """Like _spec, but with a door-posted facet binding (definition.identity.facets),
-    the concrete case a same-shape merge must compare and carry forward."""
+    """Like _spec, but with a door-posted facet binding (definition.identity.facets) and
+    open roles, the concrete cases a same-shape merge must compare and carry forward."""
     return build_spec(
+        open_roles=open_roles,
         measure_elected_properties=frozenset(),
         shape=shape,
         slots=[_value_slot("constraintProp", constraint_val)],
@@ -82,7 +85,6 @@ def _spec_with_facet(
         ],
         entities=[],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
         facet_bindings=facet_bindings,
     )
 
@@ -96,9 +98,10 @@ def _spec_with_resolved_facets(
     unit_lexicon_version: str | None = None,
 ):
     """Build a spec with resolved facet state, distinct from posted identity facets.
-    Install `unit_lexicon_version` on the trace after `build_spec`.
+    State `unit_lexicon_version` after `build_spec`.
     """
     spec = build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
         slots=[_value_slot("constraintProp", constraint_val)],
@@ -109,23 +112,18 @@ def _spec_with_resolved_facets(
         ],
         entities=[],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
         facets=facets,
         facet_options=facet_options,
     )
     if unit_lexicon_version is not None:
         spec = spec.model_copy(
-            update={
-                "resolved": spec.resolved.model_copy(
-                    update={
-                        "trace": spec.resolved.trace.model_copy(
-                            update={"unit_lexicon_version": unit_lexicon_version}
-                        )
-                    }
-                )
-            }
+            update={"resolved": spec.resolved.stating_unit_lexicon_version(unit_lexicon_version)}
         )
     return spec
+
+
+def _with_declaration_version(spec, version: str):
+    return spec.model_copy(update={"resolved": spec.resolved.stating_declaration_version(version)})
 
 
 def _spec_with_scope(spec, member_dcids: list[str]):
@@ -173,6 +171,7 @@ def _where_bound_spec(shape: Shape, recipient_dcid: str, sv_dcid: str):
         binding=BindingValue(value=SlotValue(ref=_gr(recipient_dcid), value_kind="entity")),
     )
     return build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
         slots=[where_slot],
@@ -183,7 +182,6 @@ def _where_bound_spec(shape: Shape, recipient_dcid: str, sv_dcid: str):
         ],
         entities=[_destination_entity(recipient_dcid)],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
     )
 
 
@@ -200,6 +198,7 @@ def _where_bound_spec_with_provider(
         binding=BindingValue(value=SlotValue(ref=_gr(recipient_dcid), value_kind="entity")),
     )
     return build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
         slots=[where_slot],
@@ -213,7 +212,6 @@ def _where_bound_spec_with_provider(
             _directional_entity(provider_dcid, _RECIPIENT_PROP, "origin"),
         ],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
     )
 
 
@@ -365,7 +363,6 @@ def test_a_merged_answer_states_the_places_no_part_serves(
         extra_warnings=[],
         start_ms=now_ms(),
         engine_build="test",
-        include_sentence=True,
         max_candidates=10,
     )
 
@@ -471,6 +468,7 @@ def test_collapse_same_shape_reversed_provider_recipient_stays_distinct():
 
     def _place_constraint_off_spec(constraint_val, sv_dcid, identity_entities):
         return build_spec(
+            open_roles=(),
             measure_elected_properties=frozenset(),
             shape=_PERSON_SHAPE,
             slots=[_value_slot("constraintProp", constraint_val)],
@@ -485,7 +483,6 @@ def test_collapse_same_shape_reversed_provider_recipient_stays_distinct():
             entities=collapsed_subject,
             identity_entities=identity_entities,
             coverage=CoverageBare(has_data=True),
-            pipeline_trace=[PipelineStep(step="extract", ran=True)],
         )
 
     group1 = [
@@ -530,6 +527,7 @@ def test_collapse_same_shape_divergent_entities_on_non_where_axis_stays_residual
 
     def _place_constraint_off_spec(constraint_val, sv_dcid, identity_entities):
         return build_spec(
+            open_roles=(),
             measure_elected_properties=frozenset(),
             shape=_PERSON_SHAPE,
             slots=[_value_slot("constraintProp", constraint_val)],
@@ -544,7 +542,6 @@ def test_collapse_same_shape_divergent_entities_on_non_where_axis_stays_residual
             entities=[Entity(ref=_gr("flow/placeholder"), role=EntityRoleSubject())],
             identity_entities=identity_entities,
             coverage=CoverageBare(has_data=True),
-            pipeline_trace=[PipelineStep(step="extract", ran=True)],
         )
 
     spec_a = _place_constraint_off_spec("ValA", "sv_a", kenya)
@@ -564,6 +561,7 @@ def test_collapse_same_shape_window_survives_merge():
     """The merged spec keeps the requested window in its identity and trace."""
     window = TimeWindow(start_year=2015, end_year=2020)
     spec_a = build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=_PERSON_SHAPE,
         slots=[_value_slot("constraintProp", "ValA")],
@@ -577,10 +575,10 @@ def test_collapse_same_shape_window_survives_merge():
         ],
         entities=[],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
         requested_window=window,
     )
     spec_b = build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=_PERSON_SHAPE,
         slots=[_value_slot("constraintProp", "ValB")],
@@ -594,7 +592,6 @@ def test_collapse_same_shape_window_survives_merge():
         ],
         entities=[],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
         requested_window=window,
     )
     r_a = _region(spec_a, "var A", earliest_index=0)
@@ -620,6 +617,7 @@ def test_collapse_same_shape_refuses_merge_on_window_disagreement():
     window_a = TimeWindow(start_year=2015, end_year=2020)
     window_b = TimeWindow(start_year=2018, end_year=2020)
     spec_a = build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=_PERSON_SHAPE,
         slots=[_value_slot("constraintProp", "ValA")],
@@ -633,10 +631,10 @@ def test_collapse_same_shape_refuses_merge_on_window_disagreement():
         ],
         entities=[],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
         requested_window=window_a,
     )
     spec_b = build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=_PERSON_SHAPE,
         slots=[_value_slot("constraintProp", "ValB")],
@@ -650,7 +648,6 @@ def test_collapse_same_shape_refuses_merge_on_window_disagreement():
         ],
         entities=[],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
         requested_window=window_b,
     )
     r_a = _region(spec_a, "var A", earliest_index=0)
@@ -673,6 +670,7 @@ def test_combine_regions_keeps_window_refusal_parts_and_effective_regions_distin
     window_a = TimeWindow(start_year=2015, end_year=2020)
     window_b = TimeWindow(start_year=2018, end_year=2020)
     spec_a = build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=_PERSON_SHAPE,
         slots=[_value_slot("constraintProp", "ValA")],
@@ -686,10 +684,10 @@ def test_combine_regions_keeps_window_refusal_parts_and_effective_regions_distin
         ],
         entities=[],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
         requested_window=window_a,
     )
     spec_b = build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=_PERSON_SHAPE,
         slots=[_value_slot("constraintProp", "ValB")],
@@ -703,7 +701,6 @@ def test_combine_regions_keeps_window_refusal_parts_and_effective_regions_distin
         ],
         entities=[],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
         requested_window=window_b,
     )
     r_a = _region(spec_a, "var A", earliest_index=0)
@@ -715,7 +712,6 @@ def test_combine_regions_keeps_window_refusal_parts_and_effective_regions_distin
         extra_warnings=[],
         start_ms=now_ms(),
         engine_build="test",
-        include_sentence=False,
         max_candidates=10,
     )
 
@@ -781,6 +777,42 @@ def test_collapse_same_shape_refuses_merge_on_differing_facets():
     assert residual == [("var B", 1)]
 
 
+@pytest.mark.parametrize(
+    ("open_a", "open_b", "merged_open_roles"),
+    [
+        (("origin",), ("origin",), ["origin"]),
+        (("origin",), (), None),
+        (("origin",), ("destination",), None),
+    ],
+    ids=["equal", "one-open", "different"],
+)
+def test_collapse_same_shape_merges_only_members_asking_the_same_open_roles(
+    open_a, open_b, merged_open_roles
+):
+    """The merged identity states one set of open roles for the group, so members that
+    ask different ones stay apart, and members that ask the same carry them forward."""
+    r_a = _region(
+        _spec_with_facet(_PERSON_SHAPE, "ValA", "sv_a", {}, open_roles=open_a),
+        "var A",
+        earliest_index=0,
+    )
+    r_b = _region(
+        _spec_with_facet(_PERSON_SHAPE, "ValB", "sv_b", {}, open_roles=open_b),
+        "var B",
+        earliest_index=1,
+    )
+
+    effective, residual = collapse_same_shape([r_a, r_b])
+
+    if merged_open_roles is None:
+        assert effective == [r_a]
+        assert residual == [("var B", 1)]
+    else:
+        (merged,) = effective
+        assert residual == []
+        assert merged.spec.definition.identity.open_roles == merged_open_roles
+
+
 def test_collapse_same_shape_merges_when_neither_member_has_facets():
     """When no member carries a facet binding, the merge proceeds exactly as
     before and the merged identity carries no facets member -- the facet
@@ -799,12 +831,12 @@ def test_collapse_same_shape_merges_when_neither_member_has_facets():
 
 # ---------------------------------------------------------------------------
 # collapse_same_shape — resolved facet state (resolved.facets,
-# resolved.facet_options, resolved.trace.unit_lexicon_version)
+# resolved.facet_options, resolved.unit_lexicon_version)
 # ---------------------------------------------------------------------------
 
 
 def test_collapse_same_shape_same_resolved_facets_merge_carries_state_forward():
-    """Equal facets merge, and the merged trace keeps its lexicon version."""
+    """Equal facets merge, and the merged Spec keeps its lexicon version."""
     resolved_facets = {"unit": ResolvedFacet(basis="bound", ref="unit/USDollar", label="US Dollar")}
     spec_a = _spec_with_resolved_facets(
         _PERSON_SHAPE, "ValA", "sv_a", resolved_facets, None, "lexicon_v1"
@@ -821,7 +853,7 @@ def test_collapse_same_shape_same_resolved_facets_merge_carries_state_forward():
     assert residual == []
     merged = effective[0].spec
     assert merged.resolved.facets == resolved_facets
-    assert merged.resolved.trace.unit_lexicon_version == "lexicon_v1"
+    assert merged.resolved.unit_lexicon_version == "lexicon_v1"
     assert merged.resolved.facet_options == []
 
 
@@ -883,7 +915,6 @@ def test_merged_facet_options_offer_only_what_a_pin_on_the_merged_spec_serves():
             _maybe_build_facet_options,
             graph=_MERGE_GRAPH,
             coverage=build_coverage_index([], role_names={}),
-            include_option_coverage=True,
             deadline=None,
         ),
     )
@@ -997,7 +1028,6 @@ def test_a_failed_merged_facet_read_warns_on_the_merged_spec():
             _maybe_build_facet_options,
             graph=_FacetReadFailingGraph(),
             coverage=build_coverage_index([], role_names={}),
-            include_option_coverage=True,
             deadline=None,
         ),
     )
@@ -1014,7 +1044,6 @@ def test_a_multi_variable_answer_offers_the_merged_facet_options():
     r_b = _member("ValB", "sv_b", ("unit/USDollar", "unit/Yen"), 1)
     params = EntryParams(
         deadline=time.monotonic() + 30,
-        include_sentence=False,
         max_candidates=5,
         pac=True,
         stream_option_coverage=False,
@@ -1088,32 +1117,12 @@ def test_collapse_same_shape_refuses_merge_on_differing_unit_lexicon_version():
     assert residual == [("var B", 1)]
 
 
-def test_collapse_same_shape_merges_declaration_version_onto_merged_trace():
-    """The merged trace keeps the declaration version shared by both members."""
+def test_collapse_same_shape_merges_declaration_version_onto_merged_spec():
+    """The merged Spec keeps the declaration version shared by both members."""
     spec_a = _spec(_PERSON_SHAPE, "ValA", "sv_a")
-    spec_a = spec_a.model_copy(
-        update={
-            "resolved": spec_a.resolved.model_copy(
-                update={
-                    "trace": spec_a.resolved.trace.model_copy(
-                        update={"declaration_version": "index_v1"}
-                    )
-                }
-            )
-        }
-    )
+    spec_a = _with_declaration_version(spec_a, "index_v1")
     spec_b = _spec(_PERSON_SHAPE, "ValB", "sv_b")
-    spec_b = spec_b.model_copy(
-        update={
-            "resolved": spec_b.resolved.model_copy(
-                update={
-                    "trace": spec_b.resolved.trace.model_copy(
-                        update={"declaration_version": "index_v1"}
-                    )
-                }
-            )
-        }
-    )
+    spec_b = _with_declaration_version(spec_b, "index_v1")
     r_a = _region(spec_a, "var A", earliest_index=0)
     r_b = _region(spec_b, "var B", earliest_index=1)
 
@@ -1121,35 +1130,15 @@ def test_collapse_same_shape_merges_declaration_version_onto_merged_trace():
 
     assert len(effective) == 1
     assert residual == []
-    assert effective[0].spec.resolved.trace.declaration_version == "index_v1"
+    assert effective[0].spec.resolved.declaration_version == "index_v1"
 
 
 def test_collapse_same_shape_refuses_merge_on_differing_declaration_version():
     """The process-wide code index must have one declaration version for every member."""
     spec_a = _spec(_PERSON_SHAPE, "ValA", "sv_a")
-    spec_a = spec_a.model_copy(
-        update={
-            "resolved": spec_a.resolved.model_copy(
-                update={
-                    "trace": spec_a.resolved.trace.model_copy(
-                        update={"declaration_version": "index_v1"}
-                    )
-                }
-            )
-        }
-    )
+    spec_a = _with_declaration_version(spec_a, "index_v1")
     spec_b = _spec(_PERSON_SHAPE, "ValB", "sv_b")
-    spec_b = spec_b.model_copy(
-        update={
-            "resolved": spec_b.resolved.model_copy(
-                update={
-                    "trace": spec_b.resolved.trace.model_copy(
-                        update={"declaration_version": "index_v2"}
-                    )
-                }
-            )
-        }
-    )
+    spec_b = _with_declaration_version(spec_b, "index_v2")
     r_a = _region(spec_a, "var A", earliest_index=0)
     r_b = _region(spec_b, "var B", earliest_index=1)
 
@@ -1203,8 +1192,8 @@ def test_collapse_same_shape_no_resolved_facet_state_merge_unchanged():
     merged = effective[0].spec
     assert merged.resolved.facets == {}
     assert merged.resolved.facet_options == []
-    assert merged.resolved.trace.unit_lexicon_version is None
-    assert merged.resolved.trace.declaration_version is None
+    assert merged.resolved.unit_lexicon_version is None
+    assert merged.resolved.declaration_version is None
 
 
 def test_collapse_same_shape_merges_differing_fallback_resolved_facets():
@@ -1333,6 +1322,8 @@ def test_a_merged_relaunch_streams_options_over_every_members_places():
                 entity_options=None,
                 default_facet_probe=kenya,
                 facets_pinned=False,
+                variable_labels=NO_LABELS,
+                open_axes=frozenset(),
             )
 
     events, _warnings = asyncio.run(_events())

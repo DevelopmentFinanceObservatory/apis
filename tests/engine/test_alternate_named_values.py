@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
+from search.engine.quantity import quantity_requirement
 from search.engine.region import resolve_variable
 from search.engine.region.alternate_guard import offered_alternates, query_pins
 from search.engine.retrieval.derive import derive_shapes
@@ -107,7 +108,6 @@ def _run(svs: list[str], *, llm=None):
             graph=graph,
             resolver=make_resolver(graph),
             llm=llm or _NamesGdpLLM(),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
@@ -116,7 +116,7 @@ def _run(svs: list[str], *, llm=None):
 
 
 def _served(result) -> list[list[str]]:
-    return [[sv.ref for sv in spec.resolved.stat_vars.items] for spec in result.specs]
+    return [[sv.ref.dcid for sv in spec.resolved.members] for spec in result.specs]
 
 
 def test_an_alternate_of_another_measure_is_not_a_candidate():
@@ -159,7 +159,11 @@ def test_an_alternate_is_offered_through_the_members_holding_the_elected_values(
     (gni,) = derive_shapes(confirmed_svs=[_PPP_GNI], graph=graph)
     (gdp_other_basis,) = derive_shapes(confirmed_svs=[_REAL_GDP], graph=graph)
 
-    offered = offered_alternates(query_pins(_QUERY), gdp, {1: gni, 2: gdp_other_basis})
+    offered = offered_alternates(
+        query_pins(_QUERY, quantity=quantity_requirement([_QUERY])),
+        gdp,
+        {1: gni, 2: gdp_other_basis},
+    )
 
     assert list(offered[1].sv_arc_facts or {}) == []
     assert list(offered[2].sv_arc_facts or {}) == [_REAL_GDP]

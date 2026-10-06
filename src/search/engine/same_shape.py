@@ -24,18 +24,28 @@ from search.engine.retrieval.bound_values import (
     OpenAxisFact,
     OptionServedFact,
     ServedSeriesRows,
+    StatedMembers,
+    WalkedMembers,
+    identity_query,
     union_served,
+    walk_key,
 )
 from search.engine.spec_build import (
     RoleAxisFactInput,
     build_spec,
     entity_from_resolved,
     identity_named_groups,
-    stat_var_from_resolved,
 )
 from search.engine.unit.conversion import with_unit_conversion
-from search.models import BindingSet, BindingValue, EntityOptions, ProvenanceRef, SlotValue
-from statvar_members import member_digest
+from search.models import (
+    BindingSet,
+    BindingValue,
+    EntityOptions,
+    IdentityShapeSchema,
+    ProvenanceRef,
+    SlotValue,
+    StatVar,
+)
 
 if TYPE_CHECKING:
     from search.engine.region import RegionResult
@@ -288,11 +298,11 @@ def _served_member_dcids(region: RegionResult) -> list[str]:
     """The StatVars ``region`` serves.
 
     Every open-axis fact keys all served members. A region with no fact reads its
-    Spec's items, which a family over the wire cap truncates.
+    Spec's members.
     """
     if region.open_axis_facts:
         return list(region.open_axis_facts[0].member_values)
-    return [sv.ref for sv in region.spec.resolved.stat_vars.items]
+    return [sv.ref.dcid for sv in region.spec.resolved.members]
 
 
 def _merge_option_dcids(opts: Sequence[EntityOptions]) -> tuple[list, set[str]]:
@@ -594,7 +604,7 @@ def _collapse_group(
 
 
 def _check_merge_gates(group: list[RegionResult], base_spec: Spec) -> None:
-    """Reject differences in shared window, scope, identity facets, trace
+    """Reject differences in shared window, scope, identity facets and open roles, trace
     versions, or request-bound facet values.
 
     These fields become group-wide after merging, so a difference would be lost.
@@ -611,16 +621,16 @@ def _check_merge_gates(group: list[RegionResult], base_spec: Spec) -> None:
     if any(r.spec.definition.identity.facets != base_facets for r in group[1:]):
         raise _RefuseMerge
 
-    base_unit_lexicon_version = base_spec.resolved.trace.unit_lexicon_version
-    if any(
-        r.spec.resolved.trace.unit_lexicon_version != base_unit_lexicon_version for r in group[1:]
-    ):
+    base_open_roles = base_spec.definition.identity.open_roles
+    if any(r.spec.definition.identity.open_roles != base_open_roles for r in group[1:]):
         raise _RefuseMerge
 
-    base_declaration_version = base_spec.resolved.trace.declaration_version
-    if any(
-        r.spec.resolved.trace.declaration_version != base_declaration_version for r in group[1:]
-    ):
+    base_unit_lexicon_version = base_spec.resolved.unit_lexicon_version
+    if any(r.spec.resolved.unit_lexicon_version != base_unit_lexicon_version for r in group[1:]):
+        raise _RefuseMerge
+
+    base_declaration_version = base_spec.resolved.declaration_version
+    if any(r.spec.resolved.declaration_version != base_declaration_version for r in group[1:]):
         raise _RefuseMerge
 
     bound_facet_axes = _bound_facet_axes(group)
@@ -738,24 +748,24 @@ def _merge_stat_vars(
     group: list[RegionResult],
     is_where: bool,
     diff_key: tuple[str, str | None] | None,
-) -> tuple[list, int, bool]:
-    """Union StatVars by ref and derive the merged population count.
+) -> tuple[list[StatVar], int, bool]:
+    """Union the members' served StatVars by ref and derive the merged population count.
 
     Where merges can overlap, the larger of the union size and
     ``max(member_count)`` is a lower bound. Roster-only merges share
     one identity, so the maximum is exact when any member's count is exact. Other
     slot differences can also overlap when a StatVar omits that constraint. Their
-    union count is exact only when every member count is exact and untruncated;
-    otherwise use the larger of the union size and the largest member count as a
-    lower bound.
+    union count is exact only when every member count is exact and the member serves
+    that many StatVars; otherwise use the larger of the union size and the largest
+    member count as a lower bound.
     """
-    all_stat_vars = []
+    all_stat_vars: list[StatVar] = []
     seen_sv_dcids: set[str] = set()
     for r in group:
-        for sv in r.spec.resolved.stat_vars.items:
-            if sv.ref not in seen_sv_dcids:
-                seen_sv_dcids.add(sv.ref)
-                all_stat_vars.append(stat_var_from_resolved(sv))
+        for sv in r.spec.resolved.members:
+            if sv.ref.dcid not in seen_sv_dcids:
+                seen_sv_dcids.add(sv.ref.dcid)
+                all_stat_vars.append(sv)
 
     if is_where:
         return (
@@ -770,7 +780,8 @@ def _merge_stat_vars(
             any(r.spec.resolved.stat_vars.member_count_exact for r in group),
         )
     if all(
-        r.spec.resolved.stat_vars.member_count_exact and not r.spec.resolved.stat_vars.truncated
+        r.spec.resolved.stat_vars.member_count_exact
+        and len(r.spec.resolved.members) >= r.spec.resolved.stat_vars.member_count
         for r in group
     ):
         return all_stat_vars, len(all_stat_vars), True
@@ -784,9 +795,9 @@ def _merge_stat_vars(
 def _merge_shape(group: list[RegionResult], base_spec: Spec, is_where: bool):
     """Recompute shape population metadata across the merged group.
 
-    Digest the union of admitted dcids only when every population is present
-    and exact, and the merge is not on the where axis. Otherwise report the
-    largest member count as a lower bound.
+    Count the union of admitted dcids only when every population is present and exact,
+    and the merge is not on the where axis. Otherwise report the largest member count as a
+    lower bound. `build_spec` states the merged Spec's `member_digest`.
     """
     if not is_where and all(
         r.member_population is not None and r.member_population.exact for r in group
@@ -796,12 +807,31 @@ def _merge_shape(group: list[RegionResult], base_spec: Spec, is_where: bool):
             assert r.member_population is not None  # the all() check above guarantees this
             admitted_dcids.update(r.member_population.admitted_dcids)
         merged_member_count = len(admitted_dcids)
-        merged_member_digest = member_digest(admitted_dcids)
     else:
         merged_member_count = max(r.spec.resolved.shape.member_count for r in group)
-        merged_member_digest = None
-    return base_spec.resolved.shape.model_copy(
-        update={"member_count": merged_member_count, "member_digest": merged_member_digest}
+    return base_spec.resolved.shape.model_copy(update={"member_count": merged_member_count})
+
+
+def _merged_walked(group: list[RegionResult]) -> WalkedMembers | None:
+    """What the mint states of the members every merged Spec holds, when each states the
+    same served count and family digest for the same walk (`walk_key`). A where-axis merge
+    binds one identity's members at more places, so `build_spec` keeps the statement.
+    It states none for a merge whose identity the parts' walk does not resolve
+    (`stated_members`)."""
+    statements = {
+        (r.spec.resolved.stat_vars.served_count, r.spec.resolved.shape.member_digest) for r in group
+    }
+    identities = [r.spec.definition.identity for r in group]
+    if len(statements) != 1 or not all(
+        isinstance(identity.shape, IdentityShapeSchema) for identity in identities
+    ):
+        return None
+    ((served_count, digest),) = statements
+    keys = {walk_key(identity_query(identity)) for identity in identities}
+    if served_count is None or len(keys) != 1:
+        return None
+    return WalkedMembers(
+        key=keys.pop(), stated=StatedMembers(served_count=served_count, digest=digest)
     )
 
 
@@ -950,26 +980,19 @@ def _finalize_merged_region(
 ) -> RegionResult:
     """Assemble the merged region and preserve group-wide trace data.
 
-    Copy the agreed lexicon and declaration versions from the base trace.
+    Copy the agreed lexicon and declaration versions from the base spec.
     Clear pending option tasks so enrichment can relaunch them for the new
     spec id; retain place-option relaunch state. Remap group warnings to the
     merged spec id so they remain attached to their result, and add the facet-options
     read's warning. The merged region is one answer, so a warning several members raise
     appears once.
     """
-    base_spec = group[0].spec
+    base_resolved = group[0].spec.resolved
     merged_spec = merged_spec.model_copy(
         update={
-            "resolved": merged_spec.resolved.model_copy(
-                update={
-                    "trace": merged_spec.resolved.trace.model_copy(
-                        update={
-                            "unit_lexicon_version": base_spec.resolved.trace.unit_lexicon_version,
-                            "declaration_version": base_spec.resolved.trace.declaration_version,
-                        }
-                    )
-                }
-            )
+            "resolved": merged_spec.resolved.stating_unit_lexicon_version(
+                base_resolved.unit_lexicon_version
+            ).stating_declaration_version(base_resolved.declaration_version)
         }
     )
 
@@ -1081,15 +1104,17 @@ def _merge_group(
         stat_vars=all_stat_vars,
         stat_vars_member_count=stat_vars_member_count,
         stat_vars_member_count_exact=stat_vars_member_count_exact,
+        walked=_merged_walked(group),
         entities=_union_entities(group),
         # Identity slots omit where; its entity buckets define the merged identity.
         # Use each member's hashed buckets, not its displayed entity projection.
         identity_entities=_union_identity_entities(group),
+        # The merge gate holds every member to the base's open roles.
+        open_roles=base_spec.definition.identity.open_roles or (),
         # All members share this request window; use the base's hashed value.
         requested_window=base_spec.resolved.trace.requested_window,
         coverage=merged_coverage,
         resolved_sources=_union_sources(group),
-        pipeline_trace=list(base_spec.resolved.trace.pipeline_trace),
         slot_options=merged_slot_options,
         entity_options=entity_options,
         scope=base_spec.resolved.scope,

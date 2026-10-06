@@ -1,11 +1,10 @@
-"""Mints and previews of members that bind no entity through the collection door, the spec
-door, the worker and the preview. Each member's fetch names the places the probe resolved for
-it, and a member's `content_version` is the same through every door.
+"""Mints of members that bind no entity through the spec door and the worker. Each member's
+fetch names the places the probe resolved for it, and a member's `content_version` is the same
+through both.
 """
 
 from __future__ import annotations
 
-import itertools
 from collections.abc import Callable, Collection
 
 import httpx
@@ -23,7 +22,7 @@ from dc_sdmx import SdmxClient
 from materialise.graph import Facet
 from materialise.place_scope import DefaultPlaceScope, read_default_presence
 from series_coverage.schema import FacetMetadata, RoleNames
-from spec_registry import LiveSpecRegistry, mint_collection_id
+from spec_registry import LiveSpecRegistry
 from spec_registry.identity import recompute_identity
 from spec_registry.reader import LiveSpecReader
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
@@ -246,32 +245,12 @@ def _sidecar(stat_var: str) -> dict:
     }
 
 
-def _collection_body(order: tuple[str, ...]) -> dict:
-    members = [_sidecar(stat_var) for stat_var in order]
-    return {
-        "schema_version": 1,
-        "input": {
-            "kind": "collection_id",
-            "collection_id": mint_collection_id([member["spec_id"] for member in members]),
-            "members": members,
-        },
-        "options": {"bundle": False},
-    }
-
-
 def _spec_body(stat_var: str) -> dict:
     sidecar = _sidecar(stat_var)
     return {
         "schema_version": 1,
         "input": {"kind": "spec_id", "spec_id": sidecar["spec_id"], "definition": sidecar},
         "options": {"bundle": False},
-    }
-
-
-def _member_versions(manifest: dict) -> dict[str, str]:
-    return {
-        member["definition"]["spec_id"]: member["content_version"]
-        for member in manifest["collection"]["members"]
     }
 
 
@@ -290,21 +269,6 @@ def test_a_spec_binding_no_entity_mints_through_the_spec_door(stat_var):
 
     assert manifest["definition"]["identity"]["entities"] == {}
     assert manifest["coverage"]["rows"] == _EXPECTED_ROWS[stat_var]
-
-
-@pytest.mark.parametrize("order", list(itertools.permutations(_STAT_VARS)))
-def test_a_collection_mints_each_member_binding_no_entity_as_that_member_mints_alone(order):
-    recorded: list[httpx.Request] = []
-
-    resp = _client(recorded).post("/api/datasets", json=_collection_body(order))
-
-    assert resp.status_code == 200, resp.text
-    assert _filters(recorded) == _EXPECTED_FILTERS
-    versions = _member_versions(resp.json())
-    assert len(versions) == len(order)
-    for stat_var in order:
-        alone = _alone(stat_var)
-        assert versions[alone["definition"]["spec_id"]] == alone["content_version"]
 
 
 def _through_the_worker(body: dict, recorded: list[httpx.Request]) -> dict:
@@ -337,111 +301,7 @@ def test_the_worker_mints_a_spec_binding_no_entity_as_the_inline_door_does(
     assert manifest["content_version"] == _alone(stat_var)["content_version"]
 
 
-@pytest.mark.parametrize("order", [_STAT_VARS, _STAT_VARS[::-1]])
-def test_the_worker_mints_a_collection_of_members_binding_no_entity(
-    order, monkeypatch: pytest.MonkeyPatch
-):
-    monkeypatch.setattr(kinds.collection_id, "within_sync_budget", lambda estimate, **_: False)
-    recorded: list[httpx.Request] = []
-
-    manifest = _through_the_worker(_collection_body(order), recorded)
-
-    assert _filters(recorded) == _EXPECTED_FILTERS
-    monkeypatch.undo()
-    versions = _member_versions(manifest)
-    for stat_var in order:
-        alone = _alone(stat_var)
-        assert versions[alone["definition"]["spec_id"]] == alone["content_version"]
-
-
-@pytest.mark.parametrize("stat_var", _STAT_VARS)
-def test_a_preview_binding_no_entity_reports_the_version_the_mint_reports(stat_var):
-    recorded: list[httpx.Request] = []
-    body = {**_spec_body(stat_var), "preview": {"limit": 10}}
-    del body["options"]
-
-    resp = _client(recorded).post("/api/datasets", json=body)
-
-    assert resp.status_code == 200, resp.text
-    assert _filters(recorded) == {stat_var: _EXPECTED_FILTERS[stat_var]}
-    (member,) = resp.json()["members"]
-    assert member["total_rows"] == _EXPECTED_ROWS[stat_var]
-    assert member["content_version"] == _alone(stat_var)["content_version"]
-
-
-def test_a_preview_of_a_statvar_set_binding_no_entity_previews_each_statvar_as_it_mints():
-    recorded: list[httpx.Request] = []
-    body = {
-        "schema_version": 1,
-        "input": {"kind": "statvar_set", "statvars": [f"dcid:{s}" for s in _STAT_VARS]},
-        "preview": {"limit": 10},
-    }
-
-    resp = _client(recorded).post("/api/datasets", json=body)
-
-    assert resp.status_code == 200, resp.text
-    assert _filters(recorded) == _EXPECTED_FILTERS
-    assert {member["stat_var"]: member["content_version"] for member in resp.json()["members"]} == {
-        f"dcid:{stat_var}": _alone(stat_var)["content_version"] for stat_var in _STAT_VARS
-    }
-
-
-def test_a_statvar_set_of_several_statvars_mints_each_as_its_own_collection_member():
-    # A `statvar_set` naming several StatVars registers one spec per StatVar, so each
-    # resolves its own places: the worldwide total is fetched at Earth beside the countries.
-    recorded: list[httpx.Request] = []
-    body = {
-        "schema_version": 1,
-        "input": {"kind": "statvar_set", "statvars": [f"dcid:{_POPULATION}", f"dcid:{_WORLD}"]},
-        "options": {"bundle": False},
-    }
-
-    resp = _client(recorded).post("/api/datasets", json=body)
-
-    assert resp.status_code == 200, resp.text
-    assert _filters(recorded) == {
-        stat_var: _EXPECTED_FILTERS[stat_var] for stat_var in (_POPULATION, _WORLD)
-    }
-    versions = _member_versions(resp.json())
-    for stat_var in (_POPULATION, _WORLD):
-        alone = _alone(stat_var)
-        assert versions[alone["definition"]["spec_id"]] == alone["content_version"]
-
-
-def test_a_statvar_set_mints_each_statvar_at_its_own_scope_however_many_it_names():
-    # The first StatVar holds data in Kenya and Togo, the second in Uganda and at Earth. Minted
-    # together, each is fetched at its own places and mints the rows and `content_version` it
-    # mints alone.
-    first, second = "Count_Wide_A", "Count_Wide_B"
-    data = ((first, _KEN), (first, _TGO), (second, _UGA), (second, "Earth"))
-
-    def mint(*stat_vars: str) -> dict[str, tuple[int, str]]:
-        """Each minted spec's rows and `content_version`."""
-        body = {
-            "schema_version": 1,
-            "input": {"kind": "statvar_set", "statvars": [f"dcid:{s}" for s in stat_vars]},
-            "options": {"bundle": False},
-        }
-        resp = _client([], data=data).post("/api/datasets", json=body)
-        assert resp.status_code == 200, resp.text
-        manifest = resp.json()
-        members = manifest["collection"]["members"] if "collection" in manifest else [manifest]
-        return {
-            member["definition"]["spec_id"]: (member["coverage"]["rows"], member["content_version"])
-            for member in members
-        }
-
-    together = mint(first, second)
-
-    assert together == {**mint(first), **mint(second)}
-    assert sorted(rows for rows, _version in together.values()) == [2, 2]
-
-
-_BODIES = pytest.mark.parametrize(
-    "body",
-    [lambda: _spec_body(_POPULATION), lambda: _collection_body((_POPULATION, _WORLD))],
-    ids=["spec", "collection"],
-)
+_BODIES = pytest.mark.parametrize("body", [lambda: _spec_body(_POPULATION)], ids=["spec"])
 
 
 @_BODIES
@@ -512,7 +372,7 @@ _COUNTRIES = {_POPULATION: (_KEN, _TGO), _WORLD: ("Earth",)}
 
 @pytest.mark.parametrize("full_list", ["answers", "capped"])
 @pytest.mark.parametrize("stat_var", [_POPULATION, _WORLD])
-def test_a_mint_and_a_preview_binding_no_place_serve_the_default_scope_search_resolves(
+def test_a_mint_binding_no_place_serves_the_default_scope_search_resolves(
     stat_var, full_list, monkeypatch: pytest.MonkeyPatch
 ):
     if full_list == "capped":
@@ -524,23 +384,14 @@ def test_a_mint_and_a_preview_binding_no_place_serve_the_default_scope_search_re
         graph=_graph(), availability=ScopeAvailability(data=_SUBJECT_DATA), stat_vars=[stat_var]
     ).scope(stat_var)
     minted: list[httpx.Request] = []
-    previewed: list[httpx.Request] = []
-    preview_body = {**_spec_body(stat_var), "preview": {"limit": 10}}
-    del preview_body["options"]
 
     mint = _client(minted).post("/api/datasets", json=_spec_body(stat_var))
-    preview = _client(previewed).post("/api/datasets", json=preview_body)
 
     assert mint.status_code == 200, mint.text
-    assert preview.status_code == 200, preview.text
     assert scope == DefaultPlaceScope(
         places=(_EVERY_PLACE if every_place else _COUNTRIES)[stat_var], every_place=every_place
     )
-    for recorded in (minted, previewed):
-        assert _filters(recorded)[stat_var]["c[observationAbout]"].split(",") == list(scope.places)
-    (member,) = preview.json()["members"]
-    about = member["sample"]["columns"].index("observationAbout")
-    assert sorted({row[about] for row in member["sample"]["rows"]}) == sorted(scope.places)
+    assert _filters(minted)[stat_var]["c[observationAbout]"].split(",") == list(scope.places)
     # The mint warns of the countries fallback exactly when the scope is one.
     countries_only = [
         warning

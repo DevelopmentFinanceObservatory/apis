@@ -8,7 +8,8 @@ The surface returns RFC 9457 refusals. Infrastructure details stay server-side. 
 routing failures use generic details to prevent ID probing. Query length is checked before LLM
 or graph calls, and unsupported doors return 501.
 
-Resolve has a shared soft deadline. Buffered JSON also has an outer `request_timeout_s` limit.
+Resolve has a shared soft deadline. Buffered JSON also has an outer limit: `request_timeout_s`,
+or `resubmit_full_read_timeout_s` for a dataset_resubmit, whose member walk may run past it.
 SSE ends with a partial `done` after a soft timeout or a terminal `error` for pipeline failures.
 Options shares one deadline across two worker-thread hops. Cancellation
 detaches a running thread, which keeps its executor slot until it finishes.
@@ -33,6 +34,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 import graph_generation.config as generation_config
 import search.engine.clients.llm as _llm_mod
+from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform import Envelope, HealthResponse, ProblemSpec, health_response, refusal
 from dfo_platform.app import Surface
@@ -100,6 +102,7 @@ from search.engine.options.resolve import resolve_options_target
 from search.engine.options.surface import build_options_response
 from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.response_cache import ResponseCache
+from search.engine.response_cache_memo import PartMemo
 from search.engine.unit.conversion_catalogue import (
     ConversionCatalogue,
     ConversionCatalogueService,
@@ -189,32 +192,9 @@ def classify_search_exception(exc: BaseException) -> ProblemSpec | None:
         return ProblemSpec(status=503, code="service_unavailable", retryable=True)
     if isinstance(exc, RequestValidationError):
         # The platform maps body errors to 400 and schema-version errors to 422. Search adds
-        # two field-specific refinements below.
+        # a field-specific refinement below.
         problem = validation_problem(exc)
         errors = exc.errors()
-        # Retired promote fields get a replacement hint. Other unknown fields keep the
-        # platform detail. This applies only when schema-version handling left a 400.
-        if problem.code == "request_invalid":
-            _retired_promote_fields = ("stat_var_dcids", "entity_dcids")
-            retired_error = next(
-                (
-                    e
-                    for e in errors
-                    if e.get("type") == "extra_forbidden"
-                    and error_field_loc(e)[-1:]
-                    and error_field_loc(e)[-1] in _retired_promote_fields
-                ),
-                None,
-            )
-            if retired_error is not None:
-                field_name = error_field_loc(retired_error)[-1]
-                detail = (
-                    f"{field_name!r} is retired; post the candidate's spec_id as "
-                    "base_spec_id, with its identity as base_identity, instead."
-                )
-                problem = problem._replace(
-                    detail=detail, pointer=pointer_for_error(exc, retired_error)
-                )
         # Unsupported identity versions and recognised future facet axes also map to 422.
         # Match the nested field path or Pydantic error type. A top-level schema-version error
         # already maps to 422 in the platform.
@@ -325,11 +305,29 @@ async def _event_source(stream: AsyncIterator[Event]) -> AsyncIterator[str]:
         await asyncio.gather(prod_task, hb_task, return_exceptions=True)
 
 
+def _with_declared_datasets(request_schema: dict) -> dict:
+    """List the code index's declared datasets, in rank order, as the values a parsed part's
+    `provenance` takes: one `const` per dataset, titled with its label, described by its
+    description and flagged with `x-opt-in`."""
+    field = request_schema["$defs"]["ParsedPart"]["properties"]["provenance"]
+    named = next(branch for branch in field["anyOf"] if branch.get("type") == "string")
+    named["oneOf"] = [
+        {
+            "const": dataset.provenance,
+            "title": dataset.label,
+            "description": dataset.description,
+            "x-opt-in": dataset.opt_in,
+        }
+        for dataset in sorted(get_index().datasets.values(), key=lambda dataset: dataset.rank)
+    ]
+    return request_schema
+
+
 def _schema_payload() -> dict:
     # Versioned, unauthenticated contract schema. Capabilities are linked by relative path.
     return {
         "schema_version": SCHEMA_VERSION,
-        "request": ResolveRequest.model_json_schema(),
+        "request": _with_declared_datasets(ResolveRequest.model_json_schema()),
         "response": RESOLVE_RESPONSE_ADAPTER.json_schema(mode="serialization"),
         "capabilities": "/api/search/capabilities",
     }
@@ -435,7 +433,9 @@ async def resolve_endpoint(body: ResolveRequest, request: Request, deps: SearchD
         "place_options_pool": deps.place_options_pool,
         "shared_skills_index": deps.skills_index,
         "response_cache": deps.response_cache,
+        "part_memo": deps.part_memo,
         "generation": deps.generation,
+        "caller": request.headers.get("user-agent"),
     }
 
     # JSON and SSE share the ResolveResponse body. SSE adds trailing slot-option coverage events.
@@ -452,11 +452,16 @@ async def resolve_endpoint(body: ResolveRequest, request: Request, deps: SearchD
             },
         )
 
-    # The soft deadline usually returns a partial response first. This wait is the hard fallback.
+    # The soft deadline usually returns a partial response first. This wait is the hard
+    # fallback. A resubmit's member walk may run its full read past request_timeout_s.
     health = ResolveHealth()
     result: ResolveResponse = await asyncio.wait_for(
         resolve_async(body, health=health, **pipeline_deps),
-        timeout=settings().request_timeout_s,
+        timeout=(
+            settings().resubmit_full_read_timeout_s
+            if body.input.kind == "dataset_resubmit"
+            else settings().request_timeout_s
+        ),
     )
     # The degraded-leg flag rides in a header so the body contract stays unchanged.
     headers = {DEGRADED_LEG_HEADER: "1"} if health.degraded_leg else None
@@ -489,7 +494,7 @@ async def options_endpoint(body: OptionsRequest, deps: SearchDepsDep) -> Respons
     skips; see options.options_response_cache's own module docstring for
     the key and the warning-free-result caching rule.
     """
-    # Population derivation uses `GraphReader`'s `MemberArcReader` interface.
+    # The options population is derived through the materialise `GraphReader`.
     materialise_graph = deps.materialise_graph
     if materialise_graph is None:
         raise EngineInfraError("materialise graph client not initialised")
@@ -655,6 +660,26 @@ def _build_response_cache(
     return cache
 
 
+def _build_part_memo(registrations: ExitStack, generation: GenerationProvider) -> PartMemo:
+    memo = PartMemo()
+    logger.info(
+        "PartMemo built (enabled=%s max_bytes=%d max_entry_bytes=%d)",
+        settings().response_cache_enabled,
+        settings().response_cache_memo_max_bytes,
+        settings().response_cache_memo_max_entry_bytes,
+    )
+    # Refresh invokes clear from a worker thread. The memo is read on this loop only.
+    loop = asyncio.get_running_loop()
+
+    def _clear() -> None:
+        loop.call_soon_threadsafe(memo.clear)
+
+    _register(
+        registrations, generation, "search.response_cache_memo", stats=memo.stats, clear=_clear
+    )
+    return memo
+
+
 async def _open_search_deps(
     owned: AsyncExitStack,
     registrations: ExitStack,
@@ -670,6 +695,7 @@ async def _open_search_deps(
     rate_cache: RateTableCache | None,
     skills_index: SharedSkillsIndex | None,
     response_cache: ResponseCache | None,
+    part_memo: PartMemo | None,
     options_response_cache: OptionsResponseCache | None,
     population_memo: OptionsPopulationMemo | None,
     place_options_pool: PlaceOptionsPool | None,
@@ -703,9 +729,17 @@ async def _open_search_deps(
         owned.callback(_logged, "EntityResolver released", release_shared, shared_resolvekit)
 
     if materialise_sdmx is None:
-        materialise_sdmx = build_materialise_sdmx_client()
-        owned.callback(_logged, "materialise SdmxClient closed", materialise_sdmx.close)
+        caching_materialise_sdmx = build_materialise_sdmx_client(generation=generation)
+        owned.callback(_logged, "materialise SdmxClient closed", caching_materialise_sdmx.close)
         logger.info("materialise SdmxClient started (graph: %s)", settings().graph_base)
+        _register(
+            registrations,
+            generation,
+            "search.materialise_sdmx",
+            stats=caching_materialise_sdmx.stats,
+            clear=caching_materialise_sdmx.clear,
+        )
+        materialise_sdmx = caching_materialise_sdmx
 
     if sdmx is None:
         # Share one process-wide SDMX cache across resolve, options, and resubmit.
@@ -766,6 +800,9 @@ async def _open_search_deps(
 
     if response_cache is None:
         response_cache = _build_response_cache(registrations, generation)
+
+    if part_memo is None:
+        part_memo = _build_part_memo(registrations, generation)
 
     if options_response_cache is None:
         options_response_cache = OptionsResponseCache(generation=generation)
@@ -880,6 +917,7 @@ async def _open_search_deps(
         rate_cache=rate_cache,
         skills_index=skills_index,
         response_cache=response_cache,
+        part_memo=part_memo,
         options_response_cache=options_response_cache,
         population_memo=population_memo,
         place_options_pool=place_options_pool,
@@ -980,6 +1018,7 @@ def search_surface(
     rate_cache: RateTableCache | None = None,
     skills_index: SharedSkillsIndex | None = None,
     response_cache: ResponseCache | None = None,
+    part_memo: PartMemo | None = None,
     options_response_cache: OptionsResponseCache | None = None,
     population_memo: OptionsPopulationMemo | None = None,
     place_options_pool: PlaceOptionsPool | None = None,
@@ -1022,6 +1061,7 @@ def search_surface(
                     rate_cache=rate_cache,
                     skills_index=skills_index,
                     response_cache=response_cache,
+                    part_memo=part_memo,
                     options_response_cache=options_response_cache,
                     population_memo=population_memo,
                     place_options_pool=place_options_pool,
@@ -1069,7 +1109,9 @@ def search_surface(
         ),
         exception_exemplars=(
             EngineInputError(
-                "posted edit did not supply enough information", code="edit_incomplete"
+                "posted shape does not match the five-tuple of its members",
+                code="shape_mismatch",
+                status=422,
             ),
             GraphInfraError("simulated upstream failure", upstream_status=404),
             RequestValidationError(

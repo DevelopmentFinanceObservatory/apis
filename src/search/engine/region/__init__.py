@@ -12,7 +12,7 @@ changing the global the fetch reads. The preview caps live in
 
 from __future__ import annotations
 
-from search.engine.envelope import _record_step
+from search.engine.envelope import _emit_step
 from search.engine.region.arcs import (
     inapplicable_slots_from_arcs,
     standard_bindings_from_arcs,
@@ -117,6 +117,7 @@ __all__ = [
     "_build_shape_event",
     "_build_source_refs",
     "_discriminating_token",
+    "_emit_step",
     "_gather_slot_options_events",
     "_grade_confidence",
     "_ground_answer",
@@ -128,7 +129,6 @@ __all__ = [
     "_observation_entities",
     "_observations_relaunch_closure",
     "_place_confidence",
-    "_record_step",
     "_ref_or_miss",
     "_refs_present",
     "_representative_score_is_weak",

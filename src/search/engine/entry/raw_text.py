@@ -11,7 +11,6 @@ import logging
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import aclosing
 
-from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform.build import build_commit
 from dfo_platform.trace import get_trace_id
@@ -29,11 +28,9 @@ from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import settings
 from search.engine.conjoin import VARIABLES_CLAMPED, assemble_region
-from search.engine.dataset_mention import dataset_mentions
 from search.engine.deadline import _await_bounded
 from search.engine.departures import (
     WarningKey,
-    dataset_not_applied,
     measure_not_applied,
     names_request,
     price_basis_not_applied,
@@ -46,7 +43,6 @@ from search.engine.envelope import (
     _sum_usage,
     _terminal_events,
     make_diagnostics,
-    make_pipeline_step,
     make_query_echo,
     make_response,
     now_ms,
@@ -85,7 +81,6 @@ from search.models import (
     DeclinedAnswer,
     GraphRef,
     Operation,
-    PipelineStep,
     RawTextInput,
     RoleAxis,
     Scope,
@@ -193,7 +188,6 @@ async def _empty_query_response(
         "variable_not_resolved",
         variable_text=None,
         warnings=[],
-        include_sentence=params.include_sentence,
         include_skills=params.include_skills,
         skills_index=params.skills_index,
     )
@@ -210,13 +204,12 @@ async def _empty_query_response(
 
 async def _run_extract_phase(
     query: str, *, llm: SupportsLLM, deadline: float
-) -> tuple[ExtractionResult, dict | None, int, PipelineStep]:
-    """Run extraction under the request deadline and return its timing and step."""
+) -> tuple[ExtractionResult, dict | None, int]:
+    """Run extraction under the request deadline and return its timing."""
     t0 = now_ms()
     extract_result, extract_usage = await _await_bounded(extract(query, llm=llm), deadline=deadline)
     timing_extract = now_ms() - t0
-    extract_step = make_pipeline_step("extract", ran=True, ms=timing_extract)
-    return extract_result, extract_usage, timing_extract, extract_step
+    return extract_result, extract_usage, timing_extract
 
 
 async def _no_variables_response(
@@ -254,7 +247,6 @@ async def _no_variables_response(
         "variable_not_resolved",
         variable_text=query.strip(),
         warnings=[],
-        include_sentence=params.include_sentence,
         include_skills=params.include_skills,
         skills_index=params.skills_index,
     )
@@ -414,15 +406,12 @@ def _split_unit_phrases(phrases: Sequence[str]) -> tuple[str | None, list[str]]:
 def _dropped_phrase_fact(phrase: str) -> DepartureFact | None:
     """The departure of a phrase extraction dropped as naming no code and binding as no unit
     request (`_split_unit_phrases`): a price basis the binder refuses ("constant 2022
-    dollars" beside a second currency), which the unit token clears; a dataset
-    (`dataset_mention.dataset_mentions`), which the source token clears; else a request
+    dollars" beside a second currency), which the unit token clears; else a request
     the answer could apply (`departures.names_request`: "fragile states"), which no one
     slot clears. Operation wording ("Trend in", "compare the") writes none, and its
     `query_qualifier_dropped` warning alone discloses it."""
     if names_price_basis(phrase):
         return price_basis_not_applied(asked=phrase, shown=None)
-    if mentions := dataset_mentions(phrase, get_index()):
-        return dataset_not_applied(mentions[0].text)
     return measure_not_applied(asked=phrase, property_dcid=None) if names_request(phrase) else None
 
 
@@ -525,7 +514,6 @@ async def _handle_single_variable(
     prep: _ExtractionPrep,
     *,
     query: str,
-    extract_step: PipelineStep,
     timing_extract: int,
     extract_usage: dict | None,
     graph: EngineGraphClient,
@@ -561,7 +549,6 @@ async def _handle_single_variable(
         rate_cache=rate_cache,
         population_memo=population_memo,
         place_options_pool=place_options_pool,
-        base_steps=[extract_step],
         base_timing={"extract": timing_extract},
         pre_resolved=None,
         deadline=params.deadline,
@@ -598,7 +585,6 @@ async def _handle_single_variable(
         ),
         start_ms=start_ms,
         engine_build=build_commit(),
-        include_sentence=params.include_sentence,
         max_candidates=params.max_candidates,
         include_observations=params.include_observations,
         include_skills=params.include_skills,
@@ -631,7 +617,6 @@ async def _handle_multi_variable(
     prep: _ExtractionPrep,
     *,
     query: str,
-    extract_step: PipelineStep,
     timing_extract: int,
     extract_usage: dict | None,
     graph: EngineGraphClient,
@@ -675,7 +660,6 @@ async def _handle_multi_variable(
         rate_cache=rate_cache,
         population_memo=population_memo,
         place_options_pool=place_options_pool,
-        base_steps=[extract_step],
         base_timing={"extract": timing_extract},
         pre_resolved=pre_resolved,
         deadline=params.deadline,
@@ -746,16 +730,12 @@ async def handle(
                 yield ev
         return
 
-    extract_result, extract_usage, timing_extract, extract_step = await _run_extract_phase(
+    extract_result, extract_usage, timing_extract = await _run_extract_phase(
         query, llm=llm, deadline=params.deadline
     )
     # Record extraction once before the per-variable fan-out.
-    yield StepEvent(variable_index=None, step=extract_step.step, ran=True, ms=timing_extract)
+    yield StepEvent(variable_index=None, step="extract", ran=True, ms=timing_extract)
     extraction = extract_result.extraction
-    # An answer built on a failed mention reading binds no dataset. A working model may
-    # read the mentions differently, so no cache stores it.
-    if scope is not None and extract_result.mention_reading_failed:
-        scope.note_health(timed_out=False, degraded_leg=True)
 
     # `extract` turns a catalogue or requires-analysis question that names a
     # measure into a resolution.
@@ -832,7 +812,6 @@ async def handle(
             _handle_single_variable(
                 prep,
                 query=query,
-                extract_step=extract_step,
                 timing_extract=timing_extract,
                 extract_usage=extract_usage,
                 graph=graph,
@@ -858,7 +837,6 @@ async def handle(
         _handle_multi_variable(
             prep,
             query=query,
-            extract_step=extract_step,
             timing_extract=timing_extract,
             extract_usage=extract_usage,
             graph=graph,

@@ -20,9 +20,14 @@ from code_index.members import (
     antichain_minimal_rows,
     bind_slot_value,
     canonical_identity,
+    deciding_query,
     elect_dataset,
     elected_invariants,
     elected_pins,
+    eligible_among,
+    eligible_datasets,
+    family_among,
+    family_declares_roles,
     family_for_five_tuple,
     identity_family_query,
     index_covers_slot_keys,
@@ -30,6 +35,7 @@ from code_index.members import (
     invariant_bindings,
     named_dataset,
     option_families,
+    query_family,
 )
 from code_index.query import CodeIndex
 from code_index.types import (
@@ -103,7 +109,7 @@ def _dataset(
     return DatasetDeclaration(
         provenance=provenance,
         label=provenance,
-        synonyms=(),
+        description="A test table.",
         opt_in=opt_in,
         absent_observation=absent_observation,
         rank=rank,
@@ -334,8 +340,12 @@ def _role_row(
     return dataclasses.replace(_row(dcid, constraints, *provenances), observation_properties=roles)
 
 
-def _asks_roles(*role_keys: str, bound: frozenset[str] = frozenset()) -> FamilyQuery:
-    return dataclasses.replace(_asks(set(bound)), role_keys=frozenset(role_keys))
+def _asks_roles(
+    *role_keys: str, bound: frozenset[str] = frozenset(), open_role_keys: tuple[str, ...] = ()
+) -> FamilyQuery:
+    return dataclasses.replace(
+        _asks(set(bound)), role_keys=frozenset(role_keys), open_role_keys=frozenset(open_role_keys)
+    )
 
 
 def test_a_provider_only_row_answers_a_provider_and_two_role_rows_answer_a_named_recipient():
@@ -489,6 +499,149 @@ def test_a_named_source_publishing_another_five_tuple_lists_every_publisher():
     assert refusal.value.candidates == (_TABLES, _PLAIN)
 
 
+_CHANNEL = "channel"
+
+
+def _split_index(*, sparse: bool) -> CodeIndex:
+    """`_PLAIN` and `_TABLES` publish health rows under `sector`, and `_PLAIN` an education
+    row. `sparse` adds one `_PLAIN` row that also carries `_CHANNEL`, which splits the two
+    datasets into families of their own."""
+    rows = [
+        _row("plain_health", {"sector": "Health"}, _PLAIN),
+        _row("plain_education", {"sector": "Education"}, _PLAIN),
+        _row("tables_health", {"sector": "Health"}, _TABLES),
+    ]
+    if sparse:
+        rows.append(_row("plain_health_ngo", {"sector": "Health", _CHANNEL: "NGO"}, _PLAIN))
+    return _index(
+        *rows,
+        datasets=(_dataset(_PLAIN, rank=0), _dataset(_TABLES, rank=1)),
+        declarations=(_not_declared("sector"), _not_declared(_CHANNEL)),
+    )
+
+
+def _health_identity(source: str | None) -> dict:
+    """A saved identity binding `sector` to Health on `_FIVE_TUPLE`, naming `source`."""
+    identity: dict = {
+        "identity_version": "spec1",
+        "shape": {
+            "kind": "statvar_schema",
+            "population_type": _FIVE_TUPLE.population_type,
+            "measured_property": _FIVE_TUPLE.measured_property,
+            "stat_type": _FIVE_TUPLE.stat_type,
+        },
+        "slots": [{"property": "sector", "binding": {"state": "value", "ref": "Health"}}],
+        "entities": {"destination": ["country/KEN"]},
+        "requested_window": {"kind": "all"},
+    }
+    if source is not None:
+        identity["facets"] = {"provenance": {"state": "value", "ref": source}}
+    return identity
+
+
+@pytest.mark.parametrize("sparse", [False, True], ids=["one-family", "split"])
+@pytest.mark.parametrize(
+    ("source", "unbound", "row"),
+    [
+        (_PLAIN, None, "plain_health"),
+        (_PLAIN, "strayProp", "plain_health"),
+        (_TABLES, _CHANNEL, "tables_health"),
+    ],
+    ids=["declared-slots", "unbound-slot-no-row-declares", "unbound-slot-another-dataset-declares"],
+)
+def test_a_named_identity_keeps_its_dataset_when_a_sparse_property_splits_the_family(
+    sparse: bool, source: str, unbound: str | None, row: str
+):
+    """A row of `_PLAIN` with one property more puts `_PLAIN` and `_TABLES` in two
+    families. The identity naming a dataset resolves that dataset's row before and after,
+    though `_TABLES`' family holds fewer properties, and whatever slot it leaves unbound:
+    one no row declares, or one only the other dataset's rows carry."""
+    index = _split_index(sparse=sparse)
+    identity = _health_identity(source)
+    if unbound is not None:
+        identity["slots"].append({"property": unbound, "binding": {"state": "unbound"}})
+    query = identity_family_query(index, identity)
+
+    family = index_family(index, query)
+
+    assert family is not None
+    assert (family.provenance, _dcids(family.rows)) == (source, {row})
+    assert index_family(index, deciding_query(index, query)) == family
+
+
+@pytest.mark.parametrize("sparse", [False, True], ids=["one-family", "split"])
+def test_a_named_identity_declaring_fewer_slots_than_any_row_is_left_to_the_graph_walk(
+    sparse: bool,
+):
+    """No row's properties lie within the identity's keys, so the index does not decide it.
+    `_PLAIN` carries every key, so the identity is not refused after the split either,
+    though the keys alone select `_TABLES`' family, which holds fewer properties."""
+    index = _split_index(sparse=sparse)
+    identity = _health_identity(_PLAIN)
+    identity["slots"] = []
+
+    assert index_family(index, identity_family_query(index, identity)) is None
+
+
+def test_a_named_identity_binding_a_property_its_dataset_lacks_refuses():
+    """`_TABLES` carries no `_CHANNEL`, so an identity naming it with `_CHANNEL` bound
+    refuses, naming `_PLAIN`, whose family the keys select."""
+    index = _split_index(sparse=True)
+    identity = _health_identity(_TABLES)
+    identity["slots"].insert(0, {"property": _CHANNEL, "binding": {"state": "value", "ref": "NGO"}})
+
+    with pytest.raises(SourceNotInFamily) as refusal:
+        index_family(index, identity_family_query(index, identity))
+
+    assert refusal.value.candidates == (_PLAIN,)
+
+
+@pytest.mark.parametrize(
+    "sparse",
+    [
+        False,
+        pytest.param(
+            True,
+            marks=pytest.mark.xfail(
+                strict=True,
+                reason="the {sector} keys select the family with fewest properties, "
+                "`_TABLES`', where a cover tie broken by serving order would keep `_PLAIN`",
+            ),
+        ),
+    ],
+    ids=["one-family", "split"],
+)
+def test_an_unnamed_identity_keeps_its_dataset_when_a_sparse_property_splits_the_family(
+    sparse: bool,
+):
+    index = _split_index(sparse=sparse)
+
+    family = index_family(index, identity_family_query(index, _health_identity(None)))
+
+    assert family is not None
+    assert (family.provenance, _dcids(family.rows)) == (_PLAIN, {"plain_health"})
+
+
+def test_each_row_belongs_to_the_family_its_provenances_assign():
+    """`_PLAIN`'s `sector`-only rows stay in `_PLAIN`'s family, though their keys alone
+    select `_TABLES`' family, which holds fewer properties."""
+    index = _split_index(sparse=True)
+    sector_only = frozenset({"sector"})
+
+    selected = index.family_of(_FIVE_TUPLE, sector_only)
+    assert selected is not None
+    assert selected.datasets == (_TABLES,)
+    assert {dcid: family.datasets for dcid, family in index.family_by_dcid.items()} == {
+        "plain_health": (_PLAIN,),
+        "plain_education": (_PLAIN,),
+        "plain_health_ngo": (_PLAIN,),
+        "tables_health": (_TABLES,),
+    }
+    assert query_family(index, _asks({"sector"}, _PLAIN)) is index.family_by_dcid["plain_health"]
+    assert query_family(index, _asks({"sector", _CHANNEL}, _TABLES)) is None
+    assert query_family(index, _asks({"sector"}, "provenance/Elsewhere")) is None
+
+
 def _role_index(*, crs_rank: int, dac1_rank: int) -> CodeIndex:
     """A CRS-like dataset of donor-and-recipient rows and a DAC 1-like dataset of donor-only
     rows on one five-tuple."""
@@ -503,25 +656,85 @@ def _role_index(*, crs_rank: int, dac1_rank: int) -> CodeIndex:
     ("crs_rank", "dac1_rank"), [(0, 1), (1, 0)], ids=["crs-first", "dac1-first"]
 )
 @pytest.mark.parametrize(
-    ("role_keys", "elected"),
+    ("role_keys", "open_role_keys", "elected"),
     [
-        (("origin",), _TABLES),
-        (("origin", "destination"), _PLAIN),
-        (("destination",), _PLAIN),
+        (("origin",), (), _TABLES),
+        (("origin", "destination"), (), _PLAIN),
+        (("destination",), (), _PLAIN),
+        (("origin",), ("destination",), _PLAIN),
     ],
-    ids=["donor", "donor-recipient", "recipient"],
+    ids=["donor", "donor-recipient", "recipient", "donor-open-recipient"],
 )
 def test_the_dataset_whose_rows_place_the_role_keys_exactly_serves_first(
-    crs_rank: int, dac1_rank: int, role_keys: tuple[str, ...], elected: str
+    crs_rank: int,
+    dac1_rank: int,
+    role_keys: tuple[str, ...],
+    open_role_keys: tuple[str, ...],
+    elected: str,
 ):
     """A donor alone reads the donor-only table whatever the ranks. A recipient key drops the
     donor-only table, whose rows cover no recipient, even where `elect_role_class` would keep
-    them for want of a covering row."""
+    them for want of a covering row. An open recipient a row declares counts as a bound one."""
     index = _role_index(crs_rank=crs_rank, dac1_rank=dac1_rank)
 
-    family = elect_dataset(index, index.statvars, _asks_roles(*role_keys))
+    family = elect_dataset(
+        index, index.statvars, _asks_roles(*role_keys, open_role_keys=open_role_keys)
+    )
 
     assert family.provenance == elected
+
+
+@pytest.mark.parametrize(
+    ("donor_rank", "subject_rank"), [(0, 1), (1, 0)], ids=["donor-first", "subject-first"]
+)
+def test_an_open_role_no_row_declares_elects_under_the_bound_keys_alone(
+    donor_rank: int, subject_rank: int
+):
+    """No row covers a donor with an open recipient, so the election reads the donor alone.
+    The subject-only table, whose rows cover no donor, drops out whatever its rank, as it
+    does when the recipient is unnamed."""
+    index = _index(
+        _role_row("dac1", {"sector": "A"}, _DONOR, _PLAIN),
+        _role_row("subject", {"sector": "A"}, ("observationAbout",), _TABLES),
+        datasets=(_dataset(_PLAIN, rank=donor_rank), _dataset(_TABLES, rank=subject_rank)),
+    )
+
+    for query in (_asks_roles("origin"), _asks_roles("origin", open_role_keys=("destination",))):
+        assert elect_dataset(index, index.statvars, query).provenance == _PLAIN
+
+
+_TOTAL_A = _role_row("total_a", {"sector": "A"}, _DONOR, _PLAIN)
+_TWIN_A = _role_row("twin_a", {"sector": "A"}, _DONOR_RECIPIENT, _PLAIN)
+_TOTAL_B = _role_row("total_b", {"sector": "B"}, _DONOR, _PLAIN)
+_FLOW_C = _role_row("flow_c", {"sector": "C"}, _DONOR_RECIPIENT, _PLAIN)
+
+
+@pytest.mark.parametrize(
+    ("rows", "elected", "elected_keys"),
+    [
+        ((_TOTAL_A, _TOTAL_B, _FLOW_C), {"total_a", "total_b"}, {"origin"}),
+        ((_TOTAL_A, _TWIN_A, _FLOW_C), {"twin_a", "flow_c"}, {"origin", "destination"}),
+        ((_TOTAL_A, _TWIN_A, _TOTAL_B), {"twin_a"}, {"origin", "destination"}),
+    ],
+    ids=["totals-beside-one-flow", "one-total-twinned-beside-a-flow", "one-total-untwinned"],
+)
+def test_an_open_role_joins_where_a_total_or_its_twin_holds_it(
+    rows: tuple[StatVarRow, ...], elected: set[str], elected_keys: set[str]
+):
+    """A donor with every recipient asked for reads the donor totals, and the open
+    recipient joins where a twin of a total holds it: the by-recipient rows then answer,
+    a flow of other constraint values among them. A by-recipient row that is a twin of no
+    total does not stand for the totals beside it, and the dataset reads as it does for
+    the donor alone. `DatasetFamily.role_keys` states which."""
+    index = _index(*rows, datasets=(_dataset(_PLAIN),))
+    query = _asks_roles("origin", open_role_keys=("destination",))
+
+    family = elect_dataset(index, index.statvars, query)
+
+    assert _dcids(family.rows) == elected
+    assert family.role_keys == elected_keys
+    assert not family.tied
+    assert family == elect_dataset(index, index.statvars, _asks_roles(*elected_keys))
 
 
 def test_without_an_exact_match_the_rank_decides_between_covering_datasets():
@@ -532,6 +745,218 @@ def test_without_an_exact_match_the_rank_decides_between_covering_datasets():
     index = _index(*rows, datasets=(_dataset(_PLAIN, rank=1), _dataset(_TABLES, rank=0)))
 
     assert elect_dataset(index, rows, _asks_roles("origin")).provenance == _TABLES
+
+
+_CREDITOR = ("creditor",)
+_SERVICE_PUBLIC_CREDITOR = _role_row(
+    "service_public", {"flow": "Service", "guarantee": "Public"}, _CREDITOR, _PLAIN, _TABLES
+)
+_SERVICE_PRIVATE_DEBTOR = _role_row(
+    "private_debtor", {"flow": "Service", "guarantee": "Private"}, ("debtor",), _PLAIN
+)
+_SERVICE_PRIVATE_CREDITOR = _role_row(
+    "private_creditor", {"flow": "Service", "guarantee": "Private"}, _CREDITOR, _TABLES
+)
+
+_TWO_PUBLISHER_CASES = {
+    "a-tied-dataset-leaves-for-one-that-answers": (
+        (
+            _role_row("plain_pair", {"term": "Long"}, _PAIR, _PLAIN),
+            _role_row(
+                "plain_channel",
+                {"flow": "Service", "guarantee": "Public"},
+                ("provider", "channel"),
+                _PLAIN,
+            ),
+            _role_row(
+                "tables_pair",
+                {"flow": "Service", "guarantee": "Public", "term": "Long"},
+                _PAIR,
+                _TABLES,
+            ),
+        ),
+        ("origin",),
+        (),
+        (_TABLES, {"tables_pair"}, {"origin"}, False),
+    ),
+    "open-keys-one-dataset-cannot-order": (
+        (
+            _role_row("plain_provider", {"flow": "Service"}, _PROVIDER, _PLAIN),
+            _role_row("plain_recipient", {"guarantee": "Public"}, ("recipient",), _PLAIN),
+            _role_row(
+                "tables_provider", {"flow": "Service", "guarantee": "Public"}, _PROVIDER, _TABLES
+            ),
+        ),
+        (),
+        ("origin", "destination"),
+        (_PLAIN, {"plain_provider"}, {"origin"}, False),
+    ),
+    "a-shared-row-under-one-open-key": (
+        (_SERVICE_PRIVATE_CREDITOR, _SERVICE_PUBLIC_CREDITOR, _SERVICE_PRIVATE_DEBTOR),
+        (),
+        ("origin", "destination"),
+        (_PLAIN, {"service_public"}, {"origin"}, False),
+    ),
+    "a-shared-row-in-a-dataset-the-joined-key-ties": (
+        (
+            _SERVICE_PRIVATE_CREDITOR,
+            _SERVICE_PUBLIC_CREDITOR,
+            _SERVICE_PRIVATE_DEBTOR,
+            _role_row(
+                "plain_provider", {"flow": "Disbursement", "guarantee": "Public"}, _DONOR, _PLAIN
+            ),
+        ),
+        (),
+        ("origin", "destination"),
+        (_TABLES, {"private_creditor", "service_public"}, {"origin"}, False),
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("rows", "role_keys", "open_role_keys", "elected"),
+    _TWO_PUBLISHER_CASES.values(),
+    ids=_TWO_PUBLISHER_CASES,
+)
+def test_two_publishers_elect_one_family_for_a_question_and_the_keys_it_reports(
+    rows: tuple[StatVarRow, ...],
+    role_keys: tuple[str, ...],
+    open_role_keys: tuple[str, ...],
+    elected: tuple[str, set[str], set[str], bool],
+):
+    """`_PLAIN` ranks ahead of `_TABLES`. A dataset whose own election ties leaves for one
+    that answers. With both axes open, the family is the one the open keys that joined
+    elect on their own: `_PLAIN` reads its provider row once the recipient is set aside,
+    and stays out where the origin alone still ties its creditor row with a provider row.
+    Asking again with only the joined keys open returns the same family, which is the
+    identity Search mints for the answer."""
+    index = _index(
+        *rows, datasets=(_dataset(_PLAIN, rank=0), _dataset(_TABLES, rank=1)), declarations=()
+    )
+    query = _asks_roles(*role_keys, open_role_keys=open_role_keys)
+
+    family = elect_dataset(index, index.statvars, query)
+
+    assert (family.provenance, _dcids(family.rows), family.role_keys, family.tied) == elected
+    joined = dataclasses.replace(query, open_role_keys=family.role_keys - query.role_keys)
+    assert elect_dataset(index, index.statvars, joined) == family
+
+
+@pytest.mark.parametrize(
+    ("datasets", "source", "excluded", "eligible"),
+    [
+        ((_TABLES, _PLAIN), None, frozenset(), (_PLAIN,)),
+        ((_TABLES, _PLAIN), _TABLES, frozenset(), (_TABLES,)),
+        ((_TABLES, _PLAIN), None, frozenset({_PLAIN}), ()),
+        ((_TABLES,), None, frozenset(), (_TABLES,)),
+        ((_TABLES,), None, frozenset({_TABLES}), ()),
+    ],
+    ids=["unnamed", "named", "excluded", "opt-in-alone", "opt-in-alone-excluded"],
+)
+def test_the_eligibility_rules_filter_the_datasets_a_caller_holds(
+    datasets: tuple[str, ...],
+    source: str | None,
+    excluded: frozenset[str],
+    eligible: tuple[str, ...],
+):
+    """`_TABLES` ranks first but opts in. A list holding it alone is not the family's
+    publishers, so the filter reads the list it is given."""
+    index = _shared(plain_rank=1, tables_rank=0, tables_opt_in=True)
+
+    assert eligible_among(index, datasets, source=source, excluded=excluded) == eligible
+
+
+@pytest.mark.parametrize(
+    ("source", "excluded"),
+    [(None, frozenset()), (_TABLES, frozenset()), (None, frozenset({_PLAIN}))],
+    ids=["unnamed", "named", "excluded"],
+)
+def test_the_eligible_datasets_of_a_query_are_its_publishers_filtered(
+    source: str | None, excluded: frozenset[str]
+):
+    index = _shared(plain_rank=1, tables_rank=0, tables_opt_in=True)
+    query = dataclasses.replace(_asks(set(), source), excluded=excluded)
+
+    assert eligible_datasets(index, query) == eligible_among(
+        index, (_TABLES, _PLAIN), source=source, excluded=excluded
+    )
+
+
+@pytest.mark.parametrize(
+    ("datasets", "declares"),
+    [((_PLAIN, _TABLES), True), ((_PLAIN,), True), ((_TABLES,), False), ((), False)],
+    ids=["family", "crs", "dac1", "none"],
+)
+def test_the_roles_a_family_declares_narrow_to_the_datasets_given(
+    datasets: tuple[str, ...], declares: bool
+):
+    index = _role_index(crs_rank=0, dac1_rank=1)
+    family = index.family_by_dcid["crs"]
+
+    assert family_declares_roles(index, family, {"destination"}, datasets=datasets) is declares
+
+
+@pytest.mark.parametrize(
+    ("role_keys", "among", "elected"),
+    [
+        (("destination",), (_TABLES, _PLAIN), _PLAIN),
+        (("origin",), (_TABLES, _PLAIN), _TABLES),
+        (("origin",), (_PLAIN,), _PLAIN),
+        (("destination",), (_TABLES,), _TABLES),
+    ],
+    ids=["recipient", "donor", "donor-without-the-donor-table", "recipient-without-its-table"],
+)
+def test_an_election_among_given_datasets_is_the_election_of_an_index_holding_them_alone(
+    role_keys: tuple[str, ...], among: tuple[str, ...], elected: str
+):
+    """`_TABLES` ranks first and holds a recipient on one row of two, so it declares a donor
+    and no recipient. `_PLAIN` holds both roles on every row. Among the datasets a caller
+    gives, the election serves the dataset and rows an index holding only those datasets
+    serves, whatever the datasets left out would serve."""
+    rows = (
+        _role_row("crs", {"sector": "A"}, _DONOR_RECIPIENT, _PLAIN),
+        _role_row("dac1", {"sector": "A"}, _DONOR, _TABLES),
+        _role_row("dac1_flow", {"sector": "B"}, _DONOR_RECIPIENT, _TABLES),
+    )
+    datasets = (_dataset(_PLAIN, rank=1), _dataset(_TABLES, rank=0))
+    index = _index(*rows, datasets=datasets)
+    alone = _index(
+        *(row for row in rows if set(row.provenances) & set(among)),
+        datasets=tuple(dataset for dataset in datasets if dataset.provenance in among),
+    )
+    query = dataclasses.replace(_asks_roles(*role_keys), slots={"sector": ("unbound",)})
+
+    family = family_among(index, query, among)
+    reference = index_family(alone, query)
+
+    assert family is not None
+    assert reference is not None
+    assert family.provenance == elected
+    assert (family.provenance, _dcids(family.rows)) == (
+        reference.provenance,
+        _dcids(reference.rows),
+    )
+
+
+@pytest.mark.parametrize(
+    ("sector", "among", "served"),
+    [("Health", (_PLAIN,), (_PLAIN, {"plain_health"})), ("Education", (_TABLES,), (None, set()))],
+    ids=["own-family-rows", "no-row-among-the-given"],
+)
+def test_an_election_among_given_datasets_reads_their_family_whatever_the_keys_select(
+    sector: str, among: tuple[str, ...], served: tuple[str | None, set[str]]
+):
+    """A `sector` key alone selects `_TABLES`' family, which is what the unnamed query
+    elects. Among `_PLAIN` alone the election reads `_PLAIN`'s family, as a query naming it
+    does. Among `_TABLES` alone it serves no dataset for a sector only `_PLAIN` holds."""
+    index = _split_index(sparse=True)
+    query = FamilyQuery(_FIVE_TUPLE, {"sector": ("value", sector)}, None)
+    assert eligible_datasets(index, query) == (_TABLES,)
+
+    family = family_among(index, query, among)
+
+    assert family is not None
+    assert (family.provenance, _dcids(family.rows)) == served
 
 
 def _pinning_index() -> CodeIndex:
@@ -944,6 +1369,47 @@ def _minimal(
     source: str | None = None,
 ) -> tuple[StatVarRow, ...]:
     return antichain_minimal_rows(index, _rows(index, five_tuple, slots, source))
+
+
+_NET_DISBURSEMENT: dict[str, SlotBinding] = {
+    "financialFlowType": ("value", "Disbursement"),
+    "nettingBasis": ("value", "Net"),
+}
+_CRS_OPEN_SLOTS = ("crsCooperationModality", "crsPurpose", "crsTypeOfFinance", "crsTypeOfFlow")
+
+
+@pytest.mark.parametrize(
+    ("open_slots", "as_role_keys", "dataset", "count"),
+    [
+        (("dac1AidType",), ("origin",), "provenance/OECDDAC1", 125),
+        (
+            _CRS_OPEN_SLOTS,
+            ("origin", "destination"),
+            "provenance/OECDCreditorReportingSystem",
+            6461,
+        ),
+    ],
+    ids=["dac1-provider-totals", "crs-flows"],
+)
+def test_an_open_recipient_reads_the_packaged_rows_its_dataset_declares_it_on(
+    open_slots: tuple[str, ...], as_role_keys: tuple[str, ...], dataset: str, count: int
+):
+    """A donor's net disbursements to every recipient. DAC1 holds a recipient on two flows
+    to the West Bank and Gaza Strip only, at constraint values no provider total holds,
+    so its rows are its 125 provider totals, those of the donor alone, without the two
+    flows. Every CRS row holds one, so its rows are those of a named recipient."""
+    index = load_index(default_index_path())
+    slots = {**dict.fromkeys(open_slots, ("unbound",)), **_NET_DISBURSEMENT}
+    query = FamilyQuery(_EDU_AID_FIVE_TUPLE, slots, None, role_keys=frozenset({"origin"}))
+
+    family = index_family(
+        index, dataclasses.replace(query, open_role_keys=frozenset({"destination"}))
+    )
+    reference = index_family(index, dataclasses.replace(query, role_keys=frozenset(as_role_keys)))
+
+    assert family is not None
+    assert (family.provenance, len(family.rows)) == (dataset, count)
+    assert family == reference
 
 
 def test_the_education_family_on_amount_is_the_crs_rows():

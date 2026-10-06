@@ -8,16 +8,20 @@ Some identities pin one StatVar. For each, every Search reader of a family agree
 `datasets_api.adapter.resolve_definition_members`, or both refuse. An identity that leaves
 unbound an invariant its canonical form binds (`code_index.members.invariant_bindings`)
 resolves the family of its canonical form at the mint, and Search states that family for
-both, and the resubmit answers with a canonical identity. A sample goes through a resubmit as
-a client posts it.
+both, and the resubmit answers with a canonical identity.
 
 A second fuzz draws five-tuples whose members declare several role sets, with identities
 that bind entities under no role, the subject, the recipient, the provider, or both. Search's
 recall election and its options walk agree with the mint's walk on the role class. A recall
 sample that misses members answers only from the mint's family once the mint's walk narrows
-it, and a resubmit posting that sample names every member the mint refuses. An identity that
+it, and a resubmit's unseeded walk resolves the mint's family. An identity that
 binds no entity on a five-tuple of subject-only and role-bearing members is answered from
 the subject-only shape's sample without a walk, and the mint elects that class too.
+
+A grid over the five-tuples several datasets publish (`tests.code_index.family_grid`) names
+each dataset under each family's slot keys. For every identity the mint and Search both
+refuse the named dataset, both leave the family to the graph walk, or both read the same
+index rows.
 """
 
 from __future__ import annotations
@@ -25,14 +29,21 @@ from __future__ import annotations
 import dataclasses
 import functools
 import random
+import sys
 from collections import defaultdict
+from typing import override
 
+import pytest
+
+from code_index import shared as shared_module
 from code_index.members import (
     elected_pins,
-    index_covers_slot_keys,
+    index_decides,
     invariant_bindings,
     named_dataset,
+    publishers,
 )
+from code_index.query import CodeIndex
 from code_index.shared import get_index, get_measure_index
 from code_index.types import StatVarRow
 from datasets_api.adapter import resolve_definition_members
@@ -44,18 +55,19 @@ from search.engine.options.population import options_population
 from search.engine.region import resolve_spec_resubmit
 from search.engine.region.state import EngineOptions
 from search.engine.retrieval.bound_values import (
+    ResubmitWalk,
     RoleClassWalks,
     canonicalise_identity,
     elected_role_class_shape,
     identity_dataset,
-    identity_family_digest,
     identity_query,
     index_decides_membership,
     measure_family_partitions,
-    posted_members_outside_role_class,
+    refuse_source_outside_family,
     shape_member_facts,
     shape_query,
     source_binding,
+    stated_members,
     synthetic_shape_for_identity,
 )
 from search.engine.shape import ShapeDraft, SlotKeyDraft
@@ -66,11 +78,21 @@ from search.models import (
     ResubmitIdentityPayload,
 )
 from series_coverage.schema import FacetMetadata, RoleNames
-from spec_registry.identity import recompute_identity
-from statvar_members import FiveTuple, MemberEnumerator, member_digest
+from statvar_members import FiveTuple, MemberEnumerator, MemberGroup, member_digest
+from tests.code_index.family_grid import grid_identities
+from tests.code_index.test_elect_dataset import (
+    _PLAIN,
+    _TABLES,
+    _dataset,
+    _index,
+    _not_declared,
+    _row,
+)
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
+from tests.datasets_api._member_bounds import mint_bounds
 from tests.engine._axis_doubles import axis_confirming_reader
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
+from tests.engine._harness import walk_options
 from tests.engine.test_candidates_measure_alternatives import _ROLES
 from tests.engine.test_resubmit_alternative_measure_round_trip import (
     _KEN,
@@ -84,6 +106,8 @@ _IDENTITIES = 240
 _RECALL_SAMPLE = 6
 # One drawn identity in `_PIN_EVERY` pins a StatVar.
 _PIN_EVERY = 16
+# The resubmit walk reads up to the deployment's subject ceiling.
+_SUBJECT_CEILING = 20_000
 # The resubmit sample: identities whose family the mint resolves, of at most this many members.
 _RESUBMITS = 24
 # The resubmit sample of identities that leave unbound an invariant their canonical form binds.
@@ -279,8 +303,9 @@ def _mint(identity: dict, *, pinned: StatVarRow | None = None) -> tuple[frozense
             identity,
             spec_id="spec_fuzz",
             graph=graph,
-            enumerator=MemberEnumerator(graph=graph),
+            enumerator=MemberEnumerator(),
             code_index=get_index(),
+            bounds=mint_bounds(),
         )
     except _NO_FAMILY:
         return frozenset(), None
@@ -329,6 +354,13 @@ def _first_pass_bindings(identity: dict) -> list[SlotBindingDraft]:
     return bindings
 
 
+def _index_digest(model: BaseIdentity) -> str | None:
+    """The family digest Search states for `model` from the code index alone
+    (`stated_members` with no walk)."""
+    stated = stated_members(model, None)
+    return stated.digest if stated is not None else None
+
+
 def _check_pinned(drawn: _Drawn, kinds: dict[str, int]) -> list[str]:
     """A pinned identity names its one StatVar, which the mint admits. Search reads no index
     family for it and states no dataset and no digest."""
@@ -341,7 +373,7 @@ def _check_pinned(drawn: _Drawn, kinds: dict[str, int]) -> list[str]:
         found.append(f"pinned: mint family {sorted(family)!r}")
     if index_decides_membership(model):
         found.append("pinned: Search reads the index for a pinned identity")
-    if identity_dataset(model) is not None or identity_family_digest(model) is not None:
+    if identity_dataset(model) is not None or _index_digest(model) is not None:
         found.append("pinned: Search states an index family for a pinned identity")
     return found
 
@@ -367,13 +399,13 @@ def _check(drawn: _Drawn, rng: random.Random, kinds: dict[str, int], *, wide: bo
     kinds["binds a provenance outside the index"] += (
         query.source is not None and query.source not in index.datasets
     )
-    decided = index_covers_slot_keys(index, query.five_tuple, query.slots.keys())
+    decided = index_decides(index, query)
     synthetic = dataclasses.replace(
         synthetic_shape_for_identity(model.shape), sv_arc_facts_complete=False
     )
-    owners = index.datasets_by_five_tuple.get(query.five_tuple, ())
+    owners = publishers(index, query)
     kinds["names a dataset"] += query.source is not None
-    kinds["names a dataset another five-tuple belongs to"] += query.source not in (None, *owners)
+    kinds["names a dataset another family belongs to"] += query.source not in (None, *owners)
     kinds["sits on an opt-in dataset's five-tuple"] += any(
         index.datasets[owner].opt_in for owner in owners
     )
@@ -389,9 +421,9 @@ def _check(drawn: _Drawn, rng: random.Random, kinds: dict[str, int], *, wide: bo
         found += _canonical_disagreements(model)
 
     facts, index_sourced = shape_member_facts(synthetic, query)
-    # A dataset named outside the five-tuple's publishers is refused whatever slots the
-    # identity declares, by the mint and by Search alike, so it is checked as an index
-    # election.
+    # A dataset named outside the publishers of the family the slot keys select
+    # (`code_index.members.publishers`) is refused whatever slots the identity declares, by
+    # the mint and by Search alike, so it is checked as an index election.
     refused = query.source is not None and bool(owners) and query.source not in owners
     if not decided and not refused:
         # The mint walks the graph for this identity, and Search reads its recall pool.
@@ -409,7 +441,7 @@ def _check(drawn: _Drawn, rng: random.Random, kinds: dict[str, int], *, wide: bo
         found.append(f"dataset: Search {identity_dataset(model)!r}, mint {dataset!r}")
 
     # The digest Search may state for the identity is the digest of the mint's family.
-    stated = identity_family_digest(model)
+    stated = _index_digest(model)
     if stated != (member_digest(family) if family else None):
         found.append(f"digest: Search states {stated!r} for a mint family of {len(family)}")
 
@@ -452,9 +484,9 @@ def _canonical_disagreements(model: BaseIdentity) -> list[str]:
         canonical.model_dump(mode="json", exclude_none=True)
     ):
         found.append("canonical: the mint resolves another family for the canonical form")
-    if (identity_dataset(model), identity_family_digest(model)) != (
+    if (identity_dataset(model), _index_digest(model)) != (
         identity_dataset(canonical),
-        identity_family_digest(canonical),
+        _index_digest(canonical),
     ):
         found.append("canonical: Search states another family for the canonical form")
     return found
@@ -486,15 +518,14 @@ def _first_pass_disagreements(
     return found
 
 
-def _resubmit_disagreements(drawn: _Drawn, monkeypatch, kinds: dict[str, int], *, seed: bool):
+def _resubmit_disagreements(drawn: _Drawn, monkeypatch, kinds: dict[str, int]):
     """Post `drawn`'s identity to the resubmit door as a client does, validated and with its
     bindings as spelt, and compare each Spec it returns with the mint of that Spec's identity.
 
     A resubmit elects one measure partition, so the identity it returns can bind more than the
     posted one. Whatever it returns: a stated `member_digest` is the digest of the family the
     mint resolves for the returned identity, the where slot binds the posted place, and the
-    returned identity names the dataset the posted one names. `seed` posts three family
-    members as `resolved_stat_var_dcids`.
+    returned identity names the dataset the posted one names.
     """
     identity = BaseIdentity.model_validate(drawn.identity)
     canonical = canonicalise_identity(identity)
@@ -509,7 +540,6 @@ def _resubmit_disagreements(drawn: _Drawn, monkeypatch, kinds: dict[str, int], *
         facet_metadata={"f1": FacetMetadata(provenance_id=dataset)},
     )
     kinds["resubmits"] += 1
-    kinds["resubmits with a posted seed"] += seed
     kinds["resubmits leaving unbound an invariant the canonical form binds"] += (
         canonical is not identity
     )
@@ -517,15 +547,17 @@ def _resubmit_disagreements(drawn: _Drawn, monkeypatch, kinds: dict[str, int], *
         region = resolve_spec_resubmit(
             inp=ResubmitIdentityPayload(
                 identity=identity,
-                base_spec_id=recompute_identity(drawn.identity).spec_id,
-                base_identity=identity,
-                resolved_stat_var_dcids=sorted(family)[:3] if seed else None,
             ),
             graph=graph,
             sdmx=_sibling_sdmx(min(family)),
             coverage=FakeCoverageService(coverage_index).snapshot(),
-            options=EngineOptions(
-                materialise_graph=axis_confirming_reader(*(row.dcid for row in rows), graph=graph)
+            options=walk_options(
+                graph,
+                EngineOptions(
+                    materialise_graph=axis_confirming_reader(
+                        *(row.dcid for row in rows), graph=graph
+                    )
+                ),
             ),
         )
     except EngineInputError as exc:
@@ -546,7 +578,7 @@ def _resubmit_disagreements(drawn: _Drawn, monkeypatch, kinds: dict[str, int], *
                 f"resubmit: Search states a digest that is not the digest of the "
                 f"{len(returned_family)} members the mint resolves"
             )
-        served = {ref.dcid for ref in spec.resolved.trace.resolved_stat_vars}
+        served = {stat_var.ref.dcid for stat_var in spec.resolved.members}
         if not served <= returned_family:
             found.append(f"resubmit: {len(served - returned_family)} members outside the mint's")
         where = next(slot for slot in spec.resolved.slots if slot.key.axis == "where")
@@ -570,13 +602,12 @@ _KINDS = (
     "binds the provenance to a set of two",
     "binds a provenance outside the index",
     "resubmits",
-    "resubmits with a posted seed",
     "resubmits that state a digest",
     "resubmits leaving unbound an invariant the canonical form binds",
     "leaves a pinned slot unbound",
     "leaves unbound an invariant its canonical form binds",
     "names a dataset",
-    "names a dataset another five-tuple belongs to",
+    "names a dataset another family belongs to",
     "sits on an opt-in dataset's five-tuple",
     "binds nothing and names no dataset",
     "index does not decide",
@@ -620,8 +651,8 @@ def test_search_and_the_mint_resolve_the_same_family_for_every_drawn_identity(mo
         for index, item in enumerate(drawn)
         if (found := _check(item, rng, kinds, wide=index % 2 == 0))
     }
-    for order, position in enumerate(_resubmit_sample(drawn)):
-        found = _resubmit_disagreements(drawn[position], monkeypatch, kinds, seed=order % 2 == 1)
+    for position in _resubmit_sample(drawn):
+        found = _resubmit_disagreements(drawn[position], monkeypatch, kinds)
         if found:
             disagreements.setdefault(position, []).extend(found)
 
@@ -731,8 +762,9 @@ def _mint_role_case(
             identity,
             spec_id="spec_fuzz",
             graph=graph,
-            enumerator=MemberEnumerator(graph=graph),
+            enumerator=MemberEnumerator(),
             code_index=get_index(),
+            bounds=mint_bounds(),
         )
     except RoleSignatureIncompatible:
         return "tie", frozenset(), frozenset()
@@ -865,8 +897,8 @@ def _incomplete_sample_disagreements(
 ) -> list[str]:
     """A recall sample drawn from the role-bearing members, which `derive_shapes` groups
     into one shape, may miss any of them. The shape narrowed through the mint's walk
-    answers only members of the mint's family, and a resubmit posting the sample names
-    every posted member the mint refuses."""
+    answers only members of the mint's family, and a resubmit's walk, which takes no
+    sample, resolves the mint's family."""
     role_bearing = [member for member in members if member.roles]
     # The sample leaves out at least one member of the five-tuple.
     largest = len(role_bearing) if len(role_bearing) < len(members) else len(role_bearing) - 1
@@ -925,19 +957,19 @@ def _incomplete_sample_disagreements(
 
     if outcome == "empty":
         return found
-    posted = {member.dcid: member.recall_arcs() for member in sample}
+    resubmit = RoleClassWalks(
+        walk, resubmit=ResubmitWalk(subject_ceiling=_SUBJECT_CEILING, full_read_deadline=None)
+    )
     try:
-        outside = posted_members_outside_role_class(
-            posted, identity_query(model), walks=RoleClassWalks(walk)
-        ).value
+        walked = resubmit.family(identity_query(model), (), deadline=None).value
     except RoleSignatureError:
         if outcome != "tie":
-            found.append(f"posted sample: Search refuses a tie, mint {outcome}")
+            found.append(f"resubmit: Search refuses a tie, mint {outcome}")
         return found
     if outcome == "tie":
-        found.append("posted sample: Search answers a posted set the mint refuses as a tie")
-    elif outside != tuple(dcid for dcid in posted if dcid not in family):
-        found.append(f"posted sample: Search refuses {outside}, mint keeps {sorted(family)}")
+        found.append("resubmit: Search answers an identity the mint refuses as a tie")
+    elif walked is None or frozenset(walked.group.family) != family:
+        found.append(f"resubmit: Search walks {walked}, mint keeps {sorted(family)}")
     return found
 
 
@@ -972,3 +1004,96 @@ def test_search_and_the_mint_elect_the_same_role_class_for_every_drawn_identity(
     )
     # The agreement is vacuous for a kind of identity the draw never produces.
     assert all(count >= 10 for count in kinds.values()), kinds
+
+
+# ---------------------------------------------------------------------------
+# Every dataset named under every family's slot keys
+# ---------------------------------------------------------------------------
+
+
+class _Walked(Exception):
+    """The mint asked the graph walk for the family."""
+
+
+class _NoWalk(MemberEnumerator):
+    @override
+    def enumerate(self, **_walk: object) -> MemberGroup:
+        raise _Walked
+
+
+def _mint_answer(identity: dict) -> tuple:
+    """How the mint answers `identity`: it refuses the named dataset, walks the graph, or
+    resolves these index rows, none when no row matches."""
+    graph = FakeMintGraphReader(arcs={})
+    try:
+        resolved = resolve_definition_members(
+            identity,
+            spec_id="spec_grid",
+            graph=graph,
+            enumerator=_NoWalk(),
+            code_index=get_index(),
+            bounds=mint_bounds(),
+        )
+    except FacetNotAvailableError:
+        return ("refused",)
+    except _Walked:
+        return ("walk",)
+    except SpecNotExportable:
+        return ("index", frozenset())
+    return ("index", resolved.family)
+
+
+def _search_answer(identity: dict) -> tuple:
+    """How Search answers `identity`, as `_mint_answer` states the mint's."""
+    model = BaseIdentity.model_validate(identity)
+    assert isinstance(model.shape, IdentityShapeSchema)
+    try:
+        refuse_source_outside_family(model, pointer="/identity/facets/provenance")
+    except EngineInputError as exc:
+        assert exc.code == "facet_not_available", exc
+        return ("refused",)
+    synthetic = dataclasses.replace(
+        synthetic_shape_for_identity(model.shape), sv_arc_facts_complete=False
+    )
+    facts, index_sourced = shape_member_facts(synthetic, identity_query(model))
+    return ("index", frozenset(facts)) if index_sourced else ("walk",)
+
+
+def _overlapping_sparse_index() -> CodeIndex:
+    """Two datasets that each publish a `sector` row and a row carrying one more property
+    of its own: two families neither of whose properties hold the other's, so the keys
+    `{sector}` cover a row of each and select neither."""
+    return _index(
+        _row("plain_health", {"sector": "Health"}, _PLAIN),
+        _row("plain_health_ngo", {"sector": "Health", "channel": "NGO"}, _PLAIN),
+        _row("tables_health", {"sector": "Health"}, _TABLES),
+        _row("tables_health_gross", {"sector": "Health", "basis": "Gross"}, _TABLES),
+        datasets=(_dataset(_PLAIN, rank=0), _dataset(_TABLES, rank=1)),
+        declarations=tuple(_not_declared(prop) for prop in ("sector", "channel", "basis")),
+    )
+
+
+_GRID_INDEXES = {"packaged": get_index, "overlapping-sparse": _overlapping_sparse_index}
+
+
+@pytest.mark.parametrize("name", _GRID_INDEXES)
+def test_search_and_the_mint_answer_every_grid_identity_alike(
+    monkeypatch: pytest.MonkeyPatch, name: str
+):
+    index = _GRID_INDEXES[name]()
+    packaged = shared_module.get_index
+    for module in list(sys.modules.values()):
+        if vars(module).get("get_index") is packaged:
+            monkeypatch.setattr(module, "get_index", lambda: index)
+    answers = dict.fromkeys(("refused", "walk", "index", "no row"), 0)
+    disagreements = []
+
+    for identity in grid_identities(index):
+        mint = _mint_answer(identity)
+        answers["no row" if mint == ("index", frozenset()) else mint[0]] += 1
+        if (search := _search_answer(identity)) != mint:
+            disagreements.append((identity, mint[0], search[0]))
+
+    assert not disagreements, f"{len(disagreements)} disagree; first: {disagreements[0]!r}"
+    # The agreement is vacuous for an answer the grid never draws.
+    assert all(answers.values()), answers

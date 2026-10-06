@@ -60,12 +60,16 @@ class Warning(StrictModel):
         exclude_if=_is_none,
         description=(
             "the counts and labels the message states, for a client to compose its own "
-            "text. observations_series_truncated: {shown, total}, the series shown and "
-            "the confirmed series behind them. elected_shape_no_data: {no_data, "
+            "text. observations_series_truncated: {shown, total, order}, the series shown, "
+            "the confirmed series behind them, and how the shown series were chosen: "
+            "'ranked' (the most recent and largest) or 'fixed' (a selection made before "
+            "values were read, not ranked by value). elected_shape_no_data: {no_data, "
             "elected}, the labels of the readings with no data and of the readings "
-            "answered instead. un_system_unavailable: {places, variables}, the place dcids "
-            "the UN front door refused and the variables of the UN reads that failed, each "
-            "empty when none; a warning without params says the UN search itself was "
+            "answered instead. un_system_unavailable: {places, variables, variable_labels}, "
+            "the place dcids the UN front door refused, the variables of the UN reads that "
+            "failed, each empty when none, and each variable's graph name, in variables "
+            "order, '' where the graph holds none; a warning without params says the UN "
+            "search itself was "
             "unavailable. Omitted for every other code"
         ),
     )

@@ -20,6 +20,7 @@ from code_index.query import (
     CrossSystemParent,
     CyclicParent,
     DuplicateDcid,
+    IndexFamily,
     InvalidDeclaredDefault,
     dedupe_first_seen,
 )
@@ -57,6 +58,7 @@ __all__ = [
     "DeclaredDefault",
     "DuplicateDcid",
     "FamilyQuery",
+    "IndexFamily",
     "IndexFormatError",
     "IndexStamp",
     "InvalidDeclaredDefault",

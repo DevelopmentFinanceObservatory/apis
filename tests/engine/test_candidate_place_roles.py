@@ -30,6 +30,7 @@ from unittest import mock
 import pytest
 from fastapi.testclient import TestClient
 
+from code_index.shared import get_index
 from dfo_platform.trace import reset_trace_id, set_trace_id
 from graph_generation import UNKNOWN_GENERATION
 from materialise.graph import Facet as MaterialiseFacet
@@ -47,12 +48,14 @@ from search.engine.region import (
     candidates,
     phase_answer,
     phase_place_materialise,
+    phase_rank_bind,
     pipeline,
 )
 from search.engine.region.phase_place_materialise import _phase_place_bindings
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.place_roles import (
     bind_place_roles,
+    lacks_query_axis,
     subject_shapes_refused,
     where_binding,
 )
@@ -65,6 +68,7 @@ from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft
 from search.models import (
     DatasetResubmitInput,
+    Operation,
     OptionsFor,
     OptionsRequest,
     RawTextInput,
@@ -178,7 +182,6 @@ def _resolve(query: str, order: list[str], scores: list[float], entities: list[s
             resolver=make_resolver(graph),
             llm=_ElectFirstWithAlternate(),
             sdmx=FakeSdmxClient(observations={}, scope_availability=graph.scope_availability),
-            base_steps=[],
             base_timing={},
             coverage=_coverage().snapshot(),
         )
@@ -189,7 +192,7 @@ def _spec_serving(result, stat_var: str):
     specs = [
         spec
         for spec in result.specs
-        if [item.ref for item in spec.resolved.stat_vars.items] == [stat_var]
+        if [item.ref.dcid for item in spec.resolved.members] == [stat_var]
     ]
     assert len(specs) == 1, [spec.resolved.stat_vars for spec in result.specs]
     return specs[0]
@@ -366,7 +369,6 @@ def test_reelected_subject_only_sibling_answers_under_its_own_place_roles() -> N
             resolver=make_resolver(graph),
             llm=_ElectFirstOnly(),
             sdmx=FakeSdmxClient(observations={}, scope_availability=graph.scope_availability),
-            base_steps=[],
             base_timing={},
             coverage=coverage.snapshot(),
         )
@@ -374,7 +376,7 @@ def test_reelected_subject_only_sibling_answers_under_its_own_place_roles() -> N
 
     assert result.status == "definite", result
     (spec,) = result.specs
-    assert [item.ref for item in spec.resolved.stat_vars.items] == [_GNI_PPP]
+    assert [item.ref.dcid for item in spec.resolved.members] == [_GNI_PPP]
     assert "elected_shape_no_data" in [w.code for w in result.warnings]
     assert spec.definition.identity.entities == {"observationAbout": [_GHA]}
     assert [entity.role for entity in spec.resolved.entities] == ["observationAbout"]
@@ -472,7 +474,6 @@ def _resolve_mixed():
             resolver=make_resolver(graph),
             llm=_ElectFirstOnly(),
             sdmx=FakeSdmxClient(observations={}, scope_availability=graph.scope_availability),
-            base_steps=[],
             base_timing={},
             coverage=coverage.snapshot(),
         )
@@ -497,7 +498,7 @@ def test_reelected_sibling_probes_reads_and_dates_every_subject_place(monkeypatc
 
     assert result.status == "definite", result
     (spec,) = result.specs
-    assert [item.ref for item in spec.resolved.stat_vars.items] == [_GNI_PPP]
+    assert [item.ref.dcid for item in spec.resolved.members] == [_GNI_PPP]
     codes = [w.code for w in result.warnings]
     assert codes.count("direction_discarded") == 1, codes
     assert "elected_shape_no_data" in codes
@@ -509,7 +510,7 @@ def test_reelected_sibling_probes_reads_and_dates_every_subject_place(monkeypatc
     assert {"label": "countries", "count": 2} in [
         dim.model_dump() for dim in coverage.dimensions or []
     ]
-    (item,) = spec.resolved.stat_vars.items
+    (item,) = spec.resolved.members
     assert (item.data_date_range.start, item.data_date_range.end) == ("1990", "2024")
 
     replay = offline_resolve(
@@ -560,7 +561,7 @@ def test_reelected_sibling_reports_its_own_carrier_warnings(monkeypatch) -> None
     monkeypatch.setattr(phase_place_materialise, "run_materialise", unverified_run_materialise)
     result = _resolve_mixed()
 
-    assert [item.ref for item in result.specs[0].resolved.stat_vars.items] == [_GNI_PPP]
+    assert [item.ref.dcid for item in result.specs[0].resolved.members] == [_GNI_PPP]
     assert "role_declaration_unverified" not in [w.code for w in result.warnings]
 
 
@@ -583,7 +584,6 @@ def _resolve_electing_first(
             resolver=make_resolver(graph),
             llm=_ElectFirstOnly(),
             sdmx=FakeSdmxClient(observations={}, scope_availability=graph.scope_availability),
-            base_steps=[],
             base_timing={},
             coverage=coverage.snapshot(),
         )
@@ -669,7 +669,7 @@ def test_siblings_probed_in_separate_scopes_join_the_menu_in_rank_order() -> Non
     )
 
     assert result.status == "candidates", result
-    assert [[item.ref for item in spec.resolved.stat_vars.items] for spec in result.specs] == [
+    assert [[item.ref.dcid for item in spec.resolved.members] for spec in result.specs] == [
         [_GNI_PPP],
         [_GNI_REAL_BY_CREDITOR],
         [_GNI_ATLAS],
@@ -727,7 +727,7 @@ def test_reelected_sibling_reports_its_own_probe_clamp(
     )
 
     assert result.status == "definite", result
-    assert [item.ref for item in result.specs[0].resolved.stat_vars.items] == [_GNI_PPP]
+    assert [item.ref.dcid for item in result.specs[0].resolved.members] == [_GNI_PPP]
     assert [w.message for w in result.warnings if w.code == "standard_probe_places_clamped"] == [
         "2 probe places detected across 2 named place(s); resolved the first 1."
     ]
@@ -789,14 +789,15 @@ def test_placeless_role_bearing_shape_takes_no_default_scope() -> None:
     )
 
     assert result.status == "definite", result
-    assert [item.ref for item in result.specs[0].resolved.stat_vars.items] == [_GNI_IDS]
+    assert [item.ref.dcid for item in result.specs[0].resolved.members] == [_GNI_IDS]
     assert "place_scope_defaulted" not in [w.code for w in result.warnings]
     assert (["Earth"], "Country") not in enumerated
 
 
-def test_alternate_whose_role_cannot_take_the_place_is_dropped(caplog) -> None:
+def test_alternate_whose_role_cannot_take_the_place_is_dropped(monkeypatch) -> None:
     """Norway named as the origin binds as GNI PPP's subject, but the IDS series declares
-    only a recipient, so it is dropped from the candidates and its binding failure is logged."""
+    only a recipient, so it declares no role on the axis the query directs Norway to and is
+    no candidate (`lacks_query_axis`): it never reaches bind, so no binding of it fails."""
     query = "gross national income from Norway"
     graph = _graph(query, [_GNI_PPP, _GNI_IDS], [0.75, 0.74])
     graph_obs = {
@@ -809,33 +810,36 @@ def test_alternate_whose_role_cannot_take_the_place_is_dropped(caplog) -> None:
         resolve={"Norway": _NOR},
     )
 
-    with caplog.at_level(logging.INFO, logger="search.engine.region.place_roles"):
-        result = asyncio.run(
-            resolve_variable(
-                query,
-                entities=["Norway"],
-                date_request=None,
-                detect_query=query,
-                role_query=query,
-                entity_roles=door_roles_for_test_query(query, ["Norway"]),
-                pac=True,
-                graph=graph,
-                resolver=make_resolver(graph),
-                llm=_ElectFirstWithAlternate(),
-                sdmx=FakeSdmxClient(observations={}, scope_availability=graph.scope_availability),
-                base_steps=[],
-                base_timing={},
-                coverage=_coverage().snapshot(),
-            )
+    menus: list[list[tuple[str, ...]]] = []
+    real_bind = phase_rank_bind.bind_universal
+
+    async def _spy(variable, shapes, **kwargs):
+        menus.append([tuple(shape.sv_arc_facts or ()) for shape in shapes])
+        return await real_bind(variable, shapes, **kwargs)
+
+    monkeypatch.setattr(phase_rank_bind, "bind_universal", _spy)
+    result = asyncio.run(
+        resolve_variable(
+            query,
+            entities=["Norway"],
+            date_request=None,
+            detect_query=query,
+            role_query=query,
+            entity_roles=door_roles_for_test_query(query, ["Norway"]),
+            pac=True,
+            graph=graph,
+            resolver=make_resolver(graph),
+            llm=_ElectFirstWithAlternate(),
+            sdmx=FakeSdmxClient(observations={}, scope_availability=graph.scope_availability),
+            base_timing={},
+            coverage=_coverage().snapshot(),
         )
+    )
 
     assert result.status == "definite", result
-    assert [item.ref for item in result.specs[0].resolved.stat_vars.items] == [_GNI_PPP]
+    assert [item.ref.dcid for item in result.specs[0].resolved.members] == [_GNI_PPP]
     assert result.specs[0].definition.identity.entities == {"observationAbout": [_NOR]}
-    unbound = [r.getMessage() for r in caplog.records if "cannot bind" in r.getMessage()]
-    assert len(unbound) == 1
-    assert "'economicactivity_amount_measuredvalue_nominal_by_role'" in unbound[0]
-    assert "role_incompatible" in unbound[0]
+    assert menus == [[(_GNI_PPP,)]]
 
 
 def _shape_for(arcs: dict) -> ShapeDraft:
@@ -878,7 +882,6 @@ def _state(*, names_and_roles: dict[str, list[DoorRole]], places: dict[str, str]
         source_text=None,
         materialise_graph=None,
         materialise_sdmx=None,
-        pipeline_steps=[],
         timing={},
         warnings=[],
         coverage=empty_coverage_snapshot(),
@@ -928,6 +931,137 @@ def test_places_a_shape_cannot_take_refuse(roles, names_and_roles, places, refus
     )
 
     assert bind_place_roles(state, shape) == refusal
+
+
+def _index_member_shape(dcid: str) -> ShapeDraft:
+    """The shape `derive_shapes` builds when recall confirms the packaged index row `dcid`
+    alone, with the roles and constraints the row declares."""
+    row = next(r for r in get_index().statvars if r.dcid == dcid)
+    arcs = {
+        "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
+        "populationType": {"nodes": [{"dcid": row.population_type}]},
+        "measuredProperty": {"nodes": [{"dcid": row.measured_property}]},
+        "statType": {"nodes": [{"dcid": row.stat_type}]},
+        "measurementQualifier": {"nodes": [{"dcid": row.measurement_qualifier}]},
+        "constraintProperties": {"nodes": [{"dcid": p} for p in row.constraint_properties]},
+        **{p: {"nodes": [{"dcid": v}]} for p, v in row.constraint_properties.items()},
+        "observationProperties": {"nodes": [{"dcid": r} for r in row.observation_properties]},
+    }
+    nodes = {dcid: {"label": dcid, "type": "StatisticalVariable", "arcs": arcs}}
+    (shape,) = derive_shapes(
+        confirmed_svs=[dcid], graph=FakeGraph(nodes=nodes, obs={}, detect={}, resolve={})
+    )
+    return shape
+
+
+@pytest.mark.parametrize(
+    ("member", "lacks"),
+    [
+        pytest.param(
+            "Amount_FinancialFlow_Gross_Disbursement_DAC1AidType1010_Nominal",
+            True,
+            id="dac1-provider-total",
+        ),
+        pytest.param(
+            "Amount_FinancialFlow_Net_Disbursement_DAC1AidType8863_Nominal",
+            True,
+            id="dac1-flow-to-the-west-bank",
+        ),
+        pytest.param(
+            "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_"
+            "CRSPurposeCode11110_Nominal",
+            False,
+            id="crs-flow",
+        ),
+    ],
+)
+def test_an_index_shape_declares_the_axes_its_dataset_declares(member, lacks) -> None:
+    """ "aid to Kenya" needs the recipient. DAC1 holds one on two flows that are twins of no
+    provider total, so it declares none (`family_declares_roles`) and the DAC1 shape lacks
+    the axis whichever member recall confirmed. The CRS shape, whose rows read with nothing
+    bound hold a recipient, does not."""
+    state = _state(
+        names_and_roles={"Kenya": [_door_role("destination")]}, places={"Kenya": "country/KEN"}
+    )
+
+    assert lacks_query_axis(state, _index_member_shape(member)) is lacks
+
+
+_GHA_KEN_GROUP = {"Africa": [_GHA, "country/KEN"]}
+
+
+@pytest.mark.parametrize(
+    ("roles", "over", "place", "elected_origin", "bound"),
+    [
+        pytest.param(
+            ("creditor", "debtor"),
+            "origin",
+            "Kenya",
+            False,
+            {"destination": ["country/KEN"], "origin": []},
+            id="rank-creditors-of-a-country-reads-it-as-debtor",
+        ),
+        pytest.param(
+            ("financingProvider", "financingRecipient"),
+            "destination",
+            "Africa",
+            False,
+            "role_not_resolved",
+            id="rank-recipients-in-a-group-is-ambiguous",
+        ),
+        pytest.param(
+            ("creditor", "debtor"),
+            "origin",
+            "Africa",
+            False,
+            "role_not_resolved",
+            id="rank-creditors-of-a-group-is-ambiguous",
+        ),
+        pytest.param(
+            ("financingProvider", "financingRecipient"),
+            "origin",
+            "Kenya",
+            True,
+            {"destination": ["country/KEN"], "origin": []},
+            id="operation-axis-outranks-the-elected-binding",
+        ),
+    ],
+)
+def test_an_operation_over_one_flow_axis_places_an_undirected_place(
+    roles, over, place, elected_origin, bound
+) -> None:
+    """A rank over one flow axis of a two-role shape leaves that axis open, and a single
+    place takes the other axis, also on an alternate whose elected shape bound the place on
+    the ranked axis. A group can scope the ranked axis ("top recipients of aid in Africa")
+    or name the other ("top creditors of external debt of Africa"), so the elected shape
+    cannot tell its axis."""
+    shape = _shape_for(_economic_activity_arcs("Nominal", {}, roles))
+    groups = _GHA_KEN_GROUP if place in _GHA_KEN_GROUP else {}
+    places = {place: "country/KEN"} if not groups else {}
+    state = _state(names_and_roles={}, places=places)
+    state.entities = [place]
+    state.group_member_dcids_by_name = dict(groups)
+    state.standard_place_dcids = groups.get(place, ["country/KEN"])
+    state.operations = (Operation(verb="rank", phrase="top", over=over),)
+    if elected_origin:
+        state.shape_draft = _shape_for(
+            _economic_activity_arcs("Nominal", {}, ("financingProvider",))
+        )
+        elected = bind_place_roles(state, state.shape_draft)
+        assert not isinstance(elected, str)
+        assert elected.origin_dcids == ["country/KEN"]
+        state.elected_place_roles = elected
+
+    roles_bound = bind_place_roles(state, shape)
+
+    if isinstance(bound, str):
+        assert roles_bound == bound
+    else:
+        assert not isinstance(roles_bound, str), roles_bound
+        assert {
+            "destination": roles_bound.destination_dcids,
+            "origin": roles_bound.origin_dcids,
+        } == bound
 
 
 @pytest.mark.parametrize(
@@ -1087,7 +1221,7 @@ def test_each_candidates_read_plan_reads_its_own_place_role(monkeypatch, order) 
     def _spy(state, candidate_triples):
         grounded = real(state, candidate_triples)
         for spec in grounded.specs:
-            plans[spec.resolved.stat_vars.items[0].ref] = grounded.cand_plans.get(spec.spec_id)
+            plans[spec.resolved.members[0].ref.dcid] = grounded.cand_plans.get(spec.spec_id)
         return grounded
 
     monkeypatch.setattr(candidate_collapse, "ground_candidates", _spy)
@@ -1125,7 +1259,7 @@ def _scenario_candidates(monkeypatch, scenario_id: str, search_settings, **chang
     def _ground(state, cands):
         grounded = real_ground(state, cands)
         for spec in grounded.specs:
-            grounded_by_sv[spec.resolved.stat_vars.items[0].ref] = SimpleNamespace(
+            grounded_by_sv[spec.resolved.members[0].ref.dcid] = SimpleNamespace(
                 spec=spec,
                 probe_entities=grounded.cand_probe_entities[spec.spec_id],
                 place=grounded.cand_places[spec.spec_id],
@@ -1432,7 +1566,7 @@ def test_no_presence_read_is_made_for_an_alternate_the_admission_guards_reject(
 
     assert result.status == "definite", result
     (spec,) = result.specs
-    assert [sv.ref for sv in spec.resolved.stat_vars.items] == [scenarios._IDS]
+    assert [sv.ref.dcid for sv in spec.resolved.members] == [scenarios._IDS]
     assert reads == []
 
 
@@ -1995,7 +2129,7 @@ def test_a_tied_reading_left_unevaluated_keeps_its_tie_on_the_elected_answer(
     scenario = _tied_trade_scenario(monkeypatch, trade_places)
 
     def _stat_vars(result: Any) -> list[str]:
-        return [spec.resolved.stat_vars.items[0].ref for spec in result.specs]
+        return [spec.resolved.members[0].ref.dcid for spec in result.specs]
 
     free = scenarios._resolve(scenario)
     assert free.status == "candidates", free
@@ -2120,6 +2254,7 @@ def _gap_filled(monkeypatch, first: Any, second: Any) -> Any:
             emit=None,
             first_sentences=[],
             first_measure_class_refused=0,
+            first_names_dataset=False,
             second_state=lambda emit, bound: cast(Any, state),
         )
     )
@@ -2251,7 +2386,8 @@ def test_a_re_election_menu_is_materialised_once(monkeypatch, search_settings) -
     """Re-election offers the estimated and the projected count beside the elected one and
     a flagged alternate. Candidate admission takes both siblings as re-election
     materialised them and materialises the flagged alternate alone, so each offered shape
-    is materialised once and each sibling's facets are read once."""
+    is materialised once and each sibling's facets are read twice: once by re-election and
+    once for the facet options its candidate offers."""
     scenario_id = "placeless-reelect-menu-beside-flagged-alternate-together"
     materialised: list[str] = []
     real_materialise = candidates.materialise
@@ -2269,7 +2405,7 @@ def test_a_re_election_menu_is_materialised_once(monkeypatch, search_settings) -
         stat_vars for name, stat_vars, _, _ in spans.spans if name == "observation_facets_batch"
     ]
     for stat_var in (scenarios._MORT_EST, scenarios._MORT_PROJ):
-        assert facet_reads.count([stat_var]) == 1, facet_reads
+        assert facet_reads.count([stat_var]) == 2, facet_reads
 
 
 def test_a_role_bearing_elected_shape_reads_no_presence_for_its_siblings(
@@ -2340,10 +2476,16 @@ def test_each_option_probe_of_a_lone_candidate_binds_its_own_entities(monkeypatc
     bind the entities of its own place context, not those of the shape in play."""
     own = {"observationAbout": [_GHA, _NOR]}
     spec = SimpleNamespace(
-        spec_id="spec_ppp", definition=SimpleNamespace(identity=SimpleNamespace(facets=None))
+        spec_id="spec_ppp",
+        definition=SimpleNamespace(identity=SimpleNamespace(facets=None)),
+        resolved=SimpleNamespace(members=()),
     )
     grounded = SimpleNamespace(
-        cand_places={"spec_ppp": SimpleNamespace(roles=SimpleNamespace(resolved_entities=own))},
+        cand_places={
+            "spec_ppp": SimpleNamespace(
+                roles=SimpleNamespace(resolved_entities=own, open_axes=frozenset())
+            )
+        },
         cand_probe_inputs={"spec_ppp": (object(), [], [], [_GHA, _NOR])},
         cand_role_axis_facts={"spec_ppp": (object(), [object()], [_GHA, _NOR])},
         cand_obs_entities={"spec_ppp": ([_GNI_PPP], own)},

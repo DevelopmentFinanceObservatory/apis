@@ -171,7 +171,6 @@ def _run(
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
             sdmx=sdmx,
-            base_steps=[],
             base_timing={},
             unit_text=unit_text,
             coverage=coverage if coverage is not None else empty_coverage_snapshot(),
@@ -401,7 +400,6 @@ def test_candidate_filtering_keeps_every_named_provider(monkeypatch):
             resolver=make_resolver(graph),
             llm=_CandidatesBindLLM(),
             sdmx=sdmx,
-            base_steps=[],
             base_timing={},
             coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
         )
@@ -540,7 +538,7 @@ def test_unplaceable_declared_role_still_refuses_role_incompatible():
     assert result.status == "no_data"
     assert result.no_data_reason == "role_incompatible"
     assert result.flagged_match is not None
-    assert [sv.ref for sv in result.flagged_match[0].resolved.stat_vars.items] == [
+    assert [sv.ref.dcid for sv in result.flagged_match[0].resolved.members] == [
         _UNPLACEABLE_SV_DCID
     ]
     assert result.elected_stat_vars is not None
@@ -551,7 +549,6 @@ def test_unplaceable_declared_role_still_refuses_role_incompatible():
         result,
         representative=result,
         folded=False,
-        include_sentence=False,
         max_candidates=5,
         include_observations=False,
         include_skills=False,
@@ -560,11 +557,10 @@ def test_unplaceable_declared_role_still_refuses_role_incompatible():
     )
     assert part.status == "no_data"
     assert part.no_data.flagged_match is not None
-    assert [sv.ref for sv in part.no_data.flagged_match.resolved.stat_vars.items] == [
+    assert [sv.ref.dcid for sv in part.no_data.flagged_match.resolved.members] == [
         _UNPLACEABLE_SV_DCID
     ]
-    assert part.no_data.elected_stat_vars is not None
-    assert [ref.dcid for ref in part.no_data.elected_stat_vars] == [_UNPLACEABLE_SV_DCID]
+    assert part.no_data.elected_count == 1
 
 
 def test_unresolved_second_entity_refuses_role_not_resolved_instead_of_guessing():
@@ -757,7 +753,6 @@ def _relaxed_usa_to_kenya(monkeypatch, date_request: DateRequest | None):
             resolver=make_resolver(graph),
             llm=_BindLLMWithConstraint(),
             sdmx=sdmx,
-            base_steps=[],
             base_timing={},
             coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
             options=EngineOptions(
@@ -1107,7 +1102,7 @@ def test_zero_observation_resolve_returns_an_editable_flagged_carrier(monkeypatc
     assert len(result.flagged_match) == 1
     flagged = result.flagged_match[0]
     assert flagged.resolved.available_at_place is False
-    assert [sv.ref for sv in flagged.resolved.stat_vars.items] == [_SV_DCID]
+    assert [sv.ref.dcid for sv in flagged.resolved.members] == [_SV_DCID]
     assert result.elected_stat_vars is not None
     assert [ref.dcid for ref in result.elected_stat_vars] == [_SV_DCID]
 
@@ -1215,7 +1210,6 @@ def _candidates_with_flagged_alt(
             resolver=make_resolver(graph),
             llm=_CandidatesBindLLM(),
             sdmx=sdmx,
-            base_steps=[],
             base_timing={},
             coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
         )

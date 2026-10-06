@@ -1,11 +1,11 @@
 """Regenerate `code_index/data/index.json.gz` from the live graph.
 
-Four CRS code systems and `dac2aAidType` use `<-typeOf` enumeration. `crsPurpose` has 289 codes.
-Each declared dataset's StatVars are enumerated through a system every StatVar of that dataset
-declares, and the union is checked against complete non-spine reads. This graph repeats reverse-arc
-pages, so truncated reads split by code axes and observed `populationType`, to depth 6. A
-second read of each exported five-tuple refuses the export when the graph holds a StatVar the
-index would decide that is not an exported row.
+Four CRS code systems, `dac2aAidType` and `dac1AidType` use `<-typeOf` enumeration. `crsPurpose`
+has 289 codes. Each declared dataset's StatVars are enumerated through a system every StatVar of
+that dataset declares, and the union is checked against complete non-spine reads. This graph
+repeats reverse-arc pages, so truncated reads split by code axes and observed `populationType`, to
+depth 6. A second read of each exported five-tuple refuses the export when the graph holds a
+StatVar the index would decide that is not an exported row.
 
 Pass 1 reads each StatVar's type, shape, and declared constraints. Pass 2 reads their values.
 Export requires held, resolved targets with `typeOf` and one value per single-value field. Nodes
@@ -107,9 +107,10 @@ class CodeSystemConfig:
     `declared_by_every_statvar_of` lists the provenances of the datasets whose every StatVar
     declares this property. CRS StatVars all declare `crsPurpose`, `crsTypeOfFinance`, and
     `crsTypeOfFlow`; imputed multilateral StatVars all declare `crsPurpose`, `crsTypeOfFlow`, and
-    `dac2aAidType`, and none declares `crsTypeOfFinance`. `crsCooperationModality` is optional for
-    older CRS StatVars. A dataset is enumerated only through systems that list it, and the export
-    checks every exported row against the listing.
+    `dac2aAidType`, and none declares `crsTypeOfFinance`. DAC1 StatVars all declare `dac1AidType`
+    and no CRS code system. `crsCooperationModality` is optional for older CRS StatVars. A
+    dataset is enumerated only through systems that list it, and the export checks every
+    exported row against the listing.
 
     `plain_name` is the singular lowercase noun used after "any". A default code belongs to this
     system, scope codes belong to other systems, and `when_named` entries are lowercase and
@@ -129,6 +130,7 @@ class CodeSystemConfig:
 
 _CRS = "provenance/OECDCreditorReportingSystem"
 _IMPUTED_MULTILATERAL_SECTORS = "provenance/ONEImputedMultilateralSectors"
+_DAC1 = "provenance/OECDDAC1"
 
 # Exported declarations set CRS behaviour.
 # `crsTypeOfFlow` is flat, with nine root codes.
@@ -192,20 +194,45 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
         declared_by_every_statvar_of=(_IMPUTED_MULTILATERAL_SECTORS,),
         plain_name="aid type",
     ),
+    # DAC1 aid types nest totals over their parts ("bilateral ODA" under "ODA"), and memo items
+    # repeat amounts already counted elsewhere, so siblings neither sum nor exclude the parent.
+    CodeSystemConfig(
+        code_system="dac1AidType",
+        enum_dcid="DAC1AidTypeEnum",
+        expected_hierarchical=True,
+        disjoint_from_children=False,
+        summable=False,
+        absent_reading="not_declared",
+        declared_by_every_statvar_of=(_DAC1,),
+        plain_name="aid type",
+        # A DAC1 question that names no aid type asks about total ODA.
+        default=DeclaredDefault(
+            code="DAC1AidType1010",
+            when_bound_under=(),
+            when_open=True,
+            note="No aid type was named, so the answer covers official development assistance.",
+        ),
+    ),
 )
 
 
 # One declaration per published table. CRS commitments and some disbursement purpose codes carry
 # explicit zero rows, so a missing row for those cells reads as zero, and the imputed sectors table
-# reads the same way. The imputed table sits alone on `attributedAmount`, and a question answers
+# reads the same way. DAC1 reads a missing row as unknown, the reading for a table with no
+# zero-row evidence. The imputed table sits alone on `attributedAmount`, and a question answers
 # from it only when it names the table. Of two tables that can serve one family, the lower rank
-# serves it. Every imputed row is an ODA flow of the imputed multilateral aid type, declared as
-# invariants the loader checks against every row.
+# serves it. DAC1 shares the CRS five-tuples under its own codes (`dac1AidType`), so it forms
+# families of its own (`CodeIndex.family_of`) and its rank orders it against no other table.
+# Every imputed row is an ODA flow of the imputed multilateral aid type, declared as invariants
+# the loader checks against every row.
 DATASETS: tuple[DatasetDeclaration, ...] = (
     DatasetDeclaration(
         provenance=_CRS,
         label="OECD Creditor Reporting System (CRS)",
-        synonyms=("CRS", "creditor reporting system"),
+        description=(
+            "Development finance that providers report to the OECD activity by activity, by"
+            " sector, type of flow, type of finance and co-operation modality."
+        ),
         opt_in=False,
         absent_observation="zero",
         rank=0,
@@ -213,17 +240,26 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
     DatasetDeclaration(
         provenance=_IMPUTED_MULTILATERAL_SECTORS,
         label="ONE Imputed Multilateral Sectors",
-        synonyms=(
-            "imputed aid",
-            "imputed multilateral",
-            "imputed multilateral aid",
-            "imputed multilateral ODA",
-            "imputed ODA",
+        description=(
+            "The share of each multilateral organisation's spending attributed back to a"
+            " bilateral provider, in proportion to that provider's share of the organisation's"
+            " core resources."
         ),
         opt_in=True,
         absent_observation="zero",
         rank=10,
         invariants={"crsTypeOfFlow": "CRSTypeOfFlow10", "dac2aAidType": "DAC2aAidType106"},
+    ),
+    DatasetDeclaration(
+        provenance=_DAC1,
+        label="OECD DAC1",
+        description=(
+            "Donors' aggregate official and private flows reported to the OECD, as totals by"
+            " donor without a breakdown by recipient."
+        ),
+        opt_in=False,
+        absent_observation="unknown",
+        rank=20,
     ),
 )
 
@@ -434,7 +470,9 @@ _CODE_SHORT_NAMES: Mapping[str, str] = {
     "CRSTypeOfFinance1108": "other guarantees",
 }
 
-# Labels key full partitions. `measurementQualifier` stays outside the key, because no measure
+# A label keys a measure partition, or a family whose rows share fewer measure axes than a
+# partition; `label_for_pairs` picks the most specific label, so a family-level label never
+# names a full partition. `measurementQualifier` stays outside the key, because no measure
 # label states the price basis (`code_index.labels.compose_measure_label`).
 _MEASURE_PARTITION_LABELS: tuple[MeasurePartitionLabel, ...] = (
     MeasurePartitionLabel(
@@ -444,6 +482,16 @@ _MEASURE_PARTITION_LABELS: tuple[MeasurePartitionLabel, ...] = (
             ("populationType", "FinancialObligation"),
         ),
         label="commitments",
+    ),
+    # A family spanning both netting bases (CRS and DAC1 disbursements) reads as this
+    # label; a gross or net partition matches its own, more specific label.
+    MeasurePartitionLabel(
+        axis_values=(
+            ("financialFlowType", "Disbursement"),
+            ("measuredProperty", "amount"),
+            ("populationType", "FinancialFlow"),
+        ),
+        label="disbursements",
     ),
     MeasurePartitionLabel(
         axis_values=(
@@ -485,6 +533,41 @@ _MEASURE_PARTITION_LABELS: tuple[MeasurePartitionLabel, ...] = (
             ("populationType", "FinancialFlow"),
         ),
         label="grant equivalents",
+    ),
+    # Only DAC1 StatVars hold `amountMobilised`: private finance that official flows mobilise.
+    MeasurePartitionLabel(
+        axis_values=(
+            ("financialFlowType", "Disbursement"),
+            ("measuredProperty", "amountMobilised"),
+            ("populationType", "FinancialFlow"),
+        ),
+        label="private finance mobilised by disbursements",
+    ),
+    MeasurePartitionLabel(
+        axis_values=(
+            ("financialFlowType", "Disbursement"),
+            ("measuredProperty", "amountMobilised"),
+            ("nettingBasis", "Gross"),
+            ("populationType", "FinancialFlow"),
+        ),
+        label="private finance mobilised by gross disbursements",
+    ),
+    MeasurePartitionLabel(
+        axis_values=(
+            ("financialFlowType", "Disbursement"),
+            ("measuredProperty", "amountMobilised"),
+            ("nettingBasis", "Net"),
+            ("populationType", "FinancialFlow"),
+        ),
+        label="private finance mobilised by net disbursements",
+    ),
+    MeasurePartitionLabel(
+        axis_values=(
+            ("financialObligationType", "Commitment"),
+            ("measuredProperty", "amountMobilised"),
+            ("populationType", "FinancialObligation"),
+        ),
+        label="private finance mobilised by commitments",
     ),
 )
 
@@ -838,6 +921,8 @@ def _declared_default_to_dict(default: DeclaredDefault | None) -> dict | None:
         "code": default.code,
         "when_bound_under": list(default.when_bound_under),
         "when_named": list(default.when_named),
+        "when_open": default.when_open,
+        "note": default.note,
     }
 
 
@@ -847,7 +932,8 @@ def _validate_declared_defaults(
     """Validate each default against exported rows, raising `SystemExit` on invalid entries.
 
     Its code must belong to its own system. `when_bound_under` codes must belong to other systems.
-    `when_named` entries are non-empty lowercase strings.
+    `when_named` entries are non-empty lowercase strings. A default that fires on an open slot
+    (`when_open`) carries a note.
     """
     dcids_by_system = {
         system: {row["dcid"] for row in rows} for system, rows in code_rows_by_system.items()
@@ -882,6 +968,11 @@ def _validate_declared_defaults(
             raise SystemExit(
                 f"{config.code_system}: declared default when_named entry "
                 f"{default.when_named[invalid]!r} must be a non-empty lowercase string"
+            )
+        if default.when_open and not (default.note and default.note.strip()):
+            raise SystemExit(
+                f"{config.code_system}: declared default {default.code!r} fires on an open "
+                "slot and carries no note"
             )
 
 
@@ -1206,6 +1297,25 @@ def _read_five_tuple_subjects(
     return subjects
 
 
+def _minimal_system_sets(
+    key_sets: set[frozenset[str]], code_rows_by_system: Mapping[str, list[dict]]
+) -> list[frozenset[str]]:
+    """Return the code systems each key set of one five-tuple declares, keeping only the sets
+    no other set is a proper subset of.
+
+    A StatVar covering some row's key set carries every system of that set, so a read split on
+    a minimal set below it reaches the StatVar. Two datasets on one five-tuple with disjoint
+    systems, such as the CRS and DAC1, each get a read of their own.
+    """
+    system_sets = {
+        frozenset(system for system in keys if system in code_rows_by_system) for keys in key_sets
+    }
+    return sorted(
+        (systems for systems in system_sets if not any(other < systems for other in system_sets)),
+        key=sorted,
+    )
+
+
 def _verify_five_tuple_completeness(
     reader: GraphReader,
     statvars: Sequence[dict],
@@ -1223,12 +1333,13 @@ def _verify_five_tuple_completeness(
     must be an exported row. One the index would not decide, such as an IDS debt series with
     no CRS keys, passes because the graph walk resolves it.
 
-    A decided StatVar carries every code system each exported row of its five-tuple declares.
-    Each five-tuple's reverse read splits on those systems' enum codes, smallest non-spine
-    system first and spine systems last, so the read reaches StatVars the spine enumeration did
-    not. Values come from the enum, since exported rows would hide a value no row shows. The forward read of each unexported subject confirms its five-tuple, including the
-    denominator, and its key set. Truncated or exhausted reads refuse, as does a subject the
-    forward read finds no node for.
+    A decided StatVar carries every code system of the exported row it covers. Each five-tuple
+    gets one reverse read per minimal set of code systems its rows declare
+    (`_minimal_system_sets`), split on those systems' enum codes, smallest non-spine system first
+    and spine systems last, so the reads reach StatVars the spine enumeration did not. Values
+    come from the enum, since exported rows would hide a value no row shows. The forward read of
+    each unexported subject confirms its five-tuple, including the denominator, and its key set.
+    Truncated or exhausted reads refuse, as does a subject the forward read finds no node for.
 
     A decided StatVar whose codes lie outside the typed enums escapes both the spine and this
     check, and nothing else catches it. The check proves completeness at export time. The live
@@ -1244,26 +1355,26 @@ def _verify_five_tuple_completeness(
 
     unexported: set[str] = set()
     for five_tuple, keys in key_sets.items():
-        shared = frozenset.intersection(*keys)
-        systems = sorted(
-            (system for system in code_rows_by_system if system in shared),
-            key=lambda system: (
-                system in spine_systems,
-                len(code_rows_by_system[system]),
-                system,
-            ),
-        )
-        axes = tuple(
-            _PartitionAxis(
-                property=system,
-                values=tuple(sorted(row["dcid"] for row in code_rows_by_system[system])),
+        for systems in _minimal_system_sets(keys, code_rows_by_system):
+            ordered = sorted(
+                systems,
+                key=lambda system: (
+                    system in spine_systems,
+                    len(code_rows_by_system[system]),
+                    system,
+                ),
             )
-            for system in systems
-        )
-        subjects = _read_five_tuple_subjects(
-            reader, five_tuple, axes, max_results=max_results, max_depth=max_depth
-        )
-        unexported |= subjects - exported
+            axes = tuple(
+                _PartitionAxis(
+                    property=system,
+                    values=tuple(sorted(row["dcid"] for row in code_rows_by_system[system])),
+                )
+                for system in ordered
+            )
+            subjects = _read_five_tuple_subjects(
+                reader, five_tuple, axes, max_results=max_results, max_depth=max_depth
+            )
+            unexported |= subjects - exported
     if not unexported:
         return
 
@@ -1661,7 +1772,7 @@ def _dataset_to_dict(dataset: DatasetDeclaration) -> dict:
     return {
         "provenance": dataset.provenance,
         "label": dataset.label,
-        "synonyms": sorted(dataset.synonyms),
+        "description": dataset.description,
         "opt_in": dataset.opt_in,
         "absent_observation": dataset.absent_observation,
         "rank": dataset.rank,

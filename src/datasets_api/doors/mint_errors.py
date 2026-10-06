@@ -23,15 +23,12 @@ from artifact_store import (
 )
 from datasets_api.codes_materialise import (
     CapabilityUnavailable,
-    CodeAmbiguous,
-    CodeNotFoundError,
     CurrencyRoleUndeclared,
     DefinitionNotReproducible,
     ExcludedByRegistry,
     InvalidRoleRef,
     MalformedSidecarIdentity,
     MemberNotResolvable,
-    MemberSelectionMismatch,
     RenderedArtifactSigningFailed,
     RoleIncompatible,
     RoleSignatureIncompatible,
@@ -81,6 +78,7 @@ from materialise.reshape import (
     PivotOverColumnCapError,
     RollupNotSummableError,
 )
+from statvar_members import FiveTuple, MemberReadDeadline
 
 logger = logging.getLogger(__name__)
 
@@ -100,19 +98,6 @@ def _classify_member_not_resolvable(exc: MemberNotResolvable) -> ProblemSpec:
         detail=str(exc),
         retryable=False,
         truncated=exc.truncated,
-        issues=issues,
-    )
-
-
-def _classify_member_selection_mismatch(exc: MemberSelectionMismatch) -> ProblemSpec:
-    issues = [
-        ProblemIssue(pointer=f"{exc.pointer}/{index}", member=dcid) for index, dcid in exc.foreign
-    ]
-    return ProblemSpec(
-        status=422,
-        code="member_not_resolvable",
-        detail=str(exc),
-        retryable=False,
         issues=issues,
     )
 
@@ -147,37 +132,6 @@ def _classify_role_signature_incompatible(exc: RoleSignatureIncompatible) -> Pro
     )
 
 
-def _classify_code_ambiguous(exc: CodeAmbiguous) -> ProblemSpec:
-    # Source-code resolution attaches each ambiguous entry's request index.
-    # Direct raises use the broader `/input/codes` pointer.
-    indices = getattr(exc, "indices", None)
-    issues = [
-        ProblemIssue(
-            pointer=f"/input/codes/{indices[i]}" if indices is not None else "/input/codes",
-            member=code,
-            alternatives=[Alternative(ref=ref, label=label) for ref, label in candidates],
-            truncated=False,
-        )
-        for i, (code, candidates) in enumerate(exc.ambiguous)
-    ]
-    return ProblemSpec(
-        status=422, code="code_ambiguous", detail=str(exc), retryable=False, issues=issues
-    )
-
-
-def _classify_code_not_found(exc: CodeNotFoundError) -> ProblemSpec:
-    # Resolution attaches the code's request index. Direct raises use the
-    # broader `/input/codes` pointer.
-    index = getattr(exc, "index", None)
-    return ProblemSpec(
-        status=404,
-        code="code_not_found",
-        detail=str(exc),
-        retryable=False,
-        pointer=f"/input/codes/{index}" if index is not None else "/input/codes",
-    )
-
-
 def _classify_capability_unavailable(exc: CapabilityUnavailable) -> ProblemSpec:
     return ProblemSpec(
         status=501,
@@ -201,25 +155,13 @@ def _classify_spec_not_found(exc: SpecNotFound) -> ProblemSpec:
 
 
 def _classify_malformed_sidecar_identity(exc: MalformedSidecarIdentity) -> ProblemSpec:
-    # Collection errors identify the member. Definition errors use the top-level pointer.
-    issues = (
-        [ProblemIssue(pointer=exc.pointer, member=exc.member_spec_id)]
-        if exc.member_spec_id is not None
-        else None
-    )
     return ProblemSpec(
-        status=400,
-        code="request_invalid",
-        detail=str(exc),
-        retryable=False,
-        pointer=exc.pointer if issues is None else None,
-        issues=issues,
+        status=400, code="request_invalid", detail=str(exc), retryable=False, pointer=exc.pointer
     )
 
 
 def _classify_invalid_role_ref(exc: InvalidRoleRef) -> ProblemSpec:
-    # Collection errors identify the member. Declared roles list valid
-    # alternatives for the offending scope axis.
+    # Declared roles list valid alternatives for the offending scope axis.
     return ProblemSpec(
         status=422,
         code="invalid_role_ref",
@@ -228,7 +170,7 @@ def _classify_invalid_role_ref(exc: InvalidRoleRef) -> ProblemSpec:
         issues=[
             ProblemIssue(
                 pointer=f"/input/scope/entities/{exc.role}",
-                member=exc.member_spec_id if exc.member_spec_id is not None else exc.role,
+                member=exc.role,
                 axis=exc.role,
                 alternatives=[Alternative(ref=role, label=role) for role in exc.declared_roles],
                 truncated=False,
@@ -246,7 +188,7 @@ def _classify_role_incompatible(exc: RoleIncompatible) -> ProblemSpec:
         issues=[
             ProblemIssue(
                 pointer=f"/input/scope/entities/{exc.role}",
-                member=exc.member_spec_id if exc.member_spec_id is not None else exc.role,
+                member=exc.role,
                 axis=exc.role,
                 alternatives=[Alternative(ref=role, label=role) for role in exc.declared_roles],
                 truncated=False,
@@ -256,22 +198,15 @@ def _classify_role_incompatible(exc: RoleIncompatible) -> ProblemSpec:
 
 
 def _classify_currency_role_undeclared(exc: CurrencyRoleUndeclared) -> ProblemSpec:
-    # Collection errors carry a member issue. Stored-spec re-materialisation
-    # has no request pointer. Declared roles appear as top-level alternatives.
-    alternatives = [Alternative(ref=role, label=role) for role in exc.declared_roles]
-    issues = (
-        [ProblemIssue(pointer=exc.pointer, member=exc.member_spec_id, alternatives=alternatives)]
-        if exc.member_spec_id is not None
-        else None
-    )
+    # Stored-spec re-materialisation has no request pointer. Declared roles appear as
+    # top-level alternatives.
     return ProblemSpec(
         status=400,
         code="request_invalid",
         detail=str(exc),
         retryable=False,
-        pointer=exc.pointer if issues is None else None,
-        alternatives=alternatives if issues is None else None,
-        issues=issues,
+        pointer=exc.pointer,
+        alternatives=[Alternative(ref=role, label=role) for role in exc.declared_roles],
     )
 
 
@@ -395,8 +330,10 @@ def _classify_rollup_not_summable(exc: RollupNotSummableError) -> ProblemSpec:
 
 def _classify_pivot_not_unique(exc: PivotNotUniqueError) -> ProblemSpec:
     # Each duplicate key, including a stringify collision, becomes one issue
-    # at `/options/pivot`.
+    # at `/options/pivot`. Each column that varies inside the duplicate key
+    # groups becomes a further issue naming it as `axis`.
     issues = [ProblemIssue(pointer="/options/pivot", member=str(key)) for key in exc.duplicate_keys]
+    issues.extend(ProblemIssue(pointer="/options/pivot", axis=column) for column, _ in exc.varying)
     return ProblemSpec(
         status=422,
         code="pivot_not_unique",
@@ -487,6 +424,17 @@ def _classify_graph_deadline_exceeded(exc: GraphDeadlineExceededError) -> Proble
         status=TIMEOUT_DEFAULT.status,
         code=TIMEOUT_DEFAULT.code,
         detail="the request's deadline expired during the graph facet probe; retry",
+        retryable=TIMEOUT_DEFAULT.retryable,
+    )
+
+
+def _classify_member_read_deadline(exc: MemberReadDeadline) -> ProblemSpec:
+    # The walk ran out of time, which says nothing about the size of the set. A retry walks
+    # again, and an asynchronous operation that records it stays retryable.
+    return ProblemSpec(
+        status=TIMEOUT_DEFAULT.status,
+        code=TIMEOUT_DEFAULT.code,
+        detail=f"{exc}; the member count past it is unknown, not zero; retry",
         retryable=TIMEOUT_DEFAULT.retryable,
     )
 
@@ -668,12 +616,9 @@ _MintClassifier = tuple[
 
 _MINT_CLASSIFIERS: tuple[_MintClassifier, ...] = (
     (MemberNotResolvable, _classify_member_not_resolvable),
-    (MemberSelectionMismatch, _classify_member_selection_mismatch),
     (DefinitionNotReproducible, _classify_definition_not_reproducible),
     (SpecNotExportable, _classify_spec_not_exportable),
     (RoleSignatureIncompatible, _classify_role_signature_incompatible),
-    (CodeAmbiguous, _classify_code_ambiguous),
-    (CodeNotFoundError, _classify_code_not_found),
     (CapabilityUnavailable, _classify_capability_unavailable),
     (QueryOptionsInvalid, _classify_query_options_invalid),
     (SpecNotFound, _classify_spec_not_found),
@@ -703,6 +648,7 @@ _MINT_CLASSIFIERS: tuple[_MintClassifier, ...] = (
     (UpstreamVersionChangedError, _classify_upstream_version_changed),
     (MintBackpressure, _classify_mint_backpressure),
     (GraphDeadlineExceededError, _classify_graph_deadline_exceeded),
+    (MemberReadDeadline, _classify_member_read_deadline),
     (GraphReadError, _classify_graph_read_error),
     (SdmxQueryError, _classify_sdmx_query_error),
     (SdmxRoleCeilingError, _classify_sdmx_role_ceiling_error),
@@ -736,12 +682,9 @@ def classify_mint_exception(exc: BaseException) -> ProblemSpec | None:
 
 MINT_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     MemberNotResolvable,
-    MemberSelectionMismatch,
     DefinitionNotReproducible,
     SpecNotExportable,
     RoleSignatureIncompatible,
-    CodeAmbiguous,
-    CodeNotFoundError,
     CapabilityUnavailable,
     QueryOptionsInvalid,
     SpecNotFound,
@@ -775,6 +718,7 @@ MINT_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
     UpstreamVersionChangedError,
     MintBackpressure,
     GraphDeadlineExceededError,
+    MemberReadDeadline,
     GraphReadError,
     SdmxQueryError,
     SdmxTransportError,
@@ -799,14 +743,11 @@ MINT_EXCEPTION_TYPES: tuple[type[Exception], ...] = (
 
 MINT_EXCEPTION_EXEMPLARS: tuple[BaseException, ...] = (
     MemberNotResolvable(members=("dcid:exemplar",)),
-    MemberSelectionMismatch(foreign=((0, "exemplar"),)),
     DefinitionNotReproducible(spec_ids=("spec_exemplar",), detail="exemplar"),
     SpecNotExportable(spec_id="spec_exemplar", detail="exemplar"),
     RoleSignatureIncompatible(
         spec_id="spec_exemplar", roles_by_stat_var={"dcid:exemplar": ("recipient",)}
     ),
-    CodeAmbiguous(ambiguous=(("exemplar", (("dcid:a", "A"), ("dcid:b", "B"))),)),
-    CodeNotFoundError(code="exemplar", source=None),
     CapabilityUnavailable(detail="exemplar"),
     QueryOptionsInvalid(pointer="/options/groupby/levels", detail="exemplar"),
     SpecNotFound(subject_id="spec_exemplar", pointer="/input/spec_id"),
@@ -848,6 +789,7 @@ MINT_EXCEPTION_EXEMPLARS: tuple[BaseException, ...] = (
     UpstreamVersionChangedError("exemplar"),
     MintBackpressure(),
     GraphDeadlineExceededError("exemplar"),
+    MemberReadDeadline(five_tuple=FiveTuple(), candidates_considered=0, candidate_cap=1),
     GraphReadError("exemplar"),
     SdmxQueryError("exemplar"),
     SdmxTransportError("exemplar"),

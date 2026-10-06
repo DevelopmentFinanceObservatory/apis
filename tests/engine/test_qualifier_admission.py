@@ -53,6 +53,7 @@ from series_coverage.schema import RoleNames
 from tests.engine._fake_coverage import FakeCoverageService, empty_coverage_snapshot, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
+from tests.engine._index_slots import crs_shape_systems
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 
 _REAL_INDEX = get_index()
@@ -64,11 +65,23 @@ def _admit(
     dropped_qualifier_phrases: list[str] | None = None,
     query_text: str | None = None,
 ) -> tuple[QualifierMatch, ...]:
-    """Match the text, then admit results against the candidate shapes."""
+    """Match the text against the candidate shapes, as the prune step does, then admit
+    results against them."""
     matches, _variable_matched_phrases = _match_query_qualifiers(
-        variable, dropped_qualifier_phrases or [], query_text=query_text
+        variable,
+        dropped_qualifier_phrases or [],
+        query_text=query_text,
+        shape_systems=_shape_systems(shapes),
     )
     return _admit_qualifier_matches(shapes, matches)
+
+
+def _shape_systems(shapes: list[ShapeDraft]) -> tuple[frozenset[str], ...]:
+    """The constraint properties each of `shapes` declares, as the prune step reads them."""
+    return tuple(
+        frozenset(slot.property_dcid for slot in shape.slot_keys if slot.property_dcid)
+        for shape in shapes
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +220,7 @@ def test_collision_words_raw_match_a_real_crs_row():
     these, the admission test below would otherwise pass for the wrong
     reason (nothing to refuse)."""
     for query in _COLLISION_QUERIES:
-        assert match_qualifiers(query, _REAL_INDEX) != (), query
+        assert match_qualifiers(query, _REAL_INDEX, shape_systems=crs_shape_systems()) != (), query
 
 
 def test_collision_words_are_never_admitted_against_a_non_crs_shape():
@@ -266,7 +279,7 @@ def test_admit_qualifier_ties_promotes_when_exactly_one_row_survives_narrowing()
     # crsPurpose narrows the tie to a single surviving row -- the
     # declared-property tie-break -- promoted straight into
     # admitted_qualifiers, with no tie left for the model to see.
-    ties = match_qualifier_ties("budget support", _REAL_INDEX)
+    ties = match_qualifier_ties("budget support", _REAL_INDEX, shape_systems=crs_shape_systems())
     assert len(ties) == 1
     purpose_only_shape = _shape(
         "purpose_only_shape",
@@ -282,7 +295,7 @@ def test_admit_qualifier_ties_promotes_when_exactly_one_row_survives_narrowing()
 def test_admit_qualifier_ties_passes_through_when_two_or_more_rows_survive():
     # _CRS_SHAPE declares both crsCooperationModality and crsPurpose --
     # nothing to promote, the tie is still genuinely live.
-    ties = match_qualifier_ties("budget support", _REAL_INDEX)
+    ties = match_qualifier_ties("budget support", _REAL_INDEX, shape_systems=crs_shape_systems())
     promoted, admitted_ties = _admit_qualifier_ties([_CRS_SHAPE], ties)
     assert promoted == ()
     assert len(admitted_ties) == 1
@@ -301,7 +314,9 @@ def test_admit_qualifier_ties_drops_when_no_shape_declares_either_property():
 
 
 def test_admit_qualifier_ties_narrows_a_four_row_tie_per_declaring_shape():
-    ties = match_qualifier_ties("debt relief grants", _REAL_INDEX)
+    ties = match_qualifier_ties(
+        "debt relief grants", _REAL_INDEX, shape_systems=crs_shape_systems()
+    )
     debt_relief = next(t for t in ties if t.matched_text == "debt relief")
     assert len(debt_relief.rows) == 4
     modality_only_shape = _shape(
@@ -355,7 +370,6 @@ def _vet_state(
         source_text=None,
         materialise_graph=None,
         materialise_sdmx=None,
-        pipeline_steps=[],
         timing={},
         warnings=[],
         capped_shapes=capped_shapes,
@@ -374,7 +388,9 @@ def _run_vet(state: ResolveState) -> None:
     assert result is None, "expected _phase_vet_election to fall through"
 
 
-_BUDGET_SUPPORT_TIE = match_qualifier_ties("budget support", _REAL_INDEX)[0]
+_BUDGET_SUPPORT_TIE = match_qualifier_ties(
+    "budget support", _REAL_INDEX, shape_systems=crs_shape_systems()
+)[0]
 
 
 def test_vet_election_keeps_a_single_model_elected_tie_row():
@@ -752,7 +768,6 @@ def test_n2_fanout_broadcasts_query_text_none_to_every_leg():
                 admission=admission,
                 llm=FakeLLM(responses={}),
                 sdmx=sdmx,
-                base_steps=[],
                 base_timing={},
                 pre_resolved=None,
                 deadline=time.monotonic() + 3600,
@@ -823,7 +838,9 @@ def test_prompt_renders_admitted_ties_as_query_named_alternatives_without_matche
     # (a tie whose matched_text equals both rows' own labels) could.
     tie = next(
         t
-        for t in match_qualifier_ties("debt relief grants", _REAL_INDEX)
+        for t in match_qualifier_ties(
+            "debt relief grants", _REAL_INDEX, shape_systems=crs_shape_systems()
+        )
         if t.matched_text == "grants"
     )
     prompt = _build_universal_bind_prompt(
@@ -1030,7 +1047,9 @@ def test_e2e_fixture_matches_the_real_packaged_index():
     row = next(r for r in _REAL_INDEX.statvars if r.dcid == _E2E_SV_DCID)
     assert row.constraint_properties["crsTypeOfFlow"] == "CRSTypeOfFlow10"
     assert row.constraint_properties["crsTypeOfFinance"] == "CRSTypeOfFinance110"
-    matches = _by_system(match_qualifiers(_E2E_QUERY, _REAL_INDEX))
+    matches = _by_system(
+        match_qualifiers(_E2E_QUERY, _REAL_INDEX, shape_systems=crs_shape_systems())
+    )
     assert matches["crsTypeOfFlow"].code_dcid == "CRSTypeOfFlow10"
     assert matches["crsTypeOfFinance"].code_dcid == "CRSTypeOfFinance110"
 
@@ -1123,7 +1142,6 @@ def _run_e2e(
                 resolver=make_resolver(graph),
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 llm=llm if llm is not None else _NoBindingLLM(),
-                base_steps=[],
                 base_timing={},
                 coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
             )

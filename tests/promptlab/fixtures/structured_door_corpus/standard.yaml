@@ -36,8 +36,6 @@
         label: activity source
       binding:
         kind: unbound
-    stat_var_dcids:
-    - Amount_EconomicActivity_GrossDomesticProduction_Nominal
     entity_dcids:
     - country/IND
   why: A dataset_resubmit case the structured-door exclusion test names.

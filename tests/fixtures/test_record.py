@@ -1526,7 +1526,6 @@ _ROLE_BEARING_SHAPE = {
     "stat_type": "measuredValue",
     "measurement_qualifier": "Nominal",
 }
-_STAT_VAR = "Amount_FinancialFlow_Gross_Disbursement_Nominal"
 
 
 def _case(variable_text: str, **resubmit) -> Case:
@@ -1540,7 +1539,6 @@ def _case(variable_text: str, **resubmit) -> Case:
                 "variable_text": variable_text,
                 "shape": _ROLE_BEARING_SHAPE,
                 "slots": [],
-                "stat_var_dcids": [_STAT_VAR],
                 **resubmit,
             },
             "expect": {"definite": {}},

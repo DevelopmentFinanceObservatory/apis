@@ -286,9 +286,10 @@ class UnavailableFormatModel(BaseModel):
 class PivotOptionModel(BaseModel):
     """One ordered `(index, columns)` pivot pair. `varying` is populated
     for a `pivot_not_unique` refusal caused by a duplicate key group. A
-    bare stringification collision carries no inspectable group and is
-    pruned before this model is built. `width` and `cells` are populated
-    only when the pair is feasible.
+    stringification collision, where distinct `columns` values share an
+    output column name, is also `unavailable` as `pivot_not_unique`, with
+    no `varying` since no duplicate key group exists. `width` and `cells`
+    are populated only when the pair is feasible.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -340,51 +341,21 @@ class DefinitionModel(BaseModel):
     )
 
 
-class CollectionMemberModel(BaseModel):
-    """One collection member. `prepared_at` is when the member's own version was first
-    prepared, which can precede the collection's when the member was minted alone first.
-    `provenance_refs` are the refs of the member's own sources, which key the collection's
-    `citation` and name the member's bundle file and bare artifacts."""
-
-    model_config = ConfigDict(extra="forbid")
-    definition: DefinitionModel
-    content_version: str
-    prepared_at: AwareDatetime
-    provenance_refs: list[str]
-    coverage: CoverageModel
-    series_count: int | None = None
-    output_options: OutputOptionsModel | None = None
-
-
-class CollectionModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    collection_id: str
-    members: list[CollectionMemberModel]
-
-
 class Manifest(BaseModel):
-    """Exactly one of `definition`/`collection` present. `trace` stays a
-    plain dict -- `materialise.trace.ManifestTrace.to_dict()` is already
-    this field's exact wire shape.
+    """`trace` stays a plain dict, since `materialise.trace.ManifestTrace.to_dict()`
+    is already this field's exact wire shape.
 
     `series_count` is the number of distinct series this definition
-    resolves, and lives at this top level only for a definition manifest; a
-    collection manifest carries its own per-member `series_count` on each
-    `CollectionMemberModel` instead, and this top-level field stays `None`
-    (see `_series_count_only_at_the_right_level`). `None` also means a
-    version record minted before this field existed (`datasets_api.manifest
-    .decode_version_body` drops such a record's old inline `statistics` key
-    rather than translating it). The per-series detail itself lives in the
+    resolves. `None` means a version record minted before this field existed
+    (`datasets_api.manifest.decode_version_body` drops such a record's old inline
+    `statistics` key rather than translating it). The per-series detail itself lives in the
     `series-statistics/1` Parquet artifact every door that returns a
     `Manifest` lists in `artifacts` whenever `series_count` is not `None`
     (`datasets_api.render.render_and_store_series_statistics`), never
     inline on this model.
 
     `output_options` is `None` on a version record minted before the field
-    existed, the same convention `series_count` uses. A collection manifest
-    carries its own `output_options` per member on `CollectionMemberModel`,
-    since reshapes apply per member. This top-level field is a definition
-    manifest's document.
+    existed, the same convention `series_count` uses.
 
     `prepared_at` is when this version was first prepared, written once at its
     first mint and stored with it, so every re-mint and re-render reads the same
@@ -393,8 +364,7 @@ class Manifest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     schema_version: int = 1
-    definition: DefinitionModel | None = None
-    collection: CollectionModel | None = None
+    definition: DefinitionModel
     content_version: str
     prepared_at: AwareDatetime
     coverage: CoverageModel
@@ -421,66 +391,22 @@ class Manifest(BaseModel):
         ),
     )
 
-    @model_validator(mode="after")
-    def _definition_xor_collection(self) -> Manifest:
-        if (self.definition is None) == (self.collection is None):
-            raise ValueError("exactly one of 'definition' or 'collection' must be present")
-        return self
-
-    @model_validator(mode="after")
-    def _output_options_only_at_the_right_level(self) -> Manifest:
-        if self.collection is not None and self.output_options is not None:
-            raise ValueError(
-                "top-level 'output_options' is only for a definition manifest; "
-                "a collection manifest carries output_options per member"
-            )
-        return self
-
-    @model_validator(mode="after")
-    def _series_count_only_at_the_right_level(self) -> Manifest:
-        if self.collection is not None and self.series_count is not None:
-            raise ValueError(
-                "top-level 'series_count' is only for a definition manifest; "
-                "a collection manifest carries series_count per member"
-            )
-        return self
-
 
 class OptionsEnvelope(BaseModel):
     """`GET /api/datasets/{id}/options`'s response. It is the write-free
     projection of a materialising door's manifest onto the fields this
     route's callers need (content_version, coverage, output_options,
-    warnings, trace). Built from the pre-write half of `serve_definition`/
-    `serve_collection` (`datasets_api.serve.prewrite_definition`/
-    `prewrite_collection`), which runs no reshape, so `warnings` here
-    excludes reshape-level warnings such as `enrichment_unavailable`.
-
-    A collection request carries `output_options` per member on
-    `CollectionModel.members`, and the top-level field stays forbidden
-    once `collection` is set.
+    warnings, trace). Built from the pre-write half of `serve_definition`
+    (`datasets_api.serve.prewrite_definition`), which runs no reshape, so
+    `warnings` here excludes reshape-level warnings such as
+    `enrichment_unavailable`.
     """
 
     model_config = ConfigDict(extra="forbid")
     schema_version: int = 1
-    definition: DefinitionModel | None = None
-    collection: CollectionModel | None = None
+    definition: DefinitionModel
     content_version: str
     coverage: CoverageModel
     output_options: OutputOptionsModel | None = None
     warnings: list[WarningModel] = Field(default_factory=list)
     trace: dict[str, object]
-
-    @model_validator(mode="after")
-    def _definition_xor_collection(self) -> OptionsEnvelope:
-        if (self.definition is None) == (self.collection is None):
-            raise ValueError("exactly one of 'definition' or 'collection' must be present")
-        return self
-
-    @model_validator(mode="after")
-    def _output_options_only_at_the_right_level(self) -> OptionsEnvelope:
-        if self.collection is not None and self.output_options is not None:
-            raise ValueError(
-                "top-level 'output_options' is only for a definition envelope; "
-                "a collection envelope carries output_options per member"
-            )
-        return self

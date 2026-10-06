@@ -94,8 +94,6 @@ def wire_definition_for(
 class FakeRegistryState:
     spec_registry: dict[str, dict] = field(default_factory=dict)
     spec_definition: dict[tuple[str, int], dict] = field(default_factory=dict)
-    collection_registry: dict[str, dict] = field(default_factory=dict)
-    collection_member: dict[str, dict[int, str]] = field(default_factory=dict)
     identity_quarantine: list[dict] = field(default_factory=list)
     lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -175,30 +173,6 @@ class FakeTransaction:
                 for key, row in s.spec_definition.items()
                 if key[0] in params
             ]
-
-        if "SELECT collection_id FROM datasets.collection_registry" in sql:
-            (collection_id,) = params
-            return (
-                [{"collection_id": collection_id}] if collection_id in s.collection_registry else []
-            )
-
-        if "INSERT INTO datasets.collection_registry" in sql:
-            collection_id, trace_id = params
-            if collection_id in s.collection_registry:
-                return []
-            s.collection_registry[collection_id] = {"trace_id": trace_id}
-            s.collection_member.setdefault(collection_id, {})
-            return [{"collection_id": collection_id}]
-
-        if "INSERT INTO datasets.collection_member" in sql:
-            collection_id, position, spec_id = params
-            s.collection_member.setdefault(collection_id, {})[position] = spec_id
-            return []
-
-        if "SELECT spec_id FROM datasets.collection_member" in sql:
-            (collection_id,) = params
-            members = s.collection_member.get(collection_id, {})
-            return [{"spec_id": members[position]} for position in sorted(members)]
 
         if "INSERT INTO datasets.identity_quarantine" in sql:
             id_kind, subject_id, held_bytes, incoming_bytes, trace_id = params

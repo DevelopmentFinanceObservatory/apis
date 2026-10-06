@@ -107,7 +107,6 @@ def test_a_first_answer_over_two_named_places_serves_the_second_places_data():
             graph=graph,
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),

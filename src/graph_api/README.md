@@ -354,7 +354,7 @@ A stored document longer than six characters per byte of `dfo_provenance_docs.MA
 
 #### `usage`
 
-`usage.api_access`/`usage.python` are always `null` (`graph_api.usage.usage_document`), for every `dcid`: no request shape this deployment exposes -- the mint door's `source_codes` kind, a graph read, or the SDMX bridge -- can turn a source dcid alone into a StatVar, and without one there is nothing for a `code` sample to name. Live-verified 2026-09-10: `GET /sdmx/v3/data/dataflow/DC/DF_OBS/1.0.0/*` and `GET /sdmx/v3/availability/dataflow/DC/DF_OBS/1.0.0/*/variableMeasured`, both carrying only a `c[provenance]` filter and no `c[variableMeasured]`, each return `400 {"code":3,"message":"missing required SDMX component filter variableMeasured"}` against the dev mixer. See `graph_api.usage`'s own docstring for the full investigation.
+`usage.api_access`/`usage.python` are always `null` (`graph_api.usage.usage_document`), for every `dcid`: no request shape this deployment exposes -- the mint door, a graph read, or the SDMX bridge -- can turn a source dcid alone into a StatVar, and without one there is nothing for a `code` sample to name. Live-verified 2026-09-10: `GET /sdmx/v3/data/dataflow/DC/DF_OBS/1.0.0/*` and `GET /sdmx/v3/availability/dataflow/DC/DF_OBS/1.0.0/*/variableMeasured`, both carrying only a `c[provenance]` filter and no `c[variableMeasured]`, each return `400 {"code":3,"message":"missing required SDMX component filter variableMeasured"}` against the dev mixer. See `graph_api.usage`'s own docstring for the full investigation.
 
 #### Reads
 

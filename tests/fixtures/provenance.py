@@ -5,18 +5,21 @@ from __future__ import annotations
 from collections.abc import Mapping
 from functools import cache
 
+from code_index.query import CodeIndex
 from code_index.shared import get_index
 
 
 @cache
-def _index_provenances() -> dict[str, tuple[str, ...]]:
-    return {row.dcid: row.provenances for row in get_index().statvars}
+def _index_provenances(index: CodeIndex) -> dict[str, tuple[str, ...]]:
+    """Keyed on the index object (hashed by identity), so a test that swaps in a synthetic
+    index gets its own map and the packaged one is untouched."""
+    return {row.dcid: row.provenances for row in index.statvars}
 
 
 def index_provenance(stat_var: str) -> str | None:
     """The one dataset the packaged code index records `stat_var` under, or None for a
     variable outside the index or under several datasets."""
-    provenances = _index_provenances().get(stat_var, ())
+    provenances = _index_provenances(get_index()).get(stat_var, ())
     return provenances[0] if len(provenances) == 1 else None
 
 

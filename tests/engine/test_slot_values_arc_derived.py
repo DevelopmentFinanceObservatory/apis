@@ -135,7 +135,7 @@ def test_two_stat_vars_carry_only_their_own_set_binding_member():
 
     assert result.parts[0].status == "definite", f"expected definite, got {result.parts[0]}"
     spec = result.parts[0].spec
-    stat_vars_by_ref = {sv.ref: sv for sv in spec.resolved.stat_vars.items}
+    stat_vars_by_ref = {sv.ref.dcid: sv for sv in spec.resolved.members}
     assert set(stat_vars_by_ref) == {_SV_A, _SV_B}
 
     a_values = {v.value.ref.dcid for v in stat_vars_by_ref[_SV_A].slot_values}

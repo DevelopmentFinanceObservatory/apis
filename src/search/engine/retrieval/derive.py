@@ -4,8 +4,9 @@ membership authority.
 A five-tuple's subject-only members and its role-bearing members are separate shapes,
 since no election orders one against the other. Members whose family the packaged code
 index decides and members whose family the graph walk decides are separate shapes too
-(`bound_values.index_decides_member`), so a shape never holds members whose membership
-two authorities decide.
+(`bound_values.member_family`), so a shape never holds members whose membership two
+authorities decide, and members of two index families of one five-tuple, such as CRS and
+DAC1 flows, are separate shapes.
 
 Each shape carries confirmed member arcs and a slot taxonomy sourced from its
 recall pool or the index, so bind needs no further graph reads.
@@ -15,12 +16,17 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import functools
+import hashlib
 import logging
 from collections import defaultdict
 from collections.abc import Iterable
 from dataclasses import dataclass
 
-from code_index.shared import get_index
+from code_index import CodeIndex
+from code_index.labels import index_family_label
+from code_index.query import IndexFamily, row_five_tuple
+from code_index.shared import get_index, get_measure_index
 from materialise.recipe_bodies import RECIPE_BODIES
 from materialise.roles import DegenerateObservationProperties, declared_roles
 from origin_catalogue import (
@@ -32,12 +38,13 @@ from origin_catalogue import (
 from origin_catalogue.origins import UN_ID_PREFIX
 from search.engine.clients.graph import EngineGraphClient, force_full_facets
 from search.engine.config import settings
+from search.engine.degraded_reads import note_degraded_read
 from search.engine.errors import GraphCapExceededError, RoleSignatureError
 from search.engine.reading_coverage import ReadingCoverage, observed_years
 from search.engine.retrieval.bound_values import (
+    five_tuple_families,
     five_tuple_member_facts,
-    index_carries_five_tuple,
-    index_decides_member,
+    member_family,
 )
 from search.engine.retrieval.facts import (
     FiveTuple,
@@ -62,6 +69,8 @@ from search.engine.shape import (
     is_role_bearing,
     shape_draft_from,
 )
+from search.heading.measure_noun import denominator_noun
+from statvar_members import FiveTuple as MemberFiveTuple
 
 logger = logging.getLogger(__name__)
 
@@ -82,9 +91,18 @@ CONVERSION_TABLE_STAT_VARS: frozenset[str] = frozenset(
 # settings().max_confirm_candidates cap sort or the bind menu's top-K cap.
 _EXPANSION_RANK_EPSILON = 1e-4
 
-# A group of confirmed members: their five-tuple, whether they are role-bearing, and
-# whether the packaged code index decides their family.
-type _GroupKey = tuple[FiveTuple, bool, bool]
+# The members of one index family group an over-cap pool ranks at their score
+# (`_family_spread`). One confirmed member builds the group's shape, since the index
+# supplies the family's other rows (`five_tuple_member_facts`).
+_FAMILY_CONFIRM_MEMBERS = 1
+
+# An index row's derive group: its five-tuple, the properties of its index family, and
+# whether it declares a role.
+type _IndexGroupKey = tuple[MemberFiveTuple, frozenset[str], bool]
+
+# A group of confirmed members: their five-tuple, whether they are role-bearing, and the
+# properties of the index family they belong to, or None when the graph walk decides it.
+type _GroupKey = tuple[FiveTuple, bool, frozenset[str] | None]
 
 # The id suffix of each group class that is not its five-tuple's primary class, by
 # (role-bearing, indexed). The primary class keeps the five-tuple's own slug
@@ -326,6 +344,46 @@ def _select_capped_candidates(
     return selected
 
 
+@functools.lru_cache(maxsize=1)
+def _index_group_keys(index: CodeIndex) -> dict[str, _IndexGroupKey]:
+    """The derive group of each row of `index`, by StatVar dcid: the row's five-tuple, the
+    properties of the family it belongs to (`CodeIndex.family_by_dcid`, as
+    `bound_values.member_family` reads it), and whether it declares a role
+    (`_is_role_bearing_candidate`). These are the parts of `_GroupKey` that `derive_shapes`
+    reads from a confirmed member's arcs."""
+    return {
+        row.dcid: (
+            row_five_tuple(row),
+            index.family_by_dcid[row.dcid].properties,
+            _is_role_bearing_candidate(row.observation_properties),
+        )
+        for row in index.statvars
+    }
+
+
+def _family_spread(candidate_pool: list[str]) -> list[str]:
+    """Return `candidate_pool` with the members of each index family group beyond its first
+    `_FAMILY_CONFIRM_MEMBERS` moved after every other candidate, rank order kept within both
+    parts.
+
+    A shape the index carries reads its slot keys and taxonomy from every row of its family
+    (`five_tuple_member_facts`), so its further members would only spend confirm slots that
+    other shapes need. StatVars the index does not decide keep their rank."""
+    group_keys = _index_group_keys(get_index())
+    taken: dict[_IndexGroupKey, int] = defaultdict(int)
+    leading: list[str] = []
+    surplus: list[str] = []
+    for sv in candidate_pool:
+        key = group_keys.get(sv)
+        if key is not None and taken[key] >= _FAMILY_CONFIRM_MEMBERS:
+            surplus.append(sv)
+            continue
+        if key is not None:
+            taken[key] += 1
+        leading.append(sv)
+    return leading + surplus
+
+
 def _confirm_with_backfill(
     candidate_pool: list[str],
     selected: set[str],
@@ -407,7 +465,8 @@ def _probe_place_availability(
     `full_facets_max_candidates` because Topic expansion follows the caller's
     raw-count check; above the bound, `force_full_facets(False)` keeps this
     probe from fetching full history. Within the bound, the widened read shares
-    the dated observation request's cache key. Graph errors fail open.
+    the dated observation request's cache key. Graph errors fail open, and a failed probe
+    is noted as a lost read (`degraded_reads.note_degraded_read`).
     """
     if not place_dcids:
         return None
@@ -447,6 +506,7 @@ def _probe_place_availability(
             place_dcids,
             exc_info=True,
         )
+        note_degraded_read("place-availability probe")
         return None
 
     held = {
@@ -566,33 +626,56 @@ def _shape_draft_for_group(
     )
 
 
-def member_group_class(five_tuple: FiveTuple, arcs: dict) -> tuple[bool, bool]:
-    """Return a member's group class: whether it declares a role, and whether the packaged
-    code index decides its family (`bound_values.index_decides_member`: its constraint keys
-    cover an index row of `five_tuple`, the condition under which the Datasets mint resolves
-    it through the index).
+def member_group_class(
+    dcid: str, five_tuple: FiveTuple, arcs: dict
+) -> tuple[bool, IndexFamily | None]:
+    """Return member `dcid`'s group class: whether it declares a role, and the packaged code
+    index family it belongs to (`bound_values.member_family`), or None when the graph walk
+    decides its family.
 
     Derive groups members by five-tuple and class, and a resubmit reads the class of the
     members it re-reads to rebuild their shape's id (`group_shape_id`)."""
     return (
         _is_role_bearing_candidate(tuple(_dcids_for(arcs, "observationProperties"))),
-        index_decides_member(five_tuple, _dcids_for(arcs, "constraintProperties")),
+        member_family(dcid, five_tuple, _dcids_for(arcs, "constraintProperties")),
     )
 
 
-def group_shape_id(five_tuple: FiveTuple, *, role_bearing: bool, indexed: bool) -> str:
+def group_shape_id(five_tuple: FiveTuple, *, role_bearing: bool, family: IndexFamily | None) -> str:
     """Return the shape id of a group of members of `five_tuple`.
 
     The id reads the group alone, so it is the same whatever else a derivation or a
-    resubmit holds. The five-tuple's primary class keeps its slug: the index-decided
-    role-bearing members when the packaged code index carries the five-tuple (CRS flows),
-    and the subject-only members otherwise. Every other class takes its suffix
-    (`_GROUP_ID_SUFFIX`), so the groups a five-tuple splits into never share an id."""
+    resubmit holds. The five-tuple's primary class keeps its slug: the role-bearing members
+    of its first index family (CRS flows) when the packaged code index carries the
+    five-tuple, and the subject-only members otherwise. Every other class takes its suffix
+    (`_GROUP_ID_SUFFIX`), and the members of any other index family of the five-tuple
+    (DAC1 flows beside CRS flows) take a tag of that family's properties too, so the groups
+    a five-tuple splits into never share an id."""
     slug = standard_shape_id_for(five_tuple)
-    primary = (True, True) if index_carries_five_tuple(five_tuple) else (False, False)
-    if (role_bearing, indexed) == primary:
+    families = five_tuple_families(five_tuple)
+    primary_family = families[0].properties if families else None
+    properties = family.properties if family is not None else None
+    if families and role_bearing and properties == primary_family:
         return slug
-    return f"{slug}{_GROUP_ID_SUFFIX[(role_bearing, indexed)]}"
+    if not families and not role_bearing:
+        return slug
+    suffix = _GROUP_ID_SUFFIX.get((role_bearing, family is not None), "")
+    if properties is not None and properties != primary_family:
+        tag = hashlib.sha256("\n".join(sorted(properties)).encode()).hexdigest()[:8]
+        suffix = f"{suffix}_family_{tag}"
+    return f"{slug}{suffix}"
+
+
+def index_shape_label(family: IndexFamily, *, population_type_label: str) -> str:
+    """Return the label of a shape whose membership index `family` decides
+    (`index_family_label`). Derive and a resubmit label such a shape with this."""
+    return index_family_label(
+        family,
+        index=get_index(),
+        measure_index=get_measure_index(),
+        denominator_noun=denominator_noun(family.five_tuple.measurement_denominator),
+        population_type_label=population_type_label,
+    )
 
 
 def _build_group_shape(
@@ -600,6 +683,7 @@ def _build_group_shape(
     group_svs: list[str],
     *,
     shape_id: str,
+    family: IndexFamily | None,
     sv_facts: dict[str, dict],
     sv_scores: dict[str, float],
     recall_svs: set[str],
@@ -616,6 +700,8 @@ def _build_group_shape(
     covers the members' roles or the tuple has no schema member; otherwise
     return the shape with both flags false. Members that declare different
     roles on distinct axes share one shape carrying the union of their roles.
+    `family` is the index family that decides the group's membership, or None when the
+    graph walk decides it.
     """
     # One confirmed arc map feeds role validation, stamping, and downstream representatives.
     group_arc_facts = {sv: sv_facts[sv]["arcs"] for sv in group_svs}
@@ -689,14 +775,17 @@ def _build_group_shape(
     rep_sv_dcid = next((sv for sv in group_svs if sv in sv_scores), group_svs[0])
     label_sv_dcid = next((sv for sv in group_svs if sv in recall_svs), rep_sv_dcid)
     pop_type_name = prop_labels_raw.get(five_tuple.pop_type_dcid, five_tuple.pop_type_dcid)
-    # A UN System variable's name spells out its own constraint values, which an
-    # unbound slot spans, so a multi-member UN family reads as its population type.
+    # A member's name spells out its own constraint values, which an unbound slot spans, so
+    # an index family reads as what all its rows share and a multi-member UN family as its
+    # population type.
     population_type_label = (
         prop_labels_raw.get(five_tuple.pop_type_dcid)
         if len(group_svs) > 1 and all(sv.startswith(UN_ID_PREFIX) for sv in group_svs)
         else None
     )
-    if population_type_label is not None:
+    if family is not None:
+        shape_label = index_shape_label(family, population_type_label=pop_type_name)
+    elif population_type_label is not None:
         shape_label = family_label(
             population_type_label=population_type_label,
             member_constraints=[sv_facts[sv]["constraints"] for sv in group_svs],
@@ -830,7 +919,9 @@ def derive_shapes(
 
     Topic roots expand before capped full-arc confirmation. The cap reserves
     recalled candidates and both role classes; one backfill batch replaces
-    unconfirmable members. Index-backed groups add properties beyond the sample.
+    unconfirmable members. Over the cap, each index family group confirms its top
+    member before any of its others (`_family_spread`). Index-backed groups add
+    properties beyond the sample.
 
     `sv_scores` supplies measured recall scores; expansion-only groups retain
     no score and carry a separate ordering rank. `sv_types` identifies Topic
@@ -841,7 +932,7 @@ def derive_shapes(
 
     Return one shape per group: the members of one five-tuple that are subject-only or
     role-bearing, and whose family the packaged code index decides or does not
-    (`bound_values.index_decides_member`). A role-bearing shape declares every role its
+    (`bound_values.member_family`). A role-bearing shape declares every role its
     members declare (`facts.group_roles`), and marks optional the roles some member does
     not declare. Its label, slot keys and family all come from that one group.
     Groups without schema fields are skipped. A group whose roles put two names on one
@@ -866,6 +957,11 @@ def derive_shapes(
         expansion_rank=expansion_rank,
     )
 
+    # Over the cap, an index family group's surplus members rank last, for the capped
+    # selection and its backfill alike.
+    if len(candidate_pool) > settings().max_confirm_candidates:
+        candidate_pool = _family_spread(candidate_pool)
+
     selected = _select_capped_candidates(
         candidate_pool, sv_scores=sv_scores, recall_svs=recall_svs, graph=graph
     )
@@ -888,20 +984,25 @@ def derive_shapes(
 
     # A degenerate arc reads as role-bearing, and `group_roles` refuses its group.
     groups: dict[_GroupKey, list[str]] = defaultdict(list)
+    group_families: dict[_GroupKey, IndexFamily | None] = {}
     for sv_dcid, facts in sv_facts.items():
         five_tuple = facts["five_tuple"]
-        groups[(five_tuple, *member_group_class(five_tuple, facts["arcs"]))].append(sv_dcid)
+        role_bearing, family = member_group_class(sv_dcid, five_tuple, facts["arcs"])
+        key = (five_tuple, role_bearing, family.properties if family is not None else None)
+        groups[key].append(sv_dcid)
+        group_families[key] = family
 
     shapes: list[ShapeDraft] = []
     unusable_role_groups = 0
     zero_member_groups = 0
     for key, group_svs in groups.items():
-        five_tuple, role_bearing, indexed = key
-        shape_id = group_shape_id(five_tuple, role_bearing=role_bearing, indexed=indexed)
+        five_tuple, role_bearing, _properties = key
+        shape_id = group_shape_id(five_tuple, role_bearing=role_bearing, family=group_families[key])
         shape, unusable_roles, zero_member = _build_group_shape(
             five_tuple,
             group_svs,
             shape_id=shape_id,
+            family=group_families[key],
             sv_facts=sv_facts,
             sv_scores=sv_scores,
             recall_svs=recall_svs,

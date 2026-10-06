@@ -156,6 +156,21 @@ class _UniversalBindOutput(BaseModel):
     )
 
 
+class _SourceSlotBindOutput(_UniversalBindOutput):
+    """LLM output schema for a choose+bind call whose menu offers a source slot
+    (`ShapeDraft.source_options`): the universal output and the dropped phrase the source
+    binding consumed. A call with no source slot keeps `_UniversalBindOutput`."""
+
+    source_phrase: str | None = Field(
+        default=None,
+        description=(
+            "When the chosen shape's source slot is bound kind=value, the DROPPED "
+            "QUALIFIERS phrase that names or excludes that table, copied verbatim; null "
+            "when the slot is unbound or no DROPPED QUALIFIERS phrase names the table."
+        ),
+    )
+
+
 _UNIVERSAL_BIND_SYSTEM_PROMPT: str = """\
 You are a shape-selection and slot-binding agent for a statistical-indicator search engine built on a knowledge graph of StatisticalVariables (SVs).
 
@@ -288,6 +303,28 @@ _MAX_SAMPLE_DCIDS_SHOWN = 5
 # Render an alternatives group only when at least two rows survive filtering.
 _MIN_TIE_ROWS_TO_RENDER = 2
 
+# The source slot's spelling of a table the part excludes: the prefix and the table's dcid.
+EXCLUDED_SOURCE_PREFIX = "excluded:"
+
+# The rules for the source slot, rendered in the user prompt only when a shape offers the
+# slot, so a prompt without it is unchanged.
+_SOURCE_SLOT_RULES = (
+    "SOURCE SLOT (a shape that lists a constraint slot with axis=source is published by "
+    "several tables; the slot names the table its figures come from, its taxonomy lists "
+    f"each table's dcid and an {EXCLUDED_SOURCE_PREFIX}<dcid> form, and its labels line "
+    "gives each table's name and what it measures):",
+    "  - Bind it kind=value to a table's dcid when the variable phrase or a DROPPED "
+    "QUALIFIERS phrase names that table: its name, an abbreviation, a translation, or a "
+    "description of what it measures.",
+    f"  - Bind it kind=value to the {EXCLUDED_SOURCE_PREFIX}<dcid> form when a phrase asks "
+    "to leave that table out.",
+    "  - A donor, lender, foundation, agency or other organisation is not a table, even "
+    "when a table's name or description mentions one: leave the slot kind=unbound.",
+    "  - Bind it kind=unbound when no phrase names a table.",
+    "  - When a DROPPED QUALIFIERS phrase names or excludes the table you bind, copy that "
+    "phrase verbatim into source_phrase.",
+)
+
 
 def _display_taxonomy_values(shape: ShapeDraft, values: list[str]) -> list[str]:
     """Return taxonomy dcids for a slot's prompt line.
@@ -321,6 +358,27 @@ def _taxonomy_labels_line(shape: ShapeDraft, displayed_values: list[str]) -> str
     return "labels: " + "; ".join(parts) if parts else None
 
 
+def _source_slot_values(shape: ShapeDraft) -> list[str]:
+    """The values the shape's source slot offers: each table's dcid, then each table's
+    excluded form. Empty when the shape offers no source slot (`ShapeDraft.source_options`)."""
+    options = list(shape.source_options)
+    return [*options, *(f"{EXCLUDED_SOURCE_PREFIX}{dataset}" for dataset in options)]
+
+
+def _source_slot_lines(shape: ShapeDraft) -> list[str]:
+    """The prompt lines of the shape's source slot, with each table's declared label and
+    description (`DatasetDeclaration`) on the labels line."""
+    datasets = [get_index().datasets[dataset] for dataset in shape.source_options]
+    labels = [f"{d.provenance} = {d.label}: {d.description}" for d in datasets] + [
+        f"{EXCLUDED_SOURCE_PREFIX}{d.provenance} = every table except {d.label}" for d in datasets
+    ]
+    return [
+        "    axis=source, property_dcid=provenance (data source)",
+        f"      taxonomy: {_source_slot_values(shape)}",
+        "      labels: " + "; ".join(labels),
+    ]
+
+
 def _build_universal_bind_prompt(
     variable: str,
     shapes: list[ShapeDraft],
@@ -349,6 +407,10 @@ def _build_universal_bind_prompt(
     withheld from every shape. It holds one value on every row of that dataset, so the
     identity, which names the dataset, binds that value (`canonical_pin_bindings`). A part
     that names no dataset is offered every slot, and a value the model binds stays bound.
+
+    A shape several declared tables publish (`ShapeDraft.source_options`) lists a source
+    slot after its constraint slots, and the SOURCE SLOT rules precede the shapes. A
+    prompt with no such shape holds neither.
 
     Empty qualifier, tie, withheld-axis, and dropped-phrase inputs leave recall-sourced
     prompts unchanged. Index-sourced slots show labels
@@ -407,6 +469,9 @@ def _build_universal_bind_prompt(
             "shape's own constraint slots):"
         )
         lines.extend(f"  {phrase}" for phrase in dropped_qualifier_phrases)
+        lines.append("")
+    if any(shape.source_options for shape in shapes):
+        lines.extend(_SOURCE_SLOT_RULES)
         lines.append("")
     lines.append(f"CANDIDATE SHAPES ({len(shapes)} total):")
     lines.append("")
@@ -472,8 +537,12 @@ def _build_universal_bind_prompt(
                 )
                 if labels_line:
                     lines.append(f"      {labels_line}")
-        else:
+        elif not shape.source_options:
             lines.append("  constraint_slots: (none)")
+        else:
+            lines.append("  constraint_slots:")
+        if shape.source_options:
+            lines.extend(_source_slot_lines(shape))
 
         sample = list(shape.sv_arc_facts or {})[:_MAX_SAMPLE_DCIDS_SHOWN]
         if sample:
@@ -504,7 +573,9 @@ async def bind_universal(
     text, never other raw user text.
 
     Returns the structured output and token usage, or ``None`` when usage is unavailable. A
-    source-axis draft comes back unbound, whatever the model wrote (`_without_source_values`).
+    source-axis draft comes back as the chosen shape's source slot offers it, else unbound
+    (`_offered_source_drafts`). A menu offering a source slot is answered as
+    `_SourceSlotBindOutput`, which also names the dropped phrase the slot consumed.
     """
     prompt = _build_universal_bind_prompt(
         variable,
@@ -518,21 +589,77 @@ async def bind_universal(
         for_stage(llm, "bind"),
         prompt=prompt,
         system=_UNIVERSAL_BIND_SYSTEM_PROMPT,
-        schema=_UniversalBindOutput,
+        schema=(
+            _SourceSlotBindOutput
+            if any(shape.source_options for shape in shapes)
+            else _UniversalBindOutput
+        ),
     )
-    return output.model_copy(update={"bindings": _without_source_values(output.bindings)}), usage
+    chosen = (
+        shapes[output.chosen_shape_index] if 0 <= output.chosen_shape_index < len(shapes) else None
+    )
+    return output.model_copy(
+        update={"bindings": _offered_source_drafts(output.bindings, chosen)}
+    ), usage
 
 
-def _without_source_values(bindings: list[SlotBindingDraft]) -> list[SlotBindingDraft]:
-    """Return the model's drafts with every source-axis draft unbound.
+def _offered_source_drafts(
+    bindings: list[SlotBindingDraft], shape: ShapeDraft | None
+) -> list[SlotBindingDraft]:
+    """Return the model's drafts with each source-axis draft that binds one value `shape`'s
+    source slot offers (`_source_slot_values`) kept as that value, and every other
+    source-axis draft unbound.
 
     A source-axis value binding names the dataset a family is elected from
-    (`retrieval.bound_values.shape_query`), and the prompt offers the model no source to
-    choose from. Only the engine sets one, so a value the model writes there is dropped.
+    (`retrieval.bound_values.shape_query`), so the model names one only from the slot.
+    Vetting reads the kept draft (`drafted_source`) and writes the binding the identity
+    carries.
     """
-    return [
-        SlotBindingDraft(axis="source", property_dcid=draft.property_dcid, kind="unbound")
-        if draft.axis == "source" and draft.kind != "unbound"
-        else draft
+    offered = frozenset(_source_slot_values(shape)) if shape is not None else frozenset()
+
+    def offered_draft(draft: SlotBindingDraft) -> SlotBindingDraft:
+        if (
+            draft.kind == "value"
+            and len(draft.value_dcids) == 1
+            and draft.value_dcids[0] in offered
+        ):
+            return SlotBindingDraft(
+                axis="source", property_dcid=None, kind="value", value_dcids=draft.value_dcids
+            )
+        return SlotBindingDraft(axis="source", property_dcid=draft.property_dcid, kind="unbound")
+
+    return [offered_draft(draft) if draft.axis == "source" else draft for draft in bindings]
+
+
+def _source_drafts(bindings: list[SlotBindingDraft]) -> tuple[list[str], list[str]]:
+    """The datasets the source-axis value drafts of `bindings` name, and the datasets their
+    `EXCLUDED_SOURCE_PREFIX` form excludes, each distinct and in draft order."""
+    values = [
+        draft.value_dcids[0]
         for draft in bindings
+        if draft.axis == "source" and draft.kind == "value" and len(draft.value_dcids) == 1
     ]
+    excluded = dict.fromkeys(
+        value.removeprefix(EXCLUDED_SOURCE_PREFIX)
+        for value in values
+        if value.startswith(EXCLUDED_SOURCE_PREFIX)
+    )
+    named = dict.fromkeys(value for value in values if not value.startswith(EXCLUDED_SOURCE_PREFIX))
+    return list(named), list(excluded)
+
+
+def drafted_source(bindings: list[SlotBindingDraft]) -> tuple[str | None, frozenset[str]]:
+    """The dataset the source slot's draft names, and the datasets its
+    `EXCLUDED_SOURCE_PREFIX` form excludes, read from source-axis value drafts. Drafts
+    naming two datasets name none, and vetting refuses them (`conflicting_sources`)."""
+    named, excluded = _source_drafts(bindings)
+    return (named[0] if len(named) == 1 else None), frozenset(excluded)
+
+
+def conflicting_sources(bindings: list[SlotBindingDraft]) -> tuple[str, ...]:
+    """The datasets the source-axis drafts of `bindings` contradict each other on, in draft
+    order: every dataset named when the drafts name two or more, and each dataset one
+    draft names and another excludes. Empty for drafts a part can follow."""
+    named, excluded = _source_drafts(bindings)
+    several = named if len(named) > 1 else []
+    return tuple(dict.fromkeys((*several, *(dataset for dataset in named if dataset in excluded))))

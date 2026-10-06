@@ -116,16 +116,35 @@ PendingBound = Annotated[Gl | Bound, Field(union_mode="left_to_right")]
 
 
 class Provenance(_CaseModel):
-    """The Data Commons and provenance dcid an answer's facets name."""
+    """The Data Commons and provenance dcid an answer's facets name, and whether its
+    identity binds the provenance (the part names a dataset, or bind elects a
+    shape only an opt-in dataset publishes, which names that table)."""
 
     origin: DataCommonsId | None = None
     dataset: Pending | None = Field(default=None, description="the provenance dcid")
+    bound: bool | None = Field(
+        default=None, description="whether the identity's provenance facet is a value binding"
+    )
 
     @model_validator(mode="after")
     def _asserts_something(self) -> Self:
-        if self.origin is None and self.dataset is None:
-            raise ValueError("provenance needs origin or dataset")
+        if self.origin is None and self.dataset is None and self.bound is None:
+            raise ValueError("provenance needs origin, dataset or bound")
         return self
+
+    @model_serializer(mode="wrap")
+    def _serialise(self, handler: SerializerFunctionWrapHandler) -> Any:
+        # An unasserted bound stays out of the dump, so the expectation hash of a case that
+        # asserts none matches the one it had before the field existed.
+        dumped = handler(self)
+        if self.bound is None:
+            dumped.pop("bound", None)
+        return dumped
+
+    @property
+    def names_source(self) -> bool:
+        """Whether it names an origin or dataset, which replaces a family's."""
+        return self.origin is not None or self.dataset is not None
 
 
 class Family(_CaseModel):
@@ -532,7 +551,6 @@ class Resubmit(_CaseModel):
     variable_text: _NonEmpty
     shape: IdentityShapeSchema
     slots: list[Slot]
-    stat_var_dcids: list[_NonEmpty] | None = None
     entity_dcids: list[_NonEmpty] | None = None
     origin_dcids: Annotated[list[_NonEmpty], Field(min_length=1)] | None = None
     facets: dict[_NonEmpty, IdentityFacetBinding] | None = None

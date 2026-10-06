@@ -37,7 +37,7 @@ def test_conjunction_cross_shape(case):
             continue
         assert part.variable_text is not None, f"{case.id}: parts[{i}].variable_text is None"
         [form] = expected.definite.measure.forms
-        survivors = [sv.ref for sv in part.spec.resolved.stat_vars.items]
+        survivors = [sv.ref.dcid for sv in part.spec.resolved.members]
         assert survivors == form.stat_vars, (
             f"{case.id}: expected parts[{i}] StatVars to be {form.stat_vars!r}, got {survivors!r}"
         )

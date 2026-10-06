@@ -24,12 +24,12 @@
 
 - id: dq-crs-003
   query: aid from Japan
-  why: Resolves to crs.disbursement_gross for country/JPN as origin.
+  why: A donor total names no recipient, so it resolves to DAC1 gross disbursements for country/JPN as origin.
   reuse: panel/crs-003
   tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac1.disbursement_gross}
       entities: [{dcid: country/JPN, role: origin}]
       window: {kind: all}
       operations: []

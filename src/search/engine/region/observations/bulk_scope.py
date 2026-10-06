@@ -205,7 +205,8 @@ def _bulk_scope_series(
     left out holds data and is not counted there.
 
     `member_constraints` supplies row labels, falling back to the resolved StatVar label.
-    Rows sort by latest value descending, missing values last, then `(stat_var, entity)`.
+    Rows sort by `search.observations.series_rank`: latest year, then latest value, both
+    descending, then `(stat_var, entity)`, within groups of one unit.
     """
     groups = [s for s in plan.served if s.group]
     if plan.scope_facet_id is None or not groups:

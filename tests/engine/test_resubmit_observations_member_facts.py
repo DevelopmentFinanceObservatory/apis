@@ -9,9 +9,9 @@ from unittest.mock import patch
 from search.engine.region import promote_finalize, resolve_spec_resubmit
 from search.engine.region.state import EngineOptions
 from search.models import ResubmitIdentityPayload
-from tests.engine._base_identity import base_from_spec
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import walk_options
 from tests.engine.test_resubmit_donor_role_e2e import (
     _FLOW_ROLE_NAMES,
     _FRA,
@@ -66,15 +66,11 @@ def test_resubmit_promote_threads_member_facts_into_build_observations(monkeypat
         obs={},
     )
     fresh_spec = fresh.specs[0]
-    base_spec_id, base_identity = base_from_spec(fresh_spec)
     identity_entities = dict(fresh_spec.definition.identity.entities)
     identity_entities["origin"] = [_FRA]
     identity_entities["destination"] = [_KEN]
     inp = ResubmitIdentityPayload(
         identity=fresh_spec.definition.identity.model_copy(update={"entities": identity_entities}),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[sv.ref for sv in fresh_spec.resolved.stat_vars.items],
     )
 
     captured_kwargs: list[dict] = []
@@ -89,7 +85,7 @@ def test_resubmit_promote_threads_member_facts_into_build_observations(monkeypat
             graph=graph,
             sdmx=resubmit_sdmx,
             coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
-            options=EngineOptions(include_observations=True),
+            options=walk_options(graph, EngineOptions(include_observations=True)),
         )
 
     assert region.status == "definite", region.no_data_reason

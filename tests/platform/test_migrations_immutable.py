@@ -45,6 +45,12 @@ _DATASET_STORE = {
     "0020_trace_conversion_entries_after_deploy.sql": (
         "0f0219d5438f2a20e929eda90dbdd5c94c9ab77596fec406a3e6c95eb0ebb254"
     ),
+    "0021_drop_collections.sql": (
+        "9aa7182f4a1b6ed1087cb72086c0aac644072573f1214a3653c1b89b91991e84"
+    ),
+    "0022_drop_null_collection.sql": (
+        "1ad07c270360607f2f58904689894c140351404dbc20961218329af91f78257f"
+    ),
 }
 
 _PRESENTATION_STORE = {

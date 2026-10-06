@@ -45,7 +45,7 @@ class TestStd01TotalPopulationIndia:
         result = offline_resolve(_req("total population India"))
         inner = result.parts[0]
         assert isinstance(inner, DefinitePart)
-        sv_dcids = [sv.ref for sv in inner.spec.resolved.stat_vars.items]
+        sv_dcids = [sv.ref.dcid for sv in inner.spec.resolved.members]
         assert "Count_Person" in sv_dcids
 
     def test_entity_is_india(self):
@@ -89,9 +89,7 @@ class TestNd01TeacherCountNauru:
         assert flagged is not None
         assert flagged.resolved.available_at_place is False
         assert flagged.resolved.confidence == "low"
-        assert flagged.resolved.stat_vars.items, (
-            "flagged_match must carry the matched-but-unavailable SV"
-        )
+        assert flagged.resolved.members, "flagged_match must carry the matched-but-unavailable SV"
 
 
 # nd-03 leaves left-handedness in France unresolved.
@@ -215,7 +213,7 @@ class TestPartialFiveTupleResolves:
     def test_sparse_sv_is_returned(self):
         inner = self._run().parts[0]
         assert isinstance(inner, DefinitePart)
-        assert [sv.ref for sv in inner.spec.resolved.stat_vars.items] == [_SPARSE_SV]
+        assert [sv.ref.dcid for sv in inner.spec.resolved.members] == [_SPARSE_SV]
 
     def test_measured_property_is_none(self):
         inner = self._run().parts[0]
@@ -238,7 +236,7 @@ class TestPartialFiveTupleBeatsLowerScoredComplete:
     def test_sparse_sv_wins_on_score(self):
         inner = self._run().parts[0]
         assert isinstance(inner, DefinitePart)
-        assert [sv.ref for sv in inner.spec.resolved.stat_vars.items] == [_SPARSE_SV]
+        assert [sv.ref.dcid for sv in inner.spec.resolved.members] == [_SPARSE_SV]
 
 
 class TestPartialFiveTupleNoObservations:
@@ -276,7 +274,7 @@ class TestStd01SlotValuesArcDerived:
         result = self._result()
         inner = result.parts[0]
         assert isinstance(inner, DefinitePart)
-        for sv in inner.spec.resolved.stat_vars.items:
+        for sv in inner.spec.resolved.members:
             if sv.ref == "Count_Person":
                 assert sv.slot_values == [], (
                     f"Count_Person must carry no slot_values; got {sv.slot_values!r}"
@@ -301,7 +299,7 @@ class TestStd01SlotValuesArcDerived:
 
         realised_props = {
             sv_val.key.property.dcid
-            for sv in spec.resolved.stat_vars.items
+            for sv in spec.resolved.members
             for sv_val in sv.slot_values
             if sv_val.key.property is not None
         }

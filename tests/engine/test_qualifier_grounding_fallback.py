@@ -197,7 +197,7 @@ def test_a_measure_sibling_whose_purpose_filter_held_answers_for_an_elected_shap
     (part,) = response.parts
     assert isinstance(part, DefinitePart)
     assert "elected_shape_no_data" in [w.code for w in part.warnings]
-    assert [sv.ref for sv in part.spec.resolved.stat_vars.items] == [_COUNT]
+    assert [sv.ref.dcid for sv in part.spec.resolved.members] == [_COUNT]
     assert _purpose(part.spec)[1:] == ("value", "value")
     assert "query_qualifier_dropped" not in [w.code for w in part.warnings]
     assert "measure_not_applied" not in [d.code for d in part.departures]

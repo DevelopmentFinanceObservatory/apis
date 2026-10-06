@@ -14,7 +14,6 @@ from search.models import (
     BindingValue,
     CoverageBare,
     CoverageExact,
-    PipelineStep,
     Shape,
     Slot,
     SlotKey,
@@ -53,6 +52,7 @@ def test_same_shape_multislot_residual_warns():
 
     def _two_slot_spec(val_a: str, val_b: str):
         return build_spec(
+            open_roles=(),
             measure_elected_properties=frozenset(),
             shape=shape_two_slots,
             slots=[
@@ -68,7 +68,6 @@ def test_same_shape_multislot_residual_warns():
             stat_vars=[],
             entities=[],
             coverage=CoverageBare(has_data=True),
-            pipeline_trace=[PipelineStep(step="extract", ran=True)],
         )
 
     spec_1 = _two_slot_spec("A1", "B1")
@@ -103,6 +102,7 @@ def test_combine_regions_keeps_multislot_refusal_parts_distinct():
 
     def _two_slot_spec(val_a: str, val_b: str):
         return build_spec(
+            open_roles=(),
             measure_elected_properties=frozenset(),
             shape=shape_two_slots,
             slots=[
@@ -125,7 +125,6 @@ def test_combine_regions_keeps_multislot_refusal_parts_distinct():
             ],
             entities=[],
             coverage=CoverageBare(has_data=True),
-            pipeline_trace=[PipelineStep(step="extract", ran=True)],
         )
 
     spec_a = _two_slot_spec("A1", "B1")
@@ -139,7 +138,6 @@ def test_combine_regions_keeps_multislot_refusal_parts_distinct():
         extra_warnings=[],
         start_ms=now_ms(),
         engine_build="test",
-        include_sentence=False,
         max_candidates=10,
     )
 
@@ -163,6 +161,7 @@ def test_collapse_same_shape_exact_coverage_downgrade_unions_has_data():
     """
     window = TimeWindow(start_year=2020, end_year=2020)
     spec_a = build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=_PERSON_SHAPE,
         slots=[_value_slot("constraintProp", "ValA")],
@@ -176,9 +175,9 @@ def test_collapse_same_shape_exact_coverage_downgrade_unions_has_data():
         ],
         entities=[],
         coverage=CoverageExact(has_data=False, observation_count=0, dimensions=None, window=window),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
     )
     spec_b = build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=_PERSON_SHAPE,
         slots=[_value_slot("constraintProp", "ValB")],
@@ -192,7 +191,6 @@ def test_collapse_same_shape_exact_coverage_downgrade_unions_has_data():
         ],
         entities=[],
         coverage=CoverageExact(has_data=True, observation_count=30, dimensions=None, window=window),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
     )
     r_a = _region(spec_a, "var A", earliest_index=0)
     r_b = _region(spec_b, "var B", earliest_index=1)

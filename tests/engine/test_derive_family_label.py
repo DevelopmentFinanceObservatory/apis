@@ -1,9 +1,12 @@
-"""Tests the label `derive_shapes` gives a shape: a multi-member UN System family
-reads as its population type plus the values every member shares, and every
-other shape keeps its member's name."""
+"""Tests the label `derive_shapes` gives a shape: an index family reads as what every
+row of the family shares, a multi-member UN System family as its population type plus
+the values every member shares, and every other shape keeps its member's name."""
 
 from __future__ import annotations
 
+import pytest
+
+from code_index.shared import get_index
 from search.engine.retrieval.derive import derive_shapes
 from tests.fixtures import FakeGraph
 
@@ -157,3 +160,71 @@ def test_base_family_keeps_its_recalled_member_name():
     )
 
     assert [shape.label for shape in shapes] == ["Female life expectancy"]
+
+
+def _index_member(dcid: str, name: str) -> dict:
+    """A graph node for the packaged index row `dcid`, named `name`."""
+    row = next(row for row in get_index().statvars if row.dcid == dcid)
+    arcs: dict = {
+        "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
+        "name": {"nodes": [{"value": name}]},
+        "populationType": {"nodes": [{"dcid": row.population_type}]},
+        "measuredProperty": {"nodes": [{"dcid": row.measured_property}]},
+        "statType": {"nodes": [{"dcid": row.stat_type}]},
+        "measurementQualifier": {"nodes": [{"dcid": row.measurement_qualifier}]},
+        "observationProperties": {"nodes": [{"dcid": p} for p in row.observation_properties]},
+        "constraintProperties": {"nodes": [{"dcid": p} for p in row.constraint_properties]},
+        **{p: {"nodes": [{"dcid": v}]} for p, v in row.constraint_properties.items()},
+    }
+    if row.measurement_denominator is not None:
+        arcs["measurementDenominator"] = {"nodes": [{"dcid": row.measurement_denominator}]}
+    return {"label": name, "type": "StatisticalVariable", "arcs": arcs}
+
+
+@pytest.mark.parametrize(
+    ("dcid", "name", "expected"),
+    [
+        (
+            "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1906_Nominal",
+            "Relief food aid (net disbursements)",
+            "Financial flow disbursements, OECD DAC1",
+        ),
+        (
+            "Amount_FinancialFlow_Net_Disbursement_DAC1AidType1010_Nominal_AsAFractionOf_"
+            "PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal",
+            "Official development assistance (net disbursements, % of GNI)",
+            "Financial flow net disbursements as a share of GNI, OECD DAC1",
+        ),
+        (
+            "GrantEquivalent_FinancialFlow_Disbursement_DAC1AidType1010_Nominal_AsAFractionOf_"
+            "PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal",
+            "Official development assistance (grant equivalents, % of GNI)",
+            "Financial flow grant equivalents as a share of GNI, official development assistance, "
+            "OECD DAC1",
+        ),
+        (
+            "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_"
+            "CRSPurposeCode11110_Nominal",
+            "Official development assistance gross disbursements for education policy",
+            "Financial flow disbursements, OECD Creditor Reporting System (CRS)",
+        ),
+    ],
+    ids=["dac1-amount", "dac1-net-share-of-gni", "dac1-ge-share-of-gni", "crs-amount"],
+)
+def test_index_family_reads_as_what_every_row_shares(dcid, name, expected):
+    """A one-member sample of an index family takes the family's label, led by its
+    population type's graph name, so the member's aid type or purpose, which an open slot
+    spans, stays out of it."""
+    member = _index_member(dcid, name)
+
+    shapes = derive_shapes(
+        confirmed_svs=[dcid],
+        graph=FakeGraph(
+            nodes={dcid: member, "FinancialFlow": {"label": "financial flow"}},
+            obs={},
+            detect={},
+            resolve={},
+        ),
+    )
+
+    assert [shape.label for shape in shapes] == [expected]

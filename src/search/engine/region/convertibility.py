@@ -45,6 +45,7 @@ from materialise.recipes import (
     resolve_entity_currencies,
 )
 from search.engine.clients.graph import Facet
+from search.engine.degraded_reads import note_degraded_read
 from search.engine.departures import (
     conversion_period_fact,
     deflator_omission_fact,
@@ -586,8 +587,10 @@ def _dated_plan(
     """`plan` with the group facets of each served place series that lacks its dates
     (`read_plan.dated_without_complete_dates`) replaced by the same facets read with every
     date, where that read returns them all. The read runs under `deadline`. None when no
-    such series is served, the deadline has passed, or the read fails: the gate then keeps
-    the span's result, and logs why for the last two."""
+    such series is served, the deadline has passed, or the read fails, and the gate then
+    keeps the span's result. The last two log why and note a degraded read
+    (`degraded_reads.note_degraded_read`), so no cache stores an answer a later request
+    with time to read the dates could decide otherwise."""
     sparse = [
         s for s in plan.served if len(s.role_tuple) == 1 and dated_without_complete_dates(s.group)
     ]
@@ -602,6 +605,7 @@ def _dated_plan(
             stat_vars,
             entities,
         )
+        note_degraded_read("unit coverage dates")
         return None
     try:
         dated = reader.observation_facets_batch(
@@ -614,6 +618,7 @@ def _dated_plan(
             entities,
             exc_info=True,
         )
+        note_degraded_read("unit coverage dates")
         return None
 
     def with_dates(series: PlanSeries) -> PlanSeries:

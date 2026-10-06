@@ -102,7 +102,6 @@ from search.engine.spec_build import (
     build_shape_model,
     build_spec,
     build_stat_vars,
-    compute_member_digest,
 )
 from search.engine.spec_id import bound_facet_axes
 from search.engine.unit.conversion import (
@@ -345,6 +344,7 @@ def _ground_answer_and_models(
         state.narrowed_plan,
         unit_request=_converted_by(state),
         member_facts=mat_result.member_facts,
+        open_axes=state.place.roles.open_axes,
     )
     (
         five_tuple_refs,
@@ -391,7 +391,6 @@ def _ground_answer_and_models(
             mat_result.population.admitted if mat_result.population is not None else len(sv_refs)
         ),
         members=mat_result.served_members,
-        member_digest=compute_member_digest(mat_result.population),
     )
     state.stat_vars = build_stat_vars(
         sv_refs,
@@ -501,6 +500,7 @@ def _ground_and_build_spec(
     _served_filter = role_served_filter(
         state.shape_draft,
         state.probe_role_entities,
+        open_axes=state.place.roles.open_axes,
         years=mat_result.preview_years,
         coverage=state.coverage.index,
         facets_pinned=pins_facets(state.inp.identity.facets),
@@ -529,6 +529,9 @@ def _ground_and_build_spec(
         bound_facet_axes(slots, state.inp.identity.facets), "bound"
     )
     state.unit_request_basis = _unit_request_basis_from_facets(state.inp.identity.facets)
+    named_groups = resubmit_named_groups(
+        state.inp.identity, graph=state.graph, deadline=state.deadline
+    )
     spec = state.spec = build_spec(
         shape=shape_model,
         slots=slots,
@@ -540,7 +543,6 @@ def _ground_and_build_spec(
         coverage_index=state.coverage.index,
         coverage_stamp=mat_result.coverage_stamp,
         scope=_scope,
-        pipeline_trace=state.pipeline_steps,
         resolved_sources=source_refs,
         facets=answer_facets(
             state.narrowed_plan,
@@ -555,6 +557,7 @@ def _ground_and_build_spec(
         available_at_place=_available_at_place,
         confidence=_confidence,
         requested_window=_requested_window_for_id(state.date_request),
+        open_roles=mat_result.open_axes,
         inapplicable_slots=inapplicable_slots,
         unresolved_slots=unresolved_slots,
         # Same population record's confirmed half. See the member_count
@@ -575,9 +578,9 @@ def _ground_and_build_spec(
         measure_siblings=state.measure_siblings,
         open_axis_facts=_open_axis_facts,
         role_axis_facts=_role_axis_facts,
-        stat_vars_cap=state.stat_vars_cap,
-        named_groups=resubmit_named_groups(state.inp, graph=state.graph, deadline=state.deadline),
+        named_groups=named_groups,
         measure_served_rows=measure_served_counter(_served_filter),
+        walked=state.walked,
     )
     spec = with_unit_conversion(
         spec,
@@ -750,6 +753,10 @@ def _start_related_read(state: _PromoteState) -> None:
     """Read the survivors' measure partition and siblings, then start their related-measures
     reads on a thread of their own (`related_read.submit_related_read`), which run beside
     grounding and finalisation."""
+    role_keys = entity_role_keys(
+        state.place.roles.resolved_entities,
+        open_axes=state.place.roles.open_axes,
+    )
     state.measure_partition, state.measure_siblings = observed_measure_family(
         state.shape_draft,
         get_index(),
@@ -757,7 +764,8 @@ def _start_related_read(state: _PromoteState) -> None:
         shape_query(
             state.shape_draft,
             state.bindings,
-            entity_role_keys(state.shape_draft, state.place.roles.resolved_entities),
+            role_keys.bound,
+            open_role_keys=role_keys.open,
         ),
         _served_member_facts(state),
     )

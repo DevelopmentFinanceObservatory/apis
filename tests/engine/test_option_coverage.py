@@ -30,9 +30,13 @@ from search.models import (
     SlotValue,
     TimeWindow,
 )
-from tests.engine._base_identity import base_from_spec
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import PINNED_DATE, materialise_double_from_obs, offline_resolve
+from tests.engine._harness import (
+    PINNED_DATE,
+    materialise_double_from_obs,
+    offline_resolve,
+    with_member_arcs,
+)
 from tests.engine._search_app import search_app
 from tests.fixtures import FakeGraph, FakeLLM, _load_json, make_resolver
 from tests.materialise.conftest import FakeGraphReader
@@ -466,7 +470,6 @@ def test_resubmit_include_option_coverage_populates_coverage():
     ).parts[0]
     assert base.status == "definite"
     spec = base.spec
-    base_spec_id, base_identity = base_from_spec(spec)
 
     resubmit_req = ResolveRequest(
         input=DatasetResubmitInput(
@@ -474,9 +477,6 @@ def test_resubmit_include_option_coverage_populates_coverage():
                 ResubmitIdentityEntry(
                     variable_text="a resubmitted identity",
                     identity=spec.definition.identity,
-                    base_spec_id=base_spec_id,
-                    base_identity=base_identity,
-                    resolved_stat_var_dcids=[sv.ref for sv in spec.resolved.stat_vars.items],
                 )
             ]
         ),
@@ -485,7 +485,7 @@ def test_resubmit_include_option_coverage_populates_coverage():
     r = offline_resolve(
         resubmit_req,
         sdmx=FakeSdmxClient(),
-        materialise_graph=materialise_graph,
+        materialise_graph=with_member_arcs(materialise_graph, FakeGraph()),
         materialise_sdmx=materialise_sdmx,
     ).parts[0]
     assert r.status == "definite"
@@ -868,6 +868,7 @@ def test_probe_non_infra_error_propagates_instead_of_degrading(monkeypatch):
             materialise_graph=FakeGraphReader(),
             include_option_coverage=True,
             facets_pinned=False,
+            open_axes=frozenset(),
         )
 
 
@@ -894,6 +895,7 @@ def test_real_materialise_transport_failure_degrades_through_the_real_translatio
         materialise_graph=_RaisingGraphReader(),
         include_option_coverage=True,
         facets_pinned=False,
+        open_axes=frozenset(),
     )
     assert all(o.coverage is None for so in enriched for o in so.options)
     assert warn is not None
@@ -1005,6 +1007,7 @@ def test_the_probe_counts_the_series_a_pick_serves_and_drops_a_value_no_member_c
         materialise_graph=graph,
         include_option_coverage=True,
         facets_pinned=False,
+        open_axes=frozenset(),
     )
 
     assert warn is None

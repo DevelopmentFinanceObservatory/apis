@@ -57,7 +57,7 @@ from origin_catalogue.graph import OriginGraphClient, build_graph_client
 from origin_catalogue.service import CatalogueService, get_catalogue_service
 from series_coverage.shared import CoverageService, get_coverage_service
 from spec_registry.reader import LiveSpecReader
-from statvar_members import MemberEnumerator
+from statvar_members import shared_enumerator
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +96,7 @@ def _build_live_definition_deps(
         capability_version="",
         ceiling=_MATERIALISE_RAW_FETCH_GUARD_ROWS,
         member_concurrency=_settings.mint_member_max_concurrency,
-        enumerator=MemberEnumerator(graph=graph),
+        enumerator=shared_enumerator(),
         enrichment=EnrichmentLookup(graph),
         code_index=code_index,
         rate_cache=RateTableCache(),
@@ -251,6 +251,7 @@ def build_worker_app(
                             base_url=live_settings.un_graph_base_url,
                             timeout=_settings.sdmx_timeout_seconds,
                         ),
+                        **live_settings.graph_cache_options(),
                     )
                     sdmx = SdmxClient(
                         base_url=live_settings.sdmx_base_url,

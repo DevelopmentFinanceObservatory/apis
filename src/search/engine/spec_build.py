@@ -6,7 +6,7 @@ Pure assembly: no LLM, no graph calls.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, NamedTuple
 
@@ -22,13 +22,15 @@ from search.engine.bind import SlotBindingDraft
 from search.engine.config import settings
 from search.engine.retrieval.bound_values import (
     MeasurePartition,
+    StatedMembers,
+    WalkedMembers,
     apply_slot_summability,
     bound_source,
     identity_dataset,
-    identity_family_digest,
     measure_without_price_basis,
     mint_sibling_identity,
     price_basis_sibling,
+    stated_members,
 )
 from search.engine.retrieval.derive import upstream_source
 from search.engine.retrieval.download import download_facts
@@ -60,7 +62,6 @@ from search.models import (
     Coverage,
     DataCommonsRef,
     DateRange,
-    DateSource,
     Entity,
     EntityOptions,
     EntityRole,
@@ -74,7 +75,6 @@ from search.models import (
     MeasureAxisValue,
     OpenAxisValueCount,
     OpenConstraintAxisFact,
-    PipelineStep,
     ProvenanceRef,
     RequestedWindow,
     ResolutionTrace,
@@ -84,7 +84,6 @@ from search.models import (
     ResolvedQualifier,
     ResolvedScope,
     ResolvedSpec,
-    ResolvedStatVar,
     ResolvedStatVars,
     RoleAxisFact,
     SentenceToken,
@@ -100,16 +99,15 @@ from search.models import (
     StatVarSlotValue,
     TimeWindow,
     TraceDefaultReading,
+    served_date_range,
 )
 from search.render.labels import _humanize_ref
-from statvar_members import member_digest
 
 if TYPE_CHECKING:
     from materialise.roles import RoleAxis
     from search.engine.retrieval.bound_values import OpenAxisFact, ServedRows
     from search.engine.retrieval.member_facts import MemberFacts
     from search.engine.retrieval.read_plan import ReadPlan
-    from search.engine.retrieval.retrieve import MemberPopulation
     from search.models import (  # circular at runtime, safe under TYPE_CHECKING
         BindingKind,
         BindingProvenance,
@@ -316,68 +314,22 @@ def entity_from_resolved(re: ResolvedEntity) -> Entity:
 
 
 def _resolved_stat_vars(
-    stat_vars: list[StatVar],
+    stat_vars: Sequence[StatVar],
     *,
-    cap: int | None,
-    member_count: int | None = None,
-    member_count_exact: bool = True,
+    member_count: int | None,
+    member_count_exact: bool,
+    stated: StatedMembers | None,
 ) -> ResolvedStatVars:
-    """Project StatVars to the wire form, capped at ``cap`` items.
+    """The wire's counts of `stat_vars` and the dates they serve.
 
-    ``member_count`` defaults to ``len(stat_vars)`` and can report a wider confirmed
-    population. ``truncated`` means fewer items than that count. ``member_count_exact``
-    distinguishes a total from a lower-bound count. ``shape_id`` is omitted because
-    the Spec carries it once at shape level.
-    """
-    effective_count = member_count if member_count is not None else len(stat_vars)
-    kept = stat_vars[:cap] if cap is not None else stat_vars
-    items = [
-        ResolvedStatVar(
-            ref=sv.ref.dcid,
-            label=sv.ref.label,
-            slot_values=sv.slot_values,
-            constraint_properties=sv.constraint_properties,
-            data_date_range=sv.data_date_range,
-            data_confirmed_at_destination=sv.data_confirmed_at_destination,
-        )
-        for sv in kept
-    ]
-    truncated = len(items) < effective_count
+    ``member_count`` is ``len(stat_vars)`` when None and can report a wider confirmed
+    population. ``member_count_exact`` tells a total from a lower bound. ``served_count`` is
+    the mint's own count when Search knows it (``stated``)."""
     return ResolvedStatVars(
-        items=items,
-        member_count=effective_count,
+        member_count=member_count if member_count is not None else len(stat_vars),
         member_count_exact=member_count_exact,
-        truncated=truncated,
-    )
-
-
-def capping_stat_var_items(spec: Spec, *, cap: int) -> Spec:
-    """Return ``spec`` with at most ``cap`` items in ``resolved.stat_vars``.
-
-    A cut sets ``truncated``, and ``member_count`` keeps the population the items sample.
-    """
-    stat_vars = spec.resolved.stat_vars
-    if len(stat_vars.items) <= cap:
-        return spec
-    capped = stat_vars.model_copy(update={"items": stat_vars.items[:cap], "truncated": True})
-    return spec.model_copy(
-        update={"resolved": spec.resolved.model_copy(update={"stat_vars": capped})}
-    )
-
-
-def stat_var_from_resolved(rsv: ResolvedStatVar) -> StatVar:
-    """Rebuild a StatVar from its wire projection for same-shape merges.
-
-    The merged Spec takes its shape id from the base shape.
-    """
-    ref = GraphRef(dcid=rsv.ref, label=rsv.label or rsv.ref)
-    return StatVar(
-        ref=ref,
-        shape_id=rsv.ref,
-        slot_values=rsv.slot_values,
-        constraint_properties=rsv.constraint_properties,
-        data_date_range=rsv.data_date_range,
-        data_confirmed_at_destination=rsv.data_confirmed_at_destination,
+        served_count=stated.served_count if stated is not None else None,
+        data_date_range=served_date_range(stat_vars),
     )
 
 
@@ -416,34 +368,6 @@ def elected_sources(sources: list[ProvenanceRef], identity: BaseIdentity) -> lis
     return [observed.model_copy(update={"label": get_index().datasets[dataset].label})]
 
 
-def compute_member_digest(population: MemberPopulation | None) -> str | None:
-    """Hash exact admitted dcids with the shared cross-API member-digest function.
-
-    Only exact populations produce a digest. Missing or inexact populations return
-    None, because an inexact set is a sample and its hash could not be reproduced. The digest uses sorted bare dcids and RFC 8785 canonical JSON.
-    `build_spec` states it on the wire only when it is the digest of the family the code
-    index resolves for the minted identity (`_shape_stating_identity_family`).
-    """
-    if population is None or not population.exact:
-        return None
-    return member_digest(population.admitted_dcids)
-
-
-def _shape_stating_identity_family(shape: Shape, identity: BaseIdentity) -> Shape:
-    """Return `shape` with its `member_digest` only when that digest is the one of the family
-    the code index resolves for `identity` (`identity_family_digest`), else with none.
-
-    The Datasets mint resolves the same identity through the same index function and states
-    the same digest in its trace, so a stated `member_digest` equals the
-    `trace.family_member_digest` of a mint that resolves the identity under the same index.
-    A population the index does not resolve states none: a resubmit's posted seed for an
-    identity the mint walks the graph for, and any population that differs from the family.
-    """
-    if shape.member_digest is None or shape.member_digest == identity_family_digest(identity):
-        return shape
-    return shape.model_copy(update={"member_digest": None})
-
-
 def shape_data_commons(members: Iterable[str]) -> list[DataCommonsRef]:
     """Every Data Commons the bound origin catalogue says holds data for one of
     `members`, in wire order."""
@@ -472,10 +396,10 @@ def build_shape_model(
     member_count: int,
     *,
     members: Sequence[str] | None,
-    member_digest: str | None = None,
     suppress_unresolved_population_type_ref: bool = False,
 ) -> Shape:
-    """Build a grounded Shape, using the caller's member count and digest.
+    """Build a grounded Shape, using the caller's member count. `build_spec` states its
+    `member_digest` (`stated_members`).
 
     ``members`` are the StatVars the answer serves. ``data_commons`` lists the origins
     holding data for one of them, and ``upstream`` names the one source all of them come
@@ -528,7 +452,6 @@ def build_shape_model(
         measurement_denominator_unresolved=shape_draft.meas_denom_unresolved,
         slot_keys=slot_keys,
         member_count=member_count,
-        member_digest=member_digest,
         refine_supported=refine_supported,
         data_commons=shape_data_commons(members or ()),
         upstream=_shape_upstream(upstream_source(members or ())),
@@ -970,24 +893,16 @@ def _build_slot_filters(
     return slot_filters
 
 
-# trace.resolved_stat_vars keeps the trace readable. resolved.stat_vars.items carries the
-# served list.
-_TRACE_STAT_VARS_MAX = 200
-
-
 def build_spec(
     shape: Shape,
     slots: list[Slot],
     stat_vars: list[StatVar],
     entities: list[Entity],
     coverage: Coverage,
-    pipeline_trace: list[PipelineStep],
     *,
     headline: Headline | None = None,
     coverage_stamp: str | None = None,
     resolved_sources: list[ProvenanceRef] | None = None,
-    n_recalled: int | None = None,
-    date_source: DateSource | None = None,
     available_at_place: bool | None = None,
     confidence: Confidence | None = None,
     slot_options: list[SlotOptions] | None = None,
@@ -996,6 +911,7 @@ def build_spec(
     observations: SpecObservations | None = None,
     requested_window: RequestedWindow | None = None,
     identity_entities: list[Entity] | None = None,
+    open_roles: Collection[RoleAxis],
     inapplicable_slots: list[str] | None = None,
     unresolved_slots: list[str] | None = None,
     rendered_sentence: str | None = None,
@@ -1013,9 +929,9 @@ def build_spec(
     measure_siblings: Sequence[MeasurePartition] = (),
     open_axis_facts: Sequence[OpenAxisFact] = (),
     role_axis_facts: Sequence[RoleAxisFactInput] = (),
-    stat_vars_cap: int | None = settings().resolved_stat_vars_max,
     stat_vars_member_count: int | None = None,
     stat_vars_member_count_exact: bool = True,
+    walked: WalkedMembers | None = None,
     plan: ReadPlan | None = None,
     named_groups: Iterable[NamedGroup] = (),
     coverage_index: CoverageIndex | None = None,
@@ -1037,6 +953,8 @@ def build_spec(
             coverage-bound when slot. It is hashed and echoed for resubmission.
         identity_entities: Optional hash-only entity list that preserves directional
             identity when displayed entities collapse origin and destination.
+        open_roles: The flow axes the identity asks for member by member, none bound by
+            the hashed entities.
         named_groups: The groups the request named. A role whose identity entities are
             exactly one group's members carries that group on
             ``definition.identity.entity_groups`` and ``ResolvedSpec.entity_groups``,
@@ -1051,13 +969,15 @@ def build_spec(
         measure_served_rows: Counts the rows a resubmit of each alternative measure would
             serve (`SpecAlternativeMeasure.served_rows`). An alternative counted at none
             is omitted. None leaves the alternatives uncounted.
-        stat_vars_cap: Wire-item limit, defaulting to the configured maximum. Use None
-            only for an internal Spec whose consumers need every member.
+        stat_vars: The served members. ``ResolvedSpec.members`` holds them all, and
+            ``ResolvedSpec.sentence_facts`` what the renderer reads of them. The wire
+            states only the date range they serve (``ResolvedStatVars.data_date_range``).
         stat_vars_member_count and stat_vars_member_count_exact: Population count and
             whether it is exact or a lower bound.
-        n_recalled: Recalled candidate StatVars excluding Topics, counted before shape
-            derivation.
-        date_source: Overrides the inferred source (`query` when a coverage window exists).
+        walked: What the mint states of the members Search's walk settled for the query it
+            walked. The Spec states the mint's served count and family digest
+            (``stated_members``) for an identity the code index decides and one ``walked``
+            walked, and neither otherwise.
         Other optional arguments populate response metadata, including render data,
             facets, observations, scope, qualifiers, and open-axis facts. Slot provenance
             properties, scope, qualifiers, open-axis facts, and role-axis facts never feed
@@ -1079,13 +999,17 @@ def build_spec(
         identity_shape_from_wire(shape),
         slots,
         entities=hashed_entities,
+        open_roles=open_roles,
         requested_window=requested_window,
         explicit_facets=facet_bindings,
         entity_groups=role_entity_groups(named_groups, hashed_entities),
     )
     definition = SpecDefinition(spec_id=spec_id, identity=identity_doc)
     slots = slots_in_identity_order(slots, identity_doc)
-    shape = _shape_stating_identity_family(shape, identity_doc)
+    stated = stated_members(identity_doc, walked)
+    digest = stated.digest if stated is not None else None
+    if shape.member_digest != digest:
+        shape = shape.model_copy(update={"member_digest": digest})
 
     alternative_measures, measure_label = _measure_alternatives(
         identity_doc, measure_partition, measure_siblings, measure_served_rows
@@ -1109,7 +1033,6 @@ def build_spec(
         stat_vars=stat_vars,
     )
 
-    resolved_sv_refs = [sv.ref for sv in stat_vars[:_TRACE_STAT_VARS_MAX]]
     resolved_entity_refs = [e.ref for e in entities]
     resolved_sources = elected_sources(resolved_sources or [], identity_doc)
 
@@ -1121,19 +1044,11 @@ def build_spec(
     )
 
     trace = ResolutionTrace(
-        resolved_stat_vars=resolved_sv_refs,
-        resolved_stat_vars_truncated=len(resolved_sv_refs) < len(stat_vars),
         resolved_entities=resolved_entity_refs,
         resolved_sources=resolved_sources,
         slot_filters=slot_filters,
         query_qualifiers=query_qualifiers or [],
         default_reading=default_reading,
-        applied_window=coverage.window,
-        date_source=date_source
-        if date_source is not None
-        else ("query" if coverage.window is not None else None),
-        pipeline_trace=pipeline_trace,
-        n_recalled=n_recalled,
         requested_window=requested_window,
         capability_version=settings().capability_version,
     )
@@ -1166,9 +1081,9 @@ def build_spec(
             facet_options=facet_options or [],
             stat_vars=_resolved_stat_vars(
                 stat_vars,
-                cap=stat_vars_cap,
                 member_count=stat_vars_member_count,
                 member_count_exact=stat_vars_member_count_exact,
+                stated=stated,
             ),
             entities=_resolved_entities(entities),
             entity_groups=identity_doc.entity_groups,
@@ -1188,7 +1103,6 @@ def build_spec(
             alternative_measures=alternative_measures,
             measure_label=measure_label.text,
             measure_label_axes=measure_label.axes,
-            measure_label_named_values=list(measure_label.named_values),
             measure_axis_values=elected_axis_values,
             open_axis_facts=resolved_open_axis_facts,
             role_axis_facts=resolved_role_axis_facts,
@@ -1200,7 +1114,9 @@ def build_spec(
                 if (entity_role_key(e), e.ref.dcid) in unserved
             )
         )
-        .stating_data_years(data_years(plan)),
+        .stating_data_years(data_years(plan))
+        .stating_members(stat_vars)
+        .stating_measure_label_named_values(measure_label.named_values),
     )
 
 
@@ -1209,18 +1125,21 @@ def build_unsupported_definition(
     slots: list[Slot],
     *,
     entities: list[Entity] | None = None,
+    open_roles: Collection[RoleAxis] = (),
     requested_window: RequestedWindow | None = None,
     explicit_facets: dict[str, IdentityFacetBinding] | None = None,
 ) -> dict[str, object]:
     """Build and validate an unsupported definition without minting a spec id.
 
-    ``explicit_facets`` preserves a completed but unservable facet request in the
-    definition. Validation errors propagate before the payload is returned.
+    ``open_roles`` keeps the flow axes the request asks for member by member, and
+    ``explicit_facets`` a completed but unservable facet request, in the definition.
+    Validation errors propagate before the payload is returned.
     """
     projection = build_identity_projection(
         shape,
         slots,
         entities=entities,
+        open_roles=open_roles,
         requested_window=requested_window,
         explicit_facets=explicit_facets,
     )

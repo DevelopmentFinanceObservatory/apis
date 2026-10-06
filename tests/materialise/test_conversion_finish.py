@@ -10,13 +10,11 @@ import pytest
 from dfo_frame_grammar import (
     FrameTrace,
     canonical_frame_bytes,
-    mint_collection_content_version,
     recompute_content_version,
 )
 
 from dc_sdmx import SdmxClient
 from materialise import (
-    materialise_collection,
     materialise_group,
     materialise_preview,
     materialise_spec,
@@ -30,10 +28,8 @@ from materialise.facets import FacetBinding, UnitRequest
 from materialise.finish import (
     _conversion_trace,
     _sorted_converted_members,
-    collection_trace,
 )
 from materialise.pipeline import (
-    CollectionMaterialisationResult,
     MaterialisationRequest,
     MaterialisationResult,
     PreviewResult,
@@ -48,7 +44,7 @@ from series_coverage.schema import FacetMetadata, RoleNames
 from tests.datasets_api._legacy_conversion_trace import LEGACY_CONVERSION
 from tests.engine._fake_coverage import build_coverage_index
 
-from ._rate_table_support import RateTableServer, recipe_table_bodies
+from ._rate_table_support import RateTableServer
 from .conftest import FakeGraphReader, FakeRevisionReader, only_chunk
 
 _BASE_URL = "https://datacommons.one.org/core/api"
@@ -60,7 +56,6 @@ _STAT_VAR_B = "dcid:Amount_FinancialFlow_DevelopmentAssistance_Nominal_B"
 _BARE_STAT_VAR_B = "Amount_FinancialFlow_DevelopmentAssistance_Nominal_B"
 
 _MEMBER_PROVENANCE = "provenance/OECDCreditorReportingSystem"
-_IDS_PROVENANCE = "provenance/WorldBankInternationalDebtStatistics"
 _DAC_RECIPE = "ConversionRecipeDAC"
 _IDS_RECIPE = "ConversionRecipeIDS"
 _TABLE_PROVENANCE = RECIPE_BODIES[_DAC_RECIPE].table_provenance
@@ -501,156 +496,6 @@ def test_group_with_two_converted_members_carries_one_conversion_entry_naming_bo
         assert record.table_provenance_id == _TABLE_PROVENANCE
 
 
-def test_collection_trace_names_every_converted_members_native_facet_and_revision():
-    """Each collection member converts on its own. Two members under one recipe and table
-    version share one `collection_trace` conversion entry naming both, and the trace carries
-    each member's native-unit revision and the shared source revision once."""
-    arcs = _base_arcs(bare_stat_vars=(_BARE_STAT_VAR, _BARE_STAT_VAR_B))
-    sdmx, _requests = _router_sdmx(
-        role_bodies={
-            _BARE_STAT_VAR: _ROLE_HEADER + _role_row(year="2022", value="100"),
-            _BARE_STAT_VAR_B: (
-                _ROLE_HEADER + _role_row(stat_var=_BARE_STAT_VAR_B, year="2022", value="200")
-            ),
-        },
-        subject_bodies={_EXCHANGE_VAR: _eur_exchange_rate_body()},
-    )
-    eur_request = FacetBinding(state="request", request=UnitRequest("EUR", "current"))
-
-    result = materialise_collection(
-        [
-            ("spec_" + "a" * 32, _request(stat_var=_STAT_VAR, unit=eur_request)),
-            ("spec_" + "b" * 32, _request(stat_var=_STAT_VAR_B, unit=eur_request)),
-        ],
-        sdmx=sdmx,
-        graph=_graph(arcs),
-        revision_reader=_reader(),
-        materialiser_build="test-build",
-        capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(arcs)),
-        rate_cache=RateTableCache(),
-        coverage=_coverage_for(
-            [(_BARE_STAT_VAR, "country/KEN"), (_BARE_STAT_VAR_B, "country/KEN")]
-        ),
-    )
-    trace = collection_trace([member for _spec_id, member in result.members])
-
-    assert trace.conversion is not None
-    (entry,) = trace.conversion
-    assert entry["recipe"] == _DAC_RECIPE
-    assert entry["members"] == [
-        {"stat_var": _BARE_STAT_VAR, "native_unit": "CurrencyUSD"},
-        {"stat_var": _BARE_STAT_VAR_B, "native_unit": "CurrencyUSD"},
-    ]
-    assert list(trace.source_revisions) == [
-        {"source": "OECD_DAC_CRS", "revision": "rev-7"},
-        {"source": f"native_unit/{_BARE_STAT_VAR}", "revision": "CurrencyUSD"},
-        _RECIPE_BODY_REVISION,
-        {"source": f"native_unit/{_BARE_STAT_VAR_B}", "revision": "CurrencyUSD"},
-    ]
-    assert [entry["ref"] for entry in trace.resolved_stat_vars] == [_STAT_VAR, _STAT_VAR_B]
-
-
-def test_mixed_recipe_collection_trace_has_one_conversion_entry_per_recipe():
-    """A CRS member converts under `ConversionRecipeDAC` and an IDS member under
-    `ConversionRecipeIDS`, which reads the IMF tables. The collection trace carries one entry
-    per recipe, each naming its own member and the version of the table that member read."""
-    imf_table_provenance = RECIPE_BODIES[_IDS_RECIPE].table_provenance
-    arcs = _base_arcs(bare_stat_vars=(_BARE_STAT_VAR, _BARE_STAT_VAR_B))
-    arcs[_IDS_PROVENANCE] = {"conversionRecipe": (_IDS_RECIPE,), "isPartOf": ()}
-    arcs[imf_table_provenance] = {"lastDataRefreshDate": (_REFRESH_DATE,)}
-    sdmx, _requests = _router_sdmx(
-        role_bodies={
-            _BARE_STAT_VAR: _ROLE_HEADER + _role_row(year="2022", value="100"),
-            _BARE_STAT_VAR_B: _ROLE_HEADER
-            + _role_row(
-                stat_var=_BARE_STAT_VAR_B,
-                year="2022",
-                value="200",
-                facet_id="f2",
-                provenance=_IDS_PROVENANCE,
-            ),
-        },
-        subject_bodies={
-            _EXCHANGE_VAR: _eur_exchange_rate_body(),
-            **recipe_table_bodies(
-                _IDS_RECIPE, rates={"CurrencyUSD": {2022: 1.0}, "CurrencyEUR": {2022: 0.95}}
-            ),
-        },
-    )
-    role_names = RoleNames(donor="financingProvider", recipient="financingRecipient")
-    coverage = build_coverage_index(
-        [
-            (_BARE_STAT_VAR, "f1", "country/FRA", "country/KEN", [2022]),
-            (_BARE_STAT_VAR_B, "f2", "country/FRA", "country/KEN", [2022]),
-        ],
-        role_names=dict.fromkeys((_BARE_STAT_VAR, _BARE_STAT_VAR_B), role_names),
-        facet_metadata={
-            "f1": FacetMetadata(
-                provenance_id=_MEMBER_PROVENANCE,
-                measurement_method="GrantEquivalent",
-                unit="CurrencyUSD",
-            ),
-            "f2": FacetMetadata(
-                provenance_id=_IDS_PROVENANCE,
-                measurement_method="GrantEquivalent",
-                unit="CurrencyUSD",
-            ),
-        },
-    )
-    eur_request = FacetBinding(state="request", request=UnitRequest("EUR", "current"))
-
-    result = materialise_collection(
-        [
-            ("spec_" + "a" * 32, _request(stat_var=_STAT_VAR, unit=eur_request)),
-            (
-                "spec_" + "b" * 32,
-                _request(stat_var=_STAT_VAR_B, unit=eur_request, provenance=_IDS_PROVENANCE),
-            ),
-        ],
-        sdmx=sdmx,
-        graph=_graph(arcs),
-        revision_reader=_reader(),
-        materialiser_build="test-build",
-        capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(arcs)),
-        rate_cache=RateTableCache(),
-        coverage=coverage,
-    )
-    records = {
-        stat_var: record
-        for _spec_id, member in result.members
-        for stat_var, record in member.member_conversion_records.items()
-    }
-    dac_record, ids_record = records[_STAT_VAR], records[_STAT_VAR_B]
-    assert dac_record is not None
-    assert ids_record is not None
-    assert dac_record.table_provenance_id == _TABLE_PROVENANCE
-    assert ids_record.table_provenance_id == imf_table_provenance
-    assert dac_record.exchange_rate_table_version != ids_record.exchange_rate_table_version
-
-    trace = collection_trace([member for _spec_id, member in result.members])
-
-    no_rows = {"count": 0, "examples": [], "truncated": False}
-    assert trace.conversion == (
-        {
-            "recipe": _DAC_RECIPE,
-            "rate_table_version": dac_record.exchange_rate_table_version,
-            "members": [{"stat_var": _BARE_STAT_VAR, "native_unit": "CurrencyUSD"}],
-            "fallback": no_rows,
-            "projected": no_rows,
-        },
-        {
-            "recipe": _IDS_RECIPE,
-            "rate_table_version": ids_record.exchange_rate_table_version,
-            "members": [{"stat_var": _BARE_STAT_VAR_B, "native_unit": "CurrencyUSD"}],
-            "fallback": no_rows,
-            "projected": no_rows,
-        },
-    )
-    assert trace.to_dict()["conversion"] == list(trace.conversion)
-
-
 def test_us_dollar_group_members_trace_their_facet_unit_like_the_member_path():
     """`USDollar` facets convert on `CurrencyUSD` rates. The group trace and its content-version
     preimage name `USDollar` per member, as each member's own `materialise_spec` result does.
@@ -1006,12 +851,11 @@ def _destination_currency_result(
     ceiling: int = DEFAULT_SYNC_CEILING_ROWS,
     unrated: dict[str, str] | None = None,
     unrated_type: str = "CurrencyUnit",
-) -> MaterialisationResult | PreviewResult | CollectionMaterialisationResult:
+) -> MaterialisationResult | PreviewResult:
     """Materialise `_destination_currency_inputs` through `entry`, binding every recipient.
-    A group or collection has a second StatVar binding `second`, by default `recipients`. A
-    preview enforces `ceiling` as a mint does."""
+    A group has a second StatVar binding `second`, by default `recipients`."""
     by_stat_var = {_BARE_STAT_VAR: recipients}
-    if entry in ("group", "collection"):
+    if entry == "group":
         by_stat_var[_BARE_STAT_VAR_B] = second if second is not None else recipients
     inputs = _destination_currency_inputs(by_stat_var, unrated=unrated, unrated_type=unrated_type)
     if entry == "preview":
@@ -1022,7 +866,6 @@ def _destination_currency_result(
             coverage=inputs.coverage,
             limit=100,
             ceiling=ceiling,
-            refuse_over_ceiling=True,
             rate_cache=RateTableCache(),
         )
     common = {
@@ -1038,11 +881,6 @@ def _destination_currency_result(
     }
     if entry == "group":
         return materialise_group(inputs.requests, **common)
-    if entry == "collection":
-        return materialise_collection(
-            [(f"spec_{letter * 32}", r) for letter, r in zip("ab", inputs.requests, strict=True)],
-            **common,
-        )
     return materialise_spec(inputs.requests[0], **common)
 
 
@@ -1054,6 +892,7 @@ def _served_recipients(result: MaterialisationResult | PreviewResult) -> set[str
 
 
 _ENTRIES = ("member", "group", "preview")
+_MINT_ENTRIES = ("member", "group")
 
 
 @pytest.mark.parametrize("entry", _ENTRIES)
@@ -1084,7 +923,7 @@ def test_destination_currency_omits_the_recipients_no_currency_names(
     assert not any(w["code"] == "coverage_below_scope" for w in result.warnings)
 
 
-@pytest.mark.parametrize("entry", [*_ENTRIES, "collection"])
+@pytest.mark.parametrize("entry", _ENTRIES)
 def test_destination_currency_refuses_when_no_recipient_is_named_by_a_currency(entry: str):
     with pytest.raises(RateCoverageGapError) as exc_info:
         _destination_currency_result(entry, ["southOfSahara", "africaRegion"])
@@ -1092,38 +931,7 @@ def test_destination_currency_refuses_when_no_recipient_is_named_by_a_currency(e
     assert exc_info.value.entities == ("africaRegion", "southOfSahara")
 
 
-@pytest.mark.parametrize("entry", ["group", "collection"])
-def test_a_member_whose_rows_are_all_omitted_leaves_the_others_served(entry: str):
-    """The first StatVar gives to Kenya, the second only to a region no currency names. The
-    request still serves Kenya's row: it refuses `currency_unmapped` only when no row of the
-    whole request is left, and the warning names the region."""
-    result = _destination_currency_result(entry, ["country/KEN"], second=["africaRegion"])
-    if isinstance(result, CollectionMaterialisationResult):
-        (_a, kenya), (_b, region) = result.members
-        assert _served_recipients(kenya) == {"country/KEN"}
-        assert region.coverage.rows == 0
-        warnings = region.warnings
-    else:
-        assert _served_recipients(result) == {"country/KEN"}
-        warnings = result.warnings
-    omitted = [w for w in warnings if w["code"] == "currency_unmapped_omitted"]
-    assert [w["message"].endswith("1 entities: africaRegion") for w in omitted] == [True]
-
-
-@pytest.mark.parametrize("entry", [*_ENTRIES, "collection"])
-def test_the_survivor_ceiling_counts_the_rows_left_after_omission(entry: str):
-    """The first StatVar reads Kenya and a region no currency names, the second the region
-    alone. One row survives omission, so a ceiling of one serves it: the ceiling counts the
-    rows the request serves, not the rows read before omission."""
-    result = _destination_currency_result(
-        entry, ["country/KEN", "africaRegion"], second=["africaRegion"], ceiling=1
-    )
-    if isinstance(result, CollectionMaterialisationResult):
-        result = result.members[0][1]
-    assert _served_recipients(result) == {"country/KEN"}
-
-
-@pytest.mark.parametrize("entry", [*_ENTRIES, "collection"])
+@pytest.mark.parametrize("entry", _MINT_ENTRIES)
 @pytest.mark.parametrize(
     "unrated_type",
     [
@@ -1328,9 +1136,8 @@ def test_conversion_trace_is_absent_when_no_member_converted():
 
 
 def test_conversion_trace_lists_a_shared_stat_var_once_and_counts_every_record():
-    """Two collection definitions over one StatVar and native unit, such as ODA to Kenya and
-    ODA to Uganda, name that member once. Each record counts its own definition's rows, so the
-    counts still sum over both."""
+    """Records over one StatVar and native unit name that member once. Each record counts its
+    own rows, so the counts sum over every record."""
     (entry,) = _conversion_trace(
         [
             (_STAT_VAR, _record(fallback_count=1, fallback_examples=(("KEN", "2020"),))),
@@ -1457,40 +1264,3 @@ def test_converted_group_token_recomputes_from_its_served_trace_alone():
     )
 
     assert _recompute_from_served_trace(result) == result.content_version
-
-
-def test_converted_collection_token_recomputes_from_its_member_traces_alone():
-    arcs = _base_arcs(bare_stat_vars=(_BARE_STAT_VAR, _BARE_STAT_VAR_B))
-    sdmx, _requests = _router_sdmx(
-        role_bodies={
-            _BARE_STAT_VAR: _ROLE_HEADER + _role_row(year="2022", value="100"),
-            _BARE_STAT_VAR_B: (
-                _ROLE_HEADER + _role_row(stat_var=_BARE_STAT_VAR_B, year="2022", value="200")
-            ),
-        },
-        subject_bodies={_EXCHANGE_VAR: _eur_exchange_rate_body()},
-    )
-    eur_request = FacetBinding(state="request", request=UnitRequest("EUR", "current"))
-    result = materialise_collection(
-        [
-            ("spec_" + "a" * 32, _request(stat_var=_STAT_VAR, unit=eur_request)),
-            ("spec_" + "b" * 32, _request(stat_var=_STAT_VAR_B, unit=eur_request)),
-        ],
-        sdmx=sdmx,
-        graph=_graph(arcs),
-        revision_reader=_reader(),
-        materialiser_build="test-build",
-        capability_version="v1",
-        enrichment=EnrichmentLookup(_graph(arcs)),
-        rate_cache=RateTableCache(),
-        coverage=_coverage_for(
-            [(_BARE_STAT_VAR, "country/KEN"), (_BARE_STAT_VAR_B, "country/KEN")]
-        ),
-    )
-
-    recomputed = [
-        (spec_id, _recompute_from_served_trace(member)) for spec_id, member in result.members
-    ]
-
-    assert recomputed == [(spec_id, member.content_version) for spec_id, member in result.members]
-    assert mint_collection_content_version(recomputed) == result.content_version

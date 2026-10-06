@@ -69,7 +69,7 @@ You should see:
       "rendering": {
         "format": "parquet",
         "bundle": true,
-        "rendition": "v1-…"
+        "rendition": "v2-…"
       },
       "media_type": "application/zip",
       "bytes": 11590

@@ -21,6 +21,7 @@ from code_index.shared import get_index, get_measure_index
 from search.engine.bind import DraftBindingEvidence, SlotBindingDraft, _UniversalBindOutput
 from search.engine.extract import DateRequest
 from search.engine.qualifier_match import QualifierMatch, QualifierReadings
+from search.engine.quantity import NO_REQUIREMENT, quantity_requirement
 from search.engine.reading_coverage import ObservedYears
 from search.engine.region import alternate_guard, resolve_variable
 from search.engine.region.alternate_guard import (
@@ -291,6 +292,7 @@ class Row(NamedTuple):
     def pins(self) -> QueryPins:
         return query_pins(
             self.query,
+            quantity=quantity_requirement([self.query]),
             bindings=self.bindings,
             qualifier_matches=[_qualifier(dcid) for dcid in self.qualifiers],
             elected_has_data=self.elected_has_data,
@@ -1365,8 +1367,15 @@ def test_a_ppp_reading_of_the_elected_measure_gives_way_once_the_election_has_da
         unresolved=True,
         members=_activity("Amount_GDP_PPP_PerCapita", _GDP),
     )
-    before = query_pins("GDP per capita", bindings=_GDP_MENTIONED)
-    after = query_pins("GDP per capita", bindings=_GDP_MENTIONED, elected_has_data=True)
+    before = query_pins(
+        "GDP per capita", quantity=quantity_requirement(["GDP per capita"]), bindings=_GDP_MENTIONED
+    )
+    after = query_pins(
+        "GDP per capita",
+        quantity=quantity_requirement(["GDP per capita"]),
+        bindings=_GDP_MENTIONED,
+        elected_has_data=True,
+    )
 
     assert inadmissible_reason(before, _GDP_PC_UNRESOLVED, gdp_ppp) is None
     assert _code(inadmissible_reason(after, _GDP_PC_UNRESOLVED, gdp_ppp)) == "default:qualifier"
@@ -1379,7 +1388,11 @@ def test_no_default_when_a_price_basis_phrase_went_unread():
         members=_activity("Amount_GDP_PPP_PerCapita", _GDP),
     )
     pins = query_pins(
-        "GDP per capita", bindings=_GDP_MENTIONED, elected_has_data=True, unread_price_basis=True
+        "GDP per capita",
+        quantity=quantity_requirement(["GDP per capita"]),
+        bindings=_GDP_MENTIONED,
+        elected_has_data=True,
+        unread_price_basis=True,
     )
 
     assert inadmissible_reason(pins, _GDP_PC_UNRESOLVED, gdp_ppp) is None
@@ -1390,14 +1403,27 @@ def test_a_member_passes_on_the_elected_values_or_a_named_property():
     reading, and passes beside a reading that holds no activity when the query names it."""
     gni_member = list(_GNI_PPP.sv_arc_facts or {})
     no_activity = _gdp("Nominal", members={"sv_total": _arcs({"economicSector": "Agriculture"})})
-    named = query_pins("GDP in Kenya", bindings=[_binding("activitySource", [_GDP])])
+    named = query_pins(
+        "GDP in Kenya",
+        quantity=quantity_requirement(["GDP in Kenya"]),
+        bindings=[_binding("activitySource", [_GDP])],
+    )
 
     def offered(pins: QueryPins, elected: ShapeDraft) -> list[str]:
         return list(offered_alternates(pins, elected, {1: _GNI_PPP})[1].sv_arc_facts or {})
 
-    assert offered(query_pins("GDP in Kenya"), _NOMINAL_GDP) == []
     assert (
-        offered(query_pins("GNI in Kenya"), _gdp("Nominal", members=_activity("GNI", _GNI)))
+        offered(
+            query_pins("GDP in Kenya", quantity=quantity_requirement(["GDP in Kenya"])),
+            _NOMINAL_GDP,
+        )
+        == []
+    )
+    assert (
+        offered(
+            query_pins("GNI in Kenya", quantity=quantity_requirement(["GNI in Kenya"])),
+            _gdp("Nominal", members=_activity("GNI", _GNI)),
+        )
         == gni_member
     )
     assert offered(named, no_activity) == gni_member
@@ -1427,7 +1453,13 @@ def test_the_national_poverty_shape_is_offered_through_its_total():
         },
     )
 
-    offered = offered_alternates(query_pins("poverty in Bangladesh"), day1, {1: nahc})[1]
+    offered = offered_alternates(
+        query_pins(
+            "poverty in Bangladesh", quantity=quantity_requirement(["poverty in Bangladesh"])
+        ),
+        day1,
+        {1: nahc},
+    )[1]
 
     assert list(offered.sv_arc_facts or {}) == ["sdg/SI_POV_NAHC"]
 
@@ -1436,7 +1468,9 @@ def test_an_empty_count_gives_way_to_its_same_cohort_rate():
     count = _availability_shape("Under-five mortality count", place_available=False)
     rate = _availability_shape("Under-five mortality rate", place_available=True)
 
-    kept, _ = _prune_availability_siblings([rate, count], named_place=True)
+    kept, _ = _prune_availability_siblings(
+        [rate, count], named_place=True, quantity=NO_REQUIREMENT, denominator_kinds={}
+    )
 
     assert kept == [rate]
 
@@ -1444,10 +1478,16 @@ def test_an_empty_count_gives_way_to_its_same_cohort_rate():
 def test_a_rural_survivor_does_not_stand_in_for_a_general_rate():
     general = _availability_shape("Under-five mortality rate", place_available=False)
     rural = _availability_shape("Rural under-five mortality rate", place_available=True)
-    pins = query_pins("under-five mortality rate")
+    pins = query_pins(
+        "under-five mortality rate", quantity=quantity_requirement(["under-five mortality rate"])
+    )
 
     kept, substitutions = _prune_availability_siblings(
-        [general, rural], named_place=True, variable="under-five mortality rate"
+        [general, rural],
+        named_place=True,
+        variable="under-five mortality rate",
+        quantity=quantity_requirement(["under-five mortality rate"]),
+        denominator_kinds={},
     )
 
     assert kept == [general, rural]
@@ -1466,7 +1506,11 @@ def test_a_registered_twin_stands_in_despite_its_residence_label():
     )
 
     kept, _ = _prune_availability_siblings(
-        [general, rural], named_place=True, variable="under-five mortality rate"
+        [general, rural],
+        named_place=True,
+        variable="under-five mortality rate",
+        quantity=quantity_requirement(["under-five mortality rate"]),
+        denominator_kinds={},
     )
 
     assert kept == [rural]
@@ -1476,7 +1520,14 @@ def test_an_unresolved_per_capita_spelling_stands_in_for_an_empty_one():
     empty = _gdp(None, "Count_Person", place_available=False)
     survivor = _gdp(None, unresolved=True, place_available=True)
 
-    assert inadmissible_reason(query_pins("GDP per capita"), empty, survivor) is None
+    assert (
+        inadmissible_reason(
+            query_pins("GDP per capita", quantity=quantity_requirement(["GDP per capita"])),
+            empty,
+            survivor,
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize(
@@ -1498,7 +1549,13 @@ def test_a_raw_count_does_not_stand_in_for_a_named_rate(variable, substituted):
     )
     count = _availability_shape("Under-five mortality count", place_available=True)
 
-    kept, _ = _prune_availability_siblings([rate, count], named_place=True, variable=variable)
+    kept, _ = _prune_availability_siblings(
+        [rate, count],
+        named_place=True,
+        variable=variable,
+        quantity=quantity_requirement([variable]),
+        denominator_kinds={},
+    )
 
     assert kept == ([count] if substituted else [rate, count])
 
@@ -1506,7 +1563,9 @@ def test_a_raw_count_does_not_stand_in_for_a_named_rate(variable, substituted):
 def test_the_nominal_shape_is_represented_by_nominal_gdp():
     """Beside an inflation-adjusted GDP election with no data, the nominal shape's sector
     members fail on activitySource and nominal GDP represents it."""
-    pins = query_pins("GDP India", bindings=_GDP_SOLE_OPTION)
+    pins = query_pins(
+        "GDP India", quantity=quantity_requirement(["GDP India"]), bindings=_GDP_SOLE_OPTION
+    )
 
     offered = offered_alternates(pins, _INFLATION_ADJUSTED_GDP, {1: _NOMINAL_GDP_WITH_SECTORS})[1]
 
@@ -1536,8 +1595,15 @@ def test_the_reason_depends_on_the_binding():
             ),
         },
     )
-    bound = query_pins("GDP India", bindings=_GDP_SOLE_OPTION, elected_has_data=True)
-    unbound = query_pins("GDP India", elected_has_data=True)
+    bound = query_pins(
+        "GDP India",
+        quantity=quantity_requirement(["GDP India"]),
+        bindings=_GDP_SOLE_OPTION,
+        elected_has_data=True,
+    )
+    unbound = query_pins(
+        "GDP India", quantity=quantity_requirement(["GDP India"]), elected_has_data=True
+    )
 
     assert (
         _code(inadmissible_reason(bound, _NOMINAL_GDP_WITH_SECTORS, remainder))
@@ -1558,7 +1624,11 @@ def test_a_rate_phrasing_removes_the_raw_count_before_bind():
 
 
 def test_973_nominated_alternate():
-    result = inadmissible_alternates(query_pins("GDP of Kenya"), _NOMINAL_GDP, [(1, _GNI_PPP)])
+    result = inadmissible_alternates(
+        query_pins("GDP of Kenya", quantity=quantity_requirement(["GDP of Kenya"])),
+        _NOMINAL_GDP,
+        [(1, _GNI_PPP)],
+    )
 
     assert _code(result[1]) == "concept:activitySource"
 
@@ -1571,12 +1641,22 @@ def test_973_availability_substitute():
     gni = _gdp("Nominal", unresolved=True, members=_activity("GNI_PC", _GNI), place_available=True)
 
     kept, _ = _prune_availability_siblings(
-        [empty_gdp, gni], named_place=True, variable="GDP of Kenya"
+        [empty_gdp, gni],
+        named_place=True,
+        variable="GDP of Kenya",
+        quantity=quantity_requirement(["GDP of Kenya"]),
+        denominator_kinds={},
     )
 
     assert kept == [empty_gdp, gni]
     assert (
-        _code(inadmissible_reason(query_pins("GDP of Kenya"), empty_gdp, gni))
+        _code(
+            inadmissible_reason(
+                query_pins("GDP of Kenya", quantity=quantity_requirement(["GDP of Kenya"])),
+                empty_gdp,
+                gni,
+            )
+        )
         == "concept:activitySource"
     )
 
@@ -1592,7 +1672,9 @@ def test_973_availability_substitute_under_a_qualifier_pin(named):
         [nominal, ppp],
         named_place=True,
         variable="nominal GDP rate",
+        quantity=quantity_requirement(["nominal GDP rate"]),
         qualifier_matches=[_qualifier("Nominal")] if named else [],
+        denominator_kinds={},
     )
 
     assert kept == ([nominal, ppp] if named else [ppp])
@@ -1683,7 +1765,6 @@ def _resolve_gdp_of_kenya(
             graph=graph,
             resolver=make_resolver(graph),
             llm=_SoleOptionLLM(also_plausible, bindings),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
@@ -1694,7 +1775,7 @@ def _resolve_gdp_of_kenya(
 
 
 def _served(result) -> list[list[str]]:
-    return [[sv.ref for sv in spec.resolved.stat_vars.items] for spec in result.specs]
+    return [[sv.ref.dcid for sv in spec.resolved.members] for spec in result.specs]
 
 
 def test_973_candidate_admission():
@@ -1746,9 +1827,12 @@ def test_the_imf_series_is_a_twin_of_the_elected_gdp_reading():
     """Nominal GDP's shape holds sector value added beside GDP. With activitySource bound
     the elected reading is GDP alone, so the IMF series is its registered twin. Bound to a
     sector, the reading has no twin."""
-    gdp = query_pins("GDP India", bindings=_GDP_SOLE_OPTION)
+    gdp = query_pins(
+        "GDP India", quantity=quantity_requirement(["GDP India"]), bindings=_GDP_SOLE_OPTION
+    )
     agriculture = query_pins(
         "GDP India",
+        quantity=quantity_requirement(["GDP India"]),
         bindings=[_binding("activitySource", [_GVA]), _binding("economicSector", ["Agriculture"])],
     )
 
@@ -1795,10 +1879,19 @@ def test_the_twin_check_looks_up_registered_members_alone(monkeypatch):
         "AidFlowReadingTest", "amount", "RealValue", None, members=tuple(f"R{i}" for i in range(30))
     )
 
-    assert twin_alternates(query_pins("aid to Kenya"), flows, [(1, real_flows)]) == []
+    assert (
+        twin_alternates(
+            query_pins("aid to Kenya", quantity=quantity_requirement(["aid to Kenya"])),
+            flows,
+            [(1, real_flows)],
+        )
+        == []
+    )
     assert clusters.read == []
 
-    gdp = query_pins("GDP India", bindings=_GDP_SOLE_OPTION)
+    gdp = query_pins(
+        "GDP India", quantity=quantity_requirement(["GDP India"]), bindings=_GDP_SOLE_OPTION
+    )
     assert twin_alternates(gdp, _NOMINAL_GDP_WITH_SECTORS, [(1, _IMF_GDP)]) == [1]
     assert sorted(clusters.read) == sorted([_NOMINAL_GDP_SV, _IMF_GDP_SV])
 
@@ -1832,7 +1925,7 @@ _GDP_PROVENANCE = {
 
 def _equivalent_readings(result) -> list[list[list[str]]]:
     return [
-        [[sv.ref for sv in twin.resolved.stat_vars.items] for twin in twins]
+        [[sv.ref.dcid for sv in twin.resolved.members] for twin in twins]
         for spec in result.specs
         if (twins := spec.resolved.equivalent_readings)
     ]
@@ -1984,6 +2077,7 @@ def test_ppp_names_a_price_basis_either_shape_carries(
     with data, it keeps the default price basis from refusing it."""
     pins = query_pins(
         "GDP PPP of Kenya",
+        quantity=quantity_requirement(["GDP PPP of Kenya"]),
         bindings=_GDP_MENTIONED,
         qualifier_readings=[_PPP_READINGS],
         elected_has_data=elected_has_data,
@@ -2009,7 +2103,11 @@ def test_ppp_naming_a_crs_purpose_pins_no_price_basis():
         ),
         slot_keys=(slot,),
     )
-    pins = query_pins("PPP aid to Kenya", qualifier_readings=[_PPP_READINGS])
+    pins = query_pins(
+        "PPP aid to Kenya",
+        quantity=quantity_requirement(["PPP aid to Kenya"]),
+        qualifier_readings=[_PPP_READINGS],
+    )
 
     assert inadmissible_reason(pins, flow_nominal, flow_real) is None
 
@@ -2018,7 +2116,9 @@ def _imputed_pins() -> tuple[ShapeDraft, Mapping[str, str], Mapping[str, str]]:
     """The imputed multilateral shape the index carries, the slots its dataset pins,
     and the constraints of one of its education rows."""
     index = get_index()
-    ((dataset, five_tuple),) = (key for key, pins in index.dataset_pins.items() if pins)
+    ((dataset, five_tuple),) = (
+        key for key, pins in index.dataset_pins.items() if pins and index.datasets[key[0]].opt_in
+    )
     rows = [row for row in index.statvars if row_five_tuple(row) == five_tuple]
     elected = dataclasses.replace(
         _shape(
@@ -2069,7 +2169,11 @@ def test_a_slot_the_five_tuple_pins_is_held_by_the_imputed_reading(
     bindings = [_binding("crsPurpose", ["CRSPurposeCode110"])]
     if pins_bound:
         bindings += [_binding(prop, [value], "sole_option") for prop, value in pinned.items()]
-    pins = query_pins("imputed multilateral education aid", bindings=bindings)
+    pins = query_pins(
+        "imputed multilateral education aid",
+        quantity=quantity_requirement(["imputed multilateral education aid"]),
+        bindings=bindings,
+    )
 
     assert set(pinned) == {"crsTypeOfFlow", "dac2aAidType"}
     assert _code(inadmissible_reason(pins, elected, sibling)) == expected
@@ -2097,7 +2201,7 @@ def test_a_member_of_a_larger_shape_reads_residence_from_its_own_name():
             "Count_Person": _named("Total population"),
         },
     )
-    pins = query_pins("population of Kenya")
+    pins = query_pins("population of Kenya", quantity=quantity_requirement(["population of Kenya"]))
 
     assert inadmissible_reason(pins, population, mixed) is None
     assert list(offered_alternates(pins, population, {1: mixed})[1].sv_arc_facts or {}) == [
@@ -2400,7 +2504,6 @@ def test_a_nominal_span_around_the_year_keeps_the_only_reading_holding_it():
             graph=graph,
             resolver=make_resolver(graph),
             llm=_SoleOptionLLM(None, _GDP_SOLE_OPTION),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability

@@ -29,15 +29,14 @@ class ArtifactRecord:
 @dataclass(frozen=True)
 class VersionRecord:
     subject_id: str
-    subject_kind: str  # "spec" | "collection"
+    subject_kind: str  # "spec"
     content_version: str
     schema_version: int
     immutable_body: Mapping[str, object]
-    member_versions: tuple[tuple[str, str], ...] = ()
     # Signed URLs expire. Writers store artifact metadata separately without them.
     artifacts: tuple[ArtifactRecord, ...] = ()
     # Full collapses store their source version in a column because older Manifest
-    # readers reject unknown body fields. Collections and other records use `None`.
+    # readers reject unknown body fields. Other records use `None`.
     base_content_version: str | None = None
 
 
@@ -88,8 +87,7 @@ NULL_VERSION_RECORD_WRITER = NullVersionRecordWriter()
 class MemberSignal:
     """Currency-check signal captured for one materialised member.
 
-    A frame head carries one signal. A collection carries one per member in
-    `member_versions` order. `obs_count` is measured on the ordinary path,
+    A frame head carries one signal. `obs_count` is measured on the ordinary path,
     but stored role-bearing signals may have `None`. Two `None` counts match.
     checks then compare the facet id and dates. `None` stays distinct from
     zero, which would falsely assert an observation count.

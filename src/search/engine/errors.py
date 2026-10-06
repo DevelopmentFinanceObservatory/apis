@@ -131,10 +131,21 @@ class RoleSignatureError(Exception):
 
 class FamilyNotResolvableError(Exception):
     """The mint's member walk refuses a family for a fault in one of its members: a
-    constraint with two values, a degenerate role arc, a member that is no StatVar.
+    constraint with two values, a degenerate role arc, a member that is no StatVar. A
+    resubmit's walk also raises it for a family it cannot settle: a query with no measured
+    property, or a candidate its reads leave undismissed.
 
     Raised by `retrieval.bound_values.RoleClassWalks`. The mint refuses the identity
     `member_not_resolvable`, so Search answers nothing for it.
+    """
+
+
+class MembershipTooBroadError(Exception):
+    """A resubmit's member walk meets a family the mint refuses as too broad: a filtered
+    set past the subject ceiling, or more members than the member cap.
+
+    Raised by `retrieval.bound_values.RoleClassWalks` in its resubmit mode. The resubmit
+    answers the part `scope_too_broad`.
     """
 
 

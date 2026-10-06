@@ -270,7 +270,6 @@ def _resolution(
         resolver=make_resolver(graph),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         llm=llm if llm is not None else _set_bind_llm(),
-        base_steps=[],
         base_timing={},
         unit_text=unit_text,
         coverage=empty_coverage_snapshot(),
@@ -319,7 +318,7 @@ def test_a_covered_conversion_answers_definite_without_an_observation_read(monke
         include_observations=False,
     )
     assert result.status == "definite", result
-    assert {sv.ref for sv in result.specs[0].resolved.stat_vars.items} == {_SV_A, _SV_B}
+    assert {sv.ref.dcid for sv in result.specs[0].resolved.members} == {_SV_A, _SV_B}
 
 
 def test_a_unit_gate_refusal_never_probes_coverage(monkeypatch):
@@ -360,7 +359,7 @@ def test_single_shape_full_coverage_answers_definite_with_all_series():
     result = _run(obs=obs, unit_text="US dollars")
     assert result.status == "definite", f"expected definite, got {result.status!r}"
     spec = result.specs[0]
-    assert {sv.ref for sv in spec.resolved.stat_vars.items} == {_SV_A, _SV_B}
+    assert {sv.ref.dcid for sv in spec.resolved.members} == {_SV_A, _SV_B}
     assert spec.resolved.observations is not None
     assert {s.stat_var.ref for s in spec.resolved.observations.series} == {_SV_A, _SV_B}
 
@@ -382,7 +381,7 @@ def test_single_shape_empty_read_answers_from_the_plan():
         f"expected definite, got {result.status!r} (no_data_reason={result.no_data_reason!r})"
     )
     spec = result.specs[0]
-    assert {sv.ref for sv in spec.resolved.stat_vars.items} == {_SV_A, _SV_B}
+    assert {sv.ref.dcid for sv in spec.resolved.members} == {_SV_A, _SV_B}
     assert spec.resolved.observations is not None
     assert {s.stat_var.ref for s in spec.resolved.observations.series if s.total_obs} == {_SV_A}
 
@@ -427,7 +426,7 @@ def test_candidate_with_partial_coverage_is_dropped_leaving_the_full_alternate()
         f"lone-survivor definite; got status={result.status!r}"
     )
     spec = result.specs[0]
-    assert {sv.ref for sv in spec.resolved.stat_vars.items} == {_SV_C}
+    assert {sv.ref.dcid for sv in spec.resolved.members} == {_SV_C}
 
 
 # A role-bearing bulk scope: the role-pair product exceeds `obs_preview_max_pairs`, so the
@@ -630,7 +629,6 @@ def _run_role_bulk(
             resolver=make_resolver(graph),
             sdmx=_role_sdmx(covered_svs, raise_series=raise_series, facets=facets),
             llm=_set_bind_llm(),
-            base_steps=[],
             base_timing={},
             unit_text=unit_text,
             coverage=coverage,
@@ -654,7 +652,7 @@ def test_role_bulk_scope_answers_definite_when_every_statvar_is_confirmed(
         f"expected definite, got {result.status!r} (no_data_reason={result.no_data_reason!r})"
     )
     spec = result.specs[0]
-    assert {sv.ref for sv in spec.resolved.stat_vars.items} == {_ROLE_SV_A, _ROLE_SV_B}
+    assert {sv.ref.dcid for sv in spec.resolved.members} == {_ROLE_SV_A, _ROLE_SV_B}
     observations = spec.resolved.observations
     assert observations is not None
     assert {s.stat_var.ref for s in observations.series} == {_ROLE_SV_A}
@@ -693,7 +691,7 @@ def test_converted_role_bulk_scope_previews_converted_points(monkeypatch, search
         f"expected definite, got {result.status!r} (no_data_reason={result.no_data_reason!r})"
     )
     spec = result.specs[0]
-    assert {sv.ref for sv in spec.resolved.stat_vars.items} == {_ROLE_SV_A, _ROLE_SV_B}
+    assert {sv.ref.dcid for sv in spec.resolved.members} == {_ROLE_SV_A, _ROLE_SV_B}
     observations = spec.resolved.observations
     assert observations is not None
     assert observations.omitted is None

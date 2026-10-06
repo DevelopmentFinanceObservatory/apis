@@ -19,6 +19,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
 
 import dc_graph
+import search.engine.app as app_module
 from code_index.shared import get_index
 from dfo_platform import ProblemSpec, refusal
 from entity_resolution import NotFound
@@ -50,7 +51,6 @@ from search.models import (
     ParsedEntity,
     ParsedInput,
     ParsedPart,
-    PipelineStep,
     RawTextInput,
     ResolveOptions,
     ResolveRequest,
@@ -163,7 +163,7 @@ def test_dropped_qualifier_note_matches_raw_text_sentence_event(monkeypatch):
             resolve_events(
                 ResolveRequest(
                     input=RawTextInput(query=query),
-                    response_options=ResolveOptions(include_sentence=True),
+                    response_options=ResolveOptions(),
                 ),
                 graph=FakeGraph(),
                 llm=_SelectFirstShapeLLM(),
@@ -577,9 +577,7 @@ def test_sse_terminal_error_carries_engine_input_error_code(monkeypatch):
     """The SSE error event preserves an `EngineInputError` code."""
 
     async def _raising_stream(request, *, graph=None, llm=None, **_kwargs):
-        raise EngineInputError(
-            "posted edit did not supply enough information", code="edit_incomplete"
-        )
+        raise EngineInputError("posted shape does not match its members", code="shape_mismatch")
         yield  # pragma: no cover — makes this a generator function
 
     monkeypatch.setattr("search.engine.app.resolve_events", _raising_stream)
@@ -617,10 +615,9 @@ def test_sse_terminal_error_carries_engine_input_error_code(monkeypatch):
     # default (codes.CODE_CATALOG) rather than the generic "Bad request" --
     # that fallback is reserved for a code-less (routing-failure) raise.
     assert (
-        payload["detail"]
-        == "The posted edit did not supply enough information to re-materialise a spec."
+        payload["detail"] == "The posted shape does not match the shape this request resolves to."
     )
-    assert payload["code"] == "edit_incomplete"
+    assert payload["code"] == "shape_mismatch"
 
 
 def test_sse_terminal_error_survives_a_classify_that_itself_raises(monkeypatch, caplog):
@@ -695,7 +692,7 @@ def test_sse_terminal_error_survives_a_classify_returning_an_unregistered_code(m
 @pytest.mark.parametrize(
     "exc",
     [
-        EngineInputError("posted edit did not supply enough information", code="edit_incomplete"),
+        EngineInputError("posted shape does not match its members", code="shape_mismatch"),
         EngineInputError("unknown shape_id"),
         GraphInfraError("simulated upstream failure", upstream_status=404),
         GraphInfraError("simulated transient failure"),
@@ -880,6 +877,7 @@ def _same_shape_region_with_obs_task(
     """Build a same-shape result with a pending observations task and relaunch callback."""
     stat_var_ref = GraphRef(dcid=sv_dcid, label=sv_dcid)
     spec = build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=_SAME_SHAPE,
         slots=[_where_slot(where_dcid)],
@@ -893,7 +891,6 @@ def _same_shape_region_with_obs_task(
         ],
         entities=[],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
     )
     task = asyncio.create_task(_fake_obs_probe(delay))
     created.append(task)
@@ -1011,6 +1008,7 @@ def _same_shape_region_with_place_options_task(
     """Build a same-shape result with a pending place-options task and relaunch callback."""
     stat_var_ref = GraphRef(dcid=sv_dcid, label=sv_dcid)
     spec = build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=_SAME_SHAPE,
         slots=[_where_slot(where_dcid)],
@@ -1024,7 +1022,6 @@ def _same_shape_region_with_place_options_task(
         ],
         entities=[subject_entity(where_dcid)],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
     )
     # The merge must cancel this pending task and relaunch under the merged spec id.
     task = asyncio.create_task(
@@ -1353,7 +1350,6 @@ def test_done_carries_the_departures_a_streamed_read_adds(projected_count, late)
             extra_warnings=[],
             start_ms=0,
             engine_build="test",
-            include_sentence=False,
             max_candidates=5,
         )
         late_departures: list = []
@@ -1424,8 +1420,9 @@ def test_extract_deadline_exceeded_yields_sse_terminal_error(monkeypatch, search
 
 
 def test_resubmit_deadline_exceeded_yields_sse_terminal_error(monkeypatch, search_settings):
-    """A slow resubmit call ends the SSE request with a classified timeout."""
-    search_settings(request_timeout_s=0.02)
+    """A resubmit call slower than both its deadlines ends the SSE request with a classified
+    timeout."""
+    search_settings(request_timeout_s=0.02, resubmit_full_read_timeout_s=0.02)
 
     def _slow_resolve_spec_resubmit(
         *,
@@ -1434,6 +1431,7 @@ def test_resubmit_deadline_exceeded_yields_sse_terminal_error(monkeypatch, searc
         sdmx,
         coverage=None,
         options: EngineOptions | None = None,
+        full_read_deadline: float | None = None,
     ):
         time.sleep(0.3)
         return _no_data_region("test var")  # pragma: no cover -- deadline fires first
@@ -1498,6 +1496,47 @@ def test_extract_deadline_exceeded_returns_504_on_buffered_path(monkeypatch, sea
     body = resp.json()
     assert body["detail"] == "Request timed out"
     assert body["code"] == "timeout"
+
+
+@pytest.mark.parametrize(
+    ("body", "status"),
+    [
+        ({"kind": "raw_text", "query": "a slow question"}, 504),
+        (
+            {
+                "kind": "dataset_resubmit",
+                "entries": [
+                    {
+                        "entry_kind": "placeholder",
+                        "variable_text": "a slow part",
+                        "status": "no_data",
+                        "reason": "no_observations",
+                    }
+                ],
+            },
+            200,
+        ),
+    ],
+    ids=["raw_text", "dataset_resubmit"],
+)
+def test_the_buffered_hard_bound_allows_a_resubmit_its_full_read(
+    monkeypatch, search_settings, body, status
+):
+    """The buffered path's hard bound is `request_timeout_s`, and `resubmit_full_read_timeout_s`
+    for a dataset_resubmit, whose member walk may run its full read past the first."""
+    search_settings(request_timeout_s=0.05, resubmit_full_read_timeout_s=5)
+    real = app_module.resolve_async
+
+    async def _slow_resolve_async(*args, **kwargs):
+        await asyncio.sleep(0.2)
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(app_module, "resolve_async", _slow_resolve_async)
+    client = TestClient(_fake_app(), raise_server_exceptions=False)
+
+    resp = client.post("/api/search/resolve", json={"input": body})
+
+    assert resp.status_code == status, resp.text
 
 
 def _slow_two_part_parsed_request() -> ResolveRequest:
