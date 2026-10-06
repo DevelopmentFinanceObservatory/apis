@@ -24,18 +24,17 @@ from search.engine.spec_build import NamedGroup
 from search.engine.unit.refs import expressible as _unit_request_expressible
 from search.engine.unit.refs import satisfies as _unit_request_satisfies
 from search.models import (
-    BaseIdentity,
     Binding,
     BindingSet,
     BindingUnbound,
     BindingValue,
+    EntityGroup,
     FacetBasis,
     GraphRef,
     IdentityBinding,
     IdentityBindingSet,
     IdentityBindingUnbound,
     IdentityBindingValue,
-    IdentityEntityGroup,
     IdentityFacetBinding,
     IdentityFacetValueAbsent,
     IdentityFacetValueRequest,
@@ -318,28 +317,38 @@ def _requested_window_for_id(date_request: DateRequest | None) -> RequestedWindo
 
 
 def resubmit_named_groups(
-    identity: BaseIdentity, *, graph: EngineGraphClient, deadline: float | None
+    inp: ResubmitIdentityPayload, *, graph: EngineGraphClient, deadline: float | None
 ) -> tuple[NamedGroup, ...]:
-    """The posted identity's groups the graph confirms.
+    """The groups posted beside the identity that the graph confirms.
 
     A group is kept only when it posts a dcid and the graph's members of that node
-    (`<-containedInPlace`) are the role's entities, and it takes the graph's label for the
-    node, as a first answer does (`place_roles.request_named_groups`). The posted label
-    stands only where the graph gives none. A group posting no dcid drops, since nothing
-    ties its label to the role's entities. All posted dcids are read in one members batch,
+    (`<-containedInPlace`) are the identity's entities on the role, and it takes the
+    graph's label for the node, as a first answer does
+    (`place_roles.request_named_groups`). The posted label stands only where the graph
+    gives none. A group posting no dcid drops, since nothing ties its label to the role's
+    entities, and so does a group on a role the identity binds no entity on. All posted
+    dcids are read in one members batch,
     and the membership-confirmed ones in one labels batch. Each dropped group is logged at
     info with the reason. A `GraphInfraError` on either read drops the groups it covers,
     logged at warning and noted as a lost read (`degraded_reads.note_degraded_read`), and
     the role's entities still bind.
     """
-    kept: list[tuple[str, IdentityEntityGroup, frozenset[str]]] = []
-    for role, group in (identity.entity_groups or {}).items():
+    kept: list[tuple[str, EntityGroup, frozenset[str]]] = []
+    entities = inp.identity.entities
+    for role, group in (inp.entity_groups or {}).items():
         if group.dcid is None:
             logger.info(
                 "resubmit dropped group %r on role %s: it names no graph node", group.label, role
             )
             continue
-        kept.append((group.dcid, group, frozenset(identity.entities[role])))
+        if role not in entities:
+            logger.info(
+                "resubmit dropped group %s on role %s: the identity binds no entity there",
+                group.dcid,
+                role,
+            )
+            continue
+        kept.append((group.dcid, group, frozenset(entities[role])))
     if not kept:
         return ()
     dcids = sorted({dcid for dcid, _, _ in kept})
@@ -354,7 +363,7 @@ def resubmit_named_groups(
         logger.warning("resubmit dropped groups %s: members read failed: %s", dcids, exc)
         note_degraded_read("named group members")
         return ()
-    verified: list[tuple[str, IdentityEntityGroup, frozenset[str]]] = []
+    verified: list[tuple[str, EntityGroup, frozenset[str]]] = []
     for dcid, group, members in kept:
         page = pages.get(dcid)
         if page is None:

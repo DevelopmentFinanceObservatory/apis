@@ -16,8 +16,8 @@ from search.engine.region import phase_place_materialise, resolve_variable, sent
 from search.engine.spec_build import NamedGroup
 from search.models import (
     BindingValue,
+    EntityGroup,
     GraphRef,
-    IdentityEntityGroup,
     Shape,
     Slot,
     SlotKey,
@@ -118,9 +118,7 @@ def test_bind_stage_sentence_carries_the_group_the_query_named(monkeypatch, name
     monkeypatch.setattr(sentence_events, "heading_from_parts", _spy)
     _run_with_events(monkeypatch)
 
-    expected = (
-        {"destination": IdentityEntityGroup(dcid=None, label="the test group")} if named else {}
-    )
+    expected = {"destination": EntityGroup(dcid=None, label="the test group")} if named else {}
     assert groups_rendered == [expected]
 
 

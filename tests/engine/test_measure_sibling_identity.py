@@ -28,7 +28,6 @@ from search.models import (
     Entity,
     EntityRoleSubject,
     GraphRef,
-    IdentityEntityGroup,
     Slot,
     SlotKey,
     SlotValue,
@@ -216,18 +215,6 @@ def test_non_measure_slots_entities_and_window_are_byte_identical(monkeypatch) -
     assert sibling_slots["color"] == next(s for s in elected.slots if s.property == "color")
     assert result.identity.entities == elected.entities
     assert result.identity.requested_window == elected.requested_window
-
-
-def test_a_grouped_elected_identity_mints_a_grouped_sibling_with_the_ungrouped_spec_id() -> None:
-    _, elected = _elected()
-    group = IdentityEntityGroup(dcid=None, label="the place pair")
-    grouped = elected.model_copy(update={"entity_groups": {"observationAbout": group}})
-
-    result = mint_sibling_identity(grouped, _partition(material="Metal"), _AXES, ())
-    ungrouped = mint_sibling_identity(elected, _partition(material="Metal"), _AXES, ())
-
-    assert result.spec_id == ungrouped.spec_id
-    assert result.identity.entity_groups == {"observationAbout": group}
 
 
 def test_a_sibling_of_an_identity_with_open_roles_carries_no_open_role() -> None:

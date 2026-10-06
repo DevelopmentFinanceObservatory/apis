@@ -28,8 +28,8 @@ from search.heading.departure_fact import DepartureFact, ordered_facts
 from search.heading.words import content_words
 from search.models import (
     DateRange,
+    EntityGroup,
     GraphRef,
-    IdentityEntityGroup,
     IdentityWindowAll,
     IdentityWindowLatest,
     IdentityWindowRange,
@@ -56,7 +56,7 @@ def _spec(
     served: Sequence[tuple[str, str]] = (("1973", "2024"),),
     window: IdentityWindowAll | IdentityWindowLatest | IdentityWindowRange | None = None,
     method: str | None = None,
-    groups: dict[str, IdentityEntityGroup] | None = None,
+    groups: dict[str, EntityGroup] | None = None,
     data_years: tuple[int, int] | None = None,
 ) -> Spec:
     """A Spec whose StatVars serve `served`, asked over `window`, with `method` as its one
@@ -346,7 +346,7 @@ def test_modelled_values_when_some_series_are_modelled(methods, projected, model
     ],
 )
 def test_group_read_as_members_asks_in_the_request_s_words(role, binding_ref, entity_words, asked):
-    groups = {role: IdentityEntityGroup(dcid="EuropeanUnion", label="European Union")}
+    groups = {role: EntityGroup(dcid="EuropeanUnion", label="European Union")}
 
     facts = spec_departure_facts(_spec(groups=groups), operations=(), entity_words=entity_words)
 
@@ -437,7 +437,7 @@ def test_entity_unavailable_on_a_group_asks_for_the_group_and_names_no_member():
         for code, label in (("AUT", "Austria"), ("BGR", "Bulgaria"), ("CYP", "Cyprus"))
     ]
     eth = ResolvedEntity(ref="country/ETH", label="Ethiopia", role="destination")
-    spec = _spec(groups={"origin": IdentityEntityGroup(label="European Union")})
+    spec = _spec(groups={"origin": EntityGroup(label="European Union")})
     resolved = spec.resolved.model_copy(update={"entities": [*members, eth]}).stating_unserved(
         (("origin", "country/BGR"), ("origin", "country/CYP"))
     )
@@ -463,7 +463,7 @@ def test_an_entity_unserved_inside_a_group_counts_toward_the_group_alone():
         for code, label in (("KEN", "Kenya"), ("NOR", "Norway"), ("SOM", "Somalia"))
     ]
     donor = ResolvedEntity(ref="country/NOR", label="Norway", role="origin")
-    spec = _spec(groups={"destination": IdentityEntityGroup(label="United Nations")})
+    spec = _spec(groups={"destination": EntityGroup(label="United Nations")})
     resolved = spec.resolved.model_copy(update={"entities": [donor, *members]}).stating_unserved(
         (("destination", "country/NOR"), ("destination", "country/SOM"))
     )

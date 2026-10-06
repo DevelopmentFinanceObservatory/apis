@@ -438,30 +438,6 @@ IdentityShape = Annotated[
 (`IdentityShapeSchema`) or the pinned ask (`IdentityShapePin`)."""
 
 
-_ENTITY_GROUP_LABEL_MAX_LENGTH = 120
-"""Code points a group's name may span. Real names ("least developed countries",
-"EU institutions") run under 40; the heading and departures echo the label."""
-
-
-class IdentityEntityGroup(StrictModel):
-    """A named group whose members fill one entity role, as the request named it
-    ("EU member states"). The members themselves are the role's dcids in
-    `BaseIdentity.entities`. This records only that they were asked for as one
-    group, so the heading can say "the 27 EU member states" after any edit that
-    keeps the role's members. The group is never hashed, so two identities that
-    differ only in their groups share one spec_id."""
-
-    dcid: IdentityString | None = Field(
-        default=None,
-        description="the group's own graph node, when the graph holds one; null otherwise",
-    )
-    label: str = Field(
-        min_length=1,
-        max_length=_ENTITY_GROUP_LABEL_MAX_LENGTH,
-        description="the group's name as the request gave it, plain text",
-    )
-
-
 def _validate_facet_axis_names(data: Any) -> Any:
     """Validate facet axes before binding and after-model validation in both identity doors.
 
@@ -506,13 +482,9 @@ class BaseIdentity(StrictModel):
     `identity.entities.destination`. StatVar members are graph state, derived from the
     identity, and no member here.
 
-    `entity_groups` is the one member outside the hash. It records how the
-    request named a role's entities, so it must survive the byte-for-byte
-    round trip a resubmit makes, and it changes no data the Spec reads.
-    `core_document()` is the identity-core document without it; every hash
-    and every identity-core validation reads that document, and the Datasets
-    register door (`spec_registry.identity.recompute_identity`) drops the
-    member from a posted definition the same way.
+    The document is hashed whole: `"spec_"` plus the first 32 hex digits of
+    the SHA-256 of its RFC 8785 serialisation, with null members omitted, is
+    the Spec's spec_id.
     """
 
     identity_version: Literal["spec1"] = Field(
@@ -563,16 +535,6 @@ class BaseIdentity(StrictModel):
         ),
     )
 
-    entity_groups: dict[str, IdentityEntityGroup] | None = Field(
-        default=None,
-        max_length=3,
-        description=(
-            "the named group each role's entities were asked for as, keyed by a "
-            "role key that entities also carries; omitted when no role was named "
-            "as a group. Excluded from the spec_id hash and from the identity core"
-        ),
-    )
-
     @model_validator(mode="before")
     @classmethod
     def _classify_facet_axis_names(cls, data: Any) -> Any:
@@ -611,14 +573,3 @@ class BaseIdentity(StrictModel):
             raise ValueError("a pinned shape (kind='stat_var') cannot carry open_roles")
         self.open_roles = sorted(set(self.open_roles))
         return self
-
-    @model_validator(mode="after")
-    def _entity_groups_name_bound_roles(self) -> BaseIdentity:
-        unbound = set(self.entity_groups or {}) - set(self.entities)
-        if unbound:
-            raise ValueError(f"entity_groups names role(s) with no entities: {sorted(unbound)!r}")
-        return self
-
-    def core_document(self, *, mode: Literal["python", "json"] = "python") -> dict[str, Any]:
-        """This identity as the identity core reads it: without `entity_groups`."""
-        return self.model_dump(mode=mode, exclude_none=True, exclude={"entity_groups"})

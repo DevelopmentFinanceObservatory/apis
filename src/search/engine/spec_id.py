@@ -43,9 +43,7 @@ invariants their bindings hold. The module
 reads the packaged code index for that election and is otherwise pure apart from the
 identity package call.
 
-``BaseIdentity.entity_groups`` joins the document after the identity core has
-normalised it and stays out of the hash: the id hashes
-``BaseIdentity.core_document()``.
+The id hashes the whole ``BaseIdentity`` document, dumped with null members omitted.
 """
 
 from __future__ import annotations
@@ -65,7 +63,6 @@ from search.models import (
     EntityRoleKey,
     IdentityBindingSet,
     IdentityBindingValue,
-    IdentityEntityGroup,
     IdentityFacetBinding,
     IdentityFacetValueAbsent,
     IdentityFacetValueRequest,
@@ -281,28 +278,20 @@ def compute_spec_id(
     return identity.spec_id_from_value(projection)
 
 
-def mint_identity(
-    projection: Mapping[str, object],
-    *,
-    entity_groups: Mapping[str, IdentityEntityGroup] | None = None,
-) -> tuple[str, BaseIdentity]:
+def mint_identity(projection: Mapping[str, object]) -> tuple[str, BaseIdentity]:
     """Normalise, validate, and hash a projection as one identity document.
 
     Hashes the validated ``BaseIdentity`` after the identity package's NFC,
     sorting, deduplication, and singleton-set collapse, so its hash matches the
-    returned definition. ``entity_groups`` rides on the returned definition and
-    stays out of the hash.
+    returned definition.
     """
-    normalised = identity.build_projection(projection)
-    if entity_groups:
-        normalised = {**normalised, "entity_groups": dict(entity_groups)}
-    definition = BaseIdentity.model_validate(normalised)
+    definition = BaseIdentity.model_validate(identity.build_projection(projection))
     return identity_spec_id(definition), definition
 
 
 def identity_spec_id(definition: BaseIdentity) -> str:
-    """The spec id of `definition`'s core document, which omits `entity_groups`."""
-    return identity.spec_id_from_value(definition.core_document())
+    """The spec id of `definition`, hashed whole."""
+    return identity.spec_id_from_value(definition.model_dump(exclude_none=True))
 
 
 def build_spec_identity(
@@ -313,14 +302,12 @@ def build_spec_identity(
     open_roles: Collection[RoleAxis],
     requested_window: RequestedWindow | None = None,
     explicit_facets: Mapping[str, IdentityFacetBinding] | None = None,
-    entity_groups: Mapping[str, IdentityEntityGroup] | None = None,
 ) -> tuple[str, BaseIdentity]:
     """Mint the id and return the ``BaseIdentity`` document it hashes.
 
     Both derive from one normalised projection through ``mint_identity``. The served
-    document is in hash order, so clients can reproduce the id with JCS and SHA-256
-    over everything but ``entity_groups``. Use ``compute_spec_id`` when only the id
-    is needed.
+    document is in hash order, so clients can reproduce the id with JCS and SHA-256.
+    Use ``compute_spec_id`` when only the id is needed.
     """
     projection = build_identity_projection(
         shape,
@@ -330,7 +317,7 @@ def build_spec_identity(
         requested_window=requested_window,
         explicit_facets=explicit_facets,
     )
-    return mint_identity(projection, entity_groups=entity_groups)
+    return mint_identity(projection)
 
 
 def slots_in_identity_order(slots: list[Slot], identity_doc: BaseIdentity) -> list[Slot]:

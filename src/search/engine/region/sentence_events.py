@@ -285,7 +285,6 @@ async def _build_sentence_event(
         open_roles=open_axes,
         requested_window=requested_window_from_date_request(date_request),
         explicit_facets=explicit_facets,
-        entity_groups=entity_groups,
     )
     slots = apply_slot_summability(slots_in_identity_order(slots, identity), identity)
     measure_label = measure_label_for_partition(measure_partition)

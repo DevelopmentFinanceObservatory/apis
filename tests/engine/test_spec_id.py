@@ -25,12 +25,12 @@ from search.models import (
     BindingUnbound,
     BindingValue,
     Entity,
+    EntityGroup,
     EntityRoleDirectional,
     EntityRoleSubject,
     GraphRef,
     IdentityBindingSet,
     IdentityBindingValue,
-    IdentityEntityGroup,
     IdentityFacetValueAbsent,
     IdentityFacetValueRequest,
     IdentityUnitRequest,
@@ -204,30 +204,6 @@ def test_served_multi_entity_request_reproduces_spec_id() -> None:
     _assert_served_document_reproduces_spec_id(spec_id, base_identity)
 
 
-def test_entity_group_rides_on_the_identity_outside_the_hash() -> None:
-    """A role's group survives on the served document and leaves the id unchanged."""
-    entities = [
-        _directional_entity("country/DEU", "origin", "observationAbout"),
-        _directional_entity("country/FRA", "origin", "observationAbout"),
-    ]
-    group = IdentityEntityGroup(dcid="EuropeanUnion", label="EU member states")
-    plain_id, _ = build_spec_identity(
-        shape_for("directional_roles"), [], entities=entities, open_roles=()
-    )
-    spec_id, base_identity = build_spec_identity(
-        shape_for("directional_roles"),
-        [],
-        entities=entities,
-        entity_groups={"origin": group},
-        open_roles=(),
-    )
-
-    assert spec_id == plain_id
-    assert base_identity.entity_groups == {"origin": group}
-    canonical = rfc8785.dumps(base_identity.core_document())
-    assert spec_id == f"spec_{hashlib.sha256(canonical).hexdigest()[:32]}"
-
-
 @pytest.mark.parametrize("open_roles", [["origin"], ["origin", "origin"], []])
 def test_open_roles_round_trip_to_the_identity_cores_spec_id(open_roles: list[RoleAxis]) -> None:
     """An identity with open roles hashes to the id the identity core gives its document, and
@@ -269,20 +245,9 @@ def test_base_identity_refuses_an_open_role_bound_or_pinned(entities, shape, mes
 
 
 def test_entity_group_label_is_bounded() -> None:
-    IdentityEntityGroup(label="x" * 120)
+    EntityGroup(label="x" * 120)
     with pytest.raises(ValueError, match="label"):
-        IdentityEntityGroup(label="x" * 121)
-
-
-def test_entity_group_on_a_role_without_entities_refuses() -> None:
-    with pytest.raises(ValueError, match="entity_groups names role"):
-        build_spec_identity(
-            shape_for("directional_roles"),
-            [],
-            entities=[_directional_entity("country/KEN", "destination")],
-            entity_groups={"origin": IdentityEntityGroup(label="EU member states")},
-            open_roles=(),
-        )
+        EntityGroup(label="x" * 121)
 
 
 def test_served_multi_value_slot_reproduces_spec_id() -> None:

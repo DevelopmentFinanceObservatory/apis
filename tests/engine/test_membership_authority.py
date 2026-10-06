@@ -43,7 +43,7 @@ from search.engine.retrieval.bound_values import (
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft
-from search.models import BaseIdentity, IdentityEntityGroup, ResubmitIdentityPayload
+from search.models import BaseIdentity, EntityGroup, ResubmitIdentityPayload
 from series_coverage.shared import CoverageSnapshot
 from statvar_members import Member, MemberEnumerator, MemberGroup, five_tuple_from_identity
 from tests.datasets_api._graph_doubles import FakeMintGraphReader, _FakeSubjectPage
@@ -375,7 +375,9 @@ def test_a_resubmit_whose_family_is_past_the_ceiling_answers_scope_too_broad():
         "scope_too_broad",
         "/definition/identity",
     )
-    assert result.unsupported.definition["identity"] == identity.core_document(mode="json")
+    assert result.unsupported.definition["identity"] == identity.model_dump(
+        mode="json", exclude_none=True
+    )
 
 
 class _WithholdingWalkReader(FakeMintGraphReader):
@@ -576,11 +578,7 @@ def test_a_resubmit_dropping_a_group_for_a_failed_read_is_degraded():
     """A named group whose members read fails drops, and the answer says it stands on less
     than it read (`RegionResult.degraded`), so no cache keeps it."""
     identity = _run([_TOTAL], member_graph=_walk_reader(_DEBT_NODES)).specs[0].definition.identity
-    grouped = identity.model_copy(
-        update={
-            "entity_groups": {"destination": IdentityEntityGroup(dcid="africa", label="Africa")}
-        }
-    )
+    groups = {"destination": EntityGroup(dcid="africa", label="Africa")}
 
     class _GroupReadFails(FakeGraph):
         def node_subjects_many(self, *args, **kwargs):
@@ -593,7 +591,7 @@ def test_a_resubmit_dropping_a_group_for_a_failed_read_is_degraded():
         obs={f"{dcid}|country/KEN": _OBS for dcid in _DEBT_NODES},
     )
     region = resolve_spec_resubmit(
-        inp=ResubmitIdentityPayload(identity=grouped),
+        inp=ResubmitIdentityPayload(identity=identity, entity_groups=groups),
         graph=graph,
         sdmx=FakeSdmxClient(
             observations={}, availability={}, scope_availability=graph.scope_availability
@@ -604,7 +602,7 @@ def test_a_resubmit_dropping_a_group_for_a_failed_read_is_degraded():
 
     assert region.status == "definite"
     assert region.degraded
-    assert region.specs[0].definition.identity.entity_groups is None
+    assert region.specs[0].resolved.entity_groups is None
 
 
 def test_a_resubmit_leaving_the_guarantee_open_answers_the_total_the_mint_serves():

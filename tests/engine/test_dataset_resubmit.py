@@ -32,7 +32,7 @@ from search.engine.region.result import RegionResult
 from search.engine.spec_id import build_spec_identity
 from search.models import (
     DatasetResubmitInput,
-    IdentityEntityGroup,
+    EntityGroup,
     Operation,
     ParsedEntity,
     ParsedPart,
@@ -237,28 +237,28 @@ def test_n_part_envelope_composes_sentence_over_every_part():
 
 
 def test_a_resubmit_drops_a_label_only_group_and_states_a_spec_sentence_without_departures():
-    """C134: a posted group naming no graph node drops from the rebuilt part's identity, since
+    """C134: a posted group naming no graph node drops from the rebuilt part's Spec, since
     nothing ties its label to the role's entities, and the spec sentence holds heading and
     byline tokens only, the same sentence a fresh render of the spec states."""
-    group = IdentityEntityGroup(dcid=None, label="South Asia's largest economy")
+    group = EntityGroup(dcid=None, label="South Asia's largest economy")
     entities = [subject_entity(_INDIA)]
     _spec_id, identity = build_spec_identity(
         GDP_SHAPE,
         [_ACTIVITY_SOURCE_SLOT],
         entities=entities,
-        entity_groups={"observationAbout": group},
         open_roles=(),
     )
     entry = ResubmitIdentityEntry(
         variable_text="GDP",
         identity=identity,
+        entity_groups={"observationAbout": group},
     )
 
     result = offline_resolve(ResolveRequest(input=DatasetResubmitInput(entries=[entry])))
 
     (part,) = result.parts
     assert part.status == "definite"
-    assert part.spec.definition.identity.entity_groups is None
+    assert part.spec.resolved.entity_groups is None
     plan = part.spec.resolved.sentence_plan
     assert plan
     assert {token.segment for token in plan} <= {"heading", "byline"}
