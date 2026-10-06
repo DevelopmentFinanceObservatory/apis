@@ -322,16 +322,15 @@ def resubmit_named_groups(
     """The groups posted beside the identity that the graph confirms.
 
     A group is kept only when it posts a dcid and the graph's members of that node
-    (`<-containedInPlace`) are the identity's entities on the role, and it takes the
-    graph's label for the node, as a first answer does
-    (`place_roles.request_named_groups`). The posted label stands only where the graph
-    gives none. A group posting no dcid drops, since nothing ties its label to the role's
-    entities, and so does a group on a role the identity binds no entity on. All posted
-    dcids are read in one members batch,
-    and the membership-confirmed ones in one labels batch. Each dropped group is logged at
-    info with the reason. A `GraphInfraError` on either read drops the groups it covers,
-    logged at warning and noted as a lost read (`degraded_reads.note_degraded_read`), and
-    the role's entities still bind.
+    (`<-containedInPlace`) are the identity's entities on the role, and it takes the graph's
+    label for the node, as a first answer does (`place_roles.request_named_groups`). The
+    posted label stands only where the graph gives none. A group posting no dcid drops, since
+    nothing ties its label to the role's entities, and so does a group on a role the identity
+    binds no entity on. All posted dcids are read in one members batch, and the
+    membership-confirmed ones in one labels batch. Each dropped group is logged at info with
+    the reason. A `GraphInfraError` on either read drops the groups it covers, logged at
+    warning and noted as a lost read (`degraded_reads.note_degraded_read`), and the role's
+    entities still bind.
     """
     kept: list[tuple[str, EntityGroup, frozenset[str]]] = []
     entities = inp.identity.entities

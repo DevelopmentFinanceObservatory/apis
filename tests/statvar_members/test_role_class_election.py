@@ -5,7 +5,8 @@ recipient-only debt total beside its by-creditor variant, a provider-only line b
 provider-and-recipient rows. Role coverage runs first, then the antichain over constraint
 keys, then the role-twin collapse: of two members with equal constraint maps whose role
 sets nest, the one declaring fewer roles survives. Of the members left, those of the
-smallest role set answer when every other role set left contains it. An open role key
+smallest role set answer when every other role set left contains it and their constraint
+keys are among those of every other member left. An open role key
 joins the bound ones only where a member the bound keys elect, or a role twin of one,
 places it. `enumerate_members` runs the same election on the graph walk.
 
@@ -284,10 +285,11 @@ def test_constraint_keys_reduce_before_roles():
     assert not election.tied
 
 
-def test_a_total_answers_beside_a_two_role_member_of_other_constraint_keys():
+def test_a_total_ties_with_a_two_role_member_of_other_constraint_keys():
     """Neither constraint key set contains the other, so both members survive the
-    antichain. The by-creditor member declares a creditor the question does not ask for
-    and leaves for the total, and it answers once the creditor is bound."""
+    antichain. The recipient-only member breaks down by a property the by-creditor member
+    does not hold, so it is not that member's total and the two tie. The by-creditor
+    member answers once the creditor is bound."""
     members = {
         "total_by_flow": (_FLOW, _RECIPIENT),
         "by_creditor_by_guarantee": ({"guarantee": "Public"}, _PAIR),
@@ -295,10 +297,35 @@ def test_a_total_answers_beside_a_two_role_member_of_other_constraint_keys():
 
     election = _elect(members, "destination")
 
-    assert election.members == ("total_by_flow",)
-    assert election.family == ("total_by_flow",)
-    assert not election.tied
+    assert election.tied
+    assert election.members == tuple(members)
+    assert election.family == tuple(members)
     assert _elect(members, "origin", "destination").members == ("by_creditor_by_guarantee",)
+
+
+@pytest.mark.parametrize(
+    ("by_creditor", "tied"),
+    [
+        pytest.param(_FLOW_AND_GUARANTEE, False, id="keys inside the by-creditor member's"),
+        pytest.param({"guarantee": "Public", "term": "Long"}, True, id="a key it lacks"),
+    ],
+)
+def test_a_total_answers_only_when_its_keys_are_among_a_two_role_members(by_creditor, tied):
+    """`guarantee` reads `not_declared`, so the total survives beside a by-creditor member
+    holding it. The total answers when the by-creditor member holds every key of the
+    total, and ties when the total holds a key that member lacks."""
+    members = {"total": _FLOW, "by_creditor": by_creditor}
+
+    election = elect_role_class(
+        members,
+        {"total": _RECIPIENT, "by_creditor": _PAIR},
+        list(members),
+        role_keys=("destination",),
+        readings={"guarantee": "not_declared"},
+    )
+
+    assert election.tied is tied
+    assert election.members == (tuple(members) if tied else ("total",))
 
 
 _DOMINATED_TOTAL = {
@@ -309,9 +336,26 @@ _DOMINATED_TOTAL = {
 
 
 def test_a_total_only_a_two_role_member_dominates_stays_a_member():
-    """The by-creditor member leaves for the totals, so it dominates neither of them: the
-    members are the antichain of the recipient-only family alone."""
-    election = _elect(_DOMINATED_TOTAL, "destination")
+    """`guarantee` reads `not_declared`, so the by-creditor member survives beside the
+    total by flow and leaves for it. It then dominates nothing: the members are the
+    antichain of the recipient-only family alone."""
+    members = {
+        "total_by_flow": _FLOW,
+        "total_by_guarantee_and_term": {**_FLOW_AND_GUARANTEE, "term": "Long"},
+        "by_creditor_by_guarantee": _FLOW_AND_GUARANTEE,
+    }
+
+    election = elect_role_class(
+        members,
+        {
+            "total_by_flow": _RECIPIENT,
+            "total_by_guarantee_and_term": _RECIPIENT,
+            "by_creditor_by_guarantee": _PAIR,
+        },
+        list(members),
+        role_keys=("destination",),
+        readings={"guarantee": "not_declared"},
+    )
 
     assert election.members == ("total_by_flow", "total_by_guarantee_and_term")
     assert election.family == election.members
@@ -1007,11 +1051,27 @@ def test_the_walk_keeps_every_candidate_when_none_declares_the_bound_role():
 
 
 @pytest.mark.parametrize("role_keys", [(), ("destination",)])
-def test_the_total_answers_beside_a_lender_named_variable_with_no_creditor_bound(role_keys):
-    """A lender-named two-role variable has its own constraint map and no twin, so the
-    collapse leaves it beside the total. It declares a creditor the question does not ask
-    for, and the total answers."""
-    assert _ids_members(*role_keys, lender=True) == (_TOTAL,)
+def test_the_total_ties_with_a_lender_named_variable_of_other_keys(role_keys):
+    """A lender-named two-role variable has its own constraint keys and no twin, so the
+    collapse leaves it beside the total. The total breaks down by a property the variable
+    does not hold, so the walk reads it as the total of no creditor series and refuses."""
+    with pytest.raises(MemberRoleDisagreement) as exc_info:
+        _ids_members(*role_keys, lender=True)
+
+    assert set(exc_info.value.roles_by_stat_var) == {_TOTAL, _LENDER}
+
+
+def test_the_total_answers_beside_a_lender_named_variable_once_its_slots_are_bound():
+    """Binding the total's own constraint values leaves the lender-named variable out of
+    the candidates, and the total answers."""
+    group = enumerate_members(
+        five_tuple=_IDS_FIVE_TUPLE,
+        slots=_VALUE_SLOTS,
+        graph=_twin_reader(lender=True),
+        role_keys=("destination",),
+    )
+
+    assert [member.stat_var for member in group.members] == [_TOTAL]
 
 
 def test_an_open_creditor_reads_the_breakdown_and_the_lender_named_variable():
@@ -1022,12 +1082,28 @@ def test_an_open_creditor_reads_the_breakdown_and_the_lender_named_variable():
     assert set(members) == {_BY_CREDITOR, _LENDER}
 
 
-def test_an_open_creditor_only_a_lender_named_variable_places_leaves_the_total():
-    """With no by-creditor twin of the total, no member the recipient elects holds a
-    creditor series, and the walk reports that it read no open key."""
+@pytest.mark.parametrize(
+    ("lender_constraints", "members", "elected_open_role_keys"),
+    [
+        pytest.param(
+            {**_PPG_CONSTRAINTS, "guaranteeStatus": "PrivateNonGuaranteed"},
+            [_TOTAL],
+            frozenset(),
+            id="the total's keys under another value",
+        ),
+        pytest.param(_LENDER_CONSTRAINTS, [_LENDER], {"origin"}, id="other keys"),
+    ],
+)
+def test_an_open_creditor_only_a_lender_named_variable_places(
+    lender_constraints, members, elected_open_role_keys
+):
+    """With no by-creditor twin of the total, a lender-named variable holding the total's
+    constraint keys leaves for the total, no member the recipient elects holds a creditor
+    series, and the walk reports that it read no open key. One holding other keys ties
+    with the total under the recipient alone, so the open creditor joins and it answers."""
     arcs = {
         _TOTAL: _ids_arcs(_PPG_CONSTRAINTS, (_RECIPIENT_ROLE,)),
-        _LENDER: _ids_arcs(_LENDER_CONSTRAINTS, (_PROVIDER_ROLE, _RECIPIENT_ROLE)),
+        _LENDER: _ids_arcs(lender_constraints, (_PROVIDER_ROLE, _RECIPIENT_ROLE)),
     }
 
     group = enumerate_members(
@@ -1038,9 +1114,9 @@ def test_an_open_creditor_only_a_lender_named_variable_places_leaves_the_total()
         open_role_keys=("origin",),
     )
 
-    assert [member.stat_var for member in group.members] == [_TOTAL]
-    assert group.family == (_TOTAL,)
-    assert group.elected_open_role_keys == frozenset()
+    assert [member.stat_var for member in group.members] == members
+    assert group.family == tuple(members)
+    assert group.elected_open_role_keys == elected_open_role_keys
 
 
 def test_a_lender_named_variable_joins_the_breakdown_when_the_creditor_is_bound():

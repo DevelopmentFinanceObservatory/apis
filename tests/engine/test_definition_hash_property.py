@@ -213,7 +213,7 @@ def _served_definitions(node: object) -> list[dict]:
 def test_served_identity_hashes_whole_to_its_spec_id(
     build_graph, variable_text, entity_text, served_group, derived
 ):
-    """A served ``identity`` is the JCS document its ``spec_id`` hashes, with no member to strip.
+    """A served ``identity`` is the JCS document its ``spec_id`` hashes.
 
     The check uses ``rfc8785`` and ``hashlib`` on the response bytes alone. A group the request
     names is served at ``resolved.entity_groups``. A ``derived`` row also serves definitions
@@ -317,7 +317,7 @@ def test_resubmitted_identity_with_a_group_beside_it_hashes_whole_to_its_spec_id
 
 
 def test_resubmit_refuses_an_identity_that_carries_entity_groups():
-    """``entity_groups`` is no identity member: posted inside ``identity`` it is refused as
+    """``entity_groups`` belongs beside ``identity``. Posted inside ``identity`` it is refused as
     ``request_invalid``, and the same group posted beside the identity is accepted."""
     client, first = _g7_first_answer_and_client()
     identity_document = first["definition"]["identity"]

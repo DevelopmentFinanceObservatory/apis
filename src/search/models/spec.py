@@ -610,7 +610,7 @@ class ResolvedSpec(StrictModel):
             "the entities above carry: each group whose members are exactly the "
             "entities definition.identity binds on that role. The heading names a "
             "role by its group and member count ('the 27 EU member states') in place "
-            "of its members. None when no role was asked for as a group. Never hashed"
+            "of its members. None when no role was asked for as a group"
         ),
     )
     coverage: Coverage = Field(description="observation footprint")

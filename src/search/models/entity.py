@@ -94,7 +94,7 @@ class EntityGroup(StrictModel):
     group, so the heading can say "the 27 EU member states" after any edit that
     keeps the role's members. A Spec serves its groups on
     `ResolvedSpec.entity_groups`, and a resubmit posts them beside the identity
-    (`ResubmitIdentityEntry.entity_groups`)."""
+    (`ResubmitIdentityEntry.entity_groups`, `ResubmitCandidate.entity_groups`)."""
 
     dcid: IdentityString | None = Field(
         default=None,

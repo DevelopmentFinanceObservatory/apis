@@ -32,11 +32,12 @@ for each of its families.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import itertools
 import random
 import sys
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping, Sequence
 from types import SimpleNamespace
 from typing import cast
 
@@ -66,6 +67,7 @@ from code_index.types import (
     StatVarRow,
 )
 from datasets_api.adapter import resolve_definition_members
+from datasets_api.codes_materialise import RoleSignatureIncompatible
 from dfo_platform.roles import RoleAxis
 from entity_resolution import Admission, EntityResolver
 from materialise.facets import ElectedDataset
@@ -120,6 +122,7 @@ from search.engine.retrieval.bound_values import (
     SeriesRows,
     bind_shared_values,
     bound_source,
+    bound_values_from_bindings,
     canonical_pin_bindings,
     canonicalise_identity,
     elected_role_class_shape,
@@ -138,9 +141,16 @@ from search.engine.retrieval.bound_values import (
 )
 from search.engine.retrieval.member_facts import IndexMemberFacts, MemberFacts
 from search.engine.retrieval.read_plan import PairPlan
-from search.engine.retrieval.retrieve import Materialised
+from search.engine.retrieval.retrieve import Materialised, NoDataDraft
+from search.engine.retrieval.role_resolve import _admit_population, _AdmittedPopulation
 from search.engine.role_text import DoorRole
-from search.engine.shape import ShapeDraft, SlotKeyDraft, identity_shape_for, is_role_bearing
+from search.engine.shape import (
+    ShapeDraft,
+    SlotKeyDraft,
+    identity_shape_for,
+    is_role_bearing,
+    role_names_by_axis,
+)
 from search.engine.spec_build import build_slot, pair_slot_drafts
 from search.engine.spec_id import build_spec_identity, mint_identity
 from search.models import (
@@ -512,13 +522,20 @@ def _minted(
     roles: str,
     *,
     window: TimeWindow | None = None,
+    open_axes: Collection[RoleAxis] = (),
+    open_roles: Collection[RoleAxis] | None = None,
 ) -> Outcome:
     """Mint the identity of `shape` under the vetted `drafted` bindings, about the entities
-    of `roles`, as the first resolve does after vetting."""
+    of `roles`, as the first resolve does after vetting. The part asks `open_axes` of every
+    member, and the identity names `open_roles`, by default the axes asked. The members are
+    read under the identity's own query."""
     bindings, _shared = bind_shared_values(shape, drafted)
-    role_keys = entity_role_keys(_ENTITIES[roles], open_axes=())
-    bindings = canonical_pin_bindings(shape, bindings, role_keys)
-    query = shape_query(shape, bindings, role_keys.bound)
+    asked = entity_role_keys(_ENTITIES[roles], open_axes=open_axes)
+    bindings = canonical_pin_bindings(shape, bindings, asked)
+    role_keys = (
+        asked if open_roles is None else entity_role_keys(_ENTITIES[roles], open_axes=open_roles)
+    )
+    query = shape_query(shape, bindings, role_keys.bound, open_role_keys=role_keys.open)
     facts, index_sourced = shape_member_facts(shape, query)
     assert index_sourced
     members = {dcid: fact.read_dataset() for dcid, fact in facts.items()}
@@ -549,7 +566,7 @@ def _minted(
         slots,
         entities=_identity_entities(roles),
         requested_window=window,
-        open_roles=(),
+        open_roles=sorted(role_keys.open),
     )
     assert identity_query(identity) == query
     return Outcome(
@@ -562,6 +579,38 @@ def _minted(
         shape=shape,
         bindings=tuple(bindings),
         pins=elected_pins(shared_module.get_index(), query),
+    )
+
+
+class _IndexRoles:
+    """Serves the declared-role refresh of an index-sourced population from `rows`."""
+
+    def __init__(self, rows: Sequence[StatVarRow]) -> None:
+        self._roles = {row.dcid: row.observation_properties for row in rows}
+
+    def node_observation_properties_batch(self, dcids: list[str]) -> dict[str, tuple[str, ...]]:
+        return {dcid: self._roles[dcid] for dcid in dcids}
+
+
+def _admitted(
+    outcome: Outcome, roles: str, rows: Sequence[StatVarRow]
+) -> NoDataDraft | _AdmittedPopulation:
+    """What Search's role path admits for the part `outcome` mints, about the entities of
+    `roles` and asking the open roles its identity names
+    (`role_resolve._admit_population`)."""
+    assert outcome.shape is not None and outcome.identity is not None
+    entities = _ENTITIES[roles]
+    query = identity_query(outcome.identity)
+    return _admit_population(
+        outcome.shape,
+        query=query,
+        bound_values=bound_values_from_bindings(list(outcome.bindings)),
+        names=role_names_by_axis(outcome.shape),
+        subject_dcids=entities.get("financingRecipient", []),
+        origin_dcids=entities.get("financingProvider", []),
+        open_role_keys=sorted(query.open_role_keys),
+        graph=cast(EngineGraphClient, _IndexRoles(rows)),
+        deadline=None,
     )
 
 
@@ -3205,12 +3254,18 @@ _JOINT_LEDGER_ROWS = (
 
 
 def _part_state(
-    shape: ShapeDraft, roles: str, model: Mapping[str, str], *slots: str
+    shape: ShapeDraft,
+    roles: str,
+    model: Mapping[str, str],
+    *slots: str,
+    open_axes: Collection[RoleAxis] = (),
 ) -> ResolveState:
     """The state vetting reads for a part electing `shape`, its one candidate, about the
-    entities of `roles`, where the bind model binds `model` and one source draft for each
-    of `slots`, checked as bind checks them (`_offered_source_drafts`)."""
+    entities of `roles` and asking `open_axes` of every member, where the bind model binds
+    `model` and one source draft for each of `slots`, checked as bind checks them
+    (`_offered_source_drafts`)."""
     state = _repair_state(shape, _PLACES[roles], model)
+    state.open_axes = frozenset(open_axes)
     state.capped_shapes = [shape]
     state.named_dataset = shape.named_dataset
     drafts = [
@@ -3403,6 +3458,19 @@ def test_source_drafts_that_contradict_each_other_refuse_naming_their_tables(
 # The property test's worlds: two or three default tables and, in some, an opt-in one,
 # publishing rows of `_SHARED` by sector, by channel, by both or by neither.
 _WORLD_TABLES = (_BROAD, _DETAIL, _DONORS)
+_OPEN_AXES: tuple[tuple[RoleAxis, ...], ...] = (
+    (),
+    ("origin",),
+    ("destination",),
+    ("origin", "destination"),
+)
+# Role sets that place one flow axis, two of them beside a role on neither axis.
+_ONE_AXIS_ROLES = (
+    _DONOR,
+    ("financingRecipient",),
+    ("financingProvider", "financingChannel"),
+    ("financingRecipient", "financingChannel"),
+)
 _WORLD_CODES = {"sector": ("A", "B"), "channel": ("K1", "K2")}
 _WORLD_FIVE_TUPLE = FiveTuple(
     population_type=_SHARED[0], measured_property=_SHARED[1], stat_type="measuredValue"
@@ -3426,6 +3494,16 @@ def _world_rows(rng: random.Random) -> tuple[StatVarRow, ...]:
             f"r{number}", constraints, *published, roles=roles
         )
     return tuple(rows.values())
+
+
+def _one_axis_world_rows(rng: random.Random) -> tuple[StatVarRow, ...]:
+    """A world whose three tables each publish rows by sector under one role set of
+    `_ONE_AXIS_ROLES`, so no table ties alone and the tables read different open axes."""
+    rows = []
+    for table, roles in zip(_WORLD_TABLES, rng.sample(_ONE_AXIS_ROLES, 3), strict=True):
+        for sector in rng.sample(_WORLD_CODES["sector"], rng.choice((1, 2))):
+            rows.append(_row(f"r{len(rows)}", {"sector": sector}, table, roles=roles))
+    return tuple(rows)
 
 
 def _world_shapes(
@@ -3483,11 +3561,21 @@ def test_no_door_serves_a_part_from_a_table_it_excludes_or_does_not_own(monkeypa
     table that alone publishes its shape mints that part's identity and is treated alike.
     Where there are some, the first answer's members are among them, and the mint,
     the resubmitted identity and the stated members read the identity back to the same
-    table and members."""
+    table and members.
+
+    Each part also asks no open axis, one, or both, less the axes its places bind. Search's
+    role path (`_admit_population`) reads the part under the axes asked, the identity
+    names the open roles it records, and the mint serves exactly the members it admits,
+    from the same table. Two worlds in seven hold three tables that each place one flow
+    axis (`_one_axis_world_rows`), where an admitted member can declare a role on an axis
+    the election set aside and the identity omits that axis. Where the rows declare role
+    sets the election cannot order, Search's role path and the mint both refuse
+    `role_signature_incompatible`, and no member count is stated. Where no row places
+    every bound role, Search refuses `role_incompatible`."""
     rng = random.Random(1165)
-    answered = refused = 0
-    for _world in range(200):
-        rows = _world_rows(rng)
+    answered = refused = tied = unplaced = set_aside = 0
+    for world in range(280):
+        rows = _one_axis_world_rows(rng) if world % 7 >= 5 else _world_rows(rng)
         with monkeypatch.context() as patched:
             index = _index(rows=rows)
             _use_index(patched, index)
@@ -3500,6 +3588,9 @@ def test_no_door_serves_a_part_from_a_table_it_excludes_or_does_not_own(monkeypa
                 kind = rng.choice(("plain", "seam", "slot", "excluded"))
                 table = rng.choice(published)
                 roles = rng.choice(("none", "donor", "donor-recipient"))
+                open_axes = tuple(
+                    axis for axis in rng.choice(_OPEN_AXES) if axis not in _PLACES[roles].values()
+                )
                 keys = frozenset(key.property_dcid for key in base.slot_keys if key.property_dcid)
                 model = {
                     prop: rng.choice(_WORLD_CODES[prop])
@@ -3525,11 +3616,13 @@ def test_no_door_serves_a_part_from_a_table_it_excludes_or_does_not_own(monkeypa
                         t for t in default or family_tables if kind != "excluded" or t != table
                     )
                 held = _rows_held(rows, own, keys, model)
-                state = _part_state(shape, roles, model, *([slot] if slot else []))
+                state = _part_state(
+                    shape, roles, model, *([slot] if slot else []), open_axes=open_axes
+                )
 
                 result = _settle(patched, state)
 
-                case = (rows, kind, table, roles, model, sorted(keys))
+                case = (rows, kind, table, roles, open_axes, model, sorted(keys))
                 unnamed = default or family_tables
                 selected = eligible_datasets(index, shape_query(base, [], ()))
                 alone = (
@@ -3541,7 +3634,9 @@ def test_no_door_serves_a_part_from_a_table_it_excludes_or_does_not_own(monkeypa
                 )
                 if not held and alone:
                     assert result is None, case
-                    assert not _minted(state.shape_draft, state.bindings, roles).members, case
+                    assert not _minted(
+                        state.shape_draft, state.bindings, roles, open_axes=open_axes
+                    ).members, case
                     continue
                 if not held:
                     assert result is not None, case
@@ -3553,12 +3648,41 @@ def test_no_door_serves_a_part_from_a_table_it_excludes_or_does_not_own(monkeypa
                     refused += 1
                     continue
                 assert result is None, case
-                outcome = _minted(state.shape_draft, state.bindings, roles)
-                assert outcome.members, case
-                assert outcome.members.keys() <= held, case
-                assert outcome.elected in own, case
+                read = _minted(state.shape_draft, state.bindings, roles, open_axes=open_axes)
+                assert read.members, case
+                assert read.members.keys() <= held, case
+                assert read.elected in own, case
+                admitted = _admitted(read, roles, rows)
+                if isinstance(admitted, NoDataDraft):
+                    assert read.identity is not None
+                    if admitted.reason == "role_signature_incompatible":
+                        with pytest.raises(RoleSignatureIncompatible):
+                            _mint(read.identity, index)
+                        assert stated_members(read.identity, None) is None, case
+                        tied += 1
+                    else:
+                        assert admitted.reason == "role_incompatible", case
+                        if not open_axes:
+                            # No row places every bound role, so the mint keeps every row
+                            # for its reproducibility check, or refuses their role sets.
+                            with contextlib.suppress(RoleSignatureIncompatible):
+                                assert _mint(read.identity, index) == read.members, case
+                        unplaced += 1
+                    continue
+                outcome = _minted(
+                    state.shape_draft,
+                    state.bindings,
+                    roles,
+                    open_axes=open_axes,
+                    open_roles=admitted.open_axes,
+                )
                 assert outcome.identity is not None
-                assert _mint(outcome.identity, index) == outcome.members, case
+                assert outcome.elected == read.elected, case
+                declared = {axis for axis in admitted.names if axis in open_axes}
+                set_aside += admitted.open_axes != declared
+                minted = _mint(outcome.identity, index)
+                assert minted == outcome.members, case
+                assert minted.keys() == set(admitted.surviving_svs), case
                 resubmitted = canonicalise_identity(outcome.identity)
                 assert identity_dataset(resubmitted) == outcome.elected, case
                 stated = stated_members(outcome.identity, None)
@@ -3567,3 +3691,6 @@ def test_no_door_serves_a_part_from_a_table_it_excludes_or_does_not_own(monkeypa
                 answered += 1
     assert answered > 800
     assert refused > 400
+    assert tied
+    assert unplaced
+    assert set_aside

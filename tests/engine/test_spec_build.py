@@ -369,8 +369,8 @@ class TestConstraintProperties:
 
 
 class TestBuildSpecEntityGroups:
-    """A role whose entities are exactly a named group's members carries the group on the
-    definition and on resolved, outside the spec_id hash."""
+    """A role whose entities are exactly a named group's members serves the group on
+    `resolved.entity_groups`."""
 
     _BALTIC = NamedGroup(
         label="Baltic states",
