@@ -1,4 +1,4 @@
-"""Wire models for dataset mint inputs, scope, rendering options, and write-free previews.
+"""Wire models for dataset mint inputs, scope, and rendering options.
 
 The published mint schema and runtime validation use these same model definitions.
 """
@@ -19,12 +19,7 @@ from pydantic import (
     model_validator,
 )
 
-from datasets_api.models import (
-    MAX_COLLECTION_MEMBERS,
-    CanonicalDefinition,
-    _require_schema_version_int,
-)
-from statvar_members import POSTED_MEMBER_CAP
+from datasets_api.models import CanonicalDefinition, _require_schema_version_int
 
 FACET_AXES: tuple[str, ...] = ("provenance", "measurementMethod", "unit")
 NULL_REF_FACET_AXES: tuple[str, ...] = ("measurementMethod", "unit")
@@ -308,7 +303,18 @@ class MintOptions(BaseModel):
     `columns` selects the table and decoded columns it names. A list that names
     only enrichment fields selects nothing: every default column stays,
     decoded columns included, and the enrichments are added. A list that mixes
-    a table column with an enrichment selects.
+    a table column with an enrichment selects. Without a pivot, a list that
+    names no decoded column keeps all of them, `status` is accepted and left
+    out, `<role>_label` is written by default (a list naming it keeps
+    `<role>`), and the written order follows the long layout
+    (`materialise.projection`) whatever order the list names.
+
+    `layout: "frame"` writes a bare parquet file in the frame layout instead
+    of the long layout: the frame's grammar columns as reshaped, with
+    decoded axes as `stat_var_<code_system>`, `status` kept, and a converted
+    unit as its JCS request text. `columns` then selects over those columns,
+    as it does for pivot output. It refuses with `bundle: true`, a `pivot`,
+    or a format other than parquet.
     """
 
     # Disabled enrichment names refuse only when the frame lacks a real column with that name.
@@ -331,49 +337,35 @@ class MintOptions(BaseModel):
                 raise ValueError(f"duplicate column name(s): {sorted(duplicates)!r}")
         return value
 
+    # Declared last, so the validator sees every other field.
+    layout: Literal["frame"] | None = None
+
+    @field_validator("layout")
+    @classmethod
+    def _frame_layout_is_bare_parquet(
+        cls, value: Literal["frame"] | None, info: ValidationInfo
+    ) -> Literal["frame"] | None:
+        if value is None:
+            return value
+        if info.data.get("bundle") is not False:
+            raise ValueError('layout "frame" needs bundle: false; a bundle has its own layout')
+        if info.data.get("format") != "parquet":
+            raise ValueError('layout "frame" needs format: "parquet"')
+        if info.data.get("pivot") is not None:
+            raise ValueError('layout "frame" cannot be pivoted; a pivot is not a frame')
+        return value
+
 
 class StatVarSetInput(BaseModel):
-    """`kind: "statvar_set"` -- resolves each `dcid:`-prefixed StatVar to its
-    registered shape and mints one fully pinned member spec per StatVar.
+    """`kind: "statvar_set"` -- resolves one `dcid:`-prefixed StatVar to its
+    registered shape and mints a fully pinned spec for it. `statvars` holds
+    exactly one StatVar.
     """
 
     model_config = ConfigDict(extra="forbid")
     kind: Literal["statvar_set"] = "statvar_set"
-    statvars: list[Annotated[str, Field(pattern=r"^dcid:")]] = Field(
-        min_length=1, max_length=MAX_COLLECTION_MEMBERS
-    )
+    statvars: list[Annotated[str, Field(pattern=r"^dcid:")]] = Field(min_length=1, max_length=1)
     scope: Scope | None = None
-
-
-class SourceCodesInput(BaseModel):
-    """`kind: "source_codes"` -- resolves codes to StatVars (scoped by
-    `source` when supplied), then behaves as `statvar_set`.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-    kind: Literal["source_codes"] = "source_codes"
-    codes: list[str] = Field(min_length=1, max_length=MAX_COLLECTION_MEMBERS)
-    source: str | None = None
-    scope: Scope | None = None
-
-    @field_validator("codes")
-    @classmethod
-    def _codes_are_not_dcid_prefixed(cls, value: list[str]) -> list[str]:
-        for code in value:
-            if code.startswith("dcid:"):
-                raise ValueError(f"code {code!r} must not be dcid:-prefixed")
-        return value
-
-
-def _require_bare_dcids(value: list[str] | None) -> list[str] | None:
-    """Refuses a `resolved_stat_var_dcids` entry carrying the `dcid:` prefix."""
-    for dcid in value or ():
-        if dcid.startswith("dcid:"):
-            raise ValueError(
-                f"resolved_stat_var_dcids entry {dcid!r} must be a bare dcid, "
-                "without the dcid: prefix"
-            )
-    return value
 
 
 class SpecIdInput(BaseModel):
@@ -390,41 +382,6 @@ class SpecIdInput(BaseModel):
     spec_id: str = Field(pattern=r"^spec_")
     definition: CanonicalDefinition | None = None
     scope: Scope | None = None
-    resolved_stat_var_dcids: list[str] | None = Field(
-        default=None,
-        max_length=POSTED_MEMBER_CAP,
-        description=(
-            "bare StatVar dcids the caller holds as members of the identity, typically "
-            "resolved.stat_vars.items[].ref from a search resolve. An assertion the mint "
-            "and the preview check: after member resolution every posted dcid must be a "
-            "member of the identity's family, or the request refuses member_not_resolvable "
-            "(422) with one issue per posted non-member, pointing at "
-            "/input/resolved_stat_var_dcids/<index>. A refused mint writes no registry "
-            "row. The family is every StatVar consistent with the identity, including one "
-            "a broader member dominates. The list does not narrow the dataset: the mint "
-            "serves the family's antichain-minimal members, posted or omitted, so a "
-            "posted dominated member is accepted and not served. An accepted list "
-            "changes neither spec_id nor content_version, "
-            "and an empty list behaves as an omitted field. The check covers every arm, "
-            "so a pinned arm (kind: stat_var) accepts only its own one StatVar. The list "
-            "also joins the graph's reverse-arc index walk as extra candidates "
-            "(statvar_members.enumerate_members's extra_candidates), so a posted root, a "
-            "member constrained by exactly the identity's single-code slots (state exact, "
-            "or state value on a code with no descendants) that declares only the roles "
-            "its entities are bound under, can prove complete a family "
-            "too broad for that index to page through, unless a slot is bound to a set of "
-            "codes (state set, or state value on a hierarchical code with descendants) or "
-            "an unbound slot's code system reads absence as not_declared. "
-            f"Capped at {POSTED_MEMBER_CAP} (statvar_members.POSTED_MEMBER_CAP), the "
-            "ceiling search's resolved_stat_var_dcids shares, so a search response's member "
-            "list posts whole. A sibling of definition and "
-            "scope: the list is graph state and stays outside the identity hash"
-        ),
-    )
-
-    _validate_resolved_stat_var_dcids = field_validator("resolved_stat_var_dcids")(
-        _require_bare_dcids
-    )
 
     @model_validator(mode="after")
     def _sidecar_spec_id_matches_outer(self) -> SpecIdInput:
@@ -436,48 +393,7 @@ class SpecIdInput(BaseModel):
         return self
 
 
-class CollectionIdInput(BaseModel):
-    """`kind: "collection_id"` -- a collection id already in the registry,
-    with an optional `members` sidecar, each verified to hash to its own
-    spec_id. `members`, when supplied, is a non-empty list, one per
-    collection member; required only when the registry does not already
-    hold `collection_id`. A `scope` block applies scope surgery to every
-    member independently.
-    """
-
-    # An empty `members` list means no sidecar, so reject it at the wire boundary.
-    model_config = ConfigDict(extra="forbid")
-    kind: Literal["collection_id"] = "collection_id"
-    collection_id: str = Field(pattern=r"^col_")
-    members: list[CanonicalDefinition] | None = Field(
-        default=None, min_length=1, max_length=MAX_COLLECTION_MEMBERS
-    )
-    scope: Scope | None = None
-
-
-MintInput = Annotated[
-    SpecIdInput | CollectionIdInput | StatVarSetInput | SourceCodesInput,
-    Field(discriminator="kind"),
-]
-
-
-class PreviewRequest(BaseModel):
-    """Set on `MintRequest.preview` to ask for a write-free preview of
-    `input` instead of a mint: `POST /api/datasets` answers with a
-    `datasets_api.preview_models.PreviewEnvelope` (never a `Manifest`) and
-    touches no GCS object, no registry row, no version record --
-    `datasets_api.preview`'s own module docstring covers what stays
-    write-free and what a preview still costs.
-
-    `limit` bounds the row sample each `PreviewEnvelope` member carries
-    (`materialise.materialise_preview`'s own `limit` parameter). A preview
-    reads every row a mint of the same request reads, so its `total_rows`
-    and `content_version` cover every survivor, and it is admitted as an
-    inline mint is. The upper bound here (1000) caps the response size.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-    limit: int = Field(default=100, ge=1, le=1000)
+MintInput = Annotated[SpecIdInput | StatVarSetInput, Field(discriminator="kind")]
 
 
 class DefinitionOptionsRequest(BaseModel):
@@ -495,27 +411,28 @@ class DefinitionOptionsRequest(BaseModel):
         _require_schema_version_int
     )
     definition: CanonicalDefinition
-    resolved_stat_var_dcids: list[str] | None = Field(
-        default=None,
-        max_length=POSTED_MEMBER_CAP,
-        description=(
-            "bare StatVar dcids the caller holds as members of the identity, as on a "
-            "spec_id mint input. For an unregistered definition they seed member "
-            "resolution and each must be a member of the identity's family, or the request "
-            "refuses member_not_resolvable (422) pointing at "
-            "/resolved_stat_var_dcids/<index>. A registered id resolves as "
-            "GET /api/datasets/{id}/options does and ignores the list"
-        ),
+
+
+class DefinitionMembersRequest(BaseModel):
+    """Body of `POST /api/datasets/{id}/members`. It may carry the canonical `definition` a
+    search response gives for `id`, so the route answers before any mint registers it.
+
+    A registered id needs no `definition`. A supplied one is admitted as a mint admits a
+    `spec_id` sidecar: `definition.spec_id` must equal the path id, and the identity must hash
+    to it. Nothing is written.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1] = 1
+    _validate_schema_version = field_validator("schema_version", mode="before")(
+        _require_schema_version_int
     )
-    _validate_resolved_stat_var_dcids = field_validator("resolved_stat_var_dcids")(
-        _require_bare_dcids
-    )
+    definition: CanonicalDefinition | None = None
 
 
 class MintRequest(BaseModel):
-    """`options` is ignored when `preview` is set: a preview never renders
-    or reshapes, so nothing under `options` has an effect on its response.
-    """
+    """Body of `POST /api/datasets`: one `input` and the render `options`."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -525,4 +442,3 @@ class MintRequest(BaseModel):
     )
     input: MintInput
     options: MintOptions = Field(default_factory=MintOptions)
-    preview: PreviewRequest | None = None

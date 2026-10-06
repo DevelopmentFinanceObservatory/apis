@@ -29,14 +29,19 @@ from search.models import (
     ResubmitIdentityPayload,
 )
 from tests.engine._base_identity import (
-    make_base,
     make_identity,
     subject_entity,
 )
 from tests.engine._builders import value_slot as _value_slot
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import materialise_double_from_obs, offline_resolve
+from tests.engine._harness import (
+    materialise_double_from_obs,
+    member_walk_reader,
+    offline_resolve,
+    walk_options,
+    with_member_arcs,
+)
 from tests.engine._search_app import search_app
 from tests.fixtures import FakeGraph, FakeLLM, _load_json, make_resolver
 
@@ -60,9 +65,6 @@ def _identity_entry(payload: ResubmitIdentityPayload) -> DatasetResubmitInput:
             ResubmitIdentityEntry(
                 variable_text="a resubmitted identity",
                 identity=payload.identity,
-                base_spec_id=payload.base_spec_id,
-                base_identity=payload.base_identity,
-                resolved_stat_var_dcids=payload.resolved_stat_var_dcids,
             )
         ]
     )
@@ -132,26 +134,17 @@ def _fertility_resubmit_payload() -> ResubmitIdentityPayload:
     with a real confirmed StatVar, so slot_options gets populated with real
     coverage."""
     entities = [subject_entity("country/KEN")]
-    base_spec_id, base_identity = make_base(_FERTILITY_SHAPE, entities=entities)
     return ResubmitIdentityPayload(
         identity=make_identity(_FERTILITY_SHAPE, [_GENDER_SLOT], entities=entities),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[_FERTILITY_SV],
     )
 
 
 def _no_data_resubmit_payload() -> ResubmitIdentityPayload:
-    """A posted member dcid absent from the graph -> no_data short-circuit.
-    Standard-promote's arc re-read degrades a posted member it cannot read to
-    no_data without raising (see _phase_reread_arcs's docstring)."""
+    """A fertility identity declaring none of its members' constraints elects no member,
+    a no_data short-circuit."""
     entities = [subject_entity("country/KEN")]
-    base_spec_id, base_identity = make_base(_FERTILITY_SHAPE, entities=entities)
     return ResubmitIdentityPayload(
         identity=make_identity(_FERTILITY_SHAPE, [], entities=entities),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=["NONEXISTENT_SV_XYZ"],
     )
 
 
@@ -203,6 +196,7 @@ def test_resubmit_response_event_arrives_before_slow_probe_completes(monkeypatch
             llm=FakeLLM(),
             stream_slot_options=True,
             sdmx=FakeSdmxClient(),
+            materialise_graph=member_walk_reader(FakeGraph()),
         ):
             if ev.kind == "response" and not response_seen:
                 response_seen = True
@@ -239,10 +233,13 @@ def test_resolve_resubmit_default_stream_slot_options_false_matches_prior_behavi
         graph=FakeGraph(),
         sdmx=FakeSdmxClient(),
         coverage=empty_coverage_snapshot(),
-        options=EngineOptions(
-            include_option_coverage=True,
-            materialise_graph=materialise_graph,
-            materialise_sdmx=materialise_sdmx,
+        options=walk_options(
+            FakeGraph(),
+            EngineOptions(
+                include_option_coverage=True,
+                materialise_graph=with_member_arcs(materialise_graph, FakeGraph()),
+                materialise_sdmx=materialise_sdmx,
+            ),
         ),
     )
     assert region.status == "definite"
@@ -268,6 +265,7 @@ def test_no_data_resubmit_sse_emits_response_and_done_only():
         resolver=make_resolver(FakeGraph()),
         llm=FakeLLM(),
         sdmx=FakeSdmxClient(),
+        materialise_graph=member_walk_reader(FakeGraph()),
     )
     client = TestClient(app, raise_server_exceptions=False)
     payload = _no_data_resubmit_payload()
@@ -281,9 +279,6 @@ def test_no_data_resubmit_sse_emits_response_and_done_only():
                         "entry_kind": "identity",
                         "variable_text": "a resubmitted identity",
                         "identity": payload.identity.model_dump(mode="json"),
-                        "base_spec_id": payload.base_spec_id,
-                        "base_identity": payload.base_identity.model_dump(mode="json"),
-                        "resolved_stat_var_dcids": payload.resolved_stat_var_dcids,
                     }
                 ],
             },
@@ -317,6 +312,7 @@ async def _collect_kinds(request: ResolveRequest, *, stream_slot_options: bool) 
             llm=FakeLLM(),
             stream_slot_options=stream_slot_options,
             sdmx=FakeSdmxClient(),
+            materialise_graph=member_walk_reader(FakeGraph()),
         )
     ]
 

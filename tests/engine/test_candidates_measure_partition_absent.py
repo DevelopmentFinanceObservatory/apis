@@ -158,7 +158,6 @@ def _run(monkeypatch, obs: dict = _SDMX_OBS, coverage_rows: list = _COVERAGE_ROW
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations=obs, availability={}),
             llm=_ElectRecalledAlsoPlausibleAltLLM(),
-            base_steps=[],
             base_timing={},
             coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
         )
@@ -170,7 +169,7 @@ def test_no_measure_partition_neither_candidate_folds(monkeypatch):
     result = _run(monkeypatch)
     assert result.status == "candidates"
     assert len(result.specs) == 2
-    served_svs = {sv.ref for spec in result.specs for sv in spec.resolved.stat_vars.items}
+    served_svs = {sv.ref.dcid for spec in result.specs for sv in spec.resolved.members}
     assert served_svs == {_RECALLED_SV, _ALT_SV}
     for spec in result.specs:
         assert not spec.resolved.alternative_measures

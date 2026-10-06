@@ -170,7 +170,6 @@ def _answer(case: str, names: tuple[str, str]) -> tuple[RegionResult, list[str]]
             resolver=make_resolver(graph),
             llm=_Bind(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
-            base_steps=[],
             base_timing={},
             coverage=FakeCoverageService(build_coverage_index([], role_names={})).snapshot(),
             options=EngineOptions(

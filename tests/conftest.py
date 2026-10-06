@@ -18,12 +18,7 @@ import origin_catalogue.service as catalogue_service_module
 from materialise import place_scope
 from origin_catalogue import Catalogue, bound_catalogue, unbind_catalogue
 from origin_catalogue import bind_catalogue as _bind
-from search.models import (
-    GraphRef,
-    SlotKey,
-    SlotValue,
-    StatVarSlotValue,
-)
+from statvar_members import shared_enumerator
 from tests.llm_miss_guard import (  # noqa: F401  (hooks pytest collects here)
     pytest_runtest_makereport,
     pytest_runtest_setup,
@@ -205,6 +200,15 @@ def _fresh_family_memo() -> Iterator[None]:
 
 
 @pytest.fixture(autouse=True)
+def _fresh_member_groups() -> Iterator[None]:
+    """Start each test with no member group cached in the process's shared enumerator
+    (`statvar_members.shared_enumerator`), so no test reads a group another test's graph
+    double resolved under the same stamp key."""
+    shared_enumerator().clear()
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _fresh_default_scope_memo() -> Iterator[None]:
     """Start and end each test with no default place scope memoised and no availability read
     in flight (`materialise.place_scope`), so no test reads a scope another test settled."""
@@ -353,15 +357,13 @@ def minimal_spec(spec_id: str = "s1") -> dict:
                 "member_count": 1,
             },
             "slots": [],
-            "stat_vars": {"items": [], "member_count": 0, "truncated": False},
+            "stat_vars": {"member_count": 0},
             "entities": [],
             "coverage": {"kind": "bare", "has_data": True},
             "trace": {
-                "resolved_stat_vars": [],
                 "resolved_entities": [],
                 "resolved_sources": [],
                 "slot_filters": [],
-                "pipeline_trace": [],
             },
         },
     }
@@ -381,9 +383,6 @@ def base_response(**extra) -> dict:
     }
 
 
-_STAT_VAR_DCID = "Count_Person"
-_STAT_VAR_LABEL = "population count"
-_STAT_VAR_REF = {"dcid": _STAT_VAR_DCID, "label": _STAT_VAR_LABEL}
 _ETH_REF = {"dcid": "country/ETH", "label": "Ethiopia"}
 _SCHEME_PROP = {"dcid": "DevelopmentFinanceScheme", "label": "flow type"}
 _PURPOSE_PROP = {"dcid": "DevelopmentFinancePurpose", "label": "purpose"}
@@ -395,7 +394,6 @@ _DAC_HEALTH_REF = {"dcid": "DAC/Health", "label": "health (total)"}
 def _minimal_resolution() -> dict:
     """A contract-valid ResolutionTrace with all required fields populated."""
     return {
-        "resolved_stat_vars": [_STAT_VAR_REF],
         "resolved_entities": [_ETH_REF],
         "resolved_sources": [],
         "slot_filters": [
@@ -425,30 +423,7 @@ def _minimal_resolution() -> dict:
                 "refs": [],
             },
         ],
-        "applied_window": {"start_year": 2015},
-        "date_source": "query",
-        "pipeline_trace": [
-            {"step": "extract", "ran": True},
-            {"step": "recall", "ran": True},
-            {"step": "shape", "ran": True},
-            {"step": "bind", "ran": True},
-            {"step": "materialise", "ran": True},
-            {"step": "answer", "ran": True},
-        ],
     }
-
-
-_WORKED_SLOT_VALUE = StatVarSlotValue(
-    key=SlotKey(
-        axis="what",
-        property=GraphRef(dcid="DevelopmentFinanceScheme", label="flow type"),
-        label="flow type",
-    ),
-    value=SlotValue(
-        value_kind="enum_value",
-        ref=GraphRef(dcid="ODAGrants", label="ODA grants"),
-    ),
-)
 
 
 def _build_worked_example_response() -> dict:
@@ -574,18 +549,7 @@ def _build_worked_example_response() -> dict:
                                 "binding": {"kind": "unbound"},
                             },
                         ],
-                        "stat_vars": {
-                            "items": [
-                                {
-                                    "ref": _STAT_VAR_DCID,
-                                    "label": _STAT_VAR_LABEL,
-                                    "slot_values": [_WORKED_SLOT_VALUE.model_dump()],
-                                    "constraint_properties": ["DevelopmentFinanceScheme"],
-                                }
-                            ],
-                            "member_count": 1,
-                            "truncated": False,
-                        },
+                        "stat_vars": {"member_count": 1, "served_count": 1},
                         "entities": [
                             {
                                 "ref": _ETH_REF["dcid"],

@@ -73,10 +73,12 @@ def test_enrichment_warnings_merge_across_chunks_to_the_whole_table_answer():
     one_chunk_enrichment = [w for w in one_chunk_warnings if w["code"] == "enrichment_unavailable"]
     two_chunk_enrichment = [w for w in two_chunk_warnings if w["code"] == "enrichment_unavailable"]
 
-    assert len(one_chunk_enrichment) == 1
-    assert len(two_chunk_enrichment) == 1
-    assert one_chunk_enrichment[0]["column"] == "recipient_iso3"
-    assert one_chunk_enrichment[0]["count"] == 2
+    # The graph names nothing, so the default name columns miss on every row.
+    assert [(w["column"], w["count"]) for w in one_chunk_enrichment] == [
+        ("recipient_iso3", 2),
+        ("stat_var_label", 4),
+        ("recipient_label", 4),
+    ]
     assert two_chunk_enrichment == one_chunk_enrichment
 
 
@@ -151,5 +153,10 @@ def test_streamed_warning_order_matches_whole_table_order_across_two_columns():
     ]
     streamed_enrichment = [w for w in streamed_warnings if w["code"] == "enrichment_unavailable"]
 
-    assert [w["column"] for w in whole_table_enrichment] == ["recipient_iso2", "recipient_iso3"]
+    assert [w["column"] for w in whole_table_enrichment] == [
+        "recipient_iso2",
+        "recipient_iso3",
+        "stat_var_label",
+        "recipient_label",
+    ]
     assert streamed_enrichment == whole_table_enrichment

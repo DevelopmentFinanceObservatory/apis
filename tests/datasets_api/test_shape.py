@@ -1,14 +1,11 @@
-"""Pins role defaults, constraint slots, refusals, and batched shape resolution."""
+"""Pins role defaults, constraint slots, and refusals."""
 
 from __future__ import annotations
-
-from collections.abc import Sequence
 
 import pytest
 
 from datasets_api.codes_materialise import MemberNotResolvable
-from datasets_api.shape import resolve_shape, resolve_shapes
-from materialise.graph import UNRESOLVED_NODE, Facet, FacetDefaultPolicy
+from datasets_api.shape import resolve_shape
 
 from ._graph_doubles import FakeMintGraphReader
 
@@ -166,127 +163,3 @@ def test_observation_about_declared_alongside_nothing_else_still_refuses():
     with pytest.raises(MemberNotResolvable) as excinfo:
         resolve_shape("dcid:Degenerate", graph=graph)
     assert excinfo.value.members == ("dcid:Degenerate",)
-
-
-def test_resolve_shapes_batches_two_constrained_statvars_into_one_second_call():
-    # One second batch reads constraint values for both StatVars.
-    graph = FakeMintGraphReader(
-        arcs={
-            "BilateralODAGrants": _BILATERAL_ODA_ARCS,
-            "CountPersonFemale": _COUNT_PERSON_FEMALE_ARCS,
-        }
-    )
-
-    shapes = resolve_shapes(("dcid:BilateralODAGrants", "dcid:CountPersonFemale"), graph=graph)
-
-    assert shapes["dcid:BilateralODAGrants"] == resolve_shape(
-        "dcid:BilateralODAGrants",
-        graph=FakeMintGraphReader(arcs={"BilateralODAGrants": _BILATERAL_ODA_ARCS}),
-    )
-    assert shapes["dcid:CountPersonFemale"] == resolve_shape(
-        "dcid:CountPersonFemale",
-        graph=FakeMintGraphReader(arcs={"CountPersonFemale": _COUNT_PERSON_FEMALE_ARCS}),
-    )
-    assert graph.calls["node_arcs_many"] == 2
-    assert graph.calls["node_arc_values"] == 0
-
-
-def test_resolve_shapes_omits_a_failing_member_instead_of_raising():
-    # Unresolvable members are omitted; only the valid StatVar remains.
-    graph = FakeMintGraphReader(
-        arcs={
-            "CountPerson": _COUNT_PERSON_ARCS,
-            "DevelopmentFinance": {"typeOf": ("Class",), "name": ("Development Finance",)},
-            "CountPersonFemale": {**_COUNT_PERSON_FEMALE_ARCS, "gender": ("Female", "Male")},
-        }
-    )
-
-    shapes = resolve_shapes(
-        (
-            "dcid:CountPerson",
-            "dcid:DevelopmentFinance",
-            "dcid:CountPersonFemale",
-            "dcid:NotAKnownShape",
-        ),
-        graph=graph,
-    )
-
-    assert shapes.keys() == {"dcid:CountPerson"}
-
-
-def test_resolve_shapes_repeats_the_same_shape_for_a_duplicate_ref():
-    graph = FakeMintGraphReader(arcs={"CountPerson": _COUNT_PERSON_ARCS})
-
-    shapes = resolve_shapes(("dcid:CountPerson", "dcid:CountPerson"), graph=graph)
-
-    assert shapes == {"dcid:CountPerson": shapes["dcid:CountPerson"]}
-    # A duplicate ref adds no graph read.
-    assert graph.calls["node_arcs_many"] == 1
-
-
-def test_resolve_shapes_of_an_empty_batch_makes_no_graph_call():
-    graph = FakeMintGraphReader(arcs={})
-
-    assert resolve_shapes((), graph=graph) == {}
-    assert graph.calls["node_arcs_many"] == 0
-
-
-class _UnresolvedArcGraphReader:
-    """Marks unresolved arc targets as `UNRESOLVED_NODE`, as live `/v2/node` batches do."""
-
-    def node_label(self, dcid: str) -> str | None:
-        raise NotImplementedError
-
-    def observation_facets_batch(
-        self, *, stat_var: str, entities: Sequence[str], deadline: float | None = None
-    ) -> dict[str, list[Facet]]:
-        raise NotImplementedError
-
-    def declares_facet_defaults(self) -> bool:
-        raise NotImplementedError
-
-    def default_facet_policy(self, *, stat_var: str, axis: str) -> FacetDefaultPolicy | None:
-        raise NotImplementedError
-
-    def node_arcs(self, dcid: str, *, properties: Sequence[str]) -> dict[str, tuple[str, ...]]:
-        raise NotImplementedError
-
-    def node_subjects(self, dcid: str, *, property: str, filters=None, max_results: int):
-        raise NotImplementedError
-
-    def node_names_many(
-        self,
-        dcids,
-        *,
-        deadline: float | None = None,
-    ) -> dict[str, tuple[str, ...]]:
-        raise NotImplementedError
-
-    def node_arcs_many(
-        self,
-        dcids: Sequence[str],
-        *,
-        properties: Sequence[str],
-        individual_probe_budget: int | None = None,
-        deadline: float | None = None,
-    ) -> dict[str, dict[str, tuple[str, ...]] | None]:
-        if "UnresolvedArcs" not in dcids:
-            return {}
-        return {
-            "UnresolvedArcs": {
-                "typeOf": ("StatisticalVariable",),
-                "observationProperties": ("recipient", UNRESOLVED_NODE),
-                "measuredProperty": ("amount",),
-                "populationType": ("DevelopmentFinance",),
-                "constraintProperties": ("DevelopmentFinanceScheme",),
-                "DevelopmentFinanceScheme": (UNRESOLVED_NODE, "ODAGrants"),
-            }
-        }
-
-
-def test_resolve_shapes_drops_the_unresolved_node_marker_like_node_arcs_drops_the_entry():
-    shapes = resolve_shapes(("dcid:UnresolvedArcs",), graph=_UnresolvedArcGraphReader())
-
-    shape = shapes["dcid:UnresolvedArcs"]
-    assert shape.declared_roles == ("recipient",)
-    assert shape.slots == (("DevelopmentFinanceScheme", "ODAGrants"),)

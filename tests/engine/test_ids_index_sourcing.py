@@ -1,8 +1,8 @@
 """IDS flows share CRS's `FinancialFlow/amount/measuredValue/Nominal` five-tuple but are
 not code-index rows. The index decides a member only when its constraint keys cover an index
-row (`bound_values.index_decides_member`), and an identity only when its slot keys do
-(`index_covers_slot_keys`), so an IDS pool reads its own arcs: its taxonomy, its resubmit
-seed, its bind prompt, and its options population."""
+row (`bound_values.member_family`), and an identity only when its slot keys do
+(`index_covers_slot_keys`), so an IDS pool reads its own arcs: its taxonomy, its resubmit's
+walked members, its bind prompt, and its options population."""
 
 from __future__ import annotations
 
@@ -20,10 +20,15 @@ from search.engine.errors import EngineInputError
 from search.engine.options import population as options_population_module
 from search.engine.qualifier_match import QualifierMatch
 from search.engine.region.phase_rank_bind import _rank_key
+from search.engine.region.promote_edits import _phase_detect_edits
 from search.engine.region.promote_reread import _phase_reread_arcs
+from search.engine.region.promote_shape import _phase_build_shape
 from search.engine.region.promote_state import _PromoteState
+from search.engine.region.promote_survivors import _phase_resolve_survivors
 from search.engine.region.promote_validate import _phase_validate
 from search.engine.retrieval.bound_values import (
+    ResubmitWalk,
+    RoleClassWalks,
     collapse_measure_families,
     elect_five_tuple_family,
     elect_measure_family,
@@ -48,6 +53,7 @@ from search.models import (
 from statvar_members import FiveTuple, MemberGroup
 from tests.engine._base_identity import destination_entity, make_base
 from tests.engine._fake_coverage import empty_coverage_snapshot
+from tests.engine._harness import member_walk_reader
 from tests.fixtures import FakeGraph
 from tests.statvar_members.conftest import FakeMemberArcReader
 
@@ -423,7 +429,7 @@ def test_a_crs_bind_prompt_is_byte_identical_to_withholding_every_measure_slot()
     ) == _build_universal_bind_prompt("ODA disbursements", [stripped])
 
 
-# Resubmit: an IDS identity keeps its seed.
+# Resubmit: an IDS identity elects its members by the graph walk.
 
 
 def _slot(prop: str, value: str | None) -> Slot:
@@ -449,18 +455,12 @@ def _flow_identity(slots: list[Slot]) -> tuple[str, BaseIdentity]:
     return make_base(shape, slots, entities=[destination_entity(_KEN)])
 
 
-def _promote_state(seed: list[str], graph: FakeGraph, slots: list[Slot]) -> _PromoteState:
-    base_spec_id, identity = _flow_identity(slots)
-    inp = ResubmitIdentityPayload(
-        identity=identity,
-        base_spec_id=base_spec_id,
-        base_identity=identity,
-        resolved_stat_var_dcids=seed,
-    )
+def _promote_state(graph: FakeGraph, slots: list[Slot]) -> _PromoteState:
+    """A resubmit's state over `graph`, whose StatVars the member walk reads."""
+    _spec_id, identity = _flow_identity(slots)
     return _PromoteState(
-        inp=inp,
+        inp=ResubmitIdentityPayload(identity=identity),
         graph=cast(Any, graph),
-        pipeline_steps=[],
         sdmx=cast(Any, None),
         deadline=None,
         include_option_coverage=False,
@@ -470,19 +470,22 @@ def _promote_state(seed: list[str], graph: FakeGraph, slots: list[Slot]) -> _Pro
         materialise_graph=None,
         materialise_sdmx=None,
         coverage=empty_coverage_snapshot(),
+        role_class_walks=RoleClassWalks(
+            member_walk_reader(graph),
+            resubmit=ResubmitWalk(subject_ceiling=20_000, full_read_deadline=None),
+        ),
     )
 
 
-def test_an_ids_identity_with_guarantee_status_unbound_resubmits_over_its_seed():
+def test_an_ids_identity_with_guarantee_status_unbound_resubmits_over_its_walked_member():
     slots = [_slot("financialFlowType", None), _slot("guaranteeStatus", None)]
     graph = _graph({_IDS_DEBT_SERVICE: _ids_arcs("ServicingPayment")})
-    state = _promote_state([_IDS_DEBT_SERVICE], graph, slots)
+    state = _promote_state(graph, slots)
 
     _phase_validate(state)
     assert _phase_reread_arcs(state) is None
 
     assert state.stat_var_dcids == [_IDS_DEBT_SERVICE]
-    assert state.stat_var_dcids_from_election is False
     assert state.measure_elected_properties == frozenset()
 
 
@@ -492,26 +495,31 @@ def test_an_ids_identity_with_guarantee_status_unbound_resubmits_over_its_seed()
 def test_options_enumerates_an_ids_identity_from_the_graph(monkeypatch):
     enumerated: list[FiveTuple] = []
 
-    def _enumerate(*, five_tuple, **_kwargs):
-        enumerated.append(five_tuple)
-        return MemberGroup(
-            five_tuple=five_tuple,
-            members=(),
-            family=(),
-            root_confirmed=False,
-            candidates_considered=0,
-            candidate_cap=1,
-            truncated=False,
-            proven_complete=True,
-        )
+    class _RecordingEnumerator:
+        def enumerate(self, *, five_tuple, **_kwargs):
+            enumerated.append(five_tuple)
+            return MemberGroup(
+                five_tuple=five_tuple,
+                members=(),
+                family=(),
+                root_confirmed=False,
+                candidates_considered=0,
+                candidate_cap=1,
+                truncated=False,
+                proven_complete=True,
+            )
 
-    monkeypatch.setattr(options_population_module, "enumerate_members", _enumerate)
+    monkeypatch.setattr(
+        options_population_module, "shared_enumerator", lambda: _RecordingEnumerator()
+    )
     _base_spec_id, identity = _flow_identity(
         [_slot("financialFlowType", "ServicingPayment"), _slot("guaranteeStatus", _PPG)]
     )
 
     with pytest.raises(EngineInputError, match="denotes no StatVar population"):
-        options_population_module.options_population(identity, cast(Any, None))
+        options_population_module.options_population(
+            identity, cast(Any, FakeMemberArcReader(arcs={}))
+        )
 
     assert len(enumerated) == 1
 
@@ -620,7 +628,7 @@ def test_bound_values_decide_which_index_members_exist():
 
 
 def test_a_seedless_crs_identity_with_unmatched_values_resubmits_to_no_data():
-    state = _promote_state([], _graph({}), _crs_slots_with_purpose("CRSPurposeCodeDoesNotExist999"))
+    state = _promote_state(_graph({}), _crs_slots_with_purpose("CRSPurposeCodeDoesNotExist999"))
 
     _phase_validate(state)
     region = _phase_reread_arcs(state)
@@ -652,23 +660,25 @@ def test_options_sources_a_crs_identity_from_the_index():
 
 
 @pytest.mark.parametrize("slots", [_PROBE_SLOTS, _PPG_BOUND_SLOTS], ids=["probe", "ppg-bound"])
-def test_a_seedless_ids_identity_resubmits_to_request_invalid(slots):
-    state = _promote_state([], _graph({}), slots)
+def test_an_ids_identity_whose_graph_holds_no_member_answers_no_matching_slice(slots):
+    state = _promote_state(_graph({}), slots)
 
-    with pytest.raises(EngineInputError) as exc_info:
-        _phase_validate(state)
+    _phase_validate(state)
+    region = _phase_reread_arcs(state)
 
-    assert exc_info.value.code == "request_invalid"
-    assert exc_info.value.pointer == "/input/resolved_stat_var_dcids"
+    assert region is not None
+    assert (region.status, region.no_data_reason) == ("no_data", "no_matching_slice")
 
 
-def test_a_seedless_crs_identity_resubmits_over_an_election():
-    state = _promote_state([], _graph({}), _crs_identity_slots())
+def test_a_crs_identity_resubmits_over_the_index_election():
+    state = _promote_state(_graph({}), _crs_identity_slots())
 
     _phase_validate(state)
     _phase_reread_arcs(state)
 
-    assert state.stat_var_dcids_from_election is True
+    family = index_family(get_index(), identity_query(state.inp.identity))
+    assert family is not None
+    assert set(state.stat_var_dcids) <= {row.dcid for row in family.rows}
 
 
 def test_an_ids_shape_id_is_the_same_whether_or_not_crs_rows_were_recalled():
@@ -681,16 +691,38 @@ def test_an_ids_shape_id_is_the_same_whether_or_not_crs_rows_were_recalled():
     assert _crs_shape().shape_id == crs.shape_id == "financialflow_amount_measuredvalue_nominal"
 
 
-def test_a_no_op_resubmit_of_the_ids_answer_keeps_its_shape_id():
+def _ids_no_op_resubmit() -> tuple[ShapeDraft, _PromoteState]:
     _, ids = _mixed_shapes()
     graph = _graph({_IDS_DEBT_SERVICE: _ids_arcs("ServicingPayment")})
     slots = [_slot("financialFlowType", "ServicingPayment"), _slot("guaranteeStatus", _PPG)]
-    state = _promote_state([_IDS_DEBT_SERVICE], graph, slots)
+    return ids, _promote_state(graph, slots)
 
-    _phase_validate(state)
-    assert _phase_reread_arcs(state) is None
 
-    assert state.regenerated_shape_id == ids.shape_id
+def _crs_no_op_resubmit() -> tuple[ShapeDraft, _PromoteState]:
+    rows = _crs_rows()
+    graph = _graph({row.dcid: _crs_arcs(row) for row in rows})
+    return _crs_shape(), _promote_state(graph, _crs_identity_slots())
+
+
+@pytest.mark.parametrize(
+    "no_op_resubmit", [_ids_no_op_resubmit, _crs_no_op_resubmit], ids=["ids", "crs-index"]
+)
+def test_a_no_op_resubmit_keeps_its_answers_shape_id_and_label(no_op_resubmit):
+    """A resubmit rebuilds the shape derive gave the answer: the graph-decided IDS shape
+    under its member's name, the index-decided CRS shape under its family label."""
+    derived, state = no_op_resubmit()
+
+    for phase in (
+        _phase_validate,
+        _phase_reread_arcs,
+        _phase_detect_edits,
+        _phase_resolve_survivors,
+        _phase_build_shape,
+    ):
+        assert phase(state) is None
+
+    assert state.regenerated_shape_id == derived.shape_id
+    assert state.shape_draft.label == derived.label
 
 
 # The constraint keys each IDS case's expected StatVar lists once the graph read drops the
@@ -742,8 +774,8 @@ def test_an_ids_member_is_graph_decided(sv, keys):
     for its identity and derive puts it in a graph-decided shape. Every CRS row lists `crs*`
     keys no IDS member lists, so this holds even for a member whose every key a CRS row
     lists."""
-    _role_bearing, indexed = member_group_class(_member_five_tuple(sv), _member_arcs(keys))
-    assert indexed is False
+    _role_bearing, family = member_group_class(sv, _member_five_tuple(sv), _member_arcs(keys))
+    assert family is None
 
 
 def test_every_ids_case_member_has_its_keys_recorded():

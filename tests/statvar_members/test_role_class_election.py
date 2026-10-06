@@ -4,8 +4,10 @@ A member lacking a role its sibling carries is the aggregate over that role: a
 recipient-only debt total beside its by-creditor variant, a provider-only line beside
 provider-and-recipient rows. Role coverage runs first, then the antichain over constraint
 keys, then the role-twin collapse: of two members with equal constraint maps whose role
-sets nest, the one declaring fewer roles survives. `enumerate_members` runs the same
-election on the graph walk.
+sets nest, the one declaring fewer roles survives. Of the members left, those of the
+smallest role set answer when every other role set left contains it. An open role key
+joins the bound ones only where a member the bound keys elect, or a role twin of one,
+places it. `enumerate_members` runs the same election on the graph walk.
 
 The IDS fixtures mirror the dev graph: a total declaring `financingRecipient` and a
 by-creditor twin declaring `financingProvider, financingRecipient` with identical
@@ -24,9 +26,11 @@ from statvar_members import (
     CANDIDATE_CAP,
     AbsentReading,
     MemberRoleDisagreement,
+    antichain_minimal_ids,
     covers_role_keys,
     elect_role_class,
     elect_role_class_of,
+    electing_role_keys,
     enumerate_members,
     role_class_facts,
 )
@@ -44,12 +48,17 @@ _FLOW = {"flowType": "ServicingPayment"}
 _FLOW_AND_GUARANTEE = {"flowType": "ServicingPayment", "guarantee": "Public"}
 
 
-def _elect(members: dict[str, tuple[dict[str, str], tuple[str, ...]]], *role_keys: str):
+def _elect(
+    members: dict[str, tuple[dict[str, str], tuple[str, ...]]],
+    *role_keys: str,
+    open_role_keys: tuple[str, ...] = (),
+):
     return elect_role_class(
         {dcid: constraints for dcid, (constraints, _roles) in members.items()},
         {dcid: roles for dcid, (_keys, roles) in members.items()},
         list(members),
         role_keys=role_keys,
+        open_role_keys=open_role_keys,
         readings={},
     )
 
@@ -83,6 +92,93 @@ def test_a_named_creditor_elects_the_by_creditor_rows():
     assert election.members == ("by_creditor",)
     assert election.family == ("by_creditor", "by_creditor_guaranteed")
     assert not election.tied
+
+
+def test_an_open_creditor_elects_the_by_creditor_rows():
+    election = _elect(_DEBT, "destination", open_role_keys=("origin",))
+
+    assert election.members == ("by_creditor",)
+    assert election.family == ("by_creditor", "by_creditor_guaranteed")
+
+
+def test_an_open_origin_no_member_declares_elects_under_the_bound_keys_alone():
+    """A recipient-only total beside a subject-only member of the same constraints, with
+    an open origin. No member covers it, so coverage reads the recipient alone and the
+    subject-only member drops, where keeping every member would tie the two role sets."""
+    family = {"total": (_FLOW, _RECIPIENT), "subject": (_FLOW, _SUBJECT)}
+
+    election = _elect(family, "destination", open_role_keys=("origin",))
+
+    assert election == _elect(family, "destination")
+    assert election.members == ("total",)
+    assert not election.tied
+
+
+_DISBURSEMENT = {"flowType": "Disbursement"}
+_UNTWINNED = {"total": (_FLOW, _RECIPIENT), "lender": (_DISBURSEMENT, _PAIR)}
+
+
+def _same_map(*role_sets: tuple[str, ...]) -> dict[str, tuple[dict[str, str], tuple[str, ...]]]:
+    """One member per role set, all of one constraint map, so each is a twin of the rest."""
+    return {f"m{position}": (_FLOW, roles) for position, roles in enumerate(role_sets)}
+
+
+@pytest.mark.parametrize(
+    ("members", "role_keys", "open_role_keys", "expected"),
+    [
+        (_same_map(_PAIR), (), ("origin", "destination"), {"origin", "destination"}),
+        (_same_map(_PAIR, _RECIPIENT), (), ("origin", "destination"), {"origin", "destination"}),
+        (_same_map(_RECIPIENT), (), ("origin", "destination"), {"destination"}),
+        (_same_map(_RECIPIENT, _SUBJECT), (), ("origin", "destination"), {"destination"}),
+        (_same_map(_RECIPIENT, _PROVIDER), (), ("origin", "destination"), set()),
+        (_same_map(_SUBJECT), (), ("origin", "destination"), set()),
+        (_same_map(_PAIR), ("destination",), ("origin",), {"destination", "origin"}),
+        (_same_map(_RECIPIENT), ("destination",), ("origin",), {"destination"}),
+        (_same_map(_PAIR), ("destination",), (), {"destination"}),
+        (_same_map(_PAIR), (), (), set()),
+        (_same_map(_RECIPIENT, _PAIR), ("destination",), ("origin",), {"destination", "origin"}),
+        (_UNTWINNED, ("destination",), ("origin",), {"destination"}),
+        (_UNTWINNED, (), ("origin",), set()),
+        (_UNTWINNED, (), ("origin", "destination"), {"destination"}),
+        (
+            {"subject": (_DISBURSEMENT, _SUBJECT), "total": (_FLOW, _RECIPIENT)},
+            (),
+            ("destination",),
+            set(),
+        ),
+    ],
+    ids=[
+        "both open keys covered",
+        "the pair wins over a covered single",
+        "only one open key covered keeps it",
+        "one covered beside a subject-only twin",
+        "two single keys tie with no pair covered",
+        "no open key covered",
+        "open key joins a bound key",
+        "open key no member covers leaves the bound key",
+        "no open keys returns the bound keys",
+        "no keys at all",
+        "a twin of the elected total places the open key",
+        "a two-role member of other values places nothing beside the total",
+        "the same with no key bound",
+        "the total places its own key and the other member's is set aside",
+        "a role-bearing member of other values is no twin of the subject-only one",
+    ],
+)
+def test_electing_role_keys_keeps_the_largest_open_subset_the_elected_members_place(
+    members, role_keys, open_role_keys, expected
+):
+    facts = role_class_facts(
+        {dcid: constraints for dcid, (constraints, _roles) in members.items()},
+        {dcid: roles for dcid, (_constraints, roles) in members.items()},
+    )
+
+    keys = electing_role_keys(
+        facts, list(members), role_keys=role_keys, open_role_keys=open_role_keys, readings={}
+    )
+
+    assert keys == frozenset(expected)
+    assert _elect(members, *role_keys, open_role_keys=open_role_keys).role_keys == keys
 
 
 def test_a_creditor_alone_elects_the_by_creditor_rows():
@@ -188,13 +284,52 @@ def test_constraint_keys_reduce_before_roles():
     assert not election.tied
 
 
-def test_members_of_two_role_sets_with_different_constraint_keys_tie():
+def test_a_total_answers_beside_a_two_role_member_of_other_constraint_keys():
+    """Neither constraint key set contains the other, so both members survive the
+    antichain. The by-creditor member declares a creditor the question does not ask for
+    and leaves for the total, and it answers once the creditor is bound."""
     members = {
         "total_by_flow": (_FLOW, _RECIPIENT),
         "by_creditor_by_guarantee": ({"guarantee": "Public"}, _PAIR),
     }
 
-    assert _elect(members, "destination").tied
+    election = _elect(members, "destination")
+
+    assert election.members == ("total_by_flow",)
+    assert election.family == ("total_by_flow",)
+    assert not election.tied
+    assert _elect(members, "origin", "destination").members == ("by_creditor_by_guarantee",)
+
+
+_DOMINATED_TOTAL = {
+    "total_by_flow": (_FLOW, _RECIPIENT),
+    "total_by_guarantee_and_term": ({"guarantee": "Public", "term": "Long"}, _RECIPIENT),
+    "by_creditor_by_guarantee": ({"guarantee": "Public"}, _PAIR),
+}
+
+
+def test_a_total_only_a_two_role_member_dominates_stays_a_member():
+    """The by-creditor member leaves for the totals, so it dominates neither of them: the
+    members are the antichain of the recipient-only family alone."""
+    election = _elect(_DOMINATED_TOTAL, "destination")
+
+    assert election.members == ("total_by_flow", "total_by_guarantee_and_term")
+    assert election.family == election.members
+    assert not election.tied
+
+
+def test_role_sets_that_do_not_nest_tie_on_different_constraint_keys():
+    members = {
+        "total_by_flow": (_FLOW, _RECIPIENT),
+        "line_by_guarantee": ({"guarantee": "Public"}, _PROVIDER),
+        "by_creditor_by_term": ({"term": "Long"}, _PAIR),
+    }
+
+    election = _elect(members)
+
+    assert election.tied
+    assert election.members == tuple(members)
+    assert election.family == tuple(members)
 
 
 def test_a_not_declared_property_blocks_dominance_inside_a_role_class():
@@ -210,18 +345,125 @@ def test_a_not_declared_property_blocks_dominance_inside_a_role_class():
     assert not election.tied
 
 
-def test_a_by_creditor_member_of_other_constraint_values_is_no_twin():
-    """Equal constraint keys with another value are a different population: the total
-    does not displace the by-creditor member, and the two role sets tie."""
-    members = {
-        "total": (_FLOW, _RECIPIENT),
-        "by_creditor_private": ({"flowType": "Disbursement"}, _PAIR),
-    }
+@pytest.mark.parametrize("open_role_keys", [(), ("origin",)], ids=["no open key", "open creditor"])
+def test_a_total_answers_beside_a_by_creditor_member_of_other_constraint_values(open_role_keys):
+    """Equal constraint keys with another value are a different population, so the total
+    does not displace the by-creditor member as a twin. The total still answers a
+    question that binds no creditor, and an open creditor no twin of the total places is
+    set aside."""
+    election = _elect(_UNTWINNED, "destination", open_role_keys=open_role_keys)
 
-    election = _elect(members, "destination")
+    assert election.members == ("total",)
+    assert election.family == ("total",)
+    assert not election.tied
+    assert election.role_keys == {"destination"}
 
-    assert election.tied
-    assert election.members == ("total", "by_creditor_private")
+
+def test_a_bound_creditor_reads_the_by_creditor_member_of_other_constraint_values():
+    election = _elect(_UNTWINNED, "origin", "destination")
+
+    assert election.members == ("lender",)
+    assert election.role_keys == {"origin", "destination"}
+
+
+_DAC1 = {
+    "donor_grants": (_FLOW, _PROVIDER),
+    "donor_grants_public": (_FLOW_AND_GUARANTEE, _PROVIDER),
+    "donor_loans": (_DISBURSEMENT, _PROVIDER),
+    "to_west_bank": ({"flowType": "Arrears"}, _PAIR),
+    "to_west_bank_public": ({"flowType": "Arrears", "guarantee": "Public"}, _PAIR),
+}
+_DONOR_ROWS = ("donor_grants", "donor_loans")
+_DONOR_FAMILY = ("donor_grants", "donor_grants_public", "donor_loans")
+
+
+@pytest.mark.parametrize(
+    ("role_keys", "open_role_keys", "members", "family", "elected_keys"),
+    [
+        (("origin",), (), _DONOR_ROWS, _DONOR_FAMILY, {"origin"}),
+        (("origin",), ("destination",), _DONOR_ROWS, _DONOR_FAMILY, {"origin"}),
+        ((), ("destination",), _DONOR_ROWS, _DONOR_FAMILY, set()),
+        ((), (), _DONOR_ROWS, _DONOR_FAMILY, set()),
+        (
+            ("origin", "destination"),
+            (),
+            ("to_west_bank",),
+            ("to_west_bank", "to_west_bank_public"),
+            {"origin", "destination"},
+        ),
+        (
+            ("destination",),
+            ("origin",),
+            ("to_west_bank",),
+            ("to_west_bank", "to_west_bank_public"),
+            {"origin", "destination"},
+        ),
+    ],
+    ids=[
+        "donor bound",
+        "donor bound, recipient open",
+        "nothing bound, recipient open",
+        "nothing bound",
+        "donor and recipient bound",
+        "recipient bound, donor open",
+    ],
+)
+def test_donor_totals_beside_donor_and_recipient_rows_of_other_values(
+    role_keys, open_role_keys, members, family, elected_keys
+):
+    """A DAC 1-style table: donor totals, and two rows to one recipient at constraint
+    values no total holds. The totals answer until a recipient is bound, and an open
+    recipient no total and no twin of one places is set aside."""
+    election = _elect(_DAC1, *role_keys, open_role_keys=open_role_keys)
+
+    assert election.members == members
+    assert election.family == family
+    assert not election.tied
+    assert election.role_keys == elected_keys
+
+
+_TIE = {"line": (_FLOW, _PROVIDER), "total": (_DISBURSEMENT, _RECIPIENT)}
+_KEY_CELLS = [
+    (role_keys, open_role_keys)
+    for role_keys in ((), ("origin",), ("destination",), ("origin", "destination"))
+    for open_role_keys in ((), ("origin",), ("destination",), ("origin", "destination"))
+]
+
+
+@pytest.mark.parametrize(
+    "members",
+    [_DEBT, _UNTWINNED, _DAC1, _TIE, _DOMINATED_TOTAL],
+    ids=["twins", "untwinned", "dac1", "tie", "dominated total"],
+)
+@pytest.mark.parametrize(("role_keys", "open_role_keys"), _KEY_CELLS)
+def test_an_election_repeats_over_its_family_and_under_its_elected_keys(
+    members, role_keys, open_role_keys
+):
+    """The mint elects over the family Search stated, under the open keys the identity
+    carries, which are the ones the first election read: each repeat returns the same
+    family and members. The mint serves the antichain of the family, which is the
+    election's members unless it ties."""
+    election = _elect(members, *role_keys, open_role_keys=open_role_keys)
+    family_antichain = antichain_minimal_ids(
+        {dcid: frozenset(members[dcid][0]) for dcid in election.family},
+        election.family,
+        readings={},
+    )
+    elected_open = tuple(election.role_keys - set(role_keys))
+
+    over_family = _elect(
+        {dcid: members[dcid] for dcid in election.family},
+        *role_keys,
+        open_role_keys=open_role_keys,
+    )
+    elected_open_asked = _elect(members, *role_keys, open_role_keys=elected_open)
+    elected_bound = _elect(members, *election.role_keys)
+
+    assert over_family.family == election.family
+    assert over_family.members == election.members
+    assert election.tied or election.members == family_antichain
+    assert elected_open_asked == election
+    assert elected_bound == election
 
 
 def test_a_named_creditor_keeps_a_by_creditor_member_of_other_values():
@@ -260,13 +502,23 @@ def _quadratic_twin_reference(
     )
 
 
+def _undisplaced(
+    constraints_by_id: Mapping[str, Mapping[str, str]],
+    roles_by_id: Mapping[str, tuple[str, ...]],
+    order: list[str],
+) -> tuple[str, ...]:
+    """The ids of `order` the election's twin collapse keeps, in their order."""
+    displaced = enumerate_module._displaced(role_class_facts(constraints_by_id, roles_by_id), order)
+    return tuple(item_id for item_id in order if item_id not in displaced)
+
+
 _ROLE_POOL = ("a", "b", "c", "d")
 
 
 @pytest.mark.parametrize("seed", range(200))
 def test_the_twin_collapse_matches_the_quadratic_reference(seed: int):
-    """With every constraint key equal, the constraint antichain keeps every member, so
-    the election's members are the twin collapse's survivors."""
+    """The twin collapse keeps the members no member of the same constraint map and
+    fewer roles displaces, in any order given."""
     rng = random.Random(seed)
     roles = {
         f"m{i}": tuple(rng.sample(_ROLE_POOL, rng.randint(1, len(_ROLE_POOL))))
@@ -274,13 +526,12 @@ def test_the_twin_collapse_matches_the_quadratic_reference(seed: int):
     }
     constraints = {item_id: {"k": str(rng.randrange(rng.randint(1, 5)))} for item_id in roles}
 
-    election = elect_role_class(constraints, roles, list(roles), role_keys=(), readings={})
+    kept = _undisplaced(constraints, roles, list(roles))
 
-    assert election.members == _quadratic_twin_reference(roles, constraints)
+    assert kept == _quadratic_twin_reference(roles, constraints)
     shuffled = list(roles)
     rng.shuffle(shuffled)
-    reordered = elect_role_class(constraints, roles, shuffled, role_keys=(), readings={})
-    assert set(reordered.members) == set(election.members)
+    assert set(_undisplaced(constraints, roles, shuffled)) == set(kept)
 
 
 class _CountingRoleSet(frozenset):
@@ -300,19 +551,21 @@ def test_the_twin_collapse_compares_distinct_role_sets_for_a_crs_sized_family(mo
     monkeypatch.setattr(enumerate_module, "frozenset", _CountingRoleSet, raising=False)
     _CountingRoleSet.comparisons = 0
 
-    kept = enumerate_module._collapse_role_twins(constraints, roles, list(roles))
+    kept = _undisplaced(constraints, roles, list(roles))
 
     assert len(kept) < len(roles)
     assert _CountingRoleSet.comparisons <= 4 * 3 * 3
 
 
+@pytest.mark.parametrize("open_role_keys", [(), ("origin", "destination")])
 @pytest.mark.parametrize(
     "role_keys", [(), ("origin",), ("origin", "destination"), ("financingRecipient",)]
 )
-def test_facts_built_once_elect_any_subset_as_the_subset_alone(role_keys):
+def test_facts_built_once_elect_any_subset_as_the_subset_alone(role_keys, open_role_keys):
     """`elect_role_class_of` over facts built for every id elects a subset as
     `elect_role_class` elects it from the subset's own maps, twins whose partner is outside
-    the subset included."""
+    the subset included. The members of an untied election are the antichain of its
+    family alone."""
     rng = random.Random(1)
     roles = {f"m{i}": rng.choice([_PAIR, _PROVIDER, _RECIPIENT, _SUBJECT]) for i in range(400)}
     constraints = {
@@ -329,10 +582,19 @@ def test_facts_built_once_elect_any_subset_as_the_subset_alone(role_keys):
             {item_id: roles[item_id] for item_id in subset},
             subset,
             role_keys=role_keys,
+            open_role_keys=open_role_keys,
             readings=readings,
         )
+        of_facts = elect_role_class_of(
+            facts, subset, role_keys=role_keys, open_role_keys=open_role_keys, readings=readings
+        )
 
-        assert elect_role_class_of(facts, subset, role_keys=role_keys, readings=readings) == alone
+        assert of_facts == alone
+        assert alone.tied or alone.members == antichain_minimal_ids(
+            {item_id: frozenset(constraints[item_id]) for item_id in alone.family},
+            alone.family,
+            readings=readings,
+        )
 
 
 def test_an_axis_two_declared_roles_share_covers_no_axis_key():
@@ -377,13 +639,36 @@ _DEBT_ARCS = {
 }
 
 
-def _walk(*role_keys: str, arcs=_DEBT_ARCS, reader=None):
+def _walk(*role_keys: str, arcs=_DEBT_ARCS, reader=None, open_role_keys: tuple[str, ...] = ()):
     return enumerate_members(
         five_tuple=_FIVE_TUPLE,
         slots=_SLOTS,
         graph=reader or FakeMemberArcReader(arcs=arcs),
         role_keys=role_keys,
+        open_role_keys=open_role_keys,
     )
+
+
+class _SequencedReader(FakeMemberArcReader):
+    """Serves `reads[dcid][n]` on the nth forward read of `dcid`, the last one thereafter.
+    Every other dcid, and the reverse query, read `arcs`."""
+
+    def __init__(self, *, arcs, reads: Mapping[str, list[dict[str, tuple[str, ...]] | None]]):
+        super().__init__(arcs=arcs)
+        self._reads = reads
+        self._count: dict[str, int] = {}
+
+    def node_arcs_many(self, dcids, *, properties, individual_probe_budget=None, deadline=None):
+        result = super().node_arcs_many(dcids, properties=properties)
+        for dcid, served in self._reads.items():
+            if dcid in result:
+                position = self._count.get(dcid, 0)
+                self._count[dcid] = position + 1
+                read = served[min(position, len(served) - 1)]
+                result[dcid] = (
+                    None if read is None else {prop: read.get(prop, ()) for prop in properties}
+                )
+        return result
 
 
 def test_the_walk_answers_a_recipient_with_the_plain_total():
@@ -449,6 +734,41 @@ def test_a_dropped_role_arc_does_not_cost_the_walk_a_covering_member():
     assert [member.stat_var for member in group.members] == ["Service_ByCreditor"]
     assert group.members[0].declared_roles == _PAIR
     assert group.inconsistent_candidates == ()
+
+
+def test_a_by_creditor_twin_read_only_as_a_root_twin_answers_an_open_creditor():
+    """The twin reads empty on the batch and on the filter re-probe, so the election before
+    the twin pass sees the recipient-only total alone and reads the destination alone. Read
+    as a root twin, the twin covers the open origin and the final election elects it."""
+    arcs = {"Service": _arcs(_RECIPIENT), "Service_ByCreditor": _arcs(_PAIR)}
+    reader = _SequencedReader(
+        arcs=arcs, reads={"Service_ByCreditor": [None, None, arcs["Service_ByCreditor"]]}
+    )
+
+    group = _walk("destination", reader=reader, open_role_keys=("origin",))
+
+    assert [member.stat_var for member in group.members] == ["Service_ByCreditor"]
+    assert group.undismissed_candidates == ()
+
+
+def test_a_by_creditor_twin_settled_out_leaves_the_total_answering_an_open_creditor():
+    """The batch reads the twin by-creditor, then its trusted re-read shows another flow
+    type and it leaves the members. No member left declares the open origin, so the total
+    answers under the destination alone, where the creditor key would keep the
+    subject-only sibling and tie the two role sets."""
+    arcs = {
+        "Service": _arcs(_RECIPIENT),
+        "Service_Subject": _arcs(()),
+        "Service_ByCreditor": _arcs(_PAIR),
+    }
+    moved = {**arcs["Service_ByCreditor"], "flowType": ("Disbursement",)}
+    reader = _SequencedReader(
+        arcs=arcs, reads={"Service_ByCreditor": [arcs["Service_ByCreditor"], moved]}
+    )
+
+    group = _walk("destination", reader=reader, open_role_keys=("origin",))
+
+    assert [member.stat_var for member in group.members] == ["Service"]
 
 
 def test_many_subject_only_siblings_cost_one_more_read_and_refuse_nothing():
@@ -640,12 +960,15 @@ def _twin_reader(*, lender: bool = False, force_truncated: bool = False) -> Fake
     return FakeMemberArcReader(arcs=arcs, force_truncated=force_truncated)
 
 
-def _ids_members(*role_keys: str, lender: bool = False) -> tuple[str, ...]:
+def _ids_members(
+    *role_keys: str, lender: bool = False, open_role_keys: tuple[str, ...] = ()
+) -> tuple[str, ...]:
     group = enumerate_members(
         five_tuple=_IDS_FIVE_TUPLE,
         slots=_UNBOUND_SLOTS,
         graph=_twin_reader(lender=lender),
         role_keys=role_keys,
+        open_role_keys=open_role_keys,
     )
     return tuple(member.stat_var for member in group.members)
 
@@ -683,16 +1006,41 @@ def test_the_walk_keeps_every_candidate_when_none_declares_the_bound_role():
     assert _ids_members("observationAbout") == (_TOTAL,)
 
 
-def test_a_lender_named_variable_meets_the_total_and_refuses_with_no_creditor_bound():
+@pytest.mark.parametrize("role_keys", [(), ("destination",)])
+def test_the_total_answers_beside_a_lender_named_variable_with_no_creditor_bound(role_keys):
     """A lender-named two-role variable has its own constraint map and no twin, so the
-    collapse leaves it beside the total and the walk refuses."""
-    for role_keys in ((), ("destination",)):
-        with pytest.raises(MemberRoleDisagreement) as exc_info:
-            _ids_members(*role_keys, lender=True)
-        assert exc_info.value.roles_by_stat_var == {
-            _LENDER: (_PROVIDER_ROLE, _RECIPIENT_ROLE),
-            _TOTAL: (_RECIPIENT_ROLE,),
-        }
+    collapse leaves it beside the total. It declares a creditor the question does not ask
+    for, and the total answers."""
+    assert _ids_members(*role_keys, lender=True) == (_TOTAL,)
+
+
+def test_an_open_creditor_reads_the_breakdown_and_the_lender_named_variable():
+    """The by-creditor twin of the total places the open creditor, so the election runs
+    with the creditor and the lender-named variable answers beside the twin."""
+    members = _ids_members("destination", lender=True, open_role_keys=("origin",))
+
+    assert set(members) == {_BY_CREDITOR, _LENDER}
+
+
+def test_an_open_creditor_only_a_lender_named_variable_places_leaves_the_total():
+    """With no by-creditor twin of the total, no member the recipient elects holds a
+    creditor series, and the walk reports that it read no open key."""
+    arcs = {
+        _TOTAL: _ids_arcs(_PPG_CONSTRAINTS, (_RECIPIENT_ROLE,)),
+        _LENDER: _ids_arcs(_LENDER_CONSTRAINTS, (_PROVIDER_ROLE, _RECIPIENT_ROLE)),
+    }
+
+    group = enumerate_members(
+        five_tuple=_IDS_FIVE_TUPLE,
+        slots=_UNBOUND_SLOTS,
+        graph=FakeMemberArcReader(arcs=arcs),
+        role_keys=("destination",),
+        open_role_keys=("origin",),
+    )
+
+    assert [member.stat_var for member in group.members] == [_TOTAL]
+    assert group.family == (_TOTAL,)
+    assert group.elected_open_role_keys == frozenset()
 
 
 def test_a_lender_named_variable_joins_the_breakdown_when_the_creditor_is_bound():
@@ -798,3 +1146,87 @@ def test_a_subject_only_root_with_no_keys_proves_a_truncated_family_complete():
 
     assert [member.stat_var for member in seen.members] == ["Subject"]
     assert seen.proven_complete is True
+
+
+# ---------------------------------------------------------------------------
+# Completeness of the open keys the election reads
+# ---------------------------------------------------------------------------
+
+_NARROW = {**_PPG_CONSTRAINTS, "idsConcessionality": "IDSNonConcessional"}
+_NARROW_SLOTS = {**_VALUE_SLOTS, "idsConcessionality": ("unbound",)}
+
+
+def _open_destination_walk(arcs, *, force_truncated: bool = False, reader=None):
+    return enumerate_members(
+        five_tuple=_IDS_FIVE_TUPLE,
+        slots=_NARROW_SLOTS,
+        graph=reader or FakeMemberArcReader(arcs=arcs, force_truncated=force_truncated),
+        role_keys=(),
+        open_role_keys=("destination",),
+    )
+
+
+def test_a_role_bearing_root_proves_no_open_key_a_subject_only_member_would_set_aside():
+    """With no key bound, a subject-only member answers and an open recipient joins only
+    where its twin places it. A narrower subject-only member past the window has no such
+    twin and would answer alone, so the recipient-only root on a truncated page proves
+    nothing."""
+    total = {_TOTAL: _ids_arcs(_PPG_CONSTRAINTS, (_RECIPIENT_ROLE,))}
+    full = _open_destination_walk({**total, "Subject_Narrow": _ids_arcs(_NARROW, ())})
+    seen = _open_destination_walk(total, force_truncated=True)
+
+    assert [member.stat_var for member in full.members] == ["Subject_Narrow"]
+    assert full.elected_open_role_keys == frozenset()
+    assert [member.stat_var for member in seen.members] == [_TOTAL]
+    assert seen.elected_open_role_keys == {"destination"}
+    assert not seen.root_confirmed
+    assert not seen.proven_complete
+
+
+def test_a_subject_only_root_beside_its_twin_proves_the_open_key_on_a_truncated_page():
+    """The subject-only root dominates every subject-only member past the window, so the
+    election with no key bound reads it whatever sits there, and its recipient-only twin
+    places the open recipient."""
+    seen = _open_destination_walk(
+        {
+            "Subject": _ids_arcs(_PPG_CONSTRAINTS, ()),
+            _TOTAL: _ids_arcs(_PPG_CONSTRAINTS, (_RECIPIENT_ROLE,)),
+        },
+        force_truncated=True,
+    )
+
+    assert [member.stat_var for member in seen.members] == [_TOTAL]
+    assert seen.elected_open_role_keys == {"destination"}
+    assert seen.proven_complete
+
+
+def test_a_role_arc_dropped_from_the_member_that_admits_an_open_key_is_read_alone():
+    """`Narrow` declares a recipient, and both batch reads drop the arc. Read subject-only,
+    it answers the unbound question, its twin places the open recipient, and the broader
+    total answers. Read alone it declares its recipient, the subject-only member left has
+    no twin, and that member answers with the open key set aside."""
+    slots = {
+        "financialPositionType": ("value", "AmountOutstanding"),
+        "guaranteeStatus": ("unbound",),
+        "idsConcessionality": ("unbound",),
+    }
+    arcs = {
+        _TOTAL: _ids_arcs({"financialPositionType": "AmountOutstanding"}, (_RECIPIENT_ROLE,)),
+        "Narrow": _ids_arcs(_PPG_CONSTRAINTS, (_RECIPIENT_ROLE,)),
+        "Narrow_Twin": _ids_arcs(_PPG_CONSTRAINTS, (_PROVIDER_ROLE, _RECIPIENT_ROLE)),
+        "Subject_Narrowest": _ids_arcs(_NARROW, ()),
+    }
+    dropped = {"Narrow": "observationProperties"}
+    reader = FlakyMemberArcReader(arcs=arcs, drop_first_batch=dropped, drop_second_batch=dropped)
+
+    group = enumerate_members(
+        five_tuple=_IDS_FIVE_TUPLE,
+        slots=slots,
+        graph=reader,
+        role_keys=(),
+        open_role_keys=("destination",),
+    )
+
+    assert [member.stat_var for member in group.members] == ["Subject_Narrowest"]
+    assert group.elected_open_role_keys == frozenset()
+    assert group.undismissed_candidates == ()

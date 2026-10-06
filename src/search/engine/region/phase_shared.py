@@ -79,12 +79,14 @@ def _unsupported_definition(
     """Build the unsupported definition with the identity's shape, bindings, roles, and window.
 
     The shape, bindings and roles are `candidate`'s when given, else the elected shape's.
+    No election confirms an open axis, so the definition keeps the axes the part leaves
+    open (`PlaceRoles.open_axes`), as the resubmit door's keeps the posted `open_roles`.
     Graph reads add display labels, which identity hashing ignores. Preserve `facets` so an
     unsupported pointer can resolve against a completed facet request."""
     if candidate is None:
-        shape, bindings, roles = state.shape_draft, state.bindings, state.place.roles.roles
+        shape, bindings, place_roles = state.shape_draft, state.bindings, state.place.roles
     else:
-        shape, bindings, roles = candidate.shape, candidate.bindings, candidate.place.roles.roles
+        shape, bindings, place_roles = candidate.shape, candidate.bindings, candidate.place.roles
     id_slots = [
         build_slot(
             slot_draft,
@@ -100,7 +102,7 @@ def _unsupported_definition(
     ]
     id_entities = [
         _build_entity(role, GraphRef(dcid=dcid, label=dcid), None, {})
-        for dcid, role in role_bindings(roles)
+        for dcid, role in role_bindings(place_roles.roles)
     ]
     return build_unsupported_definition(
         identity_shape_for(
@@ -113,6 +115,7 @@ def _unsupported_definition(
         ),
         id_slots,
         entities=id_entities,
+        open_roles=place_roles.open_axes,
         requested_window=requested_window_from_date_request(state.date_request),
         explicit_facets=facets,
     )
@@ -132,7 +135,6 @@ def _unsupported(
     """`cause` carries through to `Unsupported.cause` unchanged (populated
     only for code=="recipe_not_declared"). The definition describes `candidate` when given,
     else the elected shape."""
-    state.mark_remaining_not_ran()
     return RegionResult(
         variable_text=state.variable,
         status="unsupported",
@@ -246,7 +248,6 @@ async def _role_incompatible_flagged_match(state: ResolveState) -> Spec:
 
     Preserve an established entity mapping on materialise-stage refusals so the where slot,
     entities, trace, and identity agree. Early refusals have no mapping to retain."""
-    state.mark_remaining_not_ran()
     sv_dcids = list(state.shape_draft.sv_arc_facts or ())
     (
         five_tuple_refs,
@@ -268,6 +269,7 @@ async def _role_incompatible_flagged_match(state: ResolveState) -> Spec:
         state.place.roles.roles,
         state.graph,
         query_entity_text_by_dcid=state.entity_label_text_by_dcid,
+        open_axes=state.place.roles.open_axes,
     )
     state.warnings.extend(grounding_warnings)
 
@@ -305,7 +307,6 @@ async def _role_incompatible_flagged_match(state: ResolveState) -> Spec:
             has_data=False,
             window=state.date_request.window if state.date_request is not None else None,
         ),
-        pipeline_trace=state.pipeline_steps,
         default_reading=state.default_reading,
         resolved_sources=[],
         slot_options=[],
@@ -315,6 +316,9 @@ async def _role_incompatible_flagged_match(state: ResolveState) -> Spec:
         confidence="low",
         requested_window=requested_window,
         identity_entities=identity_entities,
+        # No member serving the bound roles is elected, so no axis is open
+        # (`phase_election._query_role_keys`).
+        open_roles=(),
         # state.bindings (fed to slots above via slot_expansions) is the same
         # bindings list _phase_vet_election may have forced a qualifier-match
         # value onto. This flagged_match runs after that phase (see
@@ -328,6 +332,7 @@ async def _role_incompatible_flagged_match(state: ResolveState) -> Spec:
         measure_elected_properties=state.measure_elected_properties,
         defaulted_properties=state.defaulted_properties,
         named_groups=request_named_groups(state),
+        walked=state.walked,
     )
     return apply_declaration_version(spec, state.bindings)
 
@@ -349,7 +354,6 @@ async def _role_not_resolved_no_data(state: ResolveState) -> RegionResult:
     wording that contradicts a supplied axis. A `flagged_match` requires a resolved role map,
     which this refusal lacks. The names whose direction it could not tell
     (`untold_direction_names`) ride as the result's `unresolved_entity_names`."""
-    state.mark_remaining_not_ran()
     return state.no_data(
         "role_not_resolved",
         llm_usage=state.var_usage,

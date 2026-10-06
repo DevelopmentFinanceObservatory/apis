@@ -143,7 +143,7 @@ def test_birth_rate_ethiopia_answers_the_crude_birth_rate_beside_the_fertility_r
         )
 
     assert result.status == "candidates"
-    assert [[sv.ref for sv in spec.resolved.stat_vars.items] for spec in result.specs] == [
+    assert [[sv.ref.dcid for sv in spec.resolved.members] for spec in result.specs] == [
         [_CRUDE_BIRTH_RATE],
         [_FERTILITY_RATE],
     ]
@@ -197,6 +197,6 @@ def test_a_failed_availability_probe_leaves_the_status_open_and_the_total_answer
     )
 
     assert result.status != "no_data"
-    assert [[sv.ref for sv in spec.resolved.stat_vars.items] for spec in result.specs] == [
+    assert [[sv.ref.dcid for sv in spec.resolved.members] for spec in result.specs] == [
         [_BIRTHS_PER_CAPITA]
     ]

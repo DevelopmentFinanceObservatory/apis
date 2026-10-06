@@ -101,12 +101,19 @@ def _bulk_preview(result: Materialised, date_name: str) -> dict[str, Any]:
     # Discovery plans the facet the preview serves, the ranking's top.
     assert ranked[0].facet_id == plan.facet_id
     fetch = _plan_role_bulk_fetch(plan, plan.elected)
+    to_fetch = [[sv, [list(entry) for entry in rt]] for sv, rt in fetch.to_fetch]
     return {
         "time_period": list(plan.read_years) if plan.read_years is not None else None,
         "facet_id": plan.facet_id,
         "total_population": fetch.total_population,
-        "to_fetch": [[sv, [list(entry) for entry in rt]] for sv, rt in fetch.to_fetch],
+        # A ranked read fetches the whole population, so the golden holds its count and digest.
+        "to_fetch": (
+            to_fetch
+            if fetch.order == "fixed"
+            else {"pairs": len(to_fetch), "sha256": _digest(to_fetch)}
+        ),
         "unshipped_obs": fetch.population_n_obs - fetch.preview_n_obs,
+        "order": fetch.order,
         "ranking": [[c.facet_id, c.pair_count] for c in ranked],
     }
 
@@ -165,6 +172,7 @@ def _discover(snapshot: CoverageSnapshot, date_name: str, axis: RoleAxis) -> Mat
     oda = sorted(v for v in snapshot.index.role_names if "CRSTypeOfFlow10" in v)
     result = discover_role_scope(
         surviving_svs=oda,
+        admitted_dcids=oda,
         member_facts={},
         member_population_exact=True,
         open_flow_axis=axis,

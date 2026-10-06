@@ -84,7 +84,6 @@ def _run():
             graph=graph,
             resolver=make_resolver(graph),
             llm=_CandidatesBindLLM(),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             unit_text="USD",

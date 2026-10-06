@@ -1,6 +1,5 @@
 """Checks the sync row ceiling after filtering and before `Frame.build`.
-Generation also checks during fetch, except for `latest` windows. `pipeline._generate_all`
-checks collection totals.
+Generation also checks during fetch, except for `latest` windows.
 """
 
 from __future__ import annotations

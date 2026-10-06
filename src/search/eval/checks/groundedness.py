@@ -5,7 +5,6 @@ Walks every spec (``specs.response_specs``) and reads, under ``resolved``:
 - ``shape.{population_type, measured_property, stat_type, measurement_qualifier,
   measurement_denominator}.dcid``;
 - ``slots[].binding.value.ref.dcid`` and ``slots[].binding.values[].ref.dcid``;
-- ``stat_vars.items[].ref``;
 - ``entities[].ref`` and ``entities[].entity_type``;
 - ``scope.members[].ref`` and ``scope.members[].entity_type``.
 
@@ -67,11 +66,6 @@ def _spec_refs(spec: SpecView, ctx: ScoreContext) -> Iterator[tuple[str | None, 
         for j, value in enumerate(values):
             dcid = read_path(value, "ref.dcid", ctx, at=f"{slot_at}.binding.values[]")
             yield dcid, f"{binding}/values/{j}/ref/dcid"
-
-    items = spec.read("resolved.stat_vars.items", ctx) or []
-    for i, item in enumerate(items):
-        ref = read_path(item, "ref", ctx, at=f"{resolved_at}.stat_vars.items[]")
-        yield ref, f"{resolved}/stat_vars/items/{i}/ref"
 
     yield from _entity_refs(
         spec.read("resolved.entities", ctx),

@@ -1,13 +1,11 @@
 """The published mint schema and runtime `MintRequest` agree on field types, nullability,
-required fields, and the closed `scope` shape. Tests also cover preview version fields.
+required fields, and the closed `scope` shape.
 """
 
 from __future__ import annotations
 
 from datasets_api.mint_models import MintRequest as RuntimeMintRequest
-from datasets_api.preview_models import PreviewMemberModel
 from datasets_api.schema import MintRequest as PublishedMintRequest
-from datasets_api.schema import PreviewEnvelope as PreviewEnvelopeSchema
 from datasets_api.schema import build_schema_document
 from spec_registry import LiveSpecRegistry
 
@@ -59,12 +57,7 @@ class TestScopeIsClosedInThePublishedSchema:
         schema = PublishedMintRequest.model_json_schema()
         defs = schema["$defs"]
 
-        for input_kind in (
-            "SpecIdInput",
-            "CollectionIdInput",
-            "StatVarSetInput",
-            "SourceCodesInput",
-        ):
+        for input_kind in ("SpecIdInput", "StatVarSetInput"):
             scope_schema = defs[input_kind]["properties"]["scope"]
             ref_variant = next(v for v in scope_schema["anyOf"] if "$ref" in v)
             assert ref_variant["$ref"] == "#/$defs/Scope"
@@ -121,39 +114,17 @@ class TestOptionsOmittedIsValidInBothLayers:
         assert "options" not in schema.get("required", [])
 
 
-class TestPreviewEnvelopeCarriesTheMintVersion:
-    """`datasets_api.schema.PreviewEnvelope` publishes `content_version` on
-    each member, the same field `datasets_api.preview_models.
-    PreviewMemberModel` serialises: a client validating a preview response
-    against the published schema can read the version the preview reports.
-    """
+class TestMintPreviewIsRetired:
+    def test_neither_layer_declares_a_preview_field(self):
+        assert "preview" not in RuntimeMintRequest.model_fields
+        assert "preview" not in PublishedMintRequest.model_json_schema()["properties"]
+        assert "preview_envelope" not in build_schema_document()
 
-    def test_published_preview_envelope_member_declares_content_version(self):
-        schema = PreviewEnvelopeSchema.model_json_schema()
-        member_schema = schema["$defs"]["PreviewMember"]
+    def test_the_door_refuses_a_posted_preview_as_request_invalid(self):
+        client = make_client(registry=LiveSpecRegistry(store=FakeDatasetStore()))
+        body = {"schema_version": 1, "input": _STATVAR_INPUT, "preview": {"limit": 10}}
 
-        assert "content_version" in member_schema["properties"]
-        assert "content_version" in member_schema["required"]
+        resp = client.post("/api/datasets", json=body)
 
-    def test_the_published_schema_route_serves_that_member_schema(self):
-        served = build_schema_document()["preview_envelope"]
-
-        assert "content_version" in served["$defs"]["PreviewMember"]["properties"]
-
-    def test_the_runtime_preview_member_model_declares_the_same_field(self):
-        # Published and runtime models share the same member fields.
-        assert "content_version" in PreviewMemberModel.model_fields
-
-    def test_the_runtime_preview_member_holds_a_null_version(self):
-        # Search returns `content_version=None`, which the runtime model accepts.
-        member = PreviewMemberModel(
-            stat_var="dcid:X",
-            content_version=None,
-            coverage={"rows": 0, "dimensions": [], "window": None},
-            citation={"text": "t", "sources": []},
-            sample={"columns": [], "rows": []},
-            total_rows=0,
-            truncated=False,
-        )
-
-        assert member.content_version is None
+        assert resp.status_code == 400, resp.text
+        assert resp.json()["code"] == "request_invalid"

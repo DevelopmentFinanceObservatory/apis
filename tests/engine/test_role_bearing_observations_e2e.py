@@ -122,7 +122,6 @@ def _run(
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
             sdmx=sdmx,
-            base_steps=[],
             base_timing={},
             coverage=coverage_snapshot,
             options=EngineOptions(

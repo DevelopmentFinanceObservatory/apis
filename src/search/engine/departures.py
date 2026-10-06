@@ -40,7 +40,6 @@ from code_index.shared import get_index
 from search.heading.departure_fact import DepartureFact, ordered_facts
 from search.heading.words import content_words
 from search.models import (
-    SOURCE_REF,
     UNIT_REF,
     WHERE_REF,
     BindingProvenance,
@@ -172,7 +171,7 @@ def stated_facts(
 
 def _qualifier_stated(fact: DepartureFact, stated: Sequence[frozenset[str]]) -> bool:
     """Whether `fact` is a measure qualifier one of `stated` already holds."""
-    if fact.code != "measure_not_applied" or fact.binding_ref in (UNIT_REF, SOURCE_REF):
+    if fact.code != "measure_not_applied" or fact.binding_ref == UNIT_REF:
         return False
     asked = content_words(fact.asked or "")
     return any(asked <= words for words in stated)
@@ -204,21 +203,12 @@ def price_basis_not_applied(*, asked: str, shown: str | None) -> DepartureFact:
     return DepartureFact(code="measure_not_applied", binding_ref=UNIT_REF, asked=asked, shown=shown)
 
 
-def dataset_not_applied(asked: str) -> DepartureFact:
-    """A dataset the request named as `asked` that the answer does not read. Editing the
-    source token clears it."""
-    return DepartureFact(code="measure_not_applied", binding_ref=SOURCE_REF, asked=asked)
-
-
-def breakdown_not_applied(operation: Operation) -> DepartureFact:
-    """A breakdown over `operation.over`, a flow axis, answered with the total over it.
-    Naming an entity in that role clears it."""
-    assert operation.over in ("origin", "destination"), "a breakdown departure is over a flow axis"
+def breakdown_not_applied(over: RoleAxis, *, asked: str | None) -> DepartureFact:
+    """A breakdown over the flow axis `over`, answered with the total over it. `asked` is
+    the operation's phrase, or `None` for an open role, which carries no words. Naming an
+    entity in that role clears it."""
     return DepartureFact(
-        code="breakdown_not_applied",
-        binding_ref=role_ref(operation.over),
-        asked=operation.phrase,
-        over=operation.over,
+        code="breakdown_not_applied", binding_ref=role_ref(over), asked=asked, over=over
     )
 
 
@@ -586,7 +576,7 @@ def _served_span(spec: Spec) -> tuple[int, int] | None:
     ranges, or None when no StatVar states both bounds."""
     starts: list[int] = []
     ends: list[int] = []
-    for stat_var in spec.resolved.stat_vars.items:
+    for stat_var in spec.resolved.members:
         served = stat_var.data_date_range
         if served is not None and served.start and served.end:
             starts.append(int(served.start[:4]))

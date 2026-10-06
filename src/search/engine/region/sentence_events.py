@@ -51,6 +51,7 @@ from search.models import (
     GraphRef,
     IdentityFacetBinding,
     IdentityFacetValueRequest,
+    RoleAxis,
     Slot,
     SlotKey,
     SlotOption,
@@ -205,6 +206,7 @@ async def _build_sentence_event(
     variable_index: int,
     date_request: DateRequest | None,
     graph: EngineGraphClient,
+    open_axes: frozenset[RoleAxis],
     explicit_facets: Mapping[str, IdentityFacetBinding] | None = None,
     query_entity_text_by_dcid: Mapping[str, str] | None = None,
     measure_partition: MeasurePartition | None = None,
@@ -225,6 +227,7 @@ async def _build_sentence_event(
     may elect another partition.
     Identity uses the requested date window, grounded entities, and the same
     `explicit_facets` as `build_spec`, so ids agree when this shape survives.
+    `open_axes` are the flow axes the part asks for member by member, which grounding reads.
     """
     grounding = await asyncio.to_thread(
         _ground_answer,
@@ -235,6 +238,7 @@ async def _build_sentence_event(
         graph,
         None,
         query_entity_text_by_dcid=query_entity_text_by_dcid,
+        open_axes=open_axes,
     )
     (
         five_tuple_refs,
@@ -275,6 +279,10 @@ async def _build_sentence_event(
         ),
         slots,
         entities=identity_entities,
+        # The final identity states the open axes its elected members declare. Until
+        # materialise elects them, the axes the part leaves open stand in, and the final
+        # sentence event replaces this one.
+        open_roles=open_axes,
         requested_window=requested_window_from_date_request(date_request),
         explicit_facets=explicit_facets,
         entity_groups=entity_groups,

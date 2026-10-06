@@ -13,6 +13,7 @@ from unittest.mock import patch
 from entity_resolution import Admission
 from materialise.rate_tables import RateTableCache
 from search.engine.concurrency import scoped_concurrency
+from search.engine.config import settings
 from search.engine.entry import dataset_resubmit, parsed, raw_text
 from search.engine.entry.params import EntryParams
 from search.engine.extract import Extraction, ExtractionResult
@@ -27,7 +28,7 @@ from search.models import (
     ResubmitIdentityEntry,
     ResubmitParsedEntry,
 )
-from tests.engine._base_identity import GDP_SHAPE, make_base, make_identity, subject_entity
+from tests.engine._base_identity import GDP_SHAPE, make_identity, subject_entity
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
@@ -51,7 +52,6 @@ def _stub_region(variable_text: str | None) -> RegionResult:
 def _params() -> EntryParams:
     return EntryParams(
         deadline=time.monotonic() + 30,
-        include_sentence=True,
         max_candidates=5,
         pac=True,
         stream_option_coverage=False,
@@ -176,31 +176,30 @@ def test_raw_text_handle_forwards_rate_cache_to_resolve_variable():
     assert captured == [sentinel]
 
 
-def _gdp_identity_and_base():
-    entities = [subject_entity(_INDIA)]
-    base_spec_id, base_identity = make_base(GDP_SHAPE, entities=entities)
-    identity = make_identity(GDP_SHAPE, entities=entities)
-    return identity, base_spec_id, base_identity
+def _gdp_identity():
+    return make_identity(GDP_SHAPE, entities=[subject_entity(_INDIA)])
 
 
-def test_identity_entry_forwards_rate_cache_to_resolve_spec_resubmit():
-    """Identity entries pass the request's cache to `resolve_spec_resubmit`."""
+def test_identity_entry_forwards_rate_cache_and_full_read_deadline_to_resolve_spec_resubmit():
+    """Identity entries pass the request's cache to `resolve_spec_resubmit`, and the deadline
+    a member walk's full read runs to: `resubmit_full_read_timeout_s` from request start,
+    where the request's own deadline is `request_timeout_s` from it."""
     sentinel = RateTableCache()
     captured: list[object] = []
-    identity, base_spec_id, base_identity = _gdp_identity_and_base()
+    full_read: list[float | None] = []
+    identity = _gdp_identity()
     entry = ResubmitIdentityEntry(
         variable_text="GDP",
         identity=identity,
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[_GDP_SV],
     )
 
     def _fake_resolve_spec_resubmit(**kwargs):
         captured.append(kwargs["options"].rate_cache)
+        full_read.append(kwargs["full_read_deadline"])
         return _stub_region(None)
 
     graph = FakeGraph()
+    deadline = time.monotonic() + 30
     with patch(
         "search.engine.entry.dataset_resubmit.resolve_spec_resubmit", _fake_resolve_spec_resubmit
     ):
@@ -216,8 +215,7 @@ def test_identity_entry_forwards_rate_cache_to_resolve_spec_resubmit():
                 materialise_sdmx=None,
                 start_ms=0,
                 params=EntryParams(
-                    deadline=time.monotonic() + 30,
-                    include_sentence=True,
+                    deadline=deadline,
                     max_candidates=5,
                     pac=False,
                     stream_option_coverage=False,
@@ -232,6 +230,8 @@ def test_identity_entry_forwards_rate_cache_to_resolve_spec_resubmit():
             )
         )
     assert captured == [sentinel]
+    extension = settings().resubmit_full_read_timeout_s - settings().request_timeout_s
+    assert full_read == [deadline + extension]
 
 
 def test_dataset_resubmit_handle_forwards_rate_cache_to_every_entry_kind():
@@ -248,13 +248,10 @@ def test_dataset_resubmit_handle_forwards_rate_cache_to_every_entry_kind():
         variable_calls.append(kwargs["options"].rate_cache)
         return _stub_region(variable)
 
-    identity, base_spec_id, base_identity = _gdp_identity_and_base()
+    identity = _gdp_identity()
     identity_entry = ResubmitIdentityEntry(
         variable_text="GDP",
         identity=identity,
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[_GDP_SV],
     )
     candidates_entry = ResubmitCandidatesEntry(
         variable_text="GDP candidates",
@@ -263,11 +260,9 @@ def test_dataset_resubmit_handle_forwards_rate_cache_to_every_entry_kind():
         candidates=[
             ResubmitCandidate(
                 identity=make_identity(GDP_SHAPE, entities=[subject_entity(_INDIA)]),
-                resolved_stat_var_dcids=[_GDP_SV],
             ),
             ResubmitCandidate(
                 identity=make_identity(GDP_SHAPE, entities=[subject_entity("country/KEN")]),
-                resolved_stat_var_dcids=[_GDP_SV],
             ),
         ],
     )

@@ -23,14 +23,13 @@ from search.models import (
     TimeWindow,
 )
 from series_coverage.schema import FacetMetadata
-from tests.engine._base_identity import base_from_spec
 from tests.engine._fake_coverage import (
     FakeCoverageService,
     empty_coverage_snapshot,
     patch_coverage,
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import materialise_double_from_obs, pair_plan
+from tests.engine._harness import materialise_double_from_obs, pair_plan, walk_options
 from tests.engine.test_role_scope_resubmit_narrowing_e2e import (
     _KEN,
     _NOR,
@@ -74,22 +73,23 @@ def _discover_and_resubmit(
     )
     assert fresh.status == "definite", fresh
     spec = fresh.specs[0]
-    base_spec_id, base_identity = base_from_spec(spec)
     region = resolve_spec_resubmit(
         inp=ResubmitIdentityPayload(
             identity=BaseIdentity.model_validate(
                 {**spec.definition.identity.model_dump(mode="python"), "facets": facets}
             ),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[sv.ref for sv in spec.resolved.stat_vars.items],
         ),
         graph=FakeGraph(
             nodes=_nodes(resolve=_RESOLVE, label_dcids=_SOURCES), detect={}, resolve={}, obs={}
         ),
         sdmx=FakeSdmxClient(observations=observations, availability={}),
         coverage=coverage,
-        options=EngineOptions(include_observations=True),
+        options=walk_options(
+            FakeGraph(
+                nodes=_nodes(resolve=_RESOLVE, label_dcids=_SOURCES), detect={}, resolve={}, obs={}
+            ),
+            EngineOptions(include_observations=True),
+        ),
     )
     assert region.status == "definite", region
     return region.specs[0].resolved

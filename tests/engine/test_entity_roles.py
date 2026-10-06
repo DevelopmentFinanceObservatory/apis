@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import time
 
 import pytest
 
@@ -532,8 +531,8 @@ class TestDatasetEntriesDoorCarriesEveryOccurrence:
                 ParsedEntity(text="Kenya", role_text="recipient"),
             ],
         )
-        interpretation = asyncio.run(
-            dataset_door_interpretation([part], llm=_FixedBindLLM(), deadline=time.monotonic() + 60)
+        interpretation = dataset_door_interpretation(
+            [part], pointer_prefixes=["/input/entries/0/part"]
         )
         (roles,) = interpretation.entity_roles
         assert roles == {
@@ -590,7 +589,6 @@ def _run_self_flow_occurrences(
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
             sdmx=sdmx,
-            base_steps=[],
             base_timing={},
             coverage=coverage if coverage is not None else empty_coverage_snapshot(),
         )
@@ -692,7 +690,6 @@ def _assert_binds_china_as_creditor(
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
             sdmx=FakeSdmxClient(observations={}),
-            base_steps=[],
             base_timing={},
             coverage=FakeCoverageService(index).snapshot(),
         )

@@ -20,16 +20,20 @@ from datasets_api.codes_snapshot import (
 )
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.snapshot import build_snapshot_door, read_snapshot_manifest
-from datasets_api.manifest import encode_collection_version_body, encode_version_body
+from datasets_api.manifest import encode_version_body
 from datasets_api.manifest_models import (
     CitationModel,
-    CollectionMemberModel,
-    CollectionModel,
     CoverageModel,
     DefinitionModel,
     Manifest,
 )
-from datasets_api.render import RENDITION_KEY, rendition_token
+from datasets_api.render import (
+    DATA_LAYOUT_VERSION,
+    FRAME_LAYOUT,
+    LAYOUT_KEY,
+    RENDITION_KEY,
+    rendition_token,
+)
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from materialise import EnrichmentLookup
 from materialise.formats import FRAME1_MEDIA_TYPE
@@ -51,7 +55,6 @@ from ._snapshot_doubles import (
 _STAT_VAR_A = "dcid:GrantA"
 # A bundle rendered under the current settings carries this rendition.
 _RENDITION = rendition_token(DatasetsBuildSettings().site)
-_STAT_VAR_B = "dcid:GrantB"
 
 
 def _output_options_fixture_frame(*, stat_var: str = _STAT_VAR_A):
@@ -486,45 +489,6 @@ def test_a_version_with_one_csv_and_one_internal_frame1_location_lists_only_the_
     assert artifacts[0]["artifact_digest"] == csv_location.artifact_digest
 
 
-def test_a_collection_id_checks_the_collection_namespace_not_the_spec_one():
-    store = FakeArtifactStore()
-    location = _store_and_locate(store, b"collection-bytes")
-    reader = FakeSnapshotReader(
-        versions={
-            ("col_a", "cv1"): StoredVersion(
-                subject_id="col_a",
-                subject_kind="collection",
-                content_version="cv1",
-                schema_version=1,
-                immutable_body={
-                    "schema_version": 1,
-                    "collection": {"collection_id": "col_a", "members": []},
-                    "content_version": "cv1",
-                    "prepared_at": "2026-01-01T00:00:00Z",
-                    "coverage": {"rows": 0, "dimensions": []},
-                    "citation": {"text": "", "sources": []},
-                    "trace": {},
-                    "warnings": [],
-                },
-            )
-        },
-        locations={("col_a", "cv1"): [location]},
-    )
-
-    manifest = read_snapshot_manifest(
-        id="col_a",
-        content_version="cv1",
-        spec_reader=FakeSpecReader(collection_ids=["col_a"]),
-        snapshot_reader=reader,
-        artifact_store=store,
-        now=lambda: _NOW,
-        settings=DatasetsBuildSettings(),
-    )
-
-    assert manifest.collection is not None
-    assert manifest.collection.collection_id == "col_a"
-
-
 def test_servable_artifacts_get_freshly_signed_urls_and_the_stored_body_round_trips():
     store = FakeArtifactStore()
     location = _store_and_locate(store, b"csv-bytes")
@@ -554,11 +518,6 @@ def test_servable_artifacts_get_freshly_signed_urls_and_the_stored_body_round_tr
 
 
 _CRS_CV = "cv_5c9dfd37e657d3a3c7000cc6acf49c43"
-_COLLECTION_CV = "cv_c9847354f31564ee9bd47cc3de8fd45c"
-_SDG_MEMBER = "spec_67a1875bb528111c0df7119f8a8c2518"
-_SDG_MEMBER_CV = "cv_24f9630007d1d74d258a327760800f21"
-_GDP_MEMBER = "spec_c0c0d549a6fbda966dea8e9c21ce0a89"
-_GDP_MEMBER_CV = "cv_835350de3fe45fd96fb033e4cf7225fb"
 
 
 def _cited(*sources: tuple[str, str]) -> dict[str, object]:
@@ -583,7 +542,7 @@ def _signed_file_names(
     read_snapshot_manifest(
         id=id,
         content_version=version.content_version,
-        spec_reader=FakeSpecReader(spec_ids=[id], collection_ids=[id]),
+        spec_reader=FakeSpecReader(spec_ids=[id]),
         snapshot_reader=FakeSnapshotReader(
             versions={(id, version.content_version): version},
             locations={(id, version.content_version): stored},
@@ -633,73 +592,6 @@ def test_a_standalone_version_names_its_artifacts_by_source_first_mint_date_and_
         repr(bundle): f'{prefix}_csv_5c9dfd.zip"',
         repr({"bundle": False, "format": "csv"}): f'{prefix}_5c9dfd.csv"',
         repr({"statistics": "series"}): f'{prefix}_series-statistics_5c9dfd.parquet"',
-    }
-
-
-def test_a_collection_names_its_bundle_by_its_version_and_each_member_file_by_the_member_s():
-    def member(
-        spec_id: str, provenance_ref: str, content_version: str, prepared_at: str
-    ) -> dict[str, object]:
-        return {
-            "definition": {"schema_version": 1, "spec_id": spec_id, "identity": {}},
-            "provenance_refs": [provenance_ref],
-            "content_version": content_version,
-            "prepared_at": prepared_at,
-            "coverage": {"rows": 1, "dimensions": []},
-        }
-
-    version = StoredVersion(
-        subject_id="col_a",
-        subject_kind="collection",
-        content_version=_COLLECTION_CV,
-        schema_version=1,
-        immutable_body={
-            "schema_version": 1,
-            "collection": {
-                "collection_id": "col_a",
-                "members": [
-                    member(_SDG_MEMBER, "undata/p/SDG", _SDG_MEMBER_CV, "2026-10-03T08:00:00Z"),
-                    member(
-                        _GDP_MEMBER,
-                        "dc/base/OECDQuarterlyGDP",
-                        _GDP_MEMBER_CV,
-                        "2026-10-04T10:00:00Z",
-                    ),
-                ],
-            },
-            "content_version": _COLLECTION_CV,
-            "prepared_at": "2026-10-04T10:00:00Z",
-            "coverage": {"rows": 2, "dimensions": []},
-            "citation": _cited(
-                ("undata/p/SDG", "SDG Global Database"), ("dc/base/OECDQuarterlyGDP", "OECD GDP")
-            ),
-            "trace": {},
-            "warnings": [],
-        },
-    )
-    bundle = {"format": "csv", "bundle": True, RENDITION_KEY: _RENDITION}
-    sdg_statistics = {"statistics": "series", "member": _SDG_MEMBER}
-    gdp_csv = {"format": "csv", "bundle": False, "member": _GDP_MEMBER}
-
-    names = _signed_file_names(
-        id="col_a",
-        version=version,
-        locations=[
-            _location(rendering=bundle, media_type="application/zip"),
-            _location(rendering=sdg_statistics, media_type="application/vnd.apache.parquet"),
-            _location(rendering=gdp_csv, media_type="text/csv"),
-        ],
-    )
-
-    assert names == {
-        repr(bundle): (
-            'attachment; filename="dfo_sdg-global-database-and-oecd-gdp_2026-10-04_csv_c98473.zip"'
-        ),
-        repr(sdg_statistics): (
-            'attachment; filename="dfo_sdg-global-database_2026-10-03_series-statistics_24f963'
-            '.parquet"'
-        ),
-        repr(gdp_csv): 'attachment; filename="dfo_oecd-gdp_2026-10-04_835350.csv"',
     }
 
 
@@ -786,74 +678,15 @@ def test_a_legacy_stored_body_without_an_output_profile_serves_with_output_optio
     assert "output_options" not in resp.json()
 
 
-def test_a_collections_snapshot_carries_output_options_per_member():
-    profile_a = _output_options_fixture_profile(stat_var=_STAT_VAR_A)
-    profile_b = _output_options_fixture_profile(stat_var=_STAT_VAR_B)
-    manifest = Manifest(
-        definition=None,
-        collection=CollectionModel(
-            collection_id="col_a",
-            members=[
-                CollectionMemberModel(
-                    definition=DefinitionModel(schema_version=1, spec_id="spec_a", identity={}),
-                    provenance_refs=["provenance/A"],
-                    content_version="cv_a",
-                    prepared_at="2026-01-01T00:00:00Z",
-                    coverage=CoverageModel(rows=2, dimensions=[]),
-                ),
-                CollectionMemberModel(
-                    definition=DefinitionModel(schema_version=1, spec_id="spec_b", identity={}),
-                    provenance_refs=["provenance/B"],
-                    content_version="cv_b",
-                    prepared_at="2026-01-01T00:00:00Z",
-                    coverage=CoverageModel(rows=2, dimensions=[]),
-                ),
-            ],
-        ),
-        **_minimal_manifest_kwargs(),
-    )
-    store = FakeArtifactStore()
-    location = _store_and_locate(store, b"collection-bytes")
-    reader = FakeSnapshotReader(
-        versions={
-            ("col_a", "cv1"): StoredVersion(
-                subject_id="col_a",
-                subject_kind="collection",
-                content_version="cv1",
-                schema_version=1,
-                immutable_body=encode_collection_version_body(
-                    manifest, output_profiles=[profile_a, profile_b]
-                ),
-            )
-        },
-        locations={("col_a", "cv1"): [location]},
-    )
-
-    read_manifest = read_snapshot_manifest(
-        id="col_a",
-        content_version="cv1",
-        spec_reader=FakeSpecReader(collection_ids=["col_a"]),
-        snapshot_reader=reader,
-        artifact_store=store,
-        now=lambda: _NOW,
-        settings=DatasetsBuildSettings(),
-    )
-
-    assert read_manifest.output_options is None
-    assert read_manifest.collection is not None
-    assert len(read_manifest.collection.members) == 2
-    for member in read_manifest.collection.members:
-        assert member.output_options is not None
-        assert member.output_options.capability_version == DATASETS_CAPABILITY_VERSION
+# --- Route grammar: the {id:dfo_spec_id} convertor ---
 
 
-# --- Route grammar: the {id:dfo_subject_id} convertor ---
-
-
-def test_a_malformed_id_refuses_the_platforms_own_not_found_before_reaching_the_handler():
-    """`SubjectIdConvertor` sends malformed ids to the platform's generic `not_found` response.
-    The snapshot handler accepts ids in the `spec_` or `col_` namespace.
-    """
+@pytest.mark.parametrize("subject_id", ["not-a-valid-id", "col_a"])
+def test_an_id_outside_the_grammar_refuses_the_platforms_own_not_found_before_the_handler(
+    subject_id: str,
+):
+    """`SpecIdConvertor` sends any id outside the `spec_` namespace, a retired collection's
+    `col_` id included, to the platform's generic `not_found` response."""
     door = build_snapshot_door(
         spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
         snapshot_reader=FakeSnapshotReader(),
@@ -861,7 +694,7 @@ def test_a_malformed_id_refuses_the_platforms_own_not_found_before_reaching_the_
     )
     client = make_client_for_door(door)
 
-    resp = client.get("/api/datasets/not-a-valid-id/cv1")
+    resp = client.get(f"/api/datasets/{subject_id}/cv1")
 
     assert resp.status_code == 404, resp.text
     assert resp.json()["code"] == "not_found"
@@ -1049,4 +882,52 @@ def test_a_bundle_from_before_renditions_is_listed_only_when_pinned_after_the_cu
 
     assert [a.artifact_digest for a in manifest.artifacts] == [
         locations[name].artifact_digest for name in listed
+    ]
+
+
+def test_a_bare_file_in_an_old_layout_stays_listed_after_the_current_one():
+    """The reader lists the old-layout file first. The snapshot puts the current long layout
+    first, then the frame-layout file, keeps the old file listed unpinned, and keeps the
+    statistics artifact last."""
+    store = FakeArtifactStore()
+    locations = {
+        "old": _store_and_locate(
+            store, b"old-csv", rendering={"format": "csv", "bundle": False}, media_type="text/csv"
+        ),
+        "frame": _store_and_locate(
+            store,
+            b"frame-parquet",
+            rendering={"format": "parquet", "bundle": False, LAYOUT_KEY: FRAME_LAYOUT},
+            media_type="application/vnd.apache.parquet",
+        ),
+        "current": _store_and_locate(
+            store,
+            b"current-csv",
+            rendering={"format": "csv", "bundle": False, LAYOUT_KEY: DATA_LAYOUT_VERSION},
+            media_type="text/csv",
+        ),
+        "statistics": _store_and_locate(
+            store,
+            b"statistics",
+            rendering={"statistics": "series"},
+            media_type="application/vnd.apache.parquet",
+        ),
+    }
+    reader = FakeSnapshotReader(
+        versions={("spec_a", "cv1"): _version()},
+        locations={("spec_a", "cv1"): list(locations.values())},
+    )
+
+    manifest = read_snapshot_manifest(
+        id="spec_a",
+        content_version="cv1",
+        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+        snapshot_reader=reader,
+        artifact_store=store,
+        now=lambda: _NOW,
+        settings=DatasetsBuildSettings(),
+    )
+
+    assert [a.artifact_digest for a in manifest.artifacts] == [
+        locations[name].artifact_digest for name in ("current", "frame", "old", "statistics")
     ]

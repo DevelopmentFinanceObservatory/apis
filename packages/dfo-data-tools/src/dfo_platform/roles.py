@@ -20,7 +20,7 @@ type RoleAxis = Literal["origin", "destination"]
 type FlowFamily = Literal["aid", "debt_service", "debt_stock", "debt_lending"]
 """What a role-bearing series counts, which decides how its roles read.
 
-- `aid`: development finance from donors to recipients (OECD CRS flows and commitments,
+- `aid`: development finance from providers to recipients (OECD CRS flows and commitments,
   ONE imputed multilateral flows).
 - `debt_service`: payments a debtor makes on its debt (debt service, interest, principal).
 - `debt_stock`: debt a debtor holds at a point in time (outstanding debt, arrears).
@@ -55,6 +55,12 @@ def axis_for_role(role_dcid: str) -> RoleAxis | None:
     a directional phrase.
     """
     return ROLE_AXES.get(role_dcid)
+
+
+def role_key_axis(role: str) -> RoleAxis | None:
+    """The flow axis an identity's `entities` key names, either an axis label itself or the
+    axis of a known graph role, since keys keep the caller's spelling (`creditor`, `debtor`)."""
+    return role if role in AXIS_LABELS else axis_for_role(role)
 
 
 def declared_role_for(role_key: str, declared_roles: tuple[str, ...]) -> str | None:
@@ -95,7 +101,7 @@ class RoleWording:
     """The nouns and prepositions for both flow axes of one flow family.
 
     `possessor` is the axis whose entity leads a heading in possessive form, such as the
-    donor in "Germany's gross ODA disbursements to Kenya" or the debtor in "Ghana's external
+    provider in "Germany's gross ODA disbursements to Kenya" or the debtor in "Ghana's external
     debt service owed to China". The other axis follows the measure noun with its preposition.
     """
 
@@ -125,7 +131,7 @@ _DEBT_OWED = RoleWording(
 ROLE_WORDING: Mapping[FlowFamily, RoleWording] = MappingProxyType(
     {
         "aid": RoleWording(
-            origin=RoleNoun(singular="donor", plural="donors", preposition="from"),
+            origin=RoleNoun(singular="provider", plural="providers", preposition="from"),
             destination=RoleNoun(singular="recipient", plural="recipients", preposition="to"),
             possessor="origin",
         ),

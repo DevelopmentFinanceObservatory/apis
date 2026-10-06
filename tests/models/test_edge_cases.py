@@ -14,7 +14,6 @@ from search import (
     EntityRoleDirectional,
     EntityRoleSubject,
     GraphRef,
-    PipelineStep,
     ResolvedEntity,
     ResubmitIdentityPayload,
     Shape,
@@ -247,7 +246,9 @@ class TestInapplicableSlotsIdentity:
 
     def test_not_a_member_of_identity_projection_or_base_identity(self):
         shape = {"kind": "statvar_schema", "population_type": "sh1"}
-        projection = build_identity_projection(shape, [], entities=None, requested_window=None)
+        projection = build_identity_projection(
+            shape, [], entities=None, requested_window=None, open_roles=()
+        )
         assert "inapplicable_slots" not in projection
         assert "inapplicable_slots" not in BaseIdentity.model_fields
 
@@ -270,7 +271,6 @@ class TestInapplicableSlotsIdentity:
             )
         ]
         coverage = CoverageBare(has_data=True)
-        pipeline_trace = [PipelineStep(step="extract", ran=True)]
 
         spec_without = build_spec(
             shape,
@@ -278,7 +278,7 @@ class TestInapplicableSlotsIdentity:
             stat_vars,
             [],
             coverage,
-            pipeline_trace,
+            open_roles=(),
             inapplicable_slots=[],
             measure_elected_properties=frozenset(),
         )
@@ -288,7 +288,7 @@ class TestInapplicableSlotsIdentity:
             stat_vars,
             [],
             coverage,
-            pipeline_trace,
+            open_roles=(),
             inapplicable_slots=["SomeProperty"],
             measure_elected_properties=frozenset(),
         )
@@ -367,13 +367,6 @@ class TestIdentityVersionRefusal:
                             "entry_kind": "identity",
                             "variable_text": "a resubmitted identity",
                             "identity": {
-                                "shape": {"kind": "statvar_schema", "population_type": "sh1"},
-                                "slots": [],
-                                "entities": {},
-                                "requested_window": {"kind": "all"},
-                            },
-                            "base_spec_id": "s1",
-                            "base_identity": {
                                 "identity_version": "spec2",
                                 "shape": {"kind": "statvar_schema", "population_type": "sh1"},
                                 "slots": [],
@@ -388,7 +381,7 @@ class TestIdentityVersionRefusal:
         assert resp.status_code == 422
         body = resp.json()
         assert body["code"] == "unsupported_schema_version"
-        assert body["pointer"] == "/input/entries/0/base_identity/identity_version"
+        assert body["pointer"] == "/input/entries/0/identity/identity_version"
 
     def test_schema_version_refusal_still_points_at_top_level(self):
         """Regression: the schema_version case keeps its own pointer even

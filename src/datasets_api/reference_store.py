@@ -25,7 +25,7 @@ from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.version_store import lock_version_links
 from dfo_platform.store_errors import extract_sqlstate, safe_diagnostics
 
-# The pin door writes `pin`. The free-text column also accepts kinds such as collection membership.
+# The pin door writes `pin` to the free-text kind column.
 PIN_REFERENCE_KIND = "pin"
 
 # Alerts use this marker when a pinned copy succeeds but its reference write fails. A retry writes

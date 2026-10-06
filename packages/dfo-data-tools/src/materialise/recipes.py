@@ -352,8 +352,7 @@ class RoleAxisConflictError(RecipeNotDeclaredError):
 def graph_role_for_spec_role(*, spec_role: SpecRole, declared_roles: tuple[str, ...]) -> str:
     """Map a request role to the StatVar's declared graph role. Check
     `observationAbout` directly and flow axes through `roles_by_axis`.
-    Collection members can have different role shapes, so this checks each
-    StatVar even when the whole spec passes role-shape validation.
+    This checks each StatVar even when the whole spec passes role-shape validation.
 
     Missing axes raise `RoleAxisNotDeclaredError`; ambiguous axes raise
     `RoleAxisConflictError`. Both share cause `role_undeclared` and remain

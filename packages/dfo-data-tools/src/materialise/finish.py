@@ -1,13 +1,12 @@
 """Builds versions, warnings, statistics, profiles, and traces after generation returns its
-revision snapshot. `_finish_member` handles single and collection members. `_finish_group`
-handles combined materialisations. `collection_trace` merges collection members' traces.
-Previews reuse member minting and warnings without a trace."""
+revision snapshot. `_finish_member` handles single members and `_finish_group` handles combined
+materialisations. Previews reuse member minting and warnings without a trace."""
 
 from __future__ import annotations
 
 import time
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 from dc_sdmx import ContainedIn, EntityFilter
@@ -67,8 +66,8 @@ def _conversion_trace_entry(
 ) -> dict[str, object]:
     """Builds one `ManifestTrace.conversion` entry for the members converted under one recipe
     and table-version pair. `members` lists each distinct (bare StatVar ref,
-    `ConversionRecord.native_unit_ref`) pair once, sorted, so two collection definitions over
-    the same StatVar and native unit name it once. Fallback and projected counts sum over every
+    `ConversionRecord.native_unit_ref`) pair once, sorted, so records over the same StatVar
+    and native unit name it once. Fallback and projected counts sum over every
     record, because each record counts its own definition's rows; their examples are
     deduplicated, sorted, and capped at `_MAX_TRACE_EXAMPLES`, with `truncated` reflecting
     distinct examples, not row counts. `deflator_table_version` is omitted when no deflator
@@ -112,7 +111,7 @@ def _conversion_trace(
     """Builds `ManifestTrace.conversion`: one entry per distinct (recipe, rate-table version,
     deflator-table version), naming the members converted under it, or `None` when no member
     converted. Entries sort by recipe then table versions, and members by StatVar, so the
-    trace is the same whatever order members arrive in. A collection mixing recipes or table
+    trace is the same whatever order members arrive in. A group mixing recipes or table
     versions gets one entry for each."""
     by_tables: dict[ConversionPreimage, list[tuple[str, ConversionRecord]]] = {}
     for stat_var, record in sorted(converted, key=lambda pair: pair[0]):
@@ -132,39 +131,6 @@ def _conversion_trace(
                 t.deflator_table_version or "",
             ),
         )
-    )
-
-
-def collection_trace(members: Sequence[pipeline.MaterialisationResult]) -> ManifestTrace:
-    """Merges a collection's member traces into one. Window, revision, facets, and build fields
-    come from the first member. `source_revisions` is every member's entries in member order,
-    each distinct `(source, revision)` once, so every converted member's native-unit revision
-    appears. `resolved_stat_vars` concatenates members in order. `conversion` has one entry per
-    recipe and table-version pair across every converted member (`_conversion_trace`), so a
-    collection mixing recipes states which tables each member used."""
-    if not members:
-        raise MaterialisationUsageError("collection_trace requires at least one member")
-    seen: set[tuple[object, object]] = set()
-    source_revisions: list[dict[str, object]] = []
-    for result in members:
-        for entry in result.trace.source_revisions:
-            key = (entry["source"], entry["revision"])
-            if key not in seen:
-                seen.add(key)
-                source_revisions.append(entry)
-    converted = (
-        (stat_var, record)
-        for result in members
-        for stat_var, record in result.member_conversion_records.items()
-        if record is not None
-    )
-    return replace(
-        members[0].trace,
-        source_revisions=tuple(source_revisions),
-        resolved_stat_vars=tuple(
-            entry for result in members for entry in result.trace.resolved_stat_vars
-        ),
-        conversion=_conversion_trace(converted),
     )
 
 
@@ -357,7 +323,7 @@ def _sorted_converted_members(
 
 @dataclass(frozen=True)
 class _GroupVersionMint:
-    """A group's version and preimage inputs, shared by a group mint and a group preview.
+    """A group's version and preimage inputs.
 
     `converted` holds the converted members sorted by StatVar and `representative` the
     first of their records, or `None` when no member converted."""

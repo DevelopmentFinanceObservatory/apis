@@ -311,7 +311,8 @@ def test_version_record_tables_exist_after_migration(live_store):
         member_reg = tx.fetch_one("SELECT to_regclass('datasets.version_member') AS reg")
         artifact_reg = tx.fetch_one("SELECT to_regclass('datasets.version_artifact') AS reg")
     assert record_reg == {"reg": "datasets.version_record"}
-    assert member_reg == {"reg": "datasets.version_member"}
+    # 0021_drop_collections.sql drops the collection member table.
+    assert member_reg == {"reg": None}
     assert artifact_reg == {"reg": "datasets.version_artifact"}
 
 
@@ -2025,18 +2026,14 @@ def test_0002_spec_registry_migration_creates_tables_and_constraints():
     try:
         store = LiveDatasetStore(connections=pool)
 
-        expected_tables = {
-            "spec_registry",
-            "spec_definition",
-            "collection_registry",
-            "collection_member",
-            "identity_quarantine",
-        }
+        expected_tables = {"spec_registry", "spec_definition", "identity_quarantine"}
+        # 0021_drop_collections.sql drops the two collection tables 0002 creates.
+        dropped_tables = {"collection_registry", "collection_member"}
         with store.transaction() as tx:
             rows = tx.fetch_all(
                 "SELECT table_name FROM information_schema.tables "
                 "WHERE table_schema = 'datasets' AND table_name = ANY(%s)",
-                (list(expected_tables),),
+                (list(expected_tables | dropped_tables),),
             )
         assert {row["table_name"] for row in rows} == expected_tables
 
@@ -2053,15 +2050,9 @@ def test_0002_spec_registry_migration_creates_tables_and_constraints():
                 "SELECT conrelid::regclass::text AS table_name "
                 "FROM pg_constraint "
                 "WHERE contype = 'f' "
-                "AND conrelid IN ("
-                "  'datasets.spec_definition'::regclass,"
-                "  'datasets.collection_member'::regclass"
-                ")"
+                "AND conrelid = 'datasets.spec_definition'::regclass"
             )
-        assert {row["table_name"] for row in fk_rows} == {
-            "datasets.spec_definition",
-            "datasets.collection_member",
-        }
+        assert {row["table_name"] for row in fk_rows} == {"datasets.spec_definition"}
     finally:
         pool.close_all()
 
@@ -2271,9 +2262,9 @@ def _old_manifest_body(*, spec_id: str, content_version: str) -> dict[str, objec
 def test_0018_backfills_prepared_at_and_keeps_every_link(live_store):
     """Old bodies gain `prepared_at` from `recorded_at`, a collapsed record its base's, and
     collection members their own record's `prepared_at` and cited refs, a first member with no
-    record the collection trace's provenance facet; every body decodes with the current models,
+    record the collection trace's provenance facet; a definition body decodes with the current models,
     every artifact link stays, `ops_` subjects are untouched, and a rerun changes nothing."""
-    from datasets_api.manifest import decode_collection_version_body, decode_version_body
+    from datasets_api.manifest import decode_version_body
     from datasets_api.manifest_models import Manifest
     from datasets_api.version_store import rendering_key
 
@@ -2432,24 +2423,20 @@ def test_0018_backfills_prepared_at_and_keeps_every_link(live_store):
         assert cast(dict, collapsed["immutable_body"])["prepared_at"] == "2026-09-02T08:30:15Z"
         assert "documentation" not in bodies[definition]["citation"]["sources"][0]
 
-        fields, _profiles = decode_collection_version_body(bodies[collection])
-        manifest = Manifest.model_validate({**fields, "artifacts": []})
-        assert manifest.prepared_at == datetime(2026, 9, 3, 8, 30, 15, tzinfo=UTC)
-        assert manifest.collection is not None
-        assert [member.prepared_at for member in manifest.collection.members] == [
-            datetime(2026, 9, 1, 8, 30, 15, tzinfo=UTC),
-            datetime(2026, 9, 3, 8, 30, 15, tzinfo=UTC),
+        # Collection bodies stay stored after Datasets stopped serving them, so their raw
+        # JSON is checked.
+        assert bodies[collection]["prepared_at"] == "2026-09-03T08:30:15Z"
+        members = bodies[collection]["collection"]["members"]
+        assert [member["prepared_at"] for member in members] == [
+            "2026-09-01T08:30:15Z",
+            "2026-09-03T08:30:15Z",
         ]
-        assert [member.provenance_refs for member in manifest.collection.members] == [
+        assert [member["provenance_refs"] for member in members] == [
             ["dc/base/IMF", "OECD_DAC2A"],
             [],
         ]
-        fields, _profiles = decode_collection_version_body(bodies[first_unrecorded])
-        manifest = Manifest.model_validate({**fields, "artifacts": []})
-        assert manifest.collection is not None
-        assert [member.provenance_refs for member in manifest.collection.members] == [
-            ["OECD_DAC2A"]
-        ]
+        members = bodies[first_unrecorded]["collection"]["members"]
+        assert [member["provenance_refs"] for member in members] == [["OECD_DAC2A"]]
         assert bodies[derived] == derived_body
     finally:
         with live_store.transaction() as tx:
@@ -2475,7 +2462,7 @@ def test_0019_fills_rows_the_previous_revision_wrote_after_0018(live_store):
     """A body and a collection member written without the new keys once 0018 had run take the
     same values 0018 gives, a body that carries its keys keeps them, and a rerun changes
     nothing."""
-    from datasets_api.manifest import decode_collection_version_body, decode_version_body
+    from datasets_api.manifest import decode_version_body
     from datasets_api.manifest_models import Manifest
 
     suffix = uuid4().hex
@@ -2545,18 +2532,241 @@ def test_0019_fills_rows_the_previous_revision_wrote_after_0018(live_store):
         assert manifest.prepared_at == datetime(2026, 10, 1, 7, 45, 30, tzinfo=UTC)
         assert bodies[current] == current_body
 
-        fields, _profiles = decode_collection_version_body(bodies[collection])
-        manifest = Manifest.model_validate({**fields, "artifacts": []})
-        assert manifest.prepared_at == datetime(2026, 10, 2, 7, 45, 30, tzinfo=UTC)
-        assert manifest.collection is not None
-        assert [member.prepared_at for member in manifest.collection.members] == [
-            datetime(2026, 10, 1, 7, 45, 30, tzinfo=UTC),
-            datetime(2026, 10, 2, 7, 45, 30, tzinfo=UTC),
+        assert bodies[collection]["prepared_at"] == "2026-10-02T07:45:30Z"
+        members = bodies[collection]["collection"]["members"]
+        assert [member["prepared_at"] for member in members] == [
+            "2026-10-01T07:45:30Z",
+            "2026-10-02T07:45:30Z",
         ]
-        assert [member.provenance_refs for member in manifest.collection.members] == [
-            ["OECD_DAC2A"],
-            [],
+        assert [member["provenance_refs"] for member in members] == [["OECD_DAC2A"], []]
+    finally:
+        with live_store.transaction() as tx:
+            tx.execute(
+                "DELETE FROM datasets.version_record WHERE subject_id = ANY(%s)", (subjects,)
+            )
+
+
+_NULL_COLLECTION_MIGRATION = "0022_drop_null_collection.sql"
+
+
+def _null_collection_body(spec_id: str) -> dict[str, object]:
+    """A definition body in the shape an earlier `encode_version_body` wrote, with `collection`
+    stored as null and every optional field and nested field set. The identity is the
+    projection of dfo-spec-kit's `shape-statvar-schema-all-five-members` identity vector."""
+    return {
+        "schema_version": 1,
+        "definition": {
+            "schema_version": 1,
+            "spec_id": spec_id,
+            "identity": {
+                "identity_version": "spec1",
+                "shape": {
+                    "kind": "statvar_schema",
+                    "population_type": "DevelopmentFinance",
+                    "measured_property": "developmentFinanceFlow",
+                    "stat_type": "measuredValue",
+                    "measurement_qualifier": "Nominal",
+                    "measurement_denominator": {"ref": "Count_Person"},
+                },
+                "slots": [
+                    {
+                        "property": "DevelopmentFinancePurpose",
+                        "binding": {"state": "value", "ref": "Malaria"},
+                    }
+                ],
+                "entities": {"origin": ["country/FRA"], "destination": ["country/TGO"]},
+                "requested_window": {"kind": "range", "start_year": 2015, "end_year": 2024},
+                "facets": {
+                    "provenance": {"state": "value", "ref": "OECD_DAC2A"},
+                    "unit": {
+                        "state": "value",
+                        "request": {"currency": "EUR", "prices": "constant", "base_year": 2023},
+                    },
+                },
+            },
+        },
+        "collection": None,
+        "content_version": "cv_dev",
+        "prepared_at": "2026-09-30T12:00:00Z",
+        "coverage": {
+            "rows": 2,
+            "dimensions": [{"label": "recipient", "count": 1, "axis": "destination"}],
+            "window": {"kind": "range", "start_year": 2015, "end_year": 2016, "origin": "query"},
+        },
+        "citation": {
+            "text": "OECD DAC2a",
+            "sources": [
+                {
+                    "ref": "OECD_DAC2A",
+                    "label": "OECD DAC2a",
+                    "processing_level": "minor",
+                    "license": "Creative Commons Attribution License",
+                    "license_type": "CCBY4",
+                    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+                    "url": "https://data-explorer.oecd.org",
+                    "source": {"ref": "dc/base/OECD", "label": "OECD"},
+                    "data_commons": {"id": "dfo", "label": "DFO Data Commons"},
+                    "documentation": {
+                        "publisher": "OECD",
+                        "description": "Aid disbursements by donor and recipient.",
+                        "source_data_url": "https://data-explorer.oecd.org/dac2a",
+                        "attribution": "OECD (2026), DAC2a.",
+                        "update_cadence": "Quarterly",
+                        "last_update": "2026-09-01",
+                        "years_covered": "1960-2024",
+                        "granularity": "Annual, by provider and recipient",
+                        "currencies": ["USD"],
+                        "transformation_log": [
+                            {"transformation": "Pivot", "description": "Long to wide."}
+                        ],
+                        "version_history": [
+                            {
+                                "date": "2026-09-01",
+                                "title": "September refresh",
+                                "changes": [{"kind": "added", "note": "2024 data."}],
+                            }
+                        ],
+                    },
+                }
+            ],
+        },
+        "trace": {
+            "graph_revision": "rev",
+            "facets": [{"axis": "provenance", "ref": "OECD_DAC2A"}],
+        },
+        "warnings": [
+            {
+                "code": "stat_vars_summed",
+                "severity": "info",
+                "message": "Summed 2 StatVars.",
+                "contributing_member_count": 2,
+                "stat_var_ref": f"dcid:{spec_id}",
+                "stat_var_label": "Gross ODA",
+            }
+        ],
+        "series_count": 1,
+        "series_coverage_stamp": "sha256:coverage",
+        "output_profile": {
+            "schema_version": 1,
+            "rows": 2,
+            "columns": [
+                {"name": "recipient", "kind": "role", "droppable": False, "distinct": 1},
+                {"name": "value", "kind": "value", "droppable": False, "distinct": None},
+            ],
+            "pivots": [
+                {
+                    "index": "recipient",
+                    "columns": "time_period",
+                    "duplicate_keys": True,
+                    "homogeneous": False,
+                    "unique": False,
+                    "width": 3,
+                    "cells": 3,
+                    "varying": [["unit", 2]],
+                }
+            ],
+            "enrichments": [
+                {
+                    "column": "recipient",
+                    "field": "iso3",
+                    "entities": 2,
+                    "covered": 1,
+                    "missing": [["country/XKX", "Kosovo"]],
+                    "truncated": False,
+                }
+            ],
+        },
+        "series_conversions": [
+            {
+                "stat_var": "Oda_a",
+                "roles": [["recipient", "country/KEN"]],
+                "recipe_id": "ConversionRecipeDAC",
+                "table_provenance_id": "dc/base/IMF",
+                "exchange_rate_table_version": "r1",
+                "deflator_table_version": "d1",
+                "fallback_count": 1,
+                "fallback_examples": [["country/KEN", "2015"]],
+                "projected_count": 1,
+                "projected_examples": ["2016"],
+            }
+        ],
+        "default_scope_plural": True,
+    }
+
+
+def test_0022_drops_a_null_collection_so_the_body_decodes(live_store):
+    """A body that stores `"collection": null` fails `Manifest` validation on that key alone and
+    decodes once 0022 drops it, with every other key kept. A non-null `collection` and a body
+    without the key stay as stored, and a rerun changes nothing."""
+    from pydantic import ValidationError
+
+    from datasets_api.manifest import decode_version_body
+    from datasets_api.manifest_models import Manifest
+
+    suffix = uuid4().hex
+    definition = f"spec_null_collection_{suffix}"
+    collection = f"col_null_collection_{suffix}"
+    derived = f"ops_null_collection_{suffix}"
+    subjects = [definition, collection, derived]
+    definition_body = _null_collection_body(definition)
+    collection_body = {
+        **_old_manifest_body(spec_id=definition, content_version="cv_col"),
+        "definition": None,
+        "collection": {"collection_id": collection, "members": []},
+    }
+    derived_body = {"spec_id": derived, "input_content_versions": ["cv_x"]}
+    rows = [
+        (definition, "spec", definition_body),
+        (collection, "collection", collection_body),
+        (derived, "spec", derived_body),
+    ]
+
+    def _validate(body: dict[str, object]) -> Manifest:
+        fields, _profile = decode_version_body(body)
+        return Manifest.model_validate({**fields, "artifacts": []})
+
+    def _bodies() -> dict[str, dict]:
+        with live_store.transaction() as tx:
+            found = tx.fetch_all(
+                "SELECT subject_id, immutable_body FROM datasets.version_record "
+                "WHERE subject_id = ANY(%s)",
+                (subjects,),
+            )
+        return {cast(str, row["subject_id"]): cast(dict, row["immutable_body"]) for row in found}
+
+    with pytest.raises(ValidationError) as refused:
+        _validate(definition_body)
+    assert [(error["type"], error["loc"]) for error in refused.value.errors()] == [
+        ("extra_forbidden", ("collection",))
+    ]
+
+    with live_store.transaction() as tx:
+        for subject_id, kind, body in rows:
+            tx.execute(
+                "INSERT INTO datasets.version_record "
+                "(subject_id, subject_kind, content_version, schema_version, immutable_body, "
+                "recorded_at) VALUES (%s, %s, 'cv1', 1, %s, now())",
+                (subject_id, kind, body),
+            )
+    try:
+        assert _rerun_migration(live_store, _NULL_COLLECTION_MIGRATION) == [
+            _NULL_COLLECTION_MIGRATION
         ]
+        bodies = _bodies()
+        assert _rerun_migration(live_store, _NULL_COLLECTION_MIGRATION) == [
+            _NULL_COLLECTION_MIGRATION
+        ]
+        assert _bodies() == bodies
+
+        expected = {key: value for key, value in definition_body.items() if key != "collection"}
+        assert bodies == {
+            definition: expected,
+            collection: collection_body,
+            derived: derived_body,
+        }
+        manifest = _validate(bodies[definition])
+        assert manifest.definition.spec_id == definition
+        assert manifest.series_coverage_stamp == "sha256:coverage"
     finally:
         with live_store.transaction() as tx:
             tx.execute(

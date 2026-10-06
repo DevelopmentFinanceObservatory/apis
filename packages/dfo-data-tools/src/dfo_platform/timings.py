@@ -31,8 +31,8 @@ class PhaseTimings:
     _totals: dict[str, float] = field(default_factory=dict)
 
     def record(self, name: str, milliseconds: float) -> None:
-        """Accumulate `milliseconds` onto `name`, so a collection's repeated
-        per-member `render`/`store`/`sign` calls sum into one figure."""
+        """Accumulate `milliseconds` onto `name`, so repeated calls to one phase sum into one
+        figure."""
         with self._lock:
             self._totals[name] = self._totals.get(name, 0.0) + milliseconds
 

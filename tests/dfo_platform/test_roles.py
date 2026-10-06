@@ -21,7 +21,7 @@ def test_every_flow_family_declares_its_wording() -> None:
 @pytest.mark.parametrize(
     ("family", "possessor", "origin", "destination"),
     [
-        ("aid", "origin", ("donor", "donors", "from"), ("recipient", "recipients", "to")),
+        ("aid", "origin", ("provider", "providers", "from"), ("recipient", "recipients", "to")),
         (
             "debt_service",
             "destination",

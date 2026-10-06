@@ -18,6 +18,7 @@ from tests.engine._builders import unbound_slot as _unbound_slot
 from tests.engine._builders import value_slot as _value_slot
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import walk_options
 from tests.engine._index_slots import query_for
 from tests.engine.test_candidates_measure_alternatives import _ROLE_NAMES, _ROLE_RECIPIENT
 from tests.engine.test_resubmit_alternative_measure_round_trip import _arcs_for_row
@@ -153,22 +154,20 @@ class TestNoOpAndCoveredEdits:
     membership comes entirely from the packaged code index's own election."""
 
     def test_noop_resubmit_of_the_rollup_bound_identity_resolves_definite(self, monkeypatch):
-        base_spec_id, base_identity = _health_base(purpose=_PURPOSE_ROLLUP)
+        _base_spec_id, base_identity = _health_base(purpose=_PURPOSE_ROLLUP)
         member_dcids = _elected_members(_PURPOSE_ROLLUP)
         member_rows = _member_rows(member_dcids)
         graph = _health_graph(member_rows, places=[_KEN])
         sdmx = _sdmx_for(member_dcids, _KEN)
         materialise_graph = axis_confirming_reader(*member_dcids, graph=graph)
 
-        inp = ResubmitIdentityPayload(
-            identity=base_identity, base_spec_id=base_spec_id, base_identity=base_identity
-        )
+        inp = ResubmitIdentityPayload(identity=base_identity)
         region = resolve_spec_resubmit(
             inp=inp,
             graph=graph,
             sdmx=sdmx,
             coverage=_coverage_for(member_dcids, _KEN, monkeypatch),
-            options=EngineOptions(materialise_graph=materialise_graph),
+            options=walk_options(graph, EngineOptions(materialise_graph=materialise_graph)),
         )
 
         assert region.status == "definite", (
@@ -187,7 +186,7 @@ class TestNoOpAndCoveredEdits:
         """Narrowing the requested window alone, with `crsPurpose` re-posted
         unedited (still the rollup), must not be blocked by a false
         crsPurpose edit."""
-        base_spec_id, base_identity = _health_base(
+        _base_spec_id, _base_identity = _health_base(
             purpose=_PURPOSE_ROLLUP, window=TimeWindow(start_year=2015)
         )
         edited_identity = make_base(
@@ -202,15 +201,13 @@ class TestNoOpAndCoveredEdits:
         sdmx = _sdmx_for(member_dcids, _KEN)
         materialise_graph = axis_confirming_reader(*member_dcids, graph=graph)
 
-        inp = ResubmitIdentityPayload(
-            identity=edited_identity, base_spec_id=base_spec_id, base_identity=base_identity
-        )
+        inp = ResubmitIdentityPayload(identity=edited_identity)
         region = resolve_spec_resubmit(
             inp=inp,
             graph=graph,
             sdmx=sdmx,
             coverage=_coverage_for(member_dcids, _KEN, monkeypatch),
-            options=EngineOptions(materialise_graph=materialise_graph),
+            options=walk_options(graph, EngineOptions(materialise_graph=materialise_graph)),
         )
 
         assert region.status == "definite", (
@@ -223,7 +220,7 @@ class TestNoOpAndCoveredEdits:
         """Editing the destination alone (KEN -> ETH), with `crsPurpose`
         re-posted unedited (still the rollup), must not be blocked by a
         false crsPurpose edit, and must resolve bound to ETH."""
-        base_spec_id, base_identity = _health_base(purpose=_PURPOSE_ROLLUP, place=_KEN)
+        _base_spec_id, _base_identity = _health_base(purpose=_PURPOSE_ROLLUP, place=_KEN)
         edited_identity = make_base(
             _HEALTH_SHAPE,
             _health_slots(purpose=_PURPOSE_ROLLUP),
@@ -236,15 +233,13 @@ class TestNoOpAndCoveredEdits:
         sdmx = _sdmx_for(member_dcids, _ETH)
         materialise_graph = axis_confirming_reader(*member_dcids, graph=graph)
 
-        inp = ResubmitIdentityPayload(
-            identity=edited_identity, base_spec_id=base_spec_id, base_identity=base_identity
-        )
+        inp = ResubmitIdentityPayload(identity=edited_identity)
         region = resolve_spec_resubmit(
             inp=inp,
             graph=graph,
             sdmx=sdmx,
             coverage=_coverage_for(member_dcids, _ETH, monkeypatch),
-            options=EngineOptions(materialise_graph=materialise_graph),
+            options=walk_options(graph, EngineOptions(materialise_graph=materialise_graph)),
         )
 
         assert region.status == "definite", (
@@ -264,7 +259,7 @@ class TestRollupLeafEditDetectionBothDirections:
     def test_rollup_to_leaf_edit_is_detected_and_narrows_to_the_leaf_members(self, monkeypatch):
         """Changing the purpose from its rollup to a leaf elects that leaf's
         smaller member set."""
-        base_spec_id, base_identity = _health_base(purpose=_PURPOSE_ROLLUP)
+        _base_spec_id, _base_identity = _health_base(purpose=_PURPOSE_ROLLUP)
         edited_identity = make_base(
             _HEALTH_SHAPE,
             _health_slots(purpose=_PURPOSE_LEAF),
@@ -277,21 +272,19 @@ class TestRollupLeafEditDetectionBothDirections:
         sdmx = _sdmx_for(member_dcids, _KEN)
         materialise_graph = axis_confirming_reader(*member_dcids, graph=graph)
 
-        inp = ResubmitIdentityPayload(
-            identity=edited_identity, base_spec_id=base_spec_id, base_identity=base_identity
-        )
+        inp = ResubmitIdentityPayload(identity=edited_identity)
         region = resolve_spec_resubmit(
             inp=inp,
             graph=graph,
             sdmx=sdmx,
             coverage=_coverage_for(member_dcids, _KEN, monkeypatch),
-            options=EngineOptions(materialise_graph=materialise_graph),
+            options=walk_options(graph, EngineOptions(materialise_graph=materialise_graph)),
         )
 
         assert region.status == "definite", (
             region.no_data_reason if region.status != "definite" else None
         )
-        assert {sv.ref for sv in region.specs[0].resolved.stat_vars.items} == set(member_dcids)
+        assert {sv.ref.dcid for sv in region.specs[0].resolved.members} == set(member_dcids)
         purpose_slot = next(
             s
             for s in region.specs[0].resolved.slots
@@ -304,7 +297,7 @@ class TestRollupLeafEditDetectionBothDirections:
     def test_leaf_to_rollup_edit_is_detected_and_widens_to_the_rollup_members(self, monkeypatch):
         """Changing a leaf to its rollup elects the rollup's full member set,
         then resolves with the rollup binding."""
-        base_spec_id, base_identity = _health_base(purpose=_PURPOSE_LEAF)
+        _base_spec_id, _base_identity = _health_base(purpose=_PURPOSE_LEAF)
         edited_identity = make_base(
             _HEALTH_SHAPE,
             _health_slots(purpose=_PURPOSE_ROLLUP),
@@ -317,21 +310,19 @@ class TestRollupLeafEditDetectionBothDirections:
         sdmx = _sdmx_for(member_dcids, _KEN)
         materialise_graph = axis_confirming_reader(*member_dcids, graph=graph)
 
-        inp = ResubmitIdentityPayload(
-            identity=edited_identity, base_spec_id=base_spec_id, base_identity=base_identity
-        )
+        inp = ResubmitIdentityPayload(identity=edited_identity)
         region = resolve_spec_resubmit(
             inp=inp,
             graph=graph,
             sdmx=sdmx,
             coverage=_coverage_for(member_dcids, _KEN, monkeypatch),
-            options=EngineOptions(materialise_graph=materialise_graph),
+            options=walk_options(graph, EngineOptions(materialise_graph=materialise_graph)),
         )
 
         assert region.status == "definite", (
             region.no_data_reason if region.status != "definite" else None
         )
-        assert {sv.ref for sv in region.specs[0].resolved.stat_vars.items} <= set(member_dcids)
+        assert {sv.ref.dcid for sv in region.specs[0].resolved.members} <= set(member_dcids)
         assert region.specs[0].resolved.stat_vars.member_count == len(member_dcids)
         purpose_slot = next(
             s

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from search.models import BindingValue, Shape, Slot, SlotValue, StatVar
+from search.models import BindingValue, SentenceFacts, Shape, Slot, SlotValue, StatVar
 from search.render.heading import heading_from_parts
 from search.render.labels import _humanize_ref
 from search.render.tokens import plan_tokens, sentence_from_plan
@@ -89,7 +89,17 @@ def test_allcaps_unsplittable_measured_property_gated_at_stopword_fallback_too()
             [],
             shape,
             window=None,
-            sv_labels=["SV One", "SV Two"],
+            facts=SentenceFacts.of(
+                [
+                    StatVar(
+                        ref=_ref(dcid, label),
+                        shape_id="test-shape",
+                        slot_values=[],
+                        constraint_properties=[],
+                    )
+                    for dcid, label in (("sv1", "SV One"), ("sv2", "SV Two"))
+                ]
+            ),
             pinned_properties=frozenset(),
         )
     )

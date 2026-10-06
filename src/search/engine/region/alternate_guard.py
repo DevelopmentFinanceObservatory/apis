@@ -6,7 +6,8 @@ operations on those axes, and where structure is silent the bind model's nominat
 stands:
 
 - pin: the query names values on the axis, the alternate honours none of them, and its
-  value differs from the elected reading's;
+  value differs from the elected reading's or, on normalisation, the elected reading
+  honours one;
 - specialisation: the alternate holds a value on an axis the elected reading leaves open,
   and the query named nothing the alternate honours;
 - concept: both hold values on a concept axis and the alternate's lies outside the
@@ -37,6 +38,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
 from code_index.shared import get_index, get_measure_index
+from search.currency_codes import ISO_4217_CODES
 from search.engine.extract import _FUNCTION_WORDS, _words
 from search.engine.qualifier_match import (
     QualifierMatch,
@@ -45,9 +47,18 @@ from search.engine.qualifier_match import (
     match_qualifier_readings,
     match_qualifiers,
 )
+from search.engine.quantity import (
+    DenominatorKind,
+    NamedNormalisation,
+    QuantityRequirement,
+    fulfils,
+    honours,
+    normalisation_class,
+)
 from search.engine.region.equivalent_series import CLUSTER_BY_MEMBER, EquivalentCluster
 from search.engine.region.qualifier_readings import reading_for_shape
 from search.engine.retrieval.bound_values import (
+    RoleKeys,
     bound_values_from_bindings,
     serving_member_rows,
     shape_five_tuple,
@@ -55,8 +66,8 @@ from search.engine.retrieval.bound_values import (
 )
 from search.engine.retrieval.facts import read_name
 from search.engine.retrieval.member_facts import ArcsMemberFacts, IndexMemberFacts
-from search.engine.shape import ShapeDraft, _declared_role_names, is_role_bearing, measures_count
-from search.engine.unit.lexicon import AMBIGUOUS_CURRENCY_NAMES, CURRENCY_ALIASES, ISO_4217_CODES
+from search.engine.shape import ShapeDraft, _declared_role_names, is_role_bearing
+from search.engine.unit.lexicon import AMBIGUOUS_CURRENCY_NAMES, CURRENCY_ALIASES
 
 if TYPE_CHECKING:
     from code_index import CodeIndex
@@ -66,45 +77,12 @@ if TYPE_CHECKING:
     from search.engine.retrieval.facts import FiveTuple
     from search.engine.retrieval.member_facts import MemberFacts
 
-type NormalisationClass = Literal["level", "other", "series", "per_person", "per_area", "unknown"]
-type NamedNormalisation = Literal["per_person", "per_head_base", "per_area", "rate", "share"]
 type MeasureClass = Literal["prevalence", "incidence", "mortality"]
 
 _QUALIFIER_AXIS = "measurementQualifier"
 
-# measurementDenominator dcids of a per-person reading, and of a per-area one.
-PER_PERSON_DENOMINATORS = frozenset({"Count_Person", "PerCapita"})
-_PER_AREA_DENOMINATOR = "area"
-
-# Measured properties whose plain values are amounts. A shape on one with no denominator
-# arc and a plain stat type is a level.
-_LEVEL_PROPERTIES = frozenset({"count", "amount", "valueAdded"})
-_LEVEL_STAT_TYPES = frozenset({"measuredValue", ""})
-
-# Add new per-head nouns here. The regex reads this tuple.
-_PER_HEAD_NOUNS = ("capita", "person", "head", "inhabitant", "resident", "citizen")
-
-# Applied to lowercase text, this matches `per` plus a singular noun from
-# _PER_HEAD_NOUNS, or `capita` as a whole word (including `per-capita`). Bare
-# `per`, `per year`, `per cent`, plural nouns, and numbered rate bases such as
-# `per 100,000 residents` do not match.
-_PER_CAPITA_FRAMING_RE = re.compile(r"\bper\s+(?:" + "|".join(_PER_HEAD_NOUNS) + r")\b|\bcapita\b")
-
-# A whole phrase naming a per-person rate base: "per capita", "per person", "per 100 people",
-# "per 1,000 inhabitants". The `count` group holds the number of a numbered base.
-PER_HEAD_RATE_BASE_RE = re.compile(
-    r"per\s+(?:(?P<count>\d[\d,]*)\s+)?"
-    r"(?:capita|head|people|persons?|inhabitants?|residents?|population)",
-    re.IGNORECASE,
-)
-
-# Terms naming a rate, and terms naming a share of a whole. `STRONG_RATE_REQUEST_RE` is
-# the subset the pre-bind raw-count prune reads (`phase_rank_bind._has_strong_rate_intent`).
-# `ratio` and `incidence` name a rate here and leave that prune off.
-_RATE_TERMS_RE = re.compile(r"\b(?:rates?|ratios?|incidence)\b")
-_SHARE_TERMS = r"\b(?:proportions?|percentages?|percent|shares?)\b|%"
-_SHARE_TERMS_RE = re.compile(_SHARE_TERMS)
-STRONG_RATE_REQUEST_RE = re.compile(r"\brates?\b|" + _SHARE_TERMS, re.IGNORECASE)
+# The measure axis whose values are the measured properties of one measure family.
+_MEASURED_PROPERTY_AXIS = "measuredProperty"
 
 # The words naming each measure class, read whole-word from a lowercase phrase or label.
 # Incidence also reads from "new" followed within three tokens by "infection(s)" or
@@ -124,68 +102,6 @@ _LIVING_WITH_RE = re.compile(r"\bliving\s+with\b")
 # A lower-to-upper case boundary inside a camelCase dcid such as `MortalityEvent`.
 _CAMEL_BOUNDARY_RE = re.compile(r"(?<=[a-z])(?=[A-Z])")
 
-# Tokens of a lowercase phrase: alphabetic runs, digit runs, `/`, and `²`.
-# Every other character separates tokens, so `km²` reads as `km`, `²`, and
-# `km2`, `km^2`, `km**2`, and `km 2` all read as `km`, `2`.
-_FRAMING_TOKEN_RE = re.compile(r"[a-z]+|\d+|[/²]")
-
-# Stem shared by dense, denser, densest, densely, density, and densities.
-_DENSITY_STEM = "dens"
-
-# Units that name an area on their own. Add new spellings here.
-_AREA_UNITS = frozenset({"ha", "hectare", "hectares", "acre", "acres"})
-
-# Length units that name an area once squared. Add new spellings here.
-_LENGTH_UNITS = frozenset(
-    {
-        "km",
-        "kms",
-        "kilometre",
-        "kilometres",
-        "kilometer",
-        "kilometers",
-        "mi",
-        "mile",
-        "miles",
-        "m",
-        "metre",
-        "metres",
-        "meter",
-        "meters",
-        "ft",
-        "foot",
-        "feet",
-        "yd",
-        "yard",
-        "yards",
-        "cm",
-        "centimetre",
-        "centimetres",
-        "centimeter",
-        "centimeters",
-    }
-)
-
-# Words that square a length unit from either side: `sq km`, `km squared`.
-_SQUARE_MARKERS = frozenset({"square", "sq", "squared"})
-
-# A square marker written against its unit with no separator: `sqkm`, `sqm`.
-_GLUED_SQUARE_UNITS = frozenset(
-    marker + unit for marker in _SQUARE_MARKERS for unit in _LENGTH_UNITS
-)
-
-# Exponent tokens that square the length unit before them. The token must equal
-# one of these, so `m3` and `km20` stay distances and volumes.
-_SQUARE_EXPONENTS = frozenset({"2", "²"})
-
-# Nouns that name area: `per area`, `relative to its area`, `land area`, and also
-# `rural areas`, where the noun names a place.
-_AREA_NOUNS = frozenset({"area", "areas"})
-
-# Token runs that make the area noun straight after them a division: `per area`,
-# `per unit area`, `relative to area`.
-_AREA_DIVISORS = (("per",), ("per", "unit"), ("relative", "to"))
-
 # The constraint properties that state a place of residence, in the SDG and Data Commons
 # vocabularies, and the residence words a query, a label or a value name holds.
 _RESIDENCE_PROPERTIES = ("sdg_urbanisation", "placeOfResidenceClassification")
@@ -200,62 +116,6 @@ _PIN, _SPECIALISATION, _CONCEPT, _DEFAULT, _CROSS_POPULATION = range(5)
 _NORMALISATION, _QUALIFIER, _STAT_TYPE, _RESIDENCE, _CONSTRAINT = range(5)
 
 type _Refusal = tuple[int, int, str]
-
-
-def _names_per_area_framing(variable_lower: str, *, strong: bool) -> bool:
-    """Return whether the lowercase phrase names density framing.
-
-    A phrase names density framing through the ``dens`` stem, an area unit, a
-    length unit squared by a neighbouring marker or a following exponent, or an
-    area noun. The test reads tokens and ignores grammar. The loose reading
-    (``strong=False``) takes any area noun, so ``population in urban area``,
-    ``people living in rural areas``, ``hospitals/ha noi`` and ``bone density``
-    match. It decides only whether an alternate honours the framing, where a false
-    match admits one alternate. The strong reading takes an area noun only straight
-    after ``per``, ``per unit`` or ``relative to``. It decides the normalisation pin,
-    where a false match refuses every alternate that is not a density. A bare length
-    unit is a distance, so ``per mile driven`` and ``cost per km of road`` match
-    neither, and ``crowded`` holds no area token.
-    """
-    tokens = ["", *_FRAMING_TOKEN_RE.findall(variable_lower), ""]
-    for i in range(1, len(tokens) - 1):
-        previous, token, following = tokens[i - 1], tokens[i], tokens[i + 1]
-        if token.startswith(_DENSITY_STEM) or token in _AREA_UNITS or token in _GLUED_SQUARE_UNITS:
-            return True
-        if token in _LENGTH_UNITS and (
-            previous in _SQUARE_MARKERS
-            or following in _SQUARE_MARKERS
-            or following in _SQUARE_EXPONENTS
-        ):
-            return True
-        if token in _AREA_NOUNS and (
-            not strong or any(tuple(tokens[i - len(run) : i]) == run for run in _AREA_DIVISORS)
-        ):
-            return True
-    return False
-
-
-def query_normalisation(variable: str, *, strong: bool) -> frozenset[NamedNormalisation]:
-    """Return every normalisation class the phrase names.
-
-    Per person is per-head wording (`per capita`, `per person`, `per head`), and a
-    numbered per-head base (`per 100,000 people`) is `per_head_base`. Per area is density
-    framing (`_names_per_area_framing`, read strong or loose), rate is `rate`, `ratio` or
-    `incidence`, and share is `proportion`, `percentage`, `percent` or `%`.
-    """
-    lower = variable.lower()
-    named: set[NamedNormalisation] = set()
-    if _PER_CAPITA_FRAMING_RE.search(lower):
-        named.add("per_person")
-    for base in PER_HEAD_RATE_BASE_RE.finditer(lower):
-        named.add("per_head_base" if base.group("count") else "per_person")
-    if _names_per_area_framing(lower, strong=strong):
-        named.add("per_area")
-    if _RATE_TERMS_RE.search(lower):
-        named.add("rate")
-    if _SHARE_TERMS_RE.search(lower):
-        named.add("share")
-    return frozenset(named)
 
 
 def measure_class(text: str) -> MeasureClass | None:
@@ -281,55 +141,6 @@ def shape_measure_class(shape: ShapeDraft) -> MeasureClass | None:
     if shape.pop_type_name is None:
         return None
     return measure_class(_CAMEL_BOUNDARY_RE.sub(" ", shape.pop_type_name))
-
-
-def normalisation_class(shape: ShapeDraft) -> NormalisationClass:
-    """Return the normalisation class of a shape's five-tuple.
-
-    An unresolved denominator arc is `unknown`. A `PerCapita` or `Count_Person`
-    denominator is `per_person`, `area` is `per_area`, and any other denominator is a
-    `series`. With no denominator arc, a plain stat type over a count or a declared amount
-    property (`_LEVEL_PROPERTIES`) is a `level`, and anything else, such as an SDG
-    `value` series, a fertility rate or a growth rate, is `other`.
-    """
-    if shape.meas_denom_unresolved:
-        return "unknown"
-    denominator = shape.meas_denom_dcid
-    if denominator in PER_PERSON_DENOMINATORS:
-        return "per_person"
-    if denominator == _PER_AREA_DENOMINATOR:
-        return "per_area"
-    if denominator is not None:
-        return "series"
-    if shape.stat_type_dcid in _LEVEL_STAT_TYPES and (
-        measures_count(shape) or shape.meas_prop_dcid in _LEVEL_PROPERTIES
-    ):
-        return "level"
-    return "other"
-
-
-def _honours(shape: ShapeDraft, cls: NormalisationClass, named: NamedNormalisation) -> bool:
-    """Whether a shape of class `cls` is a reading of the named normalisation.
-
-    An unresolved arc contradicts nothing. A count of persons per person is a share of
-    the population, and an amount or an event count per person is not. A numbered per-head
-    base names a rate per person, which an `other` series may hold with its denominator
-    unstated (the SDG homicide rate per 100,000 people), while a `series` names a
-    denominator that is not a person.
-    """
-    if cls == "unknown":
-        return True
-    if cls == "level":
-        return False
-    if cls == "other":
-        return named in ("per_head_base", "rate", "share")
-    if cls == "series":
-        return named in ("rate", "share")
-    if cls == "per_area":
-        return named in ("per_area", "rate")
-    if named == "share":
-        return shape.pop_type_dcid == "Person" and measures_count(shape)
-    return named in ("per_person", "per_head_base", "rate")
 
 
 # Currency names from the unit binder's lexicon, as word tuples.
@@ -416,14 +227,16 @@ class QueryPins:
 
     `normalisation` and `residence` are named by the query's words: `normalisation` from
     strong signals only, which a pin reads, and `normalisation_framing` from loose ones as
-    well, which an alternate may honour. `qualifiers` is the reading set of every
+    well, which an alternate may honour (the leg's `QuantityRequirement`). `qualifiers` is the reading set of every
     measurement qualifier a qualifier match names, and `constraint_matches` the values
-    other qualifier matches name, by property, widened to code-index descendants.
+    other qualifier matches name, by property, widened as a binding of each reads
+    (`CodeIndex.expansion`).
     `qualifier_readings` are spans naming a code and a price basis ("PPP"). A span pins
     the price basis only when the elected shape carries that reading. `bindings` narrow
     the elected reading, and a property in `engine_authored` (a measure election, a
     declared default) narrows it and counts as unnamed. `unread_price_basis` and
-    `elected_has_data` gate the default operation.
+    `elected_has_data` gate the default operation. `denominator_kinds` classifies the
+    StatVar denominators of the shapes judged (`normalisation_class`).
     """
 
     normalisation: frozenset[NamedNormalisation] = frozenset()
@@ -436,6 +249,7 @@ class QueryPins:
     engine_authored: frozenset[str] = frozenset()
     unread_price_basis: bool = False
     elected_has_data: bool = False
+    denominator_kinds: Mapping[str, DenominatorKind] = field(default_factory=dict)
 
 
 def query_pins(
@@ -447,9 +261,12 @@ def query_pins(
     qualifier_readings: Sequence[QualifierReadings] = (),
     unread_price_basis: bool = False,
     elected_has_data: bool = False,
+    denominator_kinds: Mapping[str, DenominatorKind] | None = None,
+    quantity: QuantityRequirement,
 ) -> QueryPins:
     """Read the pins of one leg from its phrase, bindings, qualifier matches and
-    two-reading spans."""
+    two-reading spans. The normalisation pins are the leg's `quantity`
+    (`ResolveState.quantity_requirement`)."""
     index, measure_index = get_index(), get_measure_index()
     qualifiers: set[str] = set()
     constraint_matches: dict[str, set[str]] = {}
@@ -458,11 +275,11 @@ def query_pins(
             qualifiers |= measure_index.reading_set(match.code_dcid)
         else:
             constraint_matches.setdefault(match.code_system, set()).update(
-                index.descendants(match.code_dcid)
+                index.expansion(match.code_dcid)
             )
     return QueryPins(
-        normalisation=query_normalisation(variable, strong=True),
-        normalisation_framing=query_normalisation(variable, strong=False),
+        normalisation=quantity.named,
+        normalisation_framing=quantity.framing,
         residence=frozenset(_RESIDENCE_TOKEN_RE.findall(variable.lower())),
         qualifiers=frozenset(qualifiers),
         constraint_matches={prop: frozenset(values) for prop, values in constraint_matches.items()},
@@ -471,7 +288,21 @@ def query_pins(
         engine_authored=engine_authored,
         unread_price_basis=unread_price_basis,
         elected_has_data=elected_has_data,
+        denominator_kinds=denominator_kinds or {},
     )
+
+
+def _one_measure(first: str, second: str) -> bool:
+    """Whether two measured properties measure one quantity: equal, or both values of the
+    declared `measuredProperty` measure axis, as an amount and a grant equivalent of one
+    flow are (`MeasureIndex.axes`)."""
+    if first == second:
+        return True
+    measure_index = get_measure_index()
+    if not any(axis.axis == _MEASURED_PROPERTY_AXIS for axis in measure_index.axes):
+        return False
+    on_axis = {row.dcid for row in measure_index.values if row.axis == _MEASURED_PROPERTY_AXIS}
+    return first in on_axis and second in on_axis
 
 
 def is_cross_population_false_friend(elected: ShapeDraft, alternate: ShapeDraft) -> bool:
@@ -621,9 +452,10 @@ class AlternateJudge:
     that serves it (`serving_member_rows`), elected under the query the answer path builds
     for it (`_serving_query`): the leg's bindings on the slots it declares, its named
     source, and the role keys `role_keys` gives for it, the keys its identity binds the
-    query's places under, none by default. Member readings and verdicts are memoised on
-    object identity, since distinct shapes can share one `shape_id`. Each memo entry holds its
-    shape, so no other shape takes the same identity while the judge lives.
+    query's places under and the axes it leaves open, none by default. Member readings and
+    verdicts are memoised on object identity, since distinct shapes can share one `shape_id`.
+    Each memo entry holds its shape, so no other shape takes the same identity while the
+    judge lives.
     """
 
     def __init__(
@@ -631,7 +463,7 @@ class AlternateJudge:
         pins: QueryPins,
         elected: ShapeDraft,
         *,
-        role_keys: Callable[[ShapeDraft], Collection[str]] = lambda _shape: (),
+        role_keys: Callable[[ShapeDraft], RoleKeys] = lambda _shape: RoleKeys(),
     ) -> None:
         self.pins = pins
         self.elected = elected
@@ -663,7 +495,13 @@ class AlternateJudge:
             if reading_for_shape(readings, elected) is readings.measure
             for dcid in get_measure_index().reading_set(readings.measure.code_dcid)
         )
-        self.normalisation = normalisation_class(elected)
+        self.normalisation = normalisation_class(elected, kinds=pins.denominator_kinds)
+        # Whether the elected shape is a reading of the normalisation the query names. When
+        # it is, an alternate is compared with the request alone; when not, an alternate
+        # of the elected class is no further from the request than the election.
+        self.elected_fulfils = fulfils(
+            QuantityRequirement(pins.normalisation), elected, pins.denominator_kinds
+        )
         self.residence = frozenset().union(*(member.residence for member in self.served))
         self.holds = frozenset(prop for member in self.served for prop in member.properties)
         index = get_index()
@@ -672,7 +510,7 @@ class AlternateJudge:
             for prop, value in member.constraints.items():
                 values.setdefault(prop, set()).add(value)
         self.values = {
-            prop: frozenset(found for value in held for found in index.descendants(value))
+            prop: frozenset(found for value in held for found in index.expansion(value))
             for prop, held in values.items()
         }
         self.named = frozenset(
@@ -696,7 +534,8 @@ class AlternateJudge:
             for binding in self.pins.bindings
             if binding.property_dcid is None or binding.property_dcid in declared
         ]
-        return shape_query(shape, bindings, self._role_keys(shape))
+        role_keys = self._role_keys(shape)
+        return shape_query(shape, bindings, role_keys.bound, open_role_keys=role_keys.open)
 
     def members(self, shape: ShapeDraft) -> tuple[tuple[_Member, ...], bool]:
         """The shape's members, from the index rows of the dataset that serves it
@@ -780,9 +619,9 @@ class AlternateJudge:
 
     def _normalisation_refusal(self, alternate: ShapeDraft) -> _Refusal | None:
         named = self.pins.normalisation
-        cls = normalisation_class(alternate)
-        honoured = any(_honours(alternate, cls, n) for n in self.pins.normalisation_framing)
-        if named and not honoured and cls != self.normalisation:
+        cls = normalisation_class(alternate, kinds=self.pins.denominator_kinds)
+        honoured = any(honours(alternate, cls, n) for n in self.pins.normalisation_framing)
+        if named and not honoured and (self.elected_fulfils or cls != self.normalisation):
             return (
                 _PIN,
                 _NORMALISATION,
@@ -790,14 +629,16 @@ class AlternateJudge:
                 f"alternate beside a {self.normalisation} election does not honour",
             )
         # Any denominator arc makes the alternate a quotient of the elected level, and a
-        # `series` ratio is one only when its numerator is that level: the same population
-        # type and measured property. Education spending as a share of GDP does not divide a
+        # `series` ratio is one only when its numerator measures that level: the same
+        # population type, and a measured property that is the elected one or shares the
+        # declared measure axis with it (`_one_measure`). Grant equivalents as a share of GNI
+        # divide an amount of aid; education spending as a share of GDP does not divide a
         # count of education facilities. An `other` alternate states no denominator, so
         # nothing shows it divides the level.
         divides = cls in ("per_person", "per_area", "unknown") or (
             cls == "series"
             and alternate.pop_type_dcid == self.elected.pop_type_dcid
-            and alternate.meas_prop_dcid == self.elected.meas_prop_dcid
+            and _one_measure(alternate.meas_prop_dcid, self.elected.meas_prop_dcid)
         )
         if self.normalisation == "level" and divides:
             if honoured:

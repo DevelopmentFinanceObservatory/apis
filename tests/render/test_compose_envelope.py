@@ -228,7 +228,7 @@ def test_token_conservation_pairwise_and_triple_over_round_trip_specs():
 # No sentence to compose.
 
 
-def test_no_include_sentence_composes_to_none():
+def test_a_part_without_a_sentence_composes_to_none():
     part = DefinitePart(
         status="definite",
         variable_text="population",

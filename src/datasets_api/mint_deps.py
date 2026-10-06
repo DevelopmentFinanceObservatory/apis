@@ -44,13 +44,14 @@ class MintDeps:
     capability_version: str
     ceiling: int
     member_concurrency: int
-    # Shares `graph`. Direct kind resolvers use this instance. The door builds one per request.
+    # The process's shared enumerator (`statvar_members.shared_enumerator`), which holds no
+    # graph. Direct kind resolvers use it.
     enumerator: MemberEnumerator
     # Shares `graph` and caches country-code and label lookups for the process lifetime.
     enrichment: EnrichmentLookup
     # The process-wide loaded index decodes StatVar-declared code systems during rendering.
     code_index: CodeIndex
-    # One process-wide cache shared by materialisations and previews.
+    # One process-wide cache shared by materialisations.
     rate_cache: RateTableCache
     # Process-wide service used by admission before SDMX calls. It stays outside `ServeDeps`.
     coverage: CoverageService

@@ -90,7 +90,6 @@ def _run(
             graph=graph,
             resolver=make_resolver(graph),
             llm=_GuardBindLLM(also_plausible, chosen_shape_index=chosen_shape_index),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
@@ -166,7 +165,7 @@ def test_one_alt_survivor_carried_as_alternate_match():
     assert result.specs == ()
     assert result.flagged_match is None
     assert result.alternate_match is not None
-    sv_dcids = [sv.ref for sv in result.alternate_match.resolved.stat_vars.items]
+    sv_dcids = [sv.ref.dcid for sv in result.alternate_match.resolved.members]
     assert sv_dcids == [_STD_SV]
 
 
@@ -265,7 +264,6 @@ def _run_role_bearing_one_alt_scenario():
             graph=graph,
             resolver=make_resolver(graph),
             llm=_GuardBindLLM([0], chosen_shape_index=1),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(observations={}),
             coverage=empty_coverage_snapshot(),

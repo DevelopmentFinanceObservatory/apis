@@ -656,64 +656,6 @@ def test_mint_facet_probe_waits_for_a_materialise_slot_and_times_out_as_503(
         assert fetch_calls_b["n"] == fetch_calls_while_held + 1
 
 
-def test_a_preview_waits_for_the_slot_a_mint_holds_and_refuses_as_a_mint_does() -> None:
-    """While spec A's mint holds the only slot, a preview of B fetches nothing and returns the
-    retryable 503 a mint of B returns after the 0.1 s wait bound. After release, it previews."""
-    started = threading.Event()
-    hold_a = threading.Event()
-    fetch_calls_b = {"n": 0}
-
-    def _slow_transport(request: httpx.Request) -> httpx.Response:
-        variable_param = request.url.params.get("c[variableMeasured]", "")
-        body = next(csv for ref, csv in _CSV_BY_STAT_VAR.items() if ref in variable_param)
-        if _STAT_VAR_A in variable_param:
-            started.set()
-            assert hold_a.wait(timeout=5), "the test never released spec A's fetch"
-        elif _STAT_VAR_B in variable_param:
-            fetch_calls_b["n"] += 1
-        return httpx.Response(
-            200,
-            text=body,
-            headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
-        )
-
-    preview_b = {"schema_version": 1, "input": _scope(statvar=_REF_B)["input"], "preview": {}}
-    results: dict[str, int] = {}
-
-    with _client(
-        materialise_max_concurrency=1,
-        transport=_slow_transport,  # type: ignore[arg-type]
-        materialise_wait_seconds=0.1,
-    ) as client:
-
-        def _mint_a() -> None:
-            resp = client.post("/api/datasets", json=_scope(statvar=_REF_A))
-            results["mint_a"] = resp.status_code
-
-        mint_thread = threading.Thread(target=_mint_a)
-        mint_thread.start()
-        assert started.wait(timeout=5)
-
-        blocked_preview = client.post("/api/datasets", json=preview_b)
-        blocked_mint = client.post("/api/datasets", json=_scope(statvar=_REF_B))
-
-        assert not hold_a.is_set()
-        assert blocked_preview.status_code == blocked_mint.status_code == 503, blocked_preview.text
-        assert blocked_preview.json()["code"] == blocked_mint.json()["code"]
-        assert blocked_preview.json()["code"] == "service_unavailable"
-        assert blocked_preview.json()["retryable"] is True
-        assert fetch_calls_b["n"] == 0
-
-        hold_a.set()
-        mint_thread.join(timeout=10)
-        assert not mint_thread.is_alive()
-        assert results["mint_a"] == 200
-
-        previewed = client.post("/api/datasets", json=preview_b)
-        assert previewed.status_code == 200, previewed.text
-        assert fetch_calls_b["n"] == 1
-
-
 def test_posted_definition_options_wait_for_the_slot_a_mint_holds_and_refuse_retryably() -> None:
     """B's definition is posted to the options route of a deployment that never registered it.
     While A's mint holds the only slot, the call fetches nothing and returns the retryable 503

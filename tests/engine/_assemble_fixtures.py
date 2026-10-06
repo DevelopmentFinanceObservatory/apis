@@ -14,7 +14,6 @@ from search.models import (
     EntityRoleDirectional,
     EntityRoleSubject,
     GraphRef,
-    PipelineStep,
     QueryEcho,
     StatVar,
     Timing,
@@ -41,10 +40,6 @@ def _make_diagnostics() -> Diagnostics:
 
 def _make_coverage(has_data: bool = True) -> CoverageBare:
     return CoverageBare(has_data=has_data)
-
-
-def _make_pipeline_steps() -> list[PipelineStep]:
-    return [PipelineStep(step="extract", ran=True)]
 
 
 def _make_entity(dcid: str, label: str) -> Entity:
@@ -157,19 +152,20 @@ def _make_spec(
     ]
 
     return build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape_model,
         slots=slots,
         stat_vars=stat_vars,
         entities=entities if entities is not None else [_make_entity("country/ETH", "Ethiopia")],
         coverage=_make_coverage(),
-        pipeline_trace=_make_pipeline_steps(),
         identity_entities=identity_entities,
     )
 
 
-# Its humanized name extends "test measured property", triggering the SV-name fallback.
+# Its name extends "test measured property", triggering the SV-name fallback.
 _PROMOTING_SV_DCID = "Test_Measured_Property_GDP"
+_PROMOTING_SV_NAME = "test measured property gdp"
 
 
 def _make_promoting_spec(purpose_dcid: str | None, place_dcid: str):
@@ -221,19 +217,19 @@ def _make_promoting_spec(purpose_dcid: str | None, place_dcid: str):
         members=[_PROMOTING_SV_DCID],
     )
 
-    sv_ref = GraphRef(dcid=_PROMOTING_SV_DCID, label=_PROMOTING_SV_DCID)
+    sv_ref = GraphRef(dcid=_PROMOTING_SV_DCID, label=_PROMOTING_SV_NAME)
     stat_vars = [
         StatVar(ref=sv_ref, shape_id=shape_draft.shape_id, slot_values=[], constraint_properties=[])
     ]
 
     return build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape_model,
         slots=slots,
         stat_vars=stat_vars,
         entities=[_make_entity("country/ETH", "Ethiopia")],
         coverage=_make_coverage(),
-        pipeline_trace=_make_pipeline_steps(),
     )
 
 

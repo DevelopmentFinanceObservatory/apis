@@ -1,6 +1,6 @@
 """Retrieve stored definitions with `GET /api/datasets/{id}` or its write-free `/options` route.
 
-The route accepts `spec_` and `col_` ids. It reads definitions from the registry and re-materialises
+The route accepts `spec_` ids. It reads definitions from the registry and re-materialises
 against the graph when needed. The register door owns identity writes. Grammar-valid ids absent from
 the registry return `spec_not_found`. Malformed ids reach the surface's 404 refusal route. Rendering
 options use dotted query keys, and unsupported options are refused.
@@ -12,6 +12,12 @@ refusals and `over_ceiling` match retrieval behaviour. `POST /options` carries t
 definition (`DefinitionOptionsRequest`), so it also answers for a spec no mint or register call
 has stored. The definition is admitted as a mint admits a sidecar, and nothing is registered.
 
+`POST /api/datasets/{id}/members` takes a `spec_` id and resolves the members a mint of it serves
+without materialising a frame (`MembersEnvelope`): each member's ref, label, roles and
+constraints, their count, and the family's count and digest. Its optional body carries the
+canonical definition an unregistered id needs, admitted as on the options route. It refuses as
+member resolution does.
+
 Retrieval delegates shared materialisation, registry, and snapshot errors to their classifiers.
 This door adds registry-miss, backpressure, and stored-data errors. Materialisation errors whose
 mint classification points into a POST body are wrapped without a pointer. Conversion refusals carry
@@ -20,8 +26,7 @@ no request pointer because their binding comes from the stored identity.
 Rehydration checks stored identities against the current graph. It can refuse unresolvable members,
 non-exportable definitions, role mismatches, over-ceiling enumerations, and non-reproducible
 identities. `MemberNotResolvable` is wrapped so retrieval issues omit the mint body's
-`/input/statvars` pointer. Collections aggregate member-resolution failures. Other member errors
-abort retrieval immediately.
+`/input/statvars` pointer. Other member errors abort retrieval immediately.
 
 A dedicated executor and semaphore isolate retrieval from mint work. Admitted worker calls finish
 after a client timeout, and shutdown drains permits within its budget. This door builds uninjected
@@ -35,7 +40,7 @@ import functools
 import logging
 import threading
 import time
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
@@ -65,11 +70,11 @@ from dataset_store.snapshot import (
     servable_location_of_media_type,
 )
 
-# registers the `dfo_subject_id` convertor
+# registers the `dfo_spec_id` convertor
 from datasets_api import routing  # noqa: F401
 from datasets_api.adapter import (
-    check_reproducible,
-    pinned_member_ref,
+    admitted_family,
+    member_read_bounds,
     rehydrate_definition,
     to_materialisation_request,
     verify_sidecar_definition,
@@ -87,7 +92,6 @@ from datasets_api.codes_materialise import (
     ExcludedByRegistry,
     MalformedSidecarIdentity,
     MemberNotResolvable,
-    MemberSelectionMismatch,
     RenderedArtifactSigningFailed,
     RoleSignatureIncompatible,
     SpecNotExportable,
@@ -97,7 +101,6 @@ from datasets_api.codes_snapshot import (
     SnapshotNotFound,
     SnapshotSigningFailed,
 )
-from datasets_api.codes_snapshot import SpecNotFound as SnapshotSpecNotFound
 from datasets_api.config import DatasetsBuildSettings, DatasetsSettings
 from datasets_api.currency import (
     clock_moved,
@@ -118,11 +121,17 @@ from datasets_api.headers import no_store_headers
 from datasets_api.kinds.spec_id import admit_sidecar
 from datasets_api.manifest import (
     collapsed_head_manifest,
+    decode_version_body,
     record_collapsed_head_version,
     reshape_warning_models,
 )
 from datasets_api.manifest_models import ArtifactEntryModel, Manifest, OptionsEnvelope
-from datasets_api.mint_models import DefinitionOptionsRequest, MintOptions
+from datasets_api.mint_models import (
+    DefinitionMembersRequest,
+    DefinitionOptionsRequest,
+    MintOptions,
+)
+from datasets_api.models import CanonicalDefinition
 from datasets_api.operation_store import LiveOperationStore, NullOperationStore, OperationStore
 from datasets_api.operations.submit import (
     OperationSubmitted,
@@ -154,7 +163,7 @@ from datasets_api.render import (
     render_and_store_series_statistics,
 )
 from datasets_api.revision import SentinelRevisionReader
-from datasets_api.schema import OperationResource
+from datasets_api.schema import MembersEnvelope, OperationResource, ServedMember
 from datasets_api.serve import (
     DEFINITION_ROUTE_LIVE,
     FRAME1_STORE_FAILED_MARKER,
@@ -162,15 +171,13 @@ from datasets_api.serve import (
     bundle_citations,
     log_bundle_not_linked,
     persisted_response,
-    prewrite_collection,
     prewrite_definition,
     raw_fetch_guard,
     refs_from_resolved_stat_vars,
-    serve_collection,
     serve_definition,
     with_linked_artifacts,
 )
-from datasets_api.shape import resolve_shapes
+from datasets_api.shape import StatVarShape
 from datasets_api.shutdown import ShutdownBudget
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.timings import PhaseTimings, door_call, phase, run_with_timings
@@ -214,14 +221,14 @@ from origin_catalogue.service import CatalogueService
 from series_coverage.index import CoverageIndex
 from series_coverage.shared import CoverageService, CoverageSnapshot, get_coverage_service
 from spec_registry import SpecIdMismatch
-from spec_registry.reader import LiveSpecReader, SpecReader, StoredCollection, StoredDefinition
-from statvar_members import MemberEnumerator
+from spec_registry.reader import LiveSpecReader, SpecReader, StoredDefinition
+from statvar_members import MemberEnumerator, shared_enumerator
 
 logger = logging.getLogger(__name__)
 
 # `DefinitionOptionsRequest` body paths the options route's refusals point at.
 _DEFINITION_POINTER = "/definition"
-_SELECTION_POINTER = "/resolved_stat_var_dcids"
+_STAT_VAR_PREFIX = "dcid:"
 
 
 def _sdmx_deadline(timeout: float) -> float:
@@ -235,7 +242,7 @@ class SpecNotFound(Exception):
 
     def __init__(self, *, id: str) -> None:
         self.id = id
-        super().__init__(f"no definition or collection is registered at id {id!r}")
+        super().__init__(f"no definition is registered at id {id!r}")
 
 
 class DefinitionBackpressure(Exception):
@@ -257,21 +264,6 @@ class DefinitionMemberNotResolvable(Exception):
         if truncated:
             detail += "; more members disagreed than are named here"
         super().__init__(detail)
-
-
-class RegistryInconsistent(Exception):
-    """The collection lists a member missing from the same registry read.
-
-    It maps to non-retryable `internal_error`, 500.
-    """
-
-    def __init__(self, *, collection_id: str, member_spec_id: str) -> None:
-        self.collection_id = collection_id
-        self.member_spec_id = member_spec_id
-        super().__init__(
-            f"collection {collection_id!r} names member {member_spec_id!r}, which its own "
-            "registry has no definition for"
-        )
 
 
 class StoredTraceMissingResolvedStatVars(Exception):
@@ -323,11 +315,6 @@ def classify_definition_exception(exc: BaseException) -> ProblemSpec | None:
             truncated=exc.truncated,
             issues=issues,
         )
-    if isinstance(exc, RegistryInconsistent):
-        logger.error(
-            "Datasets definition door's collection read was internally inconsistent: %s", exc
-        )
-        return ProblemSpec(status=500, code="internal_error", detail=str(exc), retryable=False)
     if isinstance(exc, StoredTraceMissingResolvedStatVars):
         logger.error(
             "Datasets definition door's stored manifest trace was missing resolved_stat_vars: %s",
@@ -387,7 +374,7 @@ class DefinitionDeps:
     capability_version: str
     ceiling: int
     member_concurrency: int
-    # Direct `_serve_*` callers use this graph-bound enumerator. Routes build one per request.
+    # The process's shared member enumerator (`statvar_members.shared_enumerator`).
     enumerator: MemberEnumerator
     # Process-wide country-code and label cache, built with the graph and passed to `ServeDeps`.
     enrichment: EnrichmentLookup
@@ -446,48 +433,10 @@ def _serve_deps(deps: DefinitionDeps) -> ServeDeps:
     )
 
 
-def _seed_from_head(spec_id: str, *, deps: DefinitionDeps) -> tuple[str, ...] | None:
-    """Recover the resolution seed recorded on the subject's current head.
-
-    The identity omits `resolved_stat_var_dcids`. The trace's `resolved_stat_vars` list stores it.
-    Load the manifest without artifacts and strip `dcid:` prefixes for `resolve_definition_members`.
-
-    Return `None` when the head or version is unavailable or revoked, or an older trace lacks the
-    field. Resolution then runs unseeded, proving completeness from its walked window or refusing
-    `over_ceiling`. This helper returns a seed or `None` for every input.
-
-    The recorded list preserves the population resolved by a truncated-but-proven-complete mint.
-    It adds candidates and keeps every member the walk would find, so later reads use the same
-    population.
-    """
-    head = deps.head_store.read_head(spec_id)
-    if head is None:
-        return None
-    try:
-        manifest = _load_stored(
-            subject_id=spec_id,
-            content_version=head.content_version,
-            deps=deps,
-            include_artifacts=False,
-        )
-    except (SnapshotNotFound, SnapshotRevoked, SnapshotSpecNotFound):
-        return None
-    resolved_stat_vars = manifest.trace.get("resolved_stat_vars")
-    if resolved_stat_vars is None:
-        return None
-    refs = refs_from_resolved_stat_vars(cast("list[dict[str, object]]", resolved_stat_vars))
-    return tuple(ref.removeprefix("dcid:") for ref in refs)
-
-
 def _resolve_spec_requests(
-    *, spec_id: str, deps: DefinitionDeps, seed: Sequence[str] | None = None
+    *, spec_id: str, deps: DefinitionDeps
 ) -> tuple[StoredDefinition, Sequence[MaterialisationRequest]]:
-    """Read and rehydrate a stored spec, seeding described-arm resolution with `seed` or, when
-    the caller holds none, from the spec's head when possible.
-
-    The worker passes the members its operation stored, which the submitting door resolved.
-    A first mint has no head, so those members are the only seed that reproduces a family a
-    posted root proved complete.
+    """Read and rehydrate a stored spec.
 
     Wrap `MemberNotResolvable` so the GET route uses retrieval's pointer-free refusal.
     """
@@ -495,38 +444,36 @@ def _resolve_spec_requests(
         stored = deps.spec_reader.read_definition(spec_id)
         if stored is None:
             raise SpecNotFound(id=spec_id)
-        return stored, _rehydrate_stored(stored, deps=deps, seed=seed)
+        return stored, _rehydrate_stored(stored, deps=deps)
 
 
 def _rehydrate_stored(
-    stored: StoredDefinition, *, deps: DefinitionDeps, seed: Sequence[str] | None
+    stored: StoredDefinition, *, deps: DefinitionDeps
 ) -> Sequence[MaterialisationRequest]:
-    """Rehydrate a registered spec, seeded with `seed` or, when that is `None`, its head's."""
-    if seed is None:
-        seed = _seed_from_head(stored.spec_id, deps=deps)
+    """Rehydrate a registered spec, its member walk bounded by `member_read_bounds`."""
     try:
         _shapes, requests = rehydrate_definition(
             stored,
             graph=deps.graph,
             enumerator=deps.enumerator,
             code_index=deps.code_index,
-            seed=seed,
+            bounds=member_read_bounds(deps.settings, request_deadline=deps.deadline),
         )
     except MemberNotResolvable as exc:
         raise DefinitionMemberNotResolvable(members=exc.members, truncated=exc.truncated) from exc
     return requests
 
 
-def _verify_posted_definition(*, spec_id: str, body: DefinitionOptionsRequest) -> None:
+def _verify_posted_definition(*, spec_id: str, definition: CanonicalDefinition) -> None:
     """Refuse a posted definition whose identity does not hash to `spec_id` or whose
     `definition.spec_id` names another id."""
     try:
-        verify_sidecar_definition(body.definition, spec_id=spec_id)
+        verify_sidecar_definition(definition, spec_id=spec_id)
     except IdentityError as exc:
         raise MalformedSidecarIdentity(detail=str(exc), pointer=_DEFINITION_POINTER) from exc
-    if body.definition.spec_id != spec_id:
+    if definition.spec_id != spec_id:
         # The identity hashes to the path id, so the definition's own id is the one at fault.
-        raise SpecIdMismatch(supplied=body.definition.spec_id, computed=spec_id)
+        raise SpecIdMismatch(supplied=definition.spec_id, computed=spec_id)
 
 
 def _resolve_posted_spec_requests(
@@ -535,31 +482,23 @@ def _resolve_posted_spec_requests(
     """Resolve the definition `POST /options` carries for `spec_id`, writing nothing.
 
     `_verify_posted_definition` has already checked the body against `spec_id`. A registered id
-    resolves as the GET route resolves it. An unregistered one is admitted as
-    `preview_spec_id` admits a sidecar, seeded with the posted dcids, and becomes the
-    `StoredDefinition` a registration of it would read back, so its materialisation and envelope
-    are the ones a registered id gets. Member refusals keep the GET route's pointer-free form. A
-    posted dcid outside the family points into this body.
+    resolves as the GET route resolves it. An unregistered one is admitted as a mint admits a
+    sidecar (`admit_sidecar`) and becomes the `StoredDefinition` a registration of it would read
+    back, so its materialisation and envelope are the ones a registered id gets. Member refusals
+    keep the GET route's pointer-free form.
     """
     with phase("resolve"):
         stored = deps.spec_reader.read_definition(spec_id)
         if stored is not None:
-            return stored, _rehydrate_stored(stored, deps=deps, seed=None)
+            return stored, _rehydrate_stored(stored, deps=deps)
         try:
             recomputed, shapes = admit_sidecar(
-                body.definition,
-                spec_id=spec_id,
-                scope=None,
-                deps=deps,
-                selection=body.resolved_stat_var_dcids,
+                body.definition, spec_id=spec_id, scope=None, deps=deps
             )
         except MemberNotResolvable as exc:
             raise DefinitionMemberNotResolvable(
                 members=exc.members, truncated=exc.truncated
             ) from exc
-        except MemberSelectionMismatch as exc:
-            exc.pointer = _SELECTION_POINTER
-            raise
         identity = recomputed.identity
         requests = tuple(
             to_materialisation_request(identity, shape=shape, code_index=deps.code_index)
@@ -760,7 +699,7 @@ def _render_stored_rendering(
     can assign the correct collapsed content version.
 
     Return the collapsed manifest when groupby changes the content version. Otherwise record the
-    artifact under the base version and add it to the manifest. Return `None` for collections, a
+    artifact under the base version and add it to the manifest. Return `None` for a
     missing frame1 location, missing or corrupt frame1 bytes, or a missing groupby preimage. Raise
     `StoredTraceMissingResolvedStatVars` when the groupby population is incomplete. Other render
     errors propagate to the shared classifier.
@@ -773,8 +712,6 @@ def _render_stored_rendering(
     The response lists the artifact linked under the request's rendering key when a
     concurrent call linked one first (`with_linked_artifacts`).
     """
-    if manifest.definition is None:
-        return None
     locations = deps.snapshot_reader.read_artifact_locations(subject_id, content_version)
     location = servable_location_of_media_type(
         locations, media_type=FRAME1_MEDIA_TYPE, now=deps.now()
@@ -828,6 +765,13 @@ def _render_stored_rendering(
             metadata_read_seconds=deps.settings.metadata_read_seconds,
             coverage_index=coverage_index,
         )
+        # A pivot reads the stored pivot facts. They check its caps before the scan and let a
+        # non-unique refusal name the varying columns.
+        stored = (
+            deps.snapshot_reader.read_version(subject_id, content_version)
+            if options.pivot is not None
+            else None
+        )
         rendered = render_and_store(
             frame_chunks=(table,),
             options=options,
@@ -852,6 +796,9 @@ def _render_stored_rendering(
             code_index=deps.code_index,
             resolved_stat_var_refs=resolved_stat_var_refs,
             groupby_preimage=groupby_preimage,
+            output_profile=(
+                decode_version_body(stored.immutable_body)[1] if stored is not None else None
+            ),
             deadline=deps.deadline,
             metadata_read_seconds=deps.settings.metadata_read_seconds,
         )
@@ -972,7 +919,6 @@ def _resolve_currency(
     *,
     subject_id: str,
     resolve_probe_requests: Callable[[], Sequence[MaterialisationRequest]],
-    combine: bool,
     deps: DefinitionDeps,
     materialise_fresh: Callable[
         [Sequence[MemberSignal] | None, CollectionFacetProbe, str | None, CoverageSnapshot],
@@ -1051,7 +997,7 @@ def _resolve_currency(
             coverage=coverage_snapshot.index,
             deadline=deps.deadline,
         )
-    signals = derive_signals(probe_requests, probe, graph=deps.graph, combine=combine)
+    signals = derive_signals(probe_requests, probe, graph=deps.graph)
     if signals is not None and head is not None:
         signals = recheck_rate_provenance(
             signals,
@@ -1188,7 +1134,6 @@ def _serve_spec(
     return _resolve_currency(
         subject_id=spec_id,
         resolve_probe_requests=lambda: _resolve()[1],
-        combine=True,
         deps=deps,
         materialise_fresh=_materialise_fresh,
         write_confirmation=True,
@@ -1217,7 +1162,7 @@ def _serve_spec_options(
     """
     if body is not None:
         with phase("resolve"):
-            _verify_posted_definition(spec_id=spec_id, body=body)
+            _verify_posted_definition(spec_id=spec_id, definition=body.definition)
 
     @functools.cache
     def _resolve() -> tuple[StoredDefinition, Sequence[MaterialisationRequest]]:
@@ -1269,7 +1214,6 @@ def _serve_spec_options(
     manifest = _resolve_currency(
         subject_id=spec_id,
         resolve_probe_requests=lambda: _resolve()[1],
-        combine=True,
         deps=deps,
         materialise_fresh=_materialise_fresh,
         write_confirmation=False,
@@ -1279,235 +1223,71 @@ def _serve_spec_options(
     return _to_options_envelope(manifest)
 
 
-def _resolve_collection_requests(
-    *, collection_id: str, deps: DefinitionDeps
-) -> tuple[StoredCollection, list[tuple[StoredDefinition, MaterialisationRequest]]]:
-    """Resolve collection members in stored order before materialisation.
+def _resolve_spec_members(
+    *, spec_id: str, definition: CanonicalDefinition | None, deps: DefinitionDeps
+) -> tuple[Mapping[str, object], tuple[StatVarShape, ...]]:
+    """Resolve the identity `spec_id` names and the members a mint of it serves, writing
+    nothing.
 
-    Pinned members share one batched shape read. Described members resolve individually. Only
-    `MemberNotResolvable` failures aggregate. Other errors abort at the failing member, preserving
-    stored-order precedence.
+    A registered id resolves its stored identity as the GET route does, with its roles
+    checked (`rehydrate_definition`). An unregistered one needs `definition`, admitted as a
+    mint admits a sidecar (`admit_sidecar`). Without it the call refuses `spec_not_found`.
+    Member refusals take the GET route's pointer-free form.
     """
     with phase("resolve"):
-        stored_collection = deps.spec_reader.read_collection(collection_id)
-        if stored_collection is None:
-            raise SpecNotFound(id=collection_id)
-
-        stored_members = deps.spec_reader.read_definitions(stored_collection.member_spec_ids)
-
-        pinned_refs: dict[str, str] = {}
-        for member_spec_id in stored_collection.member_spec_ids:
-            member_stored = stored_members.get(member_spec_id)
-            if member_stored is None:
-                continue
-            ref = pinned_member_ref(member_stored.identity)
-            if ref is not None:
-                pinned_refs[member_spec_id] = ref
-        shapes_by_ref = resolve_shapes(tuple(pinned_refs.values()), graph=deps.graph)
-
-        failing: list[str] = []
-        requests: list[tuple[StoredDefinition, MaterialisationRequest]] = []
-        for member_spec_id in stored_collection.member_spec_ids:
-            member_stored = stored_members.get(member_spec_id)
-            if member_stored is None:
-                raise RegistryInconsistent(
-                    collection_id=collection_id, member_spec_id=member_spec_id
-                )
-            pinned_ref = pinned_refs.get(member_spec_id)
-            if pinned_ref is not None:
-                shape = shapes_by_ref.get(pinned_ref)
-                if shape is None:
-                    failing.append(member_spec_id)
-                    continue
-                check_reproducible(member_stored.identity, spec_id=member_spec_id, shape=shape)
-                requests.append(
-                    (
-                        member_stored,
-                        to_materialisation_request(
-                            member_stored.identity, shape=shape, code_index=deps.code_index
-                        ),
-                    )
-                )
-                continue
-            try:
-                _member_shapes, member_requests = rehydrate_definition(
-                    member_stored,
+        stored = deps.spec_reader.read_definition(spec_id)
+        if stored is None and definition is None:
+            raise SpecNotFound(id=spec_id)
+        try:
+            if stored is not None:
+                shapes, _requests = rehydrate_definition(
+                    stored,
                     graph=deps.graph,
                     enumerator=deps.enumerator,
                     code_index=deps.code_index,
-                    accepts_seed=False,
+                    bounds=member_read_bounds(deps.settings, request_deadline=deps.deadline),
                 )
-            except MemberNotResolvable as exc:
-                failing.extend(exc.members)
-                continue
-            if len(member_requests) > 1:
-                # Collections require each described-arm member to resolve to one StatVar series.
-                raise OverCeilingError(
-                    f"collection member {member_spec_id!r} enumerates "
-                    f"{len(member_requests)} StatVar series against the graph, which a "
-                    "collection cannot express as a single member",
-                    ceiling_kind="member_cardinality",
-                    count=len(member_requests),
-                    cap=1,
-                )
-            requests.append((member_stored, member_requests[0]))
-        if failing:
-            raise DefinitionMemberNotResolvable(members=tuple(failing))
-    return stored_collection, requests
+                return stored.identity, shapes
+            assert definition is not None
+            recomputed, shapes = admit_sidecar(definition, spec_id=spec_id, scope=None, deps=deps)
+        except MemberNotResolvable as exc:
+            raise DefinitionMemberNotResolvable(
+                members=exc.members, truncated=exc.truncated
+            ) from exc
+    return recomputed.identity, shapes
 
 
-def _serve_collection(
-    *, collection_id: str, options: MintOptions, deps: DefinitionDeps, trace_id: str | None
-) -> Manifest:
-    """Memoise collection resolution so the currency check resolves at most once."""
-
-    @functools.cache
-    def _resolve() -> tuple[
-        StoredCollection, list[tuple[StoredDefinition, MaterialisationRequest]]
-    ]:
-        return _resolve_collection_requests(collection_id=collection_id, deps=deps)
-
-    def _probe_requests() -> list[MaterialisationRequest]:
-        _stored_collection, requests = _resolve()
-        return [request for _member_stored, request in requests]
-
-    def _materialise_fresh(
-        signal: Sequence[MemberSignal] | None,
-        probe: CollectionFacetProbe,
-        expected_content_version: str | None,
-        coverage_snapshot: CoverageSnapshot,
-    ) -> Manifest:
-        stored_collection, requests = _resolve()
-        try:
-            estimate = sync_estimate(
-                [request for _member_stored, request in requests],
-                index=coverage_snapshot.index,
-                member_concurrency=deps.member_concurrency,
+def _serve_spec_members(
+    *, spec_id: str, deps: DefinitionDeps, body: DefinitionMembersRequest | None
+) -> MembersEnvelope:
+    """The members a mint of `spec_id` serves, with one batched label read, and the family
+    they come from, as the mint's trace states it (`admitted_family`). A posted definition is
+    verified against `spec_id` first, registered id or not."""
+    definition = body.definition if body is not None else None
+    if definition is not None:
+        with phase("resolve"):
+            _verify_posted_definition(spec_id=spec_id, definition=definition)
+    identity, shapes = _resolve_spec_members(spec_id=spec_id, definition=definition, deps=deps)
+    with phase("labels"):
+        labels = deps.graph.node_labels_batch(
+            [shape.stat_var.removeprefix(_STAT_VAR_PREFIX) for shape in shapes]
+        )
+    family = admitted_family(identity, shapes[0])
+    return MembersEnvelope(
+        spec_id=spec_id,
+        members=[
+            ServedMember(
+                ref=shape.stat_var,
+                label=labels.get(shape.stat_var.removeprefix(_STAT_VAR_PREFIX)),
+                roles=list(shape.declared_roles),
+                constraints=dict(shape.slots),
             )
-            refuse_excel_over_estimate(estimate, format=options.format)
-            submit_over_budget(
-                subject_id=stored_collection.collection_id,
-                options=options,
-                estimate=estimate,
-                coverage_stamp=coverage_snapshot.stamp,
-                operation_store=deps.operation_store,
-                task_client=deps.task_client,
-                within_budget=within_sync_budget(
-                    estimate,
-                    sync_budget_rows=deps.settings.sync_budget_rows,
-                    sync_budget_requests=deps.settings.sync_budget_requests,
-                ),
-                async_max_rows=deps.settings.async_max_rows,
-                async_max_requests=deps.settings.async_max_requests,
-            )
-            manifest = serve_collection(
-                stored=stored_collection,
-                requests=requests,
-                options=options,
-                deps=_serve_deps(deps),
-                trace_id=trace_id,
-                signal=signal,
-                expected_content_version=expected_content_version,
-                precomputed_probe=probe,
-                ceiling=raw_fetch_guard(estimate, floor=deps.ceiling),
-                coverage_stamp=coverage_snapshot.stamp,
-                coverage_index=coverage_snapshot.index,
-            )
-        except (
-            DefaultFacetUndefinedError,
-            FacetNotAvailableError,
-            ExcludedByRegistry,
-        ) as exc:
-            raise DefinitionMaterialiseRefused(wrapped=exc) from exc
-        return manifest
-
-    return _resolve_currency(
-        subject_id=collection_id,
-        resolve_probe_requests=_probe_requests,
-        combine=False,
-        deps=deps,
-        materialise_fresh=_materialise_fresh,
-        write_confirmation=True,
-        options=options,
-        trace_id=trace_id,
+            for shape in sorted(shapes, key=lambda shape: shape.stat_var)
+        ],
+        served_count=len(shapes),
+        family_member_count=family.count if family is not None else None,
+        family_member_digest=family.digest if family is not None else None,
     )
-
-
-def _serve_collection_options(
-    *, collection_id: str, deps: DefinitionDeps, trace_id: str | None
-) -> OptionsEnvelope:
-    """Run `_serve_collection`'s currency check as a prewrite that records no version, and
-    advance the head only for a clock-moved head the rebuild reproduces (`_resolve_currency`).
-
-    A rebuild runs inline under `deps.ceiling`, so `refuse_inline_over_ceiling` refuses an
-    estimate above it before any fetch.
-    """
-
-    @functools.cache
-    def _resolve() -> tuple[
-        StoredCollection, list[tuple[StoredDefinition, MaterialisationRequest]]
-    ]:
-        return _resolve_collection_requests(collection_id=collection_id, deps=deps)
-
-    def _probe_requests() -> list[MaterialisationRequest]:
-        _stored_collection, requests = _resolve()
-        return [request for _member_stored, request in requests]
-
-    def _materialise_fresh(
-        _signal: Sequence[MemberSignal] | None,
-        probe: CollectionFacetProbe,
-        _expected_content_version: str | None,
-        coverage_snapshot: CoverageSnapshot,
-    ) -> Manifest:
-        stored_collection, requests = _resolve()
-        try:
-            estimate = sync_estimate(
-                [request for _member_stored, request in requests],
-                index=coverage_snapshot.index,
-                member_concurrency=deps.member_concurrency,
-            )
-            refuse_inline_over_ceiling(estimate, ceiling=deps.ceiling)
-            prewrite = prewrite_collection(
-                stored=stored_collection,
-                requests=requests,
-                sdmx=deps.sdmx,
-                graph=deps.graph,
-                revision_reader=deps.revision_reader,
-                ceiling=deps.ceiling,
-                materialiser_build=deps.materialiser_build,
-                capability_version=deps.capability_version,
-                enrichment=deps.enrichment,
-                member_concurrency=deps.member_concurrency,
-                code_index=deps.code_index,
-                rate_cache=deps.rate_cache,
-                materialise_wait_seconds=deps.settings.materialise_wait_seconds,
-                settings=deps.settings,
-                materialise_semaphore=deps.materialise_semaphore,
-                precomputed_probe=probe,
-                coverage_index=coverage_snapshot.index,
-                deadline=deps.deadline,
-                snapshot_reader=deps.snapshot_reader,
-                documented=False,
-            )
-        except (
-            DefaultFacetUndefinedError,
-            FacetNotAvailableError,
-            ExcludedByRegistry,
-        ) as exc:
-            raise DefinitionMaterialiseRefused(wrapped=exc) from exc
-        return prewrite.manifest
-
-    manifest = _resolve_currency(
-        subject_id=collection_id,
-        resolve_probe_requests=_probe_requests,
-        combine=False,
-        deps=deps,
-        materialise_fresh=_materialise_fresh,
-        write_confirmation=False,
-        options=None,
-        trace_id=trace_id,
-    )
-    return _to_options_envelope(manifest)
 
 
 def _to_options_envelope(manifest: Manifest) -> OptionsEnvelope:
@@ -1515,7 +1295,6 @@ def _to_options_envelope(manifest: Manifest) -> OptionsEnvelope:
     return OptionsEnvelope(
         schema_version=manifest.schema_version,
         definition=manifest.definition,
-        collection=manifest.collection,
         content_version=manifest.content_version,
         coverage=manifest.coverage,
         output_options=manifest.output_options,
@@ -1601,14 +1380,7 @@ def _build_definition_deps(
         capability_version=capability_version,
         ceiling=ceiling,
         member_concurrency=member_concurrency,
-        # This is only the base instance a caller that skips
-        # `get_definition` and invokes `_serve_spec`/`_serve_collection`
-        # directly sees. `get_definition` builds its own throwaway
-        # `MemberEnumerator` per request instead (mirrors
-        # `datasets_api.doors.mint.mint_endpoint`'s identical guard).
-        enumerator=MemberEnumerator(graph=graph)
-        if graph is not None
-        else cast(MemberEnumerator, None),
+        enumerator=shared_enumerator(),
         enrichment=EnrichmentLookup(graph) if graph is not None else cast(EnrichmentLookup, None),
         code_index=code_index if code_index is not None else get_index(),
         rate_cache=rate_cache,
@@ -1674,9 +1446,9 @@ def _definition_open_graph_sdmx_and_artifact_store(
                 base_url=live_settings.un_graph_base_url,
                 timeout=state.settings.sdmx_timeout_seconds,
             ),
+            **live_settings.graph_cache_options(),
         )
         # Build graph-dependent helpers after resolving the live graph.
-        state.deps.enumerator = MemberEnumerator(graph=state.deps.graph)
         state.deps.enrichment = EnrichmentLookup(state.deps.graph)
     if not state.injected.sdmx:
         state.deps.sdmx = SdmxClient(
@@ -1778,38 +1550,26 @@ async def _run_retrieval[T](
 async def _get_definition_impl(
     id: str, request: Request, *, state: _DefinitionDoorState
 ) -> JSONResponse:
-    """Build request-scoped graph and deadline state, then dispatch by subject-id prefix."""
+    """Build request-scoped graph and deadline state, then serve the spec."""
     options = parse_query_options(request.query_params.multi_items())
     check_options_supported(options, code_index=state.deps.code_index)
     trace_id = get_trace_id()
     request_deps = replace(
         state.deps,
-        enumerator=MemberEnumerator(graph=state.deps.graph),
         deadline=_sdmx_deadline(state.settings.definition_timeout_seconds),
     )
     submitted_resource: OperationResource | None = None
     with door_call("definition", logger=logger) as call:
         try:
-            if id.startswith("spec_"):
-                manifest = await _run_retrieval(
-                    state,
-                    _serve_spec,
-                    timings=call.timings,
-                    spec_id=id,
-                    options=options,
-                    deps=request_deps,
-                    trace_id=trace_id,
-                )
-            elif id.startswith("col_"):
-                manifest = await _run_retrieval(
-                    state,
-                    _serve_collection,
-                    timings=call.timings,
-                    collection_id=id,
-                    options=options,
-                    deps=request_deps,
-                    trace_id=trace_id,
-                )
+            manifest = await _run_retrieval(
+                state,
+                _serve_spec,
+                timings=call.timings,
+                spec_id=id,
+                options=options,
+                deps=request_deps,
+                trace_id=trace_id,
+            )
         except OperationSubmitted as submitted:
             # Treat a 202 submission as a successful `door_call` outcome.
             submitted_resource = operation_submitted_resource(submitted)
@@ -1829,46 +1589,65 @@ async def _get_definition_impl(
     )
 
 
-async def _definition_options_impl(
-    id: str, request: Request, *, state: _DefinitionDoorState, body: DefinitionOptionsRequest | None
-) -> JSONResponse:
+def _refuse_query_keys(request: Request, *, route: str) -> None:
+    """Refuse the request's first query key, since `route` accepts none."""
     query_items = request.query_params.multi_items()
     if query_items:
         key, _value = query_items[0]
         raise QueryOptionsInvalid(
             pointer=pointer_for_key(key),
-            detail=(f"the options route accepts no query parameters; remove {key!r}"),
+            detail=(f"the {route} route accepts no query parameters; remove {key!r}"),
         )
+
+
+async def _definition_options_impl(
+    id: str, request: Request, *, state: _DefinitionDoorState, body: DefinitionOptionsRequest | None
+) -> JSONResponse:
+    _refuse_query_keys(request, route="options")
     trace_id = get_trace_id()
-    # Keep the member-group cache request-scoped.
     request_deps = replace(
         state.deps,
-        enumerator=MemberEnumerator(graph=state.deps.graph),
         deadline=_sdmx_deadline(state.settings.definition_timeout_seconds),
     )
     with door_call("definition_options", logger=logger) as call:
-        # A posted definition is a spec's. Under a `col_` id its hash check refuses.
-        if id.startswith("spec_") or body is not None:
-            envelope = await _run_retrieval(
-                state,
-                _serve_spec_options,
-                timings=call.timings,
-                spec_id=id,
-                deps=request_deps,
-                trace_id=trace_id,
-                body=body,
-            )
-        elif id.startswith("col_"):
-            envelope = await _run_retrieval(
-                state,
-                _serve_collection_options,
-                timings=call.timings,
-                collection_id=id,
-                deps=request_deps,
-                trace_id=trace_id,
-            )
+        envelope = await _run_retrieval(
+            state,
+            _serve_spec_options,
+            timings=call.timings,
+            spec_id=id,
+            deps=request_deps,
+            trace_id=trace_id,
+            body=body,
+        )
     return JSONResponse(
         envelope.model_dump(mode="json", exclude_none=True),
+        headers=no_store_headers(server_timing=call.server_timing),
+    )
+
+
+async def _definition_members_impl(
+    id: str,
+    request: Request,
+    *,
+    state: _DefinitionDoorState,
+    body: DefinitionMembersRequest | None,
+) -> JSONResponse:
+    _refuse_query_keys(request, route="members")
+    request_deps = replace(
+        state.deps,
+        deadline=_sdmx_deadline(state.settings.definition_timeout_seconds),
+    )
+    with door_call("definition_members", logger=logger) as call:
+        envelope = await _run_retrieval(
+            state,
+            _serve_spec_members,
+            timings=call.timings,
+            spec_id=id,
+            deps=request_deps,
+            body=body,
+        )
+    return JSONResponse(
+        envelope.model_dump(mode="json"),
         headers=no_store_headers(server_timing=call.server_timing),
     )
 
@@ -1970,14 +1749,14 @@ def build_definition_door(
 
     router = APIRouter()
 
-    @router.get("/api/datasets/{id:dfo_subject_id}", response_model=Manifest)
+    @router.get("/api/datasets/{id:dfo_spec_id}", response_model=Manifest)
     async def get_definition(id: str, request: Request) -> JSONResponse:
         return await _get_definition_impl(id, request, state=state)
 
-    @router.get("/api/datasets/{id:dfo_subject_id}/options", response_model=OptionsEnvelope)
+    @router.get("/api/datasets/{id:dfo_spec_id}/options", response_model=OptionsEnvelope)
     async def get_definition_options(id: str, request: Request) -> JSONResponse:
         """Write-free materialisation. Runs the pre-write half of
-        `serve_definition`/`serve_collection` alone, reported as
+        `serve_definition` alone, reported as
         `output_options`. This route reports what the data honours,
         stopping short of render. Any query key at all refuses
         `request_invalid` with an `/options/<key>` pointer, the same
@@ -1987,7 +1766,7 @@ def build_definition_door(
         """
         return await _definition_options_impl(id, request, state=state, body=None)
 
-    @router.post("/api/datasets/{id:dfo_subject_id}/options", response_model=OptionsEnvelope)
+    @router.post("/api/datasets/{id:dfo_spec_id}/options", response_model=OptionsEnvelope)
     async def post_definition_options(
         id: str, body: DefinitionOptionsRequest, request: Request
     ) -> JSONResponse:
@@ -1998,13 +1777,25 @@ def build_definition_door(
         """
         return await _definition_options_impl(id, request, state=state, body=body)
 
+    @router.post("/api/datasets/{id:dfo_spec_id}/members", response_model=MembersEnvelope)
+    async def post_definition_members(
+        id: str, request: Request, body: DefinitionMembersRequest | None = None
+    ) -> JSONResponse:
+        """The members a mint of the spec serves, resolved without materialising a frame:
+        each member's ref, label, declared roles and constraints, their count, and the
+        family's count and digest. The body may carry the spec's canonical `definition`,
+        which an unregistered id needs; it is admitted as a mint admits a sidecar and nothing
+        is registered. Refusals are the mint's member refusals. Query keys refuse as on the
+        options route.
+        """
+        return await _definition_members_impl(id, request, state=state, body=body)
+
     return DoorContribution(
         router=router,
         classify=classify_definition_exception,
         exception_types=(
             SpecNotFound,
             DefinitionMemberNotResolvable,
-            RegistryInconsistent,
             StoredTraceMissingResolvedStatVars,
             DefinitionMaterialiseRefused,
             QueryOptionsInvalid,
@@ -2012,7 +1803,6 @@ def build_definition_door(
             # Admission of a posted definition raises these. The mint and register classifiers
             # map them.
             MalformedSidecarIdentity,
-            MemberSelectionMismatch,
             SpecIdMismatch,
             DefinitionNotReproducible,
             SpecNotExportable,
@@ -2041,7 +1831,6 @@ def build_definition_door(
         exception_exemplars=(
             SpecNotFound(id="spec_exemplar"),
             DefinitionMemberNotResolvable(members=("spec_exemplar",)),
-            RegistryInconsistent(collection_id="col_exemplar", member_spec_id="spec_exemplar"),
             StoredTraceMissingResolvedStatVars(
                 subject_id="spec_exemplar", content_version="cv_exemplar"
             ),
@@ -2056,7 +1845,6 @@ def build_definition_door(
             QueryOptionsInvalid(pointer="/options/exemplar", detail="exemplar"),
             DefinitionBackpressure(),
             MalformedSidecarIdentity(detail="exemplar", pointer=_DEFINITION_POINTER),
-            MemberSelectionMismatch(foreign=((0, "exemplar"),)),
             SpecIdMismatch(supplied="spec_exemplar", computed="spec_exemplar_computed"),
             DefinitionNotReproducible(spec_ids=("spec_exemplar",), detail="exemplar"),
             SpecNotExportable(spec_id="spec_exemplar", detail="exemplar"),

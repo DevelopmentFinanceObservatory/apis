@@ -34,6 +34,7 @@ from search.engine.spec_id import mint_identity
 from search.models import IdentityBindingUnbound, OptionsFor, OptionsRequest
 from statvar_members import MemberEnumerator
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
+from tests.datasets_api._member_bounds import mint_bounds
 from tests.statvar_members.conftest import FakeMemberArcReader
 
 _FIRST = "provenance/First"
@@ -69,7 +70,7 @@ def _dataset(
     return DatasetDeclaration(
         provenance=provenance,
         label=provenance,
-        synonyms=(),
+        description="A test table.",
         opt_in=opt_in,
         absent_observation="zero",
         rank=rank,
@@ -172,8 +173,9 @@ def _mint(document: dict, index: CodeIndex) -> dict[str, ElectedDataset | None]:
         document,
         spec_id="spec_test",
         graph=graph,
-        enumerator=MemberEnumerator(graph=graph),
+        enumerator=MemberEnumerator(),
         code_index=index,
+        bounds=mint_bounds(),
     )
     assert sum(graph.calls.values()) == 0
     return {shape.stat_var.removeprefix("dcid:"): shape.dataset for shape in resolved.shapes}

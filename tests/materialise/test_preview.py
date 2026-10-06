@@ -11,7 +11,6 @@ import pytest
 from dc_sdmx import SdmxCapExceededError, SdmxClient
 from materialise import (
     MaterialisationRequest,
-    PreviewBudget,
     finish_materialise_preview,
     materialise_preview,
     materialise_spec,
@@ -22,7 +21,6 @@ from materialise.errors import (
     DefaultFacetUndefinedError,
     FacetNotAvailableError,
     MaterialisationUsageError,
-    OverCeilingError,
     UpstreamResponseError,
     UpstreamVersionChangedError,
 )
@@ -38,7 +36,7 @@ from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._fake_coverage import build_coverage_index
 
 from ._rate_table_support import RateTableServer, rate_csv, rate_row
-from ._scope_availability import ScopeAvailability, ScopeTransport
+from ._scope_availability import ScopeAvailability
 from .conftest import FakeGraphReader, FakeRevisionReader
 
 _BASE_URL = "https://datacommons.one.org/core/api"
@@ -385,32 +383,6 @@ def test_prepared_preview_validates_allowed_series_keys(
             series_limit=series_limit,
             allowed_series_keys=allowed_series_keys,
         )
-
-
-def test_prepared_preview_checks_series_ceiling_before_a_rate_gap():
-    providers = ["country/DEU", "country/FRA"]
-    sdmx, _server = _conversion_sdmx(
-        rows=[_conversion_row(provider=provider, year=2024) for provider in providers],
-        rate_years=[2025],
-        currencies=(("CurrencyUSD", "1.0"), ("CurrencyKES", "130.0")),
-    )
-    prepared = prepare_materialise_preview(
-        _conversion_request(currency="destination"),
-        sdmx=sdmx,
-        graph=_conversion_graph(national_currencies={"CurrencyKES": ("country/KEN",)}),
-        coverage=_conversion_coverage(providers),
-        limit=10,
-        ceiling=1,
-        refuse_over_ceiling=True,
-        rate_cache=RateTableCache(),
-        series_roles=("financingProvider",),
-        series_limit=10,
-    )
-
-    with pytest.raises(OverCeilingError) as refused:
-        finish_materialise_preview(prepared, time_period="2024")
-
-    assert (refused.value.ceiling_kind, refused.value.count, refused.value.cap) == ("rows", 2, 1)
 
 
 def test_rows_under_limit_are_not_truncated_and_every_survivor_is_in_the_frame():
@@ -1148,7 +1120,7 @@ def test_a_read_past_twenty_times_ceiling_raises_the_sdmx_cap():
     assert (capped.value.cap_kind, capped.value.cap) == ("rows", 20)
 
 
-def test_a_preview_without_the_survivor_ceiling_counts_every_survivor_past_it():
+def test_a_preview_counts_every_survivor_past_its_ceiling():
     """Search passes its `limit` as `ceiling` and truncates, so survivors past it are counted."""
     sdmx, graph, coverage, request = _single_entity_setup(rows=25)
 
@@ -1157,192 +1129,6 @@ def test_a_preview_without_the_survivor_ceiling_counts_every_survivor_past_it():
     )
 
     assert (preview.total_rows, preview.truncated) == (25, True)
-
-
-def test_a_preview_refusing_over_ceiling_stops_reading_once_survivors_pass_it():
-    """A subject-only member read at every country has no estimate to refuse it before the
-    fetch. The 80-block body exceeds Arrow's read-ahead, so `chunks_yielded` shows where each
-    read stopped: the survivor ceiling stops it within two blocks, and without it the read runs
-    on to the raw-fetch guard, 20 times `ceiling`."""
-    from dc_sdmx.client import _STREAM_BATCH_BLOCK_SIZE
-    from tests.dc_sdmx.conftest import StreamingTransport
-
-    # One block of rows survives under the ceiling; the second block passes it.
-    ceiling = _STREAM_BATCH_BLOCK_SIZE // len(_SUBJECT_ONLY_ROW) + 1
-    rows = -(-80 * _STREAM_BATCH_BLOCK_SIZE // len(_SUBJECT_ONLY_ROW))
-    body = (_SUBJECT_ONLY_HEADER + _SUBJECT_ONLY_ROW * rows).encode()
-    bounded = StreamingTransport(body=body, chunk_size=4096)
-    unbounded = StreamingTransport(body=body, chunk_size=4096)
-
-    with pytest.raises(OverCeilingError) as refused:
-        materialise_preview(
-            _subject_only_request(),
-            sdmx=SdmxClient(
-                base_url=_BASE_URL,
-                transport=ScopeTransport(bounded, _subject_only_graph().scope_availability()),
-            ),
-            graph=_subject_only_graph(),
-            limit=10,
-            ceiling=ceiling,
-            refuse_over_ceiling=True,
-        )
-    with pytest.raises(SdmxCapExceededError):
-        materialise_preview(
-            _subject_only_request(),
-            sdmx=SdmxClient(
-                base_url=_BASE_URL,
-                transport=ScopeTransport(unbounded, _subject_only_graph().scope_availability()),
-            ),
-            graph=_subject_only_graph(),
-            limit=10,
-            ceiling=ceiling,
-        )
-
-    assert (refused.value.ceiling_kind, refused.value.cap) == ("rows", ceiling)
-    assert refused.value.count > ceiling
-    assert bounded.chunks_yielded < unbounded.chunks_yielded < unbounded.total_chunks
-
-
-def test_a_preview_refusing_over_ceiling_checks_the_latest_reduction_as_a_mint_does():
-    """A `latest` read buffers before its reduction, so the ceiling applies to the reduced
-    rows: two recipients' latest rows pass a ceiling of one."""
-    csv_body = (
-        _CSV_HEADER
-        + _csv_row(recipient="country/TGO", year="2015", value="1000")
-        + _csv_row(recipient="country/KEN", year="2015", value="2000")
-    )
-    sdmx, _requests = _sdmx_client(csv_body)
-    coverage = _coverage_for([_FACET], entities=["country/TGO", "country/KEN"])
-    request = _request(
-        role_bindings={"recipient": ["country/TGO", "country/KEN"]},
-        window=RequestedWindow(kind="latest"),
-    )
-
-    with pytest.raises(OverCeilingError) as refused:
-        materialise_preview(
-            request,
-            sdmx=sdmx,
-            graph=FakeGraphReader(),
-            coverage=coverage,
-            limit=10,
-            ceiling=1,
-            refuse_over_ceiling=True,
-        )
-
-    assert (refused.value.count, refused.value.cap) == (2, 1)
-
-
-def _budgeted_preview(
-    request: MaterialisationRequest,
-    *,
-    sdmx: SdmxClient,
-    graph: FakeGraphReader,
-    coverage: CoverageIndex,
-    budget: PreviewBudget,
-    revision_reader: FakeRevisionReader | None = None,
-):
-    return materialise_preview(
-        request,
-        sdmx=sdmx,
-        graph=graph,
-        coverage=coverage,
-        revision_reader=revision_reader,
-        limit=10,
-        ceiling=budget.ceiling,
-        refuse_over_ceiling=True,
-        budget=budget,
-    )
-
-
-def test_members_sharing_a_budget_refuse_once_their_survivors_together_pass_its_ceiling():
-    """Two members of two rows each fit a ceiling of three alone and refuse together, as a
-    collection mint of them does."""
-    sdmx, graph, coverage, request = _single_entity_setup(rows=2)
-    budget = PreviewBudget(3)
-
-    first = _budgeted_preview(request, sdmx=sdmx, graph=graph, coverage=coverage, budget=budget)
-    with pytest.raises(OverCeilingError) as refused:
-        _budgeted_preview(request, sdmx=sdmx, graph=graph, coverage=coverage, budget=budget)
-
-    assert first.total_rows == 2
-    assert (refused.value.ceiling_kind, refused.value.count, refused.value.cap) == ("rows", 4, 3)
-
-
-def test_members_sharing_a_budget_refuse_once_their_raw_reads_pass_its_guard():
-    """Each member reads 25 raw rows and keeps the one in its window. A ceiling of two gives the
-    request one raw guard of 40 rows, which the second member's read passes."""
-    sdmx, graph, coverage, _ = _single_entity_setup(rows=25)
-    request = _request(
-        role_bindings={"recipient": ["country/TGO"]},
-        window=RequestedWindow(kind="range", start_year=2000, end_year=2000),
-    )
-    budget = PreviewBudget(2)
-
-    first = _budgeted_preview(request, sdmx=sdmx, graph=graph, coverage=coverage, budget=budget)
-    with pytest.raises(OverCeilingError) as refused:
-        _budgeted_preview(request, sdmx=sdmx, graph=graph, coverage=coverage, budget=budget)
-
-    assert first.total_rows == 1
-    assert (refused.value.ceiling_kind, refused.value.count, refused.value.cap) == ("rows", 50, 40)
-
-
-def test_a_member_retried_on_revision_drift_draws_on_its_budget_once():
-    """A drift retry reads the member's 25 raw rows twice, and the budget keeps one read, so a
-    second member's 10 rows still fit the request's 40-row raw guard."""
-    sdmx, graph, coverage, _ = _single_entity_setup(rows=25)
-    request = _request(
-        role_bindings={"recipient": ["country/TGO"]},
-        window=RequestedWindow(kind="range", start_year=2000, end_year=2000),
-    )
-    drifting = FakeRevisionReader(
-        [
-            RevisionSnapshot(graph_revision="rev-a", source_revisions=()),
-            RevisionSnapshot(graph_revision="rev-b", source_revisions=()),
-            RevisionSnapshot(graph_revision="rev-b", source_revisions=()),
-        ]
-    )
-    budget = PreviewBudget(2)
-
-    retried = _budgeted_preview(
-        request,
-        sdmx=sdmx,
-        graph=graph,
-        coverage=coverage,
-        budget=budget,
-        revision_reader=drifting,
-    )
-    small_sdmx, _ = _sdmx_client(
-        _CSV_HEADER
-        + "".join(
-            _csv_row(recipient="country/TGO", year=str(2000 + i), value="1") for i in range(10)
-        )
-    )
-    second = _budgeted_preview(
-        request,
-        sdmx=small_sdmx,
-        graph=graph,
-        coverage=coverage,
-        budget=budget,
-    )
-
-    assert drifting.read_count == 3
-    assert (retried.total_rows, second.total_rows) == (1, 1)
-
-
-def test_a_budget_built_for_another_ceiling_is_a_usage_error():
-    sdmx, graph, coverage, request = _single_entity_setup(rows=2)
-
-    with pytest.raises(MaterialisationUsageError):
-        materialise_preview(
-            request,
-            sdmx=sdmx,
-            graph=graph,
-            coverage=coverage,
-            limit=10,
-            ceiling=5,
-            refuse_over_ceiling=True,
-            budget=PreviewBudget(4),
-        )
 
 
 def test_preview_without_a_revision_reader_reports_no_content_version():

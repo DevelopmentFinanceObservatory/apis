@@ -1133,7 +1133,7 @@ def test_pin_with_a_malformed_digest_refuses_400_before_any_domain_lookup():
 
 
 def test_a_malformed_id_refuses_the_platforms_own_not_found_before_reaching_the_handler():
-    """An id outside the `spec_` and `col_` namespaces gets the platform's routing 404."""
+    """An id outside the `spec_` namespace gets the platform's routing 404."""
     client, _location = _build_client()
 
     resp = client.post(

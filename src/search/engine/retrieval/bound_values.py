@@ -24,7 +24,15 @@ import threading
 import time
 import weakref
 from collections import Counter, defaultdict
-from collections.abc import Collection, Hashable, Iterable, Mapping, MutableMapping, Sequence
+from collections.abc import (
+    Callable,
+    Collection,
+    Hashable,
+    Iterable,
+    Mapping,
+    MutableMapping,
+    Sequence,
+)
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Literal, NamedTuple, cast
@@ -36,19 +44,25 @@ from code_index.members import (
     SourceNotInFamily,
     absent_member_reads_zero,
     absent_readings,
+    antichain_minimal_rows,
     canonical_identity,
     carried_properties,
     deciding_query,
     elect_dataset,
     elected_invariants,
+    eligible_among,
     eligible_datasets,
+    family_among,
     family_query_digest,
     identity_family_query,
-    index_covers_slot_keys,
+    index_decides,
     index_family,
     invariant_bindings,
+    is_opt_in,
+    query_family,
     shared_pins,
 )
+from code_index.query import IndexFamily, row_five_tuple
 from code_index.shared import get_index
 from code_index.types import (
     Bound,
@@ -60,13 +74,14 @@ from code_index.types import (
     label_for_pairs,
     summable_axes,
 )
-from dc_graph import GraphReadError
+from dc_graph import GraphDeadlineExceededError, GraphReadError
 from materialise.roles import DegenerateObservationProperties, axis_for_role, declared_role_for
-from search.engine.config import settings
+from search.engine.degraded_reads import note_degraded_read
 from search.engine.errors import (
     EngineInputError,
     FamilyNotResolvableError,
     GraphInfraError,
+    MembershipTooBroadError,
     RoleSignatureError,
 )
 from search.engine.reading_coverage import covers
@@ -92,6 +107,7 @@ from search.models import (
     IdentityShapeDenominatorRef,
     IdentityShapeDenominatorUnresolved,
     IdentityShapeSchema,
+    RoleAxis,
 )
 from statvar_members import (
     DegenerateObservationProperties as MemberDegenerateObservationProperties,
@@ -105,9 +121,8 @@ from statvar_members import (
     NotAStatisticalVariable,
     SlotBinding,
     elect_role_class,
-    enumerate_members,
-    five_tuple_from_identity,
     member_digest,
+    shared_enumerator,
 )
 
 if TYPE_CHECKING:
@@ -118,7 +133,7 @@ if TYPE_CHECKING:
     from search.engine.clients.graph import EngineGraphClient
     from search.engine.qualifier_match import QualifierMatch
     from search.models import Slot, Spec, TimeWindow
-    from statvar_members import MemberGroup, SubjectPage
+    from statvar_members import MemberEnumerator, MemberGroup
 
 logger = logging.getLogger(__name__)
 
@@ -199,24 +214,6 @@ def _resolved_family(index: CodeIndex, query: FamilyQuery) -> DatasetFamily | No
 def clear_family_memo() -> None:
     """Forget every family `_resolved_family` keeps."""
     _index_family_cache.clear()
-
-
-# Cache each five-tuple's index rows, in index order, by index object id, with the same
-# finalizer.
-_index_rows_cache: dict[int, dict[FiveTuple, tuple[StatVarRow, ...]]] = {}
-
-
-def _index_rows_by_five_tuple(index: CodeIndex) -> dict[FiveTuple, tuple[StatVarRow, ...]]:
-    key = id(index)
-    cached = _index_rows_cache.get(key)
-    if cached is None:
-        rows: dict[FiveTuple, list[StatVarRow]] = defaultdict(list)
-        for row in index.statvars:
-            rows[IndexMemberFacts(row=row).read_five_tuple()].append(row)
-        cached = {five_tuple: tuple(found) for five_tuple, found in rows.items()}
-        _index_rows_cache[key] = cached
-        weakref.finalize(index, _index_rows_cache.pop, key, None)
-    return cached
 
 
 # Which StatVarRow field a `kind="shape"` measure axis reads -- the only
@@ -325,9 +322,14 @@ _MEASURE_AXIS_ELECTED_SHAPE_FIELDS = {
 }
 
 
-def _family_key(shape: ShapeDraft, basis_shape_axes: Sequence[MeasureAxis]) -> tuple[object, ...]:
-    """Return shape identity excluding free shape axes, but including basis axes."""
+def _family_key(
+    shape: ShapeDraft, basis_shape_axes: Sequence[MeasureAxis], index: CodeIndex
+) -> tuple[object, ...]:
+    """Return shape identity excluding free shape axes, but including basis axes and the
+    datasets publishing the shape's family (`shape_datasets`), so a CRS family and a DAC1
+    family of one five-tuple never collapse into each other."""
     return (
+        shape_datasets(shape, index),
         shape.stat_type_dcid,
         shape.meas_denom_dcid,
         shape.meas_denom_unresolved,
@@ -382,17 +384,16 @@ def _named_free_values(
     )
 
 
-def _five_tuple_satisfies_all(
-    index: CodeIndex, target: FiveTuple, checks: Sequence[tuple[MeasureAxis, str]]
+def _rows_satisfy_all(
+    rows: Iterable[StatVarRow], checks: Sequence[tuple[MeasureAxis, str]]
 ) -> bool:
-    """Return whether an indexed row with `target`'s tuple satisfies all checks.
+    """Return whether one of `rows`, a shape's family rows, satisfies all checks.
 
-    The index supplies constraint-axis values absent from the five-tuple; an
-    empty check set passes.
+    The rows supply constraint-axis values absent from the five-tuple; an empty check set
+    passes when there is a row.
     """
     return any(
-        all(_measure_axis_value(row, axis) == value for axis, value in checks)
-        for row in _index_rows_by_five_tuple(index).get(target, ())
+        all(_measure_axis_value(row, axis) == value for axis, value in checks) for row in rows
     )
 
 
@@ -603,15 +604,16 @@ def collapse_measure_families(
 
     basis_shape_axes = [axis for axis in shape_axes if axis.role == "basis"]
     groups: dict[tuple[object, ...], list[int]] = defaultdict(list)
-    targets: dict[int, FiveTuple] = {}
+    targets: dict[int, tuple[StatVarRow, ...]] = {}
     survivors: list[ShapeDraft | None] = [None] * len(shapes)
 
     for i, shape in enumerate(shapes):
         if not index_carries_shape(shape, index):
             survivors[i] = shape
             continue
-        targets[i] = shape_five_tuple(shape)
-        groups[_family_key(shape, basis_shape_axes)].append(i)
+        family = shape_family(shape, index)
+        targets[i] = family.rows if family is not None else ()
+        groups[_family_key(shape, basis_shape_axes, index)].append(i)
 
     checks = _named_free_values(named, axes)
 
@@ -630,7 +632,7 @@ def collapse_measure_families(
             tuple(
                 partition
                 for partition in partitions
-                if _five_tuple_satisfies_all(index, targets[int(partition.members[0])], checks)
+                if _rows_satisfy_all(targets[int(partition.members[0])], checks)
             )
             if checks
             else partitions
@@ -679,8 +681,10 @@ def collapse_measure_families(
 def shape_carries_measure_value(
     shape: ShapeDraft, index: CodeIndex, axis: MeasureAxis, value: str
 ) -> bool:
-    """Return whether an indexed member of this shape asserts `value` on `axis`."""
-    return _five_tuple_satisfies_all(index, shape_five_tuple(shape), ((axis, value),))
+    """Return whether an indexed member of this shape's family (`shape_family`) asserts
+    `value` on `axis`."""
+    family = shape_family(shape, index)
+    return family is not None and _rows_satisfy_all(family.rows, ((axis, value),))
 
 
 @dataclass(frozen=True, slots=True)
@@ -713,6 +717,11 @@ def _measure_family_rows(
 ) -> tuple[StatVarRow, ...]:
     """Return index rows matching this shape's non-measure identity and `query`'s bounds.
 
+    The rows are those the datasets of the family `query`'s slot keys select on its own
+    five-tuple (`query_family`) publish, on every five-tuple that differs from it only on a
+    free measure axis, so a CRS query reads CRS flows and commitments and no DAC1 row. A
+    query naming one of those datasets (`FamilyQuery.source`) reads its rows alone, so a
+    sibling five-tuple the named dataset does not publish adds no partition.
     Ignore bound values on declared measure axes so named values cannot hide siblings.
 
     Keep rows whose role set a member of `shape` could declare
@@ -721,12 +730,17 @@ def _measure_family_rows(
 
     The rows are one dataset's: `code_index.members.elect_dataset` applies the election
     the mint applies, over every property `query` binds, measure axes included, and the
-    dataset it names.
+    dataset it names, on each five-tuple apart, as the mint elects the family of an
+    identity on that five-tuple: the role class one five-tuple's rows elect does not narrow
+    another's.
 
     A shape the index does not carry (`index_carries_shape`) has no measure family.
     """
     target = shape_five_tuple(shape)
     if not index_carries_shape(shape, index):
+        return ()
+    family = query_family(index, query)
+    if family is None:
         return ()
     free_fields = _measure_family_free_fields(axes)
     axis_names = {axis.axis for axis in axes}
@@ -735,20 +749,32 @@ def _measure_family_rows(
         for prop, values in query_bound_values(query).items()
         if prop not in axis_names
     }
+    datasets = frozenset(family.datasets)
+    if query.source in datasets:
+        datasets = frozenset({query.source})
     matched = tuple(
         row
         for row in index.filter(constraints)
-        if all(
+        if not datasets.isdisjoint(row.provenances)
+        and all(
             getattr(IndexMemberFacts(row=row).read_five_tuple(), field) == getattr(target, field)
             for field in free_fields
         )
         and declares_shape_roles(shape, IndexMemberFacts(row=row).read_declared_roles())
     )
+    by_five_tuple: dict[MemberFiveTuple, list[StatVarRow]] = defaultdict(list)
+    for row in matched:
+        by_five_tuple[row_five_tuple(row)].append(row)
     try:
-        return elect_dataset(index, matched, query).rows
+        elected = {
+            row.dcid
+            for five_tuple, rows in by_five_tuple.items()
+            for row in elect_dataset(index, rows, replace(query, five_tuple=five_tuple)).rows
+        }
     except SourceNotInFamily as exc:
         _log_refused_election(exc)
         return ()
+    return tuple(row for row in matched if row.dcid in elected)
 
 
 def _log_refused_election(exc: SourceNotInFamily) -> None:
@@ -775,6 +801,7 @@ MeasureFamilyCacheKey = tuple[
     str | None,
     frozenset[str],
     frozenset[str],
+    frozenset[str],
 ]
 
 
@@ -785,7 +812,7 @@ def measure_family_cache_key(
 
     A measure-axis bound stays out of the row filter, and keys and values are sorted, since
     their input order is irrelevant. The election reads the dataset the query names, its
-    role keys and the datasets it excludes, so all three enter the key.
+    bound and open role keys and the datasets it excludes, so all four enter the key.
     """
     axis_names = {axis.axis for axis in axes}
     filtered = tuple(
@@ -802,6 +829,7 @@ def measure_family_cache_key(
         filtered,
         query.source,
         query.role_keys,
+        query.open_role_keys,
         query.excluded,
     )
 
@@ -950,8 +978,8 @@ def synthetic_shape_for_identity(shape: IdentityShapeSchema) -> ShapeDraft:
 def identity_names_measure_family(identity: BaseIdentity, axes: Sequence[MeasureAxis]) -> bool:
     """Return whether a described identity's shape and measure bindings select a family.
 
-    This lets resubmit recover indexed StatVars without a posted
-    `resolved_stat_var_dcids` seed. Shape axes are fixed by the identity;
+    A resubmit elects such an identity's StatVars from the index. Shape axes are fixed by
+    the identity;
     constraint axes are fixed only when bound, with their role affecting only
     open-axis preference. Other slots are excluded here,
     so an unrelated bound-value mismatch is reported later as no data, not an
@@ -1154,6 +1182,8 @@ def mint_sibling_identity(
     partition: MeasurePartition,
     axes: Sequence[MeasureAxis],
     labels: Sequence[MeasurePartitionLabel],
+    *,
+    shape: ShapeDraft | None = None,
 ) -> SiblingIdentity:
     """Mint one sibling measure partition's identity by editing the elected
     spec's own already-minted `BaseIdentity`, rather than assembling a fresh
@@ -1167,6 +1197,8 @@ def mint_sibling_identity(
     sibling agrees with -- being a sibling means sharing every axis but the
     declared measure ones -- so they carry over byte-identical, read
     straight off `elected`'s own validated document.
+    Its open roles are dropped, since they name roles of the elected family that the
+    sibling's family need not declare.
 
     The measure axes do not carry over from `elected.slots` unmodified.
     Every slot in `elected.slots` whose property is a declared measure axis
@@ -1195,11 +1227,8 @@ def mint_sibling_identity(
     an axis `elected` itself already named a slot for. `partition`'s own
     real members can declare a non-measure "how" axis `elected`'s members
     never did at all; that axis is never padded onto the minted sibling
-    here. A resubmit's own declared slot set is the POSTED identity's own
-    slot properties (`identity_edit.check_slots_declared` only requires the
-    posted identity to cover its BASE's declared properties, not the
-    reverse; see that function's docstring), so a resubmit of this
-    sibling's own `resolved_stat_var_dcids` can freely post a wider slot set
+    here. A resubmit's own declared slot set is the posted identity's own
+    slot properties, so a resubmit of this sibling can freely post a wider slot set
     naming such an axis: it is admitted as an edit (an open axis the sibling
     itself left undeclared, now bound), never refused for omitting a slot
     this identity never declared in the first place.
@@ -1214,6 +1243,15 @@ def mint_sibling_identity(
 
     The label is `label_for_partition(partition, labels)`, computed once
     here rather than left for the caller to re-derive.
+
+    `shape`, when given, is the sibling's own candidate shape, and the identity is the one
+    a question electing that shape under `elected`'s bindings mints: its non-measure slots
+    are the ones `shape` declares, each carrying `elected`'s binding where `elected`
+    declares the property and unbound where it does not, its source is the dataset `shape`
+    names (`shape_named_source`), as `named_source.with_named_source` writes it for an
+    elected shape, and the identity takes its canonical form (`canonicalise_identity`), so
+    a named dataset's invariants bind. Without `shape` the sibling keeps `elected`'s
+    non-measure slots and facets, which holds for a sibling of `elected`'s own dataset.
 
     Raises `ValueError` when `elected.shape` is not the described arm
     (`kind="statvar_schema"`): a pinned shape (`kind="stat_var"`, a single
@@ -1263,7 +1301,29 @@ def mint_sibling_identity(
 
     measure_axis_names = {axis.axis for axis in axes}
     base = elected.core_document()
+    base.pop("open_roles", None)
     sibling_slots = [slot for slot in base["slots"] if slot["property"] not in measure_axis_names]
+    if shape is not None:
+        carried_slots = {slot["property"]: slot for slot in sibling_slots}
+        declared = dict.fromkeys(
+            key.property_dcid
+            for key in shape.slot_keys
+            if key.axis in ("what", "how")
+            and key.property_dcid is not None
+            and key.property_dcid not in measure_axis_names
+        )
+        sibling_slots = [
+            carried_slots.get(prop, {"property": prop, "binding": {"state": "unbound"}})
+            for prop in declared
+        ]
+        facets = {
+            key: value for key, value in base.get("facets", {}).items() if key != "provenance"
+        }
+        if (source := shape_named_source(shape)) is not None:
+            facets["provenance"] = {"state": "value", "ref": source}
+        base = {key: value for key, value in base.items() if key != "facets"}
+        if facets:
+            base["facets"] = facets
     # asserted_axes names exactly the constraint axes `partition_values` is
     # non-None on (family_asserted_measure_axes reads it off nothing else),
     # so every axis reached here binds to a real value -- there is no
@@ -1276,6 +1336,8 @@ def mint_sibling_identity(
         sibling_slots.append({"property": axis.axis, "binding": binding})
 
     projection = {**base, "shape": sibling_shape, "slots": sibling_slots}
+    if shape is not None:
+        projection = dict(canonical_identity(get_index(), projection))
     spec_id, identity = mint_identity(projection, entity_groups=elected.entity_groups)
     return SiblingIdentity(
         spec_id=spec_id, identity=identity, label=label_for_partition(partition, labels)
@@ -1328,10 +1390,10 @@ def _collapse_bindings(bindings: Sequence[SlotBindingDraft]) -> dict[str, list[s
 
 
 def _expand_values(index: CodeIndex, values: list[str]) -> list[str]:
-    """`values` widened by each value's own code-index descendants
-    (``CodeIndex.descendants``), deduped, first-seen order (each value's own
-    dcid first -- ``descendants`` returns it first -- then its descendants,
-    across every value in `values` in turn).
+    """`values` widened by each value's own code-index expansion
+    (``CodeIndex.expansion``: its descendants in a system whose parent-coded records are
+    apart from its children's), deduped, first-seen order (each value's own dcid first,
+    then its descendants, across every value in `values` in turn).
 
     A genuine no-op -- returns `values` unchanged, same order -- for a value
     naming a flat code system (e.g. crsTypeOfFlow, per A4c) or one this index
@@ -1342,7 +1404,7 @@ def _expand_values(index: CodeIndex, values: list[str]) -> list[str]:
     result: list[str] = []
     seen: set[str] = set()
     for value in values:
-        for descendant in index.descendants(value):
+        for descendant in index.expansion(value):
             if descendant not in seen:
                 seen.add(descendant)
                 result.append(descendant)
@@ -1542,6 +1604,112 @@ def identity_query(identity: BaseIdentity) -> FamilyQuery:
     return identity_family_query(get_index(), _identity_document(identity))
 
 
+class PartNotServed(Exception):
+    """No dataset a part may answer its shape from holds a row matching its bindings."""
+
+
+def part_source(
+    shape: ShapeDraft,
+    bindings: Sequence[SlotBindingDraft],
+    role_keys: Callable[[], RoleKeys],
+    *,
+    excluded: frozenset[str] = frozenset(),
+) -> str | None:
+    """The dataset the identity of a part that excludes `excluded` names for `shape` under
+    `bindings` and the role keys `role_keys` returns, or `None` when it names none.
+
+    The part is served from one of its own tables: the dataset the shape names
+    (`ShapeDraft.named_dataset`), else the one elected among the tables a part naming none
+    may answer the shape from (`part_datasets`), by the election every door runs
+    (`code_index.members.family_among`). That table's naming identity must resolve rows in
+    the index (`code_index.members.index_family`), which is what naming it does at the
+    mint. The identity Search mints names only the open roles the elected members serve
+    (`DatasetFamily.role_keys` of that election), so the naming identity is read under
+    those: a table whose rows tie under the open keys the part asks, and serve under the
+    ones that joined, is read as the mint reads it.
+
+    A shape that names a table keeps it. Otherwise the identity names the elected table
+    unless the unnamed query elects it twice over: under the role keys the part asks, as
+    Search reads the part's members, and under the keys that election ran under, as the
+    mint reads the identity. An identity cannot state an exclusion, and its slot keys may
+    select another family than the one the shape is built from, so naming the table is
+    what makes every door elect it. An identity that names none is the plain question's,
+    and every door elects the same table of the part's own for it.
+
+    A shape the index does not carry (`shape_datasets`) keeps the name it has, and so does
+    a part whose membership the index does not decide: the mint walks the graph there and
+    elects no table. A part that names and excludes no table, has at most one table of its
+    own, and whose slot keys select no other table can be served from no other table, so
+    its shape keeps the name it has whatever rows that table holds, and no row is read:
+    it names none, or the one opt-in table that alone publishes the shape
+    (`shape_for_part`). `role_keys` is
+    called once, and only when the shape names no table and its tables or those its slot
+    keys select are several, since the role keys decide nothing among fewer.
+
+    Raises `PartNotServed` when another table could serve the part and no table of the
+    part's own holds a row matching the bindings together, whatever a table it excludes or
+    a table of another family holds. The part then has no identity that resolves its own
+    rows at every door, and the caller refuses it."""
+    index = get_index()
+    if not shape_datasets(shape, index):
+        return shape.named_dataset
+    query = replace(shape_query(shape, bindings, ()), source=None)
+    if not index_decides(index, query):
+        return shape.named_dataset
+    dataset = shape.named_dataset
+    own = part_datasets(shape, None, index, excluded=excluded)
+    selected = eligible_datasets(index, query)
+    if (
+        not excluded
+        and len(own) <= 1
+        and set(selected) <= set(own)
+        and (dataset is None or (dataset in own and is_opt_in(index, dataset)))
+    ):
+        return dataset
+    if dataset is not None:
+        family = _named_family(index, replace(query, source=dataset))
+        if family is None or not family.rows:
+            raise PartNotServed
+        return dataset
+    if len(own) > 1 or len(selected) > 1:
+        keys = role_keys()
+        query = replace(query, role_keys=keys.bound, open_role_keys=keys.open)
+    elected = family_among(index, query, own)
+    if elected is None or elected.provenance is None:
+        raise PartNotServed
+    dataset = elected.provenance
+    settled = replace(query, open_role_keys=elected.role_keys - query.role_keys)
+    family = _named_family(index, replace(settled, source=dataset))
+    if family is None or not family.rows:
+        raise PartNotServed
+    if all(
+        (plain := _resolved_family(index, unnamed)) is not None and plain.provenance == dataset
+        for unnamed in (query, settled)
+    ):
+        return None
+    return dataset
+
+
+def _named_family(index: CodeIndex, query: FamilyQuery) -> DatasetFamily | None:
+    """The family the index resolves for `query`, which names a dataset
+    (`code_index.members.index_family`), or `None` where the election refuses the dataset
+    as outside the family the query's slot keys select."""
+    try:
+        return _resolved_family(index, query)
+    except SourceNotInFamily:
+        return None
+
+
+def shape_named_source(shape: ShapeDraft) -> str | None:
+    """The dataset a part electing `shape` binds as its source: the one the shape names
+    (`ShapeDraft.named_dataset`) when it publishes the shape's family
+    (`shape_datasets`), else `None`."""
+    source = shape.named_dataset
+    if source is None or source not in shape_datasets(shape):
+        return None
+    return source
+
+
 def source_binding(source: str) -> SlotBindingDraft:
     """The binding that names the dataset `source`: a source-axis value binding. It is the
     one carrier of a named dataset in a bindings list, and `shape_query` reads it."""
@@ -1563,7 +1731,11 @@ def bound_source(bindings: Sequence[SlotBindingDraft]) -> str | None:
 
 
 def shape_query(
-    shape: ShapeDraft, bindings: Sequence[SlotBindingDraft], role_keys: Collection[str]
+    shape: ShapeDraft,
+    bindings: Sequence[SlotBindingDraft],
+    role_keys: Collection[str],
+    *,
+    open_role_keys: Collection[str] = (),
 ) -> FamilyQuery:
     """Return the `FamilyQuery` of `shape` under `bindings`, for a caller that resolves
     members before an identity exists.
@@ -1573,14 +1745,17 @@ def shape_query(
     slots are its what and how slot keys, and each property `bound_values_from_bindings`
     reads from `bindings` binds its widened values.
     `role_keys` holds the role keys the caller binds entities under, the keys the minted
-    identity's `entities` will carry (`entity_role_keys` over the shape's place binding).
+    identity's `entities` will carry, and `open_role_keys` the open axes
+    (`entity_role_keys` over the shape's place binding and open axes). Before election
+    these are the axes the request asks for. After it, they are the axes the elected members
+    serve (`PlaceContext.settled`), which the minted identity's `open_roles` names.
     Every caller states them, since they elect the dataset on a five-tuple several datasets
     publish. A caller reading only the five-tuple, or a shape bound to no place, passes
     none.
     The query names the dataset a source-axis binding binds to one value (`source_binding`),
     as an identity names the dataset its provenance facet binds to one ref. The identity
-    minted from the same bindings must bind its source slot from that binding, so that
-    `identity_query` returns the same query.
+    minted from the same bindings must bind its source slot from that binding, so that a
+    query built after election equals that identity's `identity_query`.
     """
     slots: dict[str, SlotBinding] = {
         slot.property_dcid: ("unbound",)
@@ -1594,37 +1769,49 @@ def shape_query(
         slots=slots,
         source=bound_source(bindings),
         role_keys=frozenset(role_keys),
+        open_role_keys=frozenset(open_role_keys),
     )
 
 
-def entity_role_keys(shape: ShapeDraft, entities: Mapping[str, Sequence[str]]) -> frozenset[str]:
-    """Return the role keys an identity minted for `shape` binds `entities` under.
+@dataclass(frozen=True)
+class RoleKeys:
+    """The role keys an identity minted for a shape elects under (`entity_role_keys`)."""
 
-    `entities` is keyed as `shape.entities_by_role` keys it: `observationAbout`, or a
-    role name the shape declares. A declared role maps to its flow axis, the key
+    bound: frozenset[str] = frozenset()
+    """The keys it binds entities under, as its `entities` keys them."""
+    open: frozenset[str] = frozenset()
+    """The flow axes it asks every member of, as its `open_roles` names them."""
+
+
+def entity_role_keys(
+    entities: Mapping[str, Sequence[str]], *, open_axes: Collection[RoleAxis]
+) -> RoleKeys:
+    """Return the role keys an identity binds `entities` under and the flow axes of
+    `open_axes` it leaves open.
+
+    `entities` is keyed as `ShapeDraft.entities_by_role` keys it: `observationAbout`, or
+    a role name the shape declares. A declared role maps to its flow axis, the key
     `spec_id.entity_role_key` mints, and keeps its own name when the axis vocabulary does
-    not place it. A role with no entity binds nothing."""
-    return frozenset(axis_for_role(role) or role for role, dcids in entities.items() if dcids)
+    not place it. A role with no entity binds nothing. The open keys are the axes of
+    `open_axes` that no bound key binds, whatever roles the shape declares. Before election
+    the caller passes the axes the request asks for, and the members' election decides
+    which of them it serves. After election it passes the served axes
+    (`PlaceContext.settled`)."""
+    bound = frozenset(axis_for_role(role) or role for role, dcids in entities.items() if dcids)
+    return RoleKeys(bound=bound, open=frozenset(open_axes) - bound)
 
 
 def index_decides_membership(identity: BaseIdentity) -> bool:
     """Whether the packaged code index decides which StatVars `identity` denotes.
 
-    The test is the Datasets mint's: a described identity whose slot keys hold every
-    constraint property of at least one index row of its five-tuple
-    (`code_index.members.index_covers_slot_keys`). A pinned identity names its one
-    StatVar and reads no index row.
+    The test is the Datasets mint's: a described identity whose deciding slot keys hold
+    every constraint property of at least one index row of its five-tuple
+    (`code_index.members.index_decides`). A pinned identity names its one StatVar and
+    reads no index row.
     """
-    document = _identity_document(identity)
-    shape = cast("Mapping[str, object]", document["shape"])
-    if shape.get("kind") == "stat_var":
+    if identity.shape.kind == "stat_var":
         return False
-    slots = cast("Sequence[Mapping[str, object]]", document.get("slots", ()))
-    return index_covers_slot_keys(
-        get_index(),
-        five_tuple_from_identity(shape),
-        {cast(str, slot["property"]) for slot in slots},
-    )
+    return index_decides(get_index(), identity_query(identity))
 
 
 def _identity_family(identity: BaseIdentity) -> DatasetFamily | None:
@@ -1648,8 +1835,7 @@ def refuse_source_outside_family(identity: BaseIdentity, *, pointer: str) -> Non
     its five-tuple while another dataset does (`code_index.members.index_family`), whatever
     slots it declares, as the Datasets mint refuses it. The resubmit and the options door
     read a posted identity through it. `pointer` is the door's own path to the identity's
-    provenance facet. A posted seed cannot stand in for that family, so the refusal holds
-    with or without one."""
+    provenance facet."""
     try:
         index_family(get_index(), identity_query(identity))
     except SourceNotInFamily as exc:
@@ -1671,40 +1857,133 @@ def identity_dataset(identity: BaseIdentity) -> str | None:
     return family.provenance if family is not None else None
 
 
-def shape_datasets(shape: ShapeDraft, index: CodeIndex | None = None) -> tuple[str, ...]:
-    """The provenances of the datasets whose index rows hold `shape`'s five-tuple, in
-    serving order (`CodeIndex.datasets_by_five_tuple`). Empty for a shape the index does
-    not carry (`index_carries_shape`), a debt series beside CRS flows, whose family no
-    declared dataset publishes."""
+def shape_slot_properties(shape: ShapeDraft) -> frozenset[str]:
+    """The constraint properties of `shape`'s what and how slots, the keys that select its
+    family (`shape_family`), as `shape_query` declares them."""
+    return frozenset(
+        slot.property_dcid
+        for slot in shape.slot_keys
+        if slot.property_dcid is not None and slot.axis in ("what", "how")
+    )
+
+
+def shape_family(shape: ShapeDraft, index: CodeIndex | None = None) -> IndexFamily | None:
+    """The index family `shape` is built from, or None for a shape the index does not
+    carry (`index_carries_shape`), a debt series beside CRS flows.
+
+    A shape with recalled members reads the one family they belong to (`member_family`):
+    the family the index records for a member that is an index row of the shape's
+    five-tuple (`CodeIndex.family_by_dcid`), whatever the member's or the shape's keys
+    select, and the family a member the index does not hold selects by its constraint
+    properties. A shape built from one dataset's rows so reads that dataset's family when
+    another's holds fewer properties, or holds properties that overlap its own. A CRS shape
+    and a DAC1 shape of one five-tuple each read their own family. Members the index
+    decides nothing for are passed over. A shape whose members belong to two families
+    reads none: `derive_shapes` builds one shape per family, and the rows of neither family
+    stand in for the members of the other.
+
+    A shape with no recalled member reads the family its slot properties select
+    (`CodeIndex.family_of`)."""
     index = index or get_index()
-    if not index_carries_shape(shape, index):
-        return ()
-    return index.datasets_by_five_tuple.get(_member_five_tuple(shape_five_tuple(shape)), ())
+    five_tuple = shape_five_tuple(shape)
+    if not shape.sv_arc_facts:
+        return index.family_of(_member_five_tuple(five_tuple), shape_slot_properties(shape))
+    families = {
+        id(family): family
+        for dcid, arcs in shape.sv_arc_facts.items()
+        if (
+            family := member_family(
+                dcid, five_tuple, _dcids_for(arcs, "constraintProperties"), index
+            )
+        )
+        is not None
+    }
+    return next(iter(families.values())) if len(families) == 1 else None
+
+
+def other_families_properties(shape: ShapeDraft, index: CodeIndex | None = None) -> frozenset[str]:
+    """The constraint properties only the other families of `shape`'s five-tuple carry:
+    those of every family but the shape's own (`shape_family`) that the shape declares no
+    slot for. On a CRS shape, `dac1AidType`; none on a five-tuple with one family."""
+    index = index or get_index()
+    own = shape_family(shape, index)
+    families = index.families_by_five_tuple.get(_member_five_tuple(shape_five_tuple(shape)), ())
+    others = frozenset().union(
+        *(family.properties for family in families if own is None or family != own)
+    )
+    return others - shape_slot_properties(shape) if own is not None else frozenset()
+
+
+def shape_datasets(shape: ShapeDraft, index: CodeIndex | None = None) -> tuple[str, ...]:
+    """The provenances of the datasets publishing `shape`'s family (`shape_family`), in
+    serving order. Empty for a shape the index does not carry (`index_carries_shape`), a
+    debt series beside CRS flows, whose family no declared dataset publishes."""
+    family = shape_family(shape, index)
+    return family.datasets if family is not None else ()
 
 
 def part_datasets(
-    shape: ShapeDraft, source: str | None, index: CodeIndex | None = None
+    shape: ShapeDraft,
+    source: str | None,
+    index: CodeIndex | None = None,
+    *,
+    excluded: frozenset[str] = frozenset(),
 ) -> tuple[str, ...]:
-    """The datasets a part that names `source`, or names none, may answer `shape`'s
-    five-tuple from, in serving order: the ones `code_index.members.eligible_datasets`
-    elects among. Shape candidacy stamps them on the shape (`ShapeDraft.datasets`)."""
-    query = FamilyQuery(
-        five_tuple=_member_five_tuple(shape_five_tuple(shape)), slots={}, source=source
-    )
-    return eligible_datasets(index or get_index(), query)
+    """The datasets a part that names `source`, or names none, and excludes `excluded` may
+    answer `shape` from, in serving order: the datasets publishing the shape
+    (`_publishing_datasets`) that `code_index.members.eligible_among` keeps, so the family
+    is never selected again by the shape's slot keys. A part naming a dataset that does
+    not publish the shape may answer it from none. Shape candidacy stamps them on the
+    shape (`ShapeDraft.datasets`)."""
+    index = index or get_index()
+    datasets = _publishing_datasets(shape, index)
+    if source is not None and source not in datasets:
+        return ()
+    return eligible_among(index, datasets, source=source, excluded=excluded)
 
 
 def shape_for_part(
-    shape: ShapeDraft, source: str | None, index: CodeIndex | None = None
+    shape: ShapeDraft,
+    source: str | None,
+    index: CodeIndex | None = None,
+    *,
+    excluded: frozenset[str] = frozenset(),
 ) -> ShapeDraft:
-    """`shape` as a part that names `source`, or names none, answers from it: stamped with
-    the datasets the part may answer from (`part_datasets`), its index-sourced taxonomy
-    narrowed to those datasets' rows (`five_tuple_member_facts`). The slot keys stay the
-    whole five-tuple's. The taxonomy is kept as it is when the part may answer from every
-    dataset publishing the five-tuple."""
+    """`shape` as a part that names `source`, or names none, and excludes `excluded`
+    answers from it: stamped with the datasets the part may answer from (`part_datasets`)
+    and the dataset the shape names (`ShapeDraft.named_dataset`), its index-sourced
+    taxonomy narrowed to those datasets' rows (`five_tuple_member_facts`). The slot keys
+    stay the whole family's. The taxonomy is kept as it is when the part may answer from
+    every dataset publishing the family.
+
+    The shape names `source`, else the one dataset the part may answer it from when that
+    dataset is opt-in: an unnamed part answers from an opt-in dataset only on a family no
+    other dataset publishes (`eligible_datasets`), so electing the shape names the
+    dataset, and its identity is the one a part naming it mints.
+
+    A part that names no dataset is offered a source slot on a family two or more declared
+    datasets it does not exclude publish, opt-in ones included
+    (`ShapeDraft.source_options`): naming is how a part asks for an opt-in table."""
     index = index or get_index()
-    datasets = part_datasets(shape, source, index)
-    stamped = replace(shape, datasets=datasets, named_dataset=source)
+    datasets = part_datasets(shape, source, index, excluded=excluded)
+    named = source
+    if named is None and len(datasets) == 1 and is_opt_in(index, datasets[0]):
+        (named,) = datasets
+    options = (
+        ()
+        if source is not None
+        else tuple(
+            dataset
+            for dataset in shape_datasets(shape, index)
+            if dataset in index.datasets and dataset not in excluded
+        )
+    )
+    stamped = replace(
+        shape,
+        datasets=datasets,
+        named_dataset=named,
+        source_options=options if len(options) > 1 else (),
+    )
     if not shape.slot_taxonomy_index_sourced or datasets == shape_datasets(shape, index):
         return stamped
     member_facts, _index_sourced = five_tuple_member_facts(stamped)
@@ -1716,31 +1995,122 @@ def shape_for_part(
 
 def shape_part_datasets(shape: ShapeDraft, index: CodeIndex) -> tuple[str, ...]:
     """The datasets stamped on `shape` (`ShapeDraft.datasets`), else every dataset
-    publishing its five-tuple."""
+    publishing it (`_publishing_datasets`)."""
     if shape.datasets is not None:
         return shape.datasets
+    return _publishing_datasets(shape, index)
+
+
+def _publishing_datasets(shape: ShapeDraft, index: CodeIndex) -> tuple[str, ...]:
+    """Every dataset publishing `shape`'s family (`shape_family`), else, for a shape the
+    index does not carry, every dataset publishing its five-tuple, in serving order."""
+    family = shape_family(shape, index)
+    if family is not None:
+        return family.datasets
     return index.datasets_by_five_tuple.get(_member_five_tuple(shape_five_tuple(shape)), ())
 
 
-def identity_family_digest(identity: BaseIdentity) -> str | None:
-    """The member digest of the family the code index resolves for `identity`, or None.
+@dataclass(frozen=True)
+class StatedMembers:
+    """What a Datasets mint of an identity states of its members: how many it serves (the
+    length of its `trace.resolved_stat_vars`) and the digest of the family they come from
+    (`trace.family_member_digest`), `None` when Search cannot name every member of that
+    family."""
 
-    The Datasets mint states the same digest, over the same rows, as
-    `trace.family_member_digest` for an identity it resolves from the index. None wherever
-    `_identity_family` is, and when no index row matches: the mint then walks the graph or
-    refuses, and Search cannot state the family it would read.
-    """
-    family = _identity_family(identity)
-    if family is None or not family.rows:
+    served_count: int
+    digest: str | None
+
+
+type WalkKey = tuple[
+    MemberFiveTuple, tuple[tuple[str, SlotBinding], ...], frozenset[str], frozenset[str]
+]
+
+
+def walk_key(query: FamilyQuery) -> WalkKey:
+    """What a member walk reads of `query`: its five-tuple, slots, and bound and open role
+    keys."""
+    return (
+        query.five_tuple,
+        tuple(sorted(query.slots.items())),
+        query.role_keys,
+        query.open_role_keys,
+    )
+
+
+@dataclass(frozen=True)
+class WalkedMembers:
+    """The members Search's walk settled for the query `key` names (`walk_key`), as the
+    mint states them for an identity it resolves by the same walk: `MemberGroup.members`
+    are the members it serves and `MemberGroup.stated_family` the family it digests."""
+
+    key: WalkKey
+    stated: StatedMembers
+    asked: WalkKey | None = None
+    """The key of the query the walk ran for, when its open role keys are not the ones
+    the walk elected under."""
+
+    @classmethod
+    def of(cls, query: FamilyQuery, group: MemberGroup) -> WalkedMembers:
+        """`group` as the walk of `query` settled it, keyed by `query` with the open role
+        keys the walk elected under (`MemberGroup.elected_open_role_keys`). A part can ask
+        an open role its members do not serve, and the identity minted from the answer
+        names only the served ones, so its own query carries the elected keys. The mint's
+        walk of that identity asks exactly those keys and elects the same members.
+
+        The identity names every asked axis the elected members declare
+        (`role_resolve.graph_confirm_resolve`), and a member elected under one open key
+        can declare a role on another the election set aside. Its query is then `query`
+        itself (`asked`), which the mint walks as Search did."""
+        family = group.stated_family
+        asked = walk_key(query)
+        key = walk_key(replace(query, open_role_keys=group.elected_open_role_keys))
+        return cls(
+            key=key,
+            stated=StatedMembers(
+                served_count=len(group.members),
+                digest=member_digest(family) if family is not None else None,
+            ),
+            asked=asked if asked != key else None,
+        )
+
+    def settles(self, query: FamilyQuery) -> bool:
+        """Whether the walk settled the members `query` asks for: `query` reads as the
+        walked query does under its elected open role keys (`key`) or under the ones it
+        asked (`asked`)."""
+        return walk_key(query) in (self.key, self.asked)
+
+
+def stated_members(identity: BaseIdentity, walked: WalkedMembers | None) -> StatedMembers | None:
+    """What a Datasets mint of `identity`, a described identity, states of its members, when
+    Search knows it.
+
+    An identity the code index decides serves the antichain-minimal rows of the family the
+    index resolves (`_identity_family`), and the mint digests every row of that family. Any
+    other identity serves what the mint's walk settles, which Search knows when `walked` is
+    the walk of the identity's own query. `None` otherwise: the walk ran for another query,
+    settled nothing, or did not run, or the index resolves no family or one whose role
+    election ties (`DatasetFamily.tied`), so the mint walks or refuses. Search answers no
+    pinned identity (`check_described_arm`)."""
+    if index_decides_membership(identity):
+        family = _identity_family(identity)
+        if family is None or not family.rows or family.tied:
+            return None
+        return StatedMembers(
+            served_count=len(antichain_minimal_rows(get_index(), family.rows)),
+            digest=member_digest(row.dcid for row in family.rows),
+        )
+    if (
+        walked is None
+        or not isinstance(identity.shape, IdentityShapeSchema)
+        or not walked.settles(identity_query(identity))
+    ):
         return None
-    return member_digest(row.dcid for row in family.rows)
+    return walked.stated
 
 
 def declaration_version(bindings: Sequence[SlotBindingDraft], identity: BaseIdentity) -> str | None:
-    """The packaged code index's ``content_hash``, for a caller installing
-    ``ResolutionTrace.declaration_version`` -- the same model_copy-after-the-
-    fact pattern ``engine.unit.bind.install_unit_facet`` uses for
-    ``unit_lexicon_version``.
+    """The packaged code index's ``content_hash``, for a caller stating
+    ``ResolvedSpec.declaration_version`` (``apply_declaration_version``).
 
     The hash covers the code-system and dataset declarations, so the version
     moves when either changes. It is stamped when the index decides
@@ -1818,11 +2188,10 @@ def apply_slot_summability(slots: list[Slot], identity: BaseIdentity) -> list[Sl
 
 
 def apply_declaration_version(spec: Spec, bindings: Sequence[SlotBindingDraft]) -> Spec:
-    """Stamp spec.resolved.trace.declaration_version from `bindings` and
-    `spec`'s own identity (see declaration_version) once build_spec has
-    assembled `spec` -- the same
-    model_copy-after-the-fact style engine.unit.bind.install_unit_facet uses
-    for unit_lexicon_version. A no-op, leaving spec unchanged, when
+    """State spec.resolved.declaration_version from `bindings` and `spec`'s own
+    identity (see declaration_version) once build_spec has assembled `spec`, as
+    engine.unit.bind.with_unit_lexicon_version states the unit lexicon version.
+    A no-op, leaving spec unchanged, when
     declaration_version returns None: stamping a version is a claim that the
     index decided something, and None means it never got the chance to.
 
@@ -1833,24 +2202,17 @@ def apply_declaration_version(spec: Spec, bindings: Sequence[SlotBindingDraft]) 
     version = declaration_version(bindings, spec.definition.identity)
     if version is None:
         return spec
-    return spec.model_copy(
-        update={
-            "resolved": spec.resolved.model_copy(
-                update={
-                    "trace": spec.resolved.trace.model_copy(update={"declaration_version": version})
-                }
-            )
-        }
-    )
+    return spec.model_copy(update={"resolved": spec.resolved.stating_declaration_version(version)})
 
 
 def index_member_rows(shape: ShapeDraft, index: CodeIndex) -> tuple[StatVarRow, ...]:
-    """Return every index row of `shape`'s five-tuple, whatever dataset publishes it. An
-    exact posted set (`shape.sv_arc_facts_complete`) and a shape the index does not carry
-    (`index_carries_shape`) both read no row."""
-    if shape.sv_arc_facts_complete or not index_carries_shape(shape, index):
+    """Return every row of `shape`'s family (`shape_family`), whatever dataset of it
+    publishes the row. An exact elected set (`shape.sv_arc_facts_complete`) and a shape the
+    index does not carry (`index_carries_shape`) both read no row."""
+    if shape.sv_arc_facts_complete:
         return ()
-    return _index_rows_by_five_tuple(index).get(shape_five_tuple(shape), ())
+    family = shape_family(shape, index)
+    return family.rows if family is not None else ()
 
 
 def part_member_rows(shape: ShapeDraft, index: CodeIndex) -> tuple[StatVarRow, ...]:
@@ -1893,17 +2255,19 @@ def _published_by(
 
 
 def five_tuple_member_facts(shape: ShapeDraft) -> tuple[dict[str, MemberFacts], bool]:
-    """The index rows of `shape`'s five-tuple its part may answer from, across those
-    datasets, else the shape's own recall-sourced ``sv_arc_facts``. Returns
-    (member_facts_by_sv, index_sourced).
+    """The rows of `shape`'s family its part may answer from, across those datasets, else
+    the shape's own recall-sourced ``sv_arc_facts``. Returns (member_facts_by_sv,
+    index_sourced).
 
     The pre-bind readers use this. A shape that shape candidacy keeps carries the datasets its
     part may answer from (`ShapeDraft.datasets`): the dataset the part names, else every
-    eligible publisher of the five-tuple (`part_datasets`), so the bind model sees the codes
+    eligible publisher of its family (`part_datasets`), so the bind model sees the codes
     of every dataset the election may serve. `derive_shapes` reads the shape before
-    candidacy, with no datasets stamped, so the slot keys describe the whole five-tuple: a
-    property only one dataset's rows carry stays a slot of the identity whichever dataset
-    serves it. `shape_member_facts` is the post-bind reader and keeps one dataset's members.
+    candidacy, with no datasets stamped, so the slot keys describe the whole family
+    (`shape_family`): a property only one of its datasets' rows carry stays a slot of the
+    identity whichever of them serves it, and a property only another family of the
+    five-tuple carries is no slot. `shape_member_facts` is the post-bind reader and keeps one
+    dataset's members.
     """
     rows = part_member_rows(shape, get_index())
     if rows:
@@ -1911,27 +2275,27 @@ def five_tuple_member_facts(shape: ShapeDraft) -> tuple[dict[str, MemberFacts], 
     return {sv: ArcsMemberFacts(arcs=a) for sv, a in (shape.sv_arc_facts or {}).items()}, False
 
 
-def _posted_member_facts(shape: ShapeDraft, query: FamilyQuery) -> dict[str, MemberFacts]:
-    """A posted member set as posted, each member that is a row of the family the index
+def _exact_member_facts(shape: ShapeDraft, query: FamilyQuery) -> dict[str, MemberFacts]:
+    """An exact member set as it stands, each member that is a row of the family the index
     elects for `query` carrying the elected dataset (`materialise.facets.ElectedDataset`, as
     `IndexMemberFacts.read_dataset` builds it). A query the index does not decide, or whose
     election refuses, leaves every member without one."""
-    posted: dict[str, MemberFacts] = {
+    exact: dict[str, MemberFacts] = {
         sv: ArcsMemberFacts(arcs=a) for sv, a in (shape.sv_arc_facts or {}).items()
     }
     try:
         family = _resolved_family(get_index(), query)
     except SourceNotInFamily:
-        return posted
+        return exact
     if family is None or family.provenance is None:
-        return posted
+        return exact
     for row in family.rows:
-        if row.dcid in posted:
-            posted[row.dcid] = ArcsMemberFacts(
+        if row.dcid in exact:
+            exact[row.dcid] = ArcsMemberFacts(
                 arcs=(shape.sv_arc_facts or {})[row.dcid],
                 dataset=IndexMemberFacts(row=row, dataset=family.provenance).read_dataset(),
             )
-    return posted
+    return exact
 
 
 def shape_member_facts(
@@ -1946,13 +2310,13 @@ def shape_member_facts(
     identity through, so both read the same rows for the same query: one dataset's rows,
     the dataset the query's five-tuple belongs to.
 
-    An exact posted set (`shape.sv_arc_facts_complete`, stamped by the resubmit's shape
-    constructor) is returned as posted, with `index_sourced=False`. A posted member that is
-    a row of the family the index elects for `query` carries that family's dataset
-    (`_posted_member_facts`), as the same member carries it on a first answer.
+    An exact elected set (`shape.sv_arc_facts_complete`, stamped by the resubmit's shape
+    constructor) is returned as it stands, with `index_sourced=False`. A member that is a
+    row of the family the index elects for `query` carries that family's dataset
+    (`_exact_member_facts`), as the same member carries it on a first answer.
 
     For a recall sample the index answers whenever it decides the query's membership
-    (`code_index.members.index_covers_slot_keys`). A query whose values match no row, and
+    (`code_index.members.index_decides`). A query whose values match no row, and
     one whose election refuses (the named dataset publishes no matching row), return an
     empty population with `index_sourced=True`: the mint refuses the same identity, so no
     recall member stands in for the family.
@@ -1966,7 +2330,7 @@ def shape_member_facts(
         sv: ArcsMemberFacts(arcs=a) for sv, a in (shape.sv_arc_facts or {}).items()
     }
     if shape.sv_arc_facts_complete:
-        return _posted_member_facts(shape, query), False
+        return _exact_member_facts(shape, query), False
     index = get_index()
     try:
         family = _resolved_family(index, query)
@@ -1984,7 +2348,7 @@ def query_members(shape: ShapeDraft, query: FamilyQuery) -> tuple[dict[str, Memb
     """The members an answer over `shape` to `query` reads from, before antichain reduction,
     and whether the code index decided them.
 
-    The index's family when it decides `query` (a posted member set is read past, as a
+    The index's family when it decides `query` (an exact member set is read past, as a
     resubmit of `query` reads the index's family). Otherwise the shape's own members that
     the mint's graph walk confirms for `query`'s slots (`_matches_query_slots`): the family
     a walk settled for the answer, or its recall when no walk settled one.
@@ -2041,6 +2405,7 @@ def _recall_role_election(
         roles,
         matching,
         role_keys=query.role_keys,
+        open_role_keys=query.open_role_keys,
         readings=absent_readings(get_index()),
     )
     if election.tied:
@@ -2076,9 +2441,9 @@ class MembershipAuthority(StrEnum):
     """How Search decided the members an answer reads.
 
     A settled authority (`AUTHORITATIVE`, `PROVEN`) means the members are the ones the
-    Datasets mint resolves for the same identity, seeded with the members Search holds. An
-    unsettled one (`SAMPLED`, `FAILED`) means Search answers from the members it recalled
-    or was posted, which the mint may not serve.
+    Datasets mint resolves for the same identity, seeded on a first answer with the members
+    Search recalled. An unsettled one (`SAMPLED`, `FAILED`) means Search answers from the
+    members it holds, which the mint may not serve.
     """
 
     AUTHORITATIVE = "authoritative"
@@ -2087,11 +2452,11 @@ class MembershipAuthority(StrEnum):
     """The mint's walk hit its candidate window and proved that no unread candidate
     changes its members (`MemberGroup.proven_complete`)."""
     SAMPLED = "sampled"
-    """No walk ran, so the recalled or posted members answer."""
+    """No walk ran, so the members Search holds answer."""
     FAILED = "failed"
     """The walk or the read of its members' arcs settled nothing: it ran past its bound,
     a graph read failed, it truncated without proof, it left a candidate unread, or it
-    found no member. The recalled or posted members answer."""
+    found no member. The members Search holds answer."""
 
     @property
     def settled(self) -> bool:
@@ -2100,19 +2465,21 @@ class MembershipAuthority(StrEnum):
 
 @dataclass(frozen=True)
 class MembershipResolution[T]:
-    """A membership answer and how Search decided it."""
+    """A membership answer, how Search decided it, and, when Search's walk settled it, what
+    the mint states of the walked members (`WalkedMembers`)."""
 
     value: T
     authority: MembershipAuthority
+    walked: WalkedMembers | None = None
 
 
 @dataclass(frozen=True)
 class WalkedFamily:
     """The group the mint's walk resolves, and the `time.monotonic()` instant by which every
-    read of that walk, and of its members' arcs after it, finishes."""
+    read of that walk, and of its members' arcs after it, finishes, or `None` for no bound."""
 
     group: MemberGroup
-    bound: float
+    bound: float | None
 
 
 _WALK_FAILED: MembershipResolution[WalkedFamily | None] = MembershipResolution(
@@ -2120,128 +2487,132 @@ _WALK_FAILED: MembershipResolution[WalkedFamily | None] = MembershipResolution(
 )
 
 
-class _BoundedArcReader:
-    """Read arcs through `graph` until `bound`, a `time.monotonic()` instant. A read
-    started past it raises `TimeoutError`, and the bound rides on each read, so every
-    page of a paginated read and every request's timeout end by it."""
+@dataclass(frozen=True)
+class ResubmitWalk:
+    """How a resubmit walks. It takes no seed and reads under the request deadline. When the
+    first page truncates without proof, it reads the whole filtered set up to
+    `subject_ceiling` subjects under `full_read_deadline`, as the Datasets mint does. A
+    resubmit holds no recalled members to answer from, so membership is a function of the
+    identity alone.
+    `spec_id`, the posted identity's, names the walk in its log line."""
 
-    def __init__(self, graph: GraphReader, bound: float) -> None:
-        self._graph = graph
-        self._bound = bound
-
-    def _check(self) -> None:
-        if time.monotonic() >= self._bound:
-            raise TimeoutError("the role-class walk ran past its bound")
-
-    def node_subjects(
-        self,
-        dcid: str,
-        *,
-        property: str,
-        filters: Mapping[str, str] | None = None,
-        max_results: int,
-    ) -> SubjectPage:
-        self._check()
-        return self._graph.node_subjects(
-            dcid,
-            property=property,
-            filters=filters,
-            max_results=max_results,
-            deadline=self._bound,
-        )
-
-    def node_arcs_many(
-        self,
-        dcids: Sequence[str],
-        *,
-        properties: Sequence[str],
-        individual_probe_budget: int | None = None,
-        deadline: float | None = None,
-    ) -> dict[str, dict[str, tuple[str, ...]] | None]:
-        self._check()
-        return self._graph.node_arcs_many(
-            dcids,
-            properties=properties,
-            individual_probe_budget=individual_probe_budget,
-            deadline=self._bound,
-        )
+    subject_ceiling: int
+    full_read_deadline: float | None
+    spec_id: str | None = None
 
 
 class RoleClassWalks:
     """One request's walks of the mint's member enumeration, kept by query and seeds.
 
-    Search runs the walk the mint runs (`statvar_members.enumerate_members`) to learn the
-    members an identity the code index does not decide resolves to, which recalled or
-    posted members cannot settle. A request asks the same query for its elected shape, on
-    each pass, and for alternates, so each distinct query walks once.
+    Search runs the walk the mint runs, through the enumerator the Datasets doors share
+    (`statvar_members.shared_enumerator` unless `enumerator` is given), to learn the
+    members an identity the code index does not decide resolves to, which recalled
+    members cannot settle. A request asks the same query for its elected shape, on each
+    pass, and for alternates, so each distinct query walks once.
+
+    A first answer's walk is seeded with its recalled members and bound by
+    `_ROLE_CLASS_WALK_BUDGET_S`. A read failure or a crossed bound settles nothing and
+    notes the lost read (`degraded_reads.note_degraded_read`), as does a failed read of the
+    arcs of members it adds (`elected_role_class_shape`): the answer then stands on less
+    than the walk would have read, so no cache stores it. A resubmit's walk (`resubmit`)
+    takes no seed and raises those errors, since no recalled member can answer for it.
     """
 
-    def __init__(self, graph: GraphReader) -> None:
+    def __init__(
+        self,
+        graph: GraphReader,
+        *,
+        enumerator: MemberEnumerator | None = None,
+        resubmit: ResubmitWalk | None = None,
+    ) -> None:
         self._graph = graph
+        self._enumerator = enumerator if enumerator is not None else shared_enumerator()
+        self._resubmit = resubmit
         self._walked: dict[
             Hashable,
             MembershipResolution[WalkedFamily | None]
             | RoleSignatureError
-            | FamilyNotResolvableError,
+            | FamilyNotResolvableError
+            | MembershipTooBroadError,
         ] = {}
 
     def family(
         self, query: FamilyQuery, candidates: Sequence[str], *, deadline: float | None
     ) -> MembershipResolution[WalkedFamily | None]:
-        """Return the group the mint's walk resolves for `query`, seeded with `candidates`,
-        as `AUTHORITATIVE` when the walk read every candidate and `PROVEN` when it
-        truncated with proof (`MemberGroup.proven_complete`).
+        """Return the group the mint's walk resolves for `query`, seeded with `candidates`
+        on a first answer, as `AUTHORITATIVE` when the walk read every candidate and
+        `PROVEN` when it truncated with proof (`MemberGroup.proven_complete`).
 
-        The walk is bound by `deadline` and by `_ROLE_CLASS_WALK_BUDGET_S`, whichever comes
-        first, and every graph read it makes carries that bound. It settles nothing, a
-        `FAILED` resolution with no group, when it runs past that bound, when a graph read
-        fails, when it truncates without proof or leaves a candidate unread, and when it
-        finds no member.
+        A first answer's walk is bound by `deadline` and by `_ROLE_CLASS_WALK_BUDGET_S`,
+        whichever comes first, and every graph read it makes carries that bound. It settles
+        nothing, a `FAILED` resolution with no group, when it runs past that bound, when a
+        graph read fails, when it truncates without proof or leaves a candidate unread, and
+        when it finds no member. The first two also note a degraded read
+        (`degraded_reads.note_degraded_read`).
+
+        A resubmit's walk ignores `candidates`, reads its first page under `deadline` and
+        its full read under `ResubmitWalk.full_read_deadline`. It raises a failed read as
+        `GraphInfraError`, a read past a deadline as `TimeoutError`, and
+        `MembershipTooBroadError` for a family the mint refuses as too broad: a set past
+        the subject ceiling, or more members than the member cap. A query with no measured
+        property and a walk whose reads leave a candidate undismissed raise
+        `FamilyNotResolvableError`, as the mint refuses them. A walk that settles and finds
+        no member is the one `FAILED` resolution a resubmit returns.
 
         Raises `RoleSignatureError` when the walk's members declare role sets the election
         cannot order, which the mint refuses `RoleSignatureIncompatible`, and
         `FamilyNotResolvableError` when a member is at fault, which the mint refuses
         `MemberNotResolvable`."""
+        if self._resubmit is not None:
+            candidates = ()
         key = self._key(query, candidates)
         if key not in self._walked:
             walked = self._walked[key] = self._walk(query, candidates, deadline=deadline)
             # Every member of a settled family is a candidate the walk confirmed, so the
-            # walk seeded with that family resolves it again, so a resubmit that elects a
-            # family and then holds it as its shape walks once.
+            # walk seeded with that family resolves it again, so a first answer that elects
+            # a family and then holds it as its shape walks once.
             if isinstance(walked, MembershipResolution) and isinstance(
                 settled := walked.value, WalkedFamily
             ):
                 self._walked.setdefault(self._key(query, settled.group.family), walked)
         walked = self._walked[key]
-        if isinstance(walked, (RoleSignatureError, FamilyNotResolvableError)):
+        if isinstance(walked, Exception):
             raise walked
         return walked
 
     @staticmethod
     def _key(query: FamilyQuery, candidates: Sequence[str]) -> Hashable:
-        return (
-            query.five_tuple,
-            tuple(sorted(query.slots.items())),
-            query.role_keys,
-            tuple(candidates),
-        )
+        return walk_key(query), tuple(candidates)
 
     def _walk(
         self, query: FamilyQuery, candidates: Sequence[str], *, deadline: float | None
-    ) -> MembershipResolution[WalkedFamily | None] | RoleSignatureError | FamilyNotResolvableError:
-        bound = time.monotonic() + _ROLE_CLASS_WALK_BUDGET_S
-        if deadline is not None:
-            bound = min(bound, deadline)
-        index = get_index()
+    ) -> (
+        MembershipResolution[WalkedFamily | None]
+        | RoleSignatureError
+        | FamilyNotResolvableError
+        | MembershipTooBroadError
+    ):
+        resubmit = self._resubmit
+        if resubmit is None:
+            bound = time.monotonic() + _ROLE_CLASS_WALK_BUDGET_S
+            if deadline is not None:
+                bound = min(bound, deadline)
+        else:
+            bound = deadline
         try:
-            group = enumerate_members(
+            group = self._enumerator.enumerate(
+                graph=self._graph,
+                stamp_key=self._graph.generation_stamp().key,
                 five_tuple=query.five_tuple,
                 slots=query.slots,
-                graph=_BoundedArcReader(self._graph, bound),
-                readings=absent_readings(index),
-                member_cap=settings().options_member_cap,
+                readings=absent_readings(get_index()),
                 extra_candidates=tuple(candidates),
                 role_keys=query.role_keys,
+                open_role_keys=query.open_role_keys,
+                subject_ceiling=None if resubmit is None else resubmit.subject_ceiling,
+                deadline=bound,
+                full_read_deadline=None if resubmit is None else resubmit.full_read_deadline,
+                spec_id=None if resubmit is None else resubmit.spec_id,
             )
         except MemberRoleDisagreement as exc:
             return RoleSignatureError(str(exc))
@@ -2251,24 +2622,51 @@ class RoleClassWalks:
             NotAStatisticalVariable,
         ) as exc:
             return FamilyNotResolvableError(str(exc))
-        except (
-            MemberQueryUnanchored,
-            MemberEnumerationTooLarge,
-            GraphReadError,
-            GraphInfraError,
-            TimeoutError,
-        ):
+        except MemberEnumerationTooLarge as exc:
+            if resubmit is not None:
+                return MembershipTooBroadError(
+                    f"{exc.count} StatVars are consistent with this identity, exceeding the "
+                    f"{exc.member_cap}-member cap"
+                )
             return _WALK_FAILED
-        if (
-            not group.members
-            or (group.truncated and not group.proven_complete)
-            or group.undismissed_candidates
-        ):
+        except MemberQueryUnanchored as exc:
+            if resubmit is not None:
+                return FamilyNotResolvableError(str(exc))
+            return _WALK_FAILED
+        except (GraphReadError, GraphInfraError, TimeoutError) as exc:
+            if resubmit is None:
+                note_degraded_read("member walk")
+                return _WALK_FAILED
+            if isinstance(exc, GraphDeadlineExceededError):
+                raise TimeoutError(f"the member walk's graph read timed out: {exc}") from exc
+            if isinstance(exc, GraphReadError):
+                raise GraphInfraError(f"the member walk's graph read failed: {exc}") from exc
+            raise
+        if group.truncated and not group.proven_complete:
+            if resubmit is not None:
+                return MembershipTooBroadError(
+                    f"more than {group.candidate_cap} StatVars match this identity's "
+                    "five-tuple and bound values"
+                )
+            return _WALK_FAILED
+        if group.undismissed_candidates and resubmit is not None:
+            return FamilyNotResolvableError(
+                f"the member walk of {query.five_tuple!r} left candidates undismissed: "
+                f"{list(group.undismissed_candidates)}"
+            )
+        if not group.members or group.undismissed_candidates:
             return _WALK_FAILED
         authority = (
             MembershipAuthority.PROVEN if group.truncated else MembershipAuthority.AUTHORITATIVE
         )
-        return MembershipResolution(WalkedFamily(group=group, bound=bound), authority)
+        # A resubmit's later reads run to the bound its walk ran to, which its full read
+        # extends.
+        if resubmit is not None and group.full_read and resubmit.full_read_deadline is not None:
+            bound = resubmit.full_read_deadline
+        return MembershipResolution(
+            WalkedFamily(group=group, bound=bound),
+            authority,
+        )
 
 
 def elected_role_class_shape(
@@ -2283,33 +2681,35 @@ def elected_role_class_shape(
     were decided.
 
     The role-class election first runs among the shape's recalled members
-    (`_recalled_role_class_shape`). Recalled or posted members can miss the members the
+    (`_recalled_role_class_shape`). Recalled members can miss the members the
     mint resolves, whichever roles the query binds: a by-creditor sample with only the
     recipient bound, where the mint elects the recipient-only total; a recipient-only
     sample whose role is bound, where the mint elects a by-creditor series that asserts
     fewer constraints; a guaranteed part of a recipient-only total with the guarantee left
     open, where the mint elects the total; and, with no flow role, a female population
     with gender left open, where the mint serves the total population. So for any shape
-    the index does not decide, the mint's own walk, seeded with the shape's members as the
-    mint is seeded with a resubmit's posted members, settles the members when `walks` and
+    the index does not decide, the mint's own walk, seeded on a first answer with the
+    shape's members, settles the members when `walks` and
     `arcs_graph` are given (`RoleClassWalks.family`). A settled shape holds the walked
     family exactly: when the family differs from the shape's members, it replaces them,
     the arcs of a member the shape lacks are read through `arcs_graph` under the walk's
     bound, and the shape takes the name of the family's least-constrained member. A member
     the walk does not confirm is dropped, so no later reader of the shape's members
-    answers it. A posted shape (`ShapeDraft.sv_arc_facts_complete`) stays exact, holding
-    the family in place of the posted members.
+    answers it. An exact shape (`ShapeDraft.sv_arc_facts_complete`) stays exact, holding
+    the family in place of its members. A failed read of the members' arcs notes a
+    degraded read (`degraded_reads.note_degraded_read`).
 
     The authority is `AUTHORITATIVE` when the index decides the shape, and the walk's own
     authority when the walk settles the members. Otherwise the shape's members answer:
     `SAMPLED` when no walk runs and `FAILED` when the walk, or the read of its members'
-    arcs, settles nothing.
+    arcs, settles nothing. A resolution the walk settled states what the mint states of
+    the walked members (`MembershipResolution.walked`).
 
     Raises `RoleSignatureError` when the walk meets role sets the election cannot order,
     and `FamilyNotResolvableError` when it meets a member at fault: the mint refuses that
     identity, so no sample answers it."""
     narrowed = _recalled_role_class_shape(shape, query)
-    if index_covers_slot_keys(get_index(), query.five_tuple, query.slots.keys()):
+    if index_decides(get_index(), query):
         return MembershipResolution(narrowed, MembershipAuthority.AUTHORITATIVE)
     if walks is None or arcs_graph is None or not narrowed.sv_arc_facts:
         return MembershipResolution(narrowed, MembershipAuthority.SAMPLED)
@@ -2318,14 +2718,16 @@ def elected_role_class_shape(
         return MembershipResolution(narrowed, walked.authority)
     group = walked.value.group
     recalled = narrowed.sv_arc_facts or {}
+    settled = WalkedMembers.of(query, group)
     if set(recalled) == set(group.family):
-        return MembershipResolution(narrowed, walked.authority)
+        return MembershipResolution(narrowed, walked.authority, settled)
     unread = [sv for sv in group.family if sv not in recalled]
     arcs_by_dcid: Mapping[str, dict | None] = {}
     if unread:
         try:
             arcs_by_dcid = arcs_graph.node_arcs_batch(unread, deadline=walked.value.bound)
         except GraphInfraError:
+            note_degraded_read("walked family arcs")
             return MembershipResolution(narrowed, MembershipAuthority.FAILED)
     # The shape's own members keep their order, which later readers rank by, and the
     # members the walk adds follow.
@@ -2354,56 +2756,7 @@ def elected_role_class_shape(
             label=label,
         ),
         walked.authority,
-    )
-
-
-def posted_members_outside_role_class(
-    posted: Mapping[str, dict],
-    query: FamilyQuery,
-    *,
-    walks: RoleClassWalks | None = None,
-    deadline: float | None = None,
-) -> MembershipResolution[tuple[str, ...]]:
-    """Return the posted members that are outside the family `query` resolves to, in order,
-    and how that was decided.
-
-    `posted` maps each posted StatVar to its arcs. The mint seeds its walk with the posted
-    members, elects one role class for the identity, and refuses a posted member outside
-    its family (`MemberSelectionMismatch`), so a resubmit that holds one cannot be answered
-    as posted. When `walks` is given, Search runs that walk (`RoleClassWalks.family`) and
-    a posted member outside the walked family is outside. Otherwise, and when the walk
-    settles nothing, the election runs among the posted members: a member of a role set
-    it does not elect is outside.
-
-    The authority is `AUTHORITATIVE` for an identity the index decides, which is left to
-    the index's own checks; the walk's own authority when it settles the family; `SAMPLED`
-    when no walk runs; and `FAILED` when the walk settles nothing.
-
-    Raises `RoleSignatureError` when the posted members, or the walk's, declare role sets
-    the election cannot order, and `FamilyNotResolvableError` when the walk meets a member
-    at fault."""
-    if not posted or index_covers_slot_keys(get_index(), query.five_tuple, query.slots.keys()):
-        return MembershipResolution((), MembershipAuthority.AUTHORITATIVE)
-    members: dict[str, MemberFacts] = {
-        sv: ArcsMemberFacts(arcs=arcs) for sv, arcs in posted.items()
-    }
-    role_sets = {sv: frozenset(member.read_declared_roles()) for sv, member in members.items()}
-    authority = MembershipAuthority.SAMPLED
-    if walks is not None:
-        walked = walks.family(query, tuple(posted), deadline=deadline)
-        if walked.value is not None:
-            family = frozenset(walked.value.group.family)
-            return MembershipResolution(
-                tuple(sv for sv in posted if sv not in family), walked.authority
-            )
-        authority = walked.authority
-    if len(set(role_sets.values())) == 1:
-        return MembershipResolution((), authority)
-    elected = _recall_role_election(members, query)
-    if elected is None:
-        raise RoleSignatureError("the posted members declare role sets the election cannot order")
-    return MembershipResolution(
-        tuple(sv for sv in posted if role_sets[sv] != elected[0]), authority
+        settled,
     )
 
 
@@ -2418,11 +2771,7 @@ def _recalled_role_class_shape(shape: ShapeDraft, query: FamilyQuery) -> ShapeDr
     when the index decides the query's membership and when the election decides nothing
     (`_recall_role_election`)."""
     members = shape.sv_arc_facts
-    if (
-        shape.sv_arc_facts_complete
-        or not members
-        or index_covers_slot_keys(get_index(), query.five_tuple, query.slots.keys())
-    ):
+    if shape.sv_arc_facts_complete or not members or index_decides(get_index(), query):
         return shape
     recall: dict[str, MemberFacts] = {
         sv: ArcsMemberFacts(arcs=arcs) for sv, arcs in members.items()
@@ -2539,7 +2888,7 @@ def bind_shared_values(
 
 
 def canonical_pin_bindings(
-    shape: ShapeDraft, bindings: Sequence[SlotBindingDraft], role_keys: Collection[str]
+    shape: ShapeDraft, bindings: Sequence[SlotBindingDraft], role_keys: RoleKeys
 ) -> list[SlotBindingDraft]:
     """`bindings` in the canonical form of the identity minted from them
     (`code_index.members.invariant_bindings`): each invariant slot of the dataset the part
@@ -2549,7 +2898,7 @@ def canonical_pin_bindings(
     from them names it in its provenance facet. The identity minted from the result is
     canonical, and every reader of the bindings after it (option coverage, qualifier
     dispositions, a refusal's flagged identity) reads the values it binds."""
-    query = shape_query(shape, bindings, role_keys)
+    query = shape_query(shape, bindings, role_keys.bound, open_role_keys=role_keys.open)
     return _bind_sole_options(shape, bindings, invariant_bindings(get_index(), query))[0]
 
 
@@ -2579,22 +2928,43 @@ def _bind_sole_options(
     return [b for b in bindings if b.property_dcid not in bound] + added, added
 
 
-def index_decides_member(
-    five_tuple: FiveTuple, constraint_properties: Collection[str], index: CodeIndex | None = None
-) -> bool:
-    """Whether the packaged code index is the authority for a StatVar's family membership.
+def member_family(
+    dcid: str,
+    five_tuple: FiveTuple,
+    constraint_properties: Collection[str],
+    index: CodeIndex | None = None,
+) -> IndexFamily | None:
+    """The index family StatVar `dcid` belongs to, or None when the index does not decide
+    its membership. Derive groups members by it, so a CRS member and a DAC1 member of one
+    five-tuple land in different shapes, and a shape reads its family from its members
+    through it (`shape_family`).
 
-    It is when a StatVar keyed on `constraint_properties` resolves through the index at the
-    Datasets mint: some index row of `five_tuple` has its every constraint property among
-    them (`code_index.members.index_covers_slot_keys`, the test the mint and
-    `index_decides_membership` apply to an identity's slot keys). Search and the mint so
-    resolve a member through the index under the same condition, whether or not the index
-    holds the member's own row. A debt series beside CRS flows lists none of the `crs*`
-    properties every CRS row carries, so the graph walk decides its family.
-    """
-    return index_covers_slot_keys(
-        index or get_index(), _member_five_tuple(five_tuple), frozenset(constraint_properties)
-    )
+    An index row of `five_tuple` belongs to the family its provenances assign it
+    (`CodeIndex.family_by_dcid`), so a dataset's rows stay together when another dataset's
+    family holds fewer properties, or holds properties that overlap its own so that the
+    row's keys select neither. Another StatVar belongs to the family its
+    `constraint_properties` select (`CodeIndex.family_of`) when they hold every constraint
+    property of one of its rows (`IndexFamily.covers`). That is the condition under which
+    the Datasets mint resolves an identity with those slot keys through the index
+    (`code_index.members.index_covers_slot_keys`). A debt series beside CRS flows lists
+    none of the `crs*` properties every CRS row carries, so the graph walk decides its
+    family."""
+    index = index or get_index()
+    member_five_tuple = _member_five_tuple(five_tuple)
+    family = index.family_by_dcid.get(dcid)
+    if family is not None and family.five_tuple == member_five_tuple:
+        return family
+    keys = frozenset(constraint_properties)
+    family = index.family_of(member_five_tuple, keys)
+    return family if family is not None and family.covers(keys) else None
+
+
+def five_tuple_families(
+    five_tuple: FiveTuple, index: CodeIndex | None = None
+) -> tuple[IndexFamily, ...]:
+    """The index families of `five_tuple` (`CodeIndex.families_by_five_tuple`), in serving
+    order. Empty for a five-tuple the index does not carry."""
+    return (index or get_index()).families_by_five_tuple.get(_member_five_tuple(five_tuple), ())
 
 
 def index_carries_five_tuple(five_tuple: FiveTuple, index: CodeIndex | None = None) -> bool:
@@ -2604,25 +2974,21 @@ def index_carries_five_tuple(five_tuple: FiveTuple, index: CodeIndex | None = No
 
 def index_carries_shape(shape: ShapeDraft, index: CodeIndex | None = None) -> bool:
     """Whether the packaged code index carries `shape`: rows of its five-tuple, and, for
-    a shape with recalled members, a member whose family the index decides
-    (`index_decides_member`). `five_tuple_member_facts` gates on it. It says the index
-    describes the shape's slot values.
+    a shape with recalled members, the one family those members belong to
+    (`shape_family`). `five_tuple_member_facts` gates on it. It says the index describes the
+    shape's slot values.
 
-    `derive_shapes` builds separate shapes for the members the index decides and for
-    those it does not, so a shape's members agree on this. A member the index decides is one
-    whose constraint keys cover an index row of its five-tuple, the condition under which
-    the Datasets mint resolves an identity through the index, so a shape of members the
-    index does not decide has an identity whose slot keys cover no index row.
+    `derive_shapes` builds separate shapes for the members of each index family and for
+    those the index does not decide, so a shape's members agree on this. A member the index
+    decides is an index row of the five-tuple, or one whose constraint keys cover an index
+    row of it (`member_family`), the condition under which the Datasets mint resolves an
+    identity through the index. A shape of members the index does not decide has an
+    identity whose slot keys cover no index row.
     """
     index = index or get_index()
-    five_tuple = shape_five_tuple(shape)
-    if five_tuple not in _index_five_tuples(index):
+    if shape_five_tuple(shape) not in _index_five_tuples(index):
         return False
-    members = shape.sv_arc_facts
-    return not members or any(
-        index_decides_member(five_tuple, _dcids_for(arcs, "constraintProperties"), index)
-        for arcs in members.values()
-    )
+    return not shape.sv_arc_facts or shape_family(shape, index) is not None
 
 
 def elect_five_tuple_family(

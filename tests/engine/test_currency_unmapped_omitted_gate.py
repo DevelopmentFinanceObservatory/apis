@@ -75,7 +75,6 @@ def _fresh_state(*, materialise_graph: GraphReader = _MATERIALISE_GRAPH) -> Reso
         source_text=None,
         materialise_graph=materialise_graph,
         materialise_sdmx=_MATERIALISE_SDMX,
-        pipeline_steps=[],
         timing={},
         warnings=[],
         coverage=empty_coverage_snapshot(),
@@ -109,7 +108,6 @@ def _resubmit() -> tuple[object, list]:
     state = _PromoteState(
         inp=cast(ResubmitIdentityPayload, None),
         graph=_GRAPH,
-        pipeline_steps=[],
         sdmx=cast(EngineSdmxClient, None),
         deadline=None,
         include_option_coverage=False,

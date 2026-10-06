@@ -6,13 +6,16 @@ Tests compare streamed results with `_reshape` over concatenated rows.
 
 from __future__ import annotations
 
+import pytest
+
 from code_index import CodeIndex, IndexStamp
 from code_index.types import StatVarRow
 from datasets_api.mint_models import GroupbyOptions, MintOptions, PivotOptions
 from datasets_api.render import _reshape, _stream_bare_pivot, render_and_store
 from materialise.enrichment import EnrichmentLookup
 from materialise.pipeline import ConcatenatedFrameChunks
-from materialise.reshape import RollupNotSummableError, Table
+from materialise.profile import OutputProfile, PivotFeasibility
+from materialise.reshape import PivotNotUniqueError, RollupNotSummableError, Table
 
 from ._artifact_doubles import FakeArtifactStore
 from ._graph_doubles import FakeMintGraphReader
@@ -116,6 +119,95 @@ def test_two_contributors_with_no_summable_axis_refuses_the_same_way_streamed():
             raise AssertionError("expected the streamed call to refuse no_summable_axis")
         except RollupNotSummableError as streamed_exc:
             assert streamed_exc.precondition == "no_summable_axis"
+
+
+@pytest.mark.parametrize(
+    "bounds",
+    [[0, 2], [0, 1, 2]],
+    ids=["stored_single_chunk", "fresh_multi_chunk"],
+)
+def test_no_summable_axis_refuses_before_a_stored_pivot_cap_on_every_chunking(bounds):
+    """The stored profile says the pivot is over the cell cap. The first chunk of the fresh mint
+    carries one StatVar, so only a read of every chunk sees the second and refuses first."""
+    over_cap = PivotFeasibility(
+        index="recipient",
+        columns="time_period",
+        duplicate_keys=False,
+        homogeneous=True,
+        unique=True,
+        width=3,
+        cells=6,
+        varying=(),
+    )
+    profile = OutputProfile(
+        schema_version=1, rows=2, columns=(), pivots=(over_cap,), enrichments=()
+    )
+
+    with pytest.raises(RollupNotSummableError) as refused:
+        _stream_bare_pivot(
+            iter(_chunks(_TWO_CONTRIBUTOR_ROWS, bounds)),
+            options=_options(),
+            entity_columns=("recipient",),
+            enrichment=EnrichmentLookup(_GRAPH),
+            code_index=_INDEX_TWO_CONTRIBUTORS,
+            resolved_stat_var_refs=("dcid:SV_A", "dcid:SV_B"),
+            provenance_refs=("p1",),
+            subject_id="collapses-nothing-pivot-test",
+            groupby_preimage=None,
+            pivot_max_output_cells=1,
+            output_profile=profile,
+        )
+
+    assert refused.value.precondition == "no_summable_axis"
+
+
+@pytest.mark.parametrize(
+    "groupby",
+    [None, GroupbyOptions(by=["recipient"], op="sum")],
+    ids=["bare", "noop_groupby"],
+)
+def test_a_duplicate_key_pivot_names_the_varying_column_with_or_without_a_groupby(groupby):
+    """A one-StatVar frame whose key repeats under two units refuses `pivot_not_unique` naming
+    `unit`, whether the stored profile supplies it or the fold finds it."""
+    columns = (*_COLUMNS[:-1], "unit", "value")
+    rows = (
+        ("dcid:SV_A", "country/KEN", "2020", "USD", 10.0),
+        ("dcid:SV_A", "country/KEN", "2020", "EUR", 11.0),
+    )
+    facts = PivotFeasibility(
+        index="recipient",
+        columns="time_period",
+        duplicate_keys=True,
+        homogeneous=True,
+        unique=False,
+        width=2,
+        cells=2,
+        varying=(("unit", 2),),
+    )
+    profile = OutputProfile(schema_version=1, rows=2, columns=(), pivots=(facts,), enrichments=())
+    options = MintOptions(
+        format="csv",
+        bundle=False,
+        groupby=groupby,
+        pivot=PivotOptions(index="recipient", columns="time_period"),
+    )
+
+    with pytest.raises(PivotNotUniqueError) as refused:
+        _stream_bare_pivot(
+            iter([Table(columns=columns, rows=rows)]),
+            options=options,
+            entity_columns=("recipient",),
+            enrichment=EnrichmentLookup(_GRAPH),
+            code_index=_INDEX_ONE_CONTRIBUTOR,
+            resolved_stat_var_refs=("dcid:SV_A",),
+            provenance_refs=("p1",),
+            subject_id="collapses-nothing-pivot-test",
+            groupby_preimage=None,
+            pivot_max_output_cells=5_000_000,
+            output_profile=profile,
+        )
+
+    assert refused.value.varying == (("unit", 2),)
 
 
 def test_one_contributor_with_no_summable_axis_pivots_successfully_and_matches_whole_table():

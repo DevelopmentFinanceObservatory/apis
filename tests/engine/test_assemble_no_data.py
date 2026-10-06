@@ -58,7 +58,6 @@ def test_build_no_data_part_keeps_how_property_that_distinguishes_nearest_real_s
         "no_matching_slice",
         variable_text="test variable",
         warnings=[],
-        include_sentence=True,
         nearest_real=nearest_real,
     )
 
@@ -105,7 +104,6 @@ def test_build_no_data_part_composes_no_member_has_data_at_place_gate():
         "no_observations",
         variable_text="test variable",
         warnings=[],
-        include_sentence=True,
         flagged_match=spec,
         gate="no_member_has_data_at_place",
         elected_stat_vars=[GraphRef(dcid="Count_Person", label="Count person")],
@@ -135,7 +133,6 @@ def test_build_no_data_part_no_member_has_data_at_place_names_recipient_not_dono
         "no_observations",
         variable_text="test variable",
         warnings=[],
-        include_sentence=True,
         flagged_match=spec,
         gate="no_member_has_data_at_place",
     )
@@ -155,7 +152,6 @@ def test_build_no_data_part_no_member_has_data_at_place_donor_only_falls_back():
         "no_observations",
         variable_text="test variable",
         warnings=[],
-        include_sentence=True,
         flagged_match=spec,
         gate="no_member_has_data_at_place",
     )
@@ -186,7 +182,6 @@ def test_build_no_data_part_composes_only_alternate_has_data_gate(
         "no_matching_slice",
         variable_text=variable_text,
         warnings=warnings,
-        include_sentence=True,
         alternate_match=spec,
         gate="only_alternate_has_data",
         elected_stat_vars=[GraphRef(dcid="Count_Person_Alternate", label="Alternate count")],
@@ -220,13 +215,12 @@ def test_build_no_data_part_composes_only_alternate_has_data_gate(
 def test_build_no_data_part_calls_elected_kenya_debt_match_matching_series():
     """A bound-property refusal keeps the elected debt series as the match."""
     spec = _make_promoting_spec(purpose_dcid="Debt", place_dcid="country/KEN")
-    spec.resolved.stat_vars.items[0].label = "External debt stocks"
+    spec.resolved.members[0].ref.label = "External debt stocks"
 
     part = build_no_data_part(
         "no_matching_slice",
         variable_text="external debt",
         warnings=[],
-        include_sentence=True,
         flagged_match=spec,
         gate="no_member_asserts_bound_properties",
         elected_stat_vars=[
@@ -238,8 +232,8 @@ def test_build_no_data_part_calls_elected_kenya_debt_match_matching_series():
     assert "nearest series" not in part.rendered_sentence
 
 
-def test_build_no_data_part_carries_elected_stat_vars_onto_the_wire():
-    """Carry elected StatVars with the alternate-match sentence."""
+def test_build_no_data_part_counts_the_elected_stat_vars_on_the_wire():
+    """Count the elected StatVars beside the alternate match."""
     spec = _make_spec(sv_dcid="Count_Person", purpose_dcid="DAC/Health", place_dcid="country/ETH")
     elected = [GraphRef(dcid="Count_MedicalConditionIncident_ConditionHIVAIDS", label="HIV cases")]
 
@@ -247,13 +241,12 @@ def test_build_no_data_part_carries_elected_stat_vars_onto_the_wire():
         "no_observations",
         variable_text="test variable",
         warnings=[],
-        include_sentence=True,
         alternate_match=spec,
         gate="only_alternate_has_data",
         elected_stat_vars=elected,
     )
 
-    assert part.no_data.elected_stat_vars == elected
+    assert part.no_data.elected_count == 1
 
 
 def test_build_no_data_part_carries_gate_and_alternate_match_onto_the_wire():
@@ -267,7 +260,6 @@ def test_build_no_data_part_carries_gate_and_alternate_match_onto_the_wire():
         "no_matching_slice",
         variable_text="test variable",
         warnings=[],
-        include_sentence=True,
         gate="only_alternate_has_data",
         alternate_match=alternate,
     )
@@ -287,7 +279,6 @@ def test_build_no_data_part_composes_no_member_asserts_bound_properties_gate():
         "no_matching_slice",
         variable_text="maternal mortality ratio",
         warnings=[],
-        include_sentence=True,
         flagged_match=spec,
         gate="no_member_asserts_bound_properties",
         elected_stat_vars=[GraphRef(dcid="Count_Person", label="Count person")],
@@ -310,7 +301,6 @@ def test_build_no_data_part_composes_nearest_real_lead_in_when_no_flagged_match(
         "role_incompatible",
         variable_text="bilateral aid disbursements",
         warnings=[],
-        include_sentence=True,
         nearest_real=nearest_real,
     )
 
@@ -328,7 +318,6 @@ def test_build_no_data_part_bare_phrase_when_neither_flagged_match_nor_nearest_r
         "no_observations",
         variable_text=None,
         warnings=[],
-        include_sentence=True,
     )
 
     expected = "No data found for this query. Try a different place, time period, or indicator."
@@ -365,7 +354,6 @@ def test_build_no_data_part_variable_text(
         "variable_not_resolved",
         variable_text=variable_text,
         warnings=[],
-        include_sentence=True,
     )
 
     assert part.rendered_sentence == expected_sentence
@@ -495,7 +483,6 @@ def test_build_no_data_part_role_axis(
         "no_observations",
         variable_text=None,
         warnings=[],
-        include_sentence=True,
         role_axis=role_axis,
     )
     assert part.rendered_sentence == expected_sentence
@@ -531,7 +518,6 @@ def test_a_window_answer_departs_as_year_unavailable_with_no_note(
         "no_observations",
         variable_text="GDP per capita",
         warnings=[],
-        include_sentence=True,
         elected_stat_vars=[GraphRef(dcid="sv/recorded", label=label)],
         window_gap_fact=window_gap_fact(gap),
     )
@@ -555,15 +541,10 @@ def test_a_window_answer_departs_as_year_unavailable_with_no_note(
         ("no_observations", {}),
     ],
 )
-def test_build_no_data_part_carries_its_message_without_a_sentence_request(reason, terms):
-    """`no_data.message` is set whether or not a sentence is requested, and equals the
-    bare sentence a request for one renders when no near match is named."""
-    without = build_no_data_part(reason, variable_text="atlantis gdp", warnings=[], **terms)
-    with_sentence = build_no_data_part(
-        reason, variable_text="atlantis gdp", warnings=[], include_sentence=True, **terms
-    )
+def test_build_no_data_part_message_is_its_bare_sentence(reason, terms):
+    """`no_data.message` equals the part's sentence when no near match is named."""
+    part = build_no_data_part(reason, variable_text="atlantis gdp", warnings=[], **terms)
 
-    assert without.rendered_sentence is None
-    assert without.no_data.message == with_sentence.rendered_sentence
+    assert part.no_data.message == part.rendered_sentence
     for term in terms.get("entity_terms", ()):
-        assert term in without.no_data.message
+        assert term in part.no_data.message

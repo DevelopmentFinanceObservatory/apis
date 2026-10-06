@@ -1,4 +1,4 @@
-"""Pins sentences returned by `resolve(..., include_sentence=True)`."""
+"""Pins sentences returned by `resolve`."""
 
 from __future__ import annotations
 
@@ -19,8 +19,7 @@ from search.models import (
     SentenceToken,
 )
 from search.render.tokens import sentence_from_plan
-from tests.engine._base_identity import GDP_SHAPE, make_base, make_identity, subject_entity
-from tests.engine._builders import unbound_slot as _unbound_slot
+from tests.engine._base_identity import GDP_SHAPE, make_identity, subject_entity
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve
 from tests.fixtures import FakeGraph
@@ -30,7 +29,7 @@ from tests.render._helpers import assert_round_trip
 def _resolve(query: str, *, pac: bool | None = None, sdmx: FakeSdmxClient | None = None) -> Part:
     request = ResolveRequest(
         input=RawTextInput(query=query),
-        response_options=ResolveOptions(include_sentence=True),
+        response_options=ResolveOptions(),
     )
     return offline_resolve(request, pac=pac, sdmx=sdmx or FakeSdmxClient()).parts[0]
 
@@ -97,24 +96,8 @@ def test_candidates_count_summary_sentence():
 # ---------------------------------------------------------------------------
 
 
-def test_sentence_plan_absent_when_opted_out():
-    """Opting out leaves both sentence fields null on the resolved spec."""
-    r = offline_resolve(
-        ResolveRequest(
-            input=RawTextInput(query="total population India"),
-            response_options=ResolveOptions(include_sentence=False),
-        )
-    ).parts[0]
-    assert isinstance(r, DefinitePart)
-    assert r.rendered_sentence is None
-    assert r.sentence_plan is None
-    spec = r.spec
-    assert spec.resolved.rendered_sentence is None
-    assert spec.resolved.sentence_plan is None
-
-
-def test_sentence_plan_present_by_default():
-    """Sentence fields default on for the resolved spec, not the envelope."""
+def test_sentence_plan_present_on_the_resolved_spec():
+    """Sentence fields are on the resolved spec, not the definite part."""
     r = offline_resolve(ResolveRequest(input=RawTextInput(query="total population India"))).parts[0]
     assert isinstance(r, DefinitePart)
     assert r.rendered_sentence is None
@@ -183,7 +166,7 @@ def test_place_other_kind_resolution_reaches_no_observations():
                 ParsedPart(variable_text="income", entities=[ParsedEntity(text="California")]),
             ]
         ),
-        response_options=ResolveOptions(include_sentence=True),
+        response_options=ResolveOptions(),
     )
     r = offline_resolve(
         request,
@@ -220,7 +203,7 @@ def test_no_data_sentence_names_role_not_admitted_entity():
                 ),
             ]
         ),
-        response_options=ResolveOptions(include_sentence=True),
+        response_options=ResolveOptions(),
     )
     r = offline_resolve(
         request,
@@ -251,7 +234,7 @@ def test_no_data_sentence_names_ambiguous_entity_candidates():
                 ),
             ]
         ),
-        response_options=ResolveOptions(include_sentence=True),
+        response_options=ResolveOptions(),
     )
     r = offline_resolve(
         request,
@@ -276,7 +259,6 @@ def test_no_data_sentence_names_ambiguous_entity_candidates():
 
     # Ambiguous terms also appear in the restatement.
     assert r.restatement is not None
-    assert r.restatement_reason is None
     restated_texts = {e.text for e in (r.restatement.entities or [])}
     assert all(g.text in restated_texts for g in r.no_data.ambiguous_entities)
 
@@ -293,7 +275,7 @@ def test_no_data_restatement_for_directional_ambiguous_entity():
                 ),
             ]
         ),
-        response_options=ResolveOptions(include_sentence=True),
+        response_options=ResolveOptions(),
     )
     r = offline_resolve(
         request,
@@ -304,7 +286,6 @@ def test_no_data_restatement_for_directional_ambiguous_entity():
     assert isinstance(r, NoDataPart)
     assert r.no_data.reason == "entity_ambiguous"
     assert r.restatement is not None
-    assert r.restatement_reason is None
     assert [e.text for e in r.restatement.entities] == ["Congo"]
     assert r.restatement.entities[0].role_text == "to"
     restated_texts = {e.text for e in r.restatement.entities}
@@ -323,31 +304,25 @@ def test_no_data_restatement_for_directional_ambiguous_entity():
 def test_no_data_sentence_from_a_resubmitted_identity_quotes_the_posted_text():
     """A failed resubmit quotes its posted variable text, not the display slug."""
     entities = [subject_entity("country/IND")]
-    base_spec_id, base_identity = make_base(GDP_SHAPE, entities=entities)
     request = ResolveRequest(
         input=DatasetResubmitInput(
             entries=[
                 ResubmitIdentityEntry(
                     variable_text="nominal GDP of India",
+                    # No StatVar of the graph carries this shape.
                     identity=make_identity(
-                        GDP_SHAPE,
-                        [_unbound_slot("how", "activitySource", "activity source")],
-                        entities=entities,
+                        {**GDP_SHAPE, "population_type": "NoSuchActivity"}, entities=entities
                     ),
-                    base_spec_id=base_spec_id,
-                    base_identity=base_identity,
-                    # The posted StatVar is deliberately absent from the graph.
-                    resolved_stat_var_dcids=["nonexistent/sv/does_not_exist"],
                 )
             ]
         ),
-        response_options=ResolveOptions(include_sentence=True),
+        response_options=ResolveOptions(),
     )
     r = offline_resolve(request, graph=FakeGraph(), sdmx=FakeSdmxClient()).parts[0]
     assert isinstance(r, NoDataPart)
-    assert r.no_data.reason == "variable_not_resolved"
+    assert r.no_data.reason == "no_matching_slice"
     assert r.rendered_sentence == (
-        'Could not match "nominal GDP of India" to a supported indicator. '
-        "Try a different wording or a related indicator."
+        'No published series for "nominal GDP of India" matches the combination this query '
+        "asks for."
     )
     assert "economicactivity_amount_measuredvalue" not in r.rendered_sentence

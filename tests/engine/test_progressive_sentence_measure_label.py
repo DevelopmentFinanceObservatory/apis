@@ -74,7 +74,6 @@ def _run_with_events(
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations=_OBS, availability={}),
             llm=_BindPurposeToExtraLLM(),
-            base_steps=[],
             base_timing={},
             emit=_emit,
             coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),

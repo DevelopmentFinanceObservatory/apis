@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 
-from dfo_platform.roles import RoleWording
 from search.models import (
     Binding,
     BindingSet,
@@ -254,20 +253,21 @@ def _join_labels(labels: list[str]) -> str:
     return ", ".join(labels[:-1]) + ", and " + labels[-1]
 
 
-# Plural nouns a group label can end in that already name its members.
-_MEMBER_NOUNS = frozenset({"countries", "states"})
+# Plural nouns a group label can end in that already name its members. Group labels are
+# graph names, so this set follows the labels and stays apart from the rendered role nouns.
+_MEMBER_NOUNS = frozenset(
+    {"countries", "states", "donors", "providers", "recipients", "creditors", "debtors"}
+)
 
 
-def group_text(count: int, group: IdentityEntityGroup, *, wording: RoleWording) -> str:
+def group_text(count: int, group: IdentityEntityGroup) -> str:
     """Name a group of ``count`` entities: "the {n} {label} members" ("the 27 European
     Union members").
 
     A label whose last word already names the members keeps its own noun ("the 32 DAC
-    donors", "the 27 EU member states"). That word is a plural of ``wording``'s role
-    nouns, or "countries" or "states", compared as text. The heading and the
-    `entity_unavailable` departure both read this.
+    donors", "the 27 EU member states"). That word is one of `_MEMBER_NOUNS`, compared as
+    text. The heading and the `entity_unavailable` departure both read this.
     """
-    nouns = {*_MEMBER_NOUNS, wording.origin.plural, wording.destination.plural}
     last_word = group.label.rsplit(" ", 1)[-1].lower()
-    noun = "" if last_word in nouns else " members"
+    noun = "" if last_word in _MEMBER_NOUNS else " members"
     return f"the {count} {group.label}{noun}"

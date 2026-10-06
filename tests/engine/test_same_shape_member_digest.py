@@ -1,9 +1,10 @@
-"""Tests merged `member_count` and `member_digest` over admitted populations.
+"""Tests merged `member_count` over admitted populations, and the mint's served count and
+family digest a merged Spec states.
 
 Fixtures distinguish admitted members from StatVars confirmed at probe entities. No graph or LLM
-calls are made. The fixture members sit outside the code index, where `build_spec` states no
-digest, so the tests that read a merged digest stand the merged population in for the family
-the index resolves (`_index_resolves`).
+calls are made. The fixture members sit outside the code index, so a merged Spec states what its
+parts' walk settled (`same_shape._merged_walked`) when the merged identity is the one that walk
+resolves, and nothing otherwise.
 """
 
 from __future__ import annotations
@@ -12,7 +13,6 @@ import dataclasses
 
 import pytest
 
-from search.engine import spec_build
 from search.engine.retrieval.retrieve import MemberPopulation
 from search.engine.same_shape import collapse_same_shape
 from search.models import Spec
@@ -32,18 +32,6 @@ def _population(dcids: list[str], *, exact: bool = True) -> MemberPopulation:
     )
 
 
-@pytest.fixture
-def _index_resolves(monkeypatch):
-    """Returns a function that makes the code index resolve `dcids` for every identity."""
-
-    def resolve(dcids: list[str]) -> None:
-        monkeypatch.setattr(
-            spec_build, "identity_family_digest", lambda _identity: member_digest(dcids)
-        )
-
-    return resolve
-
-
 def _with_population(region, population: MemberPopulation | None):
     """Attach the admitted population to a fixture `RegionResult`."""
     return dataclasses.replace(region, member_population=population)
@@ -60,13 +48,29 @@ def _with_shape_member_count(spec: Spec, count: int) -> Spec:
     )
 
 
-def test_collapse_same_shape_single_slot_merge_publishes_member_digest_over_the_admitted_union(
-    _index_resolves,
-):
-    """The digest covers five admitted dcids; only two StatVars are confirmed."""
-    _index_resolves(["sv_a", "sv_x", "sv_y", "sv_b", "sv_z"])
-    spec_a = _spec(_PERSON_SHAPE, "ValA", sv_dcid="sv_a")
-    spec_b = _spec(_PERSON_SHAPE, "ValB", sv_dcid="sv_b")
+def _stating(spec: Spec, served_count: int, digest: str) -> Spec:
+    """`spec` stating `served_count` and `digest`, as a part whose walk settled them does."""
+    resolved = spec.resolved
+    return spec.model_copy(
+        update={
+            "resolved": resolved.model_copy(
+                update={
+                    "stat_vars": resolved.stat_vars.model_copy(
+                        update={"served_count": served_count}
+                    ),
+                    "shape": resolved.shape.model_copy(update={"member_digest": digest}),
+                }
+            )
+        }
+    )
+
+
+def test_collapse_same_shape_single_slot_merge_counts_the_admitted_union_and_states_no_walk():
+    """The count covers five admitted dcids; only two StatVars are confirmed. The parts'
+    walks settled their own values, not the merged set, so the merge states neither."""
+    digest = member_digest(["sv_a"])
+    spec_a = _stating(_spec(_PERSON_SHAPE, "ValA", sv_dcid="sv_a"), 1, digest)
+    spec_b = _stating(_spec(_PERSON_SHAPE, "ValB", sv_dcid="sv_b"), 1, digest)
     r_a = _with_population(
         _region(spec_a, "var A", earliest_index=0), _population(["sv_a", "sv_x", "sv_y"])
     )
@@ -79,23 +83,17 @@ def test_collapse_same_shape_single_slot_merge_publishes_member_digest_over_the_
     assert len(effective) == 1
     assert residual == []
     merged = effective[0].spec
-    assert {sv.ref for sv in merged.resolved.stat_vars.items} == {"sv_a", "sv_b"}
+    assert {sv.ref.dcid for sv in merged.resolved.members} == {"sv_a", "sv_b"}
     assert merged.resolved.shape.member_count == 5
-    assert merged.resolved.shape.member_digest == member_digest(
-        ["sv_a", "sv_x", "sv_y", "sv_b", "sv_z"]
-    )
+    assert merged.resolved.shape.member_digest is None
+    assert merged.resolved.stat_vars.served_count is None
 
 
-@pytest.mark.parametrize("index_resolves_the_union", [True, False])
-def test_collapse_same_shape_roster_merge_publishes_member_digest_over_the_admitted_union(
-    _index_resolves, index_resolves_the_union
-):
+def test_collapse_same_shape_roster_merge_counts_the_admitted_union():
     """A zero-diff roster merge (diff_key None): the two members' own
     admitted populations only partly overlap (sv_a shared, sv_x/sv_y each
-    member's own) -- the merged shape publishes the union's own size/digest,
-    not either member's alone. The digest is stated only when the union is the
-    family the index resolves for the merged identity."""
-    _index_resolves(["sv_a", "sv_x", "sv_y"] if index_resolves_the_union else ["sv_a"])
+    member's own) -- the merged shape publishes the union's own size, not
+    either member's alone."""
     spec_a = _roster_variant_spec("country/KEN", "sv_a", member_count=1, carry_open_what_slot=False)
     spec_b = _roster_variant_spec("country/KEN", "sv_a", member_count=1, carry_open_what_slot=True)
     r_a = _with_population(
@@ -109,11 +107,7 @@ def test_collapse_same_shape_roster_merge_publishes_member_digest_over_the_admit
 
     assert len(effective) == 1
     assert residual == []
-    merged_shape = effective[0].spec.resolved.shape
-    assert merged_shape.member_count == 3
-    assert merged_shape.member_digest == (
-        member_digest(["sv_a", "sv_x", "sv_y"]) if index_resolves_the_union else None
-    )
+    assert effective[0].spec.resolved.shape.member_count == 3
 
 
 def test_collapse_same_shape_no_member_digest_when_a_member_is_inexact():
@@ -164,13 +158,30 @@ def test_collapse_same_shape_no_member_digest_when_a_member_has_no_population():
     assert merged_shape.member_count == 9
 
 
-def test_collapse_same_shape_where_axis_merge_never_gets_member_digest():
-    """Where-axis merges withhold the digest and use the maximum member count."""
-    spec_kenya = _with_shape_member_count(
-        _where_bound_spec_with_member_count("country/KEN", "sv_kenya", member_count=5), 5
+@pytest.mark.parametrize(
+    ("uganda", "stated"),
+    [
+        pytest.param((2, "d"), (2, "d"), id="parts-agree"),
+        pytest.param((3, "d"), (None, None), id="served-counts-differ"),
+        pytest.param((2, "e"), (None, None), id="digests-differ"),
+    ],
+)
+def test_collapse_same_shape_where_axis_merge_keeps_the_walk_its_parts_share(uganda, stated):
+    """A where-axis merge binds one identity's members at more places, so the walk both
+    parts settled stands for it; parts that disagree state nothing. The member count is the
+    maximum."""
+    spec_kenya = _stating(
+        _with_shape_member_count(
+            _where_bound_spec_with_member_count("country/KEN", "sv_kenya", member_count=5), 5
+        ),
+        2,
+        "d",
     )
-    spec_uganda = _with_shape_member_count(
-        _where_bound_spec_with_member_count("country/UGA", "sv_uganda", member_count=7), 7
+    spec_uganda = _stating(
+        _with_shape_member_count(
+            _where_bound_spec_with_member_count("country/UGA", "sv_uganda", member_count=7), 7
+        ),
+        *uganda,
     )
     r_a = _with_population(
         _region(spec_kenya, "population of Kenya", earliest_index=0), _population(["sv_kenya"])
@@ -183,16 +194,15 @@ def test_collapse_same_shape_where_axis_merge_never_gets_member_digest():
 
     assert len(effective) == 1
     assert residual == []
-    merged_shape = effective[0].spec.resolved.shape
-    assert merged_shape.member_digest is None
-    assert merged_shape.member_count == 7
+    merged = effective[0].spec.resolved
+    assert (merged.stat_vars.served_count, merged.shape.member_digest) == stated
+    assert merged.shape.member_count == 7
 
 
-def test_collapse_same_shape_recomputed_member_digest_does_not_move_spec_id(_index_resolves):
-    """Different merged counts and digests leave `spec_id` unchanged."""
+def test_collapse_same_shape_recomputed_member_count_does_not_move_spec_id():
+    """Different merged counts leave `spec_id` unchanged."""
 
     def _merge(second_admitted: list[str]):
-        _index_resolves(second_admitted)
         spec_a = _roster_variant_spec(
             "country/KEN", "sv_a", member_count=1, carry_open_what_slot=False
         )
@@ -212,5 +222,4 @@ def test_collapse_same_shape_recomputed_member_digest_does_not_move_spec_id(_ind
     shared = _merge(["sv_a"])
 
     assert distinct.resolved.shape.member_count != shared.resolved.shape.member_count
-    assert distinct.resolved.shape.member_digest != shared.resolved.shape.member_digest
     assert distinct.spec_id == shared.spec_id

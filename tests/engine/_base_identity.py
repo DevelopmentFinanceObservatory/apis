@@ -77,6 +77,7 @@ def make_base(
         entities=entities,
         requested_window=requested_window,
         explicit_facets=explicit_facets,
+        open_roles=(),
     )
 
 

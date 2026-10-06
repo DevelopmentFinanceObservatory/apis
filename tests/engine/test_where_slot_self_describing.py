@@ -33,7 +33,7 @@ from tests.engine._builders import gref as _gref
 from tests.engine._builders import value_slot as _value_slot
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import offline_resolve
+from tests.engine._harness import offline_resolve, walk_options
 from tests.fixtures import GDP_INDIA_PROVENANCES, FakeGraph, fake_graph_with_provenances
 
 
@@ -63,16 +63,12 @@ class TestStandardWhereSlot:
 
     def test_round_trip_without_entity_dcids_fully_rematerialises(self):
         """The posted where slot supplies the entity when the base identity omits it."""
-        base_spec_id, base_identity = make_base(GDP_SHAPE)
         inp = ResubmitIdentityPayload(
             identity=make_base(
                 GDP_SHAPE,
                 slots=[_ACTIVITY_SOURCE_SLOT],
                 entities=[subject_entity(_ENTITY_DCID)],
             )[1],
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_GDP_SV_DCID],
             # The where slot supplies the omitted base entity.
         )
         region = resolve_spec_resubmit(
@@ -80,6 +76,7 @@ class TestStandardWhereSlot:
             graph=FakeGraph(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(FakeGraph()),
         )
         assert region.status == "definite"
         spec = region.specs[0]
@@ -107,8 +104,8 @@ class TestWhereSlotDoesNotPerturbIdentity:
                 ),
             ),
         ]
-        id_pre = compute_spec_id(GDP_SHAPE, slots_pre_13c, entities=entities)
-        id_post = compute_spec_id(GDP_SHAPE, slots_post_13c, entities=entities)
+        id_pre = compute_spec_id(GDP_SHAPE, slots_pre_13c, entities=entities, open_roles=())
+        id_post = compute_spec_id(GDP_SHAPE, slots_post_13c, entities=entities, open_roles=())
         assert id_pre == id_post
 
     def test_where_slot_binding_value_does_not_affect_id_when_entities_fixed(self):
@@ -126,8 +123,8 @@ class TestWhereSlotDoesNotPerturbIdentity:
                 ),
             ]
 
-        id_a = compute_spec_id(GDP_SHAPE, _slots("country/IND"), entities=entities)
-        id_b = compute_spec_id(GDP_SHAPE, _slots("country/XXX"), entities=entities)
+        id_a = compute_spec_id(GDP_SHAPE, _slots("country/IND"), entities=entities, open_roles=())
+        id_b = compute_spec_id(GDP_SHAPE, _slots("country/XXX"), entities=entities, open_roles=())
         assert id_a == id_b
 
     def test_named_where_slot_unaffected(self):
@@ -144,11 +141,11 @@ class TestWhereSlotDoesNotPerturbIdentity:
         slots = [
             _value_slot("where", "FlowRecipient", "recipient", "country/ETH", "Ethiopia"),
         ]
-        id_eth = compute_spec_id(DECLARING_SHAPE, slots, entities=entities_eth)
+        id_eth = compute_spec_id(DECLARING_SHAPE, slots, entities=entities_eth, open_roles=())
         slots_ken = [
             _value_slot("where", "FlowRecipient", "recipient", "country/KEN", "Kenya"),
         ]
-        id_ken = compute_spec_id(DECLARING_SHAPE, slots_ken, entities=entities_ken)
+        id_ken = compute_spec_id(DECLARING_SHAPE, slots_ken, entities=entities_ken, open_roles=())
         assert id_eth != id_ken
 
 
@@ -194,10 +191,6 @@ class TestLatestWindowSentinel:
         """The latest sentinel resolves to 2024 despite the posted 2015 window: the latest
         point of the facet a preview serves, the 65-observation series to 2024, rather than
         the 2026 end of a 12-observation facet."""
-        base_spec_id, base_identity = make_base(
-            GDP_SHAPE,
-            entities=[subject_entity(_ENTITY_DCID)],
-        )
         inp_latest = ResubmitIdentityPayload(
             identity=make_base(
                 GDP_SHAPE,
@@ -205,15 +198,13 @@ class TestLatestWindowSentinel:
                 entities=[subject_entity(_ENTITY_DCID)],
                 requested_window="latest",
             )[1],
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_GDP_SV_DCID],
         )
         region_latest = resolve_spec_resubmit(
             inp=inp_latest,
             graph=fake_graph_with_provenances(GDP_INDIA_PROVENANCES),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(fake_graph_with_provenances(GDP_INDIA_PROVENANCES)),
         )
         assert region_latest.status == "definite"
         spec_latest = region_latest.specs[0]
@@ -227,15 +218,13 @@ class TestLatestWindowSentinel:
                 entities=[subject_entity(_ENTITY_DCID)],
                 requested_window=TimeWindow(start_year=2015, end_year=2015),
             )[1],
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_GDP_SV_DCID],
         )
         region_pinned = resolve_spec_resubmit(
             inp=inp_no_sentinel,
             graph=fake_graph_with_provenances(GDP_INDIA_PROVENANCES),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(fake_graph_with_provenances(GDP_INDIA_PROVENANCES)),
         )
         assert region_pinned.status == "definite"
         assert region_pinned.specs[0].resolved.coverage.window == TimeWindow(
@@ -257,6 +246,9 @@ class TestLatestWindowSentinel:
             slots,
             entities=entities,
             requested_window="latest",
+            open_roles=(),
         )
-        id_none = compute_spec_id(GDP_SHAPE, slots, entities=entities, requested_window=None)
+        id_none = compute_spec_id(
+            GDP_SHAPE, slots, entities=entities, requested_window=None, open_roles=()
+        )
         assert id_latest != id_none

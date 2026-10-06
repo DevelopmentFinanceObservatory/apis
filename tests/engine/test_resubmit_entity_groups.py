@@ -1,6 +1,6 @@
-"""A resubmit keeps a role's named group while the role keeps its entities, and drops it
-when the edit changes them. A group posting a dcid takes the graph's label for its node and
-is kept only while the graph's members of that node are the role's entities."""
+"""A resubmit keeps a role's named group only when it posts a dcid whose graph members are
+the role's entities, under the graph's label for the node. A group naming no graph node
+drops."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from search.models import BaseIdentity, IdentityEntityGroup, ResubmitIdentityPay
 from tests.engine._base_identity import PERSON_COUNT_SHAPE, subject_entity
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import walk_options
 from tests.fixtures import FakeGraph
 
 _SV = "Count_Person"
@@ -69,6 +70,7 @@ def _identity(
         [],
         entities=[subject_entity(dcid) for dcid in dcids],
         entity_groups={"observationAbout": group},
+        open_roles=(),
     )
 
 
@@ -77,41 +79,28 @@ def _resubmit(
     group: IdentityEntityGroup = _GROUP,
     contained: tuple[str, ...] = (),
 ):
-    base_spec_id, base_identity = _identity(_TRIANGLE, group)
     _spec_id, identity = _identity(posted_dcids, group)
+    graph = FakeGraph(nodes=_nodes(contained), obs=_OBS)
     return resolve_spec_resubmit(
-        inp=ResubmitIdentityPayload(
-            identity=identity,
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_SV],
-        ),
-        graph=FakeGraph(nodes=_nodes(contained), obs=_OBS),
+        inp=ResubmitIdentityPayload(identity=identity),
+        graph=graph,
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
+        options=walk_options(graph),
     )
 
 
-def test_a_resubmit_keeping_the_members_keeps_the_group():
-    region = _resubmit(_TRIANGLE)
+def test_a_group_naming_no_graph_node_drops(caplog):
+    with caplog.at_level(logging.INFO, logger="search.engine.region.resubmit_request"):
+        region = _resubmit(_TRIANGLE)
 
     assert region.status == "definite"
     spec = region.specs[0]
     assert spec.spec_id == _identity(_TRIANGLE)[0]
-    assert spec.definition.identity.entity_groups == {"observationAbout": _GROUP}
-    assert spec.resolved.entity_groups == {"observationAbout": _GROUP}
-
-
-def test_a_resubmit_changing_the_members_drops_the_group(caplog):
-    with caplog.at_level(logging.INFO, logger="search.engine.region.resubmit_request"):
-        region = _resubmit(_TRIANGLE[:2])
-
-    assert region.status == "definite"
-    spec = region.specs[0]
-    assert {entity.ref for entity in spec.resolved.entities} == set(_TRIANGLE[:2])
+    assert {entity.ref for entity in spec.resolved.entities} == set(_TRIANGLE)
     assert spec.definition.identity.entity_groups is None
     assert spec.resolved.entity_groups is None
-    assert "the edit changed the role's entities" in caplog.text
+    assert "it names no graph node" in caplog.text
 
 
 @pytest.mark.parametrize(

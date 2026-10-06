@@ -8,6 +8,7 @@ import dataclasses
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, cast
 
+from code_index.query import IndexFamily
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from materialise import GraphReader
 from materialise.facets import FacetSelection
@@ -16,7 +17,6 @@ from materialise.rate_tables import RateTableCache
 from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
-from search.engine.config import settings
 from search.engine.departures import WarningKey, warning_key
 from search.engine.extract import DateRequest
 from search.engine.region.convertibility import UnitCoverage
@@ -27,6 +27,7 @@ from search.engine.retrieval.bound_values import (
     OpenAxisFact,
     OptionServedFact,
     RoleClassWalks,
+    WalkedMembers,
 )
 from search.engine.retrieval.facts import FiveTuple
 from search.engine.retrieval.read_plan import ReadPlan
@@ -46,7 +47,6 @@ from search.models import (
     EntityOptions,
     FacetBasis,
     Headline,
-    PipelineStep,
     ProvenanceRef,
     ResubmitIdentityPayload,
     Shape,
@@ -80,7 +80,6 @@ class _PromoteState:
     # --- (a) request context -------------------------------------------------
     inp: ResubmitIdentityPayload
     graph: EngineGraphClient
-    pipeline_steps: list[PipelineStep]
     sdmx: EngineSdmxClient
     deadline: float | None
     include_option_coverage: bool
@@ -89,8 +88,6 @@ class _PromoteState:
     stream_observations: bool
     materialise_graph: GraphReader | None
     materialise_sdmx: MaterialiseSdmxClient | None
-    # Maximum resolved StatVars in the built Spec; `None` omits the wire cap.
-    stat_vars_cap: int | None = settings().resolved_stat_vars_max
     rate_cache: RateTableCache | None = None
     population_memo: OptionsPopulationMemo | None = None
     place_options_pool: PlaceOptionsPool | None = None
@@ -100,48 +97,47 @@ class _PromoteState:
     # --- (b) evolving state ----------------------------------------------------
     # Initial display text; the shape phase assigns the verified slug.
     variable_text: str = ""
-    # Named families start empty; other shapes start from the posted seed.
+    # The members the identity elects (`promote_reread._elected_members`).
     stat_var_dcids: list[str] = dataclasses.field(default_factory=list)
-    # True for index-elected family members. Expanded election values support descendant
-    # coverage checks; an edit a client-posted seed cannot answer elects the edited family.
-    stat_var_dcids_from_election: bool = False
-    # Constraint properties forced by a named-family election. Empty for posted seeds and
-    # disjoint from client edits.
+    # Constraint properties forced by a named-family election. Empty for any other election
+    # and disjoint from the posted bindings.
     measure_elected_properties: frozenset[str] = frozenset()
     # The posted identity's scalar observationAbout anchor dcid (the first confirmed ref).
     entity_dcid: str | None = None
-    # Re-read arcs for every posted SV, keyed by dcid.
+    # Re-read arcs for every elected SV, keyed by dcid.
     confirmed_arcs: dict[str, dict] = dataclasses.field(default_factory=dict)
     # Shared five-tuple, set after arc confirmation; the cast marks its phase-dependent value.
     ft: FiveTuple = dataclasses.field(default=cast(FiveTuple, None))
-    # Exact qualifier values seen on the posted family's graph arcs. This
+    # Exact qualifier values seen on the elected family's graph arcs. This
     # retains dangling dcids that read_five_tuple omits from public identity.
     family_measurement_qualifiers: frozenset[str | None] = frozenset()
     # Display slug from the shared five-tuple; shape identity uses the regenerated structure.
     regenerated_shape_id: str = ""
-    # Union of every posted SV's own constraint map, keyed by property to the
-    # set of values asserted across the whole posted set.
+    # The index family that decides every elected member's membership, or None when the
+    # members span families or the graph walk decides them.
+    index_family: IndexFamily | None = None
+    # Union of every elected SV's own constraint map, keyed by property to the
+    # set of values asserted across the whole elected set.
     union_constraints: dict[str, set[str]] = dataclasses.field(default_factory=dict)
-    # What/how properties this request edits, keyed to the requested values.
+    # What/how properties some elected member asserts outside the requested values, keyed to
+    # the requested values.
     edits: dict[str, list[str]] = dataclasses.field(default_factory=dict)
     # Client-controlled what/how properties posted unbound, tracked as widenings. Election-
-    # forced properties stay out; both base and request leave them open, with arcs supplying
-    # their elected binding.
+    # forced properties stay out; the identity leaves them open, with arcs supplying their
+    # elected binding.
     widened_props: set[str] = dataclasses.field(default_factory=set)
     # Every posted-bound what/how property, keyed to its requested values,
     # regardless of whether it turned out to be an edit.
     posted_bound_values: dict[str, list[str]] = dataclasses.field(default_factory=dict)
-    # Final StatVar set served by this resubmit after any narrow or refine.
+    # Final StatVar set served by this resubmit after any narrowing.
     resolved_stat_var_dcids: list[str] = dataclasses.field(default_factory=list)
     # resolved_stat_var_dcids' own confirmed arcs, and from _phase_build_shape on those of
-    # every member of the family the mint resolves with them as seeds.
+    # every member of the family the mint resolves.
     resolved_arcs: dict[str, dict] = dataclasses.field(default_factory=dict)
-    # The mint's member walks for this request, shared by the survivor election and the
-    # shape's role-class election so each distinct query walks once. None without a
-    # materialise graph client.
+    # The mint's member walks for this request, in their resubmit mode, shared by the member
+    # election and the shape's role-class election so each distinct query walks once. None
+    # without a materialise graph client.
     role_class_walks: RoleClassWalks | None = None
-    # resolved_stat_var_dcids' own constraint maps, read from resolved_arcs.
-    resolved_constraints_by_sv: dict[str, dict[str, str]] = dataclasses.field(default_factory=dict)
     # Warning list shared with every phase.
     warnings: list[Warning] = dataclasses.field(default_factory=list)
     # First resolved member, anchoring standard_bindings_from_arcs.
@@ -157,7 +153,7 @@ class _PromoteState:
     origin_dcids: list[str] = dataclasses.field(default_factory=list)
     # Full posted entity map, retaining roles the resolved shape cannot host for validation.
     identity_entities: dict[str, list[str]] = dataclasses.field(default_factory=dict)
-    # Identity's what/how slots adapted once from the confirmed seed arcs.
+    # Identity's what/how slots adapted once from the elected members' confirmed arcs.
     # Every later phase uses this wire-only view for existing slot helpers.
     posted_slots: list[Slot] = dataclasses.field(default_factory=list)
     # The shape's place context from _phase_where_places: its role entities, wire roles, probe
@@ -175,6 +171,9 @@ class _PromoteState:
     # Whether the index or the mint's walk settled the family the shape holds, so this
     # resubmit elects among it as the first answer does (`_phase_build_shape`).
     family_settled: bool = False
+    # What the mint states of the members the walk settled for this resubmit's identity,
+    # `None` when no walk settled them (`MembershipResolution.walked`).
+    walked: WalkedMembers | None = None
     # The standard resolver's own materialise() outcome for this resubmit.
     mat_result: Materialised | NoDataDraft | MaterialisedCandidates | UnsupportedDraft | None = None
     # Shared timing dict populated by every timed step.

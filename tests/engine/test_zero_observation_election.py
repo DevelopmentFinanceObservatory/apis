@@ -190,7 +190,6 @@ def _run(
             graph=graph,
             resolver=make_resolver(graph),
             llm=_NoAmbiguityBindLLM(chosen_shape_index),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
@@ -227,7 +226,7 @@ def test_a_reelected_sibling_is_walked_before_it_answers():
     )
 
     assert result.status == "definite"
-    assert [sv.ref for sv in result.specs[0].resolved.stat_vars.items] == [_SIBLING_SV]
+    assert [sv.ref.dcid for sv in result.specs[0].resolved.members] == [_SIBLING_SV]
     assert sorted(walk.get("measurementQualifier") or "" for walk in readers[0].walked) == [
         "",
         "Estimated",
@@ -262,7 +261,7 @@ def test_single_sibling_within_margin_reelects_to_definite():
         obs={f"{_SIBLING_SV}|country/KEN": _KEN_OBS},
     )
     assert result.status == "definite"
-    sv_dcids = [sv.ref for sv in result.specs[0].resolved.stat_vars.items]
+    sv_dcids = [sv.ref.dcid for sv in result.specs[0].resolved.members]
     assert sv_dcids == [_SIBLING_SV]
 
 
@@ -290,7 +289,7 @@ def test_two_siblings_within_margin_become_candidates():
     )
     assert result.status == "candidates"
     assert len(result.specs) == 2
-    sv_dcids = {sv.ref for spec in result.specs for sv in spec.resolved.stat_vars.items}
+    sv_dcids = {sv.ref.dcid for spec in result.specs for sv in spec.resolved.members}
     assert sv_dcids == {_SIBLING_SV, _SIBLING_SV_2}
 
 
@@ -395,7 +394,6 @@ def test_different_measured_property_siblings_stay_no_observations():
             graph=graph,
             resolver=make_resolver(graph),
             llm=_NoAmbiguityBindLLM(0),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
@@ -448,7 +446,6 @@ def test_single_sibling_different_measured_property_stays_no_observations():
             graph=graph,
             resolver=make_resolver(graph),
             llm=_NoAmbiguityBindLLM(0),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
@@ -476,7 +473,6 @@ def _run_qualified(*, svs: list[str], scores: list[float], obs: dict, chosen_sha
             graph=graph,
             resolver=make_resolver(graph),
             llm=_NoAmbiguityBindLLM(chosen_shape_index),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
@@ -497,7 +493,7 @@ def test_stat_type_distinct_sibling_reelects_to_definite():
         obs={f"{_BARE_STAT_TYPE_SIBLING_SV}|country/GHA": _GHA_OBS},
     )
     assert result.status == "definite"
-    sv_dcids = [sv.ref for sv in result.specs[0].resolved.stat_vars.items]
+    sv_dcids = [sv.ref.dcid for sv in result.specs[0].resolved.members]
     assert sv_dcids == [_BARE_STAT_TYPE_SIBLING_SV]
     assert any(w.code == ELECTED_SHAPE_NO_DATA for w in result.warnings)
 
@@ -552,7 +548,6 @@ def test_stat_type_differing_sibling_is_never_probed():
             graph=graph,
             resolver=make_resolver(graph),
             llm=_NoAmbiguityBindLLM(0),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
@@ -615,7 +610,6 @@ def test_unscored_expansion_sibling_is_never_probed():
             graph=graph,
             resolver=make_resolver(graph),
             llm=_NoAmbiguityBindLLM(0),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
@@ -683,7 +677,6 @@ def test_unscored_elected_shape_with_scored_data_bearing_sibling_is_never_probed
             graph=graph,
             resolver=make_resolver(graph),
             llm=_NoAmbiguityBindLLM(1),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
@@ -779,7 +772,6 @@ def _run_measure(*, svs: list[str], scores: list[float], obs: dict):
             graph=graph,
             resolver=make_resolver(graph),
             llm=_BindsActivityLLM(),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
@@ -816,7 +808,7 @@ def test_a_qualifier_variant_holding_the_bound_values_is_elected():
     )
 
     assert result.status == "definite"
-    assert [sv.ref for sv in result.specs[0].resolved.stat_vars.items] == [_NOMINAL_GDP_SV]
+    assert [sv.ref.dcid for sv in result.specs[0].resolved.members] == [_NOMINAL_GDP_SV]
     assert not any(w.code == ELECTED_SHAPE_NO_DATA for w in result.warnings)
 
 
@@ -887,7 +879,6 @@ def _run_placeless(
             graph=graph,
             resolver=make_resolver(graph),
             llm=_NoAmbiguityBindLLM(0, also_plausible),
-            base_steps=[],
             base_timing={},
             sdmx=sdmx
             or FakeSdmxClient(
@@ -929,7 +920,7 @@ def test_placeless_sibling_reelects_over_its_own_default_scope(monkeypatch):
 
     assert result.status == "definite", result
     (spec,) = result.specs
-    assert [sv.ref for sv in spec.resolved.stat_vars.items] == [_SIBLING_SV]
+    assert [sv.ref.dcid for sv in spec.resolved.members] == [_SIBLING_SV]
     codes = [w.code for w in result.warnings]
     assert codes.count(PLACE_SCOPE_DEFAULTED) == 1, codes
     assert [w.severity for w in result.warnings if w.code == PLACE_SCOPE_DEFAULTED] == ["warn"]
@@ -980,7 +971,7 @@ def test_adopted_placeless_sibling_reads_observations_over_its_own_default_scope
     )
 
     assert result.status == "definite", result
-    assert [sv.ref for sv in result.specs[0].resolved.stat_vars.items] == [_SIBLING_SV]
+    assert [sv.ref.dcid for sv in result.specs[0].resolved.members] == [_SIBLING_SV]
     assert [
         (call["variables"], call["places"], call["facet_ids"])
         for call in sdmx.subject_observations_calls
@@ -989,14 +980,14 @@ def test_adopted_placeless_sibling_reads_observations_over_its_own_default_scope
 
 def _observation_counts(result) -> dict[str, int]:
     return {
-        spec.resolved.stat_vars.items[0].ref: spec.resolved.coverage.observation_count
+        spec.resolved.members[0].ref.dcid: spec.resolved.coverage.observation_count
         for spec in result.specs
     }
 
 
 def _country_counts(result) -> dict[str, int | None]:
     return {
-        spec.resolved.stat_vars.items[0].ref: next(
+        spec.resolved.members[0].ref.dcid: next(
             (dim.count for dim in spec.resolved.coverage.dimensions or [] if dim.label == "places"),
             None,
         )
@@ -1028,16 +1019,21 @@ def test_two_placeless_siblings_share_one_default_scope_read():
     """The placeless menu of two siblings costs one listing of Earth's countries and no
     presence read, since availability gives every StatVar's scope. The elected shape's
     empty scope needs no facet batch; the batches are a prewarm and one per sibling for the
-    re-election, whose candidates the menu takes without a second read."""
+    re-election, whose candidates the menu takes without a second read. Each candidate's
+    facet options then read its own StatVar's facets, in either order."""
     obs = {f"{_SIBLING_SV}|country/KEN": _KEN_OBS, f"{_SIBLING_SV_2}|country/KEN": _KEN_OBS}
     graph = _placeless_graph(obs, *_TWO_SIBLINGS)
     result = _run_placeless(obs, graph=graph)
 
     assert result.status == "candidates", result
     both = [_SIBLING_SV, _SIBLING_SV_2]
-    assert graph.reads == [
+    assert graph.reads[:4] == [
         ("child_places_batch", ["Earth", "Country"]),
         ("observation_facets_batch", both),
+        ("observation_facets_batch", [_SIBLING_SV]),
+        ("observation_facets_batch", [_SIBLING_SV_2]),
+    ]
+    assert sorted(graph.reads[4:]) == [
         ("observation_facets_batch", [_SIBLING_SV]),
         ("observation_facets_batch", [_SIBLING_SV_2]),
     ]

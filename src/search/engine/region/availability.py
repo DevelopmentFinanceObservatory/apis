@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.qualifier_match import QualifierMatch, QualifierReadings
+from search.engine.quantity import DenominatorKind, QuantityRequirement
 from search.engine.region.alternate_guard import inadmissible_reason, query_pins
 from search.engine.region.rate_head import _rate_head, _rate_head_compatible
 from search.engine.shape import ShapeDraft, is_role_bearing
@@ -158,6 +159,8 @@ def _prune_availability_siblings(
     shapes: list[ShapeDraft],
     *,
     named_place: bool,
+    quantity: QuantityRequirement,
+    denominator_kinds: Mapping[str, DenominatorKind],
     variable: str = "",
     qualifier_matches: Sequence[QualifierMatch] = (),
     qualifier_readings: Sequence[QualifierReadings] = (),
@@ -179,14 +182,20 @@ def _prune_availability_siblings(
 
     Pairing uses structural fields alone. Before a drop, the survivor must be a reading
     of the dropped shape (`alternate_guard.inadmissible_reason`) under the query's
-    wording, its qualifier matches and its two-reading spans. No bind has run, so every
+    wording, its quantity requirement (`quantity`, judged with the kinds of the leg's
+    StatVar denominators, `denominator_kinds`, as bind and materialise judge it), its
+    qualifier matches and its two-reading spans. No bind has run, so every
     member of the dropped shape is its reading. Empty query text allows structure-only pairing. Return measure-head
     drops as ``(dropped, survivor)`` pairs for the caller's
     ``ELECTED_SHAPE_NO_DATA`` warning. Denominator-resolution drops are omitted.
     If every shape qualifies for removal, restore the original list.
     """
     pins = query_pins(
-        variable, qualifier_matches=qualifier_matches, qualifier_readings=qualifier_readings
+        variable,
+        quantity=quantity,
+        denominator_kinds=denominator_kinds,
+        qualifier_matches=qualifier_matches,
+        qualifier_readings=qualifier_readings,
     )
     to_drop: set[_ShapeGroupKey] = set()
     measure_head_substitutions: list[tuple[ShapeDraft, ShapeDraft]] = []

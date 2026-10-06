@@ -26,6 +26,11 @@ class TestDebtAndTradeVocabulary:
         assert role_axis_for_text(word.upper()) == "destination"
 
 
+@pytest.mark.parametrize("axis", ["origin", "destination"])
+def test_each_axis_name_resolves_to_its_own_axis(axis: RoleAxis) -> None:
+    assert role_axis_for_text(axis) == axis
+
+
 class TestUnrecognised:
     @pytest.mark.parametrize(
         "word",

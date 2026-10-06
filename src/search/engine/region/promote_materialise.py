@@ -5,8 +5,10 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Sequence
 
+from materialise.roles import axis_noun
 from search.engine.bind import SlotBindingDraft
 from search.engine.envelope import now_ms
+from search.engine.errors import EngineInputError
 from search.engine.region.grounding import _build_entity, memoised_labels, role_bindings
 from search.engine.region.materialise_step import (
     NoDataMaterialise,
@@ -15,7 +17,7 @@ from search.engine.region.materialise_step import (
     run_materialise,
 )
 from search.engine.region.observations.entities import open_role_axis
-from search.engine.region.place_context import settle_place
+from search.engine.region.place_context import settle_place, settled_shape
 from search.engine.region.promote_results import _no_data_region
 from search.engine.region.promote_state import _PromoteState
 from search.engine.region.resubmit_request import (
@@ -25,8 +27,6 @@ from search.engine.region.resubmit_request import (
 )
 from search.engine.region.result import RegionResult
 from search.engine.region.unrealisable import unbind_posted
-from search.engine.retrieval.facts import read_constraints
-from search.engine.retrieval.member_facts import ArcsMemberFacts
 from search.engine.retrieval.retrieve import (
     BoundValuesUnrealisable,
     Materialised,
@@ -36,7 +36,7 @@ from search.engine.retrieval.retrieve import (
 )
 from search.engine.shape import identity_shape_for
 from search.engine.spec_build import build_slot, build_unsupported_definition, pair_slot_drafts
-from search.models import CoverageBare, GraphRef, IdentityFacetBinding, Unsupported
+from search.models import GraphRef, IdentityFacetBinding, Unsupported
 
 type MaterialiseResult = Materialised | NoDataDraft | MaterialisedCandidates | UnsupportedDraft
 
@@ -57,7 +57,8 @@ def _draft_grounded_values(binding: SlotBindingDraft | None) -> list[GraphRef]:
 def _resubmit_unsupported_definition(
     state: _PromoteState, facets: dict[str, IdentityFacetBinding] | None = None
 ) -> dict[str, object]:
-    """Build the unsupported definition from the resubmit's resolved shape, bindings, and roles.
+    """Build the unsupported definition from the resubmit's resolved shape, bindings, roles,
+    and posted open roles.
 
     Display labels are ignored by identity hashing, so no graph reads are needed. `facets`
     keeps a completed facet request, so an unsupported pointer at it resolves in the
@@ -91,6 +92,7 @@ def _resubmit_unsupported_definition(
         ),
         id_slots,
         entities=id_entities,
+        open_roles=state.inp.identity.open_roles or (),
         requested_window=_requested_window_for_id(state.date_request),
         explicit_facets=facets,
     )
@@ -137,15 +139,19 @@ def _bound_facet_filter(state: _PromoteState) -> None:
 def _phase_materialise(state: _PromoteState) -> RegionResult | None:
     """Materialise the representative StatVar over the place context.
 
-    Return the draft's no-data reason, or `no_data` for candidate-only results. A capped
-    discovered-scope facet index raises `scope_too_broad` when a method or unit is bound. A
-    discovered role scope, or a default scope narrowed to the StatVars the answer serves,
-    settles the place context (`PlaceContext.settled`). Restrict probes to
-    members asserting every bound property, then fall back to a flagged-unavailable carrier
-    when no asserting member has data. Bound values that together match no member
-    (`retrieve.BoundValuesUnrealisable`) lose a minimal set, each value unbound departing
-    under its name, and the shape is read again (`unrealisable.unbind_posted`), as a fresh
-    request does."""
+    Return a terminal `RegionResult`, or `None` to continue to `_phase_ground_build`.
+    `run_materialise` reads the shape and bindings over the place context. Bound values that
+    together match no member (`retrieve.BoundValuesUnrealisable`) lose a minimal set, each
+    value unbound departing under its name, and the shape is read again
+    (`unrealisable.unbind_posted`), as a fresh request does. A discovered role scope's own
+    refusal returns an `unsupported` part, and a no-data outcome or a candidate-only result
+    returns `no_data`. A `Materialised` answer derives the source refs and facet filter
+    (`_bound_facet_filter`), then settles the place context (`PlaceContext.settled`) and the
+    shape over the role scope's members or the StatVars the default scope serves. A
+    resubmit whose family neither the index nor the walk settled (`membership_unverified`)
+    cannot name the family's total, so it drops `family_total_absent`. The answer refuses
+    422 `open_role_unavailable` for any open role the posted identity names and the elected
+    members do not serve (`_refuse_unserved_open_roles`)."""
     resolved_entities = state.place.roles.resolved_entities
 
     def materialise() -> MaterialiseResult:
@@ -159,6 +165,7 @@ def _phase_materialise(state: _PromoteState) -> RegionResult | None:
             deadline=state.deadline,
             place_dcids=state.place.probe_places,
             default_presence=state.place.presence_for(state.default_presence),
+            open_axes=state.place.roles.open_axes,
             coverage=state.coverage,
         )
 
@@ -216,79 +223,40 @@ def _phase_materialise(state: _PromoteState) -> RegionResult | None:
 
     # Read the answer over the context its result settles: a discovered role scope's members,
     # or the default scope of the StatVars the answer serves.
+    # The open axes narrow to those the elected members serve, and the shape declares their
+    # roles.
     state.place = settle_place(state.place, mat_result, state.warnings)
+    state.shape_draft = settled_shape(state.shape_draft, mat_result)
 
-    # Recheck edit-reshaped survivor sets because they can differ from materialise's filtered
-    # members. Materialise already enforces this for its own probe, so skip when it returned
-    # unavailable. Keep bindings unchanged when restricting data members; identity and spec id
-    # remain based on the posted definition, while this check controls which data can answer.
-    bound_props = {
-        b.property_dcid
-        for b in state.bindings
-        if b.property_dcid and b.kind in ("value", "set") and b.value_dcids
-    }
-    if bound_props and mat_result.has_data:
-        winner_constraints = [
-            read_constraints(state.resolved_arcs[sv]) for sv in mat_result.sv_dcids
-        ]
-        if not all(all(prop in wc for wc in winner_constraints) for prop in bound_props):
-            # Probe only members that assert every bound property. This preserves data from
-            # valid members in mixed-presence groups without serving unsupported claims.
-            asserting = [
-                sv
-                for sv in state.resolved_stat_var_dcids
-                if all(prop in state.resolved_constraints_by_sv[sv] for prop in bound_props)
-            ]
-            asserting_result: Materialised | None = None
-            if asserting:
-                restricted_shape = dataclasses.replace(
-                    state.shape_draft,
-                    sv_arc_facts={sv: state.resolved_arcs[sv] for sv in asserting},
-                )
-                candidate = run_materialise(
-                    restricted_shape,
-                    state.bindings,
-                    resolved_entities,
-                    graph=state.graph,
-                    sdmx=state.sdmx,
-                    date_request=state.date_request,
-                    deadline=state.deadline,
-                    place_dcids=state.place.probe_places,
-                    default_presence=state.place.presence_for(state.default_presence),
-                    coverage=state.coverage,
-                )
-                # The asserting members' own answer stands when they hold data, in the years
-                # read or, as a window carrier, outside them.
-                if isinstance(candidate, Materialised) and (
-                    candidate.has_data or candidate.window_gap is not None
-                ):
-                    asserting_result = candidate
-            if asserting_result is not None:
-                mat_result = state.mat_result = asserting_result
-                # The asserting members' own default scope replaces the winner's.
-                if asserting_result.default_scope is not None:
-                    state.place = settle_place(state.place, asserting_result, state.warnings)
-            else:
-                # Use a bound-property asserter for the flagged identity, separate from the
-                # unrelated winner's data.
-                explicit_sv = asserting[0] if asserting else state.resolved_stat_var_dcids[0]
-                explicit_facts = (mat_result.member_facts or {}).get(explicit_sv) or (
-                    ArcsMemberFacts(arcs=state.resolved_arcs[explicit_sv])
-                )
-                mat_result = state.mat_result = Materialised(
-                    sv_dcids=[explicit_sv],
-                    member_facts={explicit_sv: explicit_facts},
-                    has_data=False,
-                    coverage=CoverageBare(
-                        has_data=False,
-                        window=state.date_request.window if state.date_request else None,
-                    ),
-                    available_at_place=False,
-                )
-
-    # A resubmit whose family the mint's walk settled nothing for reads its posted members
-    # alone and runs no election, so it raises no election warning. One whose family the
-    # index or the walk settled elects among it and warns where the first answer does.
+    # A resubmit whose family the walk did not settle (`membership_unverified`) cannot name
+    # the family's total, so it raises no election warning. One whose family the index or
+    # the walk settled elects among it and warns where the first answer does.
     if mat_result.family_total_absent is not None and not state.family_settled:
         mat_result = state.mat_result = dataclasses.replace(mat_result, family_total_absent=None)
+    _refuse_unserved_open_roles(state, mat_result)
     return None
+
+
+def _refuse_unserved_open_roles(state: _PromoteState, mat_result: Materialised) -> None:
+    """Refuse `open_role_unavailable` when the answer drops an open role the identity names.
+
+    An open role in an identity is a promise of one series per member on that axis, and a
+    posted identity is the whole definition, so one the elected members declare no role on
+    (`Materialised.open_axes`) refuses the resubmit. An answer without the role would carry
+    another `spec_id` than the identity posted. The parsed door's `open_roles` are a request,
+    and their drop warns (`result.with_dropped_open_roles`)."""
+    unserved = sorted(frozenset(state.inp.identity.open_roles or ()) - mat_result.open_axes)
+    if not unserved:
+        return
+    nouns = " or ".join(f"every {axis_noun(axis)}" for axis in unserved)
+    raise EngineInputError(
+        f"open role(s) {unserved} unavailable",
+        code="open_role_unavailable",
+        status=422,
+        pointer="/input/identity/open_roles",
+        detail=(
+            f"The identity asks for {nouns}, and the StatVars this definition elects "
+            "give no series per member on that axis. A fresh search that asks "
+            "for the role elects whatever definition serves it, if one does."
+        ),
+    )

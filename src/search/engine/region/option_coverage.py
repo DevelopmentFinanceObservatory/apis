@@ -1,8 +1,10 @@
-"""Build optional slot, open-role, and facet options for responses or trailing events.
+"""Build slot, open-role, and facet options for responses or trailing events.
 
 Every slot menu is counted from the series its answer serves (`count_slot_options`) before
 the Spec takes it; the coverage probe counts only the menus that leaves uncounted.
-Disabled `include_option_coverage` adds zero graph calls. The materialised result supplies
+Disabled `include_option_coverage` adds no slot-coverage probe and no entity-option label
+read. Facet options are built for every definite Spec and candidate either way
+(`_maybe_build_facet_options`). The materialised result supplies
 open-role membership and counts. Observation previews use a separate dispatch.
 """
 
@@ -10,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Literal, NamedTuple, get_args
 
@@ -18,7 +20,7 @@ from code_index.members import (
     FamilyQuery,
     SourceNotInFamily,
     eligible_datasets,
-    index_covers_slot_keys,
+    index_decides,
     option_families,
 )
 from code_index.shared import get_index
@@ -43,6 +45,7 @@ from search.engine.region.refs import listed_provenance_labels
 from search.engine.region.un_system import un_unavailable_warning
 from search.engine.retrieval.bound_values import (
     OptionServedFact,
+    RoleKeys,
     SeriesRows,
     ServedRows,
     ServedSeries,
@@ -95,6 +98,7 @@ from search.models import (
     FacetOptions,
     GraphRef,
     IdentityShapeSchema,
+    RoleAxis,
     Slot,
     SlotOption,
     SlotOptions,
@@ -107,6 +111,7 @@ from search.observations import facet_value_label, unlisted_provenances
 from series_coverage.coverage_types import BoundRoles, Role
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import RoleNames
+from statvar_members import covers_role_keys
 
 logger = logging.getLogger(__name__)
 
@@ -271,6 +276,9 @@ class RoleServedFilter:
     """
 
     probe_entities: Mapping[str, Sequence[str]]
+    # The flow axes the answer leaves open (`place_roles.PlaceRoles.open_axes`), which its
+    # picks elect under beside the roles `probe_entities` binds.
+    open_axes: frozenset[RoleAxis]
     years: PlanYears
     coverage: CoverageIndex
     facets_pinned: bool = False
@@ -349,6 +357,7 @@ def role_served_filter(
     shape: ShapeDraft,
     probe_entities: Mapping[str, Sequence[str]],
     *,
+    open_axes: frozenset[RoleAxis],
     years: PlanYears,
     coverage: CoverageIndex,
     facets_pinned: bool,
@@ -362,6 +371,7 @@ def role_served_filter(
         return None
     return RoleServedFilter(
         probe_entities=probe_entities,
+        open_axes=open_axes,
         years=years,
         coverage=coverage,
         facets_pinned=facets_pinned,
@@ -422,7 +432,8 @@ def _pick_population(
     None when `index_only` and the code index does not decide the family: a graph-walked
     family holds the answer's own bindings alone, so it cannot stand for bindings that
     differ from them."""
-    query = shape_query(shape, bindings, entity_role_keys(shape, served_filter.probe_entities))
+    role_keys = entity_role_keys(served_filter.probe_entities, open_axes=served_filter.open_axes)
+    query = shape_query(shape, bindings, role_keys.bound, open_role_keys=role_keys.open)
     members, index_sourced = query_members(shape, query)
     if index_only and not index_sourced:
         return None
@@ -515,7 +526,9 @@ def option_axis_facts(
     graph walk decides it, so an answer serving its family total still counts the parts a
     pick would serve. A bound slot's pick reads the family with that slot left unbound and
     every other binding kept, which only the code index resolves without a graph walk; a
-    graph-walked family's bound slots get no fact. A menu counted at zero for every option
+    graph-walked family's bound slots get no fact. Under an answer that leaves flow axes
+    open, a pick whose members do not declare every open axis counts no series
+    (`_serving_open_keys`). A menu counted at zero for every option
     while members carry some of them, under an answer that serves data, means the coverage
     index and the members disagree (a facet without metadata, a population that differs from the one
     materialised), so it gets no fact and the coverage probe counts it (`_drifted`).
@@ -554,7 +567,7 @@ def option_axis_facts(
             facets_pinned=facets_pinned,
             conversion=conversion,
         )
-    role_keys = entity_role_keys(shape, served_filter.probe_entities)
+    role_keys = entity_role_keys(served_filter.probe_entities, open_axes=served_filter.open_axes)
     # Each pick is counted over the members of the group it reads from: the dataset its
     # election serves, or the population it is drawn from. A row two datasets publish thus
     # counts the facets of each pick's own dataset. The picks of one group overlap, so the
@@ -565,14 +578,19 @@ def option_axis_facts(
     for prop in slot_properties:
         pick_bindings = without_values(bindings, {prop}) if prop in bound else bindings
         index_picks = _index_option_picks(
-            shape_query(shape, pick_bindings, role_keys), prop, menus[prop]
+            shape_query(shape, pick_bindings, role_keys.bound, open_role_keys=role_keys.open),
+            prop,
+            menus[prop],
         )
         if index_picks is not None:
             prop_picks[prop] = {}
             for value, pick in index_picks.items():
                 group = ("elected", pick.dataset)
                 groups.setdefault(group, {}).update(pick.members)
-                prop_picks[prop][value] = (group, list(pick.members))
+                prop_picks[prop][value] = (
+                    group,
+                    _serving_open_keys(pick.members, list(pick.members), role_keys.open),
+                )
             continue
         if prop in bound:
             population = _pick_population(shape, pick_bindings, served_filter, index_only=True)
@@ -587,7 +605,8 @@ def option_axis_facts(
         if population is not None:
             groups[group] = dict(population.members)
             prop_picks[prop] = {
-                value: (group, svs) for value, svs in population.picks(prop, menus[prop]).items()
+                value: (group, _serving_open_keys(population.members, svs, role_keys.open))
+                for value, svs in population.picks(prop, menus[prop]).items()
             }
     served = {group: served_filter.served(members) for group, members in groups.items()}
     facts: list[OptionServedFact] = []
@@ -611,10 +630,7 @@ def _options_may_elect_elsewhere(shape: ShapeDraft, bindings: Sequence[SlotBindi
     holds only its own dataset's series, so it cannot count such an option."""
     query = shape_query(shape, bindings, ())
     index = get_index()
-    return (
-        index_covers_slot_keys(index, query.five_tuple, query.slots.keys())
-        and len(eligible_datasets(index, query)) > 1
-    )
+    return index_decides(index, query) and len(eligible_datasets(index, query)) > 1
 
 
 def _pick_series(
@@ -622,6 +638,21 @@ def _pick_series(
 ) -> ServedSeriesRows:
     """The series a pick reading `members` serves, of those `served` holds by member."""
     return {key: rows for sv in members for key, rows in served.get(sv, {}).items()}
+
+
+def _serving_open_keys(
+    facts: Mapping[str, MemberFacts], members: Sequence[str], open_keys: frozenset[str]
+) -> list[str]:
+    """The members a pick reading `members` counts under an answer leaving `open_keys`
+    open: all of them when each declares a role on every open key (`covers_role_keys`),
+    else none. A pick whose elected members leave an open axis undeclared serves the
+    total, and its resubmit, which inherits the answer's `open_roles`, refuses
+    `open_role_unavailable`, so its option counts no series."""
+    if not open_keys:
+        return list(members)
+    if all(covers_role_keys(facts[sv].read_declared_roles(), open_keys) for sv in members):
+        return list(members)
+    return []
 
 
 def _drifted(fact: OptionServedFact, picks: Mapping[str, Sequence[str]], *, shape_id: str) -> bool:
@@ -796,12 +827,15 @@ def merged_served_filter(filters: Sequence[RoleServedFilter | None]) -> RoleServ
     entities unioned in first-seen order, as the merged identity binds them. The merged
     test pins facets and reads in bulk when any answer's does, and keeps the years their
     conversions keep (`unit.conversion.merged_conversion`). None when an answer has no
-    test or the answers read different years or coverage."""
+    test or the answers read different years, coverage or open axes."""
     if not filters or any(f is None for f in filters):
         return None
     tests = [f for f in filters if f is not None]
     first = tests[0]
-    if any(t.years != first.years or t.coverage is not first.coverage for t in tests):
+    if any(
+        t.years != first.years or t.coverage is not first.coverage or t.open_axes != first.open_axes
+        for t in tests
+    ):
         return None
     entities: dict[str, list[str]] = {}
     for test in tests:
@@ -810,6 +844,7 @@ def merged_served_filter(filters: Sequence[RoleServedFilter | None]) -> RoleServ
             entities[role].extend(d for d in dcids if d not in entities[role])
     return RoleServedFilter(
         probe_entities=entities,
+        open_axes=first.open_axes,
         years=first.years,
         coverage=first.coverage,
         facets_pinned=any(t.facets_pinned for t in tests),
@@ -827,7 +862,7 @@ def _pick_members(
     shape: ShapeDraft,
     bindings: Sequence[SlotBindingDraft],
     menus: Sequence[SlotOptions],
-    role_keys: Collection[str],
+    role_keys: RoleKeys,
 ) -> dict[str, dict[str, list[str] | None]]:
     """For each menu's property and each of its options, the members a pick of that option
     reads. Where the code index decides the picks, each reads the family the index elects
@@ -842,6 +877,8 @@ def _pick_members(
     population is exact when the code index decides it, or for an unbound slot when the
     shape holds its family exactly (`ShapeDraft.sv_arc_facts_complete`); a walked family
     holds the answer's own bindings alone, so it cannot rule out an option of a bound slot.
+    A pick whose members do not declare every open key of `role_keys` reads none of them
+    (`_serving_open_keys`).
     """
     bound = bound_values_from_bindings(bindings)
     picks: dict[str, dict[str, list[str] | None]] = {}
@@ -851,12 +888,18 @@ def _pick_members(
         prop = so.key.property.dcid
         is_bound = prop in bound
         query = shape_query(
-            shape, without_values(bindings, {prop}) if is_bound else bindings, role_keys
+            shape,
+            without_values(bindings, {prop}) if is_bound else bindings,
+            role_keys.bound,
+            open_role_keys=role_keys.open,
         )
         values = [o.value.ref.dcid for o in so.options if o.value.ref is not None]
         index_picks = _index_option_picks(query, prop, values)
         if index_picks is not None:
-            picks[prop] = {value: list(pick.members) for value, pick in index_picks.items()}
+            picks[prop] = {
+                value: _serving_open_keys(pick.members, list(pick.members), role_keys.open)
+                for value, pick in index_picks.items()
+            }
             continue
         members, index_sourced = query_members(shape, query)
         exact = index_sourced or (not is_bound and shape.sv_arc_facts_complete)
@@ -864,7 +907,9 @@ def _pick_members(
             members=members, constraints={sv: m.read_constraints() for sv, m in members.items()}
         )
         picks[prop] = {
-            value: svs if svs or exact else None
+            value: counted
+            if (counted := _serving_open_keys(members, svs, role_keys.open)) or exact
+            else None
             for value, svs in population.picks(prop, values).items()
         }
     return picks
@@ -891,6 +936,7 @@ def _maybe_enrich_slot_options(
     slot_options: list[SlotOptions],
     *,
     entities: Mapping[str, list[str]],
+    open_axes: frozenset[RoleAxis],
     date_request: DateRequest | None,
     materialise_graph: GraphReader | None,
     place_dcids: list[str] | None = None,
@@ -910,16 +956,16 @@ def _maybe_enrich_slot_options(
     unchanged. A `GraphInfraError` also returns the original options with an
     `OPTION_COVERAGE_PROBE_FAILED` warning, distinguishing failure from an empty result.
     A member counts only the facets of the dataset elected once its option is bound to the
-    family query `bindings` and the role keys of `entities` state, else of the family they
-    elect (`standard_option_coverage`). `facets_pinned`, whether the answer's identity binds
+    family query `bindings`, the role keys of `entities` and `open_axes` state, else of the
+    family they elect (`standard_option_coverage`). `facets_pinned`, whether the answer's identity binds
     a facet, makes every probed count an upper bound.
     """
     pending = [i for i, so in enumerate(slot_options) if _uncounted(so)]
     if not include_option_coverage or not pending:
         return slot_options, None
     try:
-        role_keys = entity_role_keys(shape_draft, entities)
-        query = shape_query(shape_draft, bindings, role_keys)
+        role_keys = entity_role_keys(entities, open_axes=open_axes)
+        query = shape_query(shape_draft, bindings, role_keys.bound, open_role_keys=role_keys.open)
         member_facts, _index_sourced = shape_member_facts(shape_draft, query)
         menus = [slot_options[i] for i in pending]
         probed = standard_option_coverage(
@@ -1016,6 +1062,7 @@ def _stream_slot_options_events(
     slot_options: list[SlotOptions],
     *,
     entities: Mapping[str, list[str]],
+    open_axes: frozenset[RoleAxis],
     date_request: DateRequest | None,
     graph: EngineGraphClient,
     sdmx: EngineSdmxClient,
@@ -1026,6 +1073,7 @@ def _stream_slot_options_events(
     coverage: CoverageIndex,
     deadline: float | None,
     facets_pinned: bool,
+    variable_labels: Mapping[str, str],
 ) -> _OptionProbeResult:
     """Probe options and return trailing events and warnings after the response event.
 
@@ -1035,6 +1083,7 @@ def _stream_slot_options_events(
     supplied entity entry emits, including one with unknown membership. Facets follow slot
     probes to reuse graph caches. Places the UN front door refused during the probes carry an
     `un_system_unavailable` warning, since the answer's own warnings are built before this runs.
+    Its variables are named from `variable_labels`, the names of the Spec's members.
     """
 
     with recording_un_blocked_places() as un_blocked:
@@ -1043,6 +1092,7 @@ def _stream_slot_options_events(
             bindings,
             slot_options,
             entities=entities,
+            open_axes=open_axes,
             date_request=date_request,
             materialise_graph=materialise_graph,
             place_dcids=place_dcids,
@@ -1078,7 +1128,6 @@ def _stream_slot_options_events(
                 facet_probe,
                 graph=graph,
                 coverage=coverage,
-                include_option_coverage=True,
                 deadline=deadline,
             )
 
@@ -1109,7 +1158,7 @@ def _stream_slot_options_events(
     )
     if facet_warn is not None:
         warns.append(facet_warn.model_copy(update={"spec_id": spec_id}))
-    refused = un_unavailable_warning(un_blocked)
+    refused = un_unavailable_warning(un_blocked, labels=variable_labels)
     if refused is not None:
         warns.append(refused.model_copy(update={"spec_id": spec_id}))
 
@@ -1123,6 +1172,7 @@ def _launch_slot_options_task(
     slot_options: list[SlotOptions],
     *,
     entities: Mapping[str, list[str]],
+    open_axes: frozenset[RoleAxis],
     date_request: DateRequest | None,
     graph: EngineGraphClient,
     sdmx: EngineSdmxClient,
@@ -1133,6 +1183,7 @@ def _launch_slot_options_task(
     coverage: CoverageIndex,
     deadline: float | None,
     facets_pinned: bool,
+    variable_labels: Mapping[str, str],
 ) -> asyncio.Task[_OptionProbeResult]:
     """Run the probe in a worker thread and return its task without awaiting it.
 
@@ -1147,6 +1198,7 @@ def _launch_slot_options_task(
             bindings,
             slot_options,
             entities=entities,
+            open_axes=open_axes,
             date_request=date_request,
             graph=graph,
             sdmx=sdmx,
@@ -1157,6 +1209,7 @@ def _launch_slot_options_task(
             coverage=coverage,
             deadline=deadline,
             facets_pinned=facets_pinned,
+            variable_labels=variable_labels,
         )
     )
 
@@ -1329,17 +1382,12 @@ def _maybe_build_facet_options(
     *,
     graph: EngineGraphClient,
     coverage: CoverageIndex,
-    include_option_coverage: bool,
     deadline: float | None,
 ) -> tuple[list[FacetOptions], Warning | None]:
-    """Build facet options over `probe` when enabled. A graph failure returns `[]` with a
-    warning.
+    """Build facet options over `probe`. A graph failure returns `[]` with a warning.
 
-    Facet options come only from observed values. Disabled coverage and successful empty probes
-    return `[]`. Graph failures add a warning.
+    Facet options come only from observed values, so a successful empty probe returns `[]`.
     """
-    if not include_option_coverage:
-        return [], None
     try:
         return (
             _facet_options(
@@ -1369,18 +1417,20 @@ def _maybe_build_facet_options(
 
 
 # Probe inputs follow _stream_slot_options_events' positional fields, then its
-# `facets_pinned`. A missing facet probe skips facets. `entity_options` carries the raw
-# list for streamed events.
+# `facets_pinned` and `variable_labels`. A missing facet probe skips facets.
+# `entity_options` carries the raw list for streamed events.
 _SlotOptionsProbe = tuple[
     str,
     ShapeDraft,
     list[SlotBindingDraft],
     list[SlotOptions],
     Mapping[str, list[str]],
+    frozenset[RoleAxis],
     "list[str] | None",
     "list[EntityOptions] | None",
     "FacetProbe | None",
     bool,
+    Mapping[str, str],
 ]
 
 
@@ -1407,6 +1457,7 @@ async def _gather_slot_options_events(
                 bindings,
                 raw_options,
                 entities=entities,
+                open_axes=open_axes,
                 date_request=date_request,
                 graph=graph,
                 sdmx=sdmx,
@@ -1417,6 +1468,7 @@ async def _gather_slot_options_events(
                 coverage=coverage,
                 deadline=deadline,
                 facets_pinned=facets_pinned,
+                variable_labels=variable_labels,
             )
             for (
                 spec_id,
@@ -1424,10 +1476,12 @@ async def _gather_slot_options_events(
                 bindings,
                 raw_options,
                 entities,
+                open_axes,
                 place_dcids,
                 entity_options,
                 facet_probe,
                 facets_pinned,
+                variable_labels,
             ) in probes
         ]
     )

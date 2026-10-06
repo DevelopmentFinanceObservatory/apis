@@ -44,14 +44,16 @@ from tests.code_index.aid_identity import (
     imputed_education_aid_identity,
 )
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
+from tests.datasets_api._member_bounds import mint_bounds
 from tests.engine._axis_doubles import axis_confirming_reader
-from tests.engine._base_identity import GDP_SHAPE, make_base, subject_entity, where_slots_for
+from tests.engine._base_identity import GDP_SHAPE, subject_entity, where_slots_for
 from tests.engine._fake_coverage import (
     FakeCoverageService,
     empty_coverage_snapshot,
     patch_coverage,
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import walk_options
 from tests.engine.test_candidates_measure_alternatives import _ROLES
 from tests.engine.test_resubmit_alternative_measure_round_trip import (
     _KEN,
@@ -80,8 +82,9 @@ def _mint_family(identity: dict, spec_id: str = "spec_test") -> frozenset[str]:
         identity,
         spec_id=spec_id,
         graph=graph,
-        enumerator=MemberEnumerator(graph=graph),
+        enumerator=MemberEnumerator(),
         code_index=get_index(),
+        bounds=mint_bounds(),
     ).family
 
 
@@ -113,15 +116,15 @@ def _resubmit_education(
     return resolve_spec_resubmit(
         inp=ResubmitIdentityPayload(
             identity=identity,
-            base_spec_id=spec_id,
-            base_identity=identity,
-            resolved_stat_var_dcids=seed,
         ),
         graph=graph,
         sdmx=_sibling_sdmx(min(served)),
         coverage=FakeCoverageService(coverage_index).snapshot(),
-        options=EngineOptions(
-            materialise_graph=axis_confirming_reader(*(row.dcid for row in rows), graph=graph)
+        options=walk_options(
+            graph,
+            EngineOptions(
+                materialise_graph=axis_confirming_reader(*(row.dcid for row in rows), graph=graph)
+            ),
         ),
     )
 
@@ -160,7 +163,7 @@ def test_a_resubmit_naming_the_imputed_dataset_resolves_the_mints_family(monkeyp
     assert spec.definition.identity.facets == {
         "provenance": IdentityBindingValue(ref=IMPUTED_PROVENANCE)
     }
-    assert {ref.dcid for ref in spec.resolved.trace.resolved_stat_vars} == family
+    assert {stat_var.ref.dcid for stat_var in spec.resolved.members} == family
     assert spec.resolved.shape.member_digest == member_digest(family)
     # The served members' measure family is read under the dataset the identity names.
     assert [query.source for query in measure_queries] == [IMPUTED_PROVENANCE]
@@ -206,7 +209,7 @@ def test_a_resubmit_leaving_a_pinned_slot_unbound_mints_the_canonical_spec_id(mo
     assert binding.value.ref.dcid == IMPUTED_MULTILATERAL
     pins = elected_pins(get_index(), identity_query(spec.definition.identity))
     assert pins[AID_TYPE] == IMPUTED_MULTILATERAL
-    assert {ref.dcid for ref in spec.resolved.trace.resolved_stat_vars} == family
+    assert {stat_var.ref.dcid for stat_var in spec.resolved.members} == family
 
 
 def test_a_provenance_set_of_one_names_the_dataset_its_value_spelling_names(monkeypatch):
@@ -227,7 +230,7 @@ def test_a_provenance_set_of_one_names_the_dataset_its_value_spelling_names(monk
     assert region.status == "definite", region.no_data_reason
     spec = region.specs[0]
     assert spec.spec_id == _canonical_spec_id(value_document)
-    assert {ref.dcid for ref in spec.resolved.trace.resolved_stat_vars} == family
+    assert {stat_var.ref.dcid for stat_var in spec.resolved.members} == family
     assert spec.resolved.shape.member_digest == member_digest(family)
 
 
@@ -287,7 +290,6 @@ def _resubmit_gdp_of_india(facets: dict[str, IdentityBindingValue]) -> Spec:
     """Resubmit nominal GDP of India, an identity the index does not carry, with one posted
     StatVar and `facets`. The graph holds one facet of each of two provenances."""
     entities = [subject_entity(_GDP_ENTITY_DCID)]
-    base_spec_id, base_identity = make_base(GDP_SHAPE, entities=entities)
     graph = FakeGraph(
         obs={
             f"{_GDP_SV_DCID}|{_GDP_ENTITY_DCID}": [
@@ -308,14 +310,11 @@ def _resubmit_gdp_of_india(facets: dict[str, IdentityBindingValue]) -> Spec:
                 ],
                 entities=entities,
             ).model_copy(update={"facets": facets}),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_GDP_SV_DCID],
         ),
         graph=graph,
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
-        options=EngineOptions(include_observations=True),
+        options=walk_options(graph, EngineOptions(include_observations=True)),
     )
     assert region.status == "definite", region.no_data_reason
     return region.specs[0]
@@ -333,14 +332,15 @@ def test_a_resubmit_naming_a_source_keeps_its_where_slot_and_its_sentence():
     assert "WorldDevelopmentIndicators" not in sentence
 
 
-def test_a_posted_seed_of_an_identity_the_mint_walks_states_no_member_digest():
+def test_an_identity_the_mint_walks_states_the_walked_family():
     """The index does not resolve the GDP identity, so the mint walks the graph for its
-    family and Search serves the one posted StatVar. Search states the count of what it
-    serves and no digest, since it cannot state the family the mint reads."""
+    family, and the resubmit runs the same walk. Search serves its one member and states
+    the mint's served count and family digest."""
     spec = _resubmit_gdp_of_india(
         {"measurementMethod": IdentityBindingValue(ref=_MEASUREMENT_METHOD_A)}
     )
 
-    assert [ref.dcid for ref in spec.resolved.trace.resolved_stat_vars] == [_GDP_SV_DCID]
+    assert [stat_var.ref.dcid for stat_var in spec.resolved.members] == [_GDP_SV_DCID]
     assert spec.resolved.shape.member_count == 1
-    assert spec.resolved.shape.member_digest is None
+    assert spec.resolved.stat_vars.served_count == 1
+    assert spec.resolved.shape.member_digest == member_digest([_GDP_SV_DCID])

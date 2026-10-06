@@ -102,7 +102,6 @@ def _run(*, obs: dict) -> object:
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_GenderBindLLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
@@ -120,7 +119,7 @@ def test_silent_sibling_only_has_data_returns_no_data_with_flagged_match():
     assert result.no_data_reason == "no_observations"
     assert result.flagged_match is not None
     flagged_spec = result.flagged_match[0]
-    assert [sv.ref for sv in flagged_spec.resolved.stat_vars.items] == [_SV_FEMALE]
+    assert [sv.ref.dcid for sv in flagged_spec.resolved.members] == [_SV_FEMALE]
     assert flagged_spec.resolved.available_at_place is False
     assert flagged_spec.resolved.confidence == "low"
     assert result.gate == NO_MEMBER_HAS_DATA_AT_PLACE
@@ -135,7 +134,7 @@ def test_asserting_member_has_data_returns_definite_with_binding_intact():
 
     assert result.status == "definite"
     spec = result.specs[0]
-    assert [sv.ref for sv in spec.resolved.stat_vars.items] == [_SV_FEMALE]
+    assert [sv.ref.dcid for sv in spec.resolved.members] == [_SV_FEMALE]
     gender_slot = next(
         s
         for s in spec.resolved.slots
@@ -156,7 +155,7 @@ def test_both_have_data_asserting_member_wins():
 
     assert result.status == "definite"
     spec = result.specs[0]
-    assert [sv.ref for sv in spec.resolved.stat_vars.items] == [_SV_FEMALE]
+    assert [sv.ref.dcid for sv in spec.resolved.members] == [_SV_FEMALE]
 
 
 def test_coherence_invariant_bound_slot_never_inapplicable():
@@ -276,7 +275,6 @@ def test_split_ownership_neither_partial_asserter_wins():
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_SplitOwnershipBindLLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
@@ -321,7 +319,6 @@ def test_split_ownership_no_entity_neither_partial_asserter_wins():
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_SplitOwnershipBindLLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
@@ -342,4 +339,4 @@ def test_split_ownership_no_entity_neither_partial_asserter_wins():
     # The representative is the best partial asserter (_bind_aware_order over
     # the full member set): both SVs tie at match-count 1, so insertion order
     # (gender-only inserted first) decides.
-    assert flagged_spec.resolved.stat_vars.items[0].ref == _SV_A
+    assert flagged_spec.resolved.members[0].ref.dcid == _SV_A

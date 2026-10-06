@@ -30,7 +30,7 @@ from search.engine.retrieval.retrieve import (
 )
 from search.engine.shape import ShapeDraft
 from search.heading.departure_fact import DepartureFact
-from search.models import Spec, Warning
+from search.models import RoleAxis, Spec, Warning
 from search.render.heading import heading_for
 from series_coverage.shared import CoverageSnapshot
 
@@ -57,10 +57,12 @@ def run_materialise(
     deadline: float | None,
     place_dcids: list[str] | None,
     default_presence: DefaultPresence | None = None,
+    open_axes: frozenset[RoleAxis],
     coverage: CoverageSnapshot,
 ) -> Materialised | NoDataDraft | MaterialisedCandidates | UnsupportedDraft:
     """Materialise the chosen shape with scope discovery enabled. `default_presence` derives
-    a default place scope in place of `place_dcids` (`standard_resolve`)."""
+    a default place scope in place of `place_dcids` (`standard_resolve`), and `open_axes`
+    are the flow axes its places leave open (`place_roles.PlaceRoles.open_axes`)."""
     return materialise(
         shape_draft,
         bindings,
@@ -72,6 +74,7 @@ def run_materialise(
         place_dcids=place_dcids,
         default_presence=default_presence,
         discover_scope=True,
+        open_axes=open_axes,
         coverage=coverage,
     )
 

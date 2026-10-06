@@ -16,7 +16,9 @@
     ["FakeGraph.node_type",{"dcid":"boreal"}],
     ["FakeGraph.node_label",{"dcid":"Continent"}],
     ["FakeGraph.node_type",{"dcid":"country/GTM"}],
-    ["FakeGraph.node_label",{"dcid":"Country"}]
+    ["FakeGraph.node_label",{"dcid":"Country"}],
+    ["FakeGraph.observation_facets_batch",{"stat_vars":["Count_Person"],"entities":["country/B1","country/B2","country/GTM"],"needs_dates":true}],
+    ["FakeGraph.node_labels_batch",{"dcids":["dc/base/WorldDevelopmentIndicators"]}]
   ],
   "test_posted_set_whose_data_sits_at_its_second_place_answers": [
     ["FakeGraph.node_arcs_batch",{"dcids":["Count_Person"]}],
@@ -31,7 +33,9 @@
     ["FakeGraph.node_type",{"dcid":"country/GTM"}],
     ["FakeGraph.node_label",{"dcid":"Country"}],
     ["FakeGraph.node_type",{"dcid":"country/SLV"}],
-    ["FakeGraph.node_label",{"dcid":"Country"}]
+    ["FakeGraph.node_label",{"dcid":"Country"}],
+    ["FakeGraph.observation_facets_batch",{"stat_vars":["Count_Person"],"entities":["country/GTM","country/SLV"],"needs_dates":true}],
+    ["FakeGraph.node_labels_batch",{"dcids":["dc/base/WorldDevelopmentIndicators"]}]
   ],
   "test_posted_single_value_where_unchanged": [
     ["FakeGraph.node_arcs_batch",{"dcids":["Count_Person"]}],
@@ -43,7 +47,9 @@
     ["FakeGraph.observation_facets_batch",{"stat_vars":["Count_Person"],"entities":["country/GTM"],"needs_dates":false}],
     ["FakeGraph.node_labels_batch",{"dcids":["Count_Person","Person","count","country/GTM","dc/base/WorldDevelopmentIndicators","measuredValue"]}],
     ["FakeGraph.node_type",{"dcid":"country/GTM"}],
-    ["FakeGraph.node_label",{"dcid":"Country"}]
+    ["FakeGraph.node_label",{"dcid":"Country"}],
+    ["FakeGraph.observation_facets_batch",{"stat_vars":["Count_Person"],"entities":["country/GTM"],"needs_dates":true}],
+    ["FakeGraph.node_labels_batch",{"dcids":["dc/base/WorldDevelopmentIndicators"]}]
   ],
   "test_posted_two_place_set_survives_as_binding_set_with_both_roles": [
     ["FakeGraph.node_arcs_batch",{"dcids":["Count_Person"]}],
@@ -58,7 +64,9 @@
     ["FakeGraph.node_type",{"dcid":"country/GTM"}],
     ["FakeGraph.node_label",{"dcid":"Country"}],
     ["FakeGraph.node_type",{"dcid":"country/SLV"}],
-    ["FakeGraph.node_label",{"dcid":"Country"}]
+    ["FakeGraph.node_label",{"dcid":"Country"}],
+    ["FakeGraph.observation_facets_batch",{"stat_vars":["Count_Person"],"entities":["country/GTM","country/SLV"],"needs_dates":true}],
+    ["FakeGraph.node_labels_batch",{"dcids":["dc/base/WorldDevelopmentIndicators"]}]
   ],
   "test_probe_union_cap_overflow_fires_standard_probe_places_clamped": [
     ["FakeGraph.node_arcs_batch",{"dcids":["Count_Person"]}],
@@ -73,7 +81,9 @@
     ["FakeGraph.node_type",{"dcid":"country/GTM"}],
     ["FakeGraph.node_label",{"dcid":"Country"}],
     ["FakeGraph.node_type",{"dcid":"country/SLV"}],
-    ["FakeGraph.node_label",{"dcid":"Country"}]
+    ["FakeGraph.node_label",{"dcid":"Country"}],
+    ["FakeGraph.observation_facets_batch",{"stat_vars":["Count_Person"],"entities":["country/GTM"],"needs_dates":true}],
+    ["FakeGraph.node_labels_batch",{"dcids":["dc/base/WorldDevelopmentIndicators"]}]
   ],
   "test_single_region_resubmit_re_expands_to_member_countries": [
     ["FakeGraph.node_arcs_batch",{"dcids":["Count_Person"]}],
@@ -86,7 +96,9 @@
     ["FakeGraph.observation_facets_batch",{"stat_vars":["Count_Person"],"entities":["country/B1","country/B2"],"needs_dates":false}],
     ["FakeGraph.node_labels_batch",{"dcids":["Count_Person","Person","boreal","count","dc/base/WorldDevelopmentIndicators","measuredValue"]}],
     ["FakeGraph.node_type",{"dcid":"boreal"}],
-    ["FakeGraph.node_label",{"dcid":"Continent"}]
+    ["FakeGraph.node_label",{"dcid":"Continent"}],
+    ["FakeGraph.observation_facets_batch",{"stat_vars":["Count_Person"],"entities":["country/B1","country/B2"],"needs_dates":true}],
+    ["FakeGraph.node_labels_batch",{"dcids":["dc/base/WorldDevelopmentIndicators"]}]
   ],
   "test_unresolvable_base_entity_alongside_valid_where_set_is_inert": [
     ["FakeGraph.node_arcs_batch",{"dcids":["Count_Person"]}],
@@ -101,6 +113,8 @@
     ["FakeGraph.node_type",{"dcid":"country/GTM"}],
     ["FakeGraph.node_label",{"dcid":"Country"}],
     ["FakeGraph.node_type",{"dcid":"country/SLV"}],
-    ["FakeGraph.node_label",{"dcid":"Country"}]
+    ["FakeGraph.node_label",{"dcid":"Country"}],
+    ["FakeGraph.observation_facets_batch",{"stat_vars":["Count_Person"],"entities":["country/GTM","country/SLV"],"needs_dates":true}],
+    ["FakeGraph.node_labels_batch",{"dcids":["dc/base/WorldDevelopmentIndicators"]}]
   ]
 }

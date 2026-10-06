@@ -102,7 +102,7 @@ _MAX_ALTERNATIVES_PER_ISSUE = 10
 # Caps summed distinct StatVar/entity pairs across subject-only scope groups. A supported
 # shared scope is 100 members x 1,024 entities = 102,400 pairs, below the 200,000 cap. A member
 # that binds no place counts its own places, at most `place_scope.MAX_EVERY_PLACE` (5,000), so
-# 40 members at a full scope fit and a collection past the cap refuses.
+# 40 members at a full scope fit and a group past the cap refuses.
 _MAX_COLLECTION_PROBE_PAIRS = 200_000
 
 # `CurrencyUnit` refs use `Currency<ISO>`. A unit request resolves to such a ref or to a
@@ -736,7 +736,7 @@ def _dates_account_for_points(facet: Facet) -> bool:
 
 @dataclass(frozen=True)
 class CollectionFacetProbe:
-    """Member probes from a collection probe, in request order.
+    """Member probes for a request group, in request order.
     Subject-only groups use one graph batch. Role-bearing groups use coverage. Each
     `members[i]` matches `probe_facets` for request `i`. Reuse as `precomputed_probe`
     requires the same request order. A generation that reuses this probe fetches each request
@@ -780,7 +780,7 @@ def probe_collection_facets(
     revision_reader: RevisionReader | None = None,
     deadline: float | None = None,
 ) -> CollectionFacetProbe:
-    """Probes a collection and returns its candidates, revision snapshot, and provenance
+    """Probes a request group and returns its candidates, revision snapshot, and provenance
     refresh dates. Reads `revision_reader` before any probe call. Then fetches distinct
     provenance dates in one `node_arcs_many` call. That method has no `deadline` parameter.
     Empty `requests` returns empty candidates and refresh dates without network calls.
@@ -837,7 +837,7 @@ def probe_collection_candidates(
     holds data or its countries with data (`DefaultPresence.scope` of that StatVar alone).
     Members are probed at their own places, with one graph batch per distinct place list
     (`_probe_at_own_places`), and each member's probe carries its places
-    (`MemberProbe.places`), so a member of a group or a collection gets the scope,
+    (`MemberProbe.places`), so a member of a group gets the scope,
     candidates, rows and `content_version` it gets alone.
 
     Empty requests return no members. A subject-only group whose bindings name no plain
@@ -871,7 +871,7 @@ def probe_collection_candidates(
         requests[indices[0]].declared_roles != _SUBJECT_ROLE_ONLY for indices in groups.values()
     ):
         raise MaterialisationUsageError(
-            "the collection facet probe got a role-bearing entity-scope group whose facet "
+            "the group facet probe got a role-bearing entity-scope group whose facet "
             "candidates require a coverage index; none was given"
         )
 
@@ -902,7 +902,7 @@ def probe_collection_candidates(
 
     if total_pairs > _MAX_COLLECTION_PROBE_PAIRS:
         raise CollectionProbeCeilingExceededError(
-            f"the collection's entity-scope groups would probe {total_pairs} "
+            f"the request's entity-scope groups would probe {total_pairs} "
             f"stat_var/entity pairs, over the cap of {_MAX_COLLECTION_PROBE_PAIRS}; a member "
             "that binds no place counts every place where it holds data, so name the places "
             "to cover or request fewer members"

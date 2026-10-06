@@ -13,6 +13,8 @@ import dataclasses
 import pytest
 
 from search.engine.bind import _UniversalBindOutput
+from search.engine.qualifier_match import CodedQualifier
+from search.engine.quantity import denominator_kinds, normalisation_class, quantity_requirement
 from search.engine.region import NEAR_NEIGHBOR_AMBIGUOUS, resolve_variable
 from search.engine.region.alternate_guard import (
     inadmissible_alternates,
@@ -238,6 +240,33 @@ REJECT_CASES = [
         id="remittances-level-refuses-the-share-of-gdp",
     ),
     pytest.param(
+        "dq-crs-003",
+        "aid from Japan",
+        _shape(
+            "Gross disbursements of official development assistance",
+            "FinancialFlow",
+            "amount",
+            "measuredValue",
+            "Nominal",
+            None,
+            members=("Amount_FinancialFlow_Gross_Disbursement_DAC1AidType1010_Nominal",),
+        ),
+        _shape(
+            "Grant equivalents of official development assistance (% of GNI)",
+            "FinancialFlow",
+            "grantEquivalent",
+            "measuredValue",
+            "Nominal",
+            "PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal",
+            members=(
+                "GrantEquivalent_FinancialFlow_Disbursement_DAC1AidType1010_Nominal_AsAFractionOf_"
+                "PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal",
+            ),
+        ),
+        "specialisation:normalisation",
+        id="aid-amount-refuses-the-grant-equivalent-share-of-gni",
+    ),
+    pytest.param(
         "ids-interest-external-debt-kenya",
         "Kenya interest payments on external debt",
         _shape(
@@ -269,7 +298,9 @@ REJECT_CASES = [
 
 @pytest.mark.parametrize("golden_id,variable,elected,alt,expected_code", REJECT_CASES)
 def test_repro_nomination_rejected(golden_id, variable, elected, alt, expected_code):
-    result = inadmissible_alternates(query_pins(variable), elected, [(0, alt)])
+    result = inadmissible_alternates(
+        query_pins(variable, quantity=quantity_requirement([variable])), elected, [(0, alt)]
+    )
     assert 0 in result, f"{golden_id}: expected rejection, guard admitted the alternate"
     assert _code(result[0]) == expected_code, f"{golden_id}: got reason {result[0]!r}"
 
@@ -302,7 +333,16 @@ def test_rwanda_twin_is_exempt_from_narrowing_check():
             "sdg/EG_ACS_ELEC.URBANISATION--U",
         ),
     )
-    assert inadmissible_alternates(query_pins("access to electricity"), elected, [(0, twin)]) == {}
+    assert (
+        inadmissible_alternates(
+            query_pins(
+                "access to electricity", quantity=quantity_requirement(["access to electricity"])
+            ),
+            elected,
+            [(0, twin)],
+        )
+        == {}
+    )
 
 
 # Cross-population false friends.
@@ -406,7 +446,9 @@ def test_cross_population_false_friend_rejected(
     """The cross-population SDG alternate to the elected CRS flow is refused (#902)."""
     elected = _r5_shape(elected_spec, elected_members)
     alt = _r5_shape(alt_spec, alt_members)
-    result = inadmissible_alternates(query_pins(query), elected, [(0, alt)])
+    result = inadmissible_alternates(
+        query_pins(query, quantity=quantity_requirement([query])), elected, [(0, alt)]
+    )
     assert 0 in result, f"{query}: admitted the cross-population alternate"
     assert _code(result[0]) == "cross_population", result[0]
 
@@ -435,7 +477,12 @@ def test_same_population_sibling_admitted():
     )
     assert (
         inadmissible_alternates(
-            query_pins("biodiversity aid to Zambia since 2018 in grant equivalents"),
+            query_pins(
+                "biodiversity aid to Zambia since 2018 in grant equivalents",
+                quantity=quantity_requirement(
+                    ["biodiversity aid to Zambia since 2018 in grant equivalents"]
+                ),
+            ),
             elected,
             [(0, sibling)],
         )
@@ -464,7 +511,16 @@ def test_cross_population_registry_twin_still_exempt():
         members=("sdg/EG_ACS_ELEC",),
         roles=("unit",),
     )
-    assert inadmissible_alternates(query_pins("access to electricity"), elected, [(0, twin)]) == {}
+    assert (
+        inadmissible_alternates(
+            query_pins(
+                "access to electricity", quantity=quantity_requirement(["access to electricity"])
+            ),
+            elected,
+            [(0, twin)],
+        )
+        == {}
+    )
 
 
 # The GDP and per-capita sibling tuples.
@@ -500,7 +556,9 @@ def _r6_pair() -> tuple[ShapeDraft, ShapeDraft]:
 def test_per_capita_alternate_rejected_on_bare_phrase():
     """The per-capita sibling specialises a bare GDP question (#692)."""
     elected, per_capita = _r6_pair()
-    result = inadmissible_alternates(query_pins("GDP"), elected, [(0, per_capita)])
+    result = inadmissible_alternates(
+        query_pins("GDP", quantity=quantity_requirement(["GDP"])), elected, [(0, per_capita)]
+    )
     assert _code(result[0]) == "specialisation:normalisation", result
 
 
@@ -512,7 +570,14 @@ def test_per_capita_alternate_rejected_on_bare_phrase():
 def test_per_capita_alternate_kept_when_phrase_names_the_framing(variable):
     """The alternate stands when the query names per-capita framing."""
     elected, per_capita = _r6_pair()
-    assert inadmissible_alternates(query_pins(variable), elected, [(0, per_capita)]) == {}
+    assert (
+        inadmissible_alternates(
+            query_pins(variable, quantity=quantity_requirement([variable])),
+            elected,
+            [(0, per_capita)],
+        )
+        == {}
+    )
 
 
 @pytest.mark.parametrize(
@@ -531,7 +596,9 @@ def test_per_capita_alternate_rejected_when_phrase_names_no_per_capita_framing(
 ):
     """Only phrases naming per-capita framing select that alternate (#954)."""
     elected, per_capita = _r6_pair()
-    result = inadmissible_alternates(query_pins(variable), elected, [(0, per_capita)])
+    result = inadmissible_alternates(
+        query_pins(variable, quantity=quantity_requirement([variable])), elected, [(0, per_capita)]
+    )
     assert 0 in result, f"admitted the per-capita alternate on {variable!r}"
     assert _code(result[0]) == expected_code, result[0]
 
@@ -539,7 +606,12 @@ def test_per_capita_alternate_rejected_when_phrase_names_no_per_capita_framing(
 def test_per_capita_elected_with_plain_alternate_not_rejected():
     """The plain-total sibling stands when the per-capita shape is elected."""
     elected, per_capita = _r6_pair()
-    assert inadmissible_alternates(query_pins("GDP"), per_capita, [(0, elected)]) == {}
+    assert (
+        inadmissible_alternates(
+            query_pins("GDP", quantity=quantity_requirement(["GDP"])), per_capita, [(0, elected)]
+        )
+        == {}
+    )
 
 
 def test_count_person_denominator_alternate_is_per_capita():
@@ -554,8 +626,150 @@ def test_count_person_denominator_alternate_is_per_capita():
         "Count_Person",
         members=("Amount_EconomicActivity_GrossDomesticProduction_AsFractionOf_Count_Person",),
     )
-    result = inadmissible_alternates(query_pins("GDP"), elected, [(0, fraction_of_population)])
+    result = inadmissible_alternates(
+        query_pins("GDP", quantity=quantity_requirement(["GDP"])),
+        elected,
+        [(0, fraction_of_population)],
+    )
     assert _code(result[0]) == "specialisation:normalisation", result
+
+
+# A StatVar denominator classified from its own arcs.
+
+_ADULTS = "Count_Person_15OrMoreYears"
+_GNI = "Amount_EconomicActivity_GrossNationalIncome"
+_DENOMINATOR_NODES = {
+    _ADULTS: {
+        "arcs": {
+            "populationType": {"nodes": [{"dcid": "Person"}]},
+            "measuredProperty": {"nodes": [{"dcid": "count"}]},
+            "age": {"nodes": [{"dcid": "Years15Onwards"}]},
+        }
+    },
+    _GNI: {
+        "arcs": {
+            "populationType": {"nodes": [{"dcid": "EconomicActivity"}]},
+            "measuredProperty": {"nodes": [{"dcid": "amount"}]},
+        }
+    },
+    "Area_Land": {"arcs": {"measuredProperty": {"nodes": [{"dcid": "area"}]}}},
+}
+
+
+class _CountingGraph(FakeGraph):
+    def __init__(self) -> None:
+        super().__init__(nodes=_DENOMINATOR_NODES)
+        self.batches: list[list[str]] = []
+
+    def node_arcs_batch(self, dcids, *, deadline=None):
+        self.batches.append(list(dcids))
+        return super().node_arcs_batch(dcids, deadline=deadline)
+
+
+def test_denominator_kinds_reads_statvar_denominators_in_one_batch():
+    """Schema terms are not read; each StatVar denominator is read once."""
+    graph = _CountingGraph()
+    kinds = denominator_kinds(
+        [_ADULTS, "Count_Person", _GNI, "PerCapita", "area", "Area_Land", _ADULTS, "Unloaded"],
+        graph=graph,
+    )
+    assert graph.batches == [[_ADULTS, _GNI, "Area_Land", "Unloaded"]]
+    assert kinds == {_ADULTS: "person", _GNI: "other", "Area_Land": "area", "Unloaded": "unknown"}
+
+
+def test_denominator_kinds_skips_the_read_with_no_statvar_denominator():
+    graph = _CountingGraph()
+    assert denominator_kinds(["Count_Person", "PerCapita", "area"], graph=graph) == {}
+    assert graph.batches == []
+
+
+@pytest.mark.parametrize(
+    "denominator,kinds,expected",
+    [
+        (_ADULTS, {_ADULTS: "person"}, "per_person"),
+        (_GNI, {_GNI: "other"}, "series"),
+        ("Area_Land", {"Area_Land": "area"}, "per_area"),
+        ("Unloaded", {"Unloaded": "unknown"}, "unknown"),
+        # A denominator missing from the map follows the dcid rule.
+        (_ADULTS, {}, "series"),
+        ("Count_Person", {}, "per_person"),
+        ("area", {}, "per_area"),
+        # A schema term outranks a map entry.
+        ("Count_Person", {"Count_Person": "unknown"}, "per_person"),
+    ],
+    ids=[
+        "person-arcs",
+        "gni-arcs",
+        "area-arcs",
+        "unresolved-arcs",
+        "unmapped-statvar",
+        "count-person",
+        "area",
+        "schema-term-wins",
+    ],
+)
+def test_normalisation_class_reads_the_denominator_kind(denominator, kinds, expected):
+    shape = _shape("x", "Consumption", "amount", "measuredValue", None, denominator)
+    assert normalisation_class(shape, kinds=kinds) == expected
+
+
+def test_person_count_denominator_alternate_honours_per_capita():
+    """Alcohol consumption per adult is per capita once its denominator's arcs are read."""
+    elected = _shape(
+        "Alcohol consumption",
+        "Consumption",
+        "amount",
+        "measuredValue",
+        None,
+        None,
+        members=("Amount_Consumption_Alcohol",),
+    )
+    per_adult = _shape(
+        "Alcohol consumption per adult",
+        "Consumption",
+        "amount",
+        "measuredValue",
+        None,
+        _ADULTS,
+        members=(f"Amount_Consumption_Alcohol_15OrMoreYears_AsFractionOf_{_ADULTS}",),
+    )
+    variable = "alcohol consumption per capita"
+    unread = inadmissible_alternates(
+        query_pins(variable, quantity=quantity_requirement([variable])), elected, [(0, per_adult)]
+    )
+    assert _code(unread[0]) == "pin:normalisation", unread
+    pins = query_pins(
+        variable, quantity=quantity_requirement([variable]), denominator_kinds={_ADULTS: "person"}
+    )
+    assert inadmissible_alternates(pins, elected, [(0, per_adult)]) == {}
+
+
+def test_alternate_compared_with_the_request_when_the_election_fulfils_it():
+    """A share of the population honours "percent of population"; a per-person amount
+    of the same class beside it does not, and the pin refuses it."""
+    share = _shape(
+        "Share of the population that is urban",
+        "Person",
+        "count",
+        "measuredValue",
+        None,
+        "Count_Person",
+        members=("Count_Person_Urban_AsFractionOf_Count_Person",),
+    )
+    income_per_person = _shape(
+        "Income per person",
+        "Person",
+        "income",
+        "measuredValue",
+        None,
+        "Count_Person",
+        members=("Amount_Income_Person_AsFractionOf_Count_Person",),
+    )
+    pins = query_pins(
+        "percent of population", quantity=quantity_requirement(["percent of population"])
+    )
+    result = inadmissible_alternates(pins, share, [(0, income_per_person)])
+    assert _code(result[0]) == "pin:normalisation", result
 
 
 # An unrequested per-area (density) alternate of a bare count.
@@ -587,7 +801,11 @@ def _r7_pair() -> tuple[ShapeDraft, ShapeDraft]:
 def test_per_area_alternate_rejected_on_bare_count_phrase():
     """The density series specialises "population of Kenya"."""
     elected, density = _r7_pair()
-    result = inadmissible_alternates(query_pins("population of Kenya"), elected, [(0, density)])
+    result = inadmissible_alternates(
+        query_pins("population of Kenya", quantity=quantity_requirement(["population of Kenya"])),
+        elected,
+        [(0, density)],
+    )
     assert _code(result[0]) == "specialisation:normalisation", result
 
 
@@ -713,7 +931,12 @@ def test_per_area_alternate_rejected_on_bare_count_phrase():
 def test_per_area_alternate_kept_when_phrase_names_the_framing(variable):
     """The density alternate stands when the phrase holds an area token."""
     elected, density = _r7_pair()
-    assert inadmissible_alternates(query_pins(variable), elected, [(0, density)]) == {}
+    assert (
+        inadmissible_alternates(
+            query_pins(variable, quantity=quantity_requirement([variable])), elected, [(0, density)]
+        )
+        == {}
+    )
 
 
 @pytest.mark.parametrize(
@@ -762,7 +985,9 @@ def test_per_area_alternate_kept_when_phrase_names_the_framing(variable):
 def test_per_area_alternate_rejected_when_phrase_names_no_density_framing(variable):
     """The density alternate specialises phrases that hold no area token."""
     elected, density = _r7_pair()
-    result = inadmissible_alternates(query_pins(variable), elected, [(0, density)])
+    result = inadmissible_alternates(
+        query_pins(variable, quantity=quantity_requirement([variable])), elected, [(0, density)]
+    )
     assert 0 in result, f"admitted the density alternate on {variable!r}"
     assert _code(result[0]) == "specialisation:normalisation", result[0]
 
@@ -770,7 +995,13 @@ def test_per_area_alternate_rejected_when_phrase_names_no_density_framing(variab
 def test_per_area_alternate_rejected_when_phrase_names_a_share():
     """`percent of population` names a share, which a density does not honour."""
     elected, density = _r7_pair()
-    result = inadmissible_alternates(query_pins("percent of population"), elected, [(0, density)])
+    result = inadmissible_alternates(
+        query_pins(
+            "percent of population", quantity=quantity_requirement(["percent of population"])
+        ),
+        elected,
+        [(0, density)],
+    )
     assert _code(result[0]) == "pin:normalisation", result
 
 
@@ -980,6 +1211,28 @@ NON_REJECT_PAIRS = [
         _T("Total CO2 emissions", "SDG_EN_ATM_CO2", "value", "measuredValue", None, None),
     ),
     (
+        "dq-crs-003",
+        "aid from Japan",
+        # A grant equivalent is another measure of the same flow on the declared
+        # `measuredProperty` axis, and a level of it divides nothing.
+        _T(
+            "Gross disbursements of ODA",
+            "FinancialFlow",
+            "amount",
+            "measuredValue",
+            "Nominal",
+            None,
+        ),
+        _T(
+            "Grant equivalents of ODA",
+            "FinancialFlow",
+            "grantEquivalent",
+            "measuredValue",
+            "Nominal",
+            None,
+        ),
+    ),
+    (
         "subj-education-data",
         "What education data do you have?",
         # A ratio whose numerator is another quantity does not divide the elected count.
@@ -1011,8 +1264,12 @@ NON_REJECT_PAIRS = [
 def test_legitimate_pair_never_rejected(golden_ids, variable, a, b):
     shape_a = _shape(*a[:6], unresolved=a[6], members=("sv_a",))
     shape_b = _shape(*b[:6], unresolved=b[6], members=("sv_b",))
-    a_elected = inadmissible_alternates(query_pins(variable), shape_a, [(0, shape_b)])
-    b_elected = inadmissible_alternates(query_pins(variable), shape_b, [(0, shape_a)])
+    a_elected = inadmissible_alternates(
+        query_pins(variable, quantity=quantity_requirement([variable])), shape_a, [(0, shape_b)]
+    )
+    b_elected = inadmissible_alternates(
+        query_pins(variable, quantity=quantity_requirement([variable])), shape_b, [(0, shape_a)]
+    )
     assert a_elected == {}, f"{golden_ids}: rejected b when a elected: {a_elected}"
     assert b_elected == {}, f"{golden_ids}: rejected a when b elected: {b_elected}"
 
@@ -1166,7 +1423,7 @@ class _FixedBindLLM:
 
 
 def _sv_refs(spec) -> set[str]:
-    return {sv.ref for sv in spec.resolved.stat_vars.items}
+    return {sv.ref.dcid for sv in spec.resolved.members}
 
 
 def _warning_codes(result) -> set[str]:
@@ -1182,6 +1439,7 @@ def _run(
     chosen_shape_index: int,
     also_plausible: list[int] | None,
     obs: dict,
+    qualifiers: tuple[CodedQualifier, ...] | None = None,
 ):
     graph = FakeGraph(
         nodes={**_TSTLAND, **nodes},
@@ -1196,11 +1454,11 @@ def _run(
             date_request=None,
             detect_query=query,
             role_query=query,
+            qualifiers=qualifiers,
             pac=True,
             graph=graph,
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(chosen_shape_index=chosen_shape_index, also_plausible=also_plausible),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
@@ -1211,10 +1469,21 @@ def _run(
 # An unresolved per-capita winner beside a plain-total alternate.
 
 
-def test_pipeline_r1_contradicted_denominator_rejected():
+# The pin reads the leg's quantity requirement, so a sidecar phrase naming the framing pins
+# it as the variable does.
+@pytest.mark.parametrize(
+    "query,qualifiers",
+    [
+        ("GDP per capita of Testland", None),
+        ("GDP of Testland", (CodedQualifier(phrase="per capita", spans=(), matches=()),)),
+    ],
+    ids=["variable", "sidecar-phrase"],
+)
+def test_pipeline_r1_contradicted_denominator_rejected(query, qualifiers):
     elected_sv, alt_sv = "Test_GDP_PerCapita", "Test_GDP_Total"
     result = _run(
-        query="GDP per capita of Testland",
+        query=query,
+        qualifiers=qualifiers,
         nodes={
             elected_sv: _node(
                 pop_type="EconomicActivity",

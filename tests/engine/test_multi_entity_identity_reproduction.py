@@ -66,7 +66,6 @@ def _run(entities: list[str], *, obs: dict) -> RegionResult:
             graph=graph,
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),

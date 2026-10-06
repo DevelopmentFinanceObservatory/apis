@@ -131,7 +131,7 @@ class _CountingGraph(FakeGraph):
 
 
 class TestAcronymCanonicalization:
-    """GNI, U5MR, and IMR expand only for bare-variable detection; other fields stay unchanged.
+    """GNI, U5MR, IMR, and PPG expand only for bare-variable detection; other fields stay unchanged.
     GDP is excluded."""
 
     def test_bare_acronym_query_is_expanded(self):
@@ -174,6 +174,30 @@ class TestAcronymCanonicalization:
         )
         run(recall("co2", [], graph=graph, resolver=make_resolver(graph), raw_query="co2"))
         assert graph.detect_calls == ["carbon dioxide emissions"]
+
+    @pytest.mark.parametrize(
+        ("variable_text", "expected_query"),
+        [
+            pytest.param(
+                "debt service for PPG debt",
+                "debt service for public and publicly guaranteed debt",
+                id="ppg_expanded_in_phrase",
+            ),
+            pytest.param("mppgx stock", "mppgx stock", id="ppg_inside_a_word_unchanged"),
+        ],
+    )
+    def test_ppg_expands_at_word_boundaries_only(self, variable_text, expected_query):
+        graph = _CountingGraph()
+        run(
+            recall(
+                variable_text,
+                [],
+                graph=graph,
+                resolver=make_resolver(graph),
+                raw_query=variable_text,
+            )
+        )
+        assert graph.detect_calls == [expected_query]
 
     def test_unmapped_term_passes_through_unchanged(self):
         graph = _CountingGraph()

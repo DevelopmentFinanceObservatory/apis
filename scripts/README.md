@@ -77,7 +77,7 @@ The graph supplies the code rows and StatVar rows. The coverage build supplies e
 | `summable`               | Sibling values add up to their parent's total.                                                                                          |
 | `absent_reading`         | How a StatVar that does not carry the property reads: `not_declared` (a separate population) or `aggregate` (a total over every value). |
 | `plain_name`             | The singular noun a sentence uses for the axis.                                                                                         |
-| `default`                | A code bound onto an open slot when another slot or a query phrase triggers it, or `null`.                                              |
+| `default`                | A code bound onto an open slot when another slot or a query phrase triggers it, or on every open slot (`when_open`), with the `note` an answer states when it fires; or `null`. |
 
 `declared_by_every_statvar_of` stays in the script: it lists the datasets whose every StatVar declares the property, and the export enumerates each dataset only through the systems that list it.
 
@@ -87,12 +87,11 @@ The graph supplies the code rows and StatVar rows. The coverage build supplies e
 | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `provenance`         | The provenance the table's observations carry. A StatVar row belongs to the dataset when its `provenances` names it.                                   |
 | `label`              | The name a sentence uses for the dataset.                                                                                                              |
-| `synonyms`           | Other names a query uses for it.                                                                                                                       |
 | `opt_in`             | Whether a question answers from the table only when it names the table.                                                                                |
 | `absent_observation` | Whether an observation the table holds no row for reads as `zero`, or `unknown`.                                                                       |
 | `rank`               | The serving order among datasets that publish one five-tuple: of those that can serve a family, the lowest rank serves it. Unique across declarations. |
 
-ONE Imputed Multilateral Sectors is opt-in and CRS is not. Both read an absent observation as zero. CRS has rank 0 and ONE Imputed Multilateral Sectors rank 10.
+ONE Imputed Multilateral Sectors is opt-in, and OECD DAC1 and CRS are not. CRS and ONE Imputed Multilateral Sectors read an absent observation as zero, and OECD DAC1 reads it as unknown. CRS has rank 0, ONE Imputed Multilateral Sectors rank 10 and OECD DAC1 rank 20. DAC1 shares the CRS five-tuples under its own codes, so it forms families of its own and its rank orders it against no other table.
 
 The export and the loader refuse a document in which a StatVar carries a provenance no dataset declares, a declared dataset has no StatVar, or a dataset's `rank` is not an integer or repeats another's. The second case means a stale or misjoined coverage build. A StatVar may carry several provenances, and several datasets may publish one five-tuple. `code_index.members.elect_dataset` serves each family from the dataset the identity names. Without one, a dataset whose rows cover the identity's role keys serves before one whose rows do not, then one whose family declares exactly the roles those keys place, then the lowest rank.
 

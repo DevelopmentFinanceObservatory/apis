@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
+
+import pytest
+
+from code_index.shared import get_index
+from code_index.types import StatVarRow
 from search.engine.config import settings
-from search.engine.retrieval.derive import derive_shapes
+from search.engine.retrieval.derive import _index_group_keys, derive_shapes
 from tests.engine._discover_fixtures import _std_sv_arcs
 from tests.fixtures import FakeGraph
 
@@ -342,3 +348,103 @@ class TestShapeClassFloorRescuesAboveThresholdRoleBearingFromWideStandardLattice
 
         all_members = {sv for s in shapes for sv in (s.sv_arc_facts or {})}
         assert set(role_bearing_svs) <= all_members
+
+
+def _index_group_rows(count_a: int, count_b: int) -> tuple[list[StatVarRow], list[StatVarRow]]:
+    """Rows of the two largest packaged-index family groups whose five-tuples have no
+    denominator, `count_a` from the larger and `count_b` from the other."""
+    rows_by_dcid = {row.dcid: row for row in get_index().statvars}
+    groups: dict[object, list[StatVarRow]] = defaultdict(list)
+    for dcid, key in _index_group_keys(get_index()).items():
+        if key[0].measurement_denominator is None:
+            groups[key].append(rows_by_dcid[dcid])
+    larger, other = sorted(groups.values(), key=len, reverse=True)[:2]
+    return larger[:count_a], other[:count_b]
+
+
+def _index_row_arcs(row: StatVarRow) -> dict:
+    """Graph arcs of a packaged-index row: its five-tuple, roles, and constraints."""
+    arcs: dict = {
+        "populationType": {"nodes": [{"dcid": row.population_type}]},
+        "measuredProperty": {"nodes": [{"dcid": row.measured_property}]},
+        "statType": {"nodes": [{"dcid": row.stat_type}]},
+        "observationProperties": {"nodes": [{"dcid": p} for p in row.observation_properties]},
+        "constraintProperties": {"nodes": [{"dcid": p} for p in row.constraint_properties]},
+        **{p: {"nodes": [{"dcid": v}]} for p, v in row.constraint_properties.items()},
+    }
+    if row.measurement_qualifier is not None:
+        arcs["measurementQualifier"] = {"nodes": [{"dcid": row.measurement_qualifier}]}
+    return arcs
+
+
+class TestFamilySpreadOverTheCap:
+    """Over the cap, one index family group confirms its top member before its others.
+
+    Pool entries are `a<i>` (rows of one family group), `b<i>` (rows of another), `n<i>`
+    (StatVars the index does not hold) and `p<i>` (StatVars absent from the graph), listed
+    by descending score. `reads` are the arc reads in order: the capped confirm, then the
+    backfill when a member is absent."""
+
+    @pytest.mark.parametrize(
+        ("cap", "pool", "reads"),
+        [
+            pytest.param(
+                4,
+                ["a0", "a1", "a2", "a3", "a4", "a5", "b0"],
+                [["a0", "b0", "a1", "a2"]],
+                id="surplus-members-yield-to-another-family",
+            ),
+            pytest.param(
+                3,
+                ["p0", "p1", "a0", "a1", "a2", "a3", "a4", "a5", "b0"],
+                [["p0", "p1", "a0"], ["b0", "a1"]],
+                id="backfill-draws-in-spread-order",
+            ),
+            pytest.param(
+                4,
+                ["a0", "n0", "a1", "n1", "a2", "n2", "n3", "b0"],
+                [["a0", "n0", "n1", "n2"]],
+                id="unindexed-members-keep-their-rank",
+            ),
+            pytest.param(
+                10,
+                ["a0", "a1", "a2", "n0", "b0"],
+                [["a0", "a1", "a2", "n0", "b0"]],
+                id="pool-within-cap-keeps-rank-order",
+            ),
+        ],
+    )
+    def test_confirm_reads(self, search_settings, cap, pool, reads):
+        search_settings(
+            max_confirm_candidates=cap, min_recall_confirm_slots=0, min_shape_class_confirm_slots=0
+        )
+        rows_a, rows_b = _index_group_rows(
+            sum(name[0] == "a" for name in pool), sum(name[0] == "b" for name in pool)
+        )
+        rows = {f"a{i}": row for i, row in enumerate(rows_a)} | {
+            f"b{i}": row for i, row in enumerate(rows_b)
+        }
+        dcids = {name: rows[name].dcid if name in rows else f"Unindexed_{name}" for name in pool}
+        nodes = {
+            dcids[name]: {
+                "label": name,
+                "arcs": (
+                    _index_row_arcs(rows[name])
+                    if name in rows
+                    else _std_sv_arcs("Country", f"metric_{name}")
+                ),
+            }
+            for name in pool
+            if name[0] != "p"
+        }
+        sv_scores = {dcids[name]: 0.9 - rank * 0.01 for rank, name in enumerate(pool)}
+
+        graph = _ArcsBatchCountingGraph(FakeGraph(nodes=nodes, obs={}, detect={}, resolve={}))
+        shapes = derive_shapes(
+            confirmed_svs=[dcids[name] for name in pool], graph=graph, sv_scores=sv_scores
+        )
+
+        assert graph.node_arcs_batch_calls == [[dcids[name] for name in read] for read in reads]
+        confirmed = {name for read in reads for name in read if name[0] != "p"}
+        members = {sv for shape in shapes for sv in (shape.sv_arc_facts or {})}
+        assert members == {dcids[name] for name in confirmed}

@@ -15,7 +15,6 @@ from datasets_api.origin import origin_reads
 from materialise import (
     EnrichmentLookup,
     MaterialisationRequest,
-    materialise_collection,
     materialise_group,
     materialise_preview,
     probe_collection_facets,
@@ -136,8 +135,8 @@ def test_a_request_binding_no_place_refuses_upstream_error_when_its_un_read_fail
         pytest.raises(UnSystemUnavailable) as refused,
         origin_reads(graph, availability=_NO_DATA, deadline=None),
     ):
-        materialise_collection(
-            [(f"spec_{index:032x}", request) for index, request in enumerate(requests)],
+        materialise_group(
+            requests,
             sdmx=_sdmx_never_called(),
             graph=graph,
             revision_reader=FakeRevisionReader([snapshot, snapshot]),

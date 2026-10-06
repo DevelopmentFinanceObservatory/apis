@@ -92,8 +92,17 @@ def _record_releases(monkeypatch: pytest.MonkeyPatch) -> tuple[list[str], FakeGe
     monkeypatch.setattr(app_module, "release_shared", _release_shared)
 
     class _MaterialiseSdmx:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
         def close(self) -> None:
             events.append("materialise_sdmx")
+
+        def stats(self) -> dict[str, int]:
+            return {}
+
+        def clear(self) -> None:
+            pass
 
     monkeypatch.setattr(app_module, "build_materialise_sdmx_client", _MaterialiseSdmx)
 

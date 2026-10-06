@@ -188,7 +188,8 @@ def _parse_requested_keys(harvest_file: Path, lines: Iterable[str]) -> frozenset
 
 
 def _schema_and_stage(schema_name: str) -> tuple[type, str]:
-    """Map `Extraction`, `MentionReadings` and `_UniversalBindOutput` to a schema and stage.
+    """Map `Extraction`, `_UniversalBindOutput` and `_SourceSlotBindOutput` to a schema
+    and stage.
 
     Unknown names raise `HarvestError`.
     """
@@ -200,10 +201,10 @@ def _schema_and_stage(schema_name: str) -> tuple[type, str]:
         from search.engine.bind import _UniversalBindOutput
 
         return _UniversalBindOutput, "bind"
-    if schema_name == "MentionReadings":
-        from search.engine.dataset_mention import MentionReadings
+    if schema_name == "_SourceSlotBindOutput":
+        from search.engine.bind import _SourceSlotBindOutput
 
-        return MentionReadings, "extract"
+        return _SourceSlotBindOutput, "bind"
     raise HarvestError(
         f"no schema registered for schema_name={schema_name!r}; add it to "
         f"_schema_and_stage in {Path(__file__).name} before harvesting"

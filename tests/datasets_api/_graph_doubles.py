@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from graph_generation import FakeGeneration, GenerationStamp
 from materialise.graph import Facet, FacetDefaultPolicy
 from materialise.revision import RevisionSnapshot
+from statvar_members import CANDIDATE_CAP
 
 
 @dataclass(frozen=True)
@@ -35,8 +36,8 @@ class FakeMintGraphReader:
     a live place holding observations is a graph node. A StatVar has data at the entities
     holding a facet for it, and `presence_reads` records each presence read's
     `(stat_vars, entities)`. Each instance has its own generation token (`generation_stamp`)
-    and reaches no UN deployment. The locked `calls` counts are safe across concurrent
-    materialisation workers.
+    and reaches no UN deployment, unless `generation` supplies one a test advances. The locked
+    `calls` counts are safe across concurrent materialisation workers.
     """
 
     def __init__(
@@ -47,6 +48,7 @@ class FakeMintGraphReader:
         labels: Mapping[str, str] = {},
         arcs: Mapping[str, Mapping[str, tuple[str, ...]]] = {},
         child_places: Mapping[tuple[str, str], list[str]] = {},
+        generation: FakeGeneration | None = None,
     ) -> None:
         self._facets = facets
         self._child_places = child_places
@@ -54,7 +56,11 @@ class FakeMintGraphReader:
         self._labels = labels
         self._arcs = arcs
         self._place_nodes = frozenset(entity for _stat_var, entity in facets)
-        self._generation = FakeGeneration(token=f"fake-mint-graph-{next(_FAKE_GENERATIONS)}")
+        self._generation = (
+            generation
+            if generation is not None
+            else FakeGeneration(token=f"fake-mint-graph-{next(_FAKE_GENERATIONS)}")
+        )
         self._calls_lock = threading.Lock()
         self.calls: dict[str, int] = {
             "node_label": 0,
@@ -206,6 +212,35 @@ class FakeMintGraphReader:
             )
             for candidate in dict.fromkeys(dcids)
         }
+
+
+class FirstPageWithholdingGraphReader(FakeMintGraphReader):
+    """A `FakeMintGraphReader` whose first reverse page, read at `CANDIDATE_CAP`, is truncated
+    and leaves out `withheld`, as the live first page leaves out a root that sorts past it.
+    Any other read, the member walk's full read among them, returns every match, truncated
+    only past its own `max_results`."""
+
+    def __init__(self, *, withheld: frozenset[str], **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._withheld = withheld
+
+    def node_subjects(
+        self,
+        dcid: str,
+        *,
+        property: str,
+        filters: Mapping[str, str] | None = None,
+        max_results: int,
+        deadline: float | None = None,
+    ) -> _FakeSubjectPage:
+        page = super().node_subjects(
+            dcid, property=property, filters=filters, max_results=max_results
+        )
+        if max_results != CANDIDATE_CAP:
+            return page
+        return _FakeSubjectPage(
+            dcids=tuple(d for d in page.dcids if d not in self._withheld), truncated=True
+        )
 
 
 class BlockingFakeMintGraphReader:

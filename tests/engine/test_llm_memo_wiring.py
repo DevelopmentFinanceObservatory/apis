@@ -21,7 +21,7 @@ from tests.engine._harness import materialise_double_from_obs, parse_sse
 from tests.fixtures import PINNED_DATE, FakeGraph, FakeLLM, make_resolver
 
 _QUERY = "total population India"
-_OPTIONS = {"include_sentence": True, "include_observations": True, "include_option_coverage": True}
+_OPTIONS = {"include_observations": True, "include_option_coverage": True}
 
 # The same single-series override tests/engine/test_observations_e2e_buffered_sse.py
 # uses: FakeGraph reads it for coverage, materialise_double_from_obs for the

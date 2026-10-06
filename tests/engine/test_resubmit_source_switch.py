@@ -26,14 +26,13 @@ from search.models import (
 )
 from tests.engine._base_identity import (
     GDP_SHAPE,
-    make_base,
     make_identity,
     subject_entity,
 )
 from tests.engine._builders import gref as _gref
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import materialise_double_from_obs
+from tests.engine._harness import materialise_double_from_obs, walk_options, with_member_arcs
 from tests.fixtures import FakeGraph
 
 # ---------------------------------------------------------------------------
@@ -127,15 +126,8 @@ def _resolve_standard(source_slot: Slot | None, graph: FakeGraph, *, stream: boo
         activity_source_slot,
         *([source_slot] if source_slot is not None else []),
     ]
-    base_spec_id, base_identity = make_base(
-        GDP_SHAPE,
-        entities=entities,
-    )
     inp = ResubmitIdentityPayload(
         identity=make_identity(GDP_SHAPE, slots, entities=entities),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[_GDP_SV_DCID],
     )
     materialise_graph, materialise_sdmx = materialise_double_from_obs(_GDP_TWO_SOURCE_OBS)
     return resolve_spec_resubmit(
@@ -143,11 +135,14 @@ def _resolve_standard(source_slot: Slot | None, graph: FakeGraph, *, stream: boo
         graph=graph,
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
-        options=EngineOptions(
-            include_observations=not stream,
-            stream_observations=stream,
-            materialise_graph=materialise_graph,
-            materialise_sdmx=materialise_sdmx,
+        options=walk_options(
+            graph,
+            EngineOptions(
+                include_observations=not stream,
+                stream_observations=stream,
+                materialise_graph=with_member_arcs(materialise_graph, graph),
+                materialise_sdmx=materialise_sdmx,
+            ),
         ),
     )
 
@@ -253,7 +248,6 @@ def _resolve_standard_with_method(source_slot: Slot | None, method: IdentityFace
     )
     entities = [subject_entity(_GDP_ENTITY_DCID)]
     slots = [activity_source_slot, *([source_slot] if source_slot is not None else [])]
-    base_spec_id, base_identity = make_base(GDP_SHAPE, entities=entities)
     inp = ResubmitIdentityPayload(
         identity=make_identity(
             GDP_SHAPE,
@@ -261,9 +255,6 @@ def _resolve_standard_with_method(source_slot: Slot | None, method: IdentityFace
             entities=entities,
             explicit_facets={"measurementMethod": method},
         ),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[_GDP_SV_DCID],
     )
     materialise_graph, materialise_sdmx = materialise_double_from_obs(_GDP_METHOD_OBS)
     return resolve_spec_resubmit(
@@ -271,10 +262,15 @@ def _resolve_standard_with_method(source_slot: Slot | None, method: IdentityFace
         graph=FakeGraph(obs=_GDP_METHOD_OBS),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
-        options=EngineOptions(
-            include_observations=True,
-            materialise_graph=materialise_graph,
-            materialise_sdmx=materialise_sdmx,
+        options=walk_options(
+            FakeGraph(obs=_GDP_METHOD_OBS),
+            EngineOptions(
+                include_observations=True,
+                materialise_graph=with_member_arcs(
+                    materialise_graph, FakeGraph(obs=_GDP_METHOD_OBS)
+                ),
+                materialise_sdmx=materialise_sdmx,
+            ),
         ),
     )
 

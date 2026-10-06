@@ -11,12 +11,12 @@ import random
 import pytest
 from dfo_spec_kit import identity
 
+from search.currency_codes import ISO_4217_CODES
 from search.engine.unit.bind import (
     BoundUnitRequest,
     CurrencyAlternative,
     UnitDefaultPolicy,
     UnitDefaultPolicyError,
-    UnitFacetInstallation,
     UnitNotResolved,
     UnitRequestUnsupported,
     _assemble,
@@ -25,20 +25,20 @@ from search.engine.unit.bind import (
     _normalise,
     _tokenise,
     bind_unit_text,
-    install_unit_facet,
     names_unit_request,
+    with_unit_lexicon_version,
 )
 from search.engine.unit.lexicon import (
     AMBIGUOUS_ISO_CODES,
     CONNECTIVE_WORDS,
     CURRENCY_ALIASES,
-    ISO_4217_CODES,
     LEXICON_VERSION,
     MAX_YEAR,
     MIN_YEAR,
     PRICE_BASIS_PHRASES,
 )
-from search.models import IdentityCurrencyRole, ResolutionTrace, Warning
+from search.models import IdentityCurrencyRole
+from tests.engine._assemble_fixtures import _make_spec
 
 # The base year the conversion tables declare in these tests.
 _DECLARED_BASE_YEAR = 2024
@@ -1130,11 +1130,11 @@ class TestFuzzing:
 
 
 # ---------------------------------------------------------------------------
-# `ResolutionTrace` carries the binder's lexicon version when a unit is bound.
+# Every outcome carries the binder's lexicon version, which a bound Spec states.
 # ---------------------------------------------------------------------------
 
 
-class TestLexiconVersionStampsIntoResolutionTrace:
+class TestLexiconVersion:
     def test_bound_request_lexicon_version_matches_the_module_constant(self) -> None:
         outcome = _bind("current EUR")
         assert isinstance(outcome, BoundUnitRequest)
@@ -1144,82 +1144,16 @@ class TestLexiconVersionStampsIntoResolutionTrace:
         refusal = _bind("gobbledygook")
         assert refusal.lexicon_version == LEXICON_VERSION
 
-    def test_resolution_trace_carries_the_stamped_version(self) -> None:
-        outcome = _bind("current EUR")
-        assert isinstance(outcome, BoundUnitRequest)
-        trace = ResolutionTrace(
-            resolved_stat_vars=[],
-            resolved_entities=[],
-            resolved_sources=[],
-            slot_filters=[],
-            pipeline_trace=[],
-            unit_lexicon_version=outcome.lexicon_version,
-        )
-        assert trace.unit_lexicon_version == LEXICON_VERSION
 
-    def test_resolution_trace_defaults_to_none_when_no_unit_was_bound(self) -> None:
-        trace = ResolutionTrace(
-            resolved_stat_vars=[],
-            resolved_entities=[],
-            resolved_sources=[],
-            slot_filters=[],
-            pipeline_trace=[],
-        )
-        assert trace.unit_lexicon_version is None
+def test_a_bound_outcome_states_its_lexicon_version_on_a_copy_of_the_spec() -> None:
+    outcome = _bind("current EUR")
+    assert isinstance(outcome, BoundUnitRequest)
+    spec = _make_spec(sv_dcid="Count_Person", purpose_dcid="DAC/Health", place_dcid="country/ETH")
 
+    stated = with_unit_lexicon_version(spec, outcome)
 
-# ---------------------------------------------------------------------------
-# `install_unit_facet` combines the wire request, warnings, trace version, and request provenance.
-# ---------------------------------------------------------------------------
-
-
-def _empty_trace() -> ResolutionTrace:
-    return ResolutionTrace(
-        resolved_stat_vars=[],
-        resolved_entities=[],
-        resolved_sources=[],
-        slot_filters=[],
-        pipeline_trace=[],
-    )
-
-
-class TestInstallUnitFacet:
-    def test_bound_outcome_installs_request_warnings_and_trace_version(self) -> None:
-        outcome = _bind("current EUR")
-        assert isinstance(outcome, BoundUnitRequest)
-        existing_warning = Warning(code="date_coverage_partial", severity="info", message="x")
-
-        installation = install_unit_facet(
-            outcome, warnings=(existing_warning,), trace=_empty_trace()
-        )
-
-        assert isinstance(installation, UnitFacetInstallation)
-        assert installation.request == outcome.as_wire_request()
-        assert installation.warnings == (existing_warning,)
-        assert installation.trace.unit_lexicon_version == LEXICON_VERSION
-        assert installation.request_basis == outcome.request_basis
-
-    def test_installation_does_not_mutate_the_caller_s_trace_in_place(self) -> None:
-        outcome = _bind("current EUR")
-        assert isinstance(outcome, BoundUnitRequest)
-        original_trace = _empty_trace()
-
-        install_unit_facet(outcome, warnings=(), trace=original_trace)
-
-        assert original_trace.unit_lexicon_version is None
-
-    def test_installation_carries_provenance_for_every_completed_member(self) -> None:
-        # "constant" alone binds only prices via text; currency and
-        # base_year both complete. The installation still carries a
-        # request_basis entry for every member of the completed request,
-        # including those the text did not name.
-        outcome = _bind("constant")
-        assert isinstance(outcome, BoundUnitRequest)
-
-        installation = install_unit_facet(outcome, warnings=(), trace=_empty_trace())
-
-        assert set(installation.request_basis) == {"currency", "prices", "base_year"}
-        assert installation.request_basis == outcome.request_basis
+    assert stated.resolved.unit_lexicon_version == LEXICON_VERSION
+    assert spec.resolved.unit_lexicon_version is None
 
 
 @pytest.mark.parametrize(

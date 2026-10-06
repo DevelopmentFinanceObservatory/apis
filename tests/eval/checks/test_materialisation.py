@@ -11,7 +11,12 @@ from dc_graph import Facet
 from search.eval.checks import CHECKS, MODAL_ONLY_CHECKS, Result, ScoreContext, Verdict, WireSchema
 from series_coverage.loader import CoverageArtifactError
 from tests.conftest import base_response, minimal_spec
-from tests.eval.checks.conftest import make_case, response_schema
+from tests.eval.checks.conftest import (
+    make_case,
+    no_members_door,
+    response_schema,
+    schema_listing_members,
+)
 from tests.eval.conftest import RaisingGraphClient, StubGraphClient, make_worked_example_response
 
 PASS, FAIL, NA, U = Verdict.PASS, Verdict.FAIL, Verdict.NA, Verdict.UNVERIFIABLE
@@ -28,11 +33,29 @@ class Coverage:
         return self.snapshots()
 
 
+# The key a test Spec lists the StatVars its members door names under (`_members_of`).
+_SERVED = "served_by_members_door"
+
+
+def _members_of(resp: dict):
+    """A members door answering each Spec of `resp` with the StatVars it lists under
+    `_SERVED`."""
+
+    def members(spec_id: str, definition: dict) -> list[str]:
+        (spec,) = (
+            part["spec"] for part in resp["parts"] if part.get("spec", {}).get("spec_id") == spec_id
+        )
+        return list(spec[_SERVED])
+
+    return members
+
+
 def check(resp: dict, *, graph=None, coverage=None, case=DEFINITE) -> Result:
     ctx = ScoreContext(
         schema=WireSchema.from_document({"response": response_schema()}),
         graph=graph if graph is not None else StubGraphClient(),
         coverage=Coverage(coverage) if coverage is not None else None,
+        members=_members_of(resp),
     )
     return CHECKS["materialisation"](case, resp, ctx)
 
@@ -133,14 +156,8 @@ def _exact_response(
     spec["resolved"]["facets"] = (
         {"provenance": {"basis": "fallback", "ref": _WDI}} if facets is None else facets
     )
-    spec["resolved"]["stat_vars"] = {
-        "items": [
-            {"ref": sv, "label": sv, "slot_values": [], "constraint_properties": []}
-            for sv in stat_vars
-        ],
-        "member_count": len(stat_vars),
-        "truncated": False,
-    }
+    spec["resolved"]["stat_vars"] = {"member_count": len(stat_vars)}
+    spec[_SERVED] = stat_vars
     spec["resolved"]["entities"] = [
         {"ref": entity, "label": entity, "role": "observationAbout"} for entity in entities
     ]
@@ -166,6 +183,22 @@ _TWO_SOURCES = {
 def test_materialisation_exact_counts_the_stated_source_alone():
     """Two sources hold ten observations each and the answer serves one: ten, not twenty."""
     ev = _score(_exact_response(10), _TWO_SOURCES)
+    assert ev.verdict == PASS, ev.detail
+    assert "observed=10," in ev.detail
+
+
+def test_materialisation_exact_counts_the_stat_vars_an_app_lists_on_its_wire():
+    """An app with no members door is counted over the StatVars its own wire lists."""
+    resp = _exact_response(10)
+    resp["parts"][0]["spec"]["resolved"]["stat_vars"]["items"] = [{"ref": "sv1"}]
+    ctx = ScoreContext(
+        schema=schema_listing_members(),
+        graph=StubGraphClient(facets=_TWO_SOURCES),
+        members=no_members_door,
+    )
+
+    ev = CHECKS["materialisation"](DEFINITE, resp, ctx)
+
     assert ev.verdict == PASS, ev.detail
     assert "observed=10," in ev.detail
 

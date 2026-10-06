@@ -77,12 +77,14 @@ def _posted_place_roles(
 
     A directional shape binds its destinations as the where places and keeps its origins; a
     subject shape binds every posted place as its subject, the anchor first. An identity
-    carries no direction, so no direction is dropped."""
+    carries no direction, so no direction is dropped. A directional shape leaves open the
+    axes the identity's `open_roles` name."""
     where_dcids = state.standard_where_dcids
     if is_role_bearing(state.shape_draft):
         return PlaceRoles(
             destination_dcids=where_dcids,
             origin_dcids=state.origin_dcids,
+            open_axes=frozenset(state.inp.identity.open_roles or ()),
             resolved_entities=resolved_entities,
             roles=[(dcid, "destination") for dcid in where_dcids]
             + [(dcid, "origin") for dcid in state.origin_dcids],
@@ -93,6 +95,7 @@ def _posted_place_roles(
     return PlaceRoles(
         destination_dcids=[],
         origin_dcids=[],
+        open_axes=frozenset(),
         resolved_entities=resolved_entities,
         roles=[(dcid, "observationAbout") for dcid in anchor]
         + [(dcid, "observationAbout") for dcid in where_dcids if dcid != state.entity_dcid],

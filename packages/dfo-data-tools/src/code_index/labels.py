@@ -1,5 +1,5 @@
-"""Labels the packaged indexes override: a measure partition, a StatVar family, and a node's
-display label."""
+"""Labels the packaged indexes override: a measure partition, a StatVar family, an index
+family, and a node's display label."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from types import MappingProxyType
 from typing import Literal, cast
 
 from code_index.members import elected_pins, identity_family_query
-from code_index.query import CodeIndex
+from code_index.query import CodeIndex, IndexFamily
 from code_index.types import MeasureIndex, MeasureValueRow, PartitionLabelMatch, label_for_pairs
 
 PRICE_BASIS_AXIS = "measurementQualifier"
@@ -111,6 +111,75 @@ def family_label(
         if slot_labels:
             parts.append("/".join(slot_labels))
     return ", ".join(parts) if parts else None
+
+
+def index_family_label(
+    family: IndexFamily,
+    *,
+    index: CodeIndex,
+    measure_index: MeasureIndex,
+    denominator_noun: str | None,
+    population_type_label: str,
+) -> str:
+    """Name an index family by what every one of its rows shares, and its serving dataset.
+
+    The label leads with `population_type_label` and the measure partition label of the
+    family's shape axes and of the constraint measure axes every row holds at one value
+    (`compose_measure_label`), as in "Financial flow disbursements", else with
+    `population_type_label` alone. A ratio adds "as a share of" `denominator_noun`. The codes of
+    the other properties every row holds at one value follow, by `CodeRow.label` in property
+    order, except those the partition label's text names. The serving dataset's
+    `DatasetDeclaration.label` closes the label. A property whose value differs across rows
+    contributes nothing, so the label is the family's whichever member recall ranks first.
+    Search labels a shape whose family the index decides with this.
+    """
+    shared = _shared_constraints(family)
+    five_tuple = family.five_tuple
+    pairs = [
+        (
+            axis.axis,
+            cast("str | None", getattr(five_tuple, _SHAPE_AXIS_FIELDS[axis.axis]))
+            if axis.kind == "shape"
+            else shared.get(axis.axis),
+        )
+        for axis in measure_index.axes
+    ]
+    match = label_for_pairs(pairs, measure_index.partition_labels)
+    measure = (
+        f"{population_type_label} {_lead_lower(compose_measure_label(match, measure_index.values))}"
+        if match is not None
+        else population_type_label
+    )
+    if five_tuple.measurement_denominator is not None and denominator_noun is not None:
+        measure = f"{measure} as a share of {denominator_noun}"
+
+    measure_axes = {axis.axis for axis in measure_index.axes}
+    named = frozenset(match.named_values) if match is not None else frozenset()
+    parts = [measure]
+    for prop, value in shared.items():
+        if prop in measure_axes or (prop, value) in named:
+            continue
+        if (row := index.code_by_dcid(value)) is not None:
+            parts.append(row.label)
+    if family.datasets and (dataset := index.datasets.get(family.datasets[0])) is not None:
+        parts.append(dataset.label)
+    label = ", ".join(parts)
+    return label[:1].upper() + label[1:]
+
+
+def _lead_lower(text: str) -> str:
+    """`text` with its first letter lowercased, unless its first word is an acronym."""
+    return text[:1].lower() + text[1:] if text[1:2].islower() else text
+
+
+def _shared_constraints(family: IndexFamily) -> dict[str, str]:
+    """The constraint properties every row of `family` declares at one value, sorted."""
+    first, *rest = family.rows
+    return {
+        prop: value
+        for prop, value in sorted(first.constraint_properties.items())
+        if all(row.constraint_properties.get(prop) == value for row in rest)
+    }
 
 
 def _bound_refs(slot: Mapping[str, object]) -> tuple[str, ...]:

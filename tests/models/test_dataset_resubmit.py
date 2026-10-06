@@ -115,18 +115,18 @@ class TestDatasetResubmitDiscrimination:
 
 
 class TestResubmitIdentityEntry:
-    def test_mirrors_resubmit_identity_entry_fields(self):
-        entry = ResubmitIdentityEntry.model_validate(
-            _identity_entry(
-                base_spec_id="abc123",
-                base_identity=_identity(),
-                removed={"facets": ["provenance"]},
-                resolved_stat_var_dcids=["dc/statvar/1"],
-            )
-        )
-        assert entry.base_spec_id == "abc123"
-        assert entry.removed.facets == ["provenance"]
-        assert entry.resolved_stat_var_dcids == ["dc/statvar/1"]
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("base_spec_id", "abc123"),
+            ("base_identity", _identity()),
+            ("removed", {"facets": ["provenance"]}),
+            ("resolved_stat_var_dcids", ["dc/statvar/1"]),
+        ],
+    )
+    def test_a_removed_field_is_refused(self, field, value):
+        with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+            ResubmitIdentityEntry.model_validate(_identity_entry(**{field: value}))
 
     def test_requires_variable_text(self):
         entry = _identity_entry()
@@ -145,17 +145,16 @@ class TestResubmitCandidatesEntry:
         assert len(entry.candidates) == 2
         assert entry.ordering == "broadest_first"
 
-    def test_candidate_carries_identity_and_dcids(self):
-        entry = ResubmitCandidatesEntry.model_validate(
-            _candidates_entry(
-                candidates=[
-                    {"identity": _identity(), "resolved_stat_var_dcids": ["dc/statvar/1"]},
-                    {"identity": _identity()},
-                ]
+    def test_a_candidate_refuses_posted_members(self):
+        with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+            ResubmitCandidatesEntry.model_validate(
+                _candidates_entry(
+                    candidates=[
+                        {"identity": _identity(), "resolved_stat_var_dcids": ["dc/statvar/1"]},
+                        {"identity": _identity()},
+                    ]
+                )
             )
-        )
-        assert entry.candidates[0].resolved_stat_var_dcids == ["dc/statvar/1"]
-        assert entry.candidates[1].resolved_stat_var_dcids is None
 
     def test_one_candidate_rejected(self):
         with pytest.raises(ValidationError):

@@ -24,7 +24,6 @@ from materialise import (
     EnrichmentLookup,
     MaterialisationRequest,
     columnar,
-    materialise_collection,
     materialise_group,
     materialise_preview,
     materialise_spec,
@@ -449,17 +448,3 @@ def test_a_group_of_un_variables_reads_them_in_one_un_fetch(
     assert [sorted(r.url.params.get_list("variable.dcids")) for r in dated] == [
         [UN_VARIABLE, UN_SECOND_VARIABLE]
     ]
-
-
-def test_a_collection_of_un_variables_serves_each_member(graph: OriginGraphClient) -> None:
-    result = materialise_collection(
-        [
-            (f"spec_{1:032x}", _request(UN_VARIABLE)),
-            (f"spec_{2:032x}", _request(UN_SECOND_VARIABLE)),
-        ],
-        **_mint_kwargs(graph),
-    )
-
-    assert [
-        sum(len(frame.rows) for frame in member.frame_chunks()) for _, member in result.members
-    ] == [5, 5]

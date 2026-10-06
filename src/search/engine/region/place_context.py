@@ -3,7 +3,8 @@ place warnings it carries.
 
 `place_context` builds the context from a shape's bound places and makes no graph request.
 `PlaceContext.settled` gives the context an answer is read over once materialisation has
-run. `default_scope_stat_vars` chooses the StatVars a default-scope presence read covers.
+run, and `settled_shape` the shape it is read under. `default_scope_stat_vars` chooses the
+StatVars a default-scope presence read covers.
 `stamp_offered_place_warnings` stamps each offered spec with the place warnings of its own
 context, and `install_place_warnings` makes one context's the answer's own.
 """
@@ -24,6 +25,7 @@ from search.engine.region.codes import (
     PLACE_SCOPE_DEFAULTED,
     STANDARD_PROBE_PLACES_CLAMPED,
 )
+from search.engine.region.convertibility import survivor_declared_roles
 from search.engine.region.decisions import place_scope_defaulted_warning, standard_probe_union
 from search.engine.region.place_roles import PlaceRoles, where_binding
 from search.engine.retrieval.bound_values import shape_member_facts, shape_query
@@ -117,29 +119,62 @@ class PlaceContext:
     def settled(self, mat: Materialised) -> PlaceContext:
         """The context the answer is read over.
 
-        A discovered role scope's members replace the probe places, so the preview and later
-        probes bind every member the open axis holds data for. A default scope takes the
-        scope `mat` was settled on (`Materialised.default_scope`): the places of the
-        StatVars the answer serves, with the scope warning saying which kind it is.
-        Otherwise the context stands.
+        The open axes narrow to those the elected members declare (`Materialised.open_axes`),
+        so every reader after the election reads the axes the answer serves. A discovered
+        role scope's members replace the probe places, so the preview and later probes bind
+        every member the open axis holds data for. A default scope takes the scope `mat` was
+        settled on (`Materialised.default_scope`): the places of the StatVars the answer
+        serves, with the scope warning saying which kind it is. Otherwise the probe places
+        and scope stand.
         """
+        place = self
+        if not self.roles.open_axes <= mat.open_axes:
+            place = dataclasses.replace(
+                self,
+                roles=dataclasses.replace(
+                    self.roles, open_axes=self.roles.open_axes & mat.open_axes
+                ),
+            )
         if mat.discovered_scope is not None:
             return dataclasses.replace(
-                self, probe_dcids=tuple(mat.discovered_scope.member_dcids), mode="discovered"
+                place, probe_dcids=tuple(mat.discovered_scope.member_dcids), mode="discovered"
             )
         if mat.default_scope is not None:
             return dataclasses.replace(
-                self,
+                place,
                 probe_dcids=mat.default_scope.places,
                 mode=_default_scope_mode(mat.default_scope),
                 scope_warning=place_scope_defaulted_warning(mat.default_scope),
             )
-        return self
+        return place
 
 
 def _default_scope_mode(scope: DefaultPlaceScope) -> PlaceMode:
     """The mode of a context probed over `scope`."""
     return "every_place" if scope.every_place else "countries_fallback"
+
+
+def settled_shape(shape: ShapeDraft, mat: Materialised) -> ShapeDraft:
+    """`shape` declaring the roles of the members `mat` elects, the shape the answer is read
+    under beside `PlaceContext.settled`.
+
+    A role-bearing shape declares the union of its recalled members' roles, and for a
+    family the code index decides the election keeps the recalled shape
+    (`bound_values.elected_role_class_shape`), so its roles can lack an axis the elected
+    members declare. The settled shape declares the survivors' shared signature
+    (`convertibility.survivor_declared_roles`) with no optional role, so the roles the
+    answer states (`result.answered_roles`) are the elected members'. `shape` stands when
+    it is subject-only, when `mat` names no member or carries no member facts, when the
+    survivors declare no flow role, and when it declares those roles already.
+    """
+    if not is_role_bearing(shape) or not mat.sv_dcids or mat.member_facts is None:
+        return shape
+    roles = survivor_declared_roles(mat)
+    if roles == ("observationAbout",) or (
+        frozenset(roles) == frozenset(shape.declared_roles or ()) and not shape.optional_roles
+    ):
+        return shape
+    return dataclasses.replace(shape, declared_roles=roles, optional_roles=frozenset())
 
 
 def settle_place(place: PlaceContext, mat: Materialised, warnings: list[Warning]) -> PlaceContext:
@@ -200,6 +235,7 @@ def empty_place_context() -> PlaceContext:
         roles=PlaceRoles(
             destination_dcids=[],
             origin_dcids=[],
+            open_axes=frozenset(),
             resolved_entities={},
             roles=[],
             where_dcids=[],

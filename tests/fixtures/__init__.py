@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from code_index.shared import get_index
 from dc_graph import FacetDefaultPolicy
-from dc_graph.client import _dedup_wire_arcs
+from dc_graph.client import UNRESOLVED_NODE, _dedup_wire_arcs
 from entity_resolution import EntityResolver, GraphLookup, acquire_shared
 from graph_generation import FakeGeneration, GenerationStamp
 from origin_catalogue import current_catalogue
@@ -762,21 +762,31 @@ class FakeGraph:
 
     def member_arcs(self) -> dict[str, dict[str, tuple[str, ...]]]:
         """Every node's arcs in the tuple shape the mint's member walk reads, each value its
-        dcid or literal, with `typeOf` read from `type` when the arcs omit it."""
+        dcid or literal, or `UNRESOLVED_NODE` for a target holding neither (a provisional
+        node), as the live client reads it, with `typeOf` read from `type` when the arcs
+        omit it, or `StatisticalVariable` for a node carrying `measuredProperty`."""
         result: dict[str, dict[str, tuple[str, ...]]] = {}
-        for dcid, node in self._nodes.items():
+        if getattr(self, "_impl", None) is not None:
+            # A graph that raises on every call holds no node.
+            return result
+        for dcid, node in getattr(self, "_nodes", {}).items():
             if not isinstance(node, dict):
                 continue
             arcs = {
                 prop: tuple(
                     dict.fromkeys(
-                        v for n in arc.get("nodes", []) if (v := n.get("dcid") or n.get("value"))
+                        n.get("dcid") or n.get("value") or UNRESOLVED_NODE
+                        for n in arc.get("nodes", [])
                     )
                 )
                 for prop, arc in (node.get("arcs") or {}).items()
             }
             if "typeOf" not in arcs and node.get("type"):
                 arcs["typeOf"] = (node["type"],)
+            elif "typeOf" not in arcs and "measuredProperty" in arcs:
+                # Only a StatVar carries measuredProperty, and fixtures written before the
+                # walk read `typeOf` leave it out.
+                arcs["typeOf"] = ("StatisticalVariable",)
             result[dcid] = arcs
         return result
 

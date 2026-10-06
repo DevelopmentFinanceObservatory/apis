@@ -929,6 +929,108 @@ def test_the_refresh_opens_a_deadline_scope_matching_the_callers_own_deadline(
     assert graph.observed_deadlines == [555.5]
 
 
+# An open axis reaches the index election whatever roles the recalled shape declares.
+
+_SV_INDEX_TOTAL = "TESTFIXTURE/RoleBearingResolve/IndexTotal"
+_SV_INDEX_BY_CREDITOR = "TESTFIXTURE/RoleBearingResolve/IndexTotalByCreditor"
+_DEBTOR_ONLY_ROLE_NAMES = RoleNames(donor=None, recipient="debtor")
+
+
+def _index_row(dcid: str, roles: tuple[str, ...]) -> StatVarRow:
+    return StatVarRow(
+        dcid=dcid,
+        population_type="EconomicActivity",
+        measured_property="amount",
+        stat_type="measuredValue",
+        measurement_qualifier=None,
+        measurement_denominator=None,
+        observation_properties=roles,
+        constraint_properties={},
+        provenances=(FIXTURE_PROVENANCE,),
+    )
+
+
+def _index_of(*rows: StatVarRow) -> CodeIndex:
+    return CodeIndex(stamp=_STAMP, declarations=(), codes=(), statvars=list(rows))
+
+
+def _recalled_total_shape() -> ShapeDraft:
+    """The shape recall gives when it holds only the debtor-only total."""
+    return ShapeDraft(
+        shape_id="test_role_bearing_resolve_recalled_total_shape",
+        label="test flow",
+        pop_type_dcid="EconomicActivity",
+        meas_prop_dcid="amount",
+        stat_type_dcid="measuredValue",
+        meas_qual_dcid=None,
+        meas_denom_dcid=None,
+        slot_keys=(),
+        sv_arc_facts={_SV_INDEX_TOTAL: _role_arcs(("debtor",))},
+        sv_arc_facts_complete=False,
+        slot_taxonomy={},
+        declared_roles=("debtor",),
+    )
+
+
+@pytest.mark.parametrize(
+    ("rows", "elected", "open_axes"),
+    [
+        pytest.param(
+            (
+                _index_row(_SV_INDEX_TOTAL, ("debtor",)),
+                _index_row(_SV_INDEX_BY_CREDITOR, ("creditor", "debtor")),
+            ),
+            _SV_INDEX_BY_CREDITOR,
+            frozenset({"origin"}),
+            id="by-creditor-twin-in-the-index",
+        ),
+        pytest.param(
+            (_index_row(_SV_INDEX_TOTAL, ("debtor",)),),
+            _SV_INDEX_TOTAL,
+            frozenset(),
+            id="no-member-declares-the-creditor",
+        ),
+    ],
+)
+def test_an_open_creditor_elects_from_the_index_family_beyond_the_recalled_shape(
+    monkeypatch, rows, elected, open_axes
+) -> None:
+    """Recall holds only the debtor-only total, so the recalled shape declares no creditor
+    role. The index family decides the members, and the open creditor joins its election.
+    A by-creditor twin there displaces the total and the answer serves the creditor axis,
+    and a family with no such twin answers the total and serves no open axis."""
+    monkeypatch.setattr(bound_values_module, "get_index", lambda: _index_of(*rows))
+    coverage = _patch_coverage_snapshot(
+        monkeypatch,
+        [
+            (_SV_INDEX_TOTAL, "f_total", "", "country/KEN", _YEARS),
+            (_SV_INDEX_BY_CREDITOR, "f_creditor", "country/FRA", "country/KEN", _YEARS),
+        ],
+        role_names={
+            _SV_INDEX_TOTAL: _DEBTOR_ONLY_ROLE_NAMES,
+            _SV_INDEX_BY_CREDITOR: _CREDITOR_DEBTOR_ROLE_NAMES,
+        },
+    )
+    nodes = {
+        _SV_INDEX_TOTAL: {"label": "total", "arcs": _role_arcs(("debtor",))},
+        _SV_INDEX_BY_CREDITOR: {"label": "by creditor", "arcs": _role_arcs(("creditor", "debtor"))},
+    }
+
+    result = graph_confirm_resolve(
+        shape=_recalled_total_shape(),
+        bindings=[],
+        subject_dcids=["country/KEN"],
+        graph=FakeGraph(nodes=nodes, obs={}, detect={}, resolve={}),
+        sdmx=FakeSdmxClient(observations={}),
+        open_axes=frozenset({"origin"}),
+        coverage_snapshot=coverage,
+    )
+
+    assert isinstance(result, Materialised)
+    assert result.sv_dcids == [elected]
+    assert result.open_axes == open_axes
+
+
 # Nearest-real relaxation passes its deadline to the declared-role refresh.
 
 _SV_NEAREST_REAL_INDEX = "TESTFIXTURE/RoleBearingResolve/NearestRealIndexMember"

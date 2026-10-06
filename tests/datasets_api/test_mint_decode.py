@@ -82,7 +82,11 @@ def _graph() -> FakeMintGraphReader:
                 "typeOf": ("StatisticalVariable",),
                 "observationProperties": ("financingProvider", "financingRecipient"),
                 "measuredProperty": ("amount",),
-            }
+            },
+            # Named so the download's default name columns fill.
+            _PROVIDER: {"name": ("United States",)},
+            _RECIPIENT: {"name": ("Kenya",)},
+            "GrantEquivalent": {"name": ("Grant equivalent",)},
         },
         # Facet probing merges bound entities, so the recipient entry covers both roles here.
         facets={(_STAT_VAR, _RECIPIENT): [_FACET]},
@@ -166,11 +170,18 @@ def test_a_mint_response_carries_every_declared_code_system_as_its_own_column():
     fetched = artifact_store.fetch(artifact["url"])
     rows = list(csv.reader(io.StringIO(fetched.decode("utf-8"))))
     header, data = rows[0], rows[1]
-    # The packaged index declares neither constraint, so decode omits both columns.
-    assert set(header) & {"stat_var_financialFlowType", "stat_var_nettingBasis"} == set()
-    for column, expected_label in _EXPECTED_DECODED_LABELS.items():
-        assert column in header, header
-        assert data[header.index(column)] == expected_label
+    statvar = next(row for row in get_index().statvars if row.dcid == _STAT_VAR)
+    code_systems = [decoded.removeprefix("stat_var_") for decoded in _EXPECTED_DECODED_LABELS]
+    # Each declared axis is a code column and its label column, in property order after the
+    # entities and their names. The packaged index declares neither undeclared constraint, so
+    # both stay out.
+    assert header[5:13] == [name for cs in code_systems for name in (cs, f"{cs}_label")]
+    assert not {"financialFlowType", "nettingBasis"} & set(header)
+    for code_system, expected_label in zip(
+        code_systems, _EXPECTED_DECODED_LABELS.values(), strict=True
+    ):
+        assert data[header.index(code_system)] == statvar.constraint_properties[code_system]
+        assert data[header.index(f"{code_system}_label")] == expected_label
 
 
 def test_a_decoded_column_is_selectable_by_name_through_the_mint_door():
@@ -198,8 +209,26 @@ def test_a_decoded_column_is_selectable_by_name_through_the_mint_door():
     artifact = resp.json()["artifacts"][0]
     fetched = artifact_store.fetch(artifact["url"])
     rows = list(csv.reader(io.StringIO(fetched.decode("utf-8"))))
-    assert rows[0] == keep
-    assert rows[1][keep.index("stat_var_crsPurpose")] == "vocational training"
+    # Naming one decoded column keeps that axis alone.
+    assert rows[0] == [
+        "stat_var",
+        "financingProvider",
+        "financingProvider_label",
+        "financingRecipient",
+        "financingRecipient_label",
+        "crsPurpose",
+        "crsPurpose_label",
+        "time_period",
+        "value",
+        "unit",
+        "unit_label",
+        "currency",
+        "price_basis",
+        "base_year",
+        "provenance",
+        "provenance_label",
+    ]
+    assert rows[1][5:7] == ["CRSPurposeCode11330", "vocational training"]
 
 
 def test_a_mistyped_decoded_column_name_is_offered_as_an_alternative():

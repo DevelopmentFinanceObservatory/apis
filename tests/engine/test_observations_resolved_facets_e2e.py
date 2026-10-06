@@ -14,7 +14,6 @@ from search.models import (
 )
 from tests.engine._base_identity import (
     PERSON_COUNT_SHAPE,
-    make_base,
     make_identity,
     subject_entity,
 )
@@ -23,6 +22,7 @@ from tests.engine._harness import (
     materialise_double_from_obs,
     parse_sse,
     run_pinned,
+    with_member_arcs,
 )
 from tests.engine._search_app import search_app
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
@@ -72,7 +72,6 @@ def _person_eth_materialise_double():
 def _person_eth_resubmit_input(facets: dict | None = None) -> dict:
     """Builds an Ethiopia resubmit entry with four measurement-method facets."""
     entities = [subject_entity("country/ETH", "Ethiopia")]
-    base_spec_id, base_identity = make_base(PERSON_COUNT_SHAPE, entities=entities)
     explicit_facets = None
     if facets is not None:
         explicit_facets = BaseIdentity.model_validate(
@@ -92,9 +91,6 @@ def _person_eth_resubmit_input(facets: dict | None = None) -> dict:
             entities=entities,
             explicit_facets=explicit_facets,
         ).model_dump(mode="json"),
-        "base_spec_id": base_spec_id,
-        "base_identity": base_identity.model_dump(mode="json"),
-        "resolved_stat_var_dcids": ["Count_Person"],
     }
     return result
 
@@ -113,7 +109,7 @@ def test_preview_enabled_buffered_definite_populates_resolved_facets_with_fallba
             graph=FakeGraph(),
             llm=FakeLLM(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
-            materialise_graph=materialise_graph,
+            materialise_graph=with_member_arcs(materialise_graph, FakeGraph()),
             materialise_sdmx=materialise_sdmx,
         )
     ).parts[0]
@@ -131,7 +127,7 @@ def test_preview_enabled_sse_response_event_populates_resolved_facets():
         resolver=make_resolver(FakeGraph()),
         llm=FakeLLM(),
         sdmx=FakeSdmxClient(observations={}, availability={}),
-        materialise_graph=materialise_graph,
+        materialise_graph=with_member_arcs(materialise_graph, FakeGraph()),
         materialise_sdmx=materialise_sdmx,
     )
     client = TestClient(app, raise_server_exceptions=False)
@@ -173,7 +169,7 @@ def test_resubmit_sse_response_event_bound_axis_the_unconstrained_pick_disagrees
         resolver=make_resolver(FakeGraph()),
         llm=FakeLLM(),
         sdmx=FakeSdmxClient(observations={}, availability={}),
-        materialise_graph=materialise_graph,
+        materialise_graph=with_member_arcs(materialise_graph, FakeGraph()),
         materialise_sdmx=materialise_sdmx,
     )
     client = TestClient(app, raise_server_exceptions=False)

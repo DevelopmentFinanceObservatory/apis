@@ -10,10 +10,12 @@ count, which columns hold any cell, each coded column's distinct cells and the y
   heading of a pivot that spread a coded column, labelled.
 - `summary_line` and `year_window` give the coverage facts a bundle heads with.
 
-A column is coded when it is the variable, a role, the unit, the measurement method or the
-provenance, holds at least one cell, and every cell is a string a spreadsheet would not read as
-a formula. Such a cell is written to the data file unchanged, so the codes table can key it by
-the exact cell text, `dcid:` prefix included, and the bundle's foreign keys hold.
+A column is coded when it is the variable, a role, a decoded axis's code column (`<code_system>` in
+long output), the unit, the measurement method or the provenance, holds at least one cell, and every
+cell is a string a spreadsheet would not read as a formula. Such a cell is written to the data file
+unchanged, so the codes table can key it by the exact cell text, `dcid:` prefix included, and the
+bundle's foreign keys hold. The name columns beside the codes (`<role>_label`,
+`<code_system>_label`, `unit_label` and the rest) hold words and stay out of the coded set.
 
 Nothing here reads the graph. `bundle_codes` takes the label read as a callable, so the caller
 decides its client and deadline, and reports whether that read completed.
@@ -80,10 +82,21 @@ _DCID_PREFIX = "dcid:"
 
 _FIXED_COLUMNS: Mapping[str, tuple[str, str]] = {
     STAT_VAR_COLUMN: ("Variable", "The variable measured."),
+    "stat_var_label": ("Variable name", "The name of the variable."),
     TIME_PERIOD_COLUMN: ("Period", "The period the value refers to."),
     UNIT_COLUMN: ("Unit", "The unit of `value`."),
+    "unit_label": ("Unit name", 'The name of the unit, such as "Constant 2023 US dollars".'),
+    "currency": ("Currency", "The ISO 4217 code of the currency `value` is in."),
+    "price_basis": ("Price basis", "Whether `value` is in `current` or `constant` prices."),
+    "base_year": ("Base year", "The year whose prices a `constant` value is in."),
     MEASUREMENT_METHOD_COLUMN: ("Measurement method", "How the source measured the value."),
+    "measurementMethod_label": (
+        "Measurement method name",
+        "The name of the measurement method, empty when the graph holds no name beyond the "
+        "method's code.",
+    ),
     PROVENANCE_COLUMN: ("Source dataset", "The source dataset of the row."),
+    "provenance_label": ("Source dataset name", "The name of the source dataset."),
     STATUS_COLUMN: ("Status", "The source's flag on the value, such as provisional."),
 }
 
@@ -100,6 +113,8 @@ _ENRICHMENT_COLUMNS: Mapping[str, tuple[str, str]] = {
     "label": ("name", "The name of the {noun}."),
     "type": ("type", "The graph types of the {noun}, comma-separated."),
 }
+
+_LABEL_SUFFIX = "_label"
 
 _MIDDLE_DOT = "\u00b7"
 
@@ -121,6 +136,9 @@ class TableScan:
     Holds one set of distinct cells per candidate code column and a year window, so its size
     follows the data's distinct values.
 
+    `axis_kinds` maps each axis code column the table may carry (`<code_system>`) to the kind
+    its codes take in the codes table, the code system's plain name, such as `sector`.
+
     `pivot_index` and `pivot_columns` name the pivot that shaped the table, if any: the table is
     then its `pivot_index` column followed by one column per distinct value of `pivot_columns`,
     each headed by that value."""
@@ -129,15 +147,19 @@ class TableScan:
         self,
         *,
         role_columns: Sequence[str],
+        axis_kinds: Mapping[str, str] | None = None,
         pivot_index: str | None = None,
         pivot_columns: str | None = None,
     ) -> None:
         self.role_columns = tuple(role_columns)
+        self.axis_kinds: Mapping[str, str] = dict(axis_kinds or {})
         self.pivot_index = pivot_index
         self.pivot_columns = pivot_columns
         self.columns: tuple[str, ...] = ()
         self.rows = 0
-        self._candidates = frozenset(_COLUMN_KINDS) | frozenset(self.role_columns)
+        self._candidates = (
+            frozenset(_COLUMN_KINDS) | frozenset(self.role_columns) | frozenset(self.axis_kinds)
+        )
         self._filled: set[str] = set()
         self._values: dict[str, set[str]] = {}
         self._uncoded: set[str] = set()
@@ -260,13 +282,13 @@ def column_docs(
     `formats.written_header` gives it under `rendering`, the one the data file was written with,
     so a pivot heading such as `-5 to 0` is documented as the escaped `'-5 to 0` it heads.
 
-    `code_system_names` maps a code system to its plain name (`CodeSystemDeclaration
-    .plain_name`, such as `sector` for `crsPurpose`), which names the decoded
-    `stat_var_<code system>` columns. Each pivot heading holds the values for the entry its
-    heading names. Descriptions leave out "Names are in the codes table" and "Empty", which the
-    README adds from `coded` and `empty`. A heading that is a code has no foreign key, because
-    the code is the heading and no cell holds it, so its description points to the codes table
-    itself."""
+    `code_system_names` maps a code system to its plain name (`CodeSystemDeclaration.plain_name`,
+    such as `sector` for `crsPurpose`), which names the decoded axis columns: the long layout's
+    `<code system>` code and `<code system>_label` name, and the `stat_var_<code system>` label
+    column a pivot or groupby writes. Each pivot heading holds the values for the entry its heading
+    names. Descriptions leave out "Names are in the codes table" and "Empty", which the README adds
+    from `coded` and `empty`. A heading that is a code has no foreign key, because the code is the
+    heading and no cell holds it, so its description points to the codes table itself."""
     headings = frozenset(scan.headings)
     docs: list[ColumnDoc] = []
     for column in scan.columns:
@@ -307,6 +329,10 @@ def _column_meaning(
         return "Value", "The observed value."
     if column in _FIXED_COLUMNS:
         return _FIXED_COLUMNS[column]
+    if (plain := code_system_names.get(column)) is not None:
+        return plain.capitalize(), f"The {plain} of the variable, as a code."
+    if (plain := code_system_names.get(column.removesuffix(_LABEL_SUFFIX))) is not None:
+        return f"{plain.capitalize()} name", f"The {plain} of the variable, in words."
     if column.startswith(f"{STAT_VAR_COLUMN}_"):
         plain = code_system_names.get(column.removeprefix(f"{STAT_VAR_COLUMN}_"))
         if plain is not None:
@@ -418,7 +444,10 @@ def _code_kinds(scans: Sequence[TableScan]) -> dict[str, str]:
     kinds: dict[str, str] = {}
     for scan in scans:
         for column in scan.columns:
-            kind = _ENTITY_KIND if column in scan.role_columns else _COLUMN_KINDS.get(column)
+            if column in scan.role_columns:
+                kind = _ENTITY_KIND
+            else:
+                kind = scan.axis_kinds.get(column) or _COLUMN_KINDS.get(column)
             if kind is None:
                 continue
             for code in sorted(scan.codes(column)):

@@ -1,8 +1,7 @@
 """Assembles manifests and records their immutable version bodies.
 
-`assemble_manifest` and `assemble_collection_manifest` combine registry records, materialisation
-results, artifacts, citations, warnings, and output options. Options sit at the definition level or
-per collection member. Matching `record_*_version` functions write version records.
+`assemble_manifest` combines registry records, materialisation results, artifacts, citations,
+warnings, and output options. Matching `record_*_version` functions write version records.
 `encode_*` and `decode_*` define their stored bodies.
 
 Version bodies store `OutputProfile`, not artifacts or deployment-specific `output_options`.
@@ -48,8 +47,6 @@ from datasets_api.manifest_models import (
     CitedDataCommons,
     CitedDocumentation,
     CitedSourceNode,
-    CollectionMemberModel,
-    CollectionModel,
     CoverageDimension,
     CoverageModel,
     DefinitionModel,
@@ -71,10 +68,9 @@ from datasets_api.versions import (
 )
 from datasets_api.warnings import DATASETS_WARNING_CATALOGUE
 from dc_graph import GraphReadError
-from materialise import CollectionMaterialisationResult, MaterialisationResult
+from materialise import MaterialisationResult
 from materialise.bundle import BUNDLE_CODE_CATALOGUE
 from materialise.cadence import cadence_label
-from materialise.finish import collection_trace
 from materialise.formats import Frame
 from materialise.graph import GraphReader
 from materialise.profile import OutputProfile
@@ -94,7 +90,7 @@ from materialise.series_conversion import (
 from materialise.window import Coverage
 from origin_catalogue import current_catalogue
 from series_coverage.index import CoverageIndex
-from spec_registry.reader import StoredCollection, StoredDefinition
+from spec_registry.reader import StoredDefinition
 
 logger = logging.getLogger(__name__)
 
@@ -196,7 +192,7 @@ def reshape_warning_models(warnings: Sequence[Mapping[str, object]]) -> tuple[Wa
 
 
 def coverage_model(coverage: Coverage) -> CoverageModel:
-    """Converts materialisation or preview coverage to the wire model."""
+    """Converts materialisation coverage to the wire model."""
     return CoverageModel(
         rows=coverage.rows,
         dimensions=[
@@ -447,7 +443,6 @@ def assemble_manifest(
         definition=DefinitionModel(
             schema_version=stored.schema_version, spec_id=stored.spec_id, identity=stored.identity
         ),
-        collection=None,
         content_version=materialisation.content_version,
         prepared_at=prepared_at,
         coverage=coverage_model(materialisation.coverage),
@@ -554,23 +549,10 @@ def persisted_manifest(
     to this call, as in `assemble_manifest`, so the manifest carries exactly this mint's stale
     warning.
     """
-    if served.collection is not None:
-        fields, _profiles = decode_collection_version_body(body)
-        collection = cast(dict[str, object], fields["collection"])
-        members = cast(list[dict[str, object]], collection["members"])
-        for member, served_member in zip(members, served.collection.members, strict=True):
-            member["output_options"] = (
-                served_member.output_options.model_dump(mode="json")
-                if served_member.output_options is not None
-                else None
-            )
-    else:
-        fields, _profile = decode_version_body(body)
-        fields["output_options"] = (
-            served.output_options.model_dump(mode="json")
-            if served.output_options is not None
-            else None
-        )
+    fields, _profile = decode_version_body(body)
+    fields["output_options"] = (
+        served.output_options.model_dump(mode="json") if served.output_options is not None else None
+    )
     warnings = [
         entry
         for entry in cast(list[dict[str, object]], fields.get("warnings") or [])
@@ -700,220 +682,6 @@ def record_collapsed_head_version(
                 )
                 + tuple(record_only_artifacts),
                 base_content_version=base_content_version,
-            ),
-            trace_id=trace_id,
-        )
-
-
-def _aggregate_window(windows: Sequence[dict[str, object] | None]) -> dict[str, object] | None:
-    present = [w for w in windows if w is not None]
-    if not present:
-        return None
-    starts = [cast(int, w["start_year"]) for w in present if w.get("start_year") is not None]
-    ends = [cast(int, w["end_year"]) for w in present if w.get("end_year") is not None]
-    return {
-        "kind": "range",
-        "start_year": min(starts) if starts else None,
-        "end_year": max(ends) if ends else None,
-        "origin": "query",
-    }
-
-
-def _aggregate_dimensions(
-    per_member_coverage: Sequence[Coverage],
-) -> list[CoverageDimension]:
-    """Returns first-seen labels with counts from the union of each member's entity refs."""
-    union: dict[str, set[str | int]] = {}
-    order: list[str] = []
-    for coverage in per_member_coverage:
-        for label, refs in coverage.entity_refs.items():
-            if label not in union:
-                order.append(label)
-                union[label] = set()
-            union[label] |= refs
-    return [CoverageDimension(label=label, count=len(union[label])) for label in order]
-
-
-def assemble_collection_manifest(
-    *,
-    stored: StoredCollection,
-    per_member: Sequence[tuple[StoredDefinition, MaterialisationResult]],
-    collection_result: CollectionMaterialisationResult,
-    artifacts: Sequence[ArtifactEntryModel],
-    provenance_refs: Sequence[str],
-    source_citations: Mapping[str, SourceCitation],
-    prepared_at: datetime,
-    member_prepared_at: Sequence[datetime],
-    capability_version: str,
-    materialiser_build: str,
-    code_index: CodeIndex,
-    settings: DatasetsBuildSettings,
-    extra_warnings: Sequence[WarningModel] = (),
-    coverage_stamp: str | None = None,
-) -> Manifest:
-    """Builds a collection manifest and aggregates member results.
-
-    Rows are summed. Dimension counts union entity refs, windows form an envelope, and
-    citations are deduplicated. `materialise.finish.collection_trace` merges the member traces: every
-    member's `source_revisions` and `resolved_stat_vars`, and one conversion entry per recipe
-    and table-version pair naming its members, with first-member facets and revision. Each member gets
-    its own output options. `record_collection_version` writes the result.
-
-    Uses the caller's `CodeIndex` for rendering and the trace stamp. `coverage_stamp` is
-    admission-time lineage on the top-level manifest only. `prepared_at` is the collection
-    version's first-mint instant, and `member_prepared_at`, parallel to `per_member`, each
-    member version's. `provenance_refs`, also parallel to `per_member`, holds each member's
-    provenance ref, which its member entry carries as `provenance_refs`.
-    """
-    citation, citation_warnings = build_citation(
-        provenance_refs=provenance_refs, source_citations=source_citations
-    )
-
-    total_rows = sum(result.coverage.rows for _stored, result in per_member)
-    dimensions = _aggregate_dimensions([result.coverage for _stored, result in per_member])
-    window = _aggregate_window([result.coverage.window for _stored, result in per_member])
-    coverage = CoverageModel(rows=total_rows, dimensions=dimensions, window=window)
-
-    warnings: list[WarningModel] = list(extra_warnings) + list(citation_warnings)
-    for _stored, result in per_member:
-        warnings.extend(warning_model(w) for w in result.warnings)
-        warnings.extend(_facet_default_selected_warnings(result.trace.facets))
-    if per_member:
-        warnings.extend(
-            _revision_unavailable_warning_if_sentinel(per_member[0][1].trace.graph_revision)
-        )
-    warnings.extend(stale_warnings())
-
-    capabilities = build_capabilities(
-        capability_version=capability_version,
-        build=materialiser_build,
-        code_index_stamp=code_index.stamp,
-        declarations=code_index.declarations,
-        settings=settings,
-    )
-    members = [
-        CollectionMemberModel(
-            definition=DefinitionModel(
-                schema_version=member_stored.schema_version,
-                spec_id=member_stored.spec_id,
-                identity=member_stored.identity,
-            ),
-            content_version=result.content_version,
-            prepared_at=member_prepared,
-            provenance_refs=[member_ref],
-            coverage=coverage_model(result.coverage),
-            # This member's statistics artifact is in `artifacts`. The field carries its count.
-            series_count=result.series_statistics.series_count,
-            output_options=derive_output_options(result.output_profile, capabilities=capabilities),
-        )
-        for (member_stored, result), member_prepared, member_ref in zip(
-            per_member, member_prepared_at, provenance_refs, strict=True
-        )
-    ]
-    trace = (
-        replace(
-            collection_trace([result for _stored, result in per_member]),
-            code_index_stamp=_code_index_stamp_entry(code_index),
-            origin_catalogue_build_id=catalogue_build_id(),
-            # A collection's members are separate definitions, so its trace states no family.
-            family=None,
-        ).to_dict()
-        if per_member
-        else {}
-    )
-
-    return Manifest(
-        definition=None,
-        collection=CollectionModel(collection_id=stored.collection_id, members=members),
-        content_version=collection_result.content_version,
-        prepared_at=prepared_at,
-        coverage=coverage,
-        citation=citation,
-        trace=trace,
-        warnings=warnings,
-        artifacts=list(artifacts),
-        series_coverage_stamp=coverage_stamp,
-    )
-
-
-def encode_collection_version_body(
-    manifest: Manifest, *, output_profiles: Sequence[OutputProfile]
-) -> dict[str, object]:
-    """Encodes a collection version body with `output_profile` on each member in place of
-    `output_options`. Profiles follow member order. Artifacts and derived options are omitted.
-    """
-    assert manifest.collection is not None
-    body = manifest.model_dump(
-        mode="json",
-        exclude={"artifacts": True, "collection": {"members": {"__all__": {"output_options"}}}},
-    )
-    collection = cast(dict[str, object], body["collection"])
-    members = cast(list[dict[str, object]], collection["members"])
-    for member, profile in zip(members, output_profiles, strict=True):
-        member["output_profile"] = profile.to_json()
-    return body
-
-
-def decode_collection_version_body(
-    body: Mapping[str, object],
-) -> tuple[dict[str, object], list[OutputProfile | None]]:
-    """Decodes manifest fields and positional output profiles for collection members.
-
-    Missing profiles yield `None`. Removes legacy inline `statistics` keys before validation.
-    """
-    fields = dict(body)
-    collection = cast(Mapping[str, object] | None, fields.get("collection"))
-    profiles: list[OutputProfile | None] = []
-    if collection is not None:
-        new_members: list[dict[str, object]] = []
-        for member in cast(list[Mapping[str, object]], collection.get("members", [])):
-            member = dict(member)
-            profile_json = member.pop("output_profile", None)
-            profiles.append(
-                OutputProfile.from_json(cast(Mapping[str, object], profile_json))
-                if profile_json is not None
-                else None
-            )
-            member.pop("statistics", None)
-            new_members.append(member)
-        fields["collection"] = {**collection, "members": new_members}
-    return fields, profiles
-
-
-def record_collection_version(
-    *,
-    manifest: Manifest,
-    stored: StoredCollection,
-    per_member: Sequence[tuple[StoredDefinition, MaterialisationResult]],
-    collection_result: CollectionMaterialisationResult,
-    artifacts: Sequence[ArtifactEntryModel],
-    version_writer: VersionRecordWriter = NULL_VERSION_RECORD_WRITER,
-    trace_id: str | None = None,
-) -> bool:
-    """Writes the collection's version record and returns `False` if it already existed."""
-    with phase("record"):
-        return version_writer.record_version(
-            VersionRecord(
-                subject_id=stored.collection_id,
-                subject_kind="collection",
-                content_version=collection_result.content_version,
-                schema_version=1,
-                immutable_body=encode_collection_version_body(
-                    manifest,
-                    output_profiles=[result.output_profile for _stored, result in per_member],
-                ),
-                member_versions=tuple(
-                    (member_stored.spec_id, result.content_version)
-                    for member_stored, result in per_member
-                ),
-                artifacts=tuple(
-                    ArtifactRecord(
-                        artifact_digest=artifact.artifact_digest,
-                        rendering=artifact.rendering,
-                        media_type=artifact.media_type,
-                    )
-                    for artifact in artifacts
-                ),
             ),
             trace_id=trace_id,
         )

@@ -58,10 +58,12 @@ class MemberArcReader(Protocol):
         property: str,
         filters: Mapping[str, str] | None = None,
         max_results: int,
+        deadline: float | None = None,
     ) -> SubjectPage:
         """Return distinct subjects in first-occurrence order. `max_results` and
         `truncated` count subjects after duplicate provenance arcs collapse.
-        `filters` matches each subject's out-arcs. Transport errors raise."""
+        `filters` matches each subject's out-arcs. One absolute `time.monotonic()`
+        `deadline` bounds every page. Transport errors raise."""
         ...
 
     def node_arcs_many(

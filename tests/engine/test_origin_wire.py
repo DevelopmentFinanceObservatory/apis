@@ -32,6 +32,7 @@ from search.engine.clients.sdmx import (
 from search.engine.clients.sdmx_cache import CachingSdmxClient
 from search.engine.concurrency import scoped_concurrency
 from search.engine.core import _with_stale_catalogue_warning
+from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.departures import warning_key
 from search.engine.errors import GraphInfraError
 from search.engine.events import ResponseEvent
@@ -48,7 +49,7 @@ from search.engine.region.facets import _resolved_facets
 from search.engine.region.observations import dispatch
 from search.engine.region.resubmit_request import _rebind_source_slot
 from search.engine.region.result import RegionResult
-from search.engine.region.un_system import un_unavailable_warning
+from search.engine.region.un_system import NO_LABELS, un_unavailable_warning
 from search.engine.region.withheld import with_withheld_warning
 from search.engine.shape import ShapeDraft
 from search.engine.spec_build import build_shape_model
@@ -64,6 +65,7 @@ from search.models import (
     ResolvedFacet,
     ResubmitIdentityPayload,
     SeriesFacetRef,
+    StatVar,
     omitted_observations,
 )
 from search.models import SourceRef as WireSourceRef
@@ -71,6 +73,7 @@ from tests.engine._base_identity import make_identity, subject_entity
 from tests.engine._builders import conjoin_spec, gref, shape_five_tuple
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import walk_options
 from tests.fixtures import FakeGraph
 from tests.origin_catalogue.fake_catalogue import (
     FakeCatalogue,
@@ -338,12 +341,17 @@ def test_withheld_warning_skips_no_data_answers_with_another_reason():
     assert graph.calls == []
 
 
-def test_withheld_warning_absent_when_nothing_is_withheld_or_the_read_fails():
-    for graph in (_WithheldGraph(withheld=()), _WithheldGraph(fail=True)):
+@pytest.mark.parametrize("fail", [False, True], ids=["nothing-withheld", "read-fails"])
+def test_withheld_warning_absent_when_nothing_is_withheld_or_the_read_fails(fail):
+    """A failed re-read leaves the answer unwarned and notes the lost read, so no cache
+    stores an answer that may have been withheld."""
+    graph = _WithheldGraph(withheld=(), fail=fail)
+    with recording_degraded_reads() as lost:
         (out, _) = asyncio.run(
             _with_warning_twice(_no_data([_subject("country/KEN")]), _no_data([]), graph)
         )
-        assert out.warnings == ()
+    assert out.warnings == ()
+    assert lost.degraded is fail
 
 
 def test_withheld_warning_reads_nothing_without_the_re_read():
@@ -365,11 +373,15 @@ def test_a_stalled_withheld_re_read_leaves_the_answer_unwarned_before_the_deadli
         finally:
             stall.set()
 
-    with caplog.at_level(logging.INFO, logger="search.engine.region.withheld"):
+    with (
+        caplog.at_level(logging.INFO, logger="search.engine.region.withheld"),
+        recording_degraded_reads() as lost,
+    ):
         out, returned = asyncio.run(run())
 
     assert returned < deadline, "the re-read ran past the request deadline"
     assert out.warnings == ()
+    assert lost.reads == ["withheld re-read"]
     assert graph.deadlines == [deadline - withheld._HANDOFF_RESERVE_S]
     assert any("re-read skipped" in r.getMessage() for r in caplog.records)
 
@@ -387,10 +399,14 @@ def test_a_stalled_source_label_read_keeps_the_warning_without_its_sources(caplo
         finally:
             label_stall.set()
 
-    with caplog.at_level(logging.INFO, logger="search.engine.region.withheld"):
+    with (
+        caplog.at_level(logging.INFO, logger="search.engine.region.withheld"),
+        recording_degraded_reads() as lost,
+    ):
         out, returned = asyncio.run(run())
 
     assert returned < deadline, "the label read ran past the request deadline"
+    assert lost.reads == ["withheld source labels"]
     (warning,) = out.warnings
     assert warning.code == WITHHELD_BY_REGISTRY
     (fact,) = out.departure_facts.values()
@@ -547,6 +563,36 @@ def _refusal_warnings(warns) -> list[tuple[str, str | None]]:
     return [(w.message, w.spec_id) for w in warns if w.code == UN_SYSTEM_UNAVAILABLE]
 
 
+def _failing_read(result):
+    """A read whose UN part for `undata/who/MORT` at `country/KEN` fails, returning `result`."""
+
+    def read(*_args, **_kwargs):
+        record = un_unavailability_record()
+        assert record is not None
+        record.add_failure(
+            UnReadFailure(variables=("undata/who/MORT",), places=("country/KEN",), detail="503")
+        )
+        return result
+
+    return read
+
+
+class _UnDown(FakeGraph):
+    """A graph whose UN deployment is down: every label read fails, so a warning that read
+    its variables' names would fail the answer it annotates."""
+
+    def node_labels_batch(self, dcids):
+        raise GraphInfraError("UN deployment unavailable")
+
+
+def _variable_labels(warns) -> list[list[str]]:
+    return [
+        w.params["variable_labels"]
+        for w in warns
+        if w.code == UN_SYSTEM_UNAVAILABLE and w.params is not None
+    ]
+
+
 def test_trailing_observations_report_places_the_un_refused(monkeypatch):
     omitted = omitted_observations(OBSERVATIONS_NO_POINTS, "no points")
     monkeypatch.setattr(dispatch, "_build_observations", _refusing_read((omitted, None)))
@@ -561,6 +607,7 @@ def test_trailing_observations_report_places_the_un_refused(monkeypatch):
             materialise_graph=None,
             materialise_sdmx=None,
             coverage=empty_coverage_snapshot(),
+            variable_labels=NO_LABELS,
         )
 
     ((message, spec_id),) = _refusal_warnings(warns)
@@ -568,38 +615,56 @@ def test_trailing_observations_report_places_the_un_refused(monkeypatch):
     assert spec_id == "spec-1"
 
 
+def _slot_options_events(*, graph: FakeGraph, variable_labels):
+    return option_coverage._stream_slot_options_events(
+        "spec-2",
+        ShapeDraft(
+            shape_id="s",
+            label="s",
+            pop_type_dcid="Person",
+            meas_prop_dcid="count",
+            stat_type_dcid="measuredValue",
+            meas_qual_dcid=None,
+            meas_denom_dcid=None,
+            slot_keys=(),
+            slot_taxonomy={},
+        ),
+        [],
+        [],
+        entities={},
+        date_request=None,
+        graph=graph,
+        sdmx=FakeSdmxClient(),
+        materialise_graph=None,
+        coverage=empty_coverage_snapshot().index,
+        deadline=None,
+        facets_pinned=False,
+        open_axes=frozenset(),
+        variable_labels=variable_labels,
+    )
+
+
 def test_trailing_slot_options_report_places_the_un_refused(monkeypatch):
     monkeypatch.setattr(option_coverage, "_maybe_enrich_slot_options", _refusing_read(([], None)))
 
     with recording_un_blocked_places():
-        _events, warns = option_coverage._stream_slot_options_events(
-            "spec-2",
-            ShapeDraft(
-                shape_id="s",
-                label="s",
-                pop_type_dcid="Person",
-                meas_prop_dcid="count",
-                stat_type_dcid="measuredValue",
-                meas_qual_dcid=None,
-                meas_denom_dcid=None,
-                slot_keys=(),
-                slot_taxonomy={},
-            ),
-            [],
-            [],
-            entities={},
-            date_request=None,
-            graph=FakeGraph(),
-            sdmx=FakeSdmxClient(),
-            materialise_graph=None,
-            coverage=empty_coverage_snapshot().index,
-            deadline=None,
-            facets_pinned=False,
-        )
+        _events, warns = _slot_options_events(graph=FakeGraph(), variable_labels=NO_LABELS)
 
     ((message, spec_id),) = _refusal_warnings(warns)
     assert "country/XYZ" in message
     assert spec_id == "spec-2"
+
+
+def test_trailing_slot_options_name_a_failed_un_part_with_the_un_down(monkeypatch):
+    """The warning names the failed variables from the Spec's members, with no label read
+    of the deployment that just failed."""
+    monkeypatch.setattr(option_coverage, "_maybe_enrich_slot_options", _failing_read(([], None)))
+
+    _events, warns = _slot_options_events(
+        graph=_UnDown(), variable_labels={"undata/who/MORT": "Mortality rate"}
+    )
+
+    assert _variable_labels(warns) == [["Mortality rate"]]
 
 
 def test_trailing_reads_without_a_refusal_add_no_warning(monkeypatch):
@@ -614,6 +679,7 @@ def test_trailing_reads_without_a_refusal_add_no_warning(monkeypatch):
         materialise_graph=None,
         materialise_sdmx=None,
         coverage=empty_coverage_snapshot(),
+        variable_labels=NO_LABELS,
     )
 
     assert _refusal_warnings(warns) == []
@@ -622,52 +688,63 @@ def test_trailing_reads_without_a_refusal_add_no_warning(monkeypatch):
 def test_a_failed_un_part_of_a_mixed_read_is_reported_beside_refused_places():
     record = UnBlockedPlaces()
     record.add(["country/XYZ"])
-    record.add_failure(
-        UnReadFailure(
-            variables=("undata/who/MORT",),
-            places=tuple(f"country/C{i}" for i in range(7)),
-            detail="HTTP 503",
+    for variable in ("undata/who/MORT", "undata/who/UNNAMED"):
+        record.add_failure(
+            UnReadFailure(
+                variables=(variable,),
+                places=tuple(f"country/C{i}" for i in range(7)),
+                detail="HTTP 503",
+            )
         )
-    )
 
-    warning = un_unavailable_warning(record)
+    warning = un_unavailable_warning(record, labels={"undata/who/MORT": "Mortality rate"})
 
     assert warning is not None
     assert warning.code == UN_SYSTEM_UNAVAILABLE
     assert "refused reads for country/XYZ" in warning.message
     assert "undata/who/MORT at country/C0" in warning.message
     assert "and 2 more" in warning.message
-    # The params tell a refused place from a failed read without the message.
-    assert warning.params == {"places": ["country/XYZ"], "variables": ["undata/who/MORT"]}
-    assert un_unavailable_warning(UnBlockedPlaces()) is None
+    # The params tell a refused place from a failed read without the message, and name each
+    # variable from the labels the emitter holds, "" where it holds none.
+    assert warning.params == {
+        "places": ["country/XYZ"],
+        "variables": ["undata/who/MORT", "undata/who/UNNAMED"],
+        "variable_labels": ["Mortality rate", ""],
+    }
+
+
+def test_refused_places_alone_name_no_variable():
+    record = UnBlockedPlaces()
+    record.add(["country/XYZ"])
+
+    warning = un_unavailable_warning(record, labels=NO_LABELS)
+
+    assert warning is not None
+    assert warning.params == {"places": ["country/XYZ"], "variables": [], "variable_labels": []}
+    assert un_unavailable_warning(UnBlockedPlaces(), labels=NO_LABELS) is None
 
 
 def test_trailing_observations_report_a_failed_un_part(monkeypatch):
+    """The warning names the failed variable from the Spec's members, with no label read of
+    the deployment that just failed."""
     omitted = omitted_observations(OBSERVATIONS_NO_POINTS, "no points")
-
-    def read(*_args, **_kwargs):
-        record = un_unavailability_record()
-        assert record is not None
-        record.add_failure(
-            UnReadFailure(variables=("undata/who/MORT",), places=("country/KEN",), detail="503")
-        )
-        return omitted, None
-
-    monkeypatch.setattr(dispatch, "_build_observations", read)
+    monkeypatch.setattr(dispatch, "_build_observations", _failing_read((omitted, None)))
 
     _events, warns = dispatch._observations_events(
         "spec-3",
         ["undata/who/MORT", "Count_Person"],
         {"observationAbout": ["country/KEN"]},
-        graph=FakeGraph(),
+        graph=_UnDown(),
         materialise_graph=None,
         materialise_sdmx=None,
         coverage=empty_coverage_snapshot(),
+        variable_labels={"undata/who/MORT": "Mortality rate", "Count_Person": "Population"},
     )
 
     ((message, spec_id),) = _refusal_warnings(warns)
     assert "undata/who/MORT at country/KEN failed" in message
     assert spec_id == "spec-3"
+    assert _variable_labels(warns) == [["Mortality rate"]]
 
 
 _RESUBMIT_SHAPE = {
@@ -683,15 +760,46 @@ def test_a_resubmit_promote_reports_places_the_un_refused(monkeypatch):
     monkeypatch.setattr(resubmit, "_resolve_standard_promote", _refusing_read(promoted))
     inp = ResubmitIdentityPayload(
         identity=make_identity(_RESUBMIT_SHAPE, [], entities=[subject_entity("country/XYZ")]),
-        resolved_stat_var_dcids=["undata/who/MORT"],
     )
 
     region = resubmit.resolve_spec_resubmit(
-        inp=inp, graph=FakeGraph(), sdmx=FakeSdmxClient(), coverage=empty_coverage_snapshot()
+        inp=inp,
+        graph=FakeGraph(),
+        sdmx=FakeSdmxClient(),
+        coverage=empty_coverage_snapshot(),
+        options=walk_options(FakeGraph()),
     )
 
     ((message, _spec_id),) = _refusal_warnings(region.warnings)
     assert "country/XYZ" in message
+
+
+def test_a_resubmit_names_a_failed_un_part_from_its_members_with_the_un_down(monkeypatch):
+    """A resubmit's warning names the failed variable from the answer's members. The label
+    read it once made went to the deployment that just failed, and failed the answer."""
+    spec = conjoin_spec(shape_five_tuple("Person", "count"), "x", sv_dcid="undata/who/MORT")
+    member = StatVar(
+        ref=GraphRef(dcid="undata/who/MORT", label="Mortality rate"),
+        shape_id=spec.resolved.shape.shape_id,
+        slot_values=[],
+        constraint_properties=[],
+    )
+    spec = spec.model_copy(update={"resolved": spec.resolved.stating_members([member])})
+    promoted = dataclasses.replace(_no_data([]), status="definite", specs=(spec,))
+    monkeypatch.setattr(resubmit, "_resolve_standard_promote", _failing_read(promoted))
+    inp = ResubmitIdentityPayload(
+        identity=make_identity(_RESUBMIT_SHAPE, [], entities=[subject_entity("country/KEN")]),
+    )
+
+    region = resubmit.resolve_spec_resubmit(
+        inp=inp,
+        graph=_UnDown(),
+        sdmx=FakeSdmxClient(),
+        coverage=empty_coverage_snapshot(),
+        options=walk_options(FakeGraph()),
+    )
+
+    assert _variable_labels(region.warnings) == [["Mortality rate"]]
 
 
 @pytest.mark.parametrize(
@@ -719,11 +827,14 @@ def test_a_resubmit_states_the_refused_places_it_names_as_unavailable(
     monkeypatch.setattr(resubmit, "_resolve_standard_promote", _refusing_read(promoted))
     inp = ResubmitIdentityPayload(
         identity=make_identity(_RESUBMIT_SHAPE, [], entities=[subject_entity("country/XYZ")]),
-        resolved_stat_var_dcids=[sv_dcid],
     )
 
     region = resubmit.resolve_spec_resubmit(
-        inp=inp, graph=FakeGraph(), sdmx=FakeSdmxClient(), coverage=empty_coverage_snapshot()
+        inp=inp,
+        graph=FakeGraph(),
+        sdmx=FakeSdmxClient(),
+        coverage=empty_coverage_snapshot(),
+        options=walk_options(FakeGraph()),
     )
 
     (warning,) = [w for w in region.warnings if w.code == UN_SYSTEM_UNAVAILABLE]
@@ -786,7 +897,7 @@ def test_a_streamed_read_states_the_refused_places_on_done(
     region = dataclasses.replace(_no_data([]), status="definite", specs=(spec,))
     record = UnBlockedPlaces()
     record.add(["country/XYZ"])
-    warning = un_unavailable_warning(record)
+    warning = un_unavailable_warning(record, labels=NO_LABELS)
     assert warning is not None
     omitted = omitted_observations(OBSERVATIONS_NO_POINTS, "no points")
 
@@ -795,7 +906,6 @@ def test_a_streamed_read_states_the_refused_places_on_done(
         extra_warnings=[],
         start_ms=0,
         engine_build="test",
-        include_sentence=False,
         max_candidates=5,
     )
     (source,) = part_sources(response, answered=[region], streaming=[region])

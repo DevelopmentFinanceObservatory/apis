@@ -2,37 +2,46 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
-from code_index.members import index_family
+from code_index.members import antichain_minimal_rows, index_family
 from code_index.shared import get_index
 from search.engine.bind import SlotBindingDraft
-from search.engine.retrieval.bound_values import identity_query, source_binding
+from search.engine.retrieval.bound_values import (
+    StatedMembers,
+    WalkedMembers,
+    identity_query,
+    index_decides_membership,
+    source_binding,
+    stated_members,
+    walk_key,
+)
 from search.engine.retrieval.member_facts import ArcsMemberFacts
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.engine.spec_build import (
     NamedGroup,
-    _resolved_stat_vars,
-    _shape_stating_identity_family,
     build_shape_model,
     build_spec,
     build_stat_vars,
     pair_slot_drafts,
-    stat_var_from_resolved,
 )
 from search.engine.spec_id import mint_identity
 from search.models import (
     BindingUnbound,
     BindingValue,
     CoverageBare,
+    DateRange,
     Entity,
     EntityRoleDirectional,
     GraphRef,
     IdentityEntityGroup,
-    ResolvedStatVar,
+    MembersNotStated,
     Slot,
     SlotKey,
     SlotValue,
+    Spec,
     StatVar,
 )
 from statvar_members import member_digest
@@ -116,82 +125,9 @@ def _stat_vars(n: int) -> list[StatVar]:
     ]
 
 
-class TestResolvedStatVarsCap:
-    """`_resolved_stat_vars` is the sole place resolved.stat_vars.items gets
-    capped for the wire (see #659's production incident: an uncapped 1161-
-    member scope shipped a 1.6 MiB response). Covers the cap's three
-    contracts: a scope under cap publishes everything untruncated, a scope
-    over cap publishes exactly cap items while member_count still reports
-    the true full scope, and cap=None (the escape hatch internal-only
-    callers such as options/resolve.py use) stays fully uncapped."""
-
-    def test_scope_under_cap_publishes_every_item_untruncated(self):
-        stat_vars = _stat_vars(5)
-
-        resolved = _resolved_stat_vars(stat_vars, cap=10)
-
-        assert [item.ref for item in resolved.items] == [sv.ref.dcid for sv in stat_vars]
-        assert resolved.member_count == 5
-        assert resolved.truncated is False
-
-    def test_scope_over_cap_publishes_exactly_cap_with_full_member_count(self):
-        stat_vars = _stat_vars(15)
-
-        resolved = _resolved_stat_vars(stat_vars, cap=10)
-
-        assert len(resolved.items) == 10
-        assert [item.ref for item in resolved.items] == [sv.ref.dcid for sv in stat_vars[:10]]
-        assert resolved.member_count == 15
-        assert resolved.truncated is True
-
-    def test_cap_none_is_uncapped_for_the_internal_only_escape_hatch(self):
-        stat_vars = _stat_vars(500)
-
-        resolved = _resolved_stat_vars(stat_vars, cap=None)
-
-        assert len(resolved.items) == 500
-        assert resolved.member_count == 500
-        assert resolved.truncated is False
-
-    def test_member_count_override_reports_the_true_scope_a_capped_union_understates(self):
-        """same_shape.py's merge passes the sum of each group member's own
-        member_count instead of len(stat_vars): a merged union built from
-        already-capped per-member samples must not silently undercount the
-        true population, and truncated must reflect that true population
-        even when the union it was handed happens to sit at or under cap."""
-        stat_vars = _stat_vars(8)
-
-        resolved = _resolved_stat_vars(stat_vars, cap=10, member_count=1000)
-
-        assert len(resolved.items) == 8
-        assert resolved.member_count == 1000
-        assert resolved.truncated is True
-
-
-class TestTruncatedMeasuresAgainstMemberCount:
-    """#893: truncated must measure `len(items) < member_count`, not
-    `cap is not None and effective_count > cap` -- a cap-only signal that
-    can never fire on an uncapped call (cap=None), the exact call shape
-    standard_resolve's single-match branch feeds through region/pipeline.py
-    once its own confirmed population exceeds 1. This is the assertion
-    that would have caught #893's bug at this projection layer rather than
-    only at the resolver."""
-
-    def test_uncapped_call_with_explicit_member_count_still_reports_truncated(self):
-        stat_vars = _stat_vars(1)
-
-        resolved = _resolved_stat_vars(stat_vars, cap=None, member_count=12)
-
-        assert len(resolved.items) == 1
-        assert resolved.member_count == 12
-        assert resolved.truncated is True
-
-
-class TestBuildSpecStatVarsCap:
-    """build_spec's own stat_vars_cap wiring end to end: the default caps a
-    wire-facing Spec, and an internal-only caller (options/resolve.py's
-    resolve_spec_resubmit call is the one production example) can opt out
-    with stat_vars_cap=None and keep every resolved StatVar whole."""
+class TestBuildSpecStatVars:
+    """`build_spec` holds every served member off the wire and states their counts and the
+    dates they serve."""
 
     def _shape(self):
         shape_draft = _shape_draft(meas_denom_dcid=None, meas_denom_unresolved=False)
@@ -199,74 +135,90 @@ class TestBuildSpecStatVarsCap:
             shape_draft, slot_keys=[], five_tuple_refs={}, member_count=250, members=None
         )
 
-    def test_default_cap_applies_to_a_wire_facing_spec(self):
+    def _build(self, stat_vars: list[StatVar], **kwargs) -> Spec:
+        return build_spec(
+            open_roles=(),
+            measure_elected_properties=frozenset(),
+            shape=self._shape(),
+            slots=[],
+            stat_vars=stat_vars,
+            entities=[],
+            coverage=CoverageBare(has_data=True),
+            **kwargs,
+        )
+
+    def test_every_member_is_held_and_counted(self):
         stat_vars = _stat_vars(2050)
 
-        spec = build_spec(
-            measure_elected_properties=frozenset(),
-            shape=self._shape(),
-            slots=[],
-            stat_vars=stat_vars,
-            entities=[],
-            coverage=CoverageBare(has_data=True),
-            pipeline_trace=[],
-        )
+        spec = self._build(stat_vars)
 
-        assert len(spec.resolved.stat_vars.items) == 2000
+        assert spec.resolved.members == tuple(stat_vars)
+        assert len(spec.resolved.sentence_facts.members) == 2050
         assert spec.resolved.stat_vars.member_count == 2050
-        assert spec.resolved.stat_vars.truncated is True
 
-    def test_stat_vars_cap_none_keeps_an_internal_consumer_whole(self):
-        stat_vars = _stat_vars(250)
+    def test_a_spec_rebuilt_from_its_wire_form_refuses_its_members_and_facts(self):
+        spec = self._build(_stat_vars(3))
 
-        spec = build_spec(
-            measure_elected_properties=frozenset(),
-            shape=self._shape(),
-            slots=[],
-            stat_vars=stat_vars,
-            entities=[],
-            coverage=CoverageBare(has_data=True),
-            pipeline_trace=[],
-            stat_vars_cap=None,
+        rebuilt = Spec.model_validate(spec.model_dump())
+
+        assert rebuilt == spec
+        with pytest.raises(MembersNotStated):
+            rebuilt.resolved.members  # noqa: B018 -- the read raises
+        with pytest.raises(MembersNotStated):
+            rebuilt.resolved.sentence_facts  # noqa: B018 -- the read raises
+
+    @pytest.mark.parametrize(
+        ("ranges", "served"),
+        [
+            pytest.param(
+                [DateRange(start="2015", end="2020"), DateRange(start="2010", end="2018"), None],
+                DateRange(start="2010", end="2020"),
+                id="earliest-start-latest-end",
+            ),
+            pytest.param([DateRange(start="2015"), None], DateRange(start="2015"), id="start-only"),
+            pytest.param([None, None], None, id="none-served"),
+        ],
+    )
+    def test_the_served_date_range_spans_every_members_range(self, ranges, served):
+        stat_vars = [
+            stat_var.model_copy(update={"data_date_range": date_range})
+            for stat_var, date_range in zip(_stat_vars(len(ranges)), ranges, strict=True)
+        ]
+
+        assert self._build(stat_vars).resolved.stat_vars.data_date_range == served
+
+    def test_a_walk_of_the_identitys_own_query_states_the_served_count_and_digest(self):
+        unwalked = self._build(_stat_vars(3))
+        identity = unwalked.definition.identity
+        assert not index_decides_membership(identity)
+        stated = StatedMembers(served_count=2, digest=member_digest(["sv0", "sv1", "sv2"]))
+        own = WalkedMembers(key=walk_key(identity_query(identity)), stated=stated)
+        other_key = (*own.key[:2], frozenset({"origin"}), own.key[3])
+        open_key = (*own.key[:3], frozenset({"origin"}))
+
+        walked = self._build(_stat_vars(3), walked=own)
+        other = self._build(_stat_vars(3), walked=replace(own, key=other_key))
+        opened = self._build(_stat_vars(3), walked=replace(own, key=open_key))
+
+        assert (
+            unwalked.resolved.stat_vars.served_count,
+            unwalked.resolved.shape.member_digest,
+        ) == (
+            None,
+            None,
         )
-
-        assert len(spec.resolved.stat_vars.items) == 250
-        assert spec.resolved.stat_vars.member_count == 250
-        assert spec.resolved.stat_vars.truncated is False
-
-    def test_the_trace_lists_the_first_200_stat_vars_and_says_so(self):
-        stat_vars = _stat_vars(250)
-
-        spec = build_spec(
-            measure_elected_properties=frozenset(),
-            shape=self._shape(),
-            slots=[],
-            stat_vars=stat_vars,
-            entities=[],
-            coverage=CoverageBare(has_data=True),
-            pipeline_trace=[],
-            stat_vars_cap=None,
+        assert (walked.resolved.stat_vars.served_count, walked.resolved.shape.member_digest) == (
+            2,
+            stated.digest,
         )
-
-        trace = spec.resolved.trace
-        assert trace.resolved_stat_vars == [sv.ref for sv in stat_vars[:200]]
-        assert trace.resolved_stat_vars_truncated is True
-
-    def test_a_trace_under_200_stat_vars_lists_them_all(self):
-        stat_vars = _stat_vars(5)
-
-        spec = build_spec(
-            measure_elected_properties=frozenset(),
-            shape=self._shape(),
-            slots=[],
-            stat_vars=stat_vars,
-            entities=[],
-            coverage=CoverageBare(has_data=True),
-            pipeline_trace=[],
+        assert (other.resolved.stat_vars.served_count, other.resolved.shape.member_digest) == (
+            None,
+            None,
         )
-
-        assert spec.resolved.trace.resolved_stat_vars == [sv.ref for sv in stat_vars]
-        assert spec.resolved.trace.resolved_stat_vars_truncated is False
+        assert (opened.resolved.stat_vars.served_count, opened.resolved.shape.member_digest) == (
+            None,
+            None,
+        )
 
 
 def test_a_slot_pairs_with_its_draft_by_property_and_a_slot_without_one_by_axis():
@@ -293,47 +245,39 @@ def test_a_slot_pairs_with_its_draft_by_property_and_a_slot_without_one_by_axis(
     assert [draft for _key, draft in pairs] == [flow, None, place, None, source]
 
 
-class TestStatedMemberDigest:
-    """`resolved.shape.member_digest` is stated only for the family the code index resolves
-    for the spec's identity."""
+class TestStatedMembers:
+    """What a Spec states of the mint's members (`stated_members`): the family the code index
+    resolves for its identity, else the one the walk of its own query settled."""
 
-    def _shape(self, digest: str | None):
-        return build_shape_model(
-            _shape_draft(meas_denom_dcid=None, meas_denom_unresolved=False),
-            slot_keys=[],
-            five_tuple_refs={},
-            member_count=1,
-            members=None,
-            member_digest=digest,
-        )
-
-    def test_the_digest_of_the_identitys_index_family_is_kept(self):
+    def test_an_index_family_states_its_antichain_count_and_every_rows_digest(self):
         _, identity = mint_identity(education_aid_identity())
         family = index_family(get_index(), identity_query(identity))
         assert family is not None and len(family.rows) == CRS_MEMBER_COUNT
-        digest = member_digest(row.dcid for row in family.rows)
 
-        assert _shape_stating_identity_family(self._shape(digest), identity).member_digest == digest
+        assert stated_members(identity, None) == StatedMembers(
+            served_count=len(antichain_minimal_rows(get_index(), family.rows)),
+            digest=member_digest(row.dcid for row in family.rows),
+        )
 
-    def test_a_digest_over_another_population_is_dropped(self):
-        _, identity = mint_identity(education_aid_identity())
+    def test_an_identity_the_index_resolves_no_family_for_states_none(self):
+        """The index resolves no family for the education-aid identity naming the imputed
+        dataset, so Search states none."""
         _, imputed = mint_identity(education_aid_identity(source=IMPUTED_PROVENANCE))
-        family = index_family(get_index(), identity_query(identity))
-        assert family is not None
-        digest = member_digest(row.dcid for row in family.rows)
-        subset = member_digest(row.dcid for row in family.rows[:5])
 
-        assert _shape_stating_identity_family(self._shape(subset), identity).member_digest is None
-        assert _shape_stating_identity_family(self._shape(digest), imputed).member_digest is None
+        assert stated_members(imputed, None) is None
 
-    def test_an_identity_the_index_does_not_resolve_states_no_digest(self):
+    def test_an_identity_the_index_does_not_resolve_states_only_its_own_walk(self):
         document = education_aid_identity()
         document["shape"]["population_type"] = "EconomicActivity"
         _, identity = mint_identity(document)
+        stated = StatedMembers(served_count=1, digest=member_digest(["Amount_EconomicActivity"]))
+        walked = WalkedMembers(key=walk_key(identity_query(identity)), stated=stated)
+        _, other_identity = mint_identity(education_aid_identity())
+        elsewhere = replace(walked, key=walk_key(identity_query(other_identity)))
 
-        shape = self._shape(member_digest(["Amount_EconomicActivity_Nominal"]))
-
-        assert _shape_stating_identity_family(shape, identity).member_digest is None
+        assert stated_members(identity, None) is None
+        assert stated_members(identity, walked) == stated
+        assert stated_members(identity, elsewhere) is None
 
 
 def _constraint_arcs(**constraints: str) -> dict:
@@ -422,28 +366,6 @@ class TestConstraintProperties:
 
         assert stat_var.constraint_properties is None
         assert stat_var.slot_values == []
-        item = _resolved_stat_vars([stat_var], cap=None).items[0]
-        assert item.model_dump(mode="json")["constraint_properties"] is None
-
-    def test_the_wire_projection_and_its_rebuild_carry_the_list(self):
-        urban = self._built()["Count_Person_Female_Urban"]
-
-        item = _resolved_stat_vars([urban], cap=None).items[0]
-
-        assert item.constraint_properties == urban.constraint_properties
-        assert item.model_dump(mode="json")["constraint_properties"] == [
-            "gender",
-            "placeOfResidenceClassification",
-        ]
-        assert stat_var_from_resolved(item).constraint_properties == urban.constraint_properties
-
-    def test_the_published_schema_requires_and_describes_the_field(self):
-        schema = ResolvedStatVar.model_json_schema(mode="serialization")
-
-        assert "constraint_properties" in schema["required"]
-        field = schema["properties"]["constraint_properties"]
-        assert field["anyOf"] == [{"type": "array", "items": {"type": "string"}}, {"type": "null"}]
-        assert "null means its constraints are not known" in field["description"]
 
 
 class TestBuildSpecEntityGroups:
@@ -468,6 +390,7 @@ class TestBuildSpecEntityGroups:
             Entity(ref=GraphRef(dcid="country/ETH", label="Ethiopia"), role=destination)
         )
         return build_spec(
+            open_roles=(),
             measure_elected_properties=frozenset(),
             shape=build_shape_model(
                 _shape_draft(meas_denom_dcid=None, meas_denom_unresolved=False),
@@ -480,7 +403,6 @@ class TestBuildSpecEntityGroups:
             stat_vars=_stat_vars(1),
             entities=entities,
             coverage=CoverageBare(has_data=True),
-            pipeline_trace=[],
             named_groups=named_groups,
         )
 

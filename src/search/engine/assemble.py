@@ -6,14 +6,12 @@ import dataclasses
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, cast
 
-from code_index.shared import get_measure_index
 from dfo_platform import Cause
 from dfo_platform.roles import FlowFamily
 from search.engine.closest_match import spec_closest_match_fact, substituted_readings_fact
 from search.engine.config import settings
 from search.engine.departures import (
     NO_ENTITY_WORDS,
-    SOURCE_REF,
     merged_entity_facts,
     scope_limited_fact,
     spec_departure_facts,
@@ -28,9 +26,7 @@ from search.engine.region.codes import (
     RETRIEVAL_SCORE_WEAK,
 )
 from search.engine.region.near_neighbor import NEAR_NEIGHBOR_UNRESOLVED_MESSAGE
-from search.engine.retrieval.bound_values import identity_names_measure_family
 from search.engine.skills import match_spec_skills
-from search.engine.spec_build import capping_stat_var_items
 from search.heading.departure_fact import DepartureFact, ordered_facts
 from search.models import (
     _UNRESOLVED_NO_DATA_REASONS,
@@ -50,10 +46,8 @@ from search.models import (
     Ordering,
     ParsedInput,
     ParsedPart,
-    PartRestatementReason,
     ResolvedQualifier,
     RoleAxis,
-    SentenceToken,
     Timing,
     UnitAlternative,
     Unsupported,
@@ -92,14 +86,6 @@ OBSERVATIONS_OMITTED = "observations_omitted"
 SKILLS_INDEX_UNAVAILABLE = "skills_index_unavailable"
 SKILLS_INDEX_INCOMPLETE = "skills_index_incomplete"
 SKILLS_NOT_MATCHABLE = "skills_not_matchable"
-
-# Cap for the resolved.stat_vars.items of a candidate whose identity names a measure
-# family. A candidates part repeats every candidate's members, and an ODA-family item is
-# about 1 KB, so six candidates at the definite cap of 2,000 would carry about 12 MB. At
-# 200 each, they carry about 1.2 MB. A resubmit of such a candidate re-elects its members
-# from the code index and ignores the posted list. A standard-shape candidate keeps the
-# definite cap, since its items are the membership a resubmit posts back.
-CANDIDATE_STAT_VARS_MAX = 200
 
 
 def _observations_omitted_msg() -> str:
@@ -289,29 +275,6 @@ def _heading(spec: Spec, *, keep_how_properties: frozenset[str] = frozenset()) -
     return heading_for(spec, keep_how_properties=keep_how_properties)
 
 
-def _shown_source(specs: Sequence[Spec]) -> str | None:
-    """The source the bylines of `specs` name when they name one alone, else `None`."""
-    sources = {
-        source.text
-        for spec in specs
-        if (source := _heading(spec).byline.source) is not None and source.text
-    }
-    return sources.pop() if len(sources) == 1 else None
-
-
-def _with_source_shown(
-    facts: Sequence[DepartureFact], *, shown: Sequence[Spec]
-) -> list[DepartureFact]:
-    """`facts`, with each dataset the answer does not read (the source token's ref) stating
-    as `shown` the source the part's bylines name, or `None` when its readings come from
-    several."""
-    source = _shown_source(shown) if any(f.binding_ref == SOURCE_REF for f in facts) else None
-    return [
-        dataclasses.replace(fact, shown=source) if fact.binding_ref == SOURCE_REF else fact
-        for fact in facts
-    ]
-
-
 def _with_closest_match(
     facts: Sequence[DepartureFact],
     spec: Spec,
@@ -372,8 +335,8 @@ def _definite_departure_facts(
     entity_words: Mapping[str, str] | None,
 ) -> tuple[DepartureFact, ...]:
     """A definite part's departure facts (`part_departure_facts`), with the byline's price
-    basis as `shown` on a price-basis fact that lacks it, the byline's source on a dataset
-    fact, and the `closest_match` fact of its reading (`_with_closest_match`)."""
+    basis as `shown` on a price-basis fact that lacks it, and the `closest_match` fact of its
+    reading (`_with_closest_match`)."""
     facts = [
         _with_price_basis_shown(fact, unit_text=heading.byline.unit_text or "")
         for fact in part_departure_facts(
@@ -381,7 +344,7 @@ def _definite_departure_facts(
         )
     ]
     return _with_closest_match(
-        _with_source_shown(facts, shown=[spec]),
+        facts,
         spec,
         measure_noun=heading.heading.noun.inline_text,
         variable_text=variable_text,
@@ -406,31 +369,13 @@ def _shared_family(specs: Sequence[Spec]) -> FlowFamily | None:
     return families.pop() if len(families) == 1 else None
 
 
-def restatement_reason_for(
-    restatement: ParsedPart | None,
-    *,
-    reason: PartRestatementReason | None = None,
-) -> PartRestatementReason | None:
-    """Return the wire reason paired with a part's restatement.
-
-    Exactly one of ``restatement`` and the reason is set. A present restatement yields
-    ``None``. Otherwise use the supplied reason, or
-    ``no_phrase_inputs`` when no phrase existed to echo.
-    """
-    if restatement is not None:
-        return None
-    return reason if reason is not None else "no_phrase_inputs"
-
-
 def build_definite_part(
     spec: Spec,
     *,
     variable_text: str | None,
     warnings: list[Warning],
     timing_ms: Timing | None = None,
-    include_sentence: bool = False,
     restatement: ParsedPart | None = None,
-    restatement_reason: PartRestatementReason | None = None,
     operations: Sequence[Operation] = (),
     include_skills: bool = False,
     skills_index: SkillsIndex | None = None,
@@ -441,16 +386,14 @@ def build_definite_part(
 
     Every definite spec must contain a StatVar. The part's election warnings
     (`slot_defaulted`, `family_total_absent`) stay on the part. Skill matches attach when
-    requested and indexed. ``restatement_reason`` is normalised against this part's own
-    ``restatement``. ``departure_facts`` are the raised facts whose warnings the part or
+    requested and indexed. ``departure_facts`` are the raised facts whose warnings the part or
     its envelope holds. ``definite_departures`` adds those the spec, the operations
     and the reading's match carry. ``entity_words`` are the request's own words for each
     entity name (`RegionResult.entity_words`), in which a group read as members is asked.
     """
     # A definite spec must carry at least one confirmed StatVar.
-    assert spec.resolved.stat_vars.items, "definite Spec has empty stat_vars"
-    if include_sentence:
-        spec = with_sentence(spec)
+    assert spec.resolved.members, "definite Spec has empty stat_vars"
+    spec = with_sentence(spec)
     if include_skills and skills_index is not None:
         spec = with_skills(spec, index=skills_index)
     return DefinitePart(
@@ -460,7 +403,6 @@ def build_definite_part(
         timing_ms=timing_ms,
         spec=spec,
         restatement=restatement,
-        restatement_reason=restatement_reason_for(restatement, reason=restatement_reason),
         operations=list(operations),
         departures=definite_departures(
             spec,
@@ -514,7 +456,6 @@ def build_no_data_part(
     variable_text: str | None,
     warnings: list[Warning],
     timing_ms: Timing | None = None,
-    include_sentence: bool = False,
     nearest_real: list[NearestRealSpec] | None = None,
     flagged_match: Spec | None = None,
     gate: NoDataGate | None = None,
@@ -529,9 +470,7 @@ def build_no_data_part(
     data_query: ParsedInput | None = None,
     qualifier_terms: list[ResolvedQualifier] | None = None,
     unit_alternatives: list[UnitAlternative] | None = None,
-    unit_alternatives_truncated: bool = False,
     restatement: ParsedPart | None = None,
-    restatement_reason: PartRestatementReason | None = None,
     operations: Sequence[Operation] = (),
     include_skills: bool = False,
     skills_index: SkillsIndex | None = None,
@@ -555,15 +494,13 @@ def build_no_data_part(
     graph candidates, and ``ambiguous_roles`` names the flow axis of each ambiguous wording
     the sentence marks as a slot. ``data_query`` is the part's parsed form for
     ``entity_ambiguous``. ``qualifier_terms`` is used for ``qualifier_not_bound``.
-    ``unit_alternatives`` and ``unit_alternatives_truncated`` carry a
-    ``unit_not_resolved`` refusal's capped currencies. ``None`` omits both.
-    ``NoData.message`` is the bare no-data sentence with every term the part names, set
-    whether or not a sentence is requested.
+    ``unit_alternatives`` carries a ``unit_not_resolved`` refusal's capped currencies.
+    ``None`` omits it. ``NoData.message`` is the bare no-data sentence with every term the part names.
 
     Sentence plans reuse each near-match's tokens under a gate-specific lead-in. A skills
     request adds ``skills_not_matchable`` for the answer and matches available near-matches
-    when an index is available. Restatement fields are normalised together. ``cause`` is
-    populated for ``rate_coverage_gap``. ``window_gap_fact`` is the `year_unavailable` fact of
+    when an index is available. ``cause`` is populated for ``rate_coverage_gap``.
+    ``window_gap_fact`` is the `year_unavailable` fact of
     years asked that hold no point of the elected series (`departures.window_gap_fact`).
     The part carries it unless its sentence shows an alternate.
     ``departure_facts`` are the raised facts whose warnings the part or its envelope holds,
@@ -611,38 +548,34 @@ def build_no_data_part(
         shows_data=False,
         request_words=request_words,
     )
-    if include_sentence:
-        # ``model_copy`` preserves each near-match's concrete subclass. These casts reflect it.
-        if nearest_real:
-            # Preserve bound/unbound differences among sibling near-matches.
-            keep_how_properties = sibling_how_properties(nearest_real)
-            nearest_real = cast(
-                "list[NearestRealSpec]",
-                [with_sentence(s, keep_how_properties=keep_how_properties) for s in nearest_real],
-            )
-        flagged_match = with_sentence(flagged_match) if flagged_match else None
-        alternate_match = with_sentence(alternate_match) if alternate_match else None
-        # Reuse near-match sentence tokens after the no-data phrase and gate-specific lead-in.
-        plan = no_data_sentence_plan(
-            reason,
-            gate=gate,
-            flagged_match=flagged_match,
-            alternate_match=alternate_match,
-            nearest_real=nearest_real,
-            elected_stat_vars=elected_stat_vars,
-            variable_term=variable_text,
-            entity_terms=entity_terms,
-            role_axis=role_axis,
-            bound_role_dcids=bound_role_dcids,
-            ambiguous_candidates=ambiguous_candidates,
-            ambiguous_roles=ambiguous_roles,
-            qualifier_terms=qualifier_terms,
-            departures=departures,
+    # ``model_copy`` preserves each near-match's concrete subclass. These casts reflect it.
+    if nearest_real:
+        # Preserve bound/unbound differences among sibling near-matches.
+        keep_how_properties = sibling_how_properties(nearest_real)
+        nearest_real = cast(
+            "list[NearestRealSpec]",
+            [with_sentence(s, keep_how_properties=keep_how_properties) for s in nearest_real],
         )
-        rendered = sentence_from_plan(plan)
-    else:
-        rendered = None
-        plan = None
+    flagged_match = with_sentence(flagged_match) if flagged_match else None
+    alternate_match = with_sentence(alternate_match) if alternate_match else None
+    # Reuse near-match sentence tokens after the no-data phrase and gate-specific lead-in.
+    plan = no_data_sentence_plan(
+        reason,
+        gate=gate,
+        flagged_match=flagged_match,
+        alternate_match=alternate_match,
+        nearest_real=nearest_real,
+        elected_stat_vars=elected_stat_vars,
+        variable_term=variable_text,
+        entity_terms=entity_terms,
+        role_axis=role_axis,
+        bound_role_dcids=bound_role_dcids,
+        ambiguous_candidates=ambiguous_candidates,
+        ambiguous_roles=ambiguous_roles,
+        qualifier_terms=qualifier_terms,
+        departures=departures,
+    )
+    rendered = sentence_from_plan(plan)
     if include_skills and skills_index is not None:
         # Skill matching is independent of sentence rendering.
         if nearest_real:
@@ -680,21 +613,17 @@ def build_no_data_part(
             flagged_match=flagged_match,
             gate=gate,
             alternate_match=alternate_match,
-            elected_stat_vars=elected_stat_vars,
+            elected_count=len(elected_stat_vars) if elected_stat_vars is not None else None,
             entity_terms=entity_terms or [],
             ambiguous_entities=ambiguous_entities or [],
             cause=cause,
             unbound_qualifiers=qualifier_terms or [],
             unit_alternatives=unit_alternatives,
-            unit_alternatives_truncated=(
-                unit_alternatives_truncated if unit_alternatives is not None else None
-            ),
             data_query=data_query,
         ),
         rendered_sentence=rendered,
         sentence_plan=plan,
         restatement=restatement,
-        restatement_reason=restatement_reason_for(restatement, reason=restatement_reason),
         operations=list(operations),
         departures=departures,
     )
@@ -710,7 +639,6 @@ def build_unsupported_part(
     warnings: list[Warning],
     timing_ms: Timing | None = None,
     restatement: ParsedPart | None = None,
-    restatement_reason: PartRestatementReason | None = None,
     operations: Sequence[Operation] = (),
     include_skills: bool = False,
     skills_index: SkillsIndex | None = None,
@@ -719,8 +647,7 @@ def build_unsupported_part(
     """Wrap an unsupported payload in a part.
 
     A requested skills match adds ``skills_not_matchable`` because this part has no spec.
-    The supplied skills index is unused. The restatement reason is normalised against the
-    part's restatement. ``cause`` is populated for ``recipe_not_declared``.
+    The supplied skills index is unused. ``cause`` is populated for ``recipe_not_declared``.
     """
     part_warnings = list(warnings)
     if include_skills:
@@ -741,7 +668,6 @@ def build_unsupported_part(
             cause=cause,
         ),
         restatement=restatement,
-        restatement_reason=restatement_reason_for(restatement, reason=restatement_reason),
         operations=list(operations),
     )
 
@@ -793,7 +719,6 @@ def build_candidates_part(
     warnings: list[Warning],
     timing_ms: Timing | None = None,
     max_candidates: int | None = None,
-    include_sentence: bool = False,
     include_observations: bool = False,
     bind_ranked: bool = False,
     budget_truncated: bool = False,
@@ -801,7 +726,6 @@ def build_candidates_part(
     near_neighbor_spec_ids: frozenset[str] = frozenset(),
     ordering: Ordering | None = None,
     restatement: ParsedPart | None = None,
-    restatement_reason: PartRestatementReason | None = None,
     operations: Sequence[Operation] = (),
     include_skills: bool = False,
     skills_index: SkillsIndex | None = None,
@@ -828,9 +752,8 @@ def build_candidates_part(
     is selected for observation retrieval. Requested skills attach to each clamped candidate
     when the index snapshot is available. ``departure_facts`` are the raised facts that
     hold for every reading the part shows; no single spec answers, so none is read off one.
-    Their text names roles in the flow family every clamped reading shares, and a dataset
-    the readings do not come from names their one source, or none when they come from
-    several. A part warned `elected_shape_no_data` states one `closest_match` departure
+    Their text names roles in the flow family every clamped reading shares. A part warned
+    `elected_shape_no_data` states one `closest_match` departure
     (`_with_readings_substituted`).
     ``request_words`` is false on a door that holds no words of the request (a resubmit).
     """
@@ -860,10 +783,9 @@ def build_candidates_part(
     truncated = budget_truncated or len(ranked_specs) > cap
 
     keep_how_properties = sibling_how_properties(clamped)
-    if include_sentence:
-        clamped = [with_sentence(spec, keep_how_properties=keep_how_properties) for spec in clamped]
-        # Marks the tokens that set each reading apart (`SentenceToken.distinguishes`).
-        candidate_differences(clamped, axis_declarations=declared_axis_names())
+    clamped = [with_sentence(spec, keep_how_properties=keep_how_properties) for spec in clamped]
+    # Marks the tokens that set each reading apart (`SentenceToken.distinguishes`).
+    candidate_differences(clamped, axis_declarations=declared_axis_names())
 
     if include_skills and skills_index is not None:
         # Skill matching is independent of sentence rendering.
@@ -871,10 +793,7 @@ def build_candidates_part(
 
     departures = part_departures(
         _with_readings_substituted(
-            _with_source_shown(
-                part_departure_facts(None, raised=departure_facts, operations=operations),
-                shown=clamped,
-            ),
+            part_departure_facts(None, raised=departure_facts, operations=operations),
             shown=clamped,
             warnings=warnings,
             variable_text=variable_text,
@@ -885,33 +804,20 @@ def build_candidates_part(
         keep_how_properties=keep_how_properties,
         request_words=request_words,
     )
-    plan: list[SentenceToken] | None = None
-    rendered: str | None = None
-    if include_sentence:
-        plan = candidates_sentence_plan(
-            clamped,
-            departures=departures,
-            truncated=truncated,
-            # Show the pre-clamp total only when no upstream budget hid candidates.
-            total=len(ranked_specs) if not budget_truncated else None,
-        )
-        rendered = sentence_from_plan(plan)
+    plan = candidates_sentence_plan(
+        clamped,
+        departures=departures,
+        truncated=truncated,
+        # Show the pre-clamp total only when no upstream budget hid candidates.
+        total=len(ranked_specs) if not budget_truncated else None,
+    )
+    rendered = sentence_from_plan(plan)
 
     part_warnings = _with_final_near_neighbor_message(warnings, clamped, near_neighbor_spec_ids)
     if include_observations:
         part_warnings.append(
             Warning(code=OBSERVATIONS_OMITTED, severity="warn", message=_observations_omitted_msg())
         )
-    # Every candidate repeats its members, so a family candidate lists fewer than a
-    # definite answer. The sentence above read them all.
-    family_axes = get_measure_index().axes
-    clamped = [
-        capping_stat_var_items(spec, cap=CANDIDATE_STAT_VARS_MAX)
-        if identity_names_measure_family(spec.definition.identity, family_axes)
-        else spec
-        for spec in clamped
-    ]
-
     return CandidatesPart(
         status="candidates",
         variable_text=variable_text,
@@ -926,7 +832,6 @@ def build_candidates_part(
         rendered_sentence=rendered,
         sentence_plan=plan,
         restatement=restatement,
-        restatement_reason=restatement_reason_for(restatement, reason=restatement_reason),
         operations=list(operations),
         departures=departures,
     )

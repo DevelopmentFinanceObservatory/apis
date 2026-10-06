@@ -1,8 +1,10 @@
 """``provenance``: the Data Commons and provenance dcid the answer's facets name.
 
-Reads ``resolved.facets.provenance.data_commons.id`` and ``resolved.facets.provenance.ref``.
-Each family names its provenance, which a status block's own ``provenance`` replaces. A
-family passes when its measure, scored as the ``measure`` check scores
+Reads ``resolved.facets.provenance.data_commons.id`` and ``resolved.facets.provenance.ref``,
+and for ``bound`` the state of ``definition.identity.facets.provenance``: a value binding is
+bound, and an omitted facet is unbound. Each family names its provenance, which a status
+block's own ``provenance`` replaces when it names an origin or dataset; a block naming only
+``bound`` adds it to the family's. A family passes when its measure, scored as the ``measure`` check scores
 it (``measure.match_measure``), holds on the answers that carry its provenance. Measure and
 provenance therefore pass on one family and, on a candidates part, on the same candidates.
 A family whose slots or dataset are unconfirmed reads unverifiable. When the measure check
@@ -49,7 +51,21 @@ def match_provenance(expected: Provenance, answer: Answer, ctx: ScoreContext) ->
         ref = answer.read("resolved.facets.provenance.ref", ctx)
         if ref != expected.dataset:
             return fail(f"provenance dataset: got {ref!r}, expected {expected.dataset!r}")
+    if expected.bound is not None:
+        bound = answer.identity("facets.provenance.state", ctx) == "value"
+        if bound != expected.bound:
+            return fail(f"provenance bound: got {bound}, expected {expected.bound}")
     return PASS
+
+
+def _expected(block: Provenance | None, family: Provenance | None) -> Provenance | None:
+    """What a form's answers must carry: the block's provenance when it names an origin or
+    dataset, else the family's, with the block's ``bound`` either way."""
+    if block is None:
+        return family
+    if block.names_source or family is None:
+        return block
+    return family.model_copy(update={"bound": block.bound})
 
 
 def _family(
@@ -82,7 +98,7 @@ def provenance(
     families = [
         (form, p)
         for form in block.measure.forms
-        if (p := block.provenance or form.provenance) is not None
+        if (p := _expected(block.provenance, form.provenance)) is not None
     ]
     found = answers(part, ctx)
     if not families or not any(answer.is_spec for answer in found):

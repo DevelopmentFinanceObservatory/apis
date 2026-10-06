@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, cast
 from code_index import LevelOption
 from code_index.members import offers_slot
 from code_index.shared import get_index
+from dc_graph import GraphReadError
 from dfo_platform.executor import submit_with_context
 from materialise import GraphReader
 from materialise.roles import axis_noun
@@ -23,7 +24,13 @@ from search.engine.bind import SlotBindingDraft
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import settings
-from search.engine.errors import EngineInputError, GroundingMiss, RoleEntityUnplaced
+from search.engine.degraded_reads import note_degraded_read
+from search.engine.errors import (
+    EngineInputError,
+    GraphInfraError,
+    GroundingMiss,
+    RoleEntityUnplaced,
+)
 from search.engine.extract import DateRequest
 from search.engine.ground import graphref
 from search.engine.region.arcs import (
@@ -46,6 +53,7 @@ from search.engine.region.refs import (
 )
 from search.engine.retrieval.bound_values import (
     RoleClassWalks,
+    WalkedMembers,
     apply_declaration_version,
     apply_slot_expansions,
     elected_role_class_shape,
@@ -73,7 +81,6 @@ from search.engine.spec_build import (
     build_slot,
     build_spec,
     build_stat_vars,
-    compute_member_digest,
     inapplicable_property_dcid,
     pair_slot_drafts,
 )
@@ -90,6 +97,7 @@ from search.models import (
     ProvenanceRef,
     Relaxation,
     RequestedWindow,
+    RoleAxis,
     SlotOption,
     SlotOptions,
     SlotValue,
@@ -523,6 +531,8 @@ def _ground_answer_lookup(
     plan: ReadPlan | None,
     unit_request: IdentityUnitRequest | None,
     member_facts: Mapping[str, MemberFacts],
+    *,
+    open_axes: frozenset[RoleAxis],
 ) -> _GroundingLookup:
     """Batch every graph-label lookup needed by grounding.
 
@@ -533,7 +543,7 @@ def _ground_answer_lookup(
     Index-sourced taxonomies offer the bound value's parent and children. Unbound slots and
     bound sets offer each root and its children. Deeper levels are excluded from the lookup.
     A slot gets an index-sourced menu only when a dataset that can serve the family
-    `bindings` and the roles' keys state publishes a row carrying its property
+    `bindings`, the roles' keys and `open_axes` state publishes a row carrying its property
     (`code_index.members.offers_slot`), so a table without the slot's code system offers no
     menu when it is the one that serves.
     Sources are the citable provenance ids of the facets `plan` serves (`cited_facets`), and
@@ -569,8 +579,12 @@ def _ground_answer_lookup(
     level_options_by_key: dict[str, tuple[LevelOption, ...]] = {}
     if shape_draft.slot_taxonomy_index_sourced:
         index = get_index()
+        bound_keys = frozenset(role for _dcid, role in resolved_role_bindings)
         query = shape_query(
-            shape_draft, bindings, frozenset(role for _dcid, role in resolved_role_bindings)
+            shape_draft,
+            bindings,
+            bound_keys,
+            open_role_keys=open_axes - bound_keys,
         )
         for slot_draft, b_draft in slot_pairs:
             prop_dcid = slot_draft.property_dcid
@@ -761,13 +775,17 @@ def _ground_entities_and_sources(
 ) -> tuple[list[GraphRef], list, list[ProvenanceRef], list[Warning]]:
     """Build StatVar, entity, and source refs from batched labels. Resolve entity types separately.
 
-    A confirmed entity with no graph label keeps a dcid-echo ref and adds
+    Every StatVar in `sv_dcids` is a member the answer serves, so one with no graph label
+    keeps a dcid-echo ref, as a no-data answer's elected members do
+    (`state._elected_stat_vars`). Dropping it would leave the answer reading a member it
+    does not list, and a definite answer whose only member has no label listing none. A
+    confirmed entity with no graph label keeps a dcid-echo ref and adds
     `ENTITY_LABEL_UNRESOLVED`. Accepted query text overrides its display label. Identity
     uses the dcid, so entities survive missing labels.
     """
     labels = lookup.labels
 
-    sv_refs = _refs_present(sv_dcids, labels)
+    sv_refs = [GraphRef(dcid=dcid, label=labels.get(dcid, dcid)) for dcid in sv_dcids]
 
     entity_objects_data = []
     unresolved_entity_dcids: list[str] = []
@@ -819,6 +837,7 @@ def _ground_answer(
     *,
     unit_request: IdentityUnitRequest | None = None,
     member_facts: Mapping[str, MemberFacts] | None = None,
+    open_axes: frozenset[RoleAxis],
 ) -> GroundedAnswer:
     """Synchronously ground answer refs using one batched label lookup.
 
@@ -832,7 +851,8 @@ def _ground_answer(
     `query_entity_text_by_dcid` overrides labels for resolver-accepted entity text. It
     changes labels only. `member_facts` are the materialised members' facts
     (`Materialised.member_facts`). Those of `sv_dcids`, the served members, evidence the
-    bound constraint values they assert. None before materialise.
+    bound constraint values they assert. None before materialise. `open_axes` are the
+    flow axes the answer's places leave open (`place_roles.PlaceRoles.open_axes`).
     """
     query_entity_text_by_dcid = query_entity_text_by_dcid or {}
     lookup = _ground_answer_lookup(
@@ -844,6 +864,7 @@ def _ground_answer(
         plan,
         unit_request,
         member_facts or {},
+        open_axes=open_axes,
     )
     slots, slot_key_models, slot_options, inapplicable_slots = _build_grounded_slots(
         shape_draft, lookup, roles, graph, query_entity_text_by_dcid
@@ -961,6 +982,7 @@ class _WalkedRelaxation:
 
     shape: ShapeDraft
     unverified: bool
+    walked: WalkedMembers | None = None
 
 
 def _walked_relaxations(
@@ -983,22 +1005,31 @@ def _walked_relaxations(
     if walks is None or not relaxations:
         return [_WalkedRelaxation(ctx.shape_draft, unverified=False)] * len(relaxations)
     shape = ctx.shape_draft
+    role_keys = entity_role_keys(
+        ctx.place.roles.resolved_entities, open_axes=ctx.place.roles.open_axes
+    )
 
     def walked(relaxed: list[SlotBindingDraft]) -> _WalkedRelaxation | None:
         try:
             resolution = elected_role_class_shape(
                 shape,
-                shape_query(
-                    shape, relaxed, entity_role_keys(shape, ctx.place.roles.resolved_entities)
-                ),
+                shape_query(shape, relaxed, role_keys.bound, open_role_keys=role_keys.open),
                 walks=walks,
                 arcs_graph=ctx.graph,
                 deadline=ctx.deadline,
             )
+        except (GraphReadError, GraphInfraError, TimeoutError):
+            logger.debug("nearest-real relaxation walk's read failed", exc_info=True)
+            note_degraded_read("nearest-real relaxation walk")
+            return None
         except Exception:
             logger.debug("nearest-real relaxation walk failed", exc_info=True)
             return None
-        return _WalkedRelaxation(resolution.value, unverified=not resolution.authority.settled)
+        return _WalkedRelaxation(
+            resolution.value,
+            unverified=not resolution.authority.settled,
+            walked=resolution.walked,
+        )
 
     with ThreadPoolExecutor(
         max_workers=len(relaxations), thread_name_prefix="nearest-real-walk"
@@ -1038,6 +1069,7 @@ def _relaxations_presence(
         )
     except Exception:
         logger.warning("nearest-real relaxations' presence read failed", exc_info=True)
+        note_degraded_read("nearest-real presence")
         return presence
 
 
@@ -1046,16 +1078,19 @@ def _relaxed_binding_suggestion(
     shape: ShapeDraft,
     relaxed: list[SlotBindingDraft],
     relaxation: Relaxation,
+    walked: WalkedMembers | None = None,
 ) -> tuple[NearestRealSpec | None, SuggestionRead | None, list[Warning] | None, Warning | None]:
     """Try one relaxed binding over `shape`, the shape its own query answers with
     (`_walked_relaxations`), and return `(suggestion, what it is read over,
-    ground_warnings, probe_warning)`.
+    ground_warnings, probe_warning)`. `walked` is what the mint states of the members that
+    query's walk settled.
 
     No data, no StatVars, or any exception returns no suggestion. Ground warnings are None
     until grounding runs. Probe warnings report option-coverage failures, from a probe over
     the suggestion's own places. This optional no-data probe fails open and leaves the
     resolved response intact.
     """
+    from search.engine.region.place_context import settled_shape
     from search.engine.retrieval.retrieve import Materialised
     from search.engine.retrieval.role_resolve import graph_confirm_resolve
 
@@ -1076,6 +1111,7 @@ def _relaxed_binding_suggestion(
                 sdmx=ctx.sdmx,
                 date_request=ctx.date_request,
                 deadline=ctx.deadline,
+                open_axes=roles.open_axes,
                 coverage_snapshot=ctx.coverage,
             )
             if is_role_bearing(shape)
@@ -1095,6 +1131,7 @@ def _relaxed_binding_suggestion(
         if not mat.has_data:
             return None, None, None, None
         place = ctx.place.settled(mat)
+        shape = settled_shape(shape, mat)
 
         ground = _ground_answer(
             shape,
@@ -1105,6 +1142,7 @@ def _relaxed_binding_suggestion(
             mat.read_plan,
             ctx.query_entity_text_by_dcid,
             member_facts=mat.member_facts,
+            open_axes=place.roles.open_axes,
         )
 
         (
@@ -1142,7 +1180,6 @@ def _relaxed_binding_suggestion(
             ft_refs,
             member_count=(mat.population.admitted if mat.population is not None else len(sv_refs)),
             members=mat.served_members,
-            member_digest=compute_member_digest(mat.population),
         )
         stat_vars_list = build_stat_vars(
             sv_refs,
@@ -1188,6 +1225,9 @@ def _relaxed_binding_suggestion(
                 _probe_entities = None
             if _probe_entities is not None:
                 try:
+                    probe_role_keys = entity_role_keys(
+                        _probe_entities, open_axes=place.roles.open_axes
+                    )
                     slot_opts = standard_option_coverage(
                         shape=shape,
                         slot_options=slot_opts,
@@ -1196,7 +1236,12 @@ def _relaxed_binding_suggestion(
                         date_request=ctx.date_request,
                         place_dcids=_probe_places,
                         datasets=elected_datasets(mat.member_facts),
-                        query=shape_query(shape, relaxed, entity_role_keys(shape, _probe_entities)),
+                        query=shape_query(
+                            shape,
+                            relaxed,
+                            probe_role_keys.bound,
+                            open_role_keys=probe_role_keys.open,
+                        ),
                     )
                 except Exception:
                     logger.warning(
@@ -1222,7 +1267,6 @@ def _relaxed_binding_suggestion(
             entities=entities_list,
             coverage=mat.coverage,
             plan=mat.read_plan,
-            pipeline_trace=[],
             coverage_index=ctx.coverage.index,
             resolved_sources=source_refs,
             facets=answer_facets(
@@ -1237,6 +1281,7 @@ def _relaxed_binding_suggestion(
             available_at_place=available_at_place,
             confidence=confidence,
             requested_window=requested_window_from_date_request(ctx.date_request),
+            open_roles=mat.open_axes,
             inapplicable_slots=inapplicable_slots,
             unresolved_slots=unresolved_slots,
             text_recognized_properties=ctx.text_recognized_properties,
@@ -1250,8 +1295,12 @@ def _relaxed_binding_suggestion(
             stat_vars_member_count_exact=(
                 mat.population.exact if mat.population is not None else True
             ),
+            walked=walked,
         )
         spec = apply_declaration_version(spec, relaxed)
+    except (GraphReadError, GraphInfraError, TimeoutError):
+        note_degraded_read("nearest-real suggestion")
+        return None, None, ground_warnings, probe_warning
     except Exception:
         return None, None, ground_warnings, probe_warning
 
@@ -1375,7 +1424,7 @@ def _suggest_nearest_real(
         if walk is None:
             continue
         suggestion, read, ground_warnings, probe_warning = _relaxed_binding_suggestion(
-            ctx, walk.shape, relaxed, relaxation
+            ctx, walk.shape, relaxed, relaxation, walk.walked
         )
         if _entity_warnings is None and ground_warnings is not None:
             _entity_warnings = ground_warnings

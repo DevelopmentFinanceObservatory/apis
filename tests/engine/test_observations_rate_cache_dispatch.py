@@ -22,6 +22,7 @@ from search.engine.region.observations.dispatch import (
     _resolve_spec_observations,
 )
 from search.engine.region.state import ResolveState
+from search.engine.region.un_system import NO_LABELS
 from search.models import Spec, omitted_observations
 from tests.conftest import minimal_spec
 from tests.engine._fake_coverage import empty_coverage_snapshot
@@ -66,6 +67,7 @@ def test_observations_events_forwards_rate_cache_to_build_observations():
             materialise_sdmx=sdmx_double(),
             rate_cache=sentinel,
             coverage=empty_coverage_snapshot(),
+            variable_labels=NO_LABELS,
         )
     assert captured == [sentinel]
 
@@ -83,6 +85,7 @@ def test_observations_events_omits_rate_cache_by_default():
             materialise_graph=FakeGraphReader(),
             materialise_sdmx=sdmx_double(),
             coverage=empty_coverage_snapshot(),
+            variable_labels=NO_LABELS,
         )
     assert captured == [None]
 
@@ -105,6 +108,7 @@ def test_launch_observations_task_forwards_rate_cache():
                     materialise_sdmx=sdmx_double(),
                     rate_cache=sentinel,
                     coverage=empty_coverage_snapshot(),
+                    variable_labels=NO_LABELS,
                 )
                 await task
 
@@ -130,6 +134,7 @@ def test_observations_relaunch_closure_forwards_rate_cache():
                     materialise_sdmx=sdmx_double(),
                     rate_cache=sentinel,
                     coverage=empty_coverage_snapshot(),
+                    variable_labels=NO_LABELS,
                 )
                 await relaunch("spec-1")
 
@@ -144,6 +149,7 @@ def test_resolve_spec_observations_buffered_forwards_rate_cache():
     captured: list[object] = []
     sentinel = RateTableCache()
     spec = Spec.model_validate(minimal_spec())
+    spec = spec.model_copy(update={"resolved": spec.resolved.stating_members([])})
 
     async def _run() -> None:
         with pytest.MonkeyPatch.context() as mp:
@@ -173,6 +179,7 @@ def test_resolve_spec_observations_stream_forwards_rate_cache():
     captured: list[object] = []
     sentinel = RateTableCache()
     spec = Spec.model_validate(minimal_spec())
+    spec = spec.model_copy(update={"resolved": spec.resolved.stating_members([])})
 
     async def _run() -> None:
         async with scoped_concurrency():

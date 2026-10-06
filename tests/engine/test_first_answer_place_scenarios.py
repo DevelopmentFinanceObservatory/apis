@@ -72,6 +72,7 @@ from search.engine.region.state import EngineOptions
 from search.models import Resolution, Spec
 from series_coverage.schema import RoleNames
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
+from tests.engine._facet_option_builds import wrap_facet_option_builds
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
@@ -1015,7 +1016,6 @@ def _resolve_scenario(
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
             ),
-            base_steps=[],
             base_timing={},
             coverage=coverage.snapshot(),
             options=EngineOptions(
@@ -1083,7 +1083,6 @@ def _response(result: RegionResult, query: str) -> Resolution:
         extra_warnings=[],
         start_ms=now_ms(),
         engine_build="test",
-        include_sentence=True,
         max_candidates=10,
         query=query,
     )
@@ -1104,6 +1103,7 @@ _RETIRED_WORDING = (
     "observations across",
     "No year was named",
     "1 donors",
+    "1 providers",
     "1 recipients",
     "(current US$; US dollar)",
 )
@@ -1169,7 +1169,7 @@ def _answer_record(result: RegionResult) -> dict[str, str]:
         resolved = spec.resolved.model_dump(mode="json")
         served.append(
             {
-                "stat_vars": [item["ref"] for item in resolved["stat_vars"]["items"]],
+                "stat_vars": [stat_var.ref.dcid for stat_var in spec.resolved.members],
                 "identity_entities": _plain(spec.definition.identity.entities),
                 "entities": resolved["entities"],
                 "scope": resolved["scope"],
@@ -1400,7 +1400,10 @@ def test_first_answer_keeps_its_serial_depth(scenario_id, monkeypatch, search_se
     each awaiting the one before equals the scenario's baseline depth. A scenario in
     `_SERIAL_STEPS_ADDED` is deeper by its steps and gives an answer the baseline does not;
     one in `_SERIAL_STEPS_ADDED_FOR_A_SHAPE_THE_BASELINE_DROPS` is deeper by its steps; one
-    in `_SERIAL_STEPS_SAVED` is shallower by its steps."""
+    in `_SERIAL_STEPS_SAVED` is shallower by its steps. The requests a Spec's facet options
+    make (`_maybe_build_facet_options`) are left out of the chain when the scenario sets no
+    option coverage, since the baseline engine built them only under it; every other
+    request counts."""
     scenario = _SCENARIOS[scenario_id]
     _patch_settings(scenario, search_settings)
     requests = VirtualRequests()
@@ -1411,18 +1414,35 @@ def test_first_answer_keeps_its_serial_depth(scenario_id, monkeypatch, search_se
         executors=_EXECUTORS,
         free=_FREE_CALLS,
     )
+    facet_spans: set[int] = set()
+
+    def spanned(build):
+        # A build runs inline on the virtual clock's one thread, so the spans recorded
+        # while it runs are its own.
+        def run(*args, **kwargs):
+            first = len(requests.spans)
+            try:
+                return build(*args, **kwargs)
+            finally:
+                facet_spans.update(range(first, len(requests.spans)))
+
+        return run
+
+    if not scenario.include_option_coverage:
+        wrap_facet_option_builds(monkeypatch, spanned)
 
     answer = _answer_record(_resolve(scenario, requests.run))
+    depth = requests.serial_depth(excluding=facet_spans)
 
     if _recording(_RECORD_BASELINE_ENV):
-        _store(scenario_id, "baseline_serial_depth", requests.serial_depth())
+        _store(scenario_id, "baseline_serial_depth", depth)
         _store(scenario_id, "baseline_answer", answer)
         return
     baseline = _stored(scenario_id, "baseline_serial_depth", _RECORD_BASELINE_ENV)
     added = _SERIAL_STEPS_ADDED.get(scenario_id, 0)
     dropped = _SERIAL_STEPS_ADDED_FOR_A_SHAPE_THE_BASELINE_DROPS.get(scenario_id, 0)
     saved = _SERIAL_STEPS_SAVED.get(scenario_id, 0)
-    assert requests.serial_depth() == baseline + added + dropped - saved, (
+    assert depth == baseline + added + dropped - saved, (
         baseline,
         added,
         dropped,
@@ -1449,7 +1469,7 @@ def test_a_placeless_one_role_question_discovers_its_recipients_from_coverage(
 
     result = _resolve(scenario)
 
-    assert [[sv.ref for sv in spec.resolved.stat_vars.items] for spec in result.specs] == offered
+    assert [[sv.ref.dcid for sv in spec.resolved.members] for spec in result.specs] == offered
     ids_spec = result.specs[0]
     assert ids_spec.resolved.scope is not None
     assert ids_spec.resolved.scope.axis == "destination"
@@ -1555,7 +1575,7 @@ def test_a_shape_the_walk_makes_subject_only_takes_the_default_scope_of_its_own_
     assert result.status == status, result
     assert [
         (
-            [sv.ref for sv in spec.resolved.stat_vars.items],
+            [sv.ref.dcid for sv in spec.resolved.members],
             spec.resolved.scope and [member.ref for member in spec.resolved.scope.members],
         )
         for spec in result.specs
@@ -1595,7 +1615,7 @@ def test_a_bound_recipient_keeps_the_recipient_only_shape_beside_a_subject_only_
     result = _resolve(scenario)
 
     assert result.status == "definite", result
-    assert [sv.ref for sv in result.specs[0].resolved.stat_vars.items] == [_IDS]
+    assert [sv.ref.dcid for sv in result.specs[0].resolved.members] == [_IDS]
 
 
 @pytest.mark.parametrize("scenario_id", _ANSWERS_AS_THE_BASELINE_BESIDE_AN_INDEX_SOURCED_SHAPE)

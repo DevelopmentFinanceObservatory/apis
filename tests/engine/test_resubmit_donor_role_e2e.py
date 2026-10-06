@@ -29,7 +29,6 @@ from series_coverage.schema import FacetMetadata, RoleNames
 from series_coverage.shared import CoverageSnapshot
 from tests.engine._base_identity import (
     GDP_SHAPE,
-    base_from_spec,
     make_base,
     origin_entity,
     subject_entity,
@@ -41,6 +40,7 @@ from tests.engine._fake_coverage import (
     patch_coverage,
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import walk_options
 from tests.fixtures import FakeGraph, make_resolver
 
 _SV_DCID = "TESTFIXTURE/ResubmitDonorRoleE2E/Flow"
@@ -147,7 +147,6 @@ def _fresh_discover(
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
             sdmx=sdmx,
-            base_steps=[],
             base_timing={},
             coverage=coverage if coverage is not None else empty_coverage_snapshot(),
         )
@@ -174,7 +173,6 @@ def _resubmit(
         obs={},
     )
     destination_dcids = recipient_dcids or ([recipient_dcid] if recipient_dcid else None)
-    base_spec_id, base_identity = base_from_spec(fresh_spec)
     identity_entities = dict(fresh_spec.definition.identity.entities)
     if origin_dcids is not None:
         identity_entities["origin"] = origin_dcids
@@ -182,16 +180,13 @@ def _resubmit(
         identity_entities["destination"] = destination_dcids
     inp = ResubmitIdentityPayload(
         identity=fresh_spec.definition.identity.model_copy(update={"entities": identity_entities}),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[sv.ref for sv in fresh_spec.resolved.stat_vars.items],
     )
     return resolve_spec_resubmit(
         inp=inp,
         graph=graph,
         sdmx=sdmx,
         coverage=coverage if coverage is not None else empty_coverage_snapshot(),
-        options=EngineOptions(include_option_coverage=include_option_coverage),
+        options=walk_options(graph, EngineOptions(include_option_coverage=include_option_coverage)),
     )
 
 
@@ -396,7 +391,6 @@ def test_origin_dcids_against_a_recipient_only_shape_is_role_incompatible(monkey
 def _standard_shape_with_origin_inp() -> ResubmitIdentityPayload:
     """A GDP resubmit posting an origin ref, which a standard shape has no role for."""
     entities = [subject_entity("country/IND")]
-    base_spec_id, base_identity = make_base(GDP_SHAPE, entities=entities)
     activity_source_slot = value_slot(
         "how",
         "activitySource",
@@ -410,9 +404,6 @@ def _standard_shape_with_origin_inp() -> ResubmitIdentityPayload:
             slots=[activity_source_slot],
             entities=[*entities, origin_entity(_FRA)],
         )[1],
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[_GDP_SV_DCID],
     )
 
 
@@ -423,6 +414,7 @@ def test_origin_dcids_against_a_standard_shape_raises_role_incompatible():
             graph=FakeGraph(),
             sdmx=FakeSdmxClient(),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(FakeGraph()),
         )
     assert exc_info.value.code == "role_incompatible"
     assert exc_info.value.status == 422
@@ -441,7 +433,11 @@ def test_a_reversed_requested_window_refuses_before_the_role_check():
     )
     with pytest.raises(EngineInputError) as exc_info:
         resolve_spec_resubmit(
-            inp=inp, graph=FakeGraph(), sdmx=FakeSdmxClient(), coverage=empty_coverage_snapshot()
+            inp=inp,
+            graph=FakeGraph(),
+            sdmx=FakeSdmxClient(),
+            coverage=empty_coverage_snapshot(),
+            options=walk_options(FakeGraph()),
         )
     assert exc_info.value.code == "request_invalid"
     assert exc_info.value.pointer == "/input/identity"
@@ -797,7 +793,11 @@ def test_provider_cap_counts_unique_canonical_refs_before_graph_work():
     )
     with pytest.raises(EngineInputError) as exc_info:
         resolve_spec_resubmit(
-            inp=inp, graph=_NoGraph(), sdmx=FakeSdmxClient(), coverage=empty_coverage_snapshot()
+            inp=inp,
+            graph=_NoGraph(),
+            sdmx=FakeSdmxClient(),
+            coverage=empty_coverage_snapshot(),
+            options=walk_options(_NoGraph()),
         )
     assert exc_info.value.code == "request_invalid"
     assert exc_info.value.status == 400
@@ -874,7 +874,7 @@ def test_zero_observation_bilateral_resubmit_carries_a_flagged_match(monkeypatch
     assert region.flagged_match is not None
     assert len(region.flagged_match) == 1
     assert region.flagged_match[0].resolved.available_at_place is False
-    assert [sv.ref for sv in region.flagged_match[0].resolved.stat_vars.items] == [_SV_DCID]
+    assert [sv.ref.dcid for sv in region.flagged_match[0].resolved.members] == [_SV_DCID]
 
 
 def test_bound_recipient_open_donor_resubmit_warns_about_the_open_origin_axis(monkeypatch):
@@ -969,13 +969,9 @@ def _pinned_resubmit(monkeypatch, axis: str, binding: IdentityFacetBinding):
     )
     assert named.status == "definite", named.no_data_reason
     spec = named.specs[0]
-    base_spec_id, base_identity = base_from_spec(spec)
     identity = spec.definition.identity
     inp = ResubmitIdentityPayload(
         identity=identity.model_copy(update={"facets": {**(identity.facets or {}), axis: binding}}),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[sv.ref for sv in spec.resolved.stat_vars.items],
     )
     return resolve_spec_resubmit(
         inp=inp,
@@ -992,7 +988,20 @@ def _pinned_resubmit(monkeypatch, axis: str, binding: IdentityFacetBinding):
         ),
         sdmx=FakeSdmxClient(observations=observations, availability={}),
         coverage=FakeCoverageService(index).snapshot(),
-        options=EngineOptions(),
+        options=walk_options(
+            FakeGraph(
+                nodes=_nodes(
+                    resolve=resolve,
+                    label_dcids=["source/A"],
+                    sv_dcid=_SV_DCID,
+                    sv_arcs=_bilateral_arcs(),
+                ),
+                detect={},
+                resolve={},
+                obs={},
+            ),
+            EngineOptions(),
+        ),
     )
 
 
@@ -1059,7 +1068,6 @@ def test_a_role_resubmit_whose_years_hold_no_point_names_the_span(monkeypatch, r
             )
         }
     )
-    base_spec_id, base_identity = base_from_spec(spec)
     identity = windowed.definition.identity
     entities = {**dict(identity.entities), "origin": [_FRA]}
     if recipient is not None:
@@ -1067,9 +1075,6 @@ def test_a_role_resubmit_whose_years_hold_no_point_names_the_span(monkeypatch, r
     region = resolve_spec_resubmit(
         inp=ResubmitIdentityPayload(
             identity=identity.model_copy(update={"entities": entities}),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[sv.ref for sv in spec.resolved.stat_vars.items],
         ),
         graph=FakeGraph(
             nodes=_nodes(
@@ -1084,7 +1089,20 @@ def test_a_role_resubmit_whose_years_hold_no_point_names_the_span(monkeypatch, r
         ),
         sdmx=FakeSdmxClient(observations=observations, availability={}),
         coverage=FakeCoverageService(index).snapshot(),
-        options=EngineOptions(),
+        options=walk_options(
+            FakeGraph(
+                nodes=_nodes(
+                    resolve=resolve,
+                    label_dcids=["source/A"],
+                    sv_dcid=_SV_DCID,
+                    sv_arcs=_bilateral_arcs(),
+                ),
+                detect={},
+                resolve={},
+                obs={},
+            ),
+            EngineOptions(),
+        ),
     )
 
     assert region.no_data_reason == "no_observations"

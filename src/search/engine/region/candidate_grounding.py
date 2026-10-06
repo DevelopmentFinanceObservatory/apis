@@ -104,7 +104,6 @@ from search.engine.spec_build import (
     build_shape_model,
     build_spec,
     build_stat_vars,
-    compute_member_digest,
 )
 from search.engine.unit.refs import unit_currency
 from search.models import (
@@ -463,6 +462,7 @@ def _ground_one_candidate(
         # A candidate's preview converts by the request against its own elections.
         unit_request=state.unit_request,
         member_facts=cand_mat.member_facts,
+        open_axes=cand.place.roles.open_axes,
     )
     cand_facets = answer_facets(
         _cand_filtered.plan,
@@ -511,7 +511,6 @@ def _ground_one_candidate(
         ft_refs,
         member_count=cand_member_count,
         members=cand_mat.served_members,
-        member_digest=compute_member_digest(cand_mat.population),
     )
     cand_stat_vars = build_stat_vars(
         cand_sv_refs,
@@ -538,6 +537,7 @@ def _ground_one_candidate(
             destination_dcid=cand.place.roles.obs_destination_dcid,
             origin_dcids=cand.place.roles.origin_dcids,
         ),
+        open_axes=cand.place.roles.open_axes,
         years=cand_mat.preview_years,
         coverage=state.coverage.index,
         facets_pinned=facets_pinned,
@@ -676,6 +676,9 @@ def _finish_candidate(
     cand_measure_bound_values = bound_values_from_bindings(cand_bindings)
     cand_served_member_facts = cand_mat.member_facts or {}
     cand_served_members = [cand_served_member_facts[dcid] for dcid in cand_mat.sv_dcids]
+    cand_role_keys = entity_role_keys(
+        cand.place.roles.resolved_entities, open_axes=cand.place.roles.open_axes
+    )
     cand_measure_partition, cand_measure_siblings = observed_measure_family(
         cand_shape,
         get_index(),
@@ -683,7 +686,8 @@ def _finish_candidate(
         shape_query(
             cand_shape,
             cand_bindings,
-            entity_role_keys(cand_shape, cand.place.roles.resolved_entities),
+            cand_role_keys.bound,
+            open_role_keys=cand_role_keys.open,
         ),
         cand_served_members,
         cache=measure_family_cache,
@@ -706,18 +710,18 @@ def _finish_candidate(
         coverage_index=state.coverage.index,
         coverage_stamp=cand_mat.coverage_stamp,
         scope=cand_scope,
-        pipeline_trace=state.pipeline_steps,
         default_reading=state.default_reading,
         resolved_sources=groundwork.source_refs,
         facets=groundwork.facets,
-        n_recalled=state.n_recalled,
         stat_vars_member_count=groundwork.stat_vars_member_count,
         stat_vars_member_count_exact=groundwork.stat_vars_member_count_exact,
+        walked=cand.walked,
         slot_options=groundwork.slot_options_raw,
         available_at_place=cand_available_at_place,
         confidence=cand_confidence,
         requested_window=requested_window_from_date_request(state.date_request),
         identity_entities=groundwork.identity_entities,
+        open_roles=cand_mat.open_axes,
         inapplicable_slots=groundwork.inapplicable_slots,
         unresolved_slots=groundwork.unresolved_slots,
         measure_partition=cand_measure_partition,

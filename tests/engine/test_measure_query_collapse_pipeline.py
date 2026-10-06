@@ -33,6 +33,7 @@ from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.heading.departure_fact import DepartureFact
 from search.models import TraceDefaultReading
 from tests.engine._fake_coverage import empty_coverage_snapshot
+from tests.engine._index_slots import index_slot_keys
 from tests.engine.test_admissibility_table import _node, _resolve_gdp_of_kenya
 
 _ROLES = ("financingProvider", "financingRecipient")
@@ -78,7 +79,9 @@ def _shape(shape_id: str, *, pop_type: str, meas_prop: str, meas_qual: str) -> S
         stat_type_dcid="measuredValue",
         meas_qual_dcid=meas_qual,
         meas_denom_dcid=None,
-        slot_keys=(),
+        slot_keys=index_slot_keys(
+            population_type=pop_type, measured_property=meas_prop, measurement_qualifier=meas_qual
+        ),
         declared_roles=_ROLES,
     )
 
@@ -128,7 +131,6 @@ def _state(
         source_text=None,
         materialise_graph=None,
         materialise_sdmx=None,
-        pipeline_steps=[],
         timing={},
         warnings=[],
         shapes_found=shapes_found,
@@ -559,7 +561,7 @@ def test_the_answer_trace_names_the_members_the_default_reading_removed():
 
     assert result.status == "definite", result
     (spec,) = result.specs
-    assert [sv.ref for sv in spec.resolved.stat_vars.items] == [nominal]
+    assert [sv.ref.dcid for sv in spec.resolved.members] == [nominal]
     assert spec.resolved.trace.default_reading == TraceDefaultReading(
         applied=True, removed_stat_vars=[adjusted]
     )

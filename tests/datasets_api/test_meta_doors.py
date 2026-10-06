@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 
 from artifact_store import Tier
 from code_index.shared import get_index
-from dataset_store.snapshot import StoredArtifactLocation, StoredVersion
+from dataset_store.snapshot import StoredArtifactLocation
 from datasets_api.capabilities import build_capabilities
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.meta import (
@@ -31,7 +31,7 @@ from datasets_api.operation_store import (
     never_claimed_stale_after_seconds,
 )
 from datasets_api.operations.task_client import FakeTaskClient
-from datasets_api.render import MEMBER_RENDERING_KEY, artifact_rendering
+from datasets_api.render import artifact_rendering
 from datasets_api.schema import (
     Manifest,
     MintRequest,
@@ -210,8 +210,7 @@ def test_schema_document_validates_against_each_model_and_is_stable() -> None:
         "problem_details_extensions",
     ):
         jsonschema.Draft202012Validator.check_schema(body[key])
-    jsonschema.Draft202012Validator.check_schema(body["register_response"]["definition"])
-    jsonschema.Draft202012Validator.check_schema(body["register_response"]["collection"])
+    jsonschema.Draft202012Validator.check_schema(body["register_response"])
 
     # Published schema ids are fixed contract values.
     assert (
@@ -363,7 +362,7 @@ _STORED_REFUSALS = {
         status=422,
         code="over_ceiling",
         retryable=False,
-        detail="the candidate window was crossed; post resolved_stat_var_dcids",
+        detail="the candidate window was crossed",
         ceiling_kind="candidate_window",
         count=4000,
         cap=4000,
@@ -546,7 +545,6 @@ _SITE_SETTINGS = DatasetsBuildSettings(
     site=PublicSiteSettings(public_site_url="https://data.example.org")
 )
 _BARE_PARQUET = MintOptions(format="parquet", bundle=False)
-_BARE_CSV = MintOptions(format="csv", bundle=False)
 _GROUPBY = MintOptions(
     format="parquet", bundle=False, groupby=GroupbyOptions(by=["stat_var"], op="sum")
 )
@@ -559,14 +557,10 @@ def _stored_rendering(
     options: MintOptions,
     *,
     data: bytes,
-    member: str | None = None,
 ) -> StoredArtifactLocation:
     """A pinned location (so retention against the real clock never applies) stored under the
-    rendering and key the mint links `options` under, with `member` for a bare collection's
-    member artifact."""
+    rendering and key the mint links `options` under."""
     rendering = artifact_rendering(options, site=_SITE_SETTINGS.site)
-    if member is not None:
-        rendering = {**rendering, MEMBER_RENDERING_KEY: member}
     return _store_and_locate(
         artifact_store,
         data,
@@ -577,54 +571,26 @@ def _stored_rendering(
     )
 
 
-def _stored_statistics(
-    artifact_store: FakeArtifactStore, *, data: bytes, member: str | None = None
-) -> StoredArtifactLocation:
-    rendering = _STATISTICS if member is None else {**_STATISTICS, MEMBER_RENDERING_KEY: member}
+def _stored_statistics(artifact_store: FakeArtifactStore, *, data: bytes) -> StoredArtifactLocation:
     return _store_and_locate(
         artifact_store,
         data,
         tier=Tier.pinned,
-        rendering=rendering,
-        rendering_key=rendering_key(rendering),
+        rendering=_STATISTICS,
+        rendering_key=rendering_key(_STATISTICS),
         media_type="application/vnd.apache.parquet",
     )
 
 
-def _collection_version() -> StoredVersion:
-    return StoredVersion(
-        subject_id="col_a",
-        subject_kind="collection",
-        content_version="cv1",
-        schema_version=1,
-        immutable_body={
-            "schema_version": 1,
-            "collection": {"collection_id": "col_a", "members": []},
-            "content_version": "cv1",
-            "prepared_at": "2026-01-01T00:00:00Z",
-            "coverage": {"rows": 0, "dimensions": []},
-            "citation": {"text": "", "sources": []},
-            "trace": {},
-            "warnings": [],
-        },
-    )
-
-
 @pytest.mark.parametrize(
-    ("subject_id", "renderings", "members"),
+    "renderings",
     [
-        pytest.param("spec_a", (_BARE_PARQUET, _GROUPBY), (None,), id="bare-parquet-vs-groupby"),
-        pytest.param("spec_a", (MintOptions(), _GROUPBY), (None,), id="bundle-vs-groupby"),
-        pytest.param(
-            "col_a",
-            (_BARE_CSV, _BARE_PARQUET),
-            ("spec_m1", "spec_m2"),
-            id="bare-collection-members",
-        ),
+        pytest.param((_BARE_PARQUET, _GROUPBY), id="bare-parquet-vs-groupby"),
+        pytest.param((MintOptions(), _GROUPBY), id="bundle-vs-groupby"),
     ],
 )
 def test_a_done_operation_lists_only_its_own_rendering_and_statistics(
-    subject_id: str, renderings: tuple[MintOptions, ...], members: tuple[str | None, ...]
+    renderings: tuple[MintOptions, ...],
 ) -> None:
     """#1172: two renderings and statistics stored under one `(subject_id, content_version)`.
     Each done operation's poll lists the artifacts of the rendering its request posted plus
@@ -633,26 +599,17 @@ def test_a_done_operation_lists_only_its_own_rendering_and_statistics(
     own: dict[int, set[str]] = {}
     locations: list[StoredArtifactLocation] = []
     for index, options in enumerate(renderings):
-        stored = [
-            _stored_rendering(
-                artifact_store, options, data=f"{index}-{member}".encode(), member=member
-            )
-            for member in members
-        ]
-        own[index] = {location.artifact_digest for location in stored}
-        locations.extend(stored)
-    statistics = [
-        _stored_statistics(artifact_store, data=f"stats-{member}".encode(), member=member)
-        for member in members
-    ]
-    locations.extend(statistics)
-    version = _version() if subject_id == "spec_a" else _collection_version()
+        stored = _stored_rendering(artifact_store, options, data=f"{index}".encode())
+        own[index] = {stored.artifact_digest}
+        locations.append(stored)
+    statistics = _stored_statistics(artifact_store, data=b"stats")
+    locations.append(statistics)
     client = make_client(
         registry=LiveSpecRegistry(store=FakeDatasetStore()),
         settings=_SITE_SETTINGS,
-        spec_reader=FakeSpecReader(spec_ids=["spec_a"], collection_ids=["col_a"]),
+        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
         snapshot_reader=FakeSnapshotReader(
-            versions={(subject_id, "cv1"): version}, locations={(subject_id, "cv1"): locations}
+            versions={("spec_a", "cv1"): _version()}, locations={("spec_a", "cv1"): locations}
         ),
         artifact_store=artifact_store,
         reference_writer=FakeArtifactReferenceWriter(),
@@ -662,7 +619,7 @@ def test_a_done_operation_lists_only_its_own_rendering_and_statistics(
                 f"op_{index}": _operation(
                     id=f"op_{index}",
                     state="done",
-                    subject_id=subject_id,
+                    subject_id="spec_a",
                     content_version="cv1",
                     options=options,
                 )
@@ -676,7 +633,7 @@ def test_a_done_operation_lists_only_its_own_rendering_and_statistics(
 
         assert resp.status_code == 200, resp.json()
         listed = {artifact["artifact_digest"] for artifact in resp.json()["manifest"]["artifacts"]}
-        assert listed == own[index] | {location.artifact_digest for location in statistics}
+        assert listed == own[index] | {statistics.artifact_digest}
 
 
 def test_a_done_operation_whose_rendering_is_gone_fails_retryable_and_a_resubmit_resets_it() -> (

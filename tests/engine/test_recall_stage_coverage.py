@@ -158,8 +158,8 @@ def test_coded_qualifier_query_ships_no_dropped_warning_and_binds_both_codes():
 def test_coded_qualifier_codes_are_asserted_on_the_resolved_stat_var():
     """The recalled StatVar's slot values carry both codes."""
     response = _resolve_coded_qualifier_query()
-    stat_var = response.parts[0].spec.resolved.stat_vars.items[0]
-    assert stat_var.ref == _SV_DCID
+    stat_var = response.parts[0].spec.resolved.members[0]
+    assert stat_var.ref.dcid == _SV_DCID
     rendered = {sv.key.property.dcid: sv.value.ref.dcid for sv in stat_var.slot_values}
     assert rendered[_FINANCE_PROPERTY] == _FINANCE_CODE
     assert rendered[_FLOW_PROPERTY] == _FLOW_CODE

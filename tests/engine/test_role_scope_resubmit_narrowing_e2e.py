@@ -22,7 +22,6 @@ from search.models import (
 )
 from series_coverage.schema import FacetMetadata, RoleNames
 from series_coverage.shared import CoverageSnapshot
-from tests.engine._base_identity import base_from_spec
 from tests.engine._fake_coverage import (
     CoverageRow,
     FakeCoverageService,
@@ -30,6 +29,7 @@ from tests.engine._fake_coverage import (
     patch_coverage,
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import walk_options
 from tests.fixtures import FakeGraph, make_resolver
 
 pytestmark = pytest.mark.usefixtures("request_log")
@@ -139,7 +139,6 @@ def _fresh_discover(
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
             sdmx=sdmx,
-            base_steps=[],
             base_timing={},
             coverage=coverage if coverage is not None else empty_coverage_snapshot(),
         )
@@ -157,26 +156,21 @@ def _resubmit_with_facets(
 ):
     """Echo `fresh_spec`'s own identity back through resolve_spec_resubmit,
     adding `facets` as a fresh binding this edit posts -- no facet axis is
-    bound in the base, so this is a genuine new constraint, never an
-    edit_incomplete re-send failure (identity_edit.check_edit_incomplete
-    only diffs the base's OWN bound facet axes)."""
+    bound in the base, so this is a genuine new constraint."""
     graph = FakeGraph(
         nodes=_nodes(resolve=resolve, label_dcids=label_dcids), detect={}, resolve={}, obs={}
     )
-    base_spec_id, base_identity = base_from_spec(fresh_spec)
     echo = ResubmitIdentityPayload(
         identity=BaseIdentity.model_validate(
             {**fresh_spec.definition.identity.model_dump(mode="python"), "facets": facets or None}
         ),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[sv.ref for sv in fresh_spec.resolved.stat_vars.items],
     )
     return resolve_spec_resubmit(
         inp=echo,
         graph=graph,
         sdmx=sdmx,
         coverage=coverage if coverage is not None else empty_coverage_snapshot(),
+        options=walk_options(graph),
     )
 
 
@@ -193,7 +187,6 @@ def _resubmit_with_source_slot(
     graph = FakeGraph(
         nodes=_nodes(resolve=resolve, label_dcids=label_dcids), detect={}, resolve={}, obs={}
     )
-    base_spec_id, base_identity = base_from_spec(fresh_spec)
     identity_facets = {"provenance": IdentityBindingValue(ref=source_dcid)}
     if facets:
         identity_facets.update(facets)
@@ -204,15 +197,13 @@ def _resubmit_with_source_slot(
                 "facets": identity_facets,
             }
         ),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[sv.ref for sv in fresh_spec.resolved.stat_vars.items],
     )
     return resolve_spec_resubmit(
         inp=echo,
         graph=graph,
         sdmx=sdmx,
         coverage=coverage if coverage is not None else empty_coverage_snapshot(),
+        options=walk_options(graph),
     )
 
 

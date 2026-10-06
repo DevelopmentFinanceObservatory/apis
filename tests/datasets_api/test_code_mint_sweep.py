@@ -29,8 +29,6 @@ _SERVED_DATASETS_CODES: frozenset[str] = (
     | frozenset(RESHAPE_CODE_CATALOGUE)
 )
 
-# `CodeNotFoundError.code` is a source code, not a wire refusal code.
-_NON_WIRE_CODE_CALL_NAMES: frozenset[str] = frozenset({"CodeNotFoundError"})
 
 # Exemptions use stable file/function/expression keys. Every other unresolved `code=` fails.
 _KNOWN_PASSTHROUGHS: frozenset[tuple[str, str | None, str]] = frozenset(
@@ -43,6 +41,11 @@ _KNOWN_PASSTHROUGHS: frozenset[tuple[str, str | None, str]] = frozenset(
         (
             "src/datasets_api/doors/mint_errors.py",
             "_classify_graph_deadline_exceeded",
+            "TIMEOUT_DEFAULT.code",
+        ),
+        (
+            "src/datasets_api/doors/mint_errors.py",
+            "_classify_member_read_deadline",
             "TIMEOUT_DEFAULT.code",
         ),
         (
@@ -127,8 +130,6 @@ def _sweep_dir(src_dir: pathlib.Path) -> tuple[set[str], list[str]]:
         for node, enclosing_function in visitor.calls:
             code_kwarg = next((kw for kw in node.keywords if kw.arg == "code"), None)
             if code_kwarg is None:
-                continue
-            if _call_target_name(node.func) in _NON_WIRE_CODE_CALL_NAMES:
                 continue
             value = code_kwarg.value
             if isinstance(value, ast.Constant) and isinstance(value.value, str):

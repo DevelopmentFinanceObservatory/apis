@@ -15,7 +15,6 @@ def _assemble(region: RegionResult) -> dict:
         extra_warnings=[],
         start_ms=now_ms(),
         engine_build="test",
-        include_sentence=False,
         max_candidates=10,
     )
     return response.model_dump(mode="json", exclude_none=True)

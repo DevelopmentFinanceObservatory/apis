@@ -1,29 +1,45 @@
-"""Only exact populations receive a member digest, the SHA-256 hash of sorted,
-RFC 8785 canonical dcids. Tests also pin Shape wiring; end-to-end agreement with
-`statvar_members.enumerate_members` is covered by test_crs_family_member_digest.py.
+"""What Search states of a walked family is what the Datasets mint states of the same walk:
+the walk's antichain-minimal members as the served count, and the SHA-256 hash of the sorted,
+RFC 8785 canonical dcids of its whole family as the digest, none when the walk left
+candidates unread. End-to-end agreement with the mint is covered by
+tests/datasets_api/test_member_digest_cross_api.py.
 """
 
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 
+import pytest
 import rfc8785
 
-from search.engine.retrieval.retrieve import MemberPopulation
-from search.engine.shape import ShapeDraft
-from search.engine.spec_build import build_shape_model, compute_member_digest
+from code_index.members import FamilyQuery
+from search.engine.retrieval.bound_values import (
+    StatedMembers,
+    WalkedMembers,
+    identity_query,
+    stated_members,
+    walk_key,
+)
+from search.engine.spec_id import mint_identity
+from statvar_members import FiveTuple, Member, MemberGroup
+from tests.code_index.aid_identity import education_aid_identity
+
+_FIVE_TUPLE = FiveTuple(population_type="Person", measured_property="count")
+_QUERY = FamilyQuery(_FIVE_TUPLE, slots={"gender": ("unbound",)}, source=None)
 
 
-def _shape_draft() -> ShapeDraft:
-    return ShapeDraft(
-        shape_id="test_shape",
-        label="test shape",
-        pop_type_dcid="EconomicActivity",
-        meas_prop_dcid="amount",
-        stat_type_dcid="measuredValue",
-        meas_qual_dcid=None,
-        meas_denom_dcid=None,
-        slot_keys=(),
+def _group(family: tuple[str, ...], *, truncated: bool = False) -> MemberGroup:
+    """A walked group whose first family member is its one antichain-minimal member."""
+    return MemberGroup(
+        five_tuple=_FIVE_TUPLE,
+        members=(Member(stat_var=family[0], constraints={}, declared_roles=("observationAbout",)),),
+        family=family,
+        candidates_considered=len(family),
+        candidate_cap=4_000,
+        truncated=truncated,
+        proven_complete=True,
+        root_confirmed=True,
     )
 
 
@@ -31,71 +47,50 @@ def _expected_digest(dcids: list[str]) -> str:
     return hashlib.sha256(rfc8785.dumps(sorted(dcids))).hexdigest()
 
 
-def test_no_population_yields_no_digest():
-    assert compute_member_digest(None) is None
+def test_a_complete_walk_states_its_served_members_and_hashes_its_sorted_family():
+    walked = WalkedMembers.of(_QUERY, _group(("Count_Person", "Count_Person_Female")))
 
-
-def test_inexact_population_yields_no_digest():
-    population = MemberPopulation(
-        admitted=2, admitted_dcids=("sv_b", "sv_a"), confirmed=1, exact=False
+    assert walked.key == walk_key(_QUERY)
+    assert walked.stated == StatedMembers(
+        served_count=1, digest=_expected_digest(["Count_Person", "Count_Person_Female"])
     )
 
-    assert compute_member_digest(population) is None
+
+def test_the_digest_is_independent_of_confirmation_order():
+    forward = WalkedMembers.of(_QUERY, _group(("Count_Person", "Count_Person_Female")))
+    backward = WalkedMembers.of(_QUERY, _group(("Count_Person_Female", "Count_Person")))
+
+    assert forward.stated.digest == backward.stated.digest
 
 
-def test_exact_population_hashes_the_sorted_bare_dcids():
-    population = MemberPopulation(
-        admitted=2, admitted_dcids=("sv_b", "sv_a"), confirmed=2, exact=True
+@pytest.mark.parametrize("truncated", [True, False])
+def test_a_walk_that_left_candidates_unread_states_no_digest(truncated: bool):
+    """A truncated page proven complete still serves its members, so the count stands; the
+    family past its window is unread, so neither surface digests it."""
+    group = _group(("Count_Person",), truncated=truncated)
+
+    walked = WalkedMembers.of(_QUERY, group)
+
+    assert group.stated_family == (None if truncated else frozenset({"Count_Person"}))
+    assert walked.stated == StatedMembers(
+        served_count=1, digest=None if truncated else _expected_digest(["Count_Person"])
     )
 
-    digest = compute_member_digest(population)
 
-    assert digest == _expected_digest(["sv_a", "sv_b"])
+def test_a_walk_asked_an_open_role_its_members_do_not_serve_states_the_answers_members():
+    """A part asks every origin of a family the index does not resolve. Its walk elects
+    under the bound keys alone, and the identity minted from the answer names no open role,
+    so that identity's own query finds the walk. A walk that elected under the open key
+    resolved another identity's members and states nothing for this one."""
+    document = education_aid_identity()
+    document["shape"]["population_type"] = "EconomicActivity"
+    _, identity = mint_identity(document)
+    asked = replace(identity_query(identity), open_role_keys=frozenset({"origin"}))
+    dropped = _group(("Amount_EconomicActivity",))
+    served = replace(dropped, elected_open_role_keys=frozenset({"origin"}))
 
-
-def test_digest_is_independent_of_admitted_dcids_order():
-    """Reordering the same member set leaves its sorted digest unchanged."""
-    forward = MemberPopulation(
-        admitted=3, admitted_dcids=("sv_a", "sv_b", "sv_c"), confirmed=3, exact=True
+    assert stated_members(identity, WalkedMembers.of(asked, dropped)) == StatedMembers(
+        served_count=1, digest=_expected_digest(["Amount_EconomicActivity"])
     )
-    reversed_order = MemberPopulation(
-        admitted=3, admitted_dcids=("sv_c", "sv_b", "sv_a"), confirmed=3, exact=True
-    )
-
-    assert compute_member_digest(forward) == compute_member_digest(reversed_order)
-
-
-def test_digest_moves_with_membership():
-    narrower = MemberPopulation(admitted=1, admitted_dcids=("sv_a",), confirmed=1, exact=True)
-    broader = MemberPopulation(admitted=2, admitted_dcids=("sv_a", "sv_b"), confirmed=2, exact=True)
-
-    assert compute_member_digest(narrower) != compute_member_digest(broader)
-
-
-def test_build_shape_model_carries_the_caller_supplied_digest_onto_the_wire():
-    shape_draft = _shape_draft()
-    population = MemberPopulation(
-        admitted=2, admitted_dcids=("sv_b", "sv_a"), confirmed=2, exact=True
-    )
-
-    shape = build_shape_model(
-        shape_draft,
-        slot_keys=[],
-        five_tuple_refs={},
-        member_count=population.admitted,
-        members=population.admitted_dcids,
-        member_digest=compute_member_digest(population),
-    )
-
-    assert shape.member_digest == _expected_digest(["sv_a", "sv_b"])
-
-
-def test_build_shape_model_defaults_member_digest_to_none():
-    """A caller without a population leaves the wire field null."""
-    shape_draft = _shape_draft()
-
-    shape = build_shape_model(
-        shape_draft, slot_keys=[], five_tuple_refs={}, member_count=1, members=None
-    )
-
-    assert shape.member_digest is None
+    assert WalkedMembers.of(asked, served).key == walk_key(asked)
+    assert stated_members(identity, WalkedMembers.of(asked, served)) is None

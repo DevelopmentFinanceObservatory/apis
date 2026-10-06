@@ -26,8 +26,7 @@ carries this ref."""
 
 SOURCE_REF = "source:"
 """The ref of the byline's source token. The token states it whenever it has text, and
-carries it as `binding_ref` only where the answer binds a source slot. A dataset the
-request named that the answer does not use departs on it."""
+carries it as `binding_ref` only where the answer binds a source slot."""
 
 METHOD_REF = "method:"
 """The `binding_ref` of the byline's method token (axis `method`), present only when the
@@ -74,8 +73,8 @@ class Departure(StrictModel):
         description=(
             "the identity binding whose edit clears this departure ('when:' for a "
             "year, 'how:<property dcid>' for a measure value, 'where:' or 'origin:' "
-            "for a role's entities, 'unit:' for the price basis, 'source:' for the "
-            "dataset); null for a departure no binding edit clears, such as an "
+            "for a role's entities, 'unit:' for the price basis); null for a "
+            "departure no binding edit clears, such as an "
             "operation the engine does not run. A client links the departure to the "
             "sentence token carrying the same binding_ref when the plan has one; a "
             "candidates or no_data plan, and a how slot the heading leaves silent, may "

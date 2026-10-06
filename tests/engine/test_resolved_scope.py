@@ -21,11 +21,11 @@ from search.models import (
     IdentityBindingValue,
     ResubmitIdentityPayload,
 )
-from tests.engine._base_identity import make_base, make_identity
+from tests.engine._base_identity import make_identity
 from tests.engine._builders import shape_five_tuple
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import materialise_double_from_obs
+from tests.engine._harness import materialise_double_from_obs, walk_options
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise._rate_table_support import CONVERTIBLE_STAT_VAR_ARCS, conversion_arcs
 
@@ -114,7 +114,6 @@ def _run(
             graph=graph,
             resolver=resolver if resolver is not None else make_resolver(graph),
             llm=llm if llm is not None else _FixedBindLLM(),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
@@ -168,7 +167,7 @@ def _minimal_build_spec_kwargs() -> dict:
         "stat_vars": [],
         "entities": [],
         "coverage": CoverageBare(has_data=False),
-        "pipeline_trace": [],
+        "open_roles": (),
     }
 
 
@@ -344,7 +343,6 @@ def test_scope_narrows_to_admitted_entities_when_unit_is_bound():
             graph=graph,
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
-            base_steps=[],
             base_timing={},
             sdmx=sdmx,
             unit_text="US dollars",
@@ -411,7 +409,7 @@ def test_candidates_each_carry_their_own_scope():
         assert spec.resolved.scope.axis == "observationAbout"
         assert len(spec.resolved.scope.members) == 1
         ref = spec.resolved.scope.members[0].ref
-        if any(sv.ref == _SV_A for sv in spec.resolved.stat_vars.items):
+        if any(sv.ref.dcid == _SV_A for sv in spec.resolved.members):
             assert ref == "country/A1"
         else:
             assert ref == "country/A2"
@@ -450,12 +448,8 @@ _RESUBMIT_NODES: dict = {
 
 
 def _entity_less_resubmit_input() -> ResubmitIdentityPayload:
-    base_spec_id, base_identity = make_base(_RESUBMIT_SHAPE, entities=[])
     return ResubmitIdentityPayload(
         identity=make_identity(_RESUBMIT_SHAPE, entities=[]),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[_RESUBMIT_SV],
     )
 
 
@@ -482,6 +476,7 @@ def test_resubmit_of_the_same_definition_carries_scope_again():
         graph=graph,
         sdmx=sdmx,
         coverage=empty_coverage_snapshot(),
+        options=walk_options(graph),
     )
 
     assert region.status == "definite", region.no_data_reason
@@ -494,16 +489,12 @@ def test_resubmit_of_the_same_definition_carries_scope_again():
 
 
 def _entity_less_resubmit_input_with_unit_binding(ref: str) -> ResubmitIdentityPayload:
-    base_spec_id, base_identity = make_base(_RESUBMIT_SHAPE, entities=[])
     return ResubmitIdentityPayload(
         identity=make_identity(
             _RESUBMIT_SHAPE,
             entities=[],
             explicit_facets={"unit": IdentityBindingValue(ref=ref)},
         ),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[_RESUBMIT_SV],
     )
 
 
@@ -551,6 +542,7 @@ def test_resubmit_scope_narrows_to_admitted_entities_when_unit_is_bound():
         graph=graph,
         sdmx=sdmx,
         coverage=empty_coverage_snapshot(),
+        options=walk_options(graph),
     )
 
     assert region.status == "definite", region.no_data_reason

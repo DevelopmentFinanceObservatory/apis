@@ -12,11 +12,8 @@ import pytest
 
 from artifact_store import StoredArtifact, Tier
 from dataset_store.snapshot import LiveSnapshotReader
-from datasets_api.adapter import build_identity_document
-from datasets_api.mint_models import Scope
 from datasets_api.revision import SentinelRevisionReader
 from datasets_api.schema import OptionsEnvelope as PublishedOptionsEnvelope
-from datasets_api.shape import resolve_shape
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
 from datasets_api.versions import ArtifactRecord, VersionRecord
@@ -26,7 +23,6 @@ from series_coverage.schema import FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
 from spec_registry.identity import recompute_identity
 from spec_registry.reader import LiveSpecReader
-from statvar_members import POSTED_MEMBER_CAP
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.materialise._rate_table_support import CONVERTIBLE_STAT_VAR_ARCS, conversion_arcs
 
@@ -38,14 +34,12 @@ from ._snapshot_doubles import FakeSnapshotReader
 from ._version_record_store import FakeVersionRecordDatasetStore
 from .conftest import FakeDatasetStore, wire_definition_for
 from .test_definition_door import (
-    _DESCRIBED_TWO_MEMBER_IDENTITY,
-    _currency_graph,
-    _currency_sdmx_transport,
-    _described_two_member_graph,
-    _unit_request_identity,
+    _coverage_service as _currency_coverage_service,
 )
 from .test_definition_door import (
-    _coverage_service as _currency_coverage_service,
+    _currency_graph,
+    _currency_sdmx_transport,
+    _unit_request_identity,
 )
 from .test_pin_door import FakeArtifactReferenceWriter
 
@@ -251,50 +245,6 @@ def test_definition_options_envelope_matches_a_minted_content_version():
     PublishedOptionsEnvelope.model_validate(envelope)
 
 
-def _member_sidecar(
-    stat_var_ref: str, *, entities: dict[str, list[str]], graph: FakeMintGraphReader
-) -> tuple[str, dict]:
-    shape = resolve_shape(stat_var_ref, graph=graph)
-    document = build_identity_document(
-        shape, scope=Scope(entities=entities, facets=_SCOPE["facets"])
-    )
-    recomputed = recompute_identity(document)
-    return recomputed.spec_id, {
-        "schema_version": 1,
-        "spec_id": recomputed.spec_id,
-        "identity": document,
-    }
-
-
-def test_collection_options_envelope_carries_output_options_per_member_never_at_the_top_level():
-    store = FakeDatasetStore()
-    graph = _graph()
-    client = _client(store=store, graph=graph)
-    _spec_ken, def_ken = _member_sidecar(
-        _STAT_VAR_REF, entities={"recipient": ["country/KEN"]}, graph=graph
-    )
-    _spec_uga, def_uga = _member_sidecar(
-        _STAT_VAR_REF, entities={"recipient": ["country/UGA"]}, graph=graph
-    )
-    reg = client.post(
-        "/api/datasets/register", json={"schema_version": 1, "members": [def_ken, def_uga]}
-    )
-    assert reg.status_code == 200, reg.text
-    collection_id = reg.json()["collection"]["collection_id"]
-
-    resp = client.get(f"/api/datasets/{collection_id}/options")
-
-    assert resp.status_code == 200, resp.text
-    envelope = resp.json()
-    assert set(envelope) <= _ENVELOPE_TOP_LEVEL_FIELDS
-    assert "output_options" not in envelope
-    members = envelope["collection"]["members"]
-    assert len(members) == 2
-    for member in members:
-        _assert_output_options_shape(member["output_options"])
-    PublishedOptionsEnvelope.model_validate(envelope)
-
-
 def test_the_options_route_stores_no_artifact_and_writes_no_version_record():
     store = FakeDatasetStore()
     writer = _RecordingVersionRecordWriter()
@@ -367,28 +317,6 @@ def test_posted_definition_answers_for_an_unregistered_spec_as_its_mint_and_writ
         }
 
 
-def test_posted_dcids_foreign_to_a_registered_spec_are_ignored_and_the_envelope_matches_get():
-    """A registered id resolves as GET resolves it, so the posted member dcids seed nothing."""
-    client = _client()
-    manifest = client.post("/api/datasets", json=_body()).json()
-    spec_id = manifest["definition"]["spec_id"]
-
-    got = client.get(f"/api/datasets/{spec_id}/options")
-    posted = client.post(
-        f"/api/datasets/{spec_id}/options",
-        json={
-            "definition": manifest["definition"],
-            "resolved_stat_var_dcids": [_STAT_VAR, "SomeOtherStatVar"],
-        },
-    )
-
-    assert got.status_code == 200, got.text
-    assert posted.status_code == 200, posted.text
-    assert {key: value for key, value in posted.json().items() if key != "trace"} == {
-        key: value for key, value in got.json().items() if key != "trace"
-    }
-
-
 def _foreign_identity(definition: dict) -> dict:
     """The same identity bound to another recipient, so it hashes to another spec id."""
     identity = json.loads(json.dumps(definition["identity"]))
@@ -421,37 +349,6 @@ def _definition_naming_another_id(definition: dict) -> dict:
             "spec_id_mismatch",
             [],
             id="definition-names-another-id",
-        ),
-        pytest.param(
-            lambda definition: {
-                "definition": definition,
-                "resolved_stat_var_dcids": [_STAT_VAR, "SomeOtherStatVar"],
-            },
-            422,
-            "member_not_resolvable",
-            ["/resolved_stat_var_dcids/1"],
-            id="posted-dcid-outside-the-family",
-        ),
-        pytest.param(
-            lambda definition: {
-                "definition": definition,
-                "resolved_stat_var_dcids": [_STAT_VAR]
-                + [f"OtherStatVar{i}" for i in range(1, 1_626)],
-            },
-            422,
-            "member_not_resolvable",
-            [f"/resolved_stat_var_dcids/{i}" for i in range(1, 1_626)],
-            id="1626-posted-dcids-clear-the-length-check",
-        ),
-        pytest.param(
-            lambda definition: {
-                "definition": definition,
-                "resolved_stat_var_dcids": [_STAT_VAR] * (POSTED_MEMBER_CAP + 1),
-            },
-            400,
-            "request_invalid",
-            [],
-            id="posted-dcids-over-the-ceiling",
         ),
     ],
 )
@@ -523,19 +420,20 @@ def test_a_query_key_on_the_options_route_refuses_request_invalid_with_an_option
             "/api/datasets/spec_unregistered/options",
             404,
             "spec_not_found",
-            "no definition or collection is registered at id 'spec_unregistered'",
+            "no definition is registered at id 'spec_unregistered'",
             id="unknown-spec-id",
         ),
         pytest.param(
             "/api/datasets/col_unregistered/options",
             404,
-            "spec_not_found",
-            "no definition or collection is registered at id 'col_unregistered'",
-            id="unknown-collection-id",
+            "not_found",
+            "'col_unregistered' is not a valid dataset id: an id is `spec_`-prefixed, "
+            "case-sensitive",
+            id="retired-collection-id",
         ),
     ],
 )
-def test_unknown_id_refuses_spec_not_found_on_the_options_route(
+def test_an_unknown_or_retired_id_refuses_on_the_options_route(
     route: str, expected_status: int, expected_code: str, expected_detail: str
 ) -> None:
     client = _client(graph=_graph())
@@ -651,25 +549,3 @@ class TestConversionRefusalsMapTo422OnTheOptionsRoute:
         assert "pointer" not in problem
         assert problem["cause"]["code"] == "rate_missing"
         assert problem["cause"]["entities"] == ["CurrencyFRF@2020"]
-
-
-def test_collection_member_enumerating_more_than_one_statvar_refuses_over_ceiling_on_the_options_route():
-    """The options route refuses a member ask that enumerates multiple StatVars."""
-    client = _client(graph=_described_two_member_graph())
-    spec_id = recompute_identity(_DESCRIBED_TWO_MEMBER_IDENTITY).spec_id
-    reg = client.post(
-        "/api/datasets/register",
-        json={
-            "schema_version": 1,
-            "members": [
-                wire_definition_for(spec_id=spec_id, identity=_DESCRIBED_TWO_MEMBER_IDENTITY)
-            ],
-        },
-    )
-    assert reg.status_code == 200, reg.text
-    collection_id = reg.json()["collection"]["collection_id"]
-
-    resp = client.get(f"/api/datasets/{collection_id}/options")
-
-    assert resp.status_code == 422, resp.text
-    assert resp.json()["code"] == "over_ceiling"

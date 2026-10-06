@@ -26,16 +26,19 @@ from search.engine.qualifier_match import _normalize
 from search.engine.region.arcs import standard_bindings_from_arcs
 from search.engine.region.codes import OBSERVATIONS_NOTHING_TO_PROBE
 from search.engine.region.named_source import with_named_source
-from search.engine.region.place_context import PlaceContext
+from search.engine.region.place_context import PlaceContext, settled_shape
 from search.engine.region.place_roles import PlaceRoles, where_binding
 from search.engine.region.result import RegionResult
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.bound_values import (
+    PartNotServed,
     RoleClassWalks,
-    bound_source,
+    WalkedMembers,
     canonical_pin_bindings,
     elected_role_class_shape,
     entity_role_keys,
+    part_source,
+    shape_for_part,
     shape_member_facts,
     shape_query,
     without_values,
@@ -70,13 +73,15 @@ form `_build_observations` returns."""
 
 @dataclass(frozen=True)
 class _Candidate:
-    """One shape offered for the answer: its bindings, its materialised result and the place
-    context it is grounded and read over (`PlaceContext.settled` on `mat`)."""
+    """One shape offered for the answer: its bindings, its materialised result, the place
+    context it is grounded and read over (`PlaceContext.settled` on `mat`), and what the
+    mint states of the members its walk settled (`MembershipResolution.walked`)."""
 
     shape: ShapeDraft
     bindings: list[SlotBindingDraft]
     mat: Materialised
     place: PlaceContext
+    walked: WalkedMembers | None
 
 
 def _prewarm_places(
@@ -100,12 +105,14 @@ def _prewarm_places(
 @dataclass(frozen=True)
 class _Alternate:
     """An alternate ready to materialise: its shape narrowed to the role class its entities
-    elect, the constraint bindings of its representative StatVar, and whether the mint's
-    walk left its members unsettled (`MembershipAuthority.settled`)."""
+    elect, the constraint bindings of its representative StatVar, whether the mint's walk
+    left its members unsettled (`MembershipAuthority.settled`), and what the mint states of
+    the members it settled (`MembershipResolution.walked`)."""
 
     shape: ShapeDraft
     bindings: list[SlotBindingDraft]
     unverified: bool = False
+    walked: WalkedMembers | None = None
 
 
 def alternate_representative(
@@ -135,17 +142,25 @@ def walk_alternate(
     roles: PlaceRoles,
     rep_sv: str,
     *,
-    elected_bindings: list[SlotBindingDraft],
     graph: EngineGraphClient,
     deadline: float | None = None,
     role_class_walks: RoleClassWalks | None = None,
+    excluded: frozenset[str] = frozenset(),
 ) -> _Alternate | None:
     """Give an alternate the constraint bindings of `rep_sv` and narrow it to the role class
-    its entities elect, or return `None` when the mint refuses its identity.
+    its entities elect, or return `None` when the mint refuses its identity or no table the
+    part may answer the alternate from holds a row for those bindings
+    (`bound_values.PartNotServed`), so an alternate is never served from a table the part
+    excludes or from a table of another family.
 
     The chosen shape alone receives model bindings. An alternate derives constraint bindings
-    from its representative StatVar (`alternate_representative`), and names the dataset the
-    chosen shape's bindings name when that dataset publishes it. Its bindings on the invariants
+    from its representative StatVar (`alternate_representative`), and names the dataset its
+    shape names (`with_named_source`), as the chosen shape does, so its identity is the one
+    a question electing it mints. When the shape names none, the alternate names the
+    dataset the part, which excludes the datasets `excluded`, is served from under those
+    bindings and its role keys, where its unnamed identity would resolve to another at the
+    mint (`part_source`), as the elected shape is named under the model's bindings. Its
+    bindings on the invariants
     of the dataset its family elects take their canonical form as the chosen shape's do
     (`canonical_pin_bindings`), so its slots state what its canonical identity binds.
 
@@ -160,11 +175,15 @@ def walk_alternate(
     places (`place_roles.bound_after_election`) and builds its place context after this
     call.
     """
-    bindings = with_named_source(
-        standard_bindings_from_arcs(shape=shape, rep_sv_dcid=rep_sv),
-        shape,
-        bound_source(elected_bindings),
-    )
+    bindings = standard_bindings_from_arcs(shape=shape, rep_sv_dcid=rep_sv)
+    role_keys = entity_role_keys(roles.resolved_entities, open_axes=roles.open_axes)
+    try:
+        source = part_source(shape, bindings, lambda: role_keys, excluded=excluded)
+    except PartNotServed:
+        return None
+    if source is not None and shape.named_dataset is None:
+        shape = shape_for_part(shape, source)
+    bindings = with_named_source(bindings, shape)
     where = where_binding(roles.where_dcids)
     try:
         resolution = elected_role_class_shape(
@@ -172,7 +191,8 @@ def walk_alternate(
             shape_query(
                 shape,
                 bindings if where is None else [*bindings, where],
-                entity_role_keys(shape, roles.resolved_entities),
+                role_keys.bound,
+                open_role_keys=role_keys.open,
             ),
             walks=role_class_walks,
             arcs_graph=graph,
@@ -181,10 +201,8 @@ def walk_alternate(
     except (RoleSignatureError, FamilyNotResolvableError):
         return None
     elected = resolution.value
-    canonical = canonical_pin_bindings(
-        elected, bindings, entity_role_keys(elected, roles.resolved_entities)
-    )
-    return _Alternate(elected, canonical, not resolution.authority.settled)
+    canonical = canonical_pin_bindings(elected, bindings, role_keys)
+    return _Alternate(elected, canonical, not resolution.authority.settled, resolution.walked)
 
 
 def elect_alternate(
@@ -208,7 +226,6 @@ def elect_alternate(
         shape,
         roles,
         rep_sv,
-        elected_bindings=elected_bindings,
         graph=graph,
         deadline=deadline,
         role_class_walks=role_class_walks,
@@ -255,11 +272,10 @@ def _materialise_alt_shapes(
     prewarms: dict[tuple[str, ...] | None, dict[str, tuple[str, ...]]] = {}
     for alternate, place in zip(alternates, places, strict=True):
         shape = alternate.shape
+        role_keys = entity_role_keys(place.roles.resolved_entities, open_axes=place.roles.open_axes)
         shape_members, _index_sourced = shape_member_facts(
             shape,
-            shape_query(
-                shape, alternate.bindings, entity_role_keys(shape, place.roles.resolved_entities)
-            ),
+            shape_query(shape, alternate.bindings, role_keys.bound, open_role_keys=role_keys.open),
         )
         places_of = _prewarm_places(shape, list(shape_members), place, presence, named_place_dcids)
         if not any(places_of.values()):
@@ -295,6 +311,7 @@ def _materialise_alt_shapes(
                     place_dcids=place.probe_places,
                     default_presence=place.presence_for(presence),
                     discover_scope=True,
+                    open_axes=place.roles.open_axes,
                     coverage=coverage,
                 )
                 if not isinstance(result, BoundValuesUnrealisable):
@@ -314,7 +331,15 @@ def _materialise_alt_shapes(
         if isinstance(result, Materialised) and result.has_data:
             if alternate.unverified:
                 result = dataclasses.replace(result, membership_unverified=True)
-            results.append(_Candidate(alternate.shape, bindings, result, place.settled(result)))
+            results.append(
+                _Candidate(
+                    settled_shape(alternate.shape, result),
+                    bindings,
+                    result,
+                    place.settled(result),
+                    alternate.walked,
+                )
+            )
     return results, None
 
 

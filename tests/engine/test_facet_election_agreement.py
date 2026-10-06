@@ -254,7 +254,6 @@ def test_scope_bulk_path_names_the_served_facets_latest_period(
                 graph=graph,
                 resolver=make_resolver(graph),
                 llm=place_scope._FixedBindLLM(),
-                base_steps=[],
                 base_timing={},
                 sdmx=sdmx,
                 coverage=empty_coverage_snapshot(),

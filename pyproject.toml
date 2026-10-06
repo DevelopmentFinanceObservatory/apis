@@ -189,7 +189,7 @@ dfo-data-tools = { workspace = true }
 # refusals and `service_unavailable` onto it.
 # Follow-up: move all four to a real spec-kit tag once one is cut, so a
 # future force-push or GC on spec-kit's main can't silently break this lock.
-dfo-spec-kit = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "f494e75de196b409e662c91c67600b0a8327c71a", subdirectory = "python/spec-kit" }
+dfo-spec-kit = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "8ee8d133020bdc92c2b147369f17fe289edb11c1", subdirectory = "python/spec-kit" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -116,6 +116,7 @@ def test_a_windowed_discovered_pair_serves_the_planned_facet(search_settings) ->
     window = DateRequest(window=TimeWindow(start_year=2020, end_year=2022), latest=False)
     mat = discover_role_scope(
         surviving_svs=["V"],
+        admitted_dcids=["V"],
         member_facts={},
         member_population_exact=True,
         open_flow_axis="destination",

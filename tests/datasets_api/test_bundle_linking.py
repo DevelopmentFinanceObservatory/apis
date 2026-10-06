@@ -262,17 +262,10 @@ def test_bundle_metadata_reads_keep_their_floor_past_the_request_deadline(
     assert all(budget is not None and budget > 30 for budget in graph.label_budgets)
 
 
-@pytest.mark.parametrize(
-    "stat_vars",
-    [["dcid:LinkingLinkedNoHeal"], ["dcid:LinkingLinkedNoHealA", "dcid:LinkingLinkedNoHealB"]],
-    ids=["definition", "collection"],
-)
-def test_a_remint_of_a_linked_bundle_reads_no_documentation_to_fill_its_citation(
-    version_store, stat_vars: list[str]
-):
+def test_a_remint_of_a_linked_bundle_reads_no_documentation_to_fill_its_citation(version_store):
     """The stored citation has no licence URL, but the version's bundle is linked and
-    servable, so the re-mint lists that bundle and reads no documentation, for a definition
-    and for a collection."""
+    servable, so the re-mint lists that bundle and reads no documentation."""
+    stat_vars = ["dcid:LinkingLinkedNoHeal"]
     arcs = _arcs(stat_vars)
     graph = _graph(stat_vars, arcs, _FlakyGraph)
     client, _artifact_store = _client(

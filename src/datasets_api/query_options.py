@@ -18,7 +18,7 @@ from dfo_platform.validation import pointer_segment
 
 # Each closed-namespace query key's equivalent (top-level field, nested
 # key) in the mint body's `options` object. A top-level scalar field
-# (`format`, `bundle`, `columns`) carries `None` as its nested key.
+# (`format`, `bundle`, `columns`, `layout`) carries `None` as its nested key.
 # Extending the namespace -- a new option, or a dotted key for a field
 # that gains its own sub-structure -- means adding one row here.
 _NAMESPACE: dict[str, tuple[str, str | None]] = {
@@ -30,6 +30,7 @@ _NAMESPACE: dict[str, tuple[str, str | None]] = {
     "pivot.index": ("pivot", "index"),
     "pivot.columns": ("pivot", "columns"),
     "columns": ("columns", None),
+    "layout": ("layout", None),
 }
 # `groupby.by` is a comma-separated list like `columns`. The other nested keys are strings.
 _COMMA_JOINED_NESTED_KEYS: frozenset[str] = frozenset({"groupby.by"})
@@ -158,4 +159,6 @@ def encode_query_options(options: MintOptions) -> dict[str, str]:
                 encoded[key] = str(getattr(options.pivot, cast(str, subfield)))
         elif field == "columns" and options.columns is not None:
             encoded[key] = ",".join(options.columns)
+        elif field == "layout" and options.layout is not None:
+            encoded[key] = options.layout
     return encoded

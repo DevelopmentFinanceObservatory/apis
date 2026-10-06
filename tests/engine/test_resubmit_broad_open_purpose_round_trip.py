@@ -32,7 +32,8 @@ from tests.engine._axis_doubles import axis_confirming_reader
 from tests.engine._base_identity import destination_entity, make_base
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._index_slots import query_for
+from tests.engine._harness import walk_options
+from tests.engine._index_slots import crs_flow_slot_keys, query_for
 from tests.engine.test_candidates_measure_alternatives import _ROLE_RECIPIENT, _ROLES
 from tests.engine.test_resubmit_alternative_measure_round_trip import (
     _KEN,
@@ -120,7 +121,7 @@ def _real_election():
         stat_type_dcid="measuredValue",
         meas_qual_dcid="Nominal",
         meas_denom_dcid=None,
-        slot_keys=(),
+        slot_keys=crs_flow_slot_keys(),
     )
     bound_values = {
         "crsTypeOfFinance": list(index.descendants(_FINANCE_ROLLUP)),
@@ -147,19 +148,10 @@ def _member_rows_for(dcids) -> list:
     return rows
 
 
-def _round_trip(
-    *,
-    name: str,
-    identity,
-    base_spec_id: str,
-    base_identity,
-    expect_label: str,
-    monkeypatch,
-    seed: list[str] | None = None,
-) -> None:
+def _round_trip(*, name: str, identity, expect_label: str, monkeypatch) -> None:
     """Resubmits an identity and checks its label and finance binding.
 
-    Family membership comes from the index election; any posted seed is ignored. The rollup value must be echoed.
+    Family membership comes from the index election. The rollup value must be echoed.
     """
     shape = identity.shape
     dcids = _partition_members_for(shape, identity)
@@ -177,16 +169,13 @@ def _round_trip(
 
     inp = ResubmitIdentityPayload(
         identity=identity,
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=seed,
     )
     region = resolve_spec_resubmit(
         inp=inp,
         graph=graph,
         sdmx=sdmx,
         coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
-        options=EngineOptions(materialise_graph=materialise_graph),
+        options=walk_options(graph, EngineOptions(materialise_graph=materialise_graph)),
     )
 
     assert region.status == "definite", (
@@ -248,11 +237,11 @@ def _partition_members_for(shape, identity) -> tuple[str, ...]:
 
 
 def test_base_spec_and_every_real_alternative_round_trip_over_an_open_purpose_axis(monkeypatch):
-    """The base identity and both published alternatives recover their labels without a seed."""
+    """The elected identity and both published alternatives recover their labels."""
     election = _real_election()
     assert len(election.siblings) == 2
 
-    base_spec_id, elected_identity = _elected_identity()
+    _spec_id, elected_identity = _elected_identity()
     alternatives, (elected_label, _, _) = _measure_alternatives(
         elected_identity, election.elected, election.siblings
     )
@@ -264,8 +253,6 @@ def test_base_spec_and_every_real_alternative_round_trip_over_an_open_purpose_ax
     _round_trip(
         name="BASE (self)",
         identity=elected_identity,
-        base_spec_id=base_spec_id,
-        base_identity=elected_identity,
         expect_label=elected_label,
         monkeypatch=monkeypatch,
     )
@@ -287,8 +274,6 @@ def test_base_spec_and_every_real_alternative_round_trip_over_an_open_purpose_ax
         _round_trip(
             name=kind,
             identity=identity,
-            base_spec_id=alternative.definition.spec_id,
-            base_identity=identity,
             expect_label=alternative.label,
             monkeypatch=monkeypatch,
         )
@@ -319,7 +304,7 @@ def _narrowed_identity(finance_leaf: str):
 
 
 def _multi_sibling_sdmx(sibling_svs) -> FakeSdmxClient:
-    """Adds an observation for each member in a multi-member seed."""
+    """Adds an observation for each member of a multi-member family."""
     observations = {
         sv: {
             ((_ROLE_RECIPIENT, _KEN),): [
@@ -350,7 +335,7 @@ def _members_for_finance_values(finance_values: list[str]) -> tuple[str, ...]:
         stat_type_dcid="measuredValue",
         meas_qual_dcid="Nominal",
         meas_denom_dcid=None,
-        slot_keys=(),
+        slot_keys=crs_flow_slot_keys(),
     )
     bound_values = {
         "crsTypeOfFinance": finance_values,
@@ -374,13 +359,11 @@ def _members_for_finance_values(finance_values: list[str]) -> tuple[str, ...]:
 def test_narrowing_crs_type_of_finance_from_the_rollup_to_a_real_leaf_elects_that_leafs_own_family(
     monkeypatch,
 ):
-    """`base_identity` binds `crsTypeOfFinance` to the hierarchical rollup
+    """The elected identity binds `crsTypeOfFinance` to the hierarchical rollup
     (`CRSTypeOfFinance100`), and the client narrows to one real leaf
-    (`CRSTypeOfFinance110`), posting no seed at all: membership always comes
-    from the packaged index's own election now, which recovers every real
-    member sharing that leaf, not a client-posted echo of it.
+    (`CRSTypeOfFinance110`): the packaged index's election recovers every real
+    member sharing that leaf.
     """
-    base_spec_id, elected_identity = _elected_identity()
     leaf = "CRSTypeOfFinance110"
     member_dcids = _members_for_finance_values([leaf])
     member_rows = _member_rows_for(member_dcids)
@@ -394,29 +377,24 @@ def test_narrowing_crs_type_of_finance_from_the_rollup_to_a_real_leaf_elects_tha
     )
     materialise_graph = axis_confirming_reader(*member_dcids, graph=graph)
 
-    inp = ResubmitIdentityPayload(
-        identity=_narrowed_identity(leaf), base_spec_id=base_spec_id, base_identity=elected_identity
-    )
+    inp = ResubmitIdentityPayload(identity=_narrowed_identity(leaf))
     region = resolve_spec_resubmit(
         inp=inp,
         graph=graph,
         sdmx=sdmx,
         coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
-        options=EngineOptions(materialise_graph=materialise_graph),
+        options=walk_options(graph, EngineOptions(materialise_graph=materialise_graph)),
     )
 
     assert region.status == "definite", (
         region.no_data_reason if region.status != "definite" else None
     )
-    stat_vars = region.specs[0].resolved.stat_vars
-    assert stat_vars.member_count == len(member_dcids)
-    assert {sv.ref for sv in stat_vars.items} <= set(member_dcids)
+    resolved = region.specs[0].resolved
+    assert resolved.stat_vars.member_count == len(member_dcids)
+    assert {sv.ref.dcid for sv in resolved.members} <= set(member_dcids)
 
-    # The client's own edit (narrowing crsTypeOfFinance from the rollup down
-    # to this one real leaf) must read back as that leaf, not the rollup:
-    # this is an edited property (_narrowed_identity posts the leaf, which
-    # differs from base_identity's own rollup), so it never reaches the
-    # plurality-reconstruction loop's rollup-echo branch at all.
+    # The client's edit, narrowing crsTypeOfFinance from the rollup to one real leaf, reads
+    # back as that leaf, not the rollup.
     finance_slot = next(
         s
         for s in region.specs[0].resolved.slots
@@ -425,42 +403,6 @@ def test_narrowing_crs_type_of_finance_from_the_rollup_to_a_real_leaf_elects_tha
     assert finance_slot.binding.kind == "value"
     assert finance_slot.binding.value.ref is not None
     assert finance_slot.binding.value.ref.dcid == leaf
-
-
-def test_seed_from_an_unrelated_finance_subtree_leaves_membership_unchanged(monkeypatch):
-    """An unrelated member seed does not change the family's indexed membership."""
-    base_spec_id, elected_identity = _elected_identity()
-    election = _real_election()
-    _, (elected_label, _, _) = _measure_alternatives(
-        elected_identity, election.elected, election.siblings
-    )
-    assert elected_label is not None
-
-    index = get_index()
-    finance_descendants = set(index.descendants(_FINANCE_ROLLUP))
-    bad_row = next(
-        row
-        for row in index.statvars
-        if row.population_type == "FinancialFlow"
-        and row.measured_property == "amount"
-        and row.stat_type == "measuredValue"
-        and row.measurement_qualifier == "Nominal"
-        and row.constraint_properties.get("financialFlowType") == "Disbursement"
-        and row.constraint_properties.get("nettingBasis") == "Gross"
-        and row.constraint_properties.get("crsTypeOfFlow") == _FLOW
-        and row.constraint_properties.get("crsTypeOfFinance") not in finance_descendants
-    )
-    assert bad_row.constraint_properties["crsTypeOfFinance"] not in finance_descendants
-
-    _round_trip(
-        name="BASE (self), posted with an unrelated seed",
-        identity=elected_identity,
-        base_spec_id=base_spec_id,
-        base_identity=elected_identity,
-        expect_label=elected_label,
-        seed=[bad_row.dcid],
-        monkeypatch=monkeypatch,
-    )
 
 
 def _set_bound_identity(leaves: list[str]):
@@ -484,12 +426,12 @@ def _set_bound_identity(leaves: list[str]):
 
 
 def test_unedited_resubmit_of_a_posted_leaf_set_still_reads_as_that_set(monkeypatch):
-    """An unedited leaf set is echoed unchanged, without a seed."""
+    """An unedited leaf set is echoed unchanged."""
     leaf_a, leaf_b = "CRSTypeOfFinance110", "CRSTypeOfFinance210"
     member_dcids = _members_for_finance_values([leaf_a, leaf_b])
     member_rows = _member_rows_for(member_dcids)
 
-    base_spec_id, identity = _set_bound_identity([leaf_a, leaf_b])
+    _base_spec_id, identity = _set_bound_identity([leaf_a, leaf_b])
 
     graph = _family_graph(member_rows)
     sdmx = _multi_sibling_sdmx(member_dcids)
@@ -500,15 +442,13 @@ def test_unedited_resubmit_of_a_posted_leaf_set_still_reads_as_that_set(monkeypa
     )
     materialise_graph = axis_confirming_reader(*member_dcids, graph=graph)
 
-    inp = ResubmitIdentityPayload(
-        identity=identity, base_spec_id=base_spec_id, base_identity=identity
-    )
+    inp = ResubmitIdentityPayload(identity=identity)
     region = resolve_spec_resubmit(
         inp=inp,
         graph=graph,
         sdmx=sdmx,
         coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
-        options=EngineOptions(materialise_graph=materialise_graph),
+        options=walk_options(graph, EngineOptions(materialise_graph=materialise_graph)),
     )
 
     assert region.status == "definite", (

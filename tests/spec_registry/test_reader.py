@@ -8,7 +8,7 @@ from contextlib import contextmanager
 import pytest
 
 from dataset_store.errors import PoolTimeoutError
-from spec_registry import LiveSpecRegistry, MemberDefinition
+from spec_registry import LiveSpecRegistry
 from spec_registry.errors import (
     IdentityQuarantined,
     SpecRegistryStoreError,
@@ -124,78 +124,6 @@ def test_read_definition_raises_identity_quarantined_for_a_quarantined_spec_id()
 
     with pytest.raises(IdentityQuarantined):
         reader.read_definition(recomputed.spec_id)
-
-
-def test_read_collection_returns_none_for_an_unregistered_id():
-    reader = LiveSpecReader(store=FakeDatasetStore())
-    assert reader.read_collection("col_does_not_exist") is None
-
-
-def _register_two_member_collection(store: FakeDatasetStore):
-    registry = _registry(store)
-    identities = [minimal_identity(shape=shape_for(f"shape_{i}")) for i in range(2)]
-    members = [
-        MemberDefinition(
-            identity_definition=identity,
-            schema_version=1,
-            supplied_spec_id=recompute_identity(identity).spec_id,
-        )
-        for identity in identities
-    ]
-    return registry.register_collection(members=members)
-
-
-def test_read_collection_returns_sorted_member_spec_ids():
-    store = FakeDatasetStore()
-    registered = _register_two_member_collection(store)
-    reader = LiveSpecReader(store=store)
-
-    stored = reader.read_collection(registered.collection_id)
-
-    assert stored is not None
-    assert stored.collection_id == registered.collection_id
-    assert stored.member_spec_ids == registered.member_spec_ids
-
-
-def test_read_collection_raises_identity_quarantined_for_a_quarantined_collection_id():
-    state = FakeRegistryState()
-    store = FakeDatasetStore(state=state)
-    registered = _register_two_member_collection(store)
-    state.identity_quarantine.append(
-        {
-            "id_kind": "collection",
-            "subject_id": registered.collection_id,
-            "held_bytes": b"{}",
-            "incoming_bytes": b"{}",
-            "trace_id": None,
-        }
-    )
-    reader = LiveSpecReader(store=store)
-
-    with pytest.raises(IdentityQuarantined):
-        reader.read_collection(registered.collection_id)
-
-
-def test_read_collection_pool_timeout_raises_retryable_unavailable() -> None:
-    pool_timeout = PoolTimeoutError("no connection freed up within 30.0s (pool size 2)")
-    reader = LiveSpecReader(store=_RaisingFakeDatasetStore(pool_timeout))
-
-    with pytest.raises(SpecRegistryUnavailable) as excinfo:
-        reader.read_collection("col_x")
-
-    assert "PoolTimeoutError" in str(excinfo.value)
-    assert "no connection freed up" not in str(excinfo.value)
-
-
-def test_read_collection_generic_store_failure_raises_non_retryable_with_safe_class_name() -> None:
-    driver_exc = RuntimeError("driver-secret: connection reset by peer on host db.internal")
-    reader = LiveSpecReader(store=_RaisingFakeDatasetStore(driver_exc))
-
-    with pytest.raises(SpecRegistryStoreError) as excinfo:
-        reader.read_collection("col_x")
-
-    assert "RuntimeError" in str(excinfo.value)
-    assert "driver-secret" not in str(excinfo.value)
 
 
 def test_read_definitions_pool_timeout_raises_retryable_unavailable() -> None:

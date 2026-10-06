@@ -490,7 +490,7 @@ class TestOfflineContractGuardFires:
 
 
 class TestGenerationLifespanWiring:
-    """The lifespan passes one generation provider to seven caches and unregisters them."""
+    """The lifespan passes one generation provider to eight caches and unregisters them."""
 
     _EXPECTED_REGISTERED_NAMES = (
         "search.admission",
@@ -498,18 +498,21 @@ class TestGenerationLifespanWiring:
         "search.default_place_scope",
         "search.entity_resolver",
         "search.graph_client",
+        "search.materialise_sdmx",
         "search.options_population_memo",
         "search.options_response_cache",
         "search.response_cache",
+        "search.response_cache_memo",
         "search.sdmx",
     )
 
     def test_injected_generation_reaches_every_lifespan_built_cache_and_registers_it(
         self, monkeypatch
     ):
-        """Six caches and the response cache share the injected generation provider, and
-        the default place scope's process-wide memo and the conversion catalogue's reload
-        register on it. All nine registrations clear when the lifespan exits."""
+        """Seven caches, the response cache and its part memo share the injected generation
+        provider, and the default place scope's process-wide memo and the conversion
+        catalogue's reload register on it. All eleven registrations clear when the lifespan
+        exits."""
         fake = FakeGeneration(token="gen-a")
         captured: dict[str, object] = {}
 
@@ -547,6 +550,13 @@ class TestGenerationLifespanWiring:
             app_module, "EntityResolver", _spy("entity_resolver", app_module.EntityResolver)
         )
         monkeypatch.setattr(app_module, "Admission", _spy("admission", app_module.Admission))
+        build_materialise_sdmx_client = app_module.build_materialise_sdmx_client
+
+        def _spy_materialise_sdmx(**kwargs):
+            captured["materialise_sdmx"] = built = build_materialise_sdmx_client(**kwargs)
+            return built
+
+        monkeypatch.setattr(app_module, "build_materialise_sdmx_client", _spy_materialise_sdmx)
 
         surface = search_surface(
             llm=FakeLLM(),
@@ -561,6 +571,7 @@ class TestGenerationLifespanWiring:
                 assert set(captured) == {
                     "graph_client",
                     "sdmx",
+                    "materialise_sdmx",
                     "options_response_cache",
                     "options_population_memo",
                     "entity_resolver",

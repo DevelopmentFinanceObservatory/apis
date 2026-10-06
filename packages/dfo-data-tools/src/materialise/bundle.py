@@ -45,7 +45,7 @@ DFO_EMAIL = "data@one.org"
 """The DFO's contact address."""
 
 CODES_PATH = "data/codes.csv"
-"""Bundle path of the codes table, shared by every member of a collection."""
+"""Bundle path of the codes table."""
 
 CODES_RESOURCE_NAME = "codes"
 """Resource name of the codes table, which data resources' foreign keys reference."""
@@ -223,7 +223,7 @@ class MemberProvenance:
     """One bundle member: its data file, sources and column meanings."""
 
     spec_id: str
-    """The member's spec id. A collection's members must match its spec's `members` in order."""
+    """The member's spec id, which must match its spec's `spec_id`."""
     title: str
     """The member data's heading, written as the resource `title`."""
     artifact: ArtifactEntry
@@ -234,8 +234,6 @@ class MemberProvenance:
     """One entry per documented column, in file order."""
     description: str | None = None
     """What one row of the member's data holds, written as the resource `description`."""
-    row_count: int | None = None
-    """Rows in the member's data file, `None` when unknown. A collection README prints it."""
 
 
 @dataclass(frozen=True)
@@ -285,8 +283,8 @@ class BundleContext:
     links: BundleLinks
     """Absolute URLs for this version."""
     rebuild_request: Mapping[str, object] | None = None
-    """The exact `POST /api/datasets` body that re-mints a standalone dataset, `None` for a
-    collection or a card export."""
+    """The exact `POST /api/datasets` body that re-mints the dataset, `None` for a card
+    export."""
 
 
 @dataclass(frozen=True)
@@ -311,19 +309,17 @@ def assemble_bundle(
     codes: Sequence[CodeEntry],
 ) -> dict[str, bytes]:
     """Assembles one data resource per member, plus the codes resource when `codes` is
-    non-empty. The spec shape distinguishes collections from standalone bundles.
+    non-empty.
 
     `reproducing_call=None` omits `dfo.reproducing_call`.
 
     Raises `MaterialisationUsageError` for no members, an identity mismatch, a column
     description naming no schema field, colliding resource names or paths, an invalid slug, a
     naive `prepared_at`, a code listed twice with different entries, or a code a spreadsheet
-    would read as a formula. A standalone spec must match its single member. A collection's
-    `members` list must match supplied `spec_id`s in order."""
+    would read as a formula. The spec must match its single member."""
     if not members:
         raise MaterialisationUsageError("assemble_bundle requires at least one member")
-    is_collection = _is_collection(spec)
-    _validate_identity(spec, members, is_collection=is_collection)
+    _validate_identity(spec, members)
 
     dfo_property: dict[str, object] = {
         "spec": dict(spec),
@@ -333,9 +329,7 @@ def assemble_bundle(
     }
     if reproducing_call is not None:
         dfo_property["reproducing_call"] = _reproducing_call_entry(reproducing_call, context)
-    if is_collection:
-        dfo_property["members"] = [member.spec_id for member in members]
-    definition_id = spec.get("collection_id") if is_collection else spec.get("spec_id")
+    definition_id = spec.get("spec_id")
     return _assemble(
         members=members,
         context=context,
@@ -343,7 +337,6 @@ def assemble_bundle(
         dfo_property=dfo_property,
         reproducing_call=reproducing_call,
         definition_id=definition_id if isinstance(definition_id, str) else None,
-        is_collection=is_collection,
     )
 
 
@@ -392,7 +385,6 @@ def _assemble(
     dfo_property: Mapping[str, object],
     reproducing_call: ReproducingCall | None,
     definition_id: str | None = None,
-    is_collection: bool = False,
     export: ComponentExport | None = None,
 ) -> dict[str, bytes]:
     codes_csv = _codes_csv(codes) if codes else None
@@ -407,7 +399,6 @@ def _assemble(
         codes=codes,
         codes_path=CODES_PATH if codes_csv is not None else None,
         definition_id=definition_id,
-        is_collection=is_collection,
         reproducing_call=reproducing_call,
         export=export,
     )
@@ -426,46 +417,21 @@ def _assemble(
     return files
 
 
-def _is_collection(spec: Mapping[str, object]) -> bool:
-    """Collection status follows `collection_id` or `members` in the canonical spec. A
-    one-member collection keeps `dfo.members`."""
-    return "collection_id" in spec or "members" in spec
-
-
-def _validate_identity(
-    spec: Mapping[str, object], members: Sequence[MemberProvenance], *, is_collection: bool
-) -> None:
-    """Raises `MaterialisationUsageError` unless a standalone `spec_id` matches its member,
-    or a collection's `members` exactly match supplied `spec_id`s in order."""
-    if not is_collection:
-        if len(members) != 1:
-            raise MaterialisationUsageError(
-                f"a standalone spec requires exactly one member; got {len(members)}"
-            )
-        if "spec_id" not in spec:
-            raise MaterialisationUsageError(
-                "a standalone spec requires a spec_id key to validate "
-                f"against its member's spec_id ({members[0].spec_id!r})"
-            )
-        if members[0].spec_id != spec["spec_id"]:
-            raise MaterialisationUsageError(
-                f"member spec_id {members[0].spec_id!r} does not match "
-                f"spec's spec_id {spec['spec_id']!r}"
-            )
-        return
-
-    if "members" not in spec:
+def _validate_identity(spec: Mapping[str, object], members: Sequence[MemberProvenance]) -> None:
+    """Raises `MaterialisationUsageError` unless the spec's `spec_id` matches its one member."""
+    if len(members) != 1:
         raise MaterialisationUsageError(
-            "a collection spec requires a members key to validate against "
-            f"the supplied members ({[m.spec_id for m in members]!r})"
+            f"a standalone spec requires exactly one member; got {len(members)}"
         )
-    declared_members = spec["members"]
-    assert isinstance(declared_members, Sequence)
-    declared = list(declared_members)
-    supplied = [member.spec_id for member in members]
-    if declared != supplied:
+    if "spec_id" not in spec:
         raise MaterialisationUsageError(
-            f"collection spec's members {declared!r} do not match the supplied members {supplied!r}"
+            "a standalone spec requires a spec_id key to validate "
+            f"against its member's spec_id ({members[0].spec_id!r})"
+        )
+    if members[0].spec_id != spec["spec_id"]:
+        raise MaterialisationUsageError(
+            f"member spec_id {members[0].spec_id!r} does not match "
+            f"spec's spec_id {spec['spec_id']!r}"
         )
 
 

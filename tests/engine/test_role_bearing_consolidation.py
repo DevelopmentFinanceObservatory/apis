@@ -8,6 +8,7 @@ from __future__ import annotations
 import dataclasses
 
 from search.engine.clients.graph import Facet
+from search.engine.quantity import NO_REQUIREMENT
 from search.engine.region.availability import (
     _prune_availability_siblings,
     _resolve_sibling_availability,
@@ -59,7 +60,9 @@ class TestIsRoleBearingDeclarationPerturbation:
         shape = _shape(declared_roles=("observationAbout",))
         assert is_role_bearing(shape) is False
 
-        to_survive, _ = _prune_availability_siblings([shape], named_place=True)
+        to_survive, _ = _prune_availability_siblings(
+            [shape], named_place=True, quantity=NO_REQUIREMENT, denominator_kinds={}
+        )
         assert to_survive == [shape]
 
 

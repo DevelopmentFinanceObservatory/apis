@@ -27,14 +27,14 @@ from search.models import (
     ResubmitIdentityPayload,
 )
 from tests.engine import _answer_invariants_world as world_module
-from tests.engine._base_identity import make_base, subject_entity
+from tests.engine._base_identity import make_identity, subject_entity
 from tests.engine._fake_coverage import (
     FakeCoverageService,
     build_coverage_index,
     empty_coverage_snapshot,
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import materialise_double_from_obs
+from tests.engine._harness import materialise_double_from_obs, walk_options, with_member_arcs
 from tests.fixtures import FakeGraph, make_resolver
 
 
@@ -185,7 +185,6 @@ def _run_text(
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_SoleShapeLLM(),
-            base_steps=[],
             base_timing={},
             unit_text=unit_text,
             unit_text_best_effort=unit_text_best_effort,
@@ -347,7 +346,6 @@ def test_missing_materialise_graph_raises_infra_error():
                 resolver=make_resolver(graph),
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 llm=_SoleShapeLLM(),
-                base_steps=[],
                 base_timing={},
                 unit_text="USD",
                 coverage=empty_coverage_snapshot(),
@@ -385,7 +383,6 @@ def test_ref_form_unit_is_unaffected():
                 resolver=make_resolver(graph),
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 llm=_SoleShapeLLM(),
-                base_steps=[],
                 base_timing={},
                 unit_text=None,
                 coverage=empty_coverage_snapshot(),
@@ -496,7 +493,6 @@ def test_discovered_scope_role_bearing_resolve_runs_the_decision(monkeypatch):
                 resolver=make_resolver(graph),
                 sdmx=sdmx,
                 llm=_FixedBindLLM(),
-                base_steps=[],
                 base_timing={},
                 unit_text="USD",
                 coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
@@ -528,7 +524,28 @@ def _resubmit(
     include_materialise: bool = True,
 ):
     obs = {f"{_SV}|{_ENTITY}": obs_facets}
-    graph = FakeGraph(nodes=_NODES, obs=obs)
+    # The graph Search reads states the StatVar as materialise does, so the resubmit's member
+    # walk elects it for an identity of its own five-tuple.
+    sv_arcs = _sv_arcs(nominal=nominal)
+    graph = FakeGraph(
+        nodes={
+            **_NODES,
+            _SV: {
+                "label": "Convert expenditure",
+                "type": "StatisticalVariable",
+                "arcs": {
+                    prop: {"nodes": [{"dcid": value} for value in values]}
+                    for prop, values in sv_arcs.items()
+                },
+            },
+        },
+        obs=obs,
+    )
+    shape = {
+        **_SHAPE,
+        "population_type": "FinancialFlow",
+        **({"measurement_qualifier": "Nominal"} if nominal else {}),
+    }
     materialise_graph, materialise_sdmx = materialise_double_from_obs(obs)
     materialise_graph._arcs = _materialise_arcs(
         nominal=nominal, provenance_declares_recipe=provenance_declares_recipe
@@ -543,24 +560,26 @@ def _resubmit(
     if provenance_refs is not None:
         # Post provenance refs directly on the identity facet.
         facets["provenance"] = IdentityBindingSet(refs=list(provenance_refs))
-    base_spec_id, base_identity = make_base(_SHAPE, slots=[], entities=entities)
+    base_identity = make_identity(shape, slots=[], entities=entities)
     inp = ResubmitIdentityPayload(
         identity=base_identity.model_copy(update={"facets": facets}) if facets else base_identity,
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[_SV],
     )
     return resolve_spec_resubmit(
         inp=inp,
         graph=graph,
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
-        options=EngineOptions(
-            include_observations=True,
-            materialise_graph=materialise_graph if include_materialise else None,
-            materialise_sdmx=materialise_sdmx if include_materialise else None,
-            # Elected-mode planning requires a RateTableCache, even for a native match.
-            rate_cache=RateTableCache() if request is not None else None,
+        options=walk_options(
+            graph,
+            EngineOptions(
+                include_observations=True,
+                materialise_graph=with_member_arcs(
+                    materialise_graph if include_materialise else None, graph
+                ),
+                materialise_sdmx=materialise_sdmx if include_materialise else None,
+                # Elected-mode planning requires a RateTableCache, even for a native match.
+                rate_cache=RateTableCache() if request is not None else None,
+            ),
         ),
     )
 
@@ -1017,14 +1036,11 @@ def test_role_shaped_currency_naming_undeclared_axis_raises_request_invalid():
         currency=IdentityCurrencyRole(role="destination"), prices="current"
     )
     entities = [subject_entity(_ENTITY)]
-    base_spec_id, base_identity = make_base(_SHAPE, slots=[], entities=entities)
+    base_identity = make_identity(_SHAPE, slots=[], entities=entities)
     inp = ResubmitIdentityPayload(
         identity=base_identity.model_copy(
             update={"facets": {"unit": IdentityFacetValueRequest(request=request)}}
         ),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[_SV],
     )
     shape_draft = ShapeDraft(
         shape_id="test_shape",
@@ -1040,7 +1056,6 @@ def test_role_shaped_currency_naming_undeclared_axis_raises_request_invalid():
     state = _PromoteState(
         inp=inp,
         graph=None,
-        pipeline_steps=[],
         sdmx=None,
         deadline=None,
         include_option_coverage=False,

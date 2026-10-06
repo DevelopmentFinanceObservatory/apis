@@ -8,7 +8,6 @@ from search.engine.assemble import build_candidates_part
 from search.engine.region.codes import NEAR_NEIGHBOR_AMBIGUOUS
 from search.models import CandidatesPart, Warning
 from tests.engine._assemble_fixtures import _make_spec
-from tests.engine.test_resubmit_edit_detection import _PURPOSE_ROLLUP, _health_base
 
 
 def test_build_candidates_part_returns_candidates_part():
@@ -345,7 +344,7 @@ def test_assemble_candidates_truncated_true_when_budget_truncated_flag_set():
     assert part.candidates.truncated is True
 
 
-def test_assemble_candidates_include_sentence_true_truncated_with_known_total():
+def test_assemble_candidates_sentence_truncated_with_known_total():
     """The count gives the known total and says the first two are shown, then states
     each shown reading."""
     spec_a = _make_spec(
@@ -372,7 +371,6 @@ def test_assemble_candidates_include_sentence_true_truncated_with_known_total():
         variable_text="test variable",
         warnings=[],
         max_candidates=2,
-        include_sentence=True,
     )
 
     assert isinstance(part, CandidatesPart)
@@ -383,7 +381,7 @@ def test_assemble_candidates_include_sentence_true_truncated_with_known_total():
     )
 
 
-def test_assemble_candidates_include_sentence_true_truncated_with_unknown_total():
+def test_assemble_candidates_sentence_truncated_with_unknown_total():
     """An unknown total produces a count that reports only the shown readings."""
     spec_a = _make_spec(
         sv_dcid="Count_Person",
@@ -401,7 +399,6 @@ def test_assemble_candidates_include_sentence_true_truncated_with_unknown_total(
         variable_text="test variable",
         warnings=[],
         budget_truncated=True,
-        include_sentence=True,
     )
 
     assert isinstance(part, CandidatesPart)
@@ -411,10 +408,10 @@ def test_assemble_candidates_include_sentence_true_truncated_with_unknown_total(
     )
 
 
-# include_sentence wiring for assemble_candidates
+# The candidates part's sentence
 
 
-def test_assemble_candidates_include_sentence_true():
+def test_assemble_candidates_sentence_states_each_reading():
     """The sentence counts the readings, then states each one, with the bound purpose
     that sets it apart."""
     spec_health = _make_spec(
@@ -432,7 +429,6 @@ def test_assemble_candidates_include_sentence_true():
         [spec_health, spec_malaria],
         variable_text="test variable",
         warnings=[],
-        include_sentence=True,
     )
 
     assert isinstance(part, CandidatesPart)
@@ -440,29 +436,6 @@ def test_assemble_candidates_include_sentence_true():
     assert part.rendered_sentence == (
         "2 readings. ETH's ODA Grants for health. ETH's ODA Grants for malariacontrol."
     )
-
-
-def test_assemble_candidates_include_sentence_default_is_none():
-    """The default leaves the summary sentence unset."""
-    spec_health = _make_spec(
-        sv_dcid="Count_Person",
-        purpose_dcid="DAC/Health",
-        place_dcid="country/ETH",
-    )
-    spec_malaria = _make_spec(
-        sv_dcid="Count_Household",
-        purpose_dcid="DAC/Malariacontrol",
-        place_dcid="country/ETH",
-    )
-
-    part = build_candidates_part(
-        [spec_health, spec_malaria],
-        variable_text="test variable",
-        warnings=[],
-    )
-
-    assert isinstance(part, CandidatesPart)
-    assert part.rendered_sentence is None
 
 
 # Compose NEAR_NEIGHBOR_AMBIGUOUS from labels shown in the final candidate set.
@@ -530,52 +503,3 @@ def test_near_neighbor_warning_dropped_when_named_shape_not_shown():
 
     assert isinstance(part, CandidatesPart)
     assert not any(w.code == NEAR_NEIGHBOR_AMBIGUOUS for w in part.warnings)
-
-
-def _with_members(spec, count: int):
-    items = [
-        spec.resolved.stat_vars.items[0].model_copy(update={"ref": f"sv_{i}"}) for i in range(count)
-    ]
-    stat_vars = spec.resolved.stat_vars.model_copy(update={"items": items, "member_count": count})
-    return spec.model_copy(
-        update={"resolved": spec.resolved.model_copy(update={"stat_vars": stat_vars})}
-    )
-
-
-def test_a_family_candidate_lists_at_most_200_members_and_marks_the_cut():
-    """A candidates part repeats every candidate's members, so one whose identity names a
-    measure family lists fewer than a definite answer's 2,000 and states its full
-    member_count. A resubmit re-elects that family's members from the code index."""
-    wide = _make_spec(sv_dcid="Count_Person", purpose_dcid="DAC/Health", place_dcid="country/ETH")
-    _spec_id, family_identity = _health_base(purpose=_PURPOSE_ROLLUP)
-    wide = _with_members(wide, 250).model_copy(
-        update={"definition": wide.definition.model_copy(update={"identity": family_identity})}
-    )
-    narrow = _make_spec(
-        sv_dcid="Count_Household", purpose_dcid="DAC/Malariacontrol", place_dcid="country/ETH"
-    )
-
-    part = build_candidates_part([wide, narrow], variable_text="test variable", warnings=[])
-
-    by_id = {spec.spec_id: spec.resolved.stat_vars for spec in part.candidates.specs}
-    assert [sv.ref for sv in by_id[wide.spec_id].items] == [f"sv_{i}" for i in range(200)]
-    assert by_id[wide.spec_id].truncated is True
-    assert by_id[wide.spec_id].member_count == 250
-    assert by_id[narrow.spec_id] == narrow.resolved.stat_vars
-
-
-def test_a_standard_candidate_keeps_every_member_a_resubmit_posts_back():
-    """A standard-shape candidate's items are the membership its resubmit posts, so the
-    candidates part keeps all of them and promoting it never narrows the answer."""
-    wide = _with_members(
-        _make_spec(sv_dcid="Count_Person", purpose_dcid="DAC/Health", place_dcid="country/ETH"),
-        250,
-    )
-    narrow = _make_spec(
-        sv_dcid="Count_Household", purpose_dcid="DAC/Malariacontrol", place_dcid="country/ETH"
-    )
-
-    part = build_candidates_part([wide, narrow], variable_text="test variable", warnings=[])
-
-    by_id = {spec.spec_id: spec.resolved.stat_vars for spec in part.candidates.specs}
-    assert by_id[wide.spec_id] == wide.resolved.stat_vars

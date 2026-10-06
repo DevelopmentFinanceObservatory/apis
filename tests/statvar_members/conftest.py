@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
+from graph_generation import GenerationStamp
+
 
 @dataclass(frozen=True)
 class FakeSubjectPage:
@@ -34,6 +36,10 @@ class FakeMemberArcReader:
             "node_names_many": 0,
         }
 
+    def generation_stamp(self) -> GenerationStamp:
+        """An unknown generation, for a caller that walks through the shared enumerator."""
+        return GenerationStamp(token=None)
+
     def node_subjects(
         self,
         dcid: str,
@@ -41,6 +47,7 @@ class FakeMemberArcReader:
         property: str,
         filters: Mapping[str, str] | None = None,
         max_results: int,
+        deadline: float | None = None,
     ) -> FakeSubjectPage:
         self.calls["node_subjects"] += 1
         matches = tuple(

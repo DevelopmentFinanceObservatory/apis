@@ -280,7 +280,7 @@ def test_composed_surface_shutdown_fits_the_shared_budget_not_one_per_door(
 
 def _definition_endpoint_of(door):
     routes = cast("list[APIRoute]", door.router.routes)
-    # `path` includes the `dfo_subject_id` converter, so match on `path_format`.
+    # `path` includes the `dfo_spec_id` converter, so match on `path_format`.
     return next(route.endpoint for route in routes if route.path_format == "/api/datasets/{id}")
 
 

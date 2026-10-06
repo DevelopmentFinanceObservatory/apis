@@ -22,9 +22,10 @@ from search.models import (
 )
 from series_coverage.schema import RoleNames
 from tests.engine._axis_doubles import axis_confirming_reader
-from tests.engine._base_identity import destination_entity, make_base
+from tests.engine._base_identity import destination_entity, make_identity
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import walk_options
 from tests.engine.test_candidates_measure_alternatives import _ROLE_RECIPIENT
 from tests.engine.test_resubmit_alternative_measure_round_trip import _arcs_for_row
 from tests.fixtures import FakeGraph
@@ -146,23 +147,20 @@ def _resolve(slots: list[Slot], *, monkeypatch):
             for dcid in (_ODA_SV, _PRIVATE_DEV_FINANCE_SV)
         },
     )
-    base_spec_id, identity = make_base(_shape(), slots, entities=[destination_entity(_KEN)])
+    identity = make_identity(_shape(), slots, entities=[destination_entity(_KEN)])
     graph = _graph()
     sdmx = _sdmx()
     seed_dcids = [_ODA_SV, _PRIVATE_DEV_FINANCE_SV]
     materialise_graph = axis_confirming_reader(*seed_dcids, graph=graph)
     inp = ResubmitIdentityPayload(
         identity=identity,
-        base_spec_id=base_spec_id,
-        base_identity=identity,
-        resolved_stat_var_dcids=seed_dcids,
     )
     return resolve_spec_resubmit(
         inp=inp,
         graph=graph,
         sdmx=sdmx,
         coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
-        options=EngineOptions(materialise_graph=materialise_graph),
+        options=walk_options(graph, EngineOptions(materialise_graph=materialise_graph)),
     )
 
 

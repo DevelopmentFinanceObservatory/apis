@@ -1,11 +1,35 @@
 {
+  "test_a_resubmit_leaving_the_part_open_answers_the_total_its_mint_serves": [
+    ["FakeGraph.node_arcs_batch",{"dcids":["TEST/ResubmitPlaceScopeDefault_Population"]}],
+    ["FakeGraph.node_labels_batch",{"dcids":["gender"]}],
+    ["FakeGraph.node_arcs_batch",{"dcids":["TEST/ResubmitPlaceScopeDefault_PopulationFemale"],"deadline":null}],
+    ["FakeGraph.generation_stamp",{}],
+    ["FakeGraph.source_key",{}],
+    ["FakeSdmxClient.source_key",{}],
+    ["FakeSdmxClient.source_key",{}],
+    ["FakeSdmxClient.availability_values",{"variables":["TEST/ResubmitPlaceScopeDefault_Population"],"component":"observationAbout","max_values":5000,"max_bytes":320000,"deadline":"set","read_seconds":15.0}],
+    ["FakeSdmxClient.availability_values",{"variables":["TEST/ResubmitPlaceScopeDefault_PopulationFemale"],"component":"observationAbout","max_values":5000,"max_bytes":320000,"deadline":"set","read_seconds":15.0}],
+    ["FakeGraph.node_arcs_many",{"dcids":["country/RPS1","country/RPS2"],"properties":["typeOf"],"deadline":"set"}],
+    ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TEST/ResubmitPlaceScopeDefault_Population","axis":"provenance"}],
+    ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TEST/ResubmitPlaceScopeDefault_Population","axis":"measurementMethod"}],
+    ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TEST/ResubmitPlaceScopeDefault_Population","axis":"unit"}],
+    ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TEST/ResubmitPlaceScopeDefault_PopulationFemale","axis":"provenance"}],
+    ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TEST/ResubmitPlaceScopeDefault_PopulationFemale","axis":"measurementMethod"}],
+    ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TEST/ResubmitPlaceScopeDefault_PopulationFemale","axis":"unit"}],
+    ["FakeGraph.observation_facets_batch",{"stat_vars":["TEST/ResubmitPlaceScopeDefault_Population","TEST/ResubmitPlaceScopeDefault_PopulationFemale"],"entities":["country/RPS1"],"needs_dates":false}],
+    ["FakeGraph.node_labels_batch",{"dcids":["Female","TEST/ResubmitPlaceScopeDefault_Population","TestResubmitPlaceScopePopulation","gender","measuredValue","testResubmitCount"]}],
+    ["FakeGraph.node_labels_batch",{"dcids":["country/RPS1"]}],
+    ["FakeGraph.node_types_batch",{"dcids":["country/RPS1"]}],
+    ["FakeGraph.observation_facets_batch",{"stat_vars":["TEST/ResubmitPlaceScopeDefault_Population"],"entities":["country/RPS1"],"needs_dates":true}]
+  ],
   "test_a_resubmit_the_index_decides_is_scoped_over_the_family_its_mint_serves": [],
   "test_a_resubmitted_member_is_counted_and_grounded_at_its_own_scope": [
+    ["FakeGraphReader.generation_stamp",{}],
+    ["FakeGraphReader.node_subjects",{"dcid":"testResubmitCount","property":"measuredProperty","filters":{"populationType":"TestResubmitPlaceScopePopulation","statType":"measuredValue"},"max_results":4000,"deadline":null}],
+    ["FakeGraphReader.node_arcs_many",{"dcids":["TEST/ResubmitPlaceScopeDefault_PopulationFemale","TEST/ResubmitPlaceScopeDefault_PopulationOver65"],"properties":["age","constraintProperties","gender","measuredProperty","measurementDenominator","measurementQualifier","observationProperties","populationType","statType","typeOf"],"individual_probe_budget":null,"deadline":null}],
+    ["FakeGraphReader.node_arcs_many",{"dcids":["TEST/ResubmitPlaceScopeDefault_PopulationFemale","TEST/ResubmitPlaceScopeDefault_PopulationOver65"],"properties":["age","constraintProperties","gender","measuredProperty","measurementDenominator","measurementQualifier","observationProperties","populationType","statType","typeOf"],"individual_probe_budget":null,"deadline":null}],
     ["FakeGraph.node_arcs_batch",{"dcids":["TEST/ResubmitPlaceScopeDefault_PopulationFemale","TEST/ResubmitPlaceScopeDefault_PopulationOver65"]}],
     ["FakeGraph.node_labels_batch",{"dcids":["age","gender"]}],
-    ["FakeGraphReader.node_subjects",{"dcid":"testResubmitCount","property":"measuredProperty","filters":{"populationType":"TestResubmitPlaceScopePopulation","statType":"measuredValue"},"max_results":4000,"deadline":"set"}],
-    ["FakeGraphReader.node_arcs_many",{"dcids":[],"properties":["age","constraintProperties","gender","measuredProperty","measurementDenominator","measurementQualifier","observationProperties","populationType","statType","typeOf"],"individual_probe_budget":null,"deadline":"set"}],
-    ["FakeGraphReader.node_arcs_many",{"dcids":["TEST/ResubmitPlaceScopeDefault_PopulationFemale","TEST/ResubmitPlaceScopeDefault_PopulationOver65"],"properties":["age","constraintProperties","gender","measuredProperty","measurementDenominator","measurementQualifier","observationProperties","populationType","statType","typeOf"],"individual_probe_budget":32,"deadline":"set"}],
     ["FakeGraph.generation_stamp",{}],
     ["FakeGraph.source_key",{}],
     ["FakeSdmxClient.source_key",{}],
@@ -23,9 +47,11 @@
     ["FakeGraph.node_labels_batch",{"dcids":["Female","TEST/ResubmitPlaceScopeDefault_PopulationFemale","TestResubmitPlaceScopePopulation","Years65Onwards","age","gender","measuredValue","testResubmitCount"]}],
     ["FakeGraph.node_labels_batch",{"dcids":["country/RPS1"]}],
     ["FakeGraph.node_types_batch",{"dcids":["country/RPS1"]}],
+    ["FakeGraph.node_labels_batch",{"dcids":["TEST/ResubmitPlaceScopeDefault_PopulationFemale"]}],
     ["FakeGraphReader.default_facet_policy",{"stat_var":"dcid:TEST/ResubmitPlaceScopeDefault_PopulationFemale","axis":"measurementMethod"}],
     ["FakeGraphReader.default_facet_policy",{"stat_var":"dcid:TEST/ResubmitPlaceScopeDefault_PopulationFemale","axis":"unit"}],
-    ["FakeGraph.node_labels_batch",{"dcids":["Female","TEST/ResubmitPlaceScopeDefault_PopulationFemale","country/RPS1"]}]
+    ["FakeGraph.node_labels_batch",{"dcids":["Female","TEST/ResubmitPlaceScopeDefault_PopulationFemale","country/RPS1"]}],
+    ["FakeGraph.observation_facets_batch",{"stat_vars":["TEST/ResubmitPlaceScopeDefault_PopulationFemale"],"entities":["country/RPS1"],"needs_dates":true}]
   ],
   "test_a_resubmitted_part_answers_as_the_total_its_mint_serves": [
     ["FakeGraph.member_arcs",{}],
@@ -48,11 +74,13 @@
     ["FakeGraph.observation_facets_batch",{"stat_vars":["TEST/ResubmitPlaceScopeDefault_Population","TEST/ResubmitPlaceScopeDefault_PopulationFemale"],"entities":["country/RPS1"],"needs_dates":false}],
     ["FakeGraph.node_labels_batch",{"dcids":["Female","TEST/ResubmitPlaceScopeDefault_Population","TestResubmitPlaceScopePopulation","gender","measuredValue","testResubmitCount"]}],
     ["FakeGraph.node_labels_batch",{"dcids":["country/RPS1"]}],
-    ["FakeGraph.node_types_batch",{"dcids":["country/RPS1"]}]
+    ["FakeGraph.node_types_batch",{"dcids":["country/RPS1"]}],
+    ["FakeGraph.observation_facets_batch",{"stat_vars":["TEST/ResubmitPlaceScopeDefault_Population"],"entities":["country/RPS1"],"needs_dates":true}]
   ],
   "test_a_resubmitted_total_and_its_part_are_scoped_over_the_total_their_mint_serves": [
-    ["FakeGraph.node_arcs_batch",{"dcids":["TEST/ResubmitPlaceScopeDefault_Population","TEST/ResubmitPlaceScopeDefault_PopulationFemale"]}],
+    ["FakeGraph.node_arcs_batch",{"dcids":["TEST/ResubmitPlaceScopeDefault_Population"]}],
     ["FakeGraph.node_labels_batch",{"dcids":["gender"]}],
+    ["FakeGraph.node_arcs_batch",{"dcids":["TEST/ResubmitPlaceScopeDefault_PopulationFemale"],"deadline":null}],
     ["FakeGraph.generation_stamp",{}],
     ["FakeGraph.source_key",{}],
     ["FakeSdmxClient.source_key",{}],
@@ -69,13 +97,15 @@
     ["FakeGraph.observation_facets_batch",{"stat_vars":["TEST/ResubmitPlaceScopeDefault_Population","TEST/ResubmitPlaceScopeDefault_PopulationFemale"],"entities":["country/RPS1"],"needs_dates":false}],
     ["FakeGraph.node_labels_batch",{"dcids":["Female","TEST/ResubmitPlaceScopeDefault_Population","TestResubmitPlaceScopePopulation","gender","measuredValue","testResubmitCount"]}],
     ["FakeGraph.node_labels_batch",{"dcids":["country/RPS1"]}],
-    ["FakeGraph.node_types_batch",{"dcids":["country/RPS1"]}]
+    ["FakeGraph.node_types_batch",{"dcids":["country/RPS1"]}],
+    ["FakeGraph.observation_facets_batch",{"stat_vars":["TEST/ResubmitPlaceScopeDefault_Population"],"entities":["country/RPS1"],"needs_dates":true}]
   ],
   "test_no_where_slot_resubmit_earth_only_data_resolves_worldwide": [
+    ["FakeGraphReader.generation_stamp",{}],
+    ["FakeGraphReader.node_subjects",{"dcid":"testResubmitCount","property":"measuredProperty","filters":{"populationType":"TestResubmitPlaceScopePopulation","statType":"measuredValue"},"max_results":4000,"deadline":null}],
+    ["FakeGraphReader.node_arcs_many",{"dcids":["TEST/ResubmitPlaceScopeDefault_Population"],"properties":["constraintProperties","measuredProperty","measurementDenominator","measurementQualifier","observationProperties","populationType","statType","typeOf"],"individual_probe_budget":null,"deadline":null}],
+    ["FakeGraphReader.node_arcs_many",{"dcids":["TEST/ResubmitPlaceScopeDefault_Population"],"properties":["constraintProperties","measuredProperty","measurementDenominator","measurementQualifier","observationProperties","populationType","statType","typeOf"],"individual_probe_budget":null,"deadline":null}],
     ["FakeGraph.node_arcs_batch",{"dcids":["TEST/ResubmitPlaceScopeDefault_Population"]}],
-    ["FakeGraphReader.node_subjects",{"dcid":"testResubmitCount","property":"measuredProperty","filters":{"populationType":"TestResubmitPlaceScopePopulation","statType":"measuredValue"},"max_results":4000,"deadline":"set"}],
-    ["FakeGraphReader.node_arcs_many",{"dcids":[],"properties":["constraintProperties","measuredProperty","measurementDenominator","measurementQualifier","observationProperties","populationType","statType","typeOf"],"individual_probe_budget":null,"deadline":"set"}],
-    ["FakeGraphReader.node_arcs_many",{"dcids":["TEST/ResubmitPlaceScopeDefault_Population"],"properties":["constraintProperties","measuredProperty","measurementDenominator","measurementQualifier","observationProperties","populationType","statType","typeOf"],"individual_probe_budget":32,"deadline":"set"}],
     ["FakeGraph.generation_stamp",{}],
     ["FakeGraph.source_key",{}],
     ["FakeSdmxClient.source_key",{}],
@@ -91,7 +121,9 @@
     ["FakeGraphReader.default_facet_policy",{"stat_var":"dcid:TEST/ResubmitPlaceScopeDefault_Population","axis":"provenance"}],
     ["FakeGraphReader.default_facet_policy",{"stat_var":"dcid:TEST/ResubmitPlaceScopeDefault_Population","axis":"measurementMethod"}],
     ["FakeGraphReader.default_facet_policy",{"stat_var":"dcid:TEST/ResubmitPlaceScopeDefault_Population","axis":"unit"}],
-    ["FakeGraph.node_labels_batch",{"dcids":["Earth","TEST/ResubmitPlaceScopeDefault_Population","dc/base/Src"]}]
+    ["FakeGraph.node_labels_batch",{"dcids":["Earth","TEST/ResubmitPlaceScopeDefault_Population","dc/base/Src"]}],
+    ["FakeGraph.observation_facets_batch",{"stat_vars":["TEST/ResubmitPlaceScopeDefault_Population"],"entities":["Earth"],"needs_dates":true}],
+    ["FakeGraph.node_labels_batch",{"dcids":["dc/base/Src"]}]
   ],
   "test_no_where_slot_resubmit_is_definite_with_bulk_series": [
     ["FakeGraph.node_arcs_batch",{"dcids":["TEST/ResubmitPlaceScopeDefault_Population"]}],
@@ -107,7 +139,8 @@
     ["FakeGraph.node_labels_batch",{"dcids":["TEST/ResubmitPlaceScopeDefault_Population","TestResubmitPlaceScopePopulation","measuredValue","testResubmitCount"]}],
     ["FakeGraph.node_labels_batch",{"dcids":["country/RPS1","country/RPS2"]}],
     ["FakeGraph.node_types_batch",{"dcids":["country/RPS1","country/RPS2"]}],
-    ["FakeSdmxClient.subject_observations",{"variables":["TEST/ResubmitPlaceScopeDefault_Population"],"places":["country/RPS1","country/RPS2"],"facet_ids":["F1"],"latest_only":true,"max_rows":200000,"max_bytes":67108864}]
+    ["FakeSdmxClient.subject_observations",{"variables":["TEST/ResubmitPlaceScopeDefault_Population"],"places":["country/RPS1","country/RPS2"],"facet_ids":["F1"],"latest_only":true,"max_rows":200000,"max_bytes":67108864}],
+    ["FakeGraph.observation_facets_batch",{"stat_vars":["TEST/ResubmitPlaceScopeDefault_Population"],"entities":["country/RPS1","country/RPS2"],"needs_dates":true}]
   ],
   "test_no_where_slot_resubmit_no_country_has_data_reports_no_observations": [
     ["FakeGraph.node_arcs_batch",{"dcids":["TEST/ResubmitPlaceScopeDefault_Population"]}],

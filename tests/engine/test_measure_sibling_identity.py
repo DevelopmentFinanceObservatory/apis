@@ -230,6 +230,15 @@ def test_a_grouped_elected_identity_mints_a_grouped_sibling_with_the_ungrouped_s
     assert result.identity.entity_groups == {"observationAbout": group}
 
 
+def test_a_sibling_of_an_identity_with_open_roles_carries_no_open_role() -> None:
+    _, elected = _elected()
+    opened = elected.model_copy(update={"open_roles": ["origin"]})
+
+    result = mint_sibling_identity(opened, _partition(material="Metal"), _AXES, ())
+
+    assert result.identity.open_roles is None
+
+
 def test_sibling_mints_no_slot_for_an_axis_its_own_members_declare_that_elected_never_named(
     monkeypatch,
 ) -> None:

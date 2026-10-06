@@ -105,6 +105,17 @@ GOLDEN_TABLE: list[tuple[str, dict[str, object], str | None]] = [
         {"groupby": {"by": ["crsPurpose"], "op": "sum", "levels": {"crsPurpose": 100}}},
         "/options/groupby/levels/crsPurpose",
     ),
+    (
+        "format=parquet&bundle=false&layout=frame",
+        {"format": "parquet", "bundle": False, "layout": "frame"},
+        None,
+    ),
+    (
+        "format=csv&bundle=false&layout=frame",
+        {"format": "csv", "bundle": False, "layout": "frame"},
+        "/options/layout",
+    ),
+    ("format=parquet&layout=frame", {"format": "parquet", "layout": "frame"}, "/options/layout"),
     # Both validators report the same pointer for unknown keys.
     ("foo=bar", {"foo": "bar"}, "/options/foo"),
 ]
@@ -239,6 +250,13 @@ _ROUND_TRIP_OPTIONS: list[MintOptions] = [
         groupby={"by": ["recipient"], "op": "sum"},
         pivot={"index": "year", "columns": "recipient"},
         columns=["year", "recipient", "value", "unit"],
+    ),
+    MintOptions(
+        format="parquet",
+        bundle=False,
+        groupby={"by": ["time_period"], "op": "sum"},
+        columns=["observationAbout_type"],
+        layout="frame",
     ),
 ]
 

@@ -1,4 +1,4 @@
-"""Mints and previews of a role-bearing StatVar that declares one role, through the spec
+"""Mints of a role-bearing StatVar that declares one role, through the spec
 door. The coverage index holds a row per entity on that role's axis for such a StatVar, with
 the other column empty (`series_coverage.schema.ABSENT_ENTITY`), so its facets come from
 coverage as a two-role StatVar's do. A recipient-only series and a provider-only series run
@@ -190,16 +190,6 @@ def test_a_one_role_series_mints_the_rows_at_its_bound_entity(case: _OneRole):
     assert facets["provenance"] == case.provenance
     assert facets["unit"] == "CurrencyUSD"
     assert facets["measurementMethod"] is None
-
-
-@_CASES
-def test_a_one_role_series_previews_the_rows_the_mint_serves(case: _OneRole):
-    body = _body(case, entities={case.axis: [case.entity]}, preview={"limit": 5})
-
-    resp = _client(case, []).post("/api/datasets", json=body)
-
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["members"][0]["total_rows"] == 2
 
 
 @_CASES

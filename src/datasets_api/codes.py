@@ -37,7 +37,6 @@ SHARED_PLATFORM_CODES: frozenset[str] = frozenset(
         "service_unavailable",
         "timeout",
         "internal_error",
-        "code_not_found",
         "facet_not_available",
         "facet_binding_unsupported",
         "resolution_ambiguous",

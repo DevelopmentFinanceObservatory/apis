@@ -13,7 +13,7 @@ from tests.engine._assemble_fixtures import (
 # Per-candidate sentence plans.
 
 
-def test_assemble_candidates_include_sentence_true_populates_sentences():
+def test_assemble_candidates_populates_sentences():
     """Each candidate gets a distinct sentence matching its plan."""
     spec_health = _make_spec(
         sv_dcid="Count_Person",
@@ -30,7 +30,6 @@ def test_assemble_candidates_include_sentence_true_populates_sentences():
         [spec_health, spec_malaria],
         variable_text="test variable",
         warnings=[],
-        include_sentence=True,
     )
 
     assert isinstance(part, CandidatesPart)
@@ -39,31 +38,6 @@ def test_assemble_candidates_include_sentence_true_populates_sentences():
     for s in specs:
         assert s.resolved.rendered_sentence == sentence_from_plan(s.resolved.sentence_plan)
     assert specs[0].resolved.rendered_sentence != specs[1].resolved.rendered_sentence
-
-
-def test_assemble_candidates_include_sentence_false_sentences_is_none():
-    """The default leaves each candidate's sentence fields unset."""
-    spec_health = _make_spec(
-        sv_dcid="Count_Person",
-        purpose_dcid="DAC/Health",
-        place_dcid="country/ETH",
-    )
-    spec_malaria = _make_spec(
-        sv_dcid="Count_Household",
-        purpose_dcid="DAC/Malariacontrol",
-        place_dcid="country/ETH",
-    )
-
-    part = build_candidates_part(
-        [spec_health, spec_malaria],
-        variable_text="test variable",
-        warnings=[],
-    )
-
-    assert isinstance(part, CandidatesPart)
-    for s in part.candidates.specs:
-        assert s.resolved.rendered_sentence is None
-        assert s.resolved.sentence_plan is None
 
 
 def test_assemble_candidates_sentences_align_with_sort_and_clamp():
@@ -93,7 +67,6 @@ def test_assemble_candidates_sentences_align_with_sort_and_clamp():
         variable_text="test variable",
         warnings=[],
         max_candidates=2,
-        include_sentence=True,
     )
 
     assert isinstance(part, CandidatesPart)
@@ -125,7 +98,6 @@ def test_a_loose_candidate_follows_and_no_candidate_sentence_carries_a_note():
         variable_text="test variable",
         warnings=[],
         candidate_scores={loose.spec_id: 0.7},
-        include_sentence=True,
     )
 
     assert isinstance(part, CandidatesPart)
@@ -147,7 +119,6 @@ def test_assemble_candidates_keeps_how_property_that_distinguishes_candidates():
         [spec_health, spec_education],
         variable_text="test variable",
         warnings=[],
-        include_sentence=True,
     )
 
     assert isinstance(part, CandidatesPart)
@@ -168,7 +139,6 @@ def test_assemble_candidates_folds_how_property_that_matches_across_candidates()
         [spec_ethiopia, spec_kenya],
         variable_text="test variable",
         warnings=[],
-        include_sentence=True,
     )
 
     assert isinstance(part, CandidatesPart)
@@ -188,7 +158,6 @@ def test_assemble_candidates_keeps_boolean_how_property_that_distinguishes_candi
         [spec_true, spec_false],
         variable_text="test variable",
         warnings=[],
-        include_sentence=True,
     )
 
     assert isinstance(part, CandidatesPart)
@@ -210,7 +179,6 @@ def test_assemble_candidates_keeps_how_property_bound_on_one_sibling_unbound_on_
         [spec_bound, spec_unbound],
         variable_text="test variable",
         warnings=[],
-        include_sentence=True,
     )
 
     assert isinstance(part, CandidatesPart)
@@ -228,7 +196,6 @@ def test_assemble_candidates_kept_property_already_named_still_folds_without_dup
         [spec_named, spec_clause],
         variable_text="test variable",
         warnings=[],
-        include_sentence=True,
     )
 
     assert isinstance(part, CandidatesPart)

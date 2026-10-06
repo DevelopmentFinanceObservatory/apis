@@ -4,35 +4,42 @@ The packaged index holds two datasets, each on its own five-tuple: the CRS on `a
 and the opt-in imputed multilateral sectors table on `attributedAmount`, whose every row
 carries `dac2aAidType=DAC2aAidType106` and `crsTypeOfFlow=CRSTypeOfFlow10`, the slots the
 five-tuple pins. The election implies both, so an imputed part's identity leaves them
-unbound. The recall sample of every question here holds one member of each. The
-acceptance table replays the recorded extraction, mention reading and bind responses in
-`tests/fixtures/llm_responses.json`; the other tests script the model.
+unbound. The recall sample of a scripted question holds one member of each, so an unnamed
+part's bind menu offers both. A question names no dataset, so a part answers the CRS
+unless bind elects the imputed shape, which names its table; the tests of a named dataset
+name it at the part's seam, `ResolveState.named_dataset`. The recorded tests replay the
+extraction and bind responses in `tests/fixtures/llm_responses.json`, and their recall
+holds the CRS member alone, as the dev graph's recall for "education aid" and "aid" does;
+the other tests script the model.
 """
 
 from __future__ import annotations
 
-import asyncio
+import dataclasses
+import sys
 from collections import Counter
-from datetime import date
-from unittest.mock import patch
 
 import pytest
 
+from code_index import shared as shared_module
 from code_index.members import canonical_identity, elected_pins
+from code_index.query import CodeIndex, row_five_tuple
 from code_index.shared import get_index
+from code_index.types import DatasetDeclaration
 from datasets_api.adapter import resolve_definition_members
-from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
-from search.engine.core import resolve_async, resolve_events
-from search.engine.dataset_mention import MentionReading, MentionReadings
-from search.engine.errors import LLMInfraError
-from search.engine.events import DoneEvent, ResponseEvent
+from search.engine.bind import (
+    EXCLUDED_SOURCE_PREFIX,
+    SlotBindingDraft,
+    _UniversalBindOutput,
+)
 from search.engine.extract import ExtractedEntity, Extraction
-from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
-from search.engine.response_cache import ResponseCache
+from search.engine.region import pipeline as pipeline_module
+from search.engine.region.phase_rank_bind import _phase_prune_and_rank
+from search.engine.region.state import ResolveState
 from search.engine.retrieval.bound_values import identity_dataset, identity_query
 from search.engine.spec_id import mint_identity
 from search.models import (
-    DatasetResubmitInput,
+    CandidatesPart,
     DefinitePart,
     NoDataPart,
     Operation,
@@ -40,9 +47,9 @@ from search.models import (
     ParsedPart,
     ResolveRequest,
     ResolveResponse,
-    ResubmitParsedEntry,
     Spec,
 )
+from search.models.response import Part
 from series_coverage.schema import FacetMetadata, RoleNames
 from statvar_members import MemberEnumerator, member_digest
 from tests.code_index.aid_identity import (
@@ -57,13 +64,15 @@ from tests.code_index.aid_identity import (
     imputed_education_aid_identity,
 )
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
+from tests.datasets_api._member_bounds import mint_bounds
 from tests.engine._fake_coverage import patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_resolve
-from tests.fixtures import PINNED_DATE, FakeGraph, FakeLLM
+from tests.fixtures import FakeGraph, FakeLLM
 
 _KEN = "country/KEN"
 _FRA = "country/FRA"
+_UGA = "country/UGA"
 _CRS_MEMBER = (
     "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_"
     "CRSCooperationModalityA01_CRSPurposeCode11330_Nominal"
@@ -86,6 +95,10 @@ _COMMITMENTS_MEMBER = next(
     and CRS_PROVENANCE in row.provenances
 )
 _CRS_LABEL = "OECD Creditor Reporting System (CRS)"
+# A test-only table that the second-table tests declare beside the CRS on the aid five-tuple,
+# so the bind menu offers the source slot there (`_with_second_table`).
+_SECOND = "provenance/TestDacTable2a"
+_SECOND_LABEL = "DAC Table 2a"
 _IMPUTED_LABEL = "ONE Imputed Multilateral Sectors"
 # Every CRS member of the aid five-tuple under official development assistance, gross
 # disbursements, with the purpose open.
@@ -113,9 +126,11 @@ def _graph(
     *variables: str,
     members: tuple[str, ...] = _MEMBERS,
     provenance_labels: tuple[str, str] = (_CRS_LABEL, _IMPUTED_LABEL),
+    un_members: tuple[str, ...] = (),
 ) -> FakeGraph:
     """A graph whose recall returns `members` in order for each variable: one CRS member
-    and one imputed member unless told otherwise."""
+    and one imputed member unless told otherwise. The UN System Data Commons' recall returns
+    `un_members`, each an aid amount holding a series at Kenya."""
     crs_label, imputed_label = provenance_labels
     return FakeGraph(
         nodes={
@@ -123,10 +138,12 @@ def _graph(
             _FRA: {"label": "France", "type": "Country"},
             CRS_PROVENANCE: {"label": crs_label},
             IMPUTED_PROVENANCE: {"label": imputed_label},
+            _SECOND: {"label": _SECOND_LABEL},
             **{
                 dcid: {"label": dcid, "type": "StatisticalVariable", "arcs": _arcs(dcid)}
                 for dcid in members
             },
+            **{dcid: _un_node(dcid) for dcid in un_members},
         },
         detect={
             variable: {
@@ -135,9 +152,33 @@ def _graph(
             }
             for variable in variables
         },
+        un_detect={
+            variable: {"svs": list(un_members), "cosine_scores": [0.9] * len(un_members)}
+            for variable in variables
+        }
+        if un_members
+        else None,
         resolve={"Kenya": _KEN},
-        obs={},
+        obs={
+            f"{dcid}|{_KEN}": [{"earliestDate": "2019", "latestDate": "2021", "obsCount": 3}]
+            for dcid in un_members
+        },
     )
+
+
+def _un_node(dcid: str) -> dict:
+    return {
+        "label": dcid,
+        "type": "StatisticalVariable",
+        "arcs": {
+            "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
+            "name": {"nodes": [{"value": dcid}]},
+            "populationType": {"nodes": [{"dcid": "FinancialFlow"}]},
+            "measuredProperty": {"nodes": [{"dcid": "amount"}]},
+            "statType": {"nodes": [{"dcid": "measuredValue"}]},
+            "constraintProperties": {"nodes": []},
+        },
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -162,24 +203,17 @@ def _coverage(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class _RecordedLLM:
-    """Replay the recorded responses, keep each bind prompt by its variable, and keep the
-    mention readings and the number of calls per schema."""
+    """Replay the recorded responses, and keep each bind prompt by its variable and the
+    number of calls per schema."""
 
     def __init__(self) -> None:
         self._llm = FakeLLM()
         self.bind_prompts: dict[str, str] = {}
-        self.readings: list[tuple[str, int | None]] = []
         self.calls: Counter[str] = Counter()
 
     async def generate_structured(self, *, prompt, system, schema):
         self.calls[schema.__name__] += 1
-        if schema is MentionReadings:
-            readings, usage = await self._llm.generate_structured(
-                prompt=prompt, system=system, schema=schema
-            )
-            self.readings = [(r.relation, r.variable) for r in readings.readings]
-            return readings, usage
-        if schema is _UniversalBindOutput:
+        if issubclass(schema, _UniversalBindOutput):
             variable = next(
                 line.removeprefix("Variable phrase: ")
                 for line in prompt.splitlines()
@@ -193,7 +227,7 @@ def _resolve(query: str, *variables: str) -> tuple[ResolveResponse, _RecordedLLM
     llm = _RecordedLLM()
     response = offline_resolve(
         make_request(query),
-        graph=_graph(*variables),
+        graph=_graph(*variables, members=(_CRS_MEMBER,)),
         llm=llm,
         sdmx=FakeSdmxClient(observations={}, availability={}),
     )
@@ -203,6 +237,15 @@ def _resolve(query: str, *variables: str) -> tuple[ResolveResponse, _RecordedLLM
 def _specs(response: ResolveResponse) -> list[Spec]:
     assert all(isinstance(part, DefinitePart) for part in response.parts), response.parts
     return [part.spec for part in response.parts]
+
+
+def _held_spec(part: Part) -> Spec:
+    """The Spec an answered part carries, or the flagged match a no-data part keeps."""
+    if isinstance(part, DefinitePart):
+        return part.spec
+    assert isinstance(part, NoDataPart), part
+    assert part.no_data.flagged_match is not None
+    return part.no_data.flagged_match
 
 
 def _bound(spec: Spec) -> dict[str, str]:
@@ -240,8 +283,9 @@ def _mint_family(spec: Spec) -> set[str]:
         spec.definition.identity.model_dump(mode="json", exclude_none=True),
         spec_id=spec.spec_id,
         graph=graph,
-        enumerator=MemberEnumerator(graph=graph),
+        enumerator=MemberEnumerator(),
         code_index=get_index(),
+        bounds=mint_bounds(),
     )
     return {shape.stat_var.removeprefix("dcid:") for shape in resolved.shapes}
 
@@ -261,254 +305,302 @@ def _plain_aid_identity() -> dict:
     return identity
 
 
-def _query_qualifier_warnings(response: ResolveResponse) -> list[str]:
-    return [
-        warning.message
-        for warning in [
-            *response.diagnostics.warnings,
-            *(warning for part in response.parts for warning in part.warnings),
-        ]
-        if warning.code == QUERY_QUALIFIER_DROPPED
-    ]
-
-
 _E = "education aid"
-_IM = "imputed multilateral"
-_IM_E = "imputed multilateral education aid"
-_CRS_E = "CRS education aid"
-_ES = "ayuda a la educación a Kenia"
-_FR = "aide à l'éducation au Kenya"
-
-# What a part answers: the CRS education family, the imputed one, or the CRS one with the
-# source bound.
-_CRS = "crs"
-_IMPUTED = "imputed"
-_CRS_SOURCE = "crs-source"
 
 
-def _assert_part(spec: Spec, family: str) -> None:
-    if family == _IMPUTED:
-        # The identity dev mints, and the canonical form of the same identity posted with
-        # the table's invariants unbound.
-        posted_unbound = imputed_education_aid_identity(source=IMPUTED_PROVENANCE)
-        for slot in posted_unbound["slots"]:
-            if slot["property"] in ("crsTypeOfFlow", AID_TYPE):
-                slot["binding"] = {"state": "unbound"}
-        assert spec.spec_id == _spec_id(imputed_education_aid_identity(source=IMPUTED_PROVENANCE))
-        assert spec.spec_id == _spec_id(dict(canonical_identity(get_index(), posted_unbound)))
-        assert _bound(spec)[AID_TYPE] == IMPUTED_MULTILATERAL
-        assert _bound(spec)["source"] == IMPUTED_PROVENANCE
-        assert spec.resolved.shape.member_count == IMPUTED_MEMBER_COUNT
-        assert _sources(spec) == [IMPUTED_PROVENANCE]
-        return
-    assert AID_TYPE not in _bound(spec)
-    assert spec.resolved.shape.member_count == CRS_MEMBER_COUNT
-    assert _sources(spec) == [CRS_PROVENANCE]
-    if family == _CRS_SOURCE:
-        assert spec.spec_id == _spec_id(education_aid_identity(source=CRS_PROVENANCE))
-        assert _bound(spec)["source"] == CRS_PROVENANCE
-    else:
-        assert spec.spec_id == EDUCATION_AID_SPEC_ID
-        assert "source" not in _bound(spec)
+def _assert_imputed_part(spec: Spec) -> None:
+    """The identity dev mints for imputed education aid, and the canonical form of the same
+    identity posted with the table's invariants unbound."""
+    posted_unbound = imputed_education_aid_identity(source=IMPUTED_PROVENANCE)
+    for slot in posted_unbound["slots"]:
+        if slot["property"] in ("crsTypeOfFlow", AID_TYPE):
+            slot["binding"] = {"state": "unbound"}
+    assert spec.spec_id == _spec_id(imputed_education_aid_identity(source=IMPUTED_PROVENANCE))
+    assert spec.spec_id == _spec_id(dict(canonical_identity(get_index(), posted_unbound)))
+    assert _bound(spec)[AID_TYPE] == IMPUTED_MULTILATERAL
+    assert _bound(spec)["source"] == IMPUTED_PROVENANCE
+    assert spec.resolved.shape.member_count == IMPUTED_MEMBER_COUNT
+    assert _sources(spec) == [IMPUTED_PROVENANCE]
 
 
 # ---------------------------------------------------------------------------
-# The acceptance table: recorded extraction, recorded reading, recorded bind
+# A question naming no dataset: recorded extraction and bind
 # ---------------------------------------------------------------------------
 
-# (query, readings, parts as (variable, family), dropped-qualifier warnings)
-_ACCEPTANCE = [
-    (f"{_E} to Kenya including {_IM}", [("also", 0)], [(_E, _CRS), (_IM_E, _IMPUTED)], []),
-    (f"{_E} to Kenya as well as {_IM} aid", [("also", 0)], [(_E, _CRS), (_IM_E, _IMPUTED)], []),
-    (f"{_E} to Kenya and {_IM_E}", [("only", 1)], [(_E, _CRS), (_IM_E, _IMPUTED)], []),
-    (f"{_E} to Kenya counting {_IM}", [("also", 0)], [(_E, _CRS), (_IM_E, _IMPUTED)], []),
-    (f"{_E} to Kenya, not excluding {_IM}", [("also", 0)], [(_E, _CRS), (_IM_E, _IMPUTED)], []),
-    (f"{_E} to Kenya with and without {_IM}", [("also", 0)], [(_E, _CRS), (_IM_E, _IMPUTED)], []),
-    (
-        f"{_ES} incluyendo la ayuda multilateral imputada",
-        [("also", 0)],
-        [(_E, _CRS), (_IM_E, _IMPUTED)],
-        [],
-    ),
-    (
-        f"{_FR}, y compris l'aide multilatérale imputée",
-        [("also", 0)],
-        [(_E, _CRS), (_IM_E, _IMPUTED)],
-        [],
-    ),
-    (
-        f"{_ES} incluyendo {_IM}",
-        [("also", 0)],
-        [(f"{_E} including {_IM}", _IMPUTED), (f"{_E} including", _CRS)],
-        [],
-    ),
-    (
-        f"{_FR}, y compris {_IM}",
-        [("also", 0)],
-        [(f"{_E} including {_IM}", _IMPUTED), (f"{_E} including", _CRS)],
-        [],
-    ),
-    (f"{_IM_E} to Kenya", [("only", 0)], [(_IM_E, _IMPUTED)], []),
-    (f"{_E} to Kenya from {_IM} sources", [("only", 0)], [(f"{_E} {_IM}", _IMPUTED)], []),
-    (f"{_E} to Kenya, nothing except {_IM}", [("only", 0)], [(f"{_E} {_IM}", _IMPUTED)], []),
-    (f"{_CRS_E} to Kenya", [("only", 0)], [(_CRS_E, _CRS_SOURCE)], []),
-    (
-        f"CRS and {_IM_E} to Kenya",
-        [("only", 0), ("only", 1)],
-        [(_CRS_E, _CRS_SOURCE), (_IM_E, _IMPUTED)],
-        [],
-    ),
-    (f"{_E} to Kenya excluding {_IM}", [("excluded", 0)], [(_E, _CRS)], []),
-    (f"{_E} to Kenya without {_IM}", [("excluded", 0)], [(_E, _CRS)], []),
-    (f"{_E} to Kenya not counting {_IM}", [("excluded", 0)], [(_E, _CRS)], []),
-    (f"do not include {_IM} aid in {_E} to Kenya", [("excluded", 0)], [(_E, _CRS)], []),
-    (f"don't include {_IM} aid in {_E} to Kenya", [("excluded", 0)], [(_E, _CRS)], []),
-    (f"{_E} to Kenya, {_IM} excluded", [("excluded", 0)], [(_E, _CRS)], []),
-    (f"{_E} to Kenya, not including {_IM}", [("excluded", 0)], [(_E, _CRS)], []),
-    (f"{_E} to Kenya minus {_IM}", [("excluded", 0)], [(_E, _CRS)], []),
-    (f"{_E} to Kenya apart from {_IM}", [("excluded", 0)], [(_E, _CRS)], []),
-    (
-        f"{_E} to Kenya not from the ONE Imputed Multilateral Sectors",
-        [("excluded", 0)],
-        [(_E, _CRS)],
-        [],
-    ),
-    (f"{_ES} excluyendo {_IM}", [("excluded", 0)], [(_E, _CRS)], []),
-    (f"{_FR} hors {_IM}", [("excluded", 0)], [(_E, _CRS)], []),
-    (
-        "non-CRS education aid to Kenya",
-        [("excluded", 0)],
-        [("non-CRS education aid", _CRS)],
-        ['The requested qualifier "CRS" was not applied.'],
-    ),
-]
-
 
 @pytest.mark.parametrize(
-    ("query", "readings", "parts", "warnings"), _ACCEPTANCE, ids=[row[0] for row in _ACCEPTANCE]
-)
-def test_a_question_naming_a_dataset_answers_what_its_reading_asks(
-    query: str, readings: list, parts: list, warnings: list
-):
-    response, llm = _resolve(query, *(variable for variable, _family in parts))
-
-    assert llm.readings == readings
-    assert llm.calls["MentionReadings"] == 1
-    assert [part.variable_text for part in response.parts] == [variable for variable, _ in parts]
-    for spec, (_variable, family) in zip(_specs(response), parts, strict=True):
-        _assert_part(spec, family)
-    assert _query_qualifier_warnings(response) == warnings
-
-
-# The recorded extraction gives the dataset a variable naming another measure, "imputed
-# multilateral student aid", and the recorded reading asks the education measure of it.
-_PLUS = f"{_E} to Kenya plus {_IM}"
-
-
-def test_a_reading_that_names_another_measure_than_the_mentions_variable_is_reported():
-    student = f"{_IM} student aid"
-
-    response, llm = _resolve(_PLUS, _E, student)
-
-    assert llm.readings == [("also", 0)]
-    assert [part.variable_text for part in response.parts] == [_E, student]
-    plain, unbound = response.parts
-    assert isinstance(plain, DefinitePart)
-    _assert_part(plain.spec, _CRS)
-    if isinstance(unbound, DefinitePart):
-        assert AID_TYPE not in _bound(unbound.spec)
-        assert _sources(unbound.spec) == [CRS_PROVENANCE]
-    assert _query_qualifier_warnings(response) == [
-        f'The requested qualifier "{_IM}" was not applied.'
-    ]
-
-
-@pytest.mark.parametrize(
-    ("query", "variable", "member_count"),
+    ("query", "variable", "member_count", "open_roles"),
     [
-        ("top donors of education aid to Kenya", _E, CRS_MEMBER_COUNT),
-        (f"{_E} to Kenya", _E, CRS_MEMBER_COUNT),
-        ("total aid to Kenya", "aid", _PLAIN_AID_MEMBER_COUNT),
-        ("top 5 donantes de ayuda a Kenia", "aid", _PLAIN_AID_MEMBER_COUNT),
+        ("top donors of education aid to Kenya", _E, CRS_MEMBER_COUNT, ["origin"]),
+        (f"{_E} to Kenya", _E, CRS_MEMBER_COUNT, None),
+        ("total aid to Kenya", "aid", _PLAIN_AID_MEMBER_COUNT, None),
+        ("top 5 donantes de ayuda a Kenia", "aid", _PLAIN_AID_MEMBER_COUNT, ["origin"]),
     ],
 )
-def test_a_question_naming_no_dataset_asks_no_reading_and_answers_the_crs(
-    query: str, variable: str, member_count: int
+def test_a_question_naming_no_dataset_answers_the_crs(
+    query: str, variable: str, member_count: int, open_roles: list[str] | None
 ):
     response, llm = _resolve(query, variable)
 
     (spec,) = _specs(response)
-    assert llm.calls["MentionReadings"] == 0
-    assert llm.calls["Extraction"] == 1
+    assert llm.calls == {"Extraction": 1, "_UniversalBindOutput": 1}
     assert spec.resolved.shape.member_count == member_count
     assert AID_TYPE not in _bound(spec)
     assert "source" not in _bound(spec)
     plain = education_aid_identity() if variable == _E else _plain_aid_identity()
+    if open_roles is not None:
+        plain["open_roles"] = open_roles
+    assert spec.definition.identity.open_roles == open_roles
     assert spec.spec_id == _spec_id(plain)
 
 
-def test_a_ranked_education_aid_question_keeps_the_plain_crs_identity_and_its_operation():
+def test_a_ranked_education_aid_question_asks_every_donor_and_keeps_its_operation():
+    """The rank runs over donors, so the part leaves the donor open. The CRS declares the
+    donor, and the identity states it beside the plain CRS one."""
     response, _llm = _resolve("top donors of education aid to Kenya", "education aid")
 
     (spec,) = _specs(response)
-    assert spec.spec_id == EDUCATION_AID_SPEC_ID
+    assert spec.definition.identity.open_roles == ["origin"]
+    assert spec.spec_id == _spec_id({**education_aid_identity(), "open_roles": ["origin"]})
+    assert spec.spec_id != EDUCATION_AID_SPEC_ID
     assert response.parts[0].operations == [
         Operation(verb="rank", phrase="top donors", over="origin")
     ]
 
 
-def test_the_bind_prompt_of_a_part_naming_no_dataset_holds_no_opt_in_shape():
-    _response, llm = _resolve("top donors of education aid to Kenya", "education aid")
-
-    prompt = llm.bind_prompts["education aid"]
-    assert _CRS_MEMBER in prompt
-    assert _IMPUTED_MEMBER not in prompt
-    assert AID_TYPE not in prompt
+# ---------------------------------------------------------------------------
+# A second table on the CRS aid five-tuple: recorded extraction and bind
+# ---------------------------------------------------------------------------
 
 
-def test_each_part_names_the_one_dataset_elected_for_its_family():
-    response, _llm = _resolve(f"{_E} to Kenya including {_IM}", _E, _IM_E)
+def _with_second_table(*, opt_in: bool) -> CodeIndex:
+    """The packaged index with `_SECOND` declared beside the CRS on the aid five-tuple."""
+    packaged = get_index()
+    aid = row_five_tuple(next(row for row in packaged.statvars if row.dcid == _CRS_MEMBER))
+    return CodeIndex(
+        stamp=packaged.stamp,
+        declarations=tuple(packaged.declarations.values()),
+        codes=packaged.codes,
+        statvars=tuple(
+            dataclasses.replace(row, provenances=(*row.provenances, _SECOND))
+            if row_five_tuple(row) == aid and CRS_PROVENANCE in row.provenances
+            else row
+            for row in packaged.statvars
+        ),
+        datasets=(
+            *packaged.datasets.values(),
+            DatasetDeclaration(
+                provenance=_SECOND,
+                label=_SECOND_LABEL,
+                description=(
+                    "Official development assistance by donor and recipient, as the OECD's"
+                    " aggregate tables publish it."
+                ),
+                opt_in=opt_in,
+                absent_observation="zero",
+                rank=20,
+            ),
+        ),
+    )
 
-    plain, imputed = _specs(response)
-    assert (plain.resolved.rendered_sentence or "").endswith(f" {_CRS_LABEL}.")
-    assert _IMPUTED_LABEL not in plain.resolved.rendered_sentence
-    assert (imputed.resolved.rendered_sentence or "").endswith(f" {_IMPUTED_LABEL}.")
-    assert _CRS_LABEL not in imputed.resolved.rendered_sentence
+
+def _use_second_table(monkeypatch: pytest.MonkeyPatch, *, opt_in: bool) -> None:
+    """Serve `_with_second_table` wherever a loaded module reads the packaged index, and
+    give the CRS member a series under `_SECOND` as well."""
+    index = _with_second_table(opt_in=opt_in)
+    packaged = shared_module.get_index
+    for module in list(sys.modules.values()):
+        if vars(module).get("get_index") is packaged:
+            monkeypatch.setattr(module, "get_index", lambda: index)
+    names = RoleNames(donor="financingProvider", recipient="financingRecipient")
+    patch_coverage(
+        monkeypatch,
+        [
+            (_CRS_MEMBER, "crs", _FRA, _KEN, [2019, 2020, 2021]),
+            (_CRS_MEMBER, "second", _FRA, _KEN, [2019, 2020, 2021]),
+        ],
+        role_names={_CRS_MEMBER: names},
+        facet_metadata={
+            "crs": FacetMetadata(provenance_id=CRS_PROVENANCE, unit="USD"),
+            "second": FacetMetadata(provenance_id=_SECOND, unit="USD"),
+        },
+    )
 
 
-def test_a_question_naming_the_crs_binds_the_source_and_resolves_the_mints_family():
-    response, _llm = _resolve(f"{_CRS_E} to Kenya", _CRS_E)
+def _unapplied(response: ResolveResponse) -> list[str]:
+    """The phrases the answer reports as not applied: each part's `query_qualifier_dropped`
+    warning and `measure_not_applied` departure."""
+    warned = [
+        warning.message
+        for part in response.parts
+        for warning in part.warnings
+        if warning.code == "query_qualifier_dropped"
+    ]
+    departed = [
+        departure.asked or ""
+        for part in response.parts
+        for departure in part.departures or ()
+        if departure.code == "measure_not_applied"
+    ]
+    return [*warned, *departed]
+
+
+def _without_source_slot(prompt: str) -> str:
+    """`prompt` less the SOURCE SLOT rules block and each shape's source slot lines: the
+    `axis=source` line and its taxonomy and labels lines."""
+    kept: list[str] = []
+    lines = iter(prompt.splitlines(keepends=True))
+    for line in lines:
+        if line.startswith("SOURCE SLOT ("):
+            for rule in lines:
+                if not rule.strip():
+                    break
+            continue
+        if line.lstrip().startswith("axis=source,"):
+            next(lines)
+            next(lines)
+            continue
+        kept.append(line)
+    return "".join(kept)
+
+
+@pytest.mark.parametrize("shared", [False, True], ids=["packaged", "second-table"])
+def test_the_source_slot_appears_only_on_a_family_two_tables_publish(
+    monkeypatch: pytest.MonkeyPatch, shared: bool
+):
+    """On the packaged index the CRS aid family has one table, and DAC1 shares its
+    five-tuple as a family of its own, so its bind prompt offers no slot. With a second
+    table the prompt offers the slot, the question names no table, and the part answers
+    the CRS under its plain identity."""
+    if shared:
+        _use_second_table(monkeypatch, opt_in=False)
+
+    response, llm = _resolve("total aid to Kenya", "aid")
+
+    prompt = llm.bind_prompts["aid"]
+    assert ("SOURCE SLOT" in prompt) is shared
+    assert ("axis=source" in prompt) is shared
+    (spec,) = _specs(response)
+    assert "source" not in _bound(spec)
+    assert spec.spec_id == _spec_id(_plain_aid_identity())
+
+
+def test_the_source_slot_adds_only_its_rules_and_its_slot_to_the_bind_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """With a second table on the family, the bind prompt adds only the slot's rules and
+    the shape's source slot to the packaged prompt of the same question."""
+    _response, plain = _resolve("total aid to Kenya", "aid")
+    _use_second_table(monkeypatch, opt_in=False)
+    _response, slotted = _resolve("total aid to Kenya", "aid")
+
+    assert slotted.bind_prompts["aid"] != plain.bind_prompts["aid"]
+    assert _without_source_slot(slotted.bind_prompts["aid"]) == plain.bind_prompts["aid"]
+
+
+@pytest.mark.parametrize("opt_in", [False, True], ids=["default", "opt-in"])
+def test_a_question_naming_the_second_table_answers_from_it(
+    monkeypatch: pytest.MonkeyPatch, opt_in: bool
+):
+    """The source slot names the second table, opt-in or not, so the part mints the
+    identity of every aid to Kenya naming that table: the plain aid identity with its
+    provenance facet bound to the table, in canonical form."""
+    _use_second_table(monkeypatch, opt_in=opt_in)
+    named = {**_plain_aid_identity(), "facets": {"provenance": {"state": "value", "ref": _SECOND}}}
+
+    response, _llm = _resolve(f"aid to Kenya according to {_SECOND_LABEL}", "aid")
+
+    assert _unapplied(response) == []
+    (spec,) = _specs(response)
+    assert _bound(spec)["source"] == _SECOND
+    assert _sources(spec) == [_SECOND]
+    assert identity_dataset(spec.definition.identity) == _SECOND
+    assert spec.spec_id == _spec_id(dict(canonical_identity(get_index(), named)))
+
+
+@pytest.mark.parametrize("opt_in", [False, True], ids=["default", "opt-in"])
+def test_a_question_excluding_the_crs_answers_from_the_other_table_or_refuses(
+    monkeypatch: pytest.MonkeyPatch, opt_in: bool
+):
+    """Excluding the CRS leaves the second table when it serves by default, and the identity
+    names it. An opt-in second table answers only a part that names it, so excluding the
+    CRS leaves no table and the part refuses, naming the CRS."""
+    _use_second_table(monkeypatch, opt_in=opt_in)
+
+    response, _llm = _resolve("aid to Kenya excluding the CRS", "aid")
+
+    (part,) = response.parts
+    if opt_in:
+        assert isinstance(part, NoDataPart)
+        assert part.no_data.reason == "qualifier_not_bound"
+        (unbound,) = part.no_data.unbound_qualifiers
+        assert [(ref.dcid, ref.label) for ref in unbound.named] == [(CRS_PROVENANCE, _CRS_LABEL)]
+    else:
+        assert _unapplied(response) == []
+        (spec,) = _specs(response)
+        assert _bound(spec)["source"] == _SECOND
+        assert _sources(spec) == [_SECOND]
+
+
+# ---------------------------------------------------------------------------
+# A scripted model
+# ---------------------------------------------------------------------------
+
+
+_NAMED_PHRASE = f"according to {_SECOND_LABEL}"
+_OTHER_PHRASE = "in fragile states"
+
+
+@pytest.mark.parametrize(
+    ("source_phrase", "unapplied"),
+    [
+        (_NAMED_PHRASE, [_OTHER_PHRASE]),
+        (f"per {_SECOND_LABEL}", [_NAMED_PHRASE, _OTHER_PHRASE]),
+    ],
+    ids=["one-of-two-consumed", "echo-not-dropped"],
+)
+def test_only_the_dropped_phrase_the_source_slot_consumed_counts_as_applied(
+    monkeypatch: pytest.MonkeyPatch, source_phrase: str, unapplied: list[str]
+):
+    """The source slot names the second table and echoes the dropped phrase it consumed.
+    That phrase raises no warning and no departure; the other dropped phrase still does. An
+    echo that is not one of the dropped phrases verbatim applies none."""
+    _use_second_table(monkeypatch, opt_in=False)
+    named = SlotBindingDraft(axis="source", property_dcid=None, kind="value", value_dcids=[_SECOND])
+    llm = _ScriptedLLM(
+        "aid",
+        dropped=(_NAMED_PHRASE, _OTHER_PHRASE),
+        drafted=(named,),
+        source_phrase=source_phrase,
+    )
+
+    response = _resolve_scripted("aid to Kenya", llm, graph=_graph("aid", members=(_CRS_MEMBER,)))
 
     (spec,) = _specs(response)
-    assert spec.spec_id != EDUCATION_AID_SPEC_ID
-    sentence = spec.resolved.rendered_sentence or ""
-    assert "to Kenya for education, 2019 to 2021. " in sentence
-    assert sentence.endswith(f" {_CRS_LABEL}.")
-    _assert_search_family_is_the_mints(spec, member_count=CRS_MEMBER_COUNT)
-
-
-# ---------------------------------------------------------------------------
-# A scripted model: what each reading and each failure does
-# ---------------------------------------------------------------------------
+    assert _bound(spec)["source"] == _SECOND
+    reported = _unapplied(response)
+    assert {
+        phrase for phrase in (_NAMED_PHRASE, _OTHER_PHRASE) if any(phrase in r for r in reported)
+    } == set(unapplied)
 
 
 class _ScriptedLLM:
-    """Extract the given variables to Kenya, read the mentions as told, and elect the
-    first shape with every slot open but those `drafted` binds. Each bind prompt is kept in
-    call order."""
+    """Extract the given variables to Kenya, and elect the first shape with every slot open
+    but those `drafted` binds, nominating the shapes `also_plausible` indexes beside it.
+    Each bind prompt is kept in call order."""
 
     def __init__(
         self,
         *variables: str,
         dropped: tuple[str, ...] = (),
-        unplaced: tuple[str, ...] = (),
-        readings: tuple[tuple[str, int | None], ...] | Exception = (),
         drafted: tuple[SlotBindingDraft, ...] = (),
+        source_phrase: str | None = None,
+        also_plausible: list[int] | None = None,
     ) -> None:
         self._variables = list(variables)
+        self._also_plausible = also_plausible
+        self._source_phrase = source_phrase
         self._dropped = list(dropped)
-        self._unplaced = list(unplaced)
-        self._readings = readings
         self._drafted = list(drafted)
         self.bind_prompts: list[str] = []
         self.calls: Counter[str] = Counter()
@@ -526,18 +618,15 @@ class _ScriptedLLM:
                 ],
                 dropped_qualifiers=self._dropped,
             ), None
-        if schema is MentionReadings:
-            if isinstance(self._readings, Exception):
-                raise self._readings
-            return MentionReadings(
-                readings=[
-                    MentionReading(mention=number, relation=relation, variable=variable)
-                    for number, (relation, variable) in enumerate(self._readings)
-                ]
-            ), None
         self.bind_prompts.append(prompt)
-        return _UniversalBindOutput(
-            chosen_shape_index=0, bindings=self._drafted, unplaced=self._unplaced
+        slot = (
+            {"source_phrase": self._source_phrase} if "source_phrase" in schema.model_fields else {}
+        )
+        return schema(
+            chosen_shape_index=0,
+            bindings=self._drafted,
+            also_plausible=self._also_plausible,
+            **slot,
         ), None
 
 
@@ -552,54 +641,31 @@ def _resolve_scripted(
     )
 
 
-@pytest.mark.parametrize(
-    "readings",
-    [
-        (("unrelated", None),),
-        (),
-        (("only", 7),),
-        (("also", None),),
-        LLMInfraError("the model is unavailable"),
-        TimeoutError("the model timed out"),
-        ValueError("the output did not validate"),
-    ],
-    ids=["unrelated", "missing", "bad-variable", "no-variable", "infra", "timeout", "invalid"],
-)
-@pytest.mark.parametrize(
-    ("variable", "dropped"),
-    [(_E, (f"including {_IM}",)), (_IM_E, ()), (f"{_E} including {_IM}", ())],
-    ids=["dropped-phrase", "leading", "inside"],
-)
-def test_no_reading_but_only_or_also_binds_and_each_other_is_reported(
-    readings, variable: str, dropped: tuple[str, ...]
-):
-    llm = _ScriptedLLM(variable, dropped=dropped, readings=readings)
-
-    response = _resolve_scripted(f"{_E} to Kenya including {_IM}", llm, variable)
-
-    (spec,) = _specs(response)
-    assert AID_TYPE not in _bound(spec)
-    assert "source" not in _bound(spec)
-    assert spec.resolved.shape.member_count == _PLAIN_CRS_EDUCATION_MEMBERS
-    assert _sources(spec) == [CRS_PROVENANCE]
-    (warning,) = _query_qualifier_warnings(response)
-    assert _IM in warning
+def _answers(response: ResolveResponse) -> list[tuple[str | None, str, bool]]:
+    """Each part's variable text, the dataset its family comes from, and whether the
+    identity binds the aid type the imputed five-tuple pins."""
+    return [
+        (part.variable_text, _sources(spec)[0], AID_TYPE in _pinned(spec))
+        for part, spec in zip(response.parts, _specs(response), strict=True)
+    ]
 
 
-@pytest.mark.parametrize("name", [_IM, f"{_IM} ODA"])
-def test_an_excluded_mention_binds_nothing_and_warns_nothing_wherever_it_sits(name: str):
-    """ "imputed multilateral ODA" is also the label of the aid-type code the imputed rows
-    carry. The mention owns its words, so no qualifier is recognised in them on the
-    default part, which has no aid-type slot."""
-    for variable, dropped in [(_E, (f"excluding {name}",)), (f"{_E} excluding {name}", ())]:
-        llm = _ScriptedLLM(variable, dropped=dropped, readings=(("excluded", 0),))
+_PHASES = pipeline_module._PHASES
 
-        response = _resolve_scripted(f"{_E} to Kenya excluding {name}", llm, variable)
 
-        (spec,) = _specs(response)
-        assert AID_TYPE not in _bound(spec)
-        assert spec.resolved.shape.member_count == _PLAIN_CRS_EDUCATION_MEMBERS
-        assert _query_qualifier_warnings(response) == []
+def _name_dataset(monkeypatch: pytest.MonkeyPatch, provenance: str) -> None:
+    """Name `provenance` as every part's dataset, at the seam shape candidacy reads
+    (`ResolveState.named_dataset`). A later call replaces the dataset an earlier one named."""
+
+    async def named(state: ResolveState):
+        state.named_dataset = provenance
+        return await _phase_prune_and_rank(state)
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "_PHASES",
+        tuple(named if phase is _phase_prune_and_rank else phase for phase in _PHASES),
+    )
 
 
 def test_a_drafted_source_binding_is_discarded():
@@ -616,41 +682,478 @@ def test_a_drafted_source_binding_is_discarded():
     assert _sources(spec) == [CRS_PROVENANCE]
 
 
-def test_the_default_dataset_asked_for_as_well_is_one_part_with_nothing_bound():
-    llm = _ScriptedLLM(_E, dropped=("including CRS",), readings=(("also", 0),))
+def test_electing_the_opt_in_shape_names_its_table():
+    """The imputed shape, recalled first beside the CRS shape, is offered to a part naming
+    no dataset, without the table's invariant slots. Electing it names the table, so the part mints the identity
+    of a part that names it, and the identity binds the table's invariants."""
+    llm = _ScriptedLLM(_E)
 
-    response = _resolve_scripted(f"{_E} to Kenya including CRS", llm, _E)
+    response = _resolve_scripted(
+        f"{_E} to Kenya", llm, graph=_graph(_E, members=(_IMPUTED_MEMBER, _CRS_MEMBER))
+    )
+
+    (prompt,) = llm.bind_prompts
+    assert (
+        "  label: FinancialFlow imputed multilateral ODA, ONE Imputed Multilateral Sectors"
+        in prompt
+    )
+    assert "  label: FinancialFlow disbursements, OECD Creditor Reporting System (CRS)" in prompt
+    assert f"property_dcid={AID_TYPE}" not in prompt
+    (spec,) = _specs(response)
+    _assert_imputed_part(spec)
+    assert _pinned(spec)["crsTypeOfFlow"] == "CRSTypeOfFlow10"
+
+
+def test_the_opt_in_table_reached_as_an_alternate_mints_the_identity_electing_it():
+    """Bind elects the CRS commitments shape and nominates the imputed shape beside it. The
+    alternate names the opt-in table its shape alone may answer from, so its identity is the
+    one a fresh question electing the imputed shape mints under the purpose the alternate's
+    representative member binds."""
+    purpose = next(
+        row.constraint_properties["crsPurpose"]
+        for row in get_index().statvars
+        if row.dcid == _IMPUTED_MEMBER
+    )
+    drafted = SlotBindingDraft(
+        axis="how", property_dcid="crsPurpose", kind="value", value_dcids=[purpose]
+    )
+
+    offered = _resolve_scripted(
+        "aid to Kenya",
+        _ScriptedLLM("aid", also_plausible=[1]),
+        graph=_graph("aid", members=(_COMMITMENTS_MEMBER, _IMPUTED_MEMBER)),
+    )
+    fresh = _resolve_scripted(
+        "aid to Kenya",
+        _ScriptedLLM("aid", drafted=(drafted,)),
+        graph=_graph("aid", members=(_IMPUTED_MEMBER, _CRS_MEMBER)),
+    )
+
+    (part,) = offered.parts
+    assert isinstance(part, CandidatesPart)
+    alternate = next(
+        spec for spec in part.candidates.specs if _sources(spec) == [IMPUTED_PROVENANCE]
+    )
+    (elected,) = _specs(fresh)
+    assert _bound(alternate)["source"] == IMPUTED_PROVENANCE
+    assert alternate.spec_id == elected.spec_id
+
+
+def test_the_opt_in_measure_alternative_mints_the_identity_electing_it():
+    """Bind elects the CRS education aid shape and nominates the imputed shape beside it, a
+    measure sibling, so the answer folds it into its measure alternatives. The alternative
+    is the identity a fresh question electing the imputed shape mints: it names the opt-in
+    table and binds its invariants, on the imputed shape's own slots, under the purpose the
+    question bound."""
+    offered = _resolve_scripted(
+        f"{_E} to Kenya",
+        _ScriptedLLM(_E, also_plausible=[1]),
+        graph=_graph(_E, members=(_CRS_MEMBER, _IMPUTED_MEMBER)),
+    )
+    fresh = _resolve_scripted(
+        f"{_E} to Kenya", _ScriptedLLM(_E), graph=_graph(_E, members=(_IMPUTED_MEMBER, _CRS_MEMBER))
+    )
+
+    (spec,) = _specs(offered)
+    (elected,) = _specs(fresh)
+    _assert_imputed_part(elected)
+    alternative = next(
+        alternative
+        for alternative in spec.resolved.alternative_measures or []
+        if identity_dataset(alternative.definition.identity) == IMPUTED_PROVENANCE
+    )
+    assert alternative.definition.spec_id == elected.spec_id
+    assert alternative.definition.identity == elected.definition.identity
+
+
+def test_a_parsed_part_naming_no_dataset_answers_the_crs():
+    llm = _ScriptedLLM()
+
+    response = offline_resolve(
+        ResolveRequest(
+            input=ParsedInput(
+                parts=[
+                    ParsedPart(variable_text=_E, entities=[{"text": "Kenya", "role_text": "to"}])
+                ]
+            )
+        ),
+        graph=_graph(_E),
+        llm=llm,
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
 
     (spec,) = _specs(response)
-    assert "source" not in _bound(spec)
+    assert AID_TYPE not in _bound(spec)
     assert _sources(spec) == [CRS_PROVENANCE]
-    assert _query_qualifier_warnings(response) == []
+    assert llm.calls == {"_UniversalBindOutput": 1}
 
 
-def test_the_datasets_part_carries_the_operations_on_its_measure():
-    response, _llm = _resolve(f"top 5 donors of {_E} to Kenya including {_IM}", _E, _IM_E)
+def _resolve_parsed(part: ParsedPart, llm: _ScriptedLLM, *, graph: FakeGraph) -> ResolveResponse:
+    return offline_resolve(
+        ResolveRequest(input=ParsedInput(parts=[part])),
+        graph=graph,
+        llm=llm,
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+    )
 
-    rank = Operation(verb="rank", phrase="top 5 donors", over="origin")
-    assert [part.variable_text for part in response.parts] == [_E, _IM_E]
-    assert [part.operations for part in response.parts] == [[rank], [rank]]
+
+def test_a_plain_question_binding_codes_no_crs_row_holds_together_is_not_resolved():
+    """The CRS alone publishes the aid family, and it holds purpose 100 and modality B02 on
+    separate rows. A question naming and excluding no table can be served from no other
+    table, so the part goes on to materialise and ends `variable_not_resolved` with nothing
+    named, as a part whose codes match no member does."""
+    purpose, modality = "CRSPurposeCode100", "CRSCooperationModalityB02"
+    index = get_index()
+    family = index.family_by_dcid[_CRS_MEMBER]
+    assert family.datasets == (CRS_PROVENANCE,)
+    held = {
+        (
+            row.constraint_properties.get("crsPurpose") in index.descendants(purpose),
+            row.constraint_properties.get("crsCooperationModality") == modality,
+        )
+        for row in family.rows
+    }
+    assert held == {(True, False), (False, True), (False, False)}
+    drafted = (
+        SlotBindingDraft(
+            axis="what", property_dcid="crsPurpose", kind="value", value_dcids=[purpose]
+        ),
+        SlotBindingDraft(
+            axis="how", property_dcid="crsCooperationModality", kind="value", value_dcids=[modality]
+        ),
+    )
+
+    response = _resolve_scripted(
+        "aid to Kenya",
+        _ScriptedLLM("aid", drafted=drafted),
+        graph=_graph("aid", members=(_CRS_MEMBER,)),
+    )
+
+    (part,) = response.parts
+    assert isinstance(part, NoDataPart)
+    assert part.no_data.reason == "variable_not_resolved"
+    assert part.no_data.unbound_qualifiers == []
+
+
+def _drafted_source(value: str) -> tuple[SlotBindingDraft, ...]:
+    return (SlotBindingDraft(axis="source", property_dcid=None, kind="value", value_dcids=[value]),)
+
+
+# The UN System Data Commons' official development assistance series, derived from the CRS.
+_UN_ODA = "undata/sdg/SERIES-DC_ODA_TOTL"
+
+
+def test_a_source_slot_refusal_stands_though_the_un_system_has_a_candidate(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The UN System Data Commons recalls an aid series with data at Kenya. Excluding the
+    CRS beside an opt-in second table leaves the part no table, so it refuses naming the
+    CRS, and the UN series, which publishes none of the declared tables, does not answer in
+    its place."""
+    _use_second_table(monkeypatch, opt_in=True)
+    graph = _graph("aid", members=(_CRS_MEMBER,), un_members=(_UN_ODA,))
+    excluding = _drafted_source(f"{EXCLUDED_SOURCE_PREFIX}{CRS_PROVENANCE}")
+
+    response = _resolve_scripted(
+        "aid to Kenya", _ScriptedLLM("aid", drafted=excluding), graph=graph
+    )
+
+    (part,) = response.parts
+    assert isinstance(part, NoDataPart)
+    assert part.no_data.reason == "qualifier_not_bound"
+    (unbound,) = part.no_data.unbound_qualifiers
+    assert [ref.dcid for ref in unbound.named] == [CRS_PROVENANCE]
+
+
+# Each row: a raw-text question whose identity binds a table it did not name in a typed
+# field, the variable, the recall members, the source slot the model binds, the second
+# table's declaration (`None` leaves the packaged index), and the table the identity binds.
+_TABLE_ROWS = [
+    pytest.param("aid", (_CRS_MEMBER,), _drafted_source(_SECOND), False, _SECOND, id="slot-names"),
+    pytest.param(
+        "aid",
+        (_CRS_MEMBER,),
+        _drafted_source(f"{EXCLUDED_SOURCE_PREFIX}{CRS_PROVENANCE}"),
+        False,
+        _SECOND,
+        id="slot-excludes",
+    ),
+    pytest.param(_E, (_IMPUTED_MEMBER, _CRS_MEMBER), (), None, IMPUTED_PROVENANCE, id="measure"),
+]
+
+
+@pytest.mark.parametrize(("variable", "members", "drafted", "opt_in", "table"), _TABLE_ROWS)
+def test_a_parsed_part_naming_a_table_mints_the_raw_text_answer_from_it(
+    monkeypatch: pytest.MonkeyPatch,
+    variable: str,
+    members: tuple[str, ...],
+    drafted: tuple[SlotBindingDraft, ...],
+    opt_in: bool | None,
+    table: str,
+):
+    """A parsed part posting the table as `provenance` enters the seam as the named
+    dataset, and mints the spec_id of the raw-text question whose source slot or elected
+    measure chose that table."""
+    if opt_in is not None:
+        _use_second_table(monkeypatch, opt_in=opt_in)
+    graph = _graph(variable, members=members)
+    raw = _resolve_scripted(
+        f"{variable} to Kenya", _ScriptedLLM(variable, drafted=drafted), graph=graph
+    )
+    part = ParsedPart(
+        variable_text=variable, entities=[{"text": "Kenya", "role_text": "to"}], provenance=table
+    )
+
+    # The parsed side recalls the members in reverse, so the scripted model's first shape is
+    # the CRS one, and only the named dataset steers the part to the table.
+    parsed = _resolve_parsed(
+        part, _ScriptedLLM(), graph=_graph(variable, members=tuple(reversed(members)))
+    )
+
+    (raw_spec,) = _specs(raw)
+    (parsed_spec,) = _specs(parsed)
+    assert _bound(parsed_spec)["source"] == table
+    assert parsed_spec.spec_id == raw_spec.spec_id
+
+
+def _hold_series_only_away_from_kenya(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Move every member's series, under each table, to a recipient other than Kenya, so a
+    part to Kenya resolves its shape and finds no observation."""
+    names = RoleNames(donor="financingProvider", recipient="financingRecipient")
+    members = (_CRS_MEMBER, _IMPUTED_MEMBER)
+    patch_coverage(
+        monkeypatch,
+        [
+            (member, facet, _FRA, _UGA, [2019, 2020, 2021])
+            for member in members
+            for facet in ("crs", "imputed", "second")
+        ],
+        role_names=dict.fromkeys(members, names),
+        facet_metadata={
+            "crs": FacetMetadata(provenance_id=CRS_PROVENANCE, unit="USD"),
+            "imputed": FacetMetadata(provenance_id=IMPUTED_PROVENANCE, unit="USD"),
+            "second": FacetMetadata(provenance_id=_SECOND, unit="USD"),
+        },
+    )
+
+
+@pytest.mark.parametrize("has_data", [True, False], ids=["answered", "no-data"])
+@pytest.mark.parametrize(("variable", "members", "drafted", "opt_in", "table"), _TABLE_ROWS)
+def test_a_restated_part_names_the_table_its_identity_binds(
+    monkeypatch: pytest.MonkeyPatch,
+    variable: str,
+    members: tuple[str, ...],
+    drafted: tuple[SlotBindingDraft, ...],
+    opt_in: bool | None,
+    table: str,
+    has_data: bool,
+):
+    """The restatement of a part whose identity binds a table names it as `provenance`, so
+    posting the restatement back answers from the same table under the same spec_id, and
+    so does posting the parsed answer's own restatement. A part with no observation keeps
+    the elected identity as its flagged match and restates the table the same way."""
+    if opt_in is not None:
+        _use_second_table(monkeypatch, opt_in=opt_in)
+    if not has_data:
+        _hold_series_only_away_from_kenya(monkeypatch)
+    graph = _graph(variable, members=members)
+    raw = _resolve_scripted(
+        f"{variable} to Kenya", _ScriptedLLM(variable, drafted=drafted), graph=graph
+    )
+    (raw_part,) = raw.parts
+    assert raw_part.restatement is not None
+    assert raw_part.restatement.provenance == table
+
+    reposted = _resolve_parsed(raw_part.restatement, _ScriptedLLM(), graph=graph)
+
+    (reposted_part,) = reposted.parts
+    assert reposted_part.restatement == raw_part.restatement
+    assert _held_spec(reposted_part).spec_id == _held_spec(raw_part).spec_id
+
+
+@pytest.mark.parametrize(
+    ("drafted", "table"),
+    [((), None), (_drafted_source(_SECOND), _SECOND)],
+    ids=["slot-unbound", "slot-names"],
+)
+def test_a_parsed_part_naming_no_table_restates_the_table_its_identity_binds(
+    monkeypatch: pytest.MonkeyPatch, drafted: tuple[SlotBindingDraft, ...], table: str | None
+):
+    """A parsed part posted without `provenance` restates the table its source slot chose,
+    and none when the slot stays unbound and the plain CRS identity binds no source."""
+    _use_second_table(monkeypatch, opt_in=False)
+    part = ParsedPart(variable_text="aid", entities=[{"text": "Kenya", "role_text": "to"}])
+
+    response = _resolve_parsed(
+        part, _ScriptedLLM(drafted=drafted), graph=_graph("aid", members=(_CRS_MEMBER,))
+    )
+
+    (answered,) = response.parts
+    assert _bound(answered.spec).get("source") == table
+    assert answered.restatement is not None
+    assert answered.restatement.provenance == table
+
+
+_DEU = "country/DEU"
+_FROM_FRANCE = ({"text": "France", "role_text": "from"},)
+_EXCLUDING_CRS = _drafted_source(f"{EXCLUDED_SOURCE_PREFIX}{CRS_PROVENANCE}")
+_EXCLUDING_SECOND = _drafted_source(f"{EXCLUDED_SOURCE_PREFIX}{_SECOND}")
+
+
+def _hold_france_series_only_under(monkeypatch: pytest.MonkeyPatch, facet: str | None) -> None:
+    """Give the CRS and the imputed member a series from Germany to Uganda under its own
+    table, and the CRS member one from France to Kenya under `facet` alone. The second
+    table holds no other series, so a part from France finds an observation only where
+    the table of `facet` serves it, and nowhere when `facet` is `None`."""
+    names = RoleNames(donor="financingProvider", recipient="financingRecipient")
+    elsewhere = [
+        (_CRS_MEMBER, "crs", _DEU, _UGA, [2019, 2020, 2021]),
+        (_IMPUTED_MEMBER, "imputed", _DEU, _UGA, [2019, 2020, 2021]),
+    ]
+    france = [(_CRS_MEMBER, facet, _FRA, _KEN, [2019, 2020, 2021])] if facet else []
+    patch_coverage(
+        monkeypatch,
+        [*elsewhere, *france],
+        role_names=dict.fromkeys(_MEMBERS, names),
+        facet_metadata={
+            "crs": FacetMetadata(provenance_id=CRS_PROVENANCE, unit="USD"),
+            "imputed": FacetMetadata(provenance_id=IMPUTED_PROVENANCE, unit="USD"),
+            "second": FacetMetadata(provenance_id=_SECOND, unit="USD"),
+        },
+    )
+
+
+# Each row: a parsed part naming no table whose run settles on one and finds no observation
+# under it, with no flagged match to carry the identity. The variable, the recall members,
+# the entities, the open roles, the source slot the model binds, the second table's
+# declaration (`None` leaves the packaged index), the one table holding a series from
+# France, and the table the restatement names.
+_NO_DATA_ROWS = [
+    pytest.param(
+        _E, (_IMPUTED_MEMBER, _CRS_MEMBER), _FROM_FRANCE, None, (), None, "crs",
+        IMPUTED_PROVENANCE, id="measure",
+    ),
+    pytest.param(
+        "aid", (_CRS_MEMBER,), _FROM_FRANCE, None, _drafted_source(_SECOND), False, "crs",
+        _SECOND, id="slot-names",
+    ),
+    pytest.param(
+        "aid", (_CRS_MEMBER,), _FROM_FRANCE, None, _EXCLUDING_CRS, False, "crs",
+        _SECOND, id="slot-excludes",
+    ),
+    pytest.param(
+        "aid", (_CRS_MEMBER,), None, ["recipient"], _drafted_source(_SECOND), False, "crs",
+        _SECOND, id="open-recipient-no-place",
+    ),
+    pytest.param(
+        "aid", (_CRS_MEMBER,), _FROM_FRANCE, None, _EXCLUDING_SECOND, True, None,
+        None, id="exclusion-changes-nothing",
+    ),
+]  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("variable", "members", "entities", "open_roles", "drafted", "opt_in", "series", "table"),
+    _NO_DATA_ROWS,
+)
+def test_a_no_data_part_without_a_flagged_match_restates_the_table_its_run_settled(
+    monkeypatch: pytest.MonkeyPatch,
+    variable: str,
+    members: tuple[str, ...],
+    entities: tuple[dict, ...] | None,
+    open_roles: list[str] | None,
+    drafted: tuple[SlotBindingDraft, ...],
+    opt_in: bool | None,
+    series: str | None,
+    table: str | None,
+):
+    """A part that finds no observation and holds no flagged match restates the table its
+    run settled on: the one its elected measure names, the one its source slot names, or
+    the one its exclusion leaves serving. Posting the restatement back, to a model that
+    binds no source slot and recalls the members in reverse, refuses the same way, though
+    another table holds a series the part could answer from. An exclusion that leaves the
+    election where it was restates no table."""
+    if opt_in is not None:
+        _use_second_table(monkeypatch, opt_in=opt_in)
+    _hold_france_series_only_under(monkeypatch, series)
+    graph = _graph(variable, members=members)
+    graph._resolve["France"] = _FRA
+    part = ParsedPart(
+        variable_text=variable,
+        entities=list(entities) if entities is not None else None,
+        open_roles=open_roles,
+    )
+
+    (refused,) = _resolve_parsed(part, _ScriptedLLM(drafted=drafted), graph=graph).parts
+
+    assert isinstance(refused, NoDataPart)
+    assert refused.no_data.flagged_match is None
+    assert refused.restatement is not None
+    assert refused.restatement.provenance == table
+
+    reversed_graph = _graph(variable, members=tuple(reversed(members)))
+    reversed_graph._resolve["France"] = _FRA
+    (reposted,) = _resolve_parsed(refused.restatement, _ScriptedLLM(), graph=reversed_graph).parts
+    assert isinstance(reposted, NoDataPart)
+    assert reposted.no_data.reason == refused.no_data.reason
+    assert reposted.restatement == refused.restatement
 
 
 # ---------------------------------------------------------------------------
-# A dataset asked for where it has no such series
+# A named dataset binds the source slot and the slots its five-tuple pins
 # ---------------------------------------------------------------------------
 
 
-def _commitments_graph(*variables: str) -> FakeGraph:
-    return _graph(*variables, members=(_COMMITMENTS_MEMBER,))
+@pytest.mark.parametrize(
+    ("provenance", "member_count"),
+    [(CRS_PROVENANCE, _PLAIN_CRS_EDUCATION_MEMBERS), (IMPUTED_PROVENANCE, IMPUTED_MEMBER_COUNT)],
+    ids=["crs", "imputed"],
+)
+def test_a_named_dataset_binds_the_source_and_resolves_the_mints_family(
+    monkeypatch: pytest.MonkeyPatch, provenance: str, member_count: int
+):
+    _name_dataset(monkeypatch, provenance)
+
+    response = _resolve_scripted(f"{_E} to Kenya", _ScriptedLLM(_E), _E)
+
+    (spec,) = _specs(response)
+    assert spec.spec_id != EDUCATION_AID_SPEC_ID
+    assert _bound(spec)["source"] == provenance
+    identity = spec.definition.identity
+    assert identity.facets is not None
+    assert identity.facets["provenance"].ref == provenance
+    assert identity_dataset(identity) == provenance
+    _assert_search_family_is_the_mints(spec, member_count=member_count)
 
 
-def test_a_dataset_that_publishes_no_recalled_shape_refuses_and_names_the_mention():
+def test_the_sentence_and_the_trace_name_each_dataset_by_its_declared_label(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    graph = _graph(_E, provenance_labels=("GRAPH NAME FOR CRS", "GRAPH NAME FOR IMPUTED"))
+    answered = [(_resolve_scripted(f"{_E} to Kenya", _ScriptedLLM(_E), graph=graph), _CRS_LABEL)]
+    for provenance, label in ((CRS_PROVENANCE, _CRS_LABEL), (IMPUTED_PROVENANCE, _IMPUTED_LABEL)):
+        _name_dataset(monkeypatch, provenance)
+        answered.append((_resolve_scripted(f"{_E} to Kenya", _ScriptedLLM(_E), graph=graph), label))
+
+    for response, label in answered:
+        (spec,) = _specs(response)
+        assert [source.label for source in spec.resolved.trace.resolved_sources] == [label]
+        assert (spec.resolved.rendered_sentence or "").endswith(f" {label}.")
+        assert "GRAPH NAME" not in spec.resolved.rendered_sentence
+
+
+def test_a_dataset_that_publishes_no_recalled_shape_refuses_and_names_the_dataset(
+    monkeypatch: pytest.MonkeyPatch,
+):
     """The named dataset publishes none of the recalled shapes, so candidacy leaves the part
-    nothing to elect. It refuses before any bind call, naming the mention."""
-    variable = "imputed multilateral education aid commitments"
-    llm = _ScriptedLLM(variable, readings=(("only", 0),))
+    nothing to elect. It refuses before any bind call, naming the dataset."""
+    _name_dataset(monkeypatch, IMPUTED_PROVENANCE)
+    variable = "education aid commitments"
+    llm = _ScriptedLLM(variable)
 
-    response = _resolve_scripted(f"{variable} to Kenya", llm, graph=_commitments_graph(variable))
+    response = _resolve_scripted(
+        f"{variable} to Kenya", llm, graph=_graph(variable, members=(_COMMITMENTS_MEMBER,))
+    )
 
     (part,) = response.parts
     assert isinstance(part, NoDataPart)
@@ -662,103 +1165,6 @@ def test_a_dataset_that_publishes_no_recalled_shape_refuses_and_names_the_mentio
     ]
     assert part.no_data.flagged_match is None
     assert llm.calls["_UniversalBindOutput"] == 0
-
-
-def test_an_inclusion_of_a_dataset_with_no_such_series_answers_its_part_no_data():
-    measure = "education aid commitments"
-    response = _resolve_scripted(
-        f"{measure} to Kenya including imputed multilateral",
-        _ScriptedLLM(measure, dropped=("including imputed multilateral",), readings=(("also", 0),)),
-        graph=_commitments_graph(measure, f"imputed multilateral {measure}"),
-    )
-
-    plain, imputed = response.parts
-    assert isinstance(plain, DefinitePart)
-    assert _sources(plain.spec) == [CRS_PROVENANCE]
-    assert isinstance(imputed, NoDataPart)
-    assert imputed.variable_text == f"imputed multilateral {measure}"
-    assert imputed.no_data.reason == "qualifier_not_bound"
-    assert [q.text for q in imputed.no_data.unbound_qualifiers] == ["imputed multilateral"]
-
-
-# ---------------------------------------------------------------------------
-# The bind prompt, the source label and the qualifier record
-# ---------------------------------------------------------------------------
-
-
-def test_an_opt_in_shape_recalled_first_never_reaches_a_part_naming_no_dataset():
-    llm = _ScriptedLLM(_E)
-
-    response = _resolve_scripted(
-        f"{_E} to Kenya", llm, graph=_graph(_E, members=(_IMPUTED_MEMBER, _CRS_MEMBER))
-    )
-
-    (prompt,) = llm.bind_prompts
-    assert f"  label: {_CRS_MEMBER}" in prompt
-    assert _IMPUTED_MEMBER not in prompt
-    assert AID_TYPE not in prompt
-    assert _answers(response) == [(_E, CRS_PROVENANCE, False)]
-
-
-def test_the_sentence_and_the_trace_name_each_dataset_by_its_declared_label():
-    graph = _graph(
-        _E, _IM_E, _CRS_E, provenance_labels=("GRAPH NAME FOR CRS", "GRAPH NAME FOR IMPUTED")
-    )
-    default_and_imputed = _resolve_scripted(
-        f"{_E} to Kenya including {_IM}",
-        _ScriptedLLM(_E, dropped=(f"including {_IM}",), readings=(("also", 0),)),
-        graph=graph,
-    )
-    named = _resolve_scripted(
-        f"{_CRS_E} to Kenya", _ScriptedLLM(_CRS_E, readings=(("only", 0),)), graph=graph
-    )
-
-    plain, imputed = _specs(default_and_imputed)
-    (bound,) = _specs(named)
-    for spec, label in ((plain, _CRS_LABEL), (imputed, _IMPUTED_LABEL), (bound, _CRS_LABEL)):
-        assert [source.label for source in spec.resolved.trace.resolved_sources] == [label]
-        assert (spec.resolved.rendered_sentence or "").endswith(f" {label}.")
-        assert "GRAPH NAME" not in spec.resolved.rendered_sentence
-
-
-@pytest.mark.parametrize(
-    ("variable", "readings", "unplaced"),
-    [
-        (_CRS_E, (("only", 0),), ("CRS",)),
-        (f"{_E} excluding {_IM}", (("excluded", 0),), (_IM,)),
-    ],
-    ids=["bound-source", "excluded"],
-)
-def test_a_dataset_name_the_bind_model_echoes_is_no_qualifier_without_vocabulary(
-    variable: str, readings, unplaced: tuple[str, ...]
-):
-    response = _resolve_scripted(
-        f"{variable} to Kenya",
-        _ScriptedLLM(variable, readings=readings, unplaced=unplaced),
-        variable,
-    )
-
-    (spec,) = _specs(response)
-    assert [q.text for q in spec.resolved.trace.query_qualifiers] == ["education"]
-
-
-# ---------------------------------------------------------------------------
-# A named dataset binds the source slot and the slots its five-tuple pins
-# ---------------------------------------------------------------------------
-
-
-def test_a_named_dataset_binds_the_source_and_resolves_the_mints_family():
-    response = _resolve_scripted(
-        f"{_IM_E} to Kenya", _ScriptedLLM(_IM_E, readings=(("only", 0),)), _IM_E
-    )
-
-    (spec,) = _specs(response)
-    assert _bound(spec)["source"] == IMPUTED_PROVENANCE
-    identity = spec.definition.identity
-    assert identity.facets is not None
-    assert identity.facets["provenance"].ref == IMPUTED_PROVENANCE
-    assert identity_dataset(identity) == IMPUTED_PROVENANCE
-    _assert_search_family_is_the_mints(spec, member_count=IMPUTED_MEMBER_COUNT)
 
 
 _OPEN_AID_TYPE = (
@@ -783,39 +1189,42 @@ _OPEN_AID_TYPE = (
     [(), *((draft,) for draft in _OPEN_AID_TYPE)],
     ids=["none", "unbound", "absent", "requested-all", "value", "flow-unbound"],
 )
-def test_every_draft_of_a_pinned_slot_ends_as_its_pinned_value(drafted):
+def test_every_draft_of_a_pinned_slot_ends_as_its_pinned_value(
+    monkeypatch: pytest.MonkeyPatch, drafted
+):
     """Every row of the imputed five-tuple holds one aid type and one flow, so the bind
     menu offers neither slot, and whatever the model drafts on either, the identity, which
     names the table, binds the declared value, and the part mints one identity. The
     sentence states neither, because the measure label already says imputed multilateral
     ODA, once."""
-    llm = _ScriptedLLM(_IM_E, dropped=("every aid type",), readings=(("only", 0),), drafted=drafted)
+    _name_dataset(monkeypatch, IMPUTED_PROVENANCE)
+    llm = _ScriptedLLM(_E, dropped=("every aid type",), drafted=drafted)
 
-    response = _resolve_scripted(f"{_IM_E} to Kenya, every aid type", llm, _IM_E)
+    response = _resolve_scripted(f"{_E} to Kenya, every aid type", llm, _E)
 
     (prompt,) = llm.bind_prompts
     assert "property_dcid=crsPurpose" in prompt
     assert f"property_dcid={AID_TYPE}" not in prompt
     assert "property_dcid=crsTypeOfFlow" not in prompt
     (spec,) = _specs(response)
-    _assert_part(spec, _IMPUTED)
+    _assert_imputed_part(spec)
     assert _pinned(spec)["crsTypeOfFlow"] == "CRSTypeOfFlow10"
     sentence = spec.resolved.rendered_sentence
     assert sentence.casefold().count("imputed multilateral oda") == 1
     assert "official development assistance" not in sentence.casefold()
 
 
-def test_each_pinned_slot_offers_the_menu_around_its_pin():
+def test_each_pinned_slot_offers_the_menu_around_its_pin(monkeypatch: pytest.MonkeyPatch):
     """The imputed answer binds its two pinned slots to the table's invariants, and each
     slot's menu is the one the code index scopes around the bound value
     (`level_scoped_options`), less the options that serve no row. Every imputed row holds
     the invariant's value, so it alone is offered."""
-    llm = _ScriptedLLM(_IM_E, dropped=(), readings=(("only", 0),))
+    _name_dataset(monkeypatch, IMPUTED_PROVENANCE)
 
-    response = _resolve_scripted(f"{_IM_E} to Kenya", llm, _IM_E)
+    response = _resolve_scripted(f"{_E} to Kenya", _ScriptedLLM(_E), _E)
 
     (spec,) = _specs(response)
-    _assert_part(spec, _IMPUTED)
+    _assert_imputed_part(spec)
     pinned = _pinned(spec)
     assert set(pinned) == {AID_TYPE, "crsTypeOfFlow"}
     menus = {
@@ -828,45 +1237,15 @@ def test_each_pinned_slot_offers_the_menu_around_its_pin():
         assert value in {option.dcid for option in get_index().level_scoped_options(prop, value)}
 
 
-@pytest.mark.parametrize("variable", ["imputed aid", "imputed ODA"])
-def test_a_synonym_ending_in_a_measure_word_keeps_the_variable_and_answers_the_dataset(
-    variable: str,
+def test_a_code_no_shape_of_the_named_dataset_declares_refuses_before_any_bind_call(
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    """The synonym's last word is the measure it asks for, so the variable is no dataset
-    name alone and stays."""
-    llm = _ScriptedLLM(variable, readings=(("only", 0),))
-
-    response = _resolve_scripted(f"{variable} to Kenya", llm, variable)
-
-    assert _answers(response) == [(variable, IMPUTED_PROVENANCE, True)]
-    (spec,) = _specs(response)
-    assert _pinned(spec)[AID_TYPE] == IMPUTED_MULTILATERAL
-    assert _bound(spec)["source"] == IMPUTED_PROVENANCE
-    assert _query_qualifier_warnings(response) == []
-
-
-def test_a_variable_that_is_its_mention_alone_binds_on_the_mentions_measure_word():
-    """The bind model reads "aid" alone, so "multilateral" cannot bind the multisector
-    purpose (#1059)."""
-    variable = f"{_IM} aid"
-    llm = _ScriptedLLM(variable, readings=(("only", 0),))
-
-    response = _resolve_scripted(f"{variable} to Kenya", llm, variable)
-
-    (prompt,) = llm.bind_prompts
-    assert "Variable phrase: aid\n" in prompt
-    (spec,) = _specs(response)
-    assert "crsPurpose" not in _bound(spec)
-    assert _sources(spec) == [IMPUTED_PROVENANCE]
-
-
-def test_a_code_no_shape_of_the_named_dataset_declares_refuses_before_any_bind_call():
     """ "grants" names types of finance, which no imputed row carries, so the part refuses
     the term at candidacy, before any role check or bind call (#1059)."""
-    variable = f"{_IM} grants"
-    llm = _ScriptedLLM(variable, readings=(("only", 0),))
+    _name_dataset(monkeypatch, IMPUTED_PROVENANCE)
+    llm = _ScriptedLLM("grants")
 
-    response = _resolve_scripted(f"{variable} to Kenya", llm, variable)
+    response = _resolve_scripted("grants to Kenya", llm, "grants")
 
     (part,) = response.parts
     assert isinstance(part, NoDataPart)
@@ -891,7 +1270,8 @@ def test_a_code_the_named_dataset_declares_binds_on_its_own_five_tuple(
     """ "budget support" names a purpose the imputed rows carry, so the part answers the
     imputed family under that purpose. Its role checks pass on the dataset's own
     five-tuple (#1059)."""
-    variable = f"{_IM} budget support"
+    _name_dataset(monkeypatch, IMPUTED_PROVENANCE)
+    variable = "budget support"
     names = RoleNames(donor="financingProvider", recipient="financingRecipient")
     patch_coverage(
         monkeypatch,
@@ -899,11 +1279,10 @@ def test_a_code_the_named_dataset_declares_binds_on_its_own_five_tuple(
         role_names={_BUDGET_SUPPORT_MEMBER: names},
         facet_metadata={"imputed": FacetMetadata(provenance_id=IMPUTED_PROVENANCE, unit="USD")},
     )
-    llm = _ScriptedLLM(variable, readings=(("only", 0),))
 
     response = _resolve_scripted(
         f"{variable} to Kenya",
-        llm,
+        _ScriptedLLM(variable),
         graph=_graph(variable, members=(_CRS_MEMBER, _BUDGET_SUPPORT_MEMBER)),
     )
 
@@ -913,605 +1292,25 @@ def test_a_code_the_named_dataset_declares_binds_on_its_own_five_tuple(
     assert _sources(spec) == [IMPUTED_PROVENANCE]
 
 
-# ---------------------------------------------------------------------------
-# The parsed door
-# ---------------------------------------------------------------------------
-
-
-def _resolve_parsed(llm: _ScriptedLLM, *variables: str) -> ResolveResponse:
-    return offline_resolve(
-        ResolveRequest(
-            input=ParsedInput(
-                parts=[
-                    ParsedPart(
-                        variable_text=variable, entities=[{"text": "Kenya", "role_text": "to"}]
-                    )
-                    for variable in variables
-                ]
-            )
-        ),
-        graph=_graph(*variables),
-        llm=llm,
-        sdmx=FakeSdmxClient(observations={}, availability={}),
-    )
-
-
-def test_a_parsed_part_binds_the_dataset_its_reading_asks_for():
-    llm = _ScriptedLLM(readings=(("only", 0),))
-
-    response = _resolve_parsed(llm, _IM_E)
-
-    (spec,) = _specs(response)
-    assert _pinned(spec)[AID_TYPE] == IMPUTED_MULTILATERAL
-    assert spec.resolved.shape.member_count == IMPUTED_MEMBER_COUNT
-    assert llm.calls["MentionReadings"] == 1
-
-
-@pytest.mark.parametrize(
-    "readings",
-    [(("unrelated", None),), (("also", 0),), LLMInfraError("the model is unavailable")],
-    ids=["unrelated", "also", "infra"],
-)
-def test_a_parsed_part_whose_mention_is_not_read_only_binds_nothing_and_warns(readings):
-    response = _resolve_parsed(_ScriptedLLM(readings=readings), _IM_E)
-
-    (part,) = response.parts
-    assert isinstance(part, DefinitePart)
-    assert AID_TYPE not in _bound(part.spec)
-    assert [
-        warning.message for warning in part.warnings if warning.code == QUERY_QUALIFIER_DROPPED
-    ] == [f'The requested qualifier "{_IM}" was not applied.']
-
-
-def test_each_parsed_part_binds_its_own_mention():
-    llm = _ScriptedLLM(readings=(("only", 1),))
-
-    response = _resolve_parsed(llm, _E, _IM_E)
-
-    plain, imputed = _specs(response)
-    assert AID_TYPE not in _bound(plain)
-    assert _pinned(imputed)[AID_TYPE] == IMPUTED_MULTILATERAL
-    assert llm.calls["MentionReadings"] == 1
-
-
-def test_a_parsed_part_naming_no_dataset_asks_no_reading():
-    llm = _ScriptedLLM()
-
-    response = _resolve_parsed(llm, _E)
-
-    (spec,) = _specs(response)
-    assert AID_TYPE not in _bound(spec)
-    assert llm.calls["MentionReadings"] == 0
-
-
-# ---------------------------------------------------------------------------
-# A reading takes effect only where a part carries it
-# ---------------------------------------------------------------------------
-
-
-def _answers(response: ResolveResponse) -> list[tuple[str | None, str, bool]]:
-    """Each part's variable text, the dataset its family comes from, and whether the
-    identity binds the aid type the imputed five-tuple pins."""
-    return [
-        (part.variable_text, _sources(spec)[0], AID_TYPE in _pinned(spec))
-        for part, spec in zip(response.parts, _specs(response), strict=True)
-    ]
-
-
-def test_a_dataset_named_on_two_variables_binds_on_each_part():
-    all_sectors = f"{_IM} aid"
-    llm = _ScriptedLLM(all_sectors, _IM_E, readings=(("only", 0), ("only", 1)))
-
-    response = _resolve_scripted(f"{all_sectors} and {_IM_E} to Kenya", llm, all_sectors, _IM_E)
-
-    assert _answers(response) == [
-        (all_sectors, IMPUTED_PROVENANCE, True),
-        (_IM_E, IMPUTED_PROVENANCE, True),
-    ]
-    assert _query_qualifier_warnings(response) == []
-    assert llm.calls["MentionReadings"] == 1
-
-
-def test_a_dataset_named_on_two_variables_and_read_on_one_reports_the_other():
-    all_sectors = f"{_IM} aid"
-    llm = _ScriptedLLM(all_sectors, _IM_E, readings=(("only", 0), ("unrelated", None)))
-
-    response = _resolve_scripted(f"{all_sectors} and {_IM_E} to Kenya", llm, all_sectors, _IM_E)
-
-    assert _answers(response) == [
-        (all_sectors, IMPUTED_PROVENANCE, True),
-        (_IM_E, CRS_PROVENANCE, False),
-    ]
-    assert _query_qualifier_warnings(response) == [
-        f'The requested qualifier "{_IM}" was not applied.'
-    ]
-
-
-@pytest.mark.parametrize(
-    ("query", "variables", "dropped", "readings", "parts"),
-    [
-        (
-            f"{_E} to Kenya including {_IM}",
-            (_IM_E,),
-            (),
-            (("also", 0),),
-            [(_IM_E, True), (_E, False)],
-        ),
-        (
-            f"{_E} and {_IM_E} to Kenya",
-            (_E, _IM_E),
-            (),
-            (("also", 1),),
-            [(_E, False), (_IM_E, True)],
-        ),
-        (
-            f"{_E} and {_IM_E} to Kenya",
-            (_E, _IM_E),
-            (),
-            (("also", 0),),
-            [(_E, False), (_IM_E, True)],
-        ),
-        (
-            f"{_E} to Kenya including {_IM} ODA",
-            (_E,),
-            (f"including {_IM} ODA",),
-            (("also", 0),),
-            [(_E, False), (_IM_E, True)],
-        ),
-        (
-            f"{_E} to Kenya as well as {_IM} ODA",
-            (_E, f"{_IM} ODA"),
-            (),
-            (("also", 0),),
-            [(_E, False), (_IM_E, True)],
-        ),
-        (
-            f"education spending to Kenya including {_IM} aid",
-            ("education spending",),
-            (f"including {_IM} aid",),
-            (("also", 0),),
-            [("education spending", False), (f"{_IM} education spending", True)],
-        ),
-    ],
-    ids=[
-        "collapsed-into-one-variable",
-        "read-on-the-datasets-variable",
-        "read-on-the-measure",
-        "dropped-phrase-other-measure-word",
-        "name-alone-other-measure-word",
-        "measure-lacking-the-mentions-word",
-    ],
-)
-def test_also_answers_the_measure_from_the_default_and_from_the_dataset(
-    query, variables, dropped, readings, parts
-):
-    llm = _ScriptedLLM(*variables, dropped=dropped, readings=readings)
-    texts = [text for text, _imputed in parts]
-
-    response = _resolve_scripted(query, llm, *texts)
-
-    assert _answers(response) == [
-        (text, IMPUTED_PROVENANCE if imputed else CRS_PROVENANCE, imputed)
-        for text, imputed in parts
-    ]
-    assert len({spec.spec_id for spec in _specs(response)}) > 1
-    assert _query_qualifier_warnings(response) == []
-
-
-def test_an_excluded_dataset_extracted_as_a_variable_of_its_own_answers_no_part():
-    llm = _ScriptedLLM(_E, f"{_IM} aid", readings=(("excluded", None),))
-
-    response = _resolve_scripted(f"{_E} to Kenya but not {_IM} aid", llm, _E, f"{_IM} aid")
-
-    assert _answers(response) == [(_E, CRS_PROVENANCE, False)]
-    assert _query_qualifier_warnings(response) == []
-
-
-def test_an_excluded_dataset_that_is_the_only_variable_answers_its_measure_from_the_default():
-    llm = _ScriptedLLM(f"{_IM} aid", readings=(("excluded", None),))
-
-    response = _resolve_scripted(f"aid to Kenya not counting {_IM}", llm, "aid")
-
-    assert _answers(response) == [("aid", CRS_PROVENANCE, False)]
-    assert _query_qualifier_warnings(response) == []
-
-
-def test_an_exclusion_extracted_as_a_variable_and_read_on_the_measure_answers_no_part():
-    llm = _ScriptedLLM(_E, f"{_IM} excluded", readings=(("excluded", 0),))
-
-    response = _resolve_scripted(f"{_E} to Kenya, {_IM} excluded", llm, _E, f"{_IM} excluded")
-
-    assert _answers(response) == [(_E, CRS_PROVENANCE, False)]
-    assert _query_qualifier_warnings(response) == []
-
-
-@pytest.mark.parametrize(
-    ("variables", "readings", "parts"),
-    [
-        (
-            (_E, f"{_IM} aid flows"),
-            (("also", 0),),
-            [(_E, CRS_PROVENANCE, False), (f"{_IM} aid flows", CRS_PROVENANCE, False)],
-        ),
-        (
-            (f"{_IM} aid", _IM_E),
-            (("also", 0), ("also", 0)),
-            [(f"{_IM} aid", IMPUTED_PROVENANCE, True), (_IM_E, CRS_PROVENANCE, False)],
-        ),
-    ],
-    ids=["another-measure", "target-is-the-mention"],
-)
-def test_also_read_away_from_a_variable_naming_another_measure_rewrites_nothing(
-    variables, readings, parts
-):
-    llm = _ScriptedLLM(*variables, readings=readings)
-
-    response = _resolve_scripted(f"{' and '.join(variables)} to Kenya", llm, *variables)
-
-    assert _answers(response) == parts
-    assert len(_query_qualifier_warnings(response)) == 1
-
-
-@pytest.mark.parametrize(
-    "readings", [(("only", 1),), (("unrelated", None),), (("excluded", None),)]
-)
-def test_a_dataset_name_with_no_measure_is_no_part_and_is_reported(readings):
-    llm = _ScriptedLLM(_E, "CRS", readings=readings)
-
-    response = _resolve_scripted(f"{_E} and CRS in Kenya", llm, _E, "CRS")
-
-    assert [part.variable_text for part in response.parts] == [_E]
-    assert _query_qualifier_warnings(response) == ['The requested qualifier "CRS" was not applied.']
-
-
-# ---------------------------------------------------------------------------
-# A failed reading and the response cache
-# ---------------------------------------------------------------------------
-
-
-class _FailingOnce(_ScriptedLLM):
-    """Fail the first mention reading and answer the later ones."""
-
-    async def generate_structured(self, *, prompt, system, schema):
-        if schema is MentionReadings and not self.calls["MentionReadings"]:
-            self.calls["MentionReadings"] += 1
-            raise LLMInfraError("the model is unavailable")
-        return await super().generate_structured(prompt=prompt, system=system, schema=schema)
-
-
-def _resolve_cached(query: str, llm: _ScriptedLLM, cache: ResponseCache) -> ResolveResponse:
-    with patch("search.engine.extract.date") as today:
-        today.today.return_value = PINNED_DATE
-        today.side_effect = lambda *args, **kwargs: date(*args, **kwargs)
-        return asyncio.run(
-            resolve_async(
-                make_request(query),
-                graph=_graph(_IM_E),
-                llm=llm,
-                sdmx=FakeSdmxClient(observations={}, availability={}),
-                response_cache=cache,
-            )
-        )
-
-
-def test_an_answer_built_on_a_failed_reading_enters_no_cache():
-    query = f"{_IM_E} to Kenya"
-    llm = _FailingOnce(_IM_E, readings=(("only", 0),))
-    cache = ResponseCache()
-
-    failed = _resolve_cached(query, llm, cache)
-
-    assert _answers(failed) == [(_IM_E, CRS_PROVENANCE, False)]
-    assert len(_query_qualifier_warnings(failed)) == 1
-    assert cache.stats().entries == 0
-
-    read = _resolve_cached(query, llm, cache)
-
-    assert _answers(read) == [(_IM_E, IMPUTED_PROVENANCE, True)]
-    assert _query_qualifier_warnings(read) == []
-    assert llm.calls["MentionReadings"] == 2
-    assert cache.stats().entries == 2
-
-    _resolve_cached(query, llm, cache)
-
-    assert llm.calls["MentionReadings"] == 2
-
-
-# ---------------------------------------------------------------------------
-# The parsed door reports what the raw-text door reports
-# ---------------------------------------------------------------------------
-
-
-def _part_warnings(response: ResolveResponse) -> list[list[str]]:
-    return [
-        [warning.message for warning in part.warnings if warning.code == QUERY_QUALIFIER_DROPPED]
-        for part in response.parts
-    ]
-
-
-@pytest.mark.parametrize(
-    ("variables", "readings", "warnings"),
-    [
-        (("non-CRS education aid",), (("excluded", None),), [["CRS"]]),
-        ((f"{_E} excluding {_IM}",), (("excluded", None),), [[]]),
-        ((_IM_E,), (("also", 0),), [[_IM]]),
-        ((_IM_E,), (("unrelated", None),), [[_IM]]),
-        ((_E, f"{_IM} health aid"), (("only", 0),), [[], [_IM]]),
-        ((f"{_IM} aid", _IM_E), (("only", 0), ("unrelated", None)), [[], [_IM]]),
-        ((f"CRS {_IM_E}",), (("only", 0), ("only", 0)), [[_IM]]),
-    ],
-    ids=[
-        "excluded-default",
-        "excluded",
-        "also",
-        "unrelated",
-        "read-on-another-part",
-        "second-occurrence",
-        "second-dataset",
-    ],
-)
-def test_a_parsed_part_reports_each_reading_that_took_no_effect(variables, readings, warnings):
-    response = _resolve_parsed(_ScriptedLLM(readings=readings), *variables)
-
-    assert _part_warnings(response) == [
-        [f'The requested qualifier "{text}" was not applied.' for text in part] for part in warnings
-    ]
-
-
-def test_each_parsed_part_naming_the_dataset_binds_on_its_own_reading():
-    llm = _ScriptedLLM(readings=(("only", 0), ("only", 1)))
-
-    response = _resolve_parsed(llm, f"{_IM} aid", _IM_E)
-
-    assert [AID_TYPE in _pinned(spec) for spec in _specs(response)] == [True, True]
-    assert _part_warnings(response) == [[], []]
-    assert llm.calls["MentionReadings"] == 1
-
-
-# ---------------------------------------------------------------------------
-# A dropped phrase that holds a mention and other words
-# ---------------------------------------------------------------------------
-
-
-def _dropped_section(prompt: str) -> list[str]:
-    """The phrases a bind prompt lists under its dropped qualifiers."""
-    lines = prompt.splitlines()
-    start = next(
-        (number for number, line in enumerate(lines) if line.startswith("DROPPED QUALIFIERS")),
-        None,
-    )
-    if start is None:
-        return []
-    return [line.strip() for line in lines[start + 1 : lines.index("", start)]]
-
-
-@pytest.mark.parametrize(
-    ("dropped", "left"),
-    [
-        (f"including {_IM} aid, verified figures only", "verified figures only"),
-        (f"audited, including {_IM} aid", "audited"),
-        (f"audited; including {_IM}; verified figures only", "audited, verified figures only"),
-        (f"audited including {_IM} aid", "audited"),
-        (f"including {_IM} aid for girls", "for girls"),
-    ],
-    ids=["after", "before", "around", "same-clause-before", "same-clause-after"],
-)
-def test_the_clauses_beside_an_applied_mention_stay_dropped_and_reach_each_bind_leg(
-    dropped: str, left: str
-):
-    llm = _ScriptedLLM(_E, dropped=(dropped,), readings=(("also", 0),))
-
-    response = _resolve_scripted(f"{_E} to Kenya, {dropped}", llm, _E, _IM_E)
-
-    assert _answers(response) == [(_E, CRS_PROVENANCE, False), (_IM_E, IMPUTED_PROVENANCE, True)]
-    assert _query_qualifier_warnings(response) == [
-        f'The requested qualifier "{left}" was not applied.'
-    ]
-    assert [_dropped_section(prompt) for prompt in llm.bind_prompts] == [[left], [left]]
-
-
-def test_an_exclusion_read_away_from_a_variable_naming_more_keeps_it_and_warns():
-    exclusion = f"{_E} excluding {_IM}"
-    llm = _ScriptedLLM("health aid", exclusion, readings=(("excluded", 0),))
-
-    response = _resolve_scripted(
-        f"health aid and {exclusion} to Kenya", llm, "health aid", exclusion
-    )
-
-    assert [part.variable_text for part in response.parts] == ["health aid", exclusion]
-    assert _query_qualifier_warnings(response) == [
-        f'The requested qualifier "{_IM}" was not applied.'
-    ]
-
-
-def test_a_dropped_phrase_that_is_one_clause_around_its_applied_mention_leaves_nothing():
-    llm = _ScriptedLLM(_E, dropped=(f"from {_IM} sources",), readings=(("only", 0),))
-
-    response = _resolve_scripted(f"{_E} to Kenya from {_IM} sources", llm, f"{_E} {_IM}")
-
-    assert _answers(response) == [(f"{_E} {_IM}", IMPUTED_PROVENANCE, True)]
-    assert _query_qualifier_warnings(response) == []
-    (prompt,) = llm.bind_prompts
-    assert _dropped_section(prompt) == []
-
-
-# ---------------------------------------------------------------------------
-# Two names of one dataset
-# ---------------------------------------------------------------------------
-
-
-def test_a_dataset_the_question_names_one_way_and_its_variable_another_is_one_mention():
-    llm = _ScriptedLLM(_IM_E, readings=(("only", 0),))
-
-    response = _resolve_scripted(f"{_IMPUTED_LABEL} {_E} to Kenya", llm, _IM_E)
-
-    assert _answers(response) == [(_IM_E, IMPUTED_PROVENANCE, True)]
-    assert _query_qualifier_warnings(response) == []
-    assert llm.calls["MentionReadings"] == 1
-
-
-def test_two_names_of_one_dataset_in_one_variable_bind_once_and_report_nothing():
-    variable = f"{_IM_E} from the {_IMPUTED_LABEL}"
-    llm = _ScriptedLLM(variable, readings=(("only", 0), ("only", 0)))
-
-    response = _resolve_scripted(f"{variable} to Kenya", llm, variable)
-
-    assert _answers(response) == [(variable, IMPUTED_PROVENANCE, True)]
-    assert _bound(_specs(response)[0])["source"] == IMPUTED_PROVENANCE
-    assert _query_qualifier_warnings(response) == []
-
-
-# ---------------------------------------------------------------------------
-# The parsed door applies an inclusion its parts already spell out
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("variable", [0, 1], ids=["read-on-the-measure", "read-on-its-own-part"])
-def test_a_parsed_inclusion_binds_the_part_naming_the_dataset_beside_its_measure(variable: int):
-    response = _resolve_parsed(_ScriptedLLM(readings=(("also", variable),)), _E, _IM_E)
-
-    assert _answers(response) == [(_E, CRS_PROVENANCE, False), (_IM_E, IMPUTED_PROVENANCE, True)]
-    assert _part_warnings(response) == [[], []]
-
-
-@pytest.mark.parametrize(
-    ("variables", "readings", "warnings"),
-    [
-        ((_IM_E,), (("also", 0),), [[_IM]]),
-        ((_E, f"{_IM} aid"), (("also", 0),), [[], [f"{_IM} aid"]]),
-        ((_E, f"{_IM} health aid"), (("also", 0),), [[], [_IM]]),
-        (("health aid", _IM_E, f"{_IM} aid"), (("only", 1), ("also", 0)), [[], [], [f"{_IM} aid"]]),
-    ],
-    ids=["would-add-the-measure", "would-rename", "another-measure", "would-remove"],
-)
-def test_a_parsed_inclusion_that_would_add_or_rewrite_a_part_binds_nothing_and_warns(
-    variables, readings, warnings
-):
-    response = _resolve_parsed(_ScriptedLLM(readings=readings), *variables)
-
-    assert _part_warnings(response) == [
-        [f'The requested qualifier "{text}" was not applied.' for text in part] for part in warnings
-    ]
-    assert [part.variable_text for part in response.parts] == list(variables)
-
-
-# ---------------------------------------------------------------------------
-# Token usage counts the mention reading once
-# ---------------------------------------------------------------------------
-
-_CALL_USAGE = {"input_tokens": 100, "output_tokens": 10, "cached_tokens": 1}
-
-
-class _MeteredLLM(_ScriptedLLM):
-    """A scripted model whose every call reports `_CALL_USAGE`."""
-
-    async def generate_structured(self, *, prompt, system, schema):
-        output, _usage = await super().generate_structured(
-            prompt=prompt, system=system, schema=schema
-        )
-        return output, dict(_CALL_USAGE)
-
-
-def _response_and_done(
-    request: ResolveRequest, llm: _MeteredLLM, *variables: str
-) -> tuple[ResolveResponse, DoneEvent]:
-    async def collect() -> list:
-        return [
-            event
-            async for event in resolve_events(
-                request,
-                graph=_graph(*variables),
-                llm=llm,
-                sdmx=FakeSdmxClient(observations={}, availability={}),
-            )
-        ]
-
-    events = asyncio.run(collect())
-    (response,) = [event.response for event in events if isinstance(event, ResponseEvent)]
-    (done,) = [event for event in events if isinstance(event, DoneEvent)]
-    return response, done
-
-
-def _usage_reported(request: ResolveRequest, llm: _MeteredLLM, *variables: str) -> list[dict]:
-    """The token usage in the response's diagnostics and in the done event's telemetry."""
-    response, done = _response_and_done(request, llm, *variables)
-    return [response.diagnostics.llm_usage, done.telemetry.llm_usage]
-
-
-def _usage_of(calls: Counter[str]) -> dict:
-    return {key: value * sum(calls.values()) for key, value in _CALL_USAGE.items()}
-
-
-@pytest.mark.parametrize("variables", [(_IM_E,), (_E, _IM_E)], ids=["one-part", "two-parts"])
-def test_a_parsed_request_counts_its_mention_reading_once(variables: tuple[str, ...]):
-    llm = _MeteredLLM(readings=(("only", len(variables) - 1),))
-    request = ResolveRequest(
-        input=ParsedInput(
-            parts=[
-                ParsedPart(variable_text=variable, entities=[{"text": "Kenya", "role_text": "to"}])
-                for variable in variables
-            ]
-        )
-    )
-
-    reported = _usage_reported(request, llm, *variables)
-
-    assert llm.calls == {"MentionReadings": 1, "_UniversalBindOutput": len(variables)}
-    assert reported == [_usage_of(llm.calls)] * 2
-
-
-@pytest.mark.parametrize("variables", [(_IM_E,), (_E, _IM_E)], ids=["one-part", "two-parts"])
-@pytest.mark.parametrize("relation", ["only", "unrelated"])
-def test_a_resubmitted_parsed_part_reads_its_mention_as_the_parsed_door_does(
-    relation: str, variables: tuple[str, ...]
-):
-    readings = ((relation, len(variables) - 1 if relation == "only" else None),)
-    parts = [
-        ParsedPart(variable_text=variable, entities=[{"text": "Kenya", "role_text": "to"}])
-        for variable in variables
-    ]
-    answers = []
-    for door in (
-        ParsedInput(parts=parts),
-        DatasetResubmitInput(entries=[ResubmitParsedEntry(part=part) for part in parts]),
-    ):
-        llm = _MeteredLLM(readings=readings)
-        response, done = _response_and_done(ResolveRequest(input=door), llm, *variables)
-        specs = _specs(response)
-        if relation == "only":
-            assert _pinned(specs[-1])[AID_TYPE] == IMPUTED_MULTILATERAL
-            assert specs[-1].resolved.shape.member_count == IMPUTED_MEMBER_COUNT
-        else:
-            assert all(AID_TYPE not in _bound(spec) for spec in specs)
-        assert llm.calls == {"MentionReadings": 1, "_UniversalBindOutput": len(variables)}
-        answers.append(
-            (
-                [
-                    (spec.spec_id, spec.resolved.shape.member_count, part.warnings)
-                    for spec, part in zip(specs, response.parts, strict=True)
-                ],
-                _query_qualifier_warnings(response),
-                [response.diagnostics.llm_usage, done.telemetry.llm_usage],
-            )
-        )
-
-    parsed, resubmitted = answers
-    assert resubmitted == parsed
-    dropped = [] if relation == "only" else [f'The requested qualifier "{_IM}" was not applied.']
-    assert parsed[1] == dropped
-    assert parsed[2] == [_usage_of(llm.calls)] * 2
-
-
-@pytest.mark.parametrize("variables", [(_IM_E,), (_E, _IM_E)], ids=["one-part", "two-parts"])
-def test_a_raw_text_request_counts_its_mention_reading_once(variables: tuple[str, ...]):
-    llm = _MeteredLLM(*variables, readings=(("only", len(variables) - 1),))
-    query = f"{' and '.join(variables)} to Kenya"
-
-    reported = _usage_reported(make_request(query), llm, *variables)
-
-    assert llm.calls == {
-        "Extraction": 1,
-        "MentionReadings": 1,
-        "_UniversalBindOutput": len(variables),
-    }
-    assert reported == [_usage_of(llm.calls)] * 2
+@pytest.mark.parametrize("provenance", [CRS_PROVENANCE, IMPUTED_PROVENANCE], ids=["crs", "imputed"])
+def test_a_part_leaving_the_recipient_open_states_the_family_the_mint_resolves(provenance: str):
+    """ "Aid from France" asks every recipient, and its role-class election keeps the
+    members that are no breakdown of another: one of the imputed table's 255, and every
+    CRS member. The shape states the family the mint resolves for its identity, as the
+    same part states it with the recipient bound."""
+    graph = _graph("aid")
+    graph._resolve["France"] = _FRA
+    donor = {"text": "France", "role_text": "from"}
+    recipient = {"text": "Kenya", "role_text": "to"}
+
+    counts = []
+    for entities in ([donor], [donor, recipient]):
+        part = ParsedPart(variable_text="aid", entities=entities, provenance=provenance)
+        (spec,) = _specs(_resolve_parsed(part, _ScriptedLLM(), graph=graph))
+        family = _mint_family(spec)
+        assert len(family) > 1
+        assert spec.resolved.shape.member_count == len(family)
+        assert spec.resolved.shape.member_digest == member_digest(family)
+        counts.append(spec.resolved.shape.member_count)
+
+    assert counts[0] == counts[1]

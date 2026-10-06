@@ -1,6 +1,6 @@
 # dataset_store
 
-`dataset_store` provides the PostgreSQL persistence layer for the Datasets API. It manages database connections, connection pooling, forward-only schema migrations, transaction lifecycles, and relational persistence for dataset specifications, collections, versions, and artifact references.
+`dataset_store` provides the PostgreSQL persistence layer for the Datasets API. It manages database connections, connection pooling, forward-only schema migrations, transaction lifecycles, and relational persistence for dataset specifications, versions, and artifact references.
 
 ## Architecture and Database Connectivity
 
@@ -148,11 +148,6 @@ Tables reside in the `datasets` schema. Privileges on future tables are establis
 |  +--------------------+         +-----------------------+         +-----------------------------+  |
 |  |   spec_registry    |<--------|    spec_definition    |         |     identity_quarantine     |  |
 |  +--------------------+         +-----------------------+         +-----------------------------+  |
-|            ^                                                                                       |
-|            |                                                                                       |
-|  +--------------------+         +-----------------------+                                          |
-|  | collection_member  |-------->|  collection_registry  |                                          |
-|  +--------------------+         +-----------------------+                                          |
 |                                                                                                    |
 |  +--------------------+         +-----------------------+         +-----------------------------+  |
 |  | artifact_inventory |<--------|   artifact_location   |         |     version_revocation      |  |
@@ -165,13 +160,8 @@ Tables reside in the `datasets` schema. Privileges on future tables are establis
 |            ^                                                                     ^                 |
 |            |                                                                     |                 |
 |  +--------------------+                                           +-----------------------------+  |
-|  | artifact_reference |-------------------------------------------|       version_member        |  |
+|  | artifact_reference |                                           |        subject_head         |  |
 |  +--------------------+                                           +-----------------------------+  |
-|                                                                   ^                                |
-|                                                                   |                                |
-|                                                                   +-----------------------------+  |
-|                                                                   |        subject_head         |  |
-|                                                                   +-----------------------------+  |
 +----------------------------------------------------------------------------------------------------+
 ```
 
@@ -181,17 +171,16 @@ Tables reside in the `datasets` schema. Privileges on future tables are establis
 | ------------------------------ | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `datasets.spec_registry`       | `spec_id`                                                                   | Immutable canonical spec identities, storing `identity_version`, raw canonical `identity_bytes`, and `identity_digest`.                                                                        |
 | `datasets.spec_definition`     | `(spec_id, schema_version)`                                                 | Append-only spec projections storing canonical `definition` JSONB derived from `identity_bytes`.                                                                                               |
-| `datasets.collection_registry` | `collection_id`                                                             | Immutable collection identities and registration metadata.                                                                                                                                     |
-| `datasets.collection_member`   | `(collection_id, position)`                                                 | Ordered member specs belonging to each collection, foreign-keyed to `spec_registry`.                                                                                                           |
 | `datasets.identity_quarantine` | `id`                                                                        | Audit table recording hash collisions (`id_kind`, `subject_id`, `held_bytes`, `incoming_bytes`, `trace_id`).                                                                                   |
 | `datasets.artifact_inventory`  | `artifact_digest`                                                           | Content-addressed artifact metadata tracking `size_bytes` and creation timestamp.                                                                                                              |
 | `datasets.artifact_location`   | `(artifact_digest, tier)`                                                   | Storage location tracking per tier (`working` or `pinned`), storing `bucket`, `object_name`, and `stored_at`.                                                                                  |
-| `datasets.version_record`      | `(subject_id, content_version)`                                             | Immutable manifest records storing `subject_kind` (`spec` or `collection`), `schema_version`, and `immutable_body` JSONB.                                                                      |
-| `datasets.version_member`      | `(subject_id, content_version, position)`                                   | Ordered member versions for collection version records.                                                                                                                                        |
+| `datasets.version_record`      | `(subject_id, content_version)`                                             | Immutable manifest records storing `subject_kind` (`spec`, or `collection` on rows that predate migration 0021), `schema_version`, and `immutable_body` JSONB.                                 |
 | `datasets.version_artifact`    | `(subject_id, content_version, rendering_key)`                              | Join table linking version records to artifacts with `rendering` JSONB options and `media_type`.                                                                                               |
 | `datasets.version_revocation`  | `(subject_id, content_version)`                                             | Permanent takedown and revocation audit log.                                                                                                                                                   |
 | `datasets.artifact_reference`  | `(principal, artifact_digest, subject_id, content_version, reference_kind)` | Reference tracking backing pin lifecycles and garbage collection sweeps. Soft-deleted via `removed_at`.                                                                                        |
 | `datasets.subject_head`        | `subject_id`                                                                | Mutable pointer to the `content_version` currently served for a subject, with `confirmed_at` and a JSON currency `signal`. Written forward-only by `datasets_api.version_store.LiveHeadStore`. |
+
+Migration `0021_drop_collections.sql` drops the tables `collection_registry`, `collection_member` and `version_member`. The `version_record` rows with `subject_kind` `collection` stay on record, and no route serves them.
 
 ## Configuration
 

@@ -20,7 +20,7 @@ from search.engine.enrichment import PLACE_OPTIONS_BUDGET_S, _stream_slot_option
 from search.engine.events import PlaceOptionsEvent
 from search.engine.region.result import RegionResult
 from search.models import ResubmitIdentityEntry
-from tests.engine._base_identity import make_base, make_identity, subject_entity
+from tests.engine._base_identity import make_identity, subject_entity
 from tests.engine._builders import value_slot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import PINNED_DATE
@@ -194,17 +194,11 @@ def _fertility_resubmit_entry() -> ResubmitIdentityEntry:
     -- the same definite answer _fertility_kenya_materialise_with_population's
     own raw_text fixture above resolves, reached instead through
     dataset_resubmit's identity entry path. Re-posts the shape's own gender
-    slot at the value it is already bound to (a promote, not an edit). The
-    base carries no slots of its own, so identity_edit.check_slots_declared's
-    posted-covers-base requirement is trivially satisfied."""
+    slot at the value it is already bound to (a promote, not an edit)."""
     entities = [subject_entity(_KENYA)]
-    base_spec_id, base_identity = make_base(_FERTILITY_SHAPE, entities=entities)
     return ResubmitIdentityEntry(
         variable_text="fertility rate",
         identity=make_identity(_FERTILITY_SHAPE, [_GENDER_SLOT], entities=entities),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[_FERTILITY_SV],
     )
 
 

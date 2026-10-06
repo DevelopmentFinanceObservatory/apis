@@ -167,7 +167,6 @@ def _run():
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_ChooseShape1AlsoPlausibleShape2LLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
@@ -182,9 +181,9 @@ def test_alternate_shapes_index_only_winner_renders_its_slot_values_on_the_wire(
     alt_spec = next(
         spec
         for spec in result.specs
-        if any(sv.ref == _EXTRA_SV2 for sv in spec.resolved.stat_vars.items)
+        if any(sv.ref.dcid == _EXTRA_SV2 for sv in spec.resolved.members)
     )
-    stat_var = next(sv for sv in alt_spec.resolved.stat_vars.items if sv.ref == _EXTRA_SV2)
+    stat_var = next(sv for sv in alt_spec.resolved.members if sv.ref.dcid == _EXTRA_SV2)
     rendered = {sv.key.property.dcid: sv.value.ref.dcid for sv in stat_var.slot_values}
     expected = {p: _recalled2_row.constraint_properties[p] for p in _SHAPE2_BOUND_PROPS}
     assert rendered == expected

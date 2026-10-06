@@ -20,7 +20,6 @@ from search.engine.shape import identity_shape_for
 from search.models import ResubmitIdentityPayload
 from tests.engine._axis_doubles import AxisConfirmingGraphReader, axis_confirming_reader
 from tests.engine._base_identity import (
-    GDP_SHAPE,
     PERSON_COUNT_SHAPE,
     make_base,
     make_identity,
@@ -29,12 +28,9 @@ from tests.engine._base_identity import (
 from tests.engine._builders import unbound_slot as _unbound_slot
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine.test_resubmit_standard_widen_and_seed import _GENDER_FEMALE
-from tests.engine.test_resubmit_unresolved_slots import (
-    _UNRESOLVED_SOURCE_SV_DCID,
-    _graph_with_unresolved_source_sv,
-)
-from tests.fixtures import FakeGraph
+from tests.engine._harness import walk_options
+from tests.engine.test_resubmit_standard_widen import _GENDER_FEMALE
+from tests.fixtures import FakeGraph, _load_json
 
 _ENTITY_DCID = "country/IND"
 _FAMILY = ("Count_Person", "Count_Person_Male", "Count_Person_Female")
@@ -97,21 +93,18 @@ class TestUnassertedAxisResolvesUnboundAndInapplicable:
     def test_resolves_unbound_and_inapplicable_with_no_options(self):
         entities = [subject_entity(_ENTITY_DCID)]
         age_unbound = _unbound_slot("how", "age", "age")
-        base_spec_id, base_identity = make_base(
+        base_spec_id, _base_identity = make_base(
             PERSON_COUNT_SHAPE, slots=[age_unbound], entities=entities
         )
         inp = ResubmitIdentityPayload(
             identity=make_identity(PERSON_COUNT_SHAPE, [age_unbound], entities=entities),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=["Count_Person"],
         )
         region = resolve_spec_resubmit(
             inp=inp,
             graph=FakeGraph(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
-            options=EngineOptions(materialise_graph=_family_reader()),
+            options=walk_options(FakeGraph(), EngineOptions(materialise_graph=_family_reader())),
         )
         assert region.status == "definite"
         spec = region.specs[0]
@@ -136,21 +129,18 @@ class TestUnassertedAxisAdmittedAndFilled:
     def test_gender_admitted_with_both_values_and_stable_spec_id(self):
         entities = [subject_entity(_ENTITY_DCID)]
         gender_unbound = _unbound_slot("how", "gender", "gender")
-        base_spec_id, base_identity = make_base(
+        base_spec_id, _base_identity = make_base(
             PERSON_COUNT_SHAPE, slots=[gender_unbound], entities=entities
         )
         inp = ResubmitIdentityPayload(
             identity=make_identity(PERSON_COUNT_SHAPE, [gender_unbound], entities=entities),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=["Count_Person"],
         )
         region = resolve_spec_resubmit(
             inp=inp,
             graph=FakeGraph(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
-            options=EngineOptions(materialise_graph=_family_reader()),
+            options=walk_options(FakeGraph(), EngineOptions(materialise_graph=_family_reader())),
         )
         assert region.status == "definite"
         spec = region.specs[0]
@@ -174,21 +164,18 @@ class TestBoundAssertedAxisUnaffected:
 
     def test_bound_gender_resolves_without_materialise_graph(self):
         entities = [subject_entity(_ENTITY_DCID)]
-        base_spec_id, base_identity = make_base(
+        base_spec_id, _base_identity = make_base(
             PERSON_COUNT_SHAPE, slots=[_GENDER_FEMALE], entities=entities
         )
         inp = ResubmitIdentityPayload(
             identity=make_identity(PERSON_COUNT_SHAPE, [_GENDER_FEMALE], entities=entities),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=["Count_Person_Female"],
         )
         region = resolve_spec_resubmit(
             inp=inp,
             graph=FakeGraph(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
-            options=EngineOptions(materialise_graph=None),
+            options=walk_options(FakeGraph(), EngineOptions(materialise_graph=None)),
         )
         assert region.status == "definite"
         spec = region.specs[0]
@@ -202,19 +189,14 @@ class TestBoundAssertedAxisUnaffected:
 
 
 class TestMissingMaterialiseGraphRaises:
-    """Missing graph wiring raises `EngineInfraError` for an unasserted axis."""
+    """Missing graph wiring raises `EngineInfraError`: a standard identity elects its members
+    by the walk over the materialise graph."""
 
     def test_none_materialise_graph_raises_engine_infra_error(self):
         entities = [subject_entity(_ENTITY_DCID)]
         gender_unbound = _unbound_slot("how", "gender", "gender")
-        base_spec_id, base_identity = make_base(
-            PERSON_COUNT_SHAPE, slots=[gender_unbound], entities=entities
-        )
         inp = ResubmitIdentityPayload(
             identity=make_identity(PERSON_COUNT_SHAPE, [gender_unbound], entities=entities),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=["Count_Person"],
         )
         with pytest.raises(EngineInfraError):
             resolve_spec_resubmit(
@@ -224,36 +206,6 @@ class TestMissingMaterialiseGraphRaises:
                 coverage=empty_coverage_snapshot(),
                 options=EngineOptions(materialise_graph=None),
             )
-
-
-class TestUnresolvedValueNeedsNoGraphConfirmation:
-    """An unresolved `activitySource` arc counts as declared and skips taxonomy lookup."""
-
-    def test_resolves_with_no_materialise_graph_and_no_slot_options(self):
-        entities = [subject_entity(_ENTITY_DCID)]
-        activity_source_unbound = _unbound_slot("how", "activitySource", "activitySource")
-        base_spec_id, base_identity = make_base(
-            GDP_SHAPE, slots=[activity_source_unbound], entities=entities
-        )
-        inp = ResubmitIdentityPayload(
-            identity=make_identity(GDP_SHAPE, [activity_source_unbound], entities=entities),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_UNRESOLVED_SOURCE_SV_DCID],
-        )
-        region = resolve_spec_resubmit(
-            inp=inp,
-            graph=_graph_with_unresolved_source_sv(),
-            sdmx=FakeSdmxClient(observations={}, availability={}),
-            coverage=empty_coverage_snapshot(),
-        )
-        assert region.status == "definite"
-        spec = region.specs[0]
-        assert "activitySource" in spec.resolved.unresolved_slots
-        assert not any(
-            so.key.property is not None and so.key.property.dcid == "activitySource"
-            for so in spec.resolved.slot_options
-        )
 
 
 # A real fixture StatVar (graph_nodes.json) whose measuredProperty arc is a
@@ -280,14 +232,8 @@ class TestUnanchoredFiveTupleSkipsConfirmation:
         entities = [subject_entity(_ENTITY_DCID)]
         age_unbound = _unbound_slot("how", "age", "age")
         gender_unbound = _unbound_slot("how", "gender", "gender")
-        base_spec_id, base_identity = make_base(
-            shape, slots=[age_unbound, gender_unbound], entities=entities
-        )
         inp = ResubmitIdentityPayload(
             identity=make_identity(shape, [age_unbound, gender_unbound], entities=entities),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_UNANCHORED_SV_DCID],
         )
         reader = _CountingGraphReader(inner=_family_reader())
         region = resolve_spec_resubmit(
@@ -295,7 +241,7 @@ class TestUnanchoredFiveTupleSkipsConfirmation:
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
-            options=EngineOptions(materialise_graph=reader),
+            options=walk_options(graph, EngineOptions(materialise_graph=reader)),
         )
         assert reader.node_subjects_calls == 0
         assert reader.node_arcs_many_calls == 0
@@ -308,14 +254,11 @@ class TestForeignFamilyExcluded:
     def test_axis_asserted_only_by_a_foreign_family_resolves_with_no_options(self):
         entities = [subject_entity(_ENTITY_DCID)]
         age_unbound = _unbound_slot("how", "age", "age")
-        base_spec_id, base_identity = make_base(
+        base_spec_id, _base_identity = make_base(
             PERSON_COUNT_SHAPE, slots=[age_unbound], entities=entities
         )
         inp = ResubmitIdentityPayload(
             identity=make_identity(PERSON_COUNT_SHAPE, [age_unbound], entities=entities),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=["Count_Person"],
         )
         reader = axis_confirming_reader(*_FAMILY, _FOREIGN_DENOMINATOR_AGE_ASSERTER)
         region = resolve_spec_resubmit(
@@ -323,7 +266,7 @@ class TestForeignFamilyExcluded:
             graph=FakeGraph(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
-            options=EngineOptions(materialise_graph=reader),
+            options=walk_options(FakeGraph(), EngineOptions(materialise_graph=reader)),
         )
         assert region.status == "definite"
         spec = region.specs[0]
@@ -337,14 +280,8 @@ class TestForeignFamilyExcluded:
     def test_foreign_family_value_absent_when_exact_family_confirms(self):
         entities = [subject_entity(_ENTITY_DCID)]
         age_unbound = _unbound_slot("how", "age", "age")
-        base_spec_id, base_identity = make_base(
-            PERSON_COUNT_SHAPE, slots=[age_unbound], entities=entities
-        )
         inp = ResubmitIdentityPayload(
             identity=make_identity(PERSON_COUNT_SHAPE, [age_unbound], entities=entities),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=["Count_Person"],
         )
         reader = axis_confirming_reader(
             *_FAMILY, _EXACT_FAMILY_AGE_ASSERTER, _FOREIGN_DENOMINATOR_AGE_ASSERTER
@@ -354,7 +291,7 @@ class TestForeignFamilyExcluded:
             graph=FakeGraph(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
-            options=EngineOptions(materialise_graph=reader),
+            options=walk_options(FakeGraph(), EngineOptions(materialise_graph=reader)),
         )
         assert region.status == "definite"
         spec = region.specs[0]
@@ -387,6 +324,9 @@ class _CountingGraphReader:
     def node_names_many(self, *args, **kwargs):
         return self.inner.node_names_many(*args, **kwargs)
 
+    def generation_stamp(self):
+        return self.inner.generation_stamp()
+
     def node_label(self, *args, **kwargs):
         return self.inner.node_label(*args, **kwargs)
 
@@ -410,12 +350,8 @@ class TestUnconfirmedAxisCallCount:
     @staticmethod
     def _family_reads(slots: list) -> tuple[int, int]:
         entities = [subject_entity(_ENTITY_DCID)]
-        base_spec_id, base_identity = make_base(PERSON_COUNT_SHAPE, slots=slots, entities=entities)
         inp = ResubmitIdentityPayload(
             identity=make_identity(PERSON_COUNT_SHAPE, slots, entities=entities),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=["Count_Person"],
         )
         reader = _CountingGraphReader(inner=_family_reader())
         region = resolve_spec_resubmit(
@@ -423,7 +359,7 @@ class TestUnconfirmedAxisCallCount:
             graph=FakeGraph(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
-            options=EngineOptions(materialise_graph=reader),
+            options=walk_options(FakeGraph(), EngineOptions(materialise_graph=reader)),
         )
         assert region.status == "definite"
         return reader.node_subjects_calls, reader.node_arcs_many_calls
@@ -441,14 +377,8 @@ class TestConfirmedAxisSampleNeverDecidesClassification:
     def test_place_shaped_sample_values_keep_the_slot_on_how(self):
         entities = [subject_entity(_ENTITY_DCID)]
         gender_unbound = _unbound_slot("how", "gender", "gender")
-        base_spec_id, base_identity = make_base(
-            PERSON_COUNT_SHAPE, slots=[gender_unbound], entities=entities
-        )
         inp = ResubmitIdentityPayload(
             identity=make_identity(PERSON_COUNT_SHAPE, [gender_unbound], entities=entities),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=["Count_Person"],
         )
         place_shaped_member_arcs = {
             "populationType": {"nodes": [{"dcid": "Person"}]},
@@ -457,8 +387,13 @@ class TestConfirmedAxisSampleNeverDecidesClassification:
             "constraintProperties": {"nodes": [{"dcid": "gender"}]},
             "gender": {"nodes": [{"dcid": "country/USA"}]},
         }
+        # The family holds the total population, which the walk elects, beside the
+        # place-shaped member the axis sample reads.
         reader = AxisConfirmingGraphReader(
-            family_arcs={"synthetic-place-shaped-member": place_shaped_member_arcs},
+            family_arcs={
+                "synthetic-place-shaped-member": place_shaped_member_arcs,
+                "Count_Person": _load_json("graph_nodes.json")["Count_Person"]["arcs"],
+            },
             graph=FakeGraph(),
         )
         region = resolve_spec_resubmit(
@@ -466,7 +401,7 @@ class TestConfirmedAxisSampleNeverDecidesClassification:
             graph=FakeGraph(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
-            options=EngineOptions(materialise_graph=reader),
+            options=walk_options(FakeGraph(), EngineOptions(materialise_graph=reader)),
         )
         assert region.status == "definite"
         spec = region.specs[0]

@@ -1,8 +1,8 @@
 """Adapters between Search clients and the shared ``materialise`` core.
 
 Search's ``LiveGraphClient`` also implements ``materialise.GraphReader`` and
-serves both paths. Materialise uses a separate SDMX client, and both SDMX
-clients share one GET semaphore.
+serves both paths. Materialise uses a separate SDMX client, which caches its
+observation reads, and both SDMX clients share one GET semaphore.
 
 ``observation_facets_via_materialise`` reads facet metadata in bounded,
 concurrent graph batches for option coverage.
@@ -24,9 +24,10 @@ from dc_graph import (
     GraphDeadlineExceededError,
     GraphReadError,
 )
-from dc_sdmx import SdmxClient
 from dfo_platform.executor import submit_with_context
+from graph_generation import UNKNOWN_GENERATION, GenerationProvider
 from materialise.graph import GraphReader
+from search.engine.clients.materialise_sdmx_cache import CachingMaterialiseSdmxClient
 from search.engine.clients.sdmx import SDMX_TOTAL_SEMAPHORE
 from search.engine.errors import GraphInfraError
 
@@ -38,21 +39,27 @@ def build_materialise_sdmx_client(
     base: str | None = None,
     timeout: float | None = None,
     transport: httpx.BaseTransport | None = None,
-) -> SdmxClient:
-    """Build a ``dc_sdmx.SdmxClient`` pointed at ``{base}/core/api``.
+    generation: GenerationProvider = UNKNOWN_GENERATION,
+) -> CachingMaterialiseSdmxClient:
+    """Build a ``CachingMaterialiseSdmxClient`` pointed at ``{base}/core/api``.
 
-    It shares ``SDMX_TOTAL_SEMAPHORE`` with ``LiveSdmxClient``. The
+    It caches observation reads under ``generation``, holding at most
+    ``SEARCH_MATERIALISE_SDMX_CACHE_MAX_BYTES`` in total and
+    ``SEARCH_MATERIALISE_SDMX_CACHE_MAX_ENTRY_BYTES`` per read. It shares ``SDMX_TOTAL_SEMAPHORE`` with ``LiveSdmxClient``. The
     ``transport`` argument is for tests.
     """
     _base = (base or config.settings().graph_base).rstrip("/")
     _timeout = timeout if timeout is not None else config.settings().graph_timeout_s
-    return SdmxClient(
+    return CachingMaterialiseSdmxClient(
         base_url=f"{_base}/core/api",
         token=config.settings().graph_token or None,
         timeout=_timeout,
         transport=transport,
         chunk_concurrency=config.settings().sdmx_chunk_concurrency,
         total_concurrency=SDMX_TOTAL_SEMAPHORE,
+        max_bytes=config.settings().materialise_sdmx_cache_max_bytes,
+        max_entry_bytes=config.settings().materialise_sdmx_cache_max_entry_bytes,
+        generation=generation,
     )
 
 

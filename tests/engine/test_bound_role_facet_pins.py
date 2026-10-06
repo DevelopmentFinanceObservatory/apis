@@ -26,9 +26,9 @@ from search.models import (
     ResubmitIdentityPayload,
 )
 from series_coverage.schema import FacetMetadata, RoleNames
-from tests.engine._base_identity import base_from_spec
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import walk_options
 from tests.fixtures import FakeGraph, make_resolver
 
 _SV_PROJECTED = "TESTFIXTURE/BoundRoleFacetPins/Projected"
@@ -128,34 +128,31 @@ def _fresh():
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
             sdmx=_sdmx(),
-            base_steps=[],
             base_timing={},
             coverage=_coverage().snapshot(),
         )
     )
     assert result.status == "definite", result.no_data_reason
     spec = result.specs[0]
-    assert sorted(sv.ref for sv in spec.resolved.stat_vars.items) == sorted(_svs())
+    assert sorted(sv.ref.dcid for sv in spec.resolved.members) == sorted(_svs())
     return spec
 
 
 def _resubmit(facets: dict, *, include_option_coverage: bool = False):
     fresh = _fresh()
-    base_spec_id, base_identity = base_from_spec(fresh)
     echo = ResubmitIdentityPayload(
         identity=BaseIdentity.model_validate(
             {**fresh.definition.identity.model_dump(mode="python"), "facets": facets}
         ),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[sv.ref for sv in fresh.resolved.stat_vars.items],
     )
     return resolve_spec_resubmit(
         inp=echo,
         graph=_graph(),
         sdmx=_sdmx(),
         coverage=_coverage().snapshot(),
-        options=EngineOptions(include_option_coverage=include_option_coverage),
+        options=walk_options(
+            _graph(), EngineOptions(include_option_coverage=include_option_coverage)
+        ),
     )
 
 
@@ -181,7 +178,7 @@ def test_a_pin_every_statvar_carries_is_served(facets):
     result = _resubmit(facets)
 
     assert result.status == "definite", result.no_data_reason
-    assert sorted(sv.ref for sv in result.spec.resolved.stat_vars.items) == sorted(_svs())
+    assert sorted(sv.ref.dcid for sv in result.spec.resolved.members) == sorted(_svs())
 
 
 def test_a_null_method_pin_constrains_the_provenance_pin_beside_it():

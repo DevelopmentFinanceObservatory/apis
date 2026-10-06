@@ -15,7 +15,7 @@ from typing import cast
 
 from materialise import GraphReader
 from materialise.errors import DefaultFacetUndefinedError, FacetNotAvailableError
-from search.engine.envelope import _record_step, now_ms
+from search.engine.envelope import _emit_step, now_ms
 from search.engine.errors import EngineInfraError
 from search.engine.extract import DateRequest
 from search.engine.region.arcs import (
@@ -102,6 +102,7 @@ from search.engine.region.scope import (
 )
 from search.engine.region.sentence_events import _build_definite_sentence_event
 from search.engine.region.state import MeasureFamily, ResolveState, raised_facts
+from search.engine.region.un_system import member_labels
 from search.engine.retrieval.bound_values import (
     MeasurePartition,
     OpenAxisFact,
@@ -121,9 +122,8 @@ from search.engine.spec_build import (
     build_shape_model,
     build_spec,
     build_stat_vars,
-    compute_member_digest,
 )
-from search.engine.unit.bind import install_unit_facet
+from search.engine.unit.bind import with_unit_lexicon_version
 from search.engine.unit.conversion import (
     ConversionPeriod,
     counted_conversion,
@@ -467,6 +467,7 @@ async def _phase_ground_answer(state: ResolveState) -> RegionResult | None:
         state.entity_label_text_by_dcid,
         unit_request=_converted_by,
         member_facts=mat_result.member_facts,
+        open_axes=state.place.roles.open_axes,
     )
 
     (
@@ -535,7 +536,6 @@ async def _phase_ground_answer(state: ResolveState) -> RegionResult | None:
             mat_result.population.admitted if mat_result.population is not None else len(sv_refs)
         ),
         members=mat_result.served_members,
-        member_digest=compute_member_digest(mat_result.population),
     )
     state.shape_model = shape_model
 
@@ -561,15 +561,12 @@ async def _phase_ground_answer(state: ResolveState) -> RegionResult | None:
     state.identity_entities = identity_entities
 
     state.timing["answer"] = now_ms() - t0
-    await _record_step(
-        state.pipeline_steps,
+    await _emit_step(
         state.emit,
         state.variable_index,
         "answer",
-        ran=True,
         ms=state.timing["answer"],
     )
-    state.ran_steps.add("answer")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -686,6 +683,7 @@ def _start_assemble_definite(state: ResolveState, mat_result: Materialised) -> _
         served_filter=role_served_filter(
             state.shape_draft,
             probe_role_entities,
+            open_axes=state.place.roles.open_axes,
             years=mat_result.preview_years,
             coverage=state.coverage.index,
             facets_pinned=pins_facets(facet_bindings),
@@ -787,17 +785,19 @@ async def _gather_definite_coverage(
             return refusal
 
     # Launch slot/facet probes with the buffered observations fetch to overlap network waits.
+    # Facet options are built for every answer; a streamed request with option coverage
+    # reads them in its trailing probe instead.
     slot_task: asyncio.Task[tuple[list[SlotOptions], Warning | None]] | None = None
     facet_task: asyncio.Task[tuple[list[FacetOptions], Warning | None]] | None = None
     if state.include_option_coverage and not skip_coverage_probe:
         slot_task = asyncio.create_task(_probe_counted_slot_options(state, setup, count_task))
+    if not state.stream_slot_options and not skip_coverage_probe:
         facet_task = asyncio.create_task(
             asyncio.to_thread(
                 _maybe_build_facet_options,
                 setup.facet_probe,
                 graph=state.graph,
                 coverage=state.coverage.index,
-                include_option_coverage=True,
                 deadline=state.deadline,
             )
         )
@@ -864,6 +864,7 @@ async def _probe_counted_slot_options(
         state.bindings,
         counted.options,
         entities=state.place.roles.resolved_entities,
+        open_axes=state.place.roles.open_axes,
         date_request=state.date_request,
         materialise_graph=state.materialise_graph,
         # Option probes use filtered entities. Observation fetches use the resolved scope.
@@ -950,11 +951,9 @@ def _build_definite_spec(
         coverage_index=state.coverage.index,
         coverage_stamp=mat_result.coverage_stamp,
         scope=scope,
-        pipeline_trace=state.pipeline_steps,
         default_reading=state.default_reading,
         resolved_sources=state.source_refs,
         facets=state.answer_facets,
-        n_recalled=state.n_recalled,
         # The confirmed count is exact unless measured over a capped recall sample. A
         # missing population occurs only on hand-built materialised results.
         stat_vars_member_count=(
@@ -963,6 +962,7 @@ def _build_definite_spec(
         stat_vars_member_count_exact=(
             mat_result.population.exact if mat_result.population is not None else True
         ),
+        walked=state.walked,
         slot_options=coverage.slot_options,
         entity_options=coverage.entity_options,
         facet_options=coverage.facet_options,
@@ -970,6 +970,7 @@ def _build_definite_spec(
         confidence=setup.confidence,
         requested_window=requested_window_from_date_request(state.date_request),
         identity_entities=state.identity_entities,
+        open_roles=mat_result.open_axes,
         inapplicable_slots=state.inapplicable_slots,
         unresolved_slots=state.unresolved_slots,
         # Use qualifier bindings after election vetting and repair.
@@ -992,17 +993,10 @@ def _build_definite_spec(
         plans=(state.elected_plan,) if state.elected_plan is not None else (),
     )
 
-    # The request, warnings, and basis are already on the Spec. Install only the trace to
-    # avoid merging warnings twice.
+    # The request, warnings, and basis are already on the Spec. State only the lexicon
+    # version.
     if state.bound_unit_outcome is not None:
-        unit_installation = install_unit_facet(
-            state.bound_unit_outcome,
-            warnings=(),
-            trace=spec.resolved.trace,
-        )
-        spec = spec.model_copy(
-            update={"resolved": spec.resolved.model_copy(update={"trace": unit_installation.trace})}
-        )
+        spec = with_unit_lexicon_version(spec, state.bound_unit_outcome)
     spec = apply_declaration_version(spec, state.bindings)
     if mat_result.family_total_absent is not None:
         state.family_total_absent[spec.spec_id] = mat_result.family_total_absent
@@ -1095,11 +1089,13 @@ async def _finalize_definite_result(
         shape_draft=state.shape_draft,
         bindings=state.bindings,
         entities=state.place.roles.resolved_entities,
+        open_axes=state.place.roles.open_axes,
         # Option relaunches use the same probe entities as the initial task.
         place_dcids=setup.flat_probe_entities,
         entity_options=coverage.entity_options_raw,
         default_facet_probe=setup.facet_probe,
         facets_pinned=setup.facets_pinned,
+        variable_labels=member_labels((spec,)),
     )
     slot_options_task = (
         relaunch_slot_options(spec.spec_id, setup.slot_options_raw)

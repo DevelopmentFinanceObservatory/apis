@@ -62,13 +62,9 @@ class OptionsRequest(StrictModel):
     """Request body for the options door (POST /api/search/options): enumerate
     the candidate set for one resolved entity role of a posted identity.
 
-    An identity block only -- no base_spec_id, no base_identity, no removed,
-    and no resolved_stat_var_dcids seed. The door derives the identity's own
-    StatVar population server-side (engine.options.population.options_population)
-    rather than resolving a Spec through the resubmit path, so it needs no
-    client-posted seed of any kind for any shape, standard included: a
-    standard (catch-all) shape needs no caller-supplied resolved anchor
-    either.
+    An identity block only. The door derives the identity's own StatVar
+    population server-side (engine.options.population.options_population)
+    rather than resolving a Spec through the resubmit path.
 
     validate_by_name=False (with validate_by_alias=True, the pydantic default
     pairing made explicit here): the published schema declares only the alias
@@ -105,7 +101,7 @@ class OptionsRequest(StrictModel):
             "false (the default) never fires the extra probe, so this is opt-in "
             "latency, not a hidden cost on the hot path. The only resolution "
             "option this door reads -- unlike /resolve's ResolveOptions, this "
-            "door has no max_candidates or include_sentence concept, so it "
+            "door has no candidate cap or sentence concept, so it "
             "carries this one field directly rather than nesting a "
             "response_options object with members it would never use."
         ),

@@ -80,6 +80,7 @@ _NODES = {
         "arcs": _sv_arcs_from_real_row(_EXTRA_SV),
     },
     _EXTRA_PURPOSE: {"label": "CRS purpose 51010"},
+    "FinancialFlow": {"label": "financial flow"},
     _ALT_SV: {
         "label": "test amount sibling",
         "type": "StatisticalVariable",
@@ -172,7 +173,6 @@ def _run(monkeypatch, obs: dict = _SDMX_OBS, coverage_rows: list = _COVERAGE_ROW
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations=obs, availability={}),
             llm=_ElectGrantEquivalentAlsoPlausibleAmountLLM(),
-            base_steps=[],
             base_timing={},
             coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
         )
@@ -185,7 +185,7 @@ def test_a_measure_only_pair_collapses_to_one_definite_answer(monkeypatch):
     assert len(result.specs) == 1
 
     survivor = result.specs[0]
-    assert any(sv.ref == _EXTRA_SV for sv in survivor.resolved.stat_vars.items)
+    assert any(sv.ref.dcid == _EXTRA_SV for sv in survivor.resolved.members)
     # The region carries the measure facts its Spec was built from, which a same-shape merge
     # re-mints the label from.
     assert result.measure_partition is not None
@@ -230,7 +230,7 @@ def test_no_stale_candidates_warning_survives_the_fold(monkeypatch):
 
 def _spec_for(specs: list[Spec], sv_dcid: str) -> Spec:
     return next(
-        spec for spec in specs if any(sv.ref == sv_dcid for sv in spec.resolved.stat_vars.items)
+        spec for spec in specs if any(sv.ref.dcid == sv_dcid for sv in spec.resolved.members)
     )
 
 
@@ -250,7 +250,7 @@ def test_s8_a_measure_sibling_with_data_answers_instead_of_refusing(monkeypatch)
     assert result.status == "definite"
     assert len(result.specs) == 1
     survivor = result.specs[0]
-    assert any(sv.ref == _ALT_SV for sv in survivor.resolved.stat_vars.items)
+    assert any(sv.ref.dcid == _ALT_SV for sv in survivor.resolved.members)
 
 
 def test_s8_answers_disclose_the_measure_substitution(monkeypatch):
@@ -267,8 +267,10 @@ def test_s8_answers_disclose_the_measure_substitution(monkeypatch):
     matching = [w for w in result.warnings if w.code == ELECTED_SHAPE_NO_DATA]
     assert len(matching) == 1
     warning = matching[0]
-    # The warning names the elected shape, failure reason, and served measure.
-    assert _RECALLED_SV in warning.message
+    # The warning names the elected shape by its family label, failure reason, and served
+    # measure.
+    elected_label = "Financial flow grant equivalents, OECD Creditor Reporting System (CRS)"
+    assert elected_label in warning.message
     assert "no_observations" in warning.message
     assert survivor.resolved.measure_label in warning.message
     # The warning discloses a closest_match departure naming the measure the heading
@@ -280,6 +282,6 @@ def test_s8_answers_disclose_the_measure_substitution(monkeypatch):
         shown=heading_for(survivor).heading.noun.inline_text,
     )
     assert warning.params == {
-        "no_data": [_RECALLED_SV],
+        "no_data": [elected_label],
         "elected": [survivor.resolved.measure_label],
     }

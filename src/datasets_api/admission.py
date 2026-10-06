@@ -140,7 +140,7 @@ def sync_estimate(
             f"member_cap={UNCOVERED_MEMBER_CAP}. Coverage has no price to put on an "
             "uncovered member, so this ceiling counts how many of them one request "
             "names, independent of the covered part's own rows/requests estimate. "
-            "Narrow the identity (another slot binding, a smaller statvar_set) to "
+            "Narrow the identity (another slot binding) to "
             "bring the uncovered member count under the cap.",
             ceiling_kind="member_cardinality",
             count=uncovered_requests,
@@ -214,35 +214,6 @@ def refuse_inline_over_ceiling(estimate: Estimate, *, ceiling: int) -> None:
     )
 
 
-def refuse_preview_over_budget(
-    estimate: Estimate, *, sync_budget_rows: int, sync_budget_requests: int
-) -> None:
-    """Raise `OverCeilingError` (422) when a preview's estimate is over the sync budget.
-
-    A preview reads every row a mint reads and has no asynchronous path, so it runs only where
-    a mint would run inline. Rows are checked first, so a request over both reports `sync_rows`.
-    """
-    if estimate.rows > sync_budget_rows:
-        raise OverCeilingError(
-            f"estimated {estimate.rows} row(s) exceeds the sync budget cap={sync_budget_rows}. "
-            "A preview reads every row a mint reads and runs only inline; mint the request "
-            "instead, or narrow the identity to bring the estimate under the cap.",
-            ceiling_kind="sync_rows",
-            count=estimate.rows,
-            cap=sync_budget_rows,
-        )
-    if estimate.requests > sync_budget_requests:
-        raise OverCeilingError(
-            f"estimated {estimate.requests} SDMX request(s) exceeds the sync budget "
-            f"cap={sync_budget_requests}. A preview reads every row a mint reads and runs only "
-            "inline; mint the request instead, or narrow the identity to bring the estimate "
-            "under the cap.",
-            ceiling_kind="sync_requests",
-            count=estimate.requests,
-            cap=sync_budget_requests,
-        )
-
-
 def refuse_async_over_ceiling(
     estimate: Estimate, *, async_max_rows: int, async_max_requests: int
 ) -> None:
@@ -276,7 +247,6 @@ __all__ = [
     "refuse_async_over_ceiling",
     "refuse_excel_over_estimate",
     "refuse_inline_over_ceiling",
-    "refuse_preview_over_budget",
     "sync_estimate",
     "within_sync_budget",
 ]

@@ -1,8 +1,7 @@
 """Pure engines for decode, groupby, column selection, enrichment, and pivot.
-`apply_reshapes` runs these steps in a fixed order before format writing, per
-collection member. Graph, code-index, hierarchy, and format-cap inputs arrive
-as parameters; the engines perform no I/O and keep no identity state. The input
-frame's content version is minted before reshape.
+`apply_reshapes` runs these steps in a fixed order before format writing. Graph,
+code-index, hierarchy, and format-cap inputs arrive as parameters; the engines perform no I/O
+and keep no identity state. The input frame's content version is minted before reshape.
 
 Engines accept a structural `TableLike` with `.columns` and `.rows`. Reshape
 results use this module's frozen `Table` because grouping and pivoting can break
@@ -176,15 +175,23 @@ class PivotNotUniqueError(MaterialisationError):
     tuple of colliding raw `columns` values (prefixed with `index` itself
     when one of them collides with the retained index column name) for the
     second -- capped at `_MAX_NAMED_DUPLICATE_KEYS`; `truncated` is `True`
-    when more existed than the cap could name.
+    when more existed than the cap could name. `varying` names the columns
+    that differ inside duplicate key groups, with their frame-wide distinct
+    counts, as `PivotAnalysis.varying` does; it is empty for a
+    stringification collision.
     """
 
     def __init__(
-        self, *args: object, duplicate_keys: tuple[tuple[object, ...], ...], truncated: bool
+        self,
+        *args: object,
+        duplicate_keys: tuple[tuple[object, ...], ...],
+        truncated: bool,
+        varying: tuple[tuple[str, int], ...] = (),
     ) -> None:
         super().__init__(*args, code="pivot_not_unique", status=422)
         self.duplicate_keys = duplicate_keys
         self.truncated = truncated
+        self.varying = varying
 
 
 class PivotOverColumnCapError(MaterialisationError):
@@ -279,7 +286,11 @@ RESHAPE_CODE_CATALOGUE: CodeCatalogue = {
     ),
     "enrichment_unavailable": (
         "Enrichment Unavailable",
-        "One or more enrichment values were unavailable for the requested entities.",
+        "A name, code, or requested enrichment column has no value for some rows: the "
+        "graph names nothing for the value, the name read failed, or two codes of the "
+        "column's code system share its label. Those cells are left empty rather than "
+        "fabricated. measurementMethod_label holds only a name that differs from the "
+        "method's dcid, and its empty cells never raise this warning.",
     ),
 }
 """This module's own code-catalogue fragment. A later integration can merge
@@ -1410,6 +1421,7 @@ def pivot(
             f"{' (truncated)' if analysis.duplicate_keys_truncated else ''}",
             duplicate_keys=analysis.duplicate_keys,
             truncated=analysis.duplicate_keys_truncated,
+            varying=analysis.varying,
         )
 
     if analysis.offenders:
@@ -1481,6 +1493,28 @@ def pivot(
     return Table(columns=output_columns, rows=output_rows)
 
 
+class PivotFacts(Protocol):
+    """Facts about one `(index, columns)` pair over the rows a pivot fold
+    reads, known before the fold runs. `materialise.profile.PivotFeasibility`
+    satisfies this as-is, without this module importing it.
+    """
+
+    @property
+    def duplicate_keys(self) -> bool: ...
+
+    @property
+    def homogeneous(self) -> bool: ...
+
+    @property
+    def width(self) -> int: ...
+
+    @property
+    def cells(self) -> int: ...
+
+    @property
+    def varying(self) -> tuple[tuple[str, int], ...]: ...
+
+
 @dataclass(frozen=True)
 class PivotChunksOutcome:
     """Exactly one of `table` and `violation` is set. The fold stores
@@ -1506,6 +1540,7 @@ def fold_pivot_chunks(
     cell_cap: int,
     classification: ColumnClassification,
     value_column: str = _VALUE_COLUMN,
+    known: PivotFacts | None = None,
 ) -> PivotChunksOutcome:
     """Fold chunks in one pass into distinct output-key state. The fold keeps
     the same refusal order as `pivot` and stores violations so callers can run
@@ -1515,7 +1550,16 @@ def fold_pivot_chunks(
     Rows sharing an `index` may be separated by `row_sort_key`, so the fold
     reads the full stream before building rows. Memory scales with distinct
     `(index, columns)` keys, distinct axis values, and capped homogeneity
-    samples. Output caps are checked after the scan.
+    samples.
+
+    `known`, when given, must describe the rows `chunks` yields, as the stored
+    output profile does for a frame pivoted without a collapsing groupby. When
+    it reports unique keys and homogeneous groups, the column and cell caps are
+    checked against its `width` and `cells` before any key is stored, which
+    keeps the refusal order. A duplicate-key refusal carries its `varying`.
+    Without `known` the fold finds `varying` itself, as `analyse_pivot` does:
+    it keeps each key's first row of non-key columns and the distinct values
+    of every such column, so memory grows with those columns as well.
     """
     first_chunk = next(chunks, None)
     if first_chunk is None:
@@ -1524,6 +1568,13 @@ def fold_pivot_chunks(
     for name in (index, columns, value_column):
         if name not in table_columns:
             raise ColumnUnknownError(f"column {name!r} is not present on this table", column=name)
+
+    if known is not None and not known.duplicate_keys and known.homogeneous:
+        cap_violation = _pivot_cap_violation(
+            width=known.width, cells=known.cells, column_cap=column_cap, cell_cap=cell_cap
+        )
+        if cap_violation is not None:
+            return PivotChunksOutcome(table=None, violation=cap_violation)
 
     index_pos = table_columns.index(index)
     columns_pos = table_columns.index(columns)
@@ -1542,6 +1593,18 @@ def fold_pivot_chunks(
     seen_duplicate_keys: set[tuple[object, object]] = set()
     duplicate_keys_truncated = False
 
+    # Without stored facts, `varying` comes from the duplicate groups. `distinct_by_column` also
+    # canonicalises each cell, so a key's first row costs a pointer per column.
+    varying_columns = (
+        tuple(c for c in table_columns if c not in (index, columns, value_column, _STATUS_COLUMN))
+        if known is None
+        else ()
+    )
+    varying_positions = tuple(table_columns.index(c) for c in varying_columns)
+    distinct_by_column: dict[str, dict[object, object]] = {c: {} for c in varying_columns}
+    first_cells_by_key: dict[tuple[object, object], tuple[object, ...]] = {}
+    differing_columns: set[str] = set()
+
     cell_by_key: dict[tuple[object, object], object] = {}
     pivot_values: list[object] = []
     seen_pivot_values: set[object] = set()
@@ -1553,6 +1616,17 @@ def fold_pivot_chunks(
             index_value = row[index_pos]
             pivot_value = row[columns_pos]
             key = (index_value, pivot_value)
+            if varying_columns:
+                cells = tuple(
+                    distinct_by_column[column].setdefault(row[pos], row[pos])
+                    for column, pos in zip(varying_columns, varying_positions, strict=True)
+                )
+                first_cells = first_cells_by_key.setdefault(key, cells)
+                differing_columns.update(
+                    column
+                    for column, first, cell in zip(varying_columns, first_cells, cells, strict=True)
+                    if first != cell
+                )
             if key in cell_by_key:
                 if key not in seen_duplicate_keys:
                     seen_duplicate_keys.add(key)
@@ -1620,6 +1694,11 @@ def fold_pivot_chunks(
             f"{' (truncated)' if duplicate_keys_truncated else ''}",
             duplicate_keys=tuple(distinct_duplicate_keys),
             truncated=duplicate_keys_truncated,
+            varying=known.varying
+            if known is not None
+            else tuple(
+                (c, len(distinct_by_column[c])) for c in varying_columns if c in differing_columns
+            ),
         )
     elif offenders:
         violation = PivotNotHomogeneousError(
@@ -1628,20 +1707,12 @@ def fold_pivot_chunks(
             offenders=offenders,
             truncated=offenders_truncated,
         )
-    elif width > column_cap:
-        violation = PivotOverColumnCapError(
-            f"pivot output would carry {width} columns, exceeding the format's "
-            f"column cap of {column_cap}",
-            count=width,
-            cap=column_cap,
+    elif (
+        cap_violation := _pivot_cap_violation(
+            width=width, cells=cells, column_cap=column_cap, cell_cap=cell_cap
         )
-    elif cells > cell_cap:
-        violation = PivotOverCellCapError(
-            f"pivot output would carry {cells} cells ({len(index_values)} rows x "
-            f"{width} columns), exceeding this deployment's cap of {cell_cap}",
-            count=cells,
-            cap=cell_cap,
-        )
+    ) is not None:
+        violation = cap_violation
     elif stringification_collisions:
         violation = PivotNotUniqueError(
             f"pivot on index={index!r}, columns={columns!r} is not unique: distinct "
@@ -1664,6 +1735,27 @@ def fold_pivot_chunks(
         for index_value in index_values
     )
     return PivotChunksOutcome(table=Table(columns=output_columns, rows=output_rows), violation=None)
+
+
+def _pivot_cap_violation(
+    *, width: int, cells: int, column_cap: int, cell_cap: int
+) -> PivotOverColumnCapError | PivotOverCellCapError | None:
+    """The column-cap refusal, else the cell-cap refusal, for a pivot of this shape."""
+    if width > column_cap:
+        return PivotOverColumnCapError(
+            f"pivot output would carry {width} columns, exceeding the format's "
+            f"column cap of {column_cap}",
+            count=width,
+            cap=column_cap,
+        )
+    if cells > cell_cap:
+        return PivotOverCellCapError(
+            f"pivot output would carry {cells} cells ({cells // width} rows x "
+            f"{width} columns), exceeding this deployment's cap of {cell_cap}",
+            count=cells,
+            cap=cell_cap,
+        )
+    return None
 
 
 def pivot_chunks(

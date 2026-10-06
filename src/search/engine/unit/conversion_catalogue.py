@@ -56,9 +56,9 @@ from materialise.recipes import (
     elect_recipe,
     recipe_datasets,
 )
+from search.currency_codes import ISO_4217_CODES
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.unit.base_year import declared_base_year
-from search.engine.unit.lexicon import ISO_4217_CODES
 
 logger = logging.getLogger(__name__)
 

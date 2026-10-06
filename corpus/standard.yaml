@@ -226,7 +226,6 @@
         label: activity source
       binding:
         kind: unbound
-    stat_var_dcids: [Amount_EconomicActivity_GrossDomesticProduction_Nominal]
     entity_dcids: [country/IND]
   why: A dataset_resubmit posting activitySource unbound keeps it unbound and serves the promoted nominal GDP StatVar for India as its closest member.
   tags:
@@ -1815,8 +1814,6 @@
           value_kind: enum_value
           time_window: null
           literal: null
-    stat_var_dcids:
-    - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSPurposeCode99810_Nominal
   why: Promoting a place-less CRS gross-disbursement identity returns a definite answer with a role_scope_defaulted warning.
   tags:
     directional_flow: na
@@ -1942,8 +1939,6 @@
           value_kind: enum_value
           time_window: null
           literal: null
-    stat_var_dcids:
-    - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSPurposeCode99810_Nominal
     origin_dcids: [country/FRA]
   why: Promoting the same CRS gross-disbursement identity with provider France binds country/FRA on the origin axis and warns role_scope_defaulted.
   tags:
@@ -3043,8 +3038,6 @@
           value_kind: enum_value
           time_window: null
           literal: null
-    stat_var_dcids:
-    - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityC01_CRSPurposeCode15110_Nominal
     origin_dcids: [country/FRA]
     facets:
       unit:
@@ -3181,8 +3174,6 @@
           value_kind: enum_value
           time_window: null
           literal: null
-    stat_var_dcids:
-    - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityC01_CRSPurposeCode15110_Nominal
     origin_dcids: [country/FRA]
     facets:
       unit:
@@ -3319,8 +3310,6 @@
           value_kind: enum_value
           time_window: null
           literal: null
-    stat_var_dcids:
-    - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityC01_CRSPurposeCode15110_Nominal
     origin_dcids: [country/FRA]
     facets:
       unit:
@@ -3457,8 +3446,6 @@
           value_kind: enum_value
           time_window: null
           literal: null
-    stat_var_dcids:
-    - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityC01_CRSPurposeCode15110_Nominal
     origin_dcids: [country/FRA]
     facets:
       unit:
@@ -3595,8 +3582,6 @@
           value_kind: enum_value
           time_window: null
           literal: null
-    stat_var_dcids:
-    - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityC01_CRSPurposeCode15110_Nominal
     origin_dcids: [country/FRA]
     facets:
       unit:
@@ -3737,8 +3722,6 @@
           value_kind: enum_value
           time_window: null
           literal: null
-    stat_var_dcids:
-    - Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_CRSCooperationModalityC01_CRSPurposeCode15110_Nominal
     origin_dcids: [country/FRA]
     facets:
       unit:
@@ -3811,7 +3794,6 @@
             start_year: 2015
             end_year: 2024
           literal: null
-    stat_var_dcids: [Amount_FinancialFlow_Disbursement_DebtInstrument_Nominal]
     entity_dcids: [country/TZA]
     origin_dcids: [InternationalMonetaryFund]
     facets:
@@ -3846,21 +3828,3 @@
       - dcid: InternationalMonetaryFund
         role: origin
       warnings: [deflator_projected]
-- id: imputed-aid-kenya
-  query: imputed aid to Kenya
-  why: Imputed aid to Kenya answers from the ONE Imputed Multilateral Sectors dataset, with its provenance and the attributedAmount five-tuple bound.
-  expect:
-    operations: []
-    definite: {}
-    candidates: {}
-    no_data: {}
-    unsupported: {}
-- id: education-aid-kenya-excluding-imputed
-  query: education aid to Kenya excluding imputed multilateral
-  why: Education aid to Kenya excluding imputed multilateral takes the exclusion, binds nothing and warns nothing, and answers from the CRS education family.
-  expect:
-    operations: []
-    definite: {}
-    candidates: {}
-    no_data: {}
-    unsupported: {}

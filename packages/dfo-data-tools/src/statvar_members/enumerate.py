@@ -11,9 +11,13 @@ The graph walk here and `code_index.members` both call it.
 
 from __future__ import annotations
 
+import time
 import unicodedata
 from collections.abc import Callable, Collection, Mapping, Sequence
-from dataclasses import dataclass
+from contextlib import suppress
+from dataclasses import dataclass, replace
+from itertools import combinations
+from types import MappingProxyType
 from typing import Literal, cast
 
 from dfo_platform.roles import declared_role_for
@@ -107,15 +111,15 @@ The `oda-grants-to-kenya` sample had 3,812 candidates, 466 members, and
 wider identity before raising the cap."""
 
 DEFAULT_MEMBER_CAP = 700
-"""Default cap on the antichain-reduced result. Datasets enumerates under it; Search passes
-its own cap. A caller's posted member list has its own ceiling, `POSTED_MEMBER_CAP`."""
+"""Default cap on the antichain-reduced result. `MemberEnumerator.member_cap` defaults to it,
+so the Datasets doors and Search's walk enumerate under one cap."""
 
-POSTED_MEMBER_CAP = 2_000
-"""The most StatVar dcids a caller may post as an identity's members: Search's
-`resolved_stat_var_dcids` on a resubmit, and Datasets' mint and options inputs, which
-take the list a search response carries. Posted dcids join the reverse-arc walk as
-`extra_candidates` and are checked against the family before antichain reduction, so the
-list may exceed `DEFAULT_MEMBER_CAP`."""
+DEFAULT_SUBJECT_CEILING = 20_000
+"""Subjects a full read takes when the first page truncates without proof. It covers the
+measured deep-root sets (13,820 and 13,566 for Person/count by gender) and every dfo
+five-tuple (largest 13,614). Search's resubmit and the Datasets mint both default to it.
+`subject_ceiling` is part of the `MemberEnumerator` cache key, so one value lets them
+share cached groups."""
 
 _REPROBE_BUDGET = 32
 """Each reconciliation pass probes at most 32 suspects in one batch, then retries
@@ -162,6 +166,8 @@ _FIVE_TUPLE_PROPERTIES = (
 """Properties read to confirm candidates and reverify antichain winners. `typeOf`
 identifies non-StatVar candidates before reduction."""
 
+_EMPTY_ARCS: Mapping[str, dict[str, tuple[str, ...]] | None] = MappingProxyType({})
+
 _STATISTICAL_VARIABLE = "StatisticalVariable"
 _OBSERVATION_ABOUT = "observationAbout"
 _MEASUREMENT_DENOMINATOR = "measurementDenominator"
@@ -198,15 +204,14 @@ class MemberGroup:
     refusal a truncated page causes states this as the ceiling it crossed,
     alongside `candidates_considered` as the count: the candidate window is
     the bound this read measured, unlike the member count past it, which no
-    bounded read settles. Equals `CANDIDATE_CAP` for every `MemberGroup`
-    this module builds today; carried on the group rather than read from
-    that constant by a caller, so a future page size reaches the refusal
-    without the two drifting apart. Meaningful only when `truncated` is
-    `True`: a page that read every candidate was still read inside this
-    window, which no candidate ever reached."""
+    bounded read settles. `CANDIDATE_CAP` for the first page, and the caller's
+    `subject_ceiling` for a group the full read built (`full_read`). Meaningful
+    only when `truncated` is `True`: a page that read every candidate was still
+    read inside this window, which no candidate ever reached."""
     truncated: bool
-    """`True` when `_reverse_query`'s page hit `CANDIDATE_CAP` before
-    exhausting the candidate population. `members` is confirmed over
+    """`True` when `_reverse_query`'s page hit `candidate_cap` before
+    exhausting the candidate population. A full read past `subject_ceiling`
+    confirms nothing, so its group holds no members. `members` is confirmed over
     whatever page was read: confirmation and antichain domination depend
     only on that page, so a non-empty `members` here is as confirmed as a
     complete page's. Truncation withholds completeness, since a member
@@ -230,7 +235,9 @@ class MemberGroup:
     Always `True` when `truncated` is `False`. With `truncated` true, it is `True` only when
     `_antichain_proven_complete`'s domination argument fires and the root declares only the
     roles that place the role keys (`_root_elects_role_class`), so no member past the window
-    can declare fewer roles and replace it. It never proves the full
+    can declare fewer roles and replace it, and every open role key is among the keys the
+    election read (`elected_open_role_keys`), since a twin past the window that places
+    an open key no member on the page places would be elected over the root. It never proves the full
     population: a literal duplicate declaration with the same constraint-key set can sit past
     the window unreported, and the graph does carry duplicate StatVar declarations. The result
     is then narrower, never wrong. `_minimal_antichain` and `_minimal_constraint_svs` share this
@@ -238,8 +245,9 @@ class MemberGroup:
     root_confirmed: bool
     """`True` when `_antichain_proven_complete`'s domination argument holds: `members`
     includes a confirmed member whose constraint keys are exactly the `value`-bound slot
-    keys and whose roles cover the role keys, no slot is `set`-bound, and every unbound
-    property reads `aggregate`. Any
+    keys and whose roles cover the elected role keys, a confirmed member of those
+    constraint keys covers the bound role keys (`_root_covers_bound_keys`), no slot is
+    `set`-bound, and every unbound property reads `aggregate`. Any
     candidate this group did not read, past a truncated window or in
     `inconsistent_candidates`, is then a non-member, a member that root dominates, or a
     same-keyset duplicate of it, so none of them can change `members` beyond omitting
@@ -277,6 +285,44 @@ class MemberGroup:
     duplicate of the root whose roles disagree, and `_read_root_twins` drops each one its
     single-dcid read settles. Role agreement among `members` is then checked regardless,
     so a disagreement among confirmed members raises before any caller reads this."""
+    full_read: bool = False
+    """`True` when the walk read the whole filtered reverse set under a `subject_ceiling`,
+    because the first page truncated without proof."""
+    elected_open_role_keys: frozenset[str] = frozenset()
+    """The open role keys the final election read beside the bound ones
+    (`RoleClassElection.role_keys` over every confirmed member): the asked open keys the
+    members serve. A walk of the same candidates that asks exactly these keys, open or
+    bound, elects under the same keys, so it elects the same members."""
+
+    @property
+    def stated_family(self) -> frozenset[str] | None:
+        """The family a caller states for this walk, by count and `member_digest`: `family`
+        when the walk read every candidate, else `None`. A truncated page proven complete
+        leaves candidates past its window unread, and a member that duplicates another's
+        keys can sit among them. The Datasets mint (`trace.family_member_digest`) and
+        Search (`resolved.shape.member_digest`) both state this set, so the two digests
+        agree for one walk."""
+        return None if self.truncated else frozenset(self.family)
+
+
+class MemberReadDeadline(TimeoutError):
+    """A walk's graph read started, or failed, past the caller's `deadline`.
+
+    `candidate_cap` is the window being read when time ran out, `CANDIDATE_CAP` or the
+    caller's `subject_ceiling`, and `candidates_considered` the subjects that window had
+    returned, 0 before its page arrived. Running out of time says nothing about the set's
+    size, so a caller treats it as a transient timeout. A retry walks again."""
+
+    def __init__(
+        self, *, five_tuple: FiveTuple, candidates_considered: int, candidate_cap: int
+    ) -> None:
+        self.five_tuple = five_tuple
+        self.candidates_considered = candidates_considered
+        self.candidate_cap = candidate_cap
+        super().__init__(
+            f"the member walk of {five_tuple!r} ran past its deadline after "
+            f"{candidates_considered} candidates of a {candidate_cap}-candidate window"
+        )
 
 
 class MemberQueryUnanchored(Exception):
@@ -340,7 +386,7 @@ class NotAStatisticalVariable(Exception):
 
 class MemberRoleDisagreement(Exception):
     """Antichain members declare different role sets: a tie `elect_role_class` cannot
-    break, between members whose role sets do not nest or whose constraint maps differ.
+    break, between members no one of whose role sets sits inside all the others.
     Checked only on final survivors, whose roles must agree for materialisation."""
 
     def __init__(
@@ -363,14 +409,19 @@ def enumerate_members(
     member_cap: int = DEFAULT_MEMBER_CAP,
     extra_candidates: Sequence[str] = (),
     role_keys: Collection[str] = (),
+    subject_ceiling: int | None = None,
+    deadline: float | None = None,
+    full_read_deadline: float | None = None,
+    open_role_keys: Collection[str] = (),
 ) -> MemberGroup:
     """Enumerate matching StatVars and reduce them to the minimal-constraint antichain.
 
     `role_keys` holds the role keys the ask binds entities under (`observationAbout`,
-    `origin`, `destination`, or a declared role name). `elect_role_class` keeps the
-    members whose declared roles cover them and reduces over constraint properties, then
-    over declared roles, so a member lacking a role its sibling carries is the aggregate
-    over that role.
+    `origin`, `destination`, or a declared role name), and `open_role_keys` the flow axes
+    it asks every member of. `elect_role_class` keeps the members whose declared roles
+    cover the bound keys and the open ones that join them (`electing_role_keys`) and
+    reduces over constraint properties, then over declared roles, so a member lacking a
+    role its sibling carries is the aggregate over that role.
 
     `extra_candidates` joins the reverse-query results before confirmation and
     follows the same membership, reduction, and trusted re-read checks. It skips
@@ -380,7 +431,17 @@ def enumerate_members(
     `readings` defines how absent constraints affect domination. Unspecified
     properties default to `aggregate`. Callers with `not_declared` properties
     must supply their registry-backed mapping. `member_cap` limits the reduced
-    result and defaults to 700. Search passes its own limit.
+    result and defaults to 700. `MemberEnumerator` passes its own `member_cap`.
+
+    `subject_ceiling`, when set, settles a first page that truncates without proof by
+    reading the whole filtered reverse set, up to that many subjects, and confirming
+    it (`MemberGroup.full_read`). A complete read settles by construction. A set past
+    the ceiling returns a truncated, unproven group with `candidate_cap` the ceiling.
+
+    `deadline`, an absolute `time.monotonic()` instant, bounds every graph read: a read
+    started past it, or failing once it has passed, raises `MemberReadDeadline`.
+    `full_read_deadline` replaces it once the walk enters the full read, and defaults
+    to `deadline`.
 
     Raises `MemberQueryUnanchored` when `measured_property` is absent,
     `MemberEnumerationTooLarge` above the reduced member cap,
@@ -397,7 +458,21 @@ def enumerate_members(
         member_cap=member_cap,
         extra_candidates=extra_candidates,
         role_keys=role_keys,
+        subject_ceiling=subject_ceiling,
+        deadline=deadline,
+        full_read_deadline=full_read_deadline,
+        open_role_keys=open_role_keys,
     )
+
+
+@dataclass
+class _Window:
+    """The reverse-arc window a walk is reading: its cap and subjects returned, for the
+    refusal a deadline crossing raises, and the deadline its reads run under."""
+
+    cap: int
+    deadline: float | None
+    considered: int = 0
 
 
 def _enumerate_resolved(
@@ -409,25 +484,250 @@ def _enumerate_resolved(
     member_cap: int,
     extra_candidates: Sequence[str] = (),
     role_keys: Collection[str] = (),
+    subject_ceiling: int | None = None,
+    deadline: float | None = None,
+    full_read_deadline: float | None = None,
+    open_role_keys: Collection[str] = (),
 ) -> MemberGroup:
-    """Run `_confirm_group` on the reverse-query page plus caller-supplied candidates.
-    Truncation passes through to `MemberGroup`. An empty truncated result leaves
-    matching members beyond the page unaccounted for. An unresolved-denominator ask
-    reads through `_ProvisionalDenominatorReader`."""
+    """Run `_confirm_group` on the reverse-query page plus caller-supplied candidates,
+    then, under `subject_ceiling`, on the whole filtered set when that page truncates
+    without proof (`_read_whole_set`). Truncation passes through to `MemberGroup`. An
+    empty truncated result leaves matching members beyond the page unaccounted for. An
+    unresolved-denominator ask reads through `_ProvisionalDenominatorReader`, above the
+    `_DeadlineReader` that bounds every read by the window's deadline: `deadline` for
+    the first page, then `full_read_deadline`, which defaults to `deadline`."""
+    if full_read_deadline is None:
+        full_read_deadline = deadline
+    window = _Window(cap=CANDIDATE_CAP, deadline=deadline)
+    if deadline is not None or full_read_deadline is not None:
+        graph = _DeadlineReader(graph, window)
     if five_tuple.denominator_unresolved:
         graph = _ProvisionalDenominatorReader(graph)
-    page, candidate_cap = _reverse_query(graph, five_tuple, slots=slots)
-    return _confirm_group(
+    try:
+        page = _reverse_query(graph, five_tuple, slots=slots, max_results=CANDIDATE_CAP)
+        window.considered = len(page.dcids)
+        if subject_ceiling is None or not page.truncated:
+            return _confirm_group(
+                five_tuple,
+                page.dcids,
+                slots=slots,
+                graph=graph,
+                readings=readings,
+                member_cap=member_cap,
+                candidate_cap=CANDIDATE_CAP,
+                truncated=page.truncated,
+                extra_candidates=extra_candidates,
+                role_keys=frozenset(role_keys),
+                open_role_keys=frozenset(open_role_keys),
+            )
+        return _read_whole_set(
+            five_tuple,
+            page.dcids,
+            window=window,
+            subject_ceiling=subject_ceiling,
+            full_read_deadline=full_read_deadline,
+            slots=slots,
+            graph=graph,
+            readings=readings,
+            member_cap=member_cap,
+            extra_candidates=extra_candidates,
+            role_keys=frozenset(role_keys),
+            open_role_keys=frozenset(open_role_keys),
+        )
+    except _DeadlineCrossed as exc:
+        raise MemberReadDeadline(
+            five_tuple=five_tuple,
+            candidates_considered=window.considered,
+            candidate_cap=window.cap,
+        ) from exc.__cause__
+
+
+def _read_whole_set(
+    five_tuple: FiveTuple,
+    page: Sequence[str],
+    *,
+    window: _Window,
+    subject_ceiling: int,
+    full_read_deadline: float | None,
+    slots: Mapping[str, SlotBinding],
+    graph: MemberArcReader,
+    readings: Mapping[str, AbsentReading],
+    member_cap: int,
+    extra_candidates: Sequence[str],
+    role_keys: frozenset[str],
+    open_role_keys: frozenset[str],
+) -> MemberGroup:
+    """Settle a truncated first page. Confirm it when it may hold a root that proves it
+    complete, and otherwise read the whole filtered set up to `subject_ceiling` and
+    confirm that.
+
+    The first page's batch read serves both confirmations, so the full read reads only
+    the arcs of subjects past the page. A page settles only under a confirmed root, a
+    member whose constraint keys are exactly the `value`-bound slot keys. A read can only
+    drop an arc, so a candidate whose read names a constraint outside those
+    keys is no root, and a page holding only such candidates goes straight to the full
+    read, as does a binding no root can prove complete (`root_can_prove_complete`). The
+    full read runs under `full_read_deadline`."""
+    properties = _candidate_properties(slots)
+    page_arcs = graph.node_arcs_many(page, properties=properties)
+    if extra_candidates or _page_may_hold_root(page_arcs, slots=slots, readings=readings):
+        # A root past the page can dominate the members the page holds, so a cap or role
+        # refusal of the page alone defers to the full read.
+        with suppress(MemberEnumerationTooLarge, MemberRoleDisagreement):
+            group = _confirm_group(
+                five_tuple,
+                page,
+                slots=slots,
+                graph=graph,
+                readings=readings,
+                member_cap=member_cap,
+                candidate_cap=CANDIDATE_CAP,
+                truncated=True,
+                extra_candidates=extra_candidates,
+                role_keys=role_keys,
+                open_role_keys=open_role_keys,
+                prior_arcs=page_arcs,
+            )
+            if group.proven_complete:
+                return group
+    window.cap, window.considered, window.deadline = subject_ceiling, 0, full_read_deadline
+    whole = _reverse_query(graph, five_tuple, slots=slots, max_results=subject_ceiling)
+    window.considered = len(whole.dcids)
+    if whole.truncated:
+        return MemberGroup(
+            five_tuple=five_tuple,
+            members=(),
+            family=(),
+            candidates_considered=len(whole.dcids),
+            candidate_cap=subject_ceiling,
+            truncated=True,
+            proven_complete=False,
+            root_confirmed=False,
+            full_read=True,
+        )
+    group = _confirm_group(
         five_tuple,
-        page.dcids,
+        whole.dcids,
         slots=slots,
         graph=graph,
         readings=readings,
         member_cap=member_cap,
-        candidate_cap=candidate_cap,
-        truncated=page.truncated,
+        candidate_cap=subject_ceiling,
+        truncated=False,
         extra_candidates=extra_candidates,
-        role_keys=frozenset(role_keys),
+        role_keys=role_keys,
+        open_role_keys=open_role_keys,
+        prior_arcs=page_arcs,
+    )
+    return replace(group, full_read=True)
+
+
+def _page_may_hold_root(
+    page_arcs: Mapping[str, Mapping[str, tuple[str, ...]] | None],
+    *,
+    slots: Mapping[str, SlotBinding],
+    readings: Mapping[str, AbsentReading],
+) -> bool:
+    """Whether a confirmed root could sit among `page_arcs`: the binding lets a root prove
+    the family complete, and some candidate's read, or missing read, names no constraint
+    outside the `value`-bound slot keys."""
+    if not root_can_prove_complete(slots=slots, readings=readings):
+        return False
+    bound_keys = frozenset(name for name, binding in slots.items() if binding[0] == "value")
+    return any(
+        arcs is None or frozenset(arcs.get("constraintProperties", ())) <= bound_keys
+        for arcs in page_arcs.values()
+    )
+
+
+class _DeadlineCrossed(Exception):
+    """A read under `_DeadlineReader` started or failed past its deadline. The walk turns it
+    into `MemberReadDeadline` with the window it was reading."""
+
+
+class _DeadlineReader:
+    """Read through `graph` until the deadline of `window`, a `time.monotonic()` instant
+    or `None` for no bound, read at each call so a walk entering the full read moves it.
+    A read started past it raises `_DeadlineCrossed`, and so does any read failure once
+    it has passed. The deadline rides on each read, so every page and request ends by it."""
+
+    def __init__(self, graph: MemberArcReader, window: _Window) -> None:
+        self._graph = graph
+        self._window = window
+
+    def _crossed(self) -> bool:
+        return self._window.deadline is not None and time.monotonic() >= self._window.deadline
+
+    def _bound(self, deadline: float | None) -> float | None:
+        if self._window.deadline is None:
+            return deadline
+        return self._window.deadline if deadline is None else min(deadline, self._window.deadline)
+
+    def node_subjects(
+        self,
+        dcid: str,
+        *,
+        property: str,
+        filters: Mapping[str, str] | None = None,
+        max_results: int,
+        deadline: float | None = None,
+    ) -> SubjectPage:
+        if self._crossed():
+            raise _DeadlineCrossed
+        try:
+            return _node_subjects(
+                self._graph,
+                dcid,
+                property=property,
+                filters=filters,
+                max_results=max_results,
+                deadline=self._bound(deadline),
+            )
+        except Exception as exc:
+            if self._crossed():
+                raise _DeadlineCrossed from exc
+            raise
+
+    def node_arcs_many(
+        self,
+        dcids: Sequence[str],
+        *,
+        properties: Sequence[str],
+        individual_probe_budget: int | None = None,
+        deadline: float | None = None,
+    ) -> dict[str, dict[str, tuple[str, ...]] | None]:
+        if self._crossed():
+            raise _DeadlineCrossed
+        try:
+            return self._graph.node_arcs_many(
+                dcids,
+                properties=properties,
+                individual_probe_budget=individual_probe_budget,
+                deadline=self._bound(deadline),
+            )
+        except Exception as exc:
+            if self._crossed():
+                raise _DeadlineCrossed from exc
+            raise
+
+
+def _node_subjects(
+    graph: MemberArcReader,
+    dcid: str,
+    *,
+    property: str,
+    filters: Mapping[str, str] | None,
+    max_results: int,
+    deadline: float | None,
+) -> SubjectPage:
+    """Forward a reverse read, passing `deadline` only when one is set, since a reader
+    the walk wraps without a deadline may take none."""
+    if deadline is None:
+        return graph.node_subjects(
+            dcid, property=property, filters=filters, max_results=max_results
+        )
+    return graph.node_subjects(
+        dcid, property=property, filters=filters, max_results=max_results, deadline=deadline
     )
 
 
@@ -453,9 +753,15 @@ class _ProvisionalDenominatorReader:
         property: str,
         filters: Mapping[str, str] | None = None,
         max_results: int,
+        deadline: float | None = None,
     ) -> SubjectPage:
-        return self._graph.node_subjects(
-            dcid, property=property, filters=filters, max_results=max_results
+        return _node_subjects(
+            self._graph,
+            dcid,
+            property=property,
+            filters=filters,
+            max_results=max_results,
+            deadline=deadline,
         )
 
     def node_arcs_many(
@@ -577,12 +883,15 @@ def _safe_slot_filters(slots: Mapping[str, SlotBinding]) -> dict[str, str]:
 
 
 def _reverse_query(
-    graph: MemberArcReader, five_tuple: FiveTuple, *, slots: Mapping[str, SlotBinding]
-) -> tuple[SubjectPage, int]:
-    """Query subjects by `measuredProperty`, with safe five-tuple and slot filters.
-    The narrower measured-property arc avoids the much broader population axis.
-    Raises `MemberQueryUnanchored` when `measured_property` is absent. Returns the page
-    and its cap for `MemberGroup.candidate_cap`."""
+    graph: MemberArcReader,
+    five_tuple: FiveTuple,
+    *,
+    slots: Mapping[str, SlotBinding],
+    max_results: int,
+) -> SubjectPage:
+    """Query up to `max_results` subjects by `measuredProperty`, with safe five-tuple and
+    slot filters. The narrower measured-property arc avoids the much broader population
+    axis. Raises `MemberQueryUnanchored` when `measured_property` is absent."""
     if five_tuple.measured_property is None:
         raise MemberQueryUnanchored(five_tuple)
     filters = five_tuple_reverse_filters(
@@ -592,13 +901,17 @@ def _reverse_query(
         measurement_denominator=five_tuple.measurement_denominator,
     )
     filters.update(_safe_slot_filters(slots))
-    page = graph.node_subjects(
+    return graph.node_subjects(
         five_tuple.measured_property,
         property="measuredProperty",
         filters=filters,
-        max_results=CANDIDATE_CAP,
+        max_results=max_results,
     )
-    return page, CANDIDATE_CAP
+
+
+def _candidate_properties(slots: Mapping[str, SlotBinding]) -> tuple[str, ...]:
+    """The out-arcs `_confirm_group` reads for each candidate."""
+    return _FIVE_TUPLE_PROPERTIES + tuple(sorted(slots))
 
 
 def _confirm_group(
@@ -613,10 +926,13 @@ def _confirm_group(
     truncated: bool,
     extra_candidates: Sequence[str] = (),
     role_keys: frozenset[str] = frozenset(),
+    prior_arcs: Mapping[str, dict[str, tuple[str, ...]] | None] = _EMPTY_ARCS,
+    open_role_keys: frozenset[str] = frozenset(),
 ) -> MemberGroup:
     """Confirm walked and caller-supplied candidates, reduce survivors, and enforce
     `member_cap` on the antichain result. The reverse-query page is capped at
-    `CANDIDATE_CAP`. Supplied candidates use a separate probe budget.
+    `candidate_cap`. Supplied candidates use a separate probe budget. A walked
+    candidate in `prior_arcs` takes that batch read in place of its own.
     `truncated` and `candidate_cap` pass through unchanged. Completeness is computed
     from the final antichain. Drop candidates with a present, non-StatVar `typeOf`.
     Missing `typeOf` is inconclusive, so winners receive a trusted re-read.
@@ -626,8 +942,17 @@ def _confirm_group(
     query established. Their forward reads use a separate probe budget. Ordinary
     non-matches follow the membership checks.
 
-    The reduction is `elect_role_class` under `role_keys`. A confirmed member that reads
-    subject-only and fails a flow role key is re-read first (`_reconcile_role_rejected`),
+    The reduction is `elect_role_class` under `role_keys` and `open_role_keys`. Each
+    election, from the trusted re-read to the final one after the root twins join,
+    resolves its keys with `electing_role_keys` over the members it elects from, so an
+    open role's twin found late displaces the total and one settled out leaves it standing.
+    A truncated page is proven complete only when the final election read every open key,
+    so a page whose members serve no asked open role goes to the full read, where a twin
+    past the page is found. The root that proves a page must also cover the bound keys
+    (`_root_covers_bound_keys`), so that no member past the page changes which open keys
+    join.
+    A confirmed member that reads subject-only and fails a flow role key is re-read first
+    (`_reconcile_role_rejected`),
     since a batch read can drop its `observationProperties` arc. After the trusted re-read
     of the winners, `_settle_role_absence` reads alone each member whose role class still
     rests on that arc reading empty.
@@ -635,9 +960,12 @@ def _confirm_group(
     deduped_extra = tuple(
         dcid for dcid in dict.fromkeys(extra_candidates) if dcid not in candidate_dcids
     )
-    properties = _FIVE_TUPLE_PROPERTIES + tuple(sorted(slots))
+    properties = _candidate_properties(slots)
     graph = single_reads = _SingleReads(graph, properties=properties)
-    arcs_by_dcid = dict(graph.node_arcs_many(candidate_dcids, properties=properties))
+    arcs_by_dcid = {dcid: prior_arcs[dcid] for dcid in candidate_dcids if dcid in prior_arcs}
+    unread = [dcid for dcid in candidate_dcids if dcid not in arcs_by_dcid]
+    if unread or not prior_arcs:
+        arcs_by_dcid.update(graph.node_arcs_many(unread, properties=properties))
     if deduped_extra:
         arcs_by_dcid.update(
             graph.node_arcs_many(
@@ -675,7 +1003,9 @@ def _confirm_group(
     consistent.extend(recovered)
     consistent = _reconcile_role_rejected(
         consistent,
-        role_keys=role_keys,
+        role_keys=_elect(
+            consistent, readings=readings, role_keys=role_keys, open_role_keys=open_role_keys
+        ).role_keys,
         five_tuple=five_tuple,
         slots=slots,
         properties=properties,
@@ -690,6 +1020,7 @@ def _confirm_group(
         properties=properties,
         readings=readings,
         role_keys=role_keys,
+        open_role_keys=open_role_keys,
     )
     confirmed, role_unsettled = _settle_role_absence(
         confirmed,
@@ -698,14 +1029,16 @@ def _confirm_group(
         slots=slots,
         readings=readings,
         role_keys=role_keys,
+        open_role_keys=open_role_keys,
     )
-    members = _sorted_members(
-        confirmed, _elect(confirmed, readings=readings, role_keys=role_keys).members
+    election = _elect(
+        confirmed, readings=readings, role_keys=role_keys, open_role_keys=open_role_keys
     )
+    members = _sorted_members(confirmed, election.members)
     unresolved = inconsistent_candidates + unverified + role_unsettled
     root_confirmed = _antichain_proven_complete(
-        members, slots=slots, readings=readings, role_keys=role_keys
-    )
+        members, slots=slots, readings=readings, role_keys=election.role_keys
+    ) and _root_covers_bound_keys(confirmed, slots=slots, role_keys=role_keys)
     undismissed = unresolved
     if root_confirmed:
         twins = _possible_root_twins(
@@ -722,7 +1055,9 @@ def _confirm_group(
         confirmed += read_twins
         settled = frozenset(twins) - frozenset(undismissed)
         unresolved = tuple(dcid for dcid in unresolved if dcid not in settled)
-    election = _elect(confirmed, readings=readings, role_keys=role_keys)
+    election = _elect(
+        confirmed, readings=readings, role_keys=role_keys, open_role_keys=open_role_keys
+    )
     members = _sorted_members(confirmed, election.members)
     family = election.family
     if len(members) > member_cap:
@@ -739,10 +1074,15 @@ def _confirm_group(
         candidate_cap=candidate_cap,
         truncated=truncated,
         proven_complete=not truncated
-        or (root_confirmed and _root_elects_role_class(members, slots=slots, role_keys=role_keys)),
+        or (
+            root_confirmed
+            and open_role_keys <= election.role_keys
+            and _root_elects_role_class(members, slots=slots, role_keys=election.role_keys)
+        ),
         root_confirmed=root_confirmed,
         inconsistent_candidates=unresolved,
         undismissed_candidates=undismissed,
+        elected_open_role_keys=election.role_keys - role_keys,
     )
 
 
@@ -775,6 +1115,26 @@ def _antichain_proven_complete(
         return False
     return any(
         role_class_covers(root.declared_roles, role_keys) for root in _roots(members, slots=slots)
+    )
+
+
+def _root_covers_bound_keys(
+    confirmed: Sequence[Member], *, slots: Mapping[str, SlotBinding], role_keys: frozenset[str]
+) -> bool:
+    """Whether a root among `confirmed` covers the bound `role_keys` (`role_class_covers`),
+    so that no unread candidate changes which open keys join them.
+
+    The open keys join by what the election under the bound keys alone reads
+    (`electing_role_keys`). A root that covers the bound keys is a candidate of that
+    election and dominates every candidate with more constraint keys, under the bindings
+    `_antichain_proven_complete` accepts. The election then reads members of the root's
+    constraint map whatever sits unread, and the members that place an open key for it
+    hold that map too. A root that covers the elected keys covers a bound key among
+    them. With no bound key only a subject-only root does: beside a role-bearing root
+    alone, an unread subject-only member of more constraint keys would be read in its
+    place, and an open key would join only if a twin of that member placed it."""
+    return any(
+        role_class_covers(root.declared_roles, role_keys) for root in _roots(confirmed, slots=slots)
     )
 
 
@@ -1180,9 +1540,15 @@ class _SingleReads:
         property: str,
         filters: Mapping[str, str] | None = None,
         max_results: int,
+        deadline: float | None = None,
     ) -> SubjectPage:
-        return self._graph.node_subjects(
-            dcid, property=property, filters=filters, max_results=max_results
+        return _node_subjects(
+            self._graph,
+            dcid,
+            property=property,
+            filters=filters,
+            max_results=max_results,
+            deadline=deadline,
         )
 
     def node_arcs_many(
@@ -1212,6 +1578,7 @@ def _settle_role_absence(
     slots: Mapping[str, SlotBinding],
     readings: Mapping[str, AbsentReading],
     role_keys: frozenset[str],
+    open_role_keys: frozenset[str],
 ) -> tuple[tuple[Member, ...], tuple[str, ...]]:
     """Read alone each member whose role class rests on an empty `observationProperties` arc
     (`_role_absence_suspects`), one at a time, electing again after each read.
@@ -1230,7 +1597,10 @@ def _settle_role_absence(
     while suspects := [
         dcid
         for dcid in _role_absence_suspects(
-            tuple(by_dcid.values()), readings=readings, role_keys=role_keys
+            tuple(by_dcid.values()),
+            readings=readings,
+            role_keys=role_keys,
+            open_role_keys=open_role_keys,
         )
         if dcid not in settled
     ]:
@@ -1270,30 +1640,57 @@ def _role_absence_suspects(
     *,
     readings: Mapping[str, AbsentReading],
     role_keys: frozenset[str],
+    open_role_keys: frozenset[str],
 ) -> list[str]:
     """Return the subject-only members whose place in the election would change if their
     `observationProperties` arc held a role, fewest constraint keys first.
 
-    When a subject-only member does not cover `role_keys` and another member does, coverage
-    drops it. A member any winner's constraint keys dominate (`dominates_constraint_keys`)
-    falls to that winner whatever it declares; every other one is a suspect. When a
-    subject-only member covers, which needs no role key or `observationAbout` alone, a
-    subject-only winner is a suspect once some member declares a role: declaring one would
-    take it out of the class. A family in which every member reads subject-only offers the
-    election no other class and yields no suspect, since reading each of its winners alone
-    would cost one request per winner, up to `DEFAULT_MEMBER_CAP`."""
-    by_dcid = {member.stat_var: member for member in members}
-    winners = [
-        by_dcid[dcid] for dcid in _elect(members, readings=readings, role_keys=role_keys).members
+    They are the suspects of the election under `role_keys` and `open_role_keys`
+    (`_election_suspects`). When an open key joined, the suspects of the election under
+    `role_keys` alone are suspects too, since the members that election reads decide which
+    open keys join (`electing_role_keys`)."""
+    election = _elect(
+        members, readings=readings, role_keys=role_keys, open_role_keys=open_role_keys
+    )
+    suspects = _election_suspects(members, election, readings=readings)
+    if election.role_keys != role_keys:
+        bound = _elect(members, readings=readings, role_keys=role_keys)
+        suspects += _election_suspects(members, bound, readings=readings)
+        suspects = list({member.stat_var: member for member in suspects}.values())
+    return [
+        member.stat_var for member in sorted(suspects, key=lambda member: len(member.constraints))
     ]
+
+
+def _election_suspects(
+    members: Sequence[Member],
+    election: RoleClassElection,
+    *,
+    readings: Mapping[str, AbsentReading],
+) -> list[Member]:
+    """The subject-only members whose place in `election`, run over `members`, would
+    change if their `observationProperties` arc held a role.
+
+    When a subject-only member does not cover the election's keys and another member does,
+    coverage drops it. A member any winner's constraint keys dominate
+    (`dominates_constraint_keys`) falls to that winner whatever it declares; every other
+    one is a suspect. When a subject-only member covers, which needs no role key or
+    `observationAbout` alone, a subject-only winner is a suspect once some member declares
+    a role: declaring one would take it out of the class. A family in which every member
+    reads subject-only offers the election no other class and yields no suspect, since
+    reading each of its winners alone would cost one request per winner, up to
+    `DEFAULT_MEMBER_CAP`."""
+    role_keys = election.role_keys
+    by_dcid = {member.stat_var: member for member in members}
+    winners = [by_dcid[dcid] for dcid in election.members]
     subject_only = [member for member in members if member.declared_roles == (_OBSERVATION_ABOUT,)]
     if role_class_covers((_OBSERVATION_ABOUT,), role_keys):
         if len(subject_only) == len(members):
             return []
-        suspects = [member for member in winners if member.declared_roles == (_OBSERVATION_ABOUT,)]
-    elif any(role_class_covers(member.declared_roles, role_keys) for member in members):
+        return [member for member in winners if member.declared_roles == (_OBSERVATION_ABOUT,)]
+    if any(role_class_covers(member.declared_roles, role_keys) for member in members):
         winner_keys = {frozenset(member.constraints) for member in winners}
-        suspects = [
+        return [
             member
             for member in subject_only
             if not any(
@@ -1301,11 +1698,7 @@ def _role_absence_suspects(
                 for keys in winner_keys
             )
         ]
-    else:
-        return []
-    return [
-        member.stat_var for member in sorted(suspects, key=lambda member: len(member.constraints))
-    ]
+    return []
 
 
 def _confirm_absence_suspect(
@@ -1396,25 +1789,6 @@ def _declared_roles(stat_var: str, observation_properties: tuple[str, ...]) -> t
     return observation_properties
 
 
-def _collapse_role_twins(
-    constraints_by_id: Mapping[str, Mapping[str, str]],
-    roles_by_id: Mapping[str, tuple[str, ...]],
-    order: Sequence[str],
-) -> tuple[str, ...]:
-    """Return the ids of `order` that no role twin displaces, in their order.
-
-    Role twins are ids with equal constraint maps, property and value, whose declared
-    role sets nest. The id declaring the strict superset is a breakdown over the extra
-    roles, and the other is its total, so the breakdown is dropped. The result does not
-    depend on the order given (`_undisplaced`)."""
-    facts = role_class_facts(
-        {dcid: constraints_by_id[dcid] for dcid in order},
-        {dcid: roles_by_id[dcid] for dcid in order},
-    )
-    displaced = _displaced(facts, order)
-    return tuple(dcid for dcid in order if dcid not in displaced)
-
-
 @dataclass(frozen=True, eq=False)
 class RoleClass:
     """What `elect_role_class` reads of the ids that declare one role tuple and one set of
@@ -1481,7 +1855,9 @@ def role_class_facts(
 
 def _displaced(facts: RoleClassFacts, order: Sequence[str]) -> set[str]:
     """The ids of `order` a role twin among `order` displaces: one with the same constraint
-    map and a role set that is a strict subset of theirs."""
+    map and a role set that is a strict subset of theirs. The id declaring the strict
+    superset is a breakdown over the extra roles and the other is its total, so the
+    breakdown is displaced. The result does not depend on the order given."""
     twins = [(dcid, facts.twin_of[dcid]) for dcid in order if dcid in facts.twin_of]
     present = {twin for _dcid, twin in twins}
     return {
@@ -1503,20 +1879,88 @@ def covers_role_keys(declared_roles: tuple[str, ...], role_keys: Collection[str]
     return all(declared_role_for(key, declared_roles) is not None for key in role_keys)
 
 
+def electing_role_keys(
+    facts: RoleClassFacts,
+    order: Sequence[str],
+    *,
+    role_keys: Collection[str],
+    open_role_keys: Collection[str],
+    readings: Mapping[str, AbsentReading],
+) -> frozenset[str]:
+    """Return the role keys an election over the ids of `order` reads.
+
+    `role_keys` are bound and `open_role_keys` open. An open key guides the election as a
+    preference, and joins the bound keys only where the ids the bound keys alone elect
+    publish a series by it: one of those ids, or an id of `order` holding the constraint
+    map of one, its role twin, places it. A by-creditor twin places an open creditor and
+    displaces its total. A two-role id of other constraint values is a twin of no total,
+    so it places nothing for a question the totals answer, and the key is set aside.
+
+    The keys are `role_keys` and the largest subset of `open_role_keys` that one such id
+    covers together with them (`role_class_covers`). When two or more different subsets
+    of that largest size are covered, no open key outranks another and the keys are
+    `role_keys` alone, as they are when no such id covers any open key, so the election
+    runs as it would were the role unnamed."""
+    bound = frozenset(role_keys)
+    open_keys = frozenset(open_role_keys) - bound
+    if not open_keys:
+        return bound
+    placing = admitting_roles(facts, order, role_keys=bound, readings=readings)
+    for size in range(len(open_keys), 0, -1):
+        candidates = [bound | frozenset(subset) for subset in combinations(open_keys, size)]
+        covered = [
+            keys for keys in candidates if any(role_class_covers(roles, keys) for roles in placing)
+        ]
+        if covered:
+            return covered[0] if len(covered) == 1 else bound
+    return bound
+
+
+def admitting_roles(
+    facts: RoleClassFacts,
+    order: Sequence[str],
+    *,
+    role_keys: Collection[str],
+    readings: Mapping[str, AbsentReading],
+) -> set[tuple[str, ...]]:
+    """Return the role tuples of the series the ids of `order` publish for a question that
+    binds `role_keys`: those of the ids `role_keys` alone elect, every id the election
+    leaves when it ties, and those of the ids of `order` that hold the constraint map of
+    one of them under another role set, its role twins.
+
+    A key one of these tuples places is one the ids hold a series by, so it joins an
+    election as an open key (`electing_role_keys`). Asked with no role key, they are the
+    roles a dataset publishing the ids declares."""
+    class_of = facts.class_of
+    twin_of = facts.twin_of
+    reading = _elect_under(facts, order, frozenset(role_keys), readings=readings).members
+    roles = {class_of[dcid].roles for dcid in reading}
+    maps = {twin_of[dcid][0] for dcid in reading if dcid in twin_of}
+    if maps:
+        roles.update(
+            class_of[dcid].roles for dcid in order if dcid in twin_of and twin_of[dcid][0] in maps
+        )
+    return roles
+
+
 @dataclass(frozen=True)
 class RoleClassElection:
     """The role class `elect_role_class` elects and its reduction."""
 
     family: tuple[str, ...]
     """Ids of the elected class before antichain reduction, in the order given: the
-    covering ids that declare the one role set the minimal members share. Every covering
-    id when the minimal members declare several role sets."""
+    covering ids that declare the elected role set. Every covering id when the election
+    ties."""
     members: tuple[str, ...]
-    """The ids left after the constraint antichain and the role-twin collapse, in the
-    order given."""
+    """The antichain of `family` over constraint keys, in the order given. Every id the
+    constraint antichain and the role-twin collapse leave when the election ties."""
     tied: bool
-    """Whether the minimal members declare more than one role set, which the caller
-    refuses."""
+    """Whether the ids the antichain and the twin collapse leave declare role sets with no
+    one set inside all the others, which the caller refuses."""
+    role_keys: frozenset[str]
+    """The keys the election ran under: the bound ones and the open ones that joined
+    (`electing_role_keys`). An election over the same ids that binds these keys and
+    leaves none open elects the same family and members."""
 
 
 def elect_role_class(
@@ -1525,6 +1969,7 @@ def elect_role_class(
     order: Sequence[str],
     *,
     role_keys: Collection[str],
+    open_role_keys: Collection[str] = (),
     readings: Mapping[str, AbsentReading],
 ) -> RoleClassElection:
     """Elect the role class that answers `role_keys` among matched members.
@@ -1532,21 +1977,29 @@ def elect_role_class(
     `order` lists the ids that already match the five-tuple and every binding, with
     their constraint maps in `constraints_by_id` and declared roles in `roles_by_id`.
 
-    Role coverage runs first: an id whose roles do not place every key of `role_keys`
-    (`covers_role_keys`) is dropped. When no id covers them, every id stays, and the
-    caller's reproducibility check names the roles no member declares. An identity that
-    binds no role key is about its subject, the role an entity named without one takes,
-    so the subject-only ids cover it, and every id stays when none is subject-only.
+    `open_role_keys` join `role_keys` where the ids `role_keys` alone elect, or a role twin
+    of one, place them, and are set aside otherwise (`electing_role_keys`).
+    `RoleClassElection.role_keys` holds the keys the election ran under. Role coverage
+    runs first: an id whose roles do not place every key (`covers_role_keys`) is dropped.
+    When no id covers them, every id stays, and the caller's reproducibility check names
+    the roles no member declares. An identity that binds no role key is about its
+    subject, the role an entity named without one takes, so the subject-only ids cover
+    it, and every id stays when none is subject-only.
 
     The antichain over constraint keys under `readings` then keeps the least-constrained
-    ids, and role twins among them collapse to the total (`_collapse_role_twins`): of two
+    ids, and role twins among them collapse to the total (`_displaced`): of two
     ids with equal constraint maps whose role sets nest, the one declaring fewer roles
     survives. A recipient-only total displaces its by-creditor twin when only the
-    recipient is bound, and the twin alone covers a bound creditor. Ids whose constraint
-    values differ are not twins, so a by-creditor series with no total at its own values
-    survives beside the total. Members whose role sets do not nest, and members of
-    different role sets with different constraint maps, all survive, and `tied` reports
-    it."""
+    recipient is bound, and the twin alone covers a bound creditor.
+
+    Of the role sets the ids left declare, the smallest is elected when every other one
+    contains it: an id declaring a role the keys do not ask for leaves when an id with
+    fewer roles can answer. A by-creditor series with no total at its own constraint
+    values leaves for the totals at other values, and answers once the creditor is bound.
+    The family is every covering id of the elected role set and the members are the
+    antichain of the family alone, since an id of a role set the election does not read
+    dominates nothing: a total only a by-creditor series dominates stays a member. Role
+    sets none of which sits inside all the others all survive, and `tied` reports it."""
     return elect_role_class_of(
         role_class_facts(
             {dcid: constraints_by_id[dcid] for dcid in order},
@@ -1554,6 +2007,7 @@ def elect_role_class(
         ),
         order,
         role_keys=role_keys,
+        open_role_keys=open_role_keys,
         readings=readings,
     )
 
@@ -1563,11 +2017,32 @@ def elect_role_class_of(
     order: Sequence[str],
     *,
     role_keys: Collection[str],
+    open_role_keys: Collection[str] = (),
     readings: Mapping[str, AbsentReading],
 ) -> RoleClassElection:
     """`elect_role_class` over ids whose facts `role_class_facts` built, for a caller that
     elects over many subsets of one set of ids. Coverage, the antichain and the family
-    are decided once per role class, so an election reads each id a few times."""
+    are decided once per role class, so an election reads each id a few times, and an
+    election with open keys runs twice: under the bound keys, then under the keys that
+    joined."""
+    return _elect_under(
+        facts,
+        order,
+        electing_role_keys(
+            facts, order, role_keys=role_keys, open_role_keys=open_role_keys, readings=readings
+        ),
+        readings=readings,
+    )
+
+
+def _elect_under(
+    facts: RoleClassFacts,
+    order: Sequence[str],
+    role_keys: frozenset[str],
+    *,
+    readings: Mapping[str, AbsentReading],
+) -> RoleClassElection:
+    """`elect_role_class_of` under `role_keys` alone, with no open key."""
     class_of = facts.class_of
     present = {class_of[dcid] for dcid in order}
     covering = {
@@ -1594,22 +2069,35 @@ def elect_role_class_of(
         else tuple(dcid for dcid in covered if class_of[dcid] in minimal)
     )
     displaced = _displaced(facts, least_constrained)
-    members = (
+    survivors = (
         tuple(dcid for dcid in least_constrained if dcid not in displaced)
         if displaced
         else least_constrained
     )
-    member_classes = {class_of[dcid] for dcid in members} if displaced else minimal
-    role_sets = {role_class.role_set for role_class in member_classes}
-    if len(role_sets) > 1:
-        return RoleClassElection(family=covered, members=members, tied=True)
-    family_classes = {role_class for role_class in candidates if role_class.role_set in role_sets}
+    survivor_classes = {class_of[dcid] for dcid in survivors} if displaced else minimal
+    role_sets = {role_class.role_set for role_class in survivor_classes}
+    smallest = min(role_sets, key=len, default=frozenset())
+    if not all(smallest <= role_set for role_set in role_sets):
+        return RoleClassElection(family=covered, members=survivors, tied=True, role_keys=role_keys)
+    family_classes = {role_class for role_class in candidates if role_class.role_set == smallest}
     family = (
         covered
         if len(family_classes) == len(candidates)
         else tuple(dcid for dcid in covered if class_of[dcid] in family_classes)
     )
-    return RoleClassElection(family=family, members=members, tied=False)
+    if len(role_sets) <= 1:
+        return RoleClassElection(family=family, members=survivors, tied=False, role_keys=role_keys)
+    family_key_sets = {role_class.keys for role_class in family_classes}
+    family_minimal = {
+        role_class
+        for role_class in family_classes
+        if not any(
+            dominates_constraint_keys(other, role_class.keys, readings=readings)
+            for other in family_key_sets
+        )
+    }
+    members = tuple(dcid for dcid in family if class_of[dcid] in family_minimal)
+    return RoleClassElection(family=family, members=members, tied=False, role_keys=role_keys)
 
 
 def role_class_covers(declared_roles: tuple[str, ...], role_keys: Collection[str]) -> bool:
@@ -1621,7 +2109,11 @@ def role_class_covers(declared_roles: tuple[str, ...], role_keys: Collection[str
 
 
 def _elect(
-    members: Sequence[Member], *, readings: Mapping[str, AbsentReading], role_keys: frozenset[str]
+    members: Sequence[Member],
+    *,
+    readings: Mapping[str, AbsentReading],
+    role_keys: frozenset[str],
+    open_role_keys: frozenset[str] = frozenset(),
 ) -> RoleClassElection:
     """Run `elect_role_class` over confirmed members, keyed by StatVar."""
     by_dcid = {member.stat_var: member for member in members}
@@ -1630,6 +2122,7 @@ def _elect(
         {dcid: member.declared_roles for dcid, member in by_dcid.items()},
         tuple(by_dcid),
         role_keys=role_keys,
+        open_role_keys=open_role_keys,
         readings=readings,
     )
 
@@ -1650,8 +2143,10 @@ def _minimal_antichain(
     *,
     readings: Mapping[str, AbsentReading],
     role_keys: frozenset[str] = frozenset(),
+    open_role_keys: frozenset[str] = frozenset(),
 ) -> tuple[Member, ...]:
-    """Keep the members `elect_role_class` leaves minimal under `role_keys`.
+    """Keep the members `elect_role_class` leaves minimal under `role_keys` and
+    `open_role_keys`.
     A proper subset of constraint keys dominates when each added property reads
     `aggregate`, and among survivors with equal constraint maps a proper subset of
     roles displaces its superset.
@@ -1660,7 +2155,12 @@ def _minimal_antichain(
     An `unbound` slot selects the least-constrained member that covers it, while
     `set` expands across values. Equal key sets remain together because domination
     requires a proper subset. The shared reducer preserves order and keys by StatVar."""
-    return _sorted_members(members, _elect(members, readings=readings, role_keys=role_keys).members)
+    return _sorted_members(
+        members,
+        _elect(
+            members, readings=readings, role_keys=role_keys, open_role_keys=open_role_keys
+        ).members,
+    )
 
 
 def antichain_minimal_ids(
@@ -1716,6 +2216,7 @@ def _reverify_antichain(
     properties: Sequence[str],
     readings: Mapping[str, AbsentReading],
     role_keys: frozenset[str] = frozenset(),
+    open_role_keys: frozenset[str] = frozenset(),
 ) -> tuple[tuple[Member, ...], tuple[Member, ...], tuple[str, ...]]:
     """Re-read antichain winners' constraints, roles, and `typeOf`, then recompute the
     reduction when their data changes. Batch reads may drop these unfiltered arcs,
@@ -1733,7 +2234,12 @@ def _reverify_antichain(
     settled: set[str] = set()
     inconsistent: list[str] = []
     fallback_budget = _REPROBE_BUDGET
-    antichain = _minimal_antichain(tuple(by_dcid.values()), readings=readings, role_keys=role_keys)
+    antichain = _minimal_antichain(
+        tuple(by_dcid.values()),
+        readings=readings,
+        role_keys=role_keys,
+        open_role_keys=open_role_keys,
+    )
     for _ in range(len(by_dcid) + 1):
         pending = [member for member in antichain if member.stat_var not in settled]
         if not pending:
@@ -1787,7 +2293,10 @@ def _reverify_antichain(
                 by_dcid[member.stat_var] = reverified
                 settled.add(member.stat_var)
         antichain = _minimal_antichain(
-            tuple(by_dcid.values()), readings=readings, role_keys=role_keys
+            tuple(by_dcid.values()),
+            readings=readings,
+            role_keys=role_keys,
+            open_role_keys=open_role_keys,
         )
     return antichain, tuple(by_dcid.values()), tuple(inconsistent)
 

@@ -3,7 +3,7 @@
 `datasets_surface()` combines each door's router, classifier, exception types, lifespan, and
 admission checks. It builds the door tuple per call so tests can inject registry settings. The
 meta door mounts first. Static paths are disjoint from subject-id routes. Those routes accept only
-`spec_` and `col_` ids.
+`spec_` ids.
 
 Routes include `GET /api/datasets/healthz`, `/api/datasets/schema`,
 `/api/datasets/capabilities`, `/api/datasets/operations/{operation_id}`,

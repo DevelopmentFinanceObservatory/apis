@@ -1,9 +1,10 @@
 # Coverage artifact (`series_coverage`)
 
-The coverage artifact is a precomputed index of every role-bearing series (CRS financing flows and
-two World Bank debt-stock variables), one row per `(variable, facet_id, donor, recipient)`, that
-Search and Datasets both load at startup and query in memory. It replaces a graph or SDMX read on
-every role-bearing scope, facet, and headline decision.
+The coverage artifact is a precomputed index of every role-bearing series (every variable whose
+Spanner `Edge` rows declare one or two `observationProperties` roles, as `series_coverage.job`
+selects them), one row per `(variable, facet_id, donor, recipient)`, that Search and Datasets both
+load at startup and query in memory. It replaces a graph or SDMX read on every role-bearing scope,
+facet, and headline decision.
 
 ## Layout
 

@@ -9,8 +9,6 @@ from pydantic import (
     model_validator,
 )
 
-from statvar_members import POSTED_MEMBER_CAP
-
 from .base import StrictModel
 from .identity import BaseIdentity
 from .vocab import (
@@ -234,15 +232,45 @@ class ParsedPart(StrictModel):
         min_length=1,
         max_length=_PARSED_MAX_SOURCE_TEXT_CHARS,
         description=(
-            "this part's requested data source, when available; a recognised "
-            "facet axis this deployment has no binding machinery for, so it "
-            "always resolves unsupported with code facet_binding_unsupported"
+            "this part's requested data source as free text, when available; free text "
+            "never binds a source, so it always resolves unsupported with code "
+            "facet_binding_unsupported. Name a declared dataset in `provenance` instead"
+        ),
+    )
+    # A dataset dcid is a source; it shares the source text's length cap.
+    provenance: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=_PARSED_MAX_SOURCE_TEXT_CHARS,
+        description=(
+            "the dcid of the declared dataset this part answers from, when the caller "
+            "names one; the served request schema lists the declared datasets under this "
+            "field, each with its label, description and opt-in flag. A dcid that is not "
+            "declared refuses request_invalid with a pointer to this field. Absent, the "
+            "part answers from the dataset the code index elects for its identity"
         ),
     )
     operations: list[Operation] = Field(
         default_factory=list,
         max_length=_PARSED_MAX_PART_OPERATIONS,
         description=_OPERATIONS_DESCRIPTION,
+    )
+    open_roles: (
+        list[Annotated[str, Field(min_length=1, max_length=_PARSED_MAX_ROLE_TEXT_CHARS)]] | None
+    ) = Field(
+        default=None,
+        max_length=2,
+        description=(
+            "the roles this part asks for member by member, at most one word per flow "
+            "axis, e.g. ['creditor'] for 'debt service paid to each creditor'. Each is "
+            "a role_text word: creditor, donor, recipient, debtor, origin, destination, "
+            "or a synonym. Where the answer's family declares the role, the answer "
+            "holds one series per member of it and its identity states the axis in "
+            "open_roles; a role named in neither entities nor open_roles reads as the "
+            "total over that role. An unrecognised word, or a role one of this part's "
+            "entities binds through role_text, refuses request_invalid. An operation "
+            "whose over is origin or destination opens that axis too"
+        ),
     )
 
 
@@ -272,110 +300,25 @@ class ParsedInput(StrictModel):
     )
 
 
-class RemovedParts(StrictModel):
-    """Acknowledgement of every part deliberately dropped from the base, keyed
-    by the two categories a removal can ever name: facet axes and entity
-    roles. Slots carry no removal category of their own -- every slot the
-    shape declares always appears in the posted definition, at minimum as
-    unbound, so a slot's own unbound state IS its removal signal.
-    """
-
-    facets: list[str] | None = Field(
-        default=None,
-        max_length=3,
-        description="facet axis names dropped from the base, e.g. ['provenance']",
-    )
-    entities: list[str] | None = Field(
-        default=None,
-        max_length=16,
-        description=(
-            "entity role keys dropped from the base, e.g. ['origin'] "
-            "(observationAbout, origin, destination)"
-        ),
-    )
-
-
-_RESUBMIT_MAX_RESOLVED_STAT_VARS = POSTED_MEMBER_CAP
-"""Structural ceiling of 2,000 (`statvar_members.POSTED_MEMBER_CAP`, which Datasets' mint and
-options inputs share), equal to the engine's default cap on resolved.stat_vars.items.
-
-The deployment-specific limit is environment-configurable and enforced by the engine;
-engine config imports this value to keep its limit below the model ceiling.
-"""
-
-
 class ResubmitIdentityPayload(StrictModel):
-    """One edited identity, its base, and the graph-state seed to re-materialise.
+    """One identity to re-materialise.
 
     Not a request input of its own: the transport that carries it is
     `ResubmitIdentityEntry` (inside a `DatasetResubmitInput`), and this model is
-    what that entry's own identity/removed/resolved_stat_var_dcids fields
-    deserialize into before the engine resolves them. `ResubmitIdentityEntry`
-    mirrors it field for field, plus the `variable_text` echo every
-    dataset_resubmit entry needs.
+    what that entry's identity deserializes into before the engine resolves it.
 
-    `identity` is the complete edited definition. A no-op resubmit posts the
-    `Spec.definition.identity` it received byte-for-byte. `base_spec_id` and
-    `base_identity` are required: `_phase_validate` (region/resubmit_promote.py)
-    refuses `request_invalid` at `/input/base_identity` whenever `base_identity`
-    is absent, before any other check runs, so a base-less construction is not
-    actually accepted despite this model carrying no `min_length`/required
-    constraint of its own. When a base is supplied, `base_spec_id`/
-    `base_identity`/`removed` account for every bound part that differs from
-    that baseline; an omitted, unaccounted-for part refuses `edit_incomplete`.
-    Membership comes from the packaged code index whenever it elects one for
-    the posted identity; `resolved_stat_var_dcids` is read only when the
-    identity names no measure family the index can elect, or that family's
-    election is empty.
+    `identity` is the complete definition. A no-op resubmit posts the
+    `Spec.definition.identity` it received byte-for-byte. The engine derives the
+    identity's StatVar members itself: from the packaged code index when it decides
+    the identity, else from the graph walk the Datasets mint runs.
     """
 
     identity: BaseIdentity = Field(
         description=(
-            "the complete edited identity. Post a prior Spec.definition.identity "
+            "the complete identity. Post a prior Spec.definition.identity "
             "byte-for-byte for a no-op resubmit; change nested members, including "
             "entities.origin or entities.destination, to edit that definition"
         )
-    )
-    base_spec_id: str | None = Field(
-        default=None,
-        description=(
-            "the base spec this edit applies to, or the candidate spec_id being "
-            "promoted -- verified by hash against base_identity. A registry-only "
-            "lookup (base_spec_id posted with no base_identity) refuses "
-            "base_not_found: no spec registry exists yet"
-        ),
-    )
-    base_identity: BaseIdentity | None = Field(
-        default=None,
-        description=(
-            "the base's full identity, verified by hash against base_spec_id; "
-            "required alongside base_spec_id (posting one without the other "
-            "refuses request_invalid / base_not_found)"
-        ),
-    )
-    removed: RemovedParts | None = Field(
-        default=None,
-        description=(
-            "acknowledgement of every facet axis and entity role explicitly dropped "
-            "from the base, keyed by category (facets/entities). Requires "
-            "base_spec_id; each category is unordered; duplicates within a category "
-            "and a name still bound by the posted definition both refuse "
-            "request_invalid"
-        ),
-    )
-    resolved_stat_var_dcids: list[str] | None = Field(
-        default=None,
-        max_length=_RESUBMIT_MAX_RESOLVED_STAT_VARS,
-        description=(
-            "the served resolved.stat_vars.items refs. A sibling of base_identity, "
-            "not a member of it: this is graph state, never part of the identity "
-            "hash, and a hashed object should not carry a non-hashed passenger. "
-            "REQUIRED for a standard (catch-all) shape, which has no other way to "
-            "re-derive its own members. Read only when the identity names no "
-            "measure family the packaged code index can elect, or that family's "
-            "election is empty; otherwise ignored, since membership then comes "
-            "from that election"
-        ),
     )
 
 
@@ -387,10 +330,9 @@ class ResubmitIdentityPayload(StrictModel):
 
 
 class ResubmitIdentityEntry(StrictModel):
-    """One part re-resolved from a single edited identity -- the same payload
-    `ResubmitIdentityPayload` carries field for field, plus the text echo every
-    dataset_resubmit entry needs. Edits against its own base: this entry's
-    `base_spec_id`/`base_identity`/`removed` account for this part alone.
+    """One part re-resolved from a single identity -- the payload
+    `ResubmitIdentityPayload` carries, plus the text echo and operations every
+    dataset_resubmit entry needs.
     """
 
     entry_kind: Literal["identity"] = Field(
@@ -404,51 +346,10 @@ class ResubmitIdentityEntry(StrictModel):
     )
     identity: BaseIdentity = Field(
         description=(
-            "the complete edited identity. Post a prior Spec.definition.identity "
+            "the complete identity. Post a prior Spec.definition.identity "
             "byte-for-byte for a no-op resubmit; change nested members, including "
             "entities.origin or entities.destination, to edit that definition"
         )
-    )
-    base_spec_id: str | None = Field(
-        default=None,
-        description=(
-            "the base spec this edit applies to, or the candidate spec_id being "
-            "promoted -- verified by hash against base_identity. A registry-only "
-            "lookup (base_spec_id posted with no base_identity) refuses "
-            "base_not_found: no spec registry exists yet"
-        ),
-    )
-    base_identity: BaseIdentity | None = Field(
-        default=None,
-        description=(
-            "the base's full identity, verified by hash against base_spec_id; "
-            "required alongside base_spec_id (posting one without the other "
-            "refuses request_invalid / base_not_found)"
-        ),
-    )
-    removed: RemovedParts | None = Field(
-        default=None,
-        description=(
-            "acknowledgement of every facet axis and entity role explicitly dropped "
-            "from the base, keyed by category (facets/entities). Requires "
-            "base_spec_id; each category is unordered; duplicates within a category "
-            "and a name still bound by the posted definition both refuse "
-            "request_invalid"
-        ),
-    )
-    resolved_stat_var_dcids: list[str] | None = Field(
-        default=None,
-        max_length=_RESUBMIT_MAX_RESOLVED_STAT_VARS,
-        description=(
-            "the served resolved.stat_vars.items refs. A sibling of base_identity, "
-            "not a member of it: this is graph state, never part of the identity "
-            "hash, and a hashed object should not carry a non-hashed passenger. "
-            "REQUIRED for a standard (catch-all) shape, which has no other way to "
-            "re-derive its own members. Read only when the identity names no "
-            "measure family the packaged code index can elect, or that family's "
-            "election is empty; otherwise ignored, since membership then comes "
-            "from that election"
-        ),
     )
     operations: list[Operation] = Field(
         default_factory=list,
@@ -458,26 +359,10 @@ class ResubmitIdentityEntry(StrictModel):
 
 
 class ResubmitCandidate(StrictModel):
-    """One candidate identity within a `candidates` dataset_resubmit entry.
-    No per-candidate base rides along: the base for each candidate's promote
-    is synthesised fresh (`identity_edit.synthesize_base`), so the client
-    posts only the candidate's own identity and graph-state seed.
-    """
+    """One candidate identity within a `candidates` dataset_resubmit entry. The
+    engine derives its StatVar members as it does for an identity entry."""
 
     identity: BaseIdentity = Field(description="this candidate's complete identity")
-    resolved_stat_var_dcids: list[str] | None = Field(
-        default=None,
-        max_length=_RESUBMIT_MAX_RESOLVED_STAT_VARS,
-        description=(
-            "this candidate's own served resolved.stat_vars.items refs. A sibling "
-            "of identity, not a member of it, for the same reason "
-            "ResubmitIdentityEntry.resolved_stat_var_dcids is: graph state never "
-            "joins the identity hash. REQUIRED for a standard (catch-all) shape. "
-            "Read only when the identity names no measure family the packaged "
-            "code index can elect, or that family's election is empty; otherwise "
-            "ignored, since membership then comes from that election"
-        ),
-    )
 
 
 _RESUBMIT_MAX_CANDIDATES = 50
@@ -665,22 +550,6 @@ ResolveInput = Annotated[
 class ResolveOptions(StrictModel):
     """Optional resolution parameters the caller may supply."""
 
-    max_candidates: int | None = Field(
-        default=None,
-        ge=2,
-        description="requested maximum candidates; clamped to the server ceiling",
-    )
-    include_sentence: bool | None = Field(
-        default=None,
-        description=(
-            "when true (the default -- true/absent both mean on; set false to "
-            "opt out), the engine returns a human-readable string in "
-            "rendered_sentence: the confirmation sentence (heading and byline) for "
-            "definite, the readings and what sets them apart for candidates, or a "
-            "heading naming what was checked for no_data; the text of a part's "
-            "departures closes the sentence that carries that part"
-        ),
-    )
     include_option_coverage: bool | None = Field(
         default=None,
         description=(
@@ -693,7 +562,9 @@ class ResolveOptions(StrictModel):
             "via trailing slot_options/entity_options events emitted after the "
             "response event, and the response event's own Spec.resolved.slot_options / "
             "entity_options stay coverage=null; on the buffered JSON body, coverage "
-            "is embedded directly in the returned Spec."
+            "is embedded directly in the returned Spec. Spec.resolved.facet_options is "
+            "computed whether or not this is set; over SSE with this set, it arrives "
+            "in trailing facet_options events instead of the response event."
         ),
     )
     include_observations: bool | None = Field(

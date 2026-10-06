@@ -51,6 +51,7 @@ def _make_scope(cache: ResponseCache | None, *, deadline: float | None = None) -
         max_candidates=_MAX_CANDIDATES,
         seam_default=_SEAM_DEFAULT,
         coverage=empty_coverage_snapshot(),
+        trailing=False,
     )
 
 

@@ -138,7 +138,6 @@ def _run_buffered():
             resolver=make_resolver(_graph()),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_FixedBindLLM(),
-            base_steps=[],
             base_timing={},
             unit_text="EUR",
             coverage=empty_coverage_snapshot(),
@@ -166,7 +165,6 @@ def _run_streamed(*, rate_cache: RateTableCache | None):
                 resolver=make_resolver(_graph()),
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 llm=_FixedBindLLM(),
-                base_steps=[],
                 base_timing={},
                 unit_text="EUR",
                 coverage=empty_coverage_snapshot(),
@@ -216,7 +214,7 @@ def test_converting_request_still_cites_dates_and_covers_the_converting_stat_var
     assert _PROVENANCE in cited_dcids
 
     # The selected facet also supplies the StatVar's 2022 date range.
-    sv = next(item for item in spec.resolved.stat_vars.items if item.ref == _SV)
+    sv = next(item for item in spec.resolved.members if item.ref.dcid == _SV)
     assert sv.data_date_range is not None
     assert sv.data_date_range.start == "2022"
     assert sv.data_date_range.end == "2022"

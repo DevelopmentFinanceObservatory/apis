@@ -192,7 +192,6 @@ def _run(monkeypatch, llm=None):
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations=_OBS, availability={}),
             llm=llm if llm is not None else _BindAllFourSharedAxesLLM(),
-            base_steps=[],
             base_timing={},
             coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
         )
@@ -255,17 +254,16 @@ def test_search_member_digest_agrees_with_enumerate_members_for_a_crs_family(mon
 def test_stat_vars_lists_the_confirmed_subset_while_the_digest_names_the_whole_binding(
     monkeypatch,
 ):
-    """`resolved.stat_vars` is complete over the members confirmed at the place, so
-    `truncated` stays false although the binding is wider. The population a mint's
+    """`resolved.stat_vars` counts the members confirmed at the place, although the
+    binding is wider. The population a mint's
     `trace.family_member_digest` states is `resolved.shape`'s, which `member_digest`
     hashes, members without observations included (C75, C75a).
     """
     result = _run(monkeypatch)
     resolved = result.specs[0].resolved
 
-    assert [item.ref for item in resolved.stat_vars.items] == [_EXTRA_SV]
+    assert [item.ref.dcid for item in resolved.members] == [_EXTRA_SV]
     assert resolved.stat_vars.member_count == 1
-    assert resolved.stat_vars.truncated is False
 
     assert resolved.shape.member_count == 2
     assert resolved.shape.member_digest == _independent_digest_via_enumerate_members()

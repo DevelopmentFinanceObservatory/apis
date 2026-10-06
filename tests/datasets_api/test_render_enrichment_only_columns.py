@@ -1,5 +1,7 @@
 """A `columns` list that names only enrichment fields keeps every default column, decoded ones
 included, and adds the enrichments. A list that mixes a table column with an enrichment selects.
+In long output the decoded columns come with `stat_var`, and under a pivot they are selected
+like any other column.
 
 The frame carries a decoded `stat_var_crsPurpose` column and one place column, `observationAbout`.
 The whole-table path (`_reshape`) and the streamed bare-pivot path (`_stream_bare_pivot`) agree.
@@ -120,10 +122,19 @@ def test_an_enrichment_only_list_keeps_every_default_column_on_the_whole_table()
     assert [row[-1] for row in result.table.rows] == ["Country", "Country"]
 
 
-def test_a_mixed_list_selects_the_table_column_and_adds_the_enrichment_on_the_whole_table():
-    result = _whole([*_COLUMNS, "observationAbout_type"])
+@pytest.mark.parametrize(
+    "columns",
+    [
+        pytest.param([*_COLUMNS, "observationAbout_type"], id="names-no-decoded-column"),
+        pytest.param([*_DEFAULTS, "observationAbout_type"], id="names-the-decoded-column"),
+    ],
+)
+def test_a_mixed_list_keeps_the_decoded_column_and_adds_the_enrichment_on_the_whole_table(
+    columns,
+):
+    result = _whole(columns)
 
-    assert result.table.columns == (*_COLUMNS, "observationAbout_type")
+    assert result.table.columns == (*_DEFAULTS, "observationAbout_type")
 
 
 def test_an_enrichment_only_list_keeps_the_decoded_column_a_streamed_pivot_names():

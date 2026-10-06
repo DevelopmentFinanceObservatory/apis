@@ -183,8 +183,8 @@ def roll_up_levels(
 def contributing_dcids(table: TableLike) -> frozenset[str]:
     """Return distinct StatVars with rows, before `stat_var` collapses.
 
-    Only members with rows contribute. The count drives collection refusal and
-    the `stat_vars_summed` warning for full collapses.
+    Only members with rows contribute. The count drives the `stat_vars_summed`
+    warning for full collapses.
     """
     if _STAT_VAR_COLUMN not in table.columns:
         return frozenset()

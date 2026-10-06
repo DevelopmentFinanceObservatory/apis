@@ -1,6 +1,7 @@
 """Resolve pre-parsed inputs with per-part variable, entity, time, unit, and source data.
 
-Parsed inputs bypass extraction.
+Parsed inputs bypass extraction. A part names the declared dataset it answers from in the
+typed `provenance` field.
 """
 
 from __future__ import annotations
@@ -25,14 +26,11 @@ from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.conjoin import assemble_region
-from search.engine.dataset_mention import apply_readings, read_mentions
-from search.engine.deadline import _await_bounded
-from search.engine.departures import WarningKey, dataset_not_applied, warning_key
 from search.engine.enrichment import _stream_slot_options
 from search.engine.entity_text import ENTITY_LIKE_PHRASING, detect_entity_like_phrasing
 from search.engine.entry.multi import _stream_combined_regions
 from search.engine.entry.params import EntryParams
-from search.engine.envelope import _sum_usage, make_pipeline_step, now_ms
+from search.engine.envelope import _terminal_events, now_ms
 from search.engine.errors import EngineInputError
 from search.engine.events import (
     DoneEvent,
@@ -43,14 +41,18 @@ from search.engine.events import (
     ResponseEvent,
 )
 from search.engine.extract import DateRequest, ExtractedDate, dates_to_request
-from search.engine.fanout import _FanOutResult, _resolve_entities_bounded, _run_variables_streaming
+from search.engine.fanout import (
+    _FanOutResult,
+    _resolve_entities_bounded,
+    _run_variables_streaming,
+    answered_provenance,
+)
 from search.engine.interpret import PinnedResolved
 from search.engine.options.population_memo import OptionsPopulationMemo
-from search.engine.qualifier_match import CodedQualifier
-from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.region.refs import confirm_dcids_present
-from search.engine.region.result import RegionResult, with_departure_facts
+from search.engine.region.result import RegionResult
+from search.engine.response_cache_flow import CacheScope
 from search.engine.retrieval.read_plan import current_year
 from search.engine.role_text import (
     ROLE_TEXT_NOT_RECOGNISED,
@@ -58,8 +60,7 @@ from search.engine.role_text import (
     role_axis_for_text,
 )
 from search.engine.time_bind import parse_time_text, time_window_defaulted_warning
-from search.heading.departure_fact import DepartureFact
-from search.models import Operation, ParsedInput, ParsedPart, QueryEcho, Warning
+from search.models import Operation, ParsedInput, ParsedPart, QueryEcho, RoleAxis, Warning
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,39 @@ def _entity_roles_for_part(part: ParsedPart) -> dict[str, list[DoorRole]]:
     return roles
 
 
+def _open_axes_for_part(part: ParsedPart, *, pointer_prefix: str) -> frozenset[RoleAxis]:
+    """Map the part's open role words to flow axes, as `role_text` maps an entity's.
+
+    An unrecognised word, or an axis an entity of the part binds through its `role_text`,
+    raises `request_invalid` at the word's pointer. An axis a role-text-less entity comes to
+    bind is settled at place binding, where the bound role wins (`PlaceRoles.open_axes`).
+    """
+    bound = {role_axis_for_text(entity.role_text) for entity in part.entities or ()}
+    axes: set[RoleAxis] = set()
+    for j, word in enumerate(part.open_roles or ()):
+        axis = role_axis_for_text(word)
+        if axis is None:
+            detail = (
+                f"open_roles word {word!r} names no recognised role; use a role_text word "
+                "such as creditor, donor, recipient, debtor, origin or destination"
+            )
+        elif axis in bound:
+            detail = (
+                f"open_roles word {word!r} asks for every {axis} member, but an entity of "
+                "this part binds that role through role_text"
+            )
+        else:
+            axes.add(axis)
+            continue
+        raise EngineInputError(
+            detail,
+            code="request_invalid",
+            pointer=f"{pointer_prefix}/open_roles/{j}",
+            detail=detail,
+        )
+    return frozenset(axes)
+
+
 def _entity_text_warning(part: ParsedPart) -> Warning | None:
     """Warn when entity-like text appears without a structured entities list.
 
@@ -165,69 +199,8 @@ def _per_part_warnings(
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
-class _PartMentions:
-    """What reading the parts' dataset mentions came to, per part in posted order."""
-
-    qualifiers: list[tuple[CodedQualifier, ...]] | None
-    warnings: list[list[Warning]]
-    departure_facts: list[dict[WarningKey, DepartureFact]]
-    usage: dict | None
-
-
-async def _read_part_mentions(variable_texts: list[str], *, llm: SupportsLLM) -> _PartMentions:
-    """Read the dataset mentions the parts' variable texts hold, as raw-text extraction
-    reads a query's, and return each part's mention sidecar, warnings and departures with
-    the token usage of the reading call.
-
-    `dataset_mention.read_mentions` reads each mention and `apply_readings` decides what
-    took effect, with the variables held as posted: a part is what the caller sent, so a
-    reading binds where every part keeps its text, and one that would add, rename or
-    remove a part is reported. Each reading that took no effect warns
-    `query_qualifier_dropped` on the part its mention stands in, beside a
-    `measure_not_applied` departure the source token clears (`dataset_not_applied`). With
-    no mention no model is asked, the sidecar is `None` and so is the usage.
-    """
-    index = get_index()
-    warnings: list[list[Warning]] = [[] for _ in variable_texts]
-    departure_facts: list[dict[WarningKey, DepartureFact]] = [{} for _ in variable_texts]
-    result = await read_mentions(
-        "; ".join(variable_texts),
-        variable_texts,
-        (),
-        index=index,
-        llm=llm,
-    )
-    if not result.readings:
-        return _PartMentions(None, warnings, departure_facts, result.usage)
-    applied = apply_readings(
-        variable_texts,
-        result.readings,
-        index=index,
-        fixed_variables=True,
-    )
-    sidecar: list[tuple[CodedQualifier, ...]] = [
-        (CodedQualifier(phrase=applied.phrases[position], spans=(), matches=()),)
-        if position in applied.phrases
-        else ()
-        for position in range(len(variable_texts))
-    ]
-    for read in applied.reported:
-        if (position := read.gated.variable) is None:
-            continue
-        warning = Warning(
-            code=QUERY_QUALIFIER_DROPPED,
-            severity="degraded",
-            message=f'The requested qualifier "{read.mention.text}" was not applied.',
-        )
-        warnings[position].append(warning)
-        departure_facts[position][warning_key(warning)] = dataset_not_applied(read.mention.text)
-    return _PartMentions(sidecar, warnings, departure_facts, result.usage)
-
-
-@dataclasses.dataclass(frozen=True, slots=True)
 class PartsInterpretation:
-    """What a fan-out leg is handed for each posted part, in posted order, with the token
-    usage of the request's one mention-reading call."""
+    """What a fan-out leg is handed for each posted part, in posted order."""
 
     variable_texts: list[str]
     entities: list[list[str]]
@@ -237,42 +210,46 @@ class PartsInterpretation:
     entity_roles: list[dict[str, list[DoorRole]]]
     unit_texts: list[str | None]
     source_texts: list[str | None]
+    provenances: list[str | None]
     operations: list[tuple[Operation, ...]]
-    qualifiers: list[tuple[CodedQualifier, ...]] | None
+    open_axes: list[frozenset[RoleAxis]]
     warnings: list[list[Warning]]
-    departure_facts: list[dict[WarningKey, DepartureFact]]
     restatements: list[ParsedPart | None]
-    mention_usage: dict | None
 
     def interpreted(self, region: RegionResult, position: int) -> RegionResult:
         """`region`, the fan-out leg of part `position`, carrying that part's warnings
-        after its own, the departures they disclose, and its restatement."""
+        after its own, and its restatement naming the dataset the leg's identity binds or
+        its no-data run settled on (`fanout.answered_provenance`)."""
         restatement = self.restatements[position]
+        if restatement is not None:
+            restatement = restatement.model_copy(
+                update={"provenance": answered_provenance(region, restatement.provenance)}
+            )
         return dataclasses.replace(
-            with_departure_facts(region, self.departure_facts[position]),
+            region,
             warnings=tuple(region.warnings) + tuple(self.warnings[position]),
             restatement=restatement,
             parsed_form=restatement,
         )
 
 
-async def interpret_parts(
-    parts: list[ParsedPart], *, llm: SupportsLLM, deadline: float
+def interpret_parts(
+    parts: list[ParsedPart], *, pointer_prefixes: Sequence[str]
 ) -> PartsInterpretation:
     """Interpret posted parts for the parsed door and for `dataset_resubmit`'s parsed
-    entries, so identical parts read the same mentions, carry the same warnings and
-    count the same token usage on either door.
+    entries, so identical parts carry the same inputs and warnings on either door.
 
     Only absent time text gets `time_window_defaulted`; unrecognised text gets the
-    parser's own warning. The mention reading is bounded by `deadline`.
+    parser's own warning. An open role word `_open_axes_for_part` refuses points into its
+    part's entry of `pointer_prefixes`.
     """
+    open_axes = [
+        _open_axes_for_part(p, pointer_prefix=prefix)
+        for p, prefix in zip(parts, pointer_prefixes, strict=True)
+    ]
     variable_texts = [p.variable_text.strip() for p in parts]
     dates_and_warnings = [_time_for_part(p) for p in parts]
     role_queries_and_warnings = [_role_query_for_part(p) for p in parts]
-    warnings = _per_part_warnings(parts, dates_and_warnings, role_queries_and_warnings)
-    mentions = await _await_bounded(_read_part_mentions(variable_texts, llm=llm), deadline=deadline)
-    for part_warnings, part_mention_warnings in zip(warnings, mentions.warnings, strict=True):
-        part_warnings.extend(part_mention_warnings)
     return PartsInterpretation(
         variable_texts=variable_texts,
         entities=[[e.text for e in (p.entities or [])] for p in parts],
@@ -282,15 +259,14 @@ async def interpret_parts(
         entity_roles=[_entity_roles_for_part(p) for p in parts],
         unit_texts=[p.unit_text for p in parts],
         source_texts=[p.source_text for p in parts],
+        provenances=[p.provenance for p in parts],
         operations=[tuple(p.operations) for p in parts],
-        qualifiers=mentions.qualifiers,
-        warnings=warnings,
-        departure_facts=mentions.departure_facts,
+        open_axes=open_axes,
+        warnings=_per_part_warnings(parts, dates_and_warnings, role_queries_and_warnings),
         restatements=[
             _part_restatement(p, variable_text=v)
             for p, v in zip(parts, variable_texts, strict=True)
         ],
-        mention_usage=mentions.usage,
     )
 
 
@@ -307,7 +283,9 @@ def _part_restatement(part: ParsedPart, *, variable_text: str) -> ParsedPart | N
             time_text=part.time_text,
             unit_text=part.unit_text,
             source_text=part.source_text,
+            provenance=part.provenance,
             operations=part.operations,
+            open_roles=part.open_roles,
         )
     except ValidationError:
         return None
@@ -317,7 +295,7 @@ def _dedupe_parts_with_indices(parts: list[ParsedPart]) -> list[tuple[int, Parse
     """Deduplicate identical parts in first-seen order, keeping each posted index.
 
     Equality includes variable text, entities with role text and dcid pins, time,
-    unit, source, and operations. Parts sharing only variable text remain distinct. Original
+    unit, source, dataset, operations, and open roles. Parts sharing only variable text remain distinct. Original
     indices keep refusal pointers aligned with the client's posted `/input/parts/{i}`.
     """
     seen: dict[tuple, tuple[int, ParsedPart]] = {}
@@ -328,10 +306,30 @@ def _dedupe_parts_with_indices(parts: list[ParsedPart]) -> list[tuple[int, Parse
             part.time_text,
             part.unit_text,
             part.source_text,
+            part.provenance,
             tuple((o.verb, o.phrase, o.over, o.target_year) for o in part.operations),
+            tuple(part.open_roles or ()),
         )
         seen.setdefault(key, (i, part))
     return list(seen.values())
+
+
+def confirm_part_datasets(parts: list[ParsedPart], *, pointer_prefixes: Sequence[str]) -> None:
+    """Refuse `request_invalid` when a part's `provenance` is not a declared dataset.
+
+    The refusal points at the posted field. The declared datasets are the code index's, the
+    list the served request schema publishes.
+    """
+    declared = get_index().datasets
+    for prefix, part in zip(pointer_prefixes, parts, strict=True):
+        if part.provenance is not None and part.provenance not in declared:
+            detail = (
+                f"provenance {part.provenance!r} is not a declared dataset; the request schema "
+                "lists the declared datasets"
+            )
+            raise EngineInputError(
+                detail, code="request_invalid", pointer=f"{prefix}/provenance", detail=detail
+            )
 
 
 async def confirm_part_pins(
@@ -465,17 +463,30 @@ async def handle(
     rate_cache: RateTableCache | None = None,
     population_memo: OptionsPopulationMemo | None = None,
     place_options_pool: PlaceOptionsPool | None = None,
+    scope: CacheScope | None = None,
 ) -> AsyncIterator[Event]:
+    """Answer a parsed request, from `scope`'s layer 2 when it holds the same input.
+
+    A fresh run reports its health to `scope` so the caller stores only a complete
+    answer. Direct callers may omit `scope`."""
+    if scope is not None:
+        cached = await scope.lookup_parsed_input(inp)
+        if cached is not None:
+            for ev in _terminal_events(cached, start_ms=start_ms, timed_out=scope.served_timed_out):
+                yield ev
+            return
+
     parts_with_indices = _dedupe_parts_with_indices(inp.parts)
     original_indices = [i for i, _ in parts_with_indices]
     parts = [p for _, p in parts_with_indices]
 
-    # Confirm pins before fan-out, preserving original indices for refusal pointers.
-    pins = await confirm_part_pins(
-        parts, graph=graph, pointer_prefixes=[f"/input/parts/{i}" for i in original_indices]
-    )
+    # Confirm datasets and pins before fan-out, preserving original indices for refusal
+    # pointers.
+    pointer_prefixes = [f"/input/parts/{i}" for i in original_indices]
+    confirm_part_datasets(parts, pointer_prefixes=pointer_prefixes)
+    pins = await confirm_part_pins(parts, graph=graph, pointer_prefixes=pointer_prefixes)
 
-    interpretation = await interpret_parts(parts, llm=llm, deadline=params.deadline)
+    interpretation = interpret_parts(parts, pointer_prefixes=pointer_prefixes)
     variable_texts = interpretation.variable_texts
     all_dates = [d for dates in interpretation.dates for d in dates]
 
@@ -492,8 +503,6 @@ async def handle(
         dates=all_dates,
         expected_results=len(variable_texts),
     )
-
-    extract_step = make_pipeline_step("extract", ran=False)
 
     if len(variable_texts) == 1:
         out = _FanOutResult()
@@ -513,7 +522,6 @@ async def handle(
             rate_cache=rate_cache,
             population_memo=population_memo,
             place_options_pool=place_options_pool,
-            base_steps=[extract_step],
             base_timing={},
             pre_resolved=pins[0] or None,
             deadline=params.deadline,
@@ -528,20 +536,22 @@ async def handle(
             per_variable_entity_roles=interpretation.entity_roles,
             per_variable_unit_texts=interpretation.unit_texts,
             per_variable_source_texts=interpretation.source_texts,
+            per_variable_provenances=interpretation.provenances,
             per_variable_operations=interpretation.operations,
-            per_variable_qualifiers=interpretation.qualifiers,
+            per_variable_open_axes=interpretation.open_axes,
             coverage=params.coverage,
         ):
             yield ev
         region = interpretation.interpreted(out.regions[0], 0)
-        total_usage = _sum_usage(interpretation.mention_usage, region.llm_usage)
+        if scope is not None:
+            scope.note_health(timed_out=out.timed_out, degraded_leg=out.degraded_leg)
+        total_usage = region.llm_usage
         response = assemble_region(
             region,
             query="",
             extra_warnings=[],
             start_ms=start_ms,
             engine_build=build_commit(),
-            include_sentence=params.include_sentence,
             max_candidates=params.max_candidates,
             include_observations=params.include_observations,
             include_skills=params.include_skills,
@@ -594,7 +604,6 @@ async def handle(
         rate_cache=rate_cache,
         population_memo=population_memo,
         place_options_pool=place_options_pool,
-        base_steps=[extract_step],
         base_timing={},
         pre_resolved=None,
         deadline=params.deadline,
@@ -611,9 +620,10 @@ async def handle(
         per_variable_entity_roles=interpretation.entity_roles,
         per_variable_unit_texts=interpretation.unit_texts,
         per_variable_source_texts=interpretation.source_texts,
+        per_variable_provenances=interpretation.provenances,
         per_variable_pre_resolved=per_variable_pre_resolved,
         per_variable_operations=interpretation.operations,
-        per_variable_qualifiers=interpretation.qualifiers,
+        per_variable_open_axes=interpretation.open_axes,
         coverage=params.coverage,
     ):
         yield ev
@@ -623,14 +633,16 @@ async def handle(
     async with aclosing(
         _stream_combined_regions(
             regions,
-            initial_llm_usage=interpretation.mention_usage,
+            initial_llm_usage=None,
             query="",
             extra_warnings=[],
             echo=echo,
             timed_out=out.timed_out,
+            degraded_leg=out.degraded_leg,
             graph=graph,
             start_ms=start_ms,
             params=params,
+            scope=scope,
         )
     ) as events:
         async for event in events:

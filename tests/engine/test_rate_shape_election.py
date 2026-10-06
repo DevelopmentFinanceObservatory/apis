@@ -165,7 +165,6 @@ def _run(
             graph=graph,
             resolver=make_resolver(graph),
             llm=llm,
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
@@ -365,7 +364,7 @@ def test_hiv_incidence_retains_raw_menu_and_elects_pinned_sdg_shape() -> None:
 
     assert response.status == "definite"
     assert llm.bind_calls == 1
-    assert [stat_var.ref for stat_var in response.parts[0].spec.resolved.stat_vars.items] == [
+    assert [stat_var.ref.dcid for stat_var in response.parts[0].spec.resolved.members] == [
         "sdg/SH_HIV_INCD"
     ]
 
@@ -376,9 +375,7 @@ def test_recorded_measles_menu_retains_raw_count_and_reports_no_observations() -
     assert response.status == "no_data"
     part = response.parts[0]
     assert part.no_data.reason == "no_observations"
-    assert [ref.dcid for ref in part.no_data.elected_stat_vars or []] == [
-        "Count_MedicalConditionIncident_ConditionMeasles"
-    ]
+    assert part.no_data.elected_count == 1
 
 
 def test_recorded_hiv_prevalence_menu_refuses_the_sdg_incidence_shape() -> None:
@@ -399,9 +396,7 @@ def test_recorded_female_urban_menu_retains_joint_slice_carrier() -> None:
     part = response.parts[0]
     assert part.no_data.reason == "no_matching_slice"
     assert part.no_data.gate == "no_member_asserts_bound_properties"
-    assert [ref.dcid for ref in part.no_data.elected_stat_vars or []] == [
-        "Count_Person_Literate_Female"
-    ]
+    assert part.no_data.elected_count == 1
 
 
 def test_joint_slice_deferral_keeps_data_bearing_alternate_when_raw_is_unavailable() -> None:
@@ -498,7 +493,6 @@ def test_joint_slice_deferral_keeps_data_bearing_alternate_when_raw_is_unavailab
             graph=graph,
             resolver=make_resolver(graph),
             llm=_FullyBoundRawLLM(),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
@@ -510,7 +504,7 @@ def test_joint_slice_deferral_keeps_data_bearing_alternate_when_raw_is_unavailab
     assert result.status == "no_data"
     assert result.gate == "only_alternate_has_data"
     assert result.alternate_match is not None
-    assert [stat_var.ref for stat_var in result.alternate_match.resolved.stat_vars.items] == [
+    assert [stat_var.ref.dcid for stat_var in result.alternate_match.resolved.members] == [
         data_bearing_neighbor
     ]
 
@@ -604,7 +598,7 @@ def test_rate_filter_never_transfers_a_cross_member_raw_binding_combination() ->
     assert len(llm.prompts) == 1
     assert "female count" not in llm.prompts[0]
     assert "literate count" not in llm.prompts[0]
-    assert [stat_var.ref for stat_var in result.spec.resolved.stat_vars.items] == [rate_literate]
+    assert [stat_var.ref.dcid for stat_var in result.spec.resolved.members] == [rate_literate]
     assert "gender" not in _slots_by_property(result)
 
 
@@ -831,6 +825,4 @@ def test_replays_female_literacy_fixture_electing_the_normalized_rate() -> None:
     part = response.parts[0]
     assert part.no_data.reason == "qualifier_not_bound"
     assert [q.text for q in part.no_data.unbound_qualifiers] == ["female"]
-    assert [ref.dcid for ref in part.no_data.elected_stat_vars or []] == [
-        "Count_Person_10OrMoreYears_Literate_AsAFractionOf_Count_Person_10OrMoreYears"
-    ]
+    assert part.no_data.elected_count == 1

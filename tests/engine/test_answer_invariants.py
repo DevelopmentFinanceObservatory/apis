@@ -204,7 +204,7 @@ def statements(answer: Answer) -> tuple[Stated, ...]:
 
 
 def _stat_vars(spec: Spec) -> tuple[str, ...]:
-    return tuple(sv.ref for sv in spec.resolved.stat_vars.items)
+    return tuple(sv.ref.dcid for sv in spec.resolved.members)
 
 
 def _read_statements(spec: Spec) -> Stated:
@@ -255,11 +255,11 @@ def _read_statements(spec: Spec) -> Stated:
         headline_year=resolved.headline.year if resolved.headline else None,
         date_ranges=tuple(
             (
-                sv.ref,
+                sv.ref.dcid,
                 sv.data_date_range.start if sv.data_date_range else None,
                 sv.data_date_range.end if sv.data_date_range else None,
             )
-            for sv in resolved.stat_vars.items
+            for sv in resolved.members
         ),
         preview=series,
         preview_omitted=(
@@ -426,8 +426,16 @@ def _pin(cell: Cell) -> tuple[str, str] | None:
 
 
 def doors(cell: Cell) -> Doors:
+    """The cell's answers. A world whose member walk fails opens the first door alone: a
+    resubmit elects its members by that walk, so each of its doors fails retryably
+    (`test_membership_authority`)."""
     world = _world(cell.route, cell.row_set, cell.kind)
     first = _first_door(world, cell.order, cell.date, cell.preview, cell.unit)
+    if not world.walk_settles:
+        opened_first = (first,) if cell.pin == "none" else ()
+        return Doors(
+            cell=cell, world=world, first=first, opened=opened_first, again=(), windowed=None
+        )
     pin = _pin(cell)
     windowed = None
     if not first.specs:
@@ -918,7 +926,7 @@ def _datasets_read(
     (`materialise.materialise_preview`). For an identity with no facet binding the request
     equals the one a mint makes (`_mint_request`)."""
     identity = spec.definition.identity.model_dump(mode="json", exclude_none=True)
-    stat_var = spec.resolved.stat_vars.items[0].ref
+    stat_var = spec.resolved.members[0].ref.dcid
     key = (world, stat_var, json.dumps(identity, sort_keys=True))
     if key not in _READS:
         measured_property, purpose = world.stat_vars[stat_var]
@@ -1335,8 +1343,9 @@ _BULK_READ = "sdmx.role_series"
 def measured(answer: Answer) -> dict[str, Any]:
     """What I9 keeps of one answer: its outcome, the series, points and omission each Spec's
     preview serves, its requests by client method and its serial depth, the requests and
-    depth of its nearest-real relaxations' member walks, and the requests of its alternates'
-    and re-election siblings' member walks."""
+    depth of its nearest-real relaxations' member walks, the requests of its alternates'
+    and re-election siblings' member walks, and the requests and depth of its Specs'
+    facet-option builds."""
     served = []
     for spec in answer.specs:
         observations = spec.resolved.observations
@@ -1349,6 +1358,7 @@ def measured(answer: Answer) -> dict[str, Any]:
     reason = answer.result.no_data_reason if answer.result is not None else None
     walk = answer.recorder.relaxation_walk()
     alternate_walk = answer.recorder.alternate_walk()
+    facet_options = answer.recorder.facet_options()
     return {
         "outcome": [_status(answer), reason, answer.refusal, answer.error],
         "served": served,
@@ -1356,6 +1366,7 @@ def measured(answer: Answer) -> dict[str, Any]:
         "depth": answer.recorder.depth(),
         **({"relaxation_walk": walk} if walk is not None else {}),
         **({"alternate_walk": alternate_walk} if alternate_walk is not None else {}),
+        **({"facet_options": facet_options} if facet_options is not None else {}),
     }
 
 
@@ -1384,15 +1395,20 @@ def _beyond(
 ) -> Iterator[str]:
     """Each way `now` requests more or runs deeper than `limit`, past the reads of the
     member walks its nearest-real relaxations, alternates and re-election siblings ran
-    beyond those `limit` records, the serial steps by which its deepest relaxation walk
-    exceeds `limit`'s (`measured`), and the reads `granted` adds. The walks of alternates
-    and siblings run beside the elected shape's, so they earn no serial step."""
+    beyond those `limit` records, the reads of its facet-option builds beyond those
+    `limit` records, the serial steps by which its deepest relaxation walk and its deepest
+    facet-option build exceed `limit`'s (`measured`), and the reads `granted` adds. The
+    walks of alternates and siblings run beside the elected shape's, so they earn no serial
+    step."""
     none = {"requests": {}, "depth": 0}
     walk, held = now.get("relaxation_walk", none), limit.get("relaxation_walk", none)
+    facets = now.get("facet_options", none)
+    held_facets = limit.get("facet_options", none)
     extra = Counter(walk["requests"]) - Counter(held["requests"])
     extra += Counter(now.get("alternate_walk", none)["requests"]) - Counter(
         limit.get("alternate_walk", none)["requests"]
     )
+    extra += Counter(facets["requests"]) - Counter(held_facets["requests"])
     allowed = Counter(limit["requests"]) + extra + Counter(granted or {})
     over = {
         request: f"{count} against {allowed[request]}"
@@ -1402,10 +1418,11 @@ def _beyond(
     if over:
         yield f"makes more requests than {source}: {over}"
     deeper = max(0, walk["depth"] - held["depth"])
-    if now["depth"] > limit["depth"] + deeper:
+    built = max(0, facets["depth"] - held_facets["depth"])
+    if now["depth"] > limit["depth"] + deeper + built:
         yield (
-            f"runs {now['depth']} serial steps against {limit['depth']} {source} and "
-            f"{deeper} for its relaxations' walks"
+            f"runs {now['depth']} serial steps against {limit['depth']} {source}, "
+            f"{deeper} for its relaxations' walks and {built} for its facet options"
         )
 
 
@@ -1467,6 +1484,7 @@ def _preview_bound(cell: Cell, answer: Answer, now: dict[str, Any], off: dict[st
                 for request in {*off["requests"], *reads["requests"]}
             },
             "depth": off["depth"] + reads["depth"],
+            **({"facet_options": off["facet_options"]} if "facet_options" in off else {}),
         }
         found = "; ".join(_beyond(now, limit, "with the preview off and its preview's reads"))
         if not found:
@@ -1520,6 +1538,10 @@ def i9_latency(run: Doors) -> list[str]:
     A door whose alternates or re-election siblings walk their members may exceed its bound
     by those walks' reads, and by no serial step: the walks start beside the elected
     shape's (`phase_place_materialise._start_alternate_walks`).
+
+    A door may exceed its bound by the reads its Specs' facet options make
+    (`option_coverage._maybe_build_facet_options`), built for every Spec whose coverage is
+    not streamed, and by the serial steps of its deepest build.
 
     A first or windowed door answering that its window holds no point makes no request
     once its ground phase begins, beyond its unit decision's reads
@@ -1625,13 +1647,13 @@ def i10_election_warnings(run: Doors) -> list[str]:
     query's. A resubmit posts the member and any default. When the mint's member walk
     settles, the resubmit holds the walked family and elects again among it, so it warns
     `family_total_absent` where the first answer of the query its Spec answers does: the
-    relaxed query's for a nearest-real suggestion. When the walk fails, the posted member
-    answers alone, which is no election, and no resubmit warns it. The world declares no slot default, so no door
+    relaxed query's for a nearest-real suggestion. When the walk fails, no resubmit
+    answers (`doors`). The world declares no slot default, so no door
     warns `slot_defaulted`. The comparisons between doors leave these warnings out
     (`outcome`), and this check states where each belongs.
 
-    Every door with a result warns `membership_unverified` in a world whose walk fails, and
-    none does in a world whose walk settles."""
+    The first door warns `membership_unverified` in a world whose walk fails, and no door
+    does in a world whose walk settles."""
     cell = run.cell
     first_answers = [(FIRST, run.world, run.first)] if cell.pin == "none" else []
     relaxed_world = (
@@ -1650,9 +1672,7 @@ def i10_election_warnings(run: Doors) -> list[str]:
     for door, answer in run.answers():
         if door == FIRST:
             continue
-        expected = (
-            _expected_family_warnings(resubmit_world, answer) if run.world.walk_settles else []
-        )
+        expected = _expected_family_warnings(resubmit_world, answer)
         actual = _election_warnings(answer, "family_total_absent")
         if actual != expected:
             found.append(f"{door} warns family_total_absent {actual} where it elects {expected}")
@@ -1793,6 +1813,7 @@ def recorded_engine(monkeypatch, search_settings, door_loop) -> Callable[[str], 
     fixture_world.log_phases(monkeypatch)
     fixture_world.log_relaxation_walks(monkeypatch)
     fixture_world.log_alternate_walks(monkeypatch)
+    fixture_world.log_facet_options(monkeypatch)
     fixture_world.emit_bind_stage_sentence(monkeypatch)
     return lambda route: search_settings(obs_preview_max_pairs=1 if route.endswith("bulk") else 120)
 

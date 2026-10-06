@@ -49,8 +49,8 @@ class MemberPopulation:
     """Population measured behind a resolve's ``sv_dcids``.
 
     ``admitted`` counts members allowed by bindings before observation probes.
-    The standard path uses filtered ``member_facts``; role paths use
-    ``surviving_svs`` after bound-value checks. No-probe standard paths count
+    The standard path uses filtered ``member_facts``; role paths use the members
+    that pass the bound-value checks, before the role-class election. No-probe standard paths count
     only members that explicitly assert every bound property. ``admitted_dcids``
     lists the counted members in source order; digest callers sort them.
 
@@ -142,6 +142,9 @@ class Materialised:
     also_defaulted_axis: RoleAxis | None = None
     # Open origin members from the destination confirmation's coverage index.
     open_origin_dcids: frozenset[str] | None = None
+    # Role path: the flow axes the request left open that the elected members declare,
+    # which the minted identity states as its open roles. Empty when none was asked.
+    open_axes: frozenset[RoleAxis] = frozenset()
     # Source facts for this resolve's members, before observation confirmation.
     # None on Materialised values constructed outside a resolver.
     member_facts: dict[str, MemberFacts] | None = None
@@ -263,6 +266,7 @@ def materialise(
     place_dcids: list[str] | None = None,
     default_presence: DefaultPresence | None = None,
     discover_scope: bool = False,
+    open_axes: frozenset[RoleAxis] = frozenset(),
     coverage: CoverageSnapshot,
 ) -> Materialised | NoDataDraft | MaterialisedCandidates | UnsupportedDraft:
     """Resolve a shape through the standard or role-bearing path.
@@ -275,6 +279,7 @@ def materialise(
     destination, or an unbound origin on an origin-only shape, is discovered
     only when ``discover_scope`` is true. A bound origin with no destination
     remains ``role_not_resolved``.
+    ``open_axes`` are the role path's open flow axes (`graph_confirm_resolve`).
 
     Returns a materialised result, surviving candidates, an unsupported-scope
     refusal, or a named no-data outcome. ``coverage`` is the request's snapshot
@@ -307,6 +312,7 @@ def materialise(
                 date_request=date_request,
                 deadline=deadline,
                 discover_scope=discover_scope,
+                open_axes=open_axes,
                 coverage_snapshot=coverage,
             )
         except RoleEntityUnplaced:

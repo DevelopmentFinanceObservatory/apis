@@ -1,7 +1,6 @@
 """Resolve an options request into a server-derived target for `surface.py`. Runs no
 resubmit pipeline and no materialise pipeline: the door never re-resolves a
-Spec, so it needs no client-posted `resolved_stat_var_dcids` seed and runs
-no survivor election. Owns the identity-to-target derivation, the
+Spec, so it runs no survivor election. Owns the identity-to-target derivation, the
 anchor-ref presence check (invalid_role_ref), and the role-target check
 (option_target_invalid). Does not compute an option surface itself (that is
 surface.py's job, over the ResolvedOptionsTarget this module returns).
@@ -25,12 +24,12 @@ itself, since this door builds no `ShapeDraft` to hand that function.
 
 - **The StatVar population**: `options.population.options_population`, the
   server-side derivation seam -- either the packaged code index's full
-  population for a shape it carries (CRS today), or a deterministic graph
-  enumeration (`statvar_members.enumerate_members`, SDG-shaped asks). See
-  that module's own docstring for the two-source split and its refusals
-  (`population_empty`, `scope_too_broad`, `role_signature_incompatible`),
-  which propagate uncaught from here. `options_population` reads its own
-  `graph` parameter through `statvar_members.MemberArcReader`, which is
+  population for a shape it carries (CRS today), or the mint's graph walk
+  through the shared enumerator (`statvar_members.shared_enumerator`,
+  SDG-shaped asks). See that module's own docstring for the two-source split
+  and its refusals (`population_empty`, `scope_too_broad`,
+  `role_signature_incompatible`), which propagate uncaught from here.
+  `options_population` reads its own `graph` parameter as a
   `materialise.GraphReader` (`node_subjects`/`node_arcs_many`) -- NOT
   Search's own `EngineGraphClient`, which does not implement that
   Protocol (see `MemberArcReader`'s own module docstring) -- so this module
@@ -257,7 +256,7 @@ def resolve_options_target(
     Args:
         population_memo: optional per-surface population memo; `None` derives
             directly without caching.
-        deadline: bounds a memo follower's wait; unused without a memo.
+        deadline: bounds the population's graph walk and a memo follower's wait.
         join_inflight: when false, an occupied memo key raises
             `PopulationInFlight` instead of waiting; unused without a memo.
 
@@ -320,7 +319,7 @@ def resolve_options_target(
             identity, materialise_graph, deadline=deadline, join_inflight=join_inflight
         )
         if population_memo is not None
-        else options_population(identity, materialise_graph)
+        else options_population(identity, materialise_graph, deadline=deadline)
     )
     role_names_by_axis = _declared_axis_roles(population)
     _check_entity_role_admission(identity, role_names_by_axis)

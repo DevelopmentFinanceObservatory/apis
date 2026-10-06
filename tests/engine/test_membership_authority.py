@@ -1,48 +1,58 @@
 """Search's membership resolution states how an answer's members were decided.
 
-For an identity the code index does not decide, the mint's walk, seeded with the recalled or
-posted members, settles the members (`MembershipAuthority.AUTHORITATIVE` or `PROVEN`), and
-its family replaces any members that differ from it, whatever their roles. A walk that does
-not run (`SAMPLED`) or settles nothing (`FAILED`) leaves the recalled or posted members to
-answer, under a `membership_unverified` warning the response cache will not store.
+For an identity the code index does not decide, the mint's walk, seeded on a first answer
+with the recalled members, settles the members (`MembershipAuthority.AUTHORITATIVE` or
+`PROVEN`), and its family replaces any members that differ from it, whatever their roles. On
+a first answer, a walk that does not run (`SAMPLED`) or settles nothing (`FAILED`) leaves the
+recalled members to answer, under a `membership_unverified` warning the response cache will
+not store. A resubmit has no recalled members: a walk past its bound or a failed read fails
+the request retryably, and a family past the ceiling answers `scope_too_broad`.
 """
 
 from __future__ import annotations
 
 import asyncio
 import dataclasses
+import time
+from types import SimpleNamespace
+from typing import cast
 
 import pytest
+from fastapi.testclient import TestClient
 
 from code_index.shared import get_index
 from datasets_api.adapter import resolve_definition_members
 from dc_graph import GraphDeadlineExceededError, GraphReadError
-from search.engine.region import resolve_spec_resubmit, resolve_variable
+from search.engine.degraded_reads import recording_degraded_reads
+from search.engine.errors import GraphInfraError
+from search.engine.region import promote_reread, resolve_spec_resubmit, resolve_variable
 from search.engine.region.codes import MEMBERSHIP_UNVERIFIED
 from search.engine.region.grounding import carrier_flag_warnings
 from search.engine.region.place_context import empty_place_context
 from search.engine.region.place_roles import PlaceRoles
+from search.engine.region.promote_state import _PromoteState
 from search.engine.region.state import EngineOptions, served_stat_vars
 from search.engine.response_cache_keys import is_storable
 from search.engine.retrieval.bound_values import (
     MembershipAuthority,
+    ResubmitWalk,
     RoleClassWalks,
     elected_role_class_shape,
-    posted_members_outside_role_class,
     shape_query,
 )
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft
-from search.models import BaseIdentity, ResubmitIdentityPayload
+from search.models import BaseIdentity, IdentityEntityGroup, ResubmitIdentityPayload
 from series_coverage.shared import CoverageSnapshot
-from spec_registry.identity import recompute_identity
-from statvar_members import MemberEnumerator, five_tuple_from_identity
+from statvar_members import Member, MemberEnumerator, MemberGroup, five_tuple_from_identity
 from tests.datasets_api._graph_doubles import FakeMintGraphReader, _FakeSubjectPage
+from tests.datasets_api._member_bounds import mint_bounds
 from tests.engine._builders import bound_place_context, materialise_alternates, subject_place_roles
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, member_walk_reader, offline_resolve
+from tests.engine._search_app import search_app
 from tests.engine.test_place_scope_default import (
     _DETECT_QUERY,
     _EARTH_CHILDREN,
@@ -65,11 +75,10 @@ from tests.engine.test_role_class_shapes import (
     _debt_shape,
     _node,
     _one_role_coverage,
-    _posted,
     _walk_arcs,
     _walk_reader,
 )
-from tests.fixtures import FakeGraph, make_resolver
+from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 
 _KENYA = {"Kenya": [DoorRole(axis="destination", span="Kenya")]}
 
@@ -148,7 +157,6 @@ def _run(recalled: list[str], *, member_graph: FakeMintGraphReader | None):
             graph=graph,
             resolver=make_resolver(graph),
             llm=_BindLLM(),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
@@ -159,21 +167,15 @@ def _run(recalled: list[str], *, member_graph: FakeMintGraphReader | None):
     )
 
 
-def _resubmit(identity: BaseIdentity, posted: list[str], *, member_graph: FakeMintGraphReader):
+def _resubmit(identity: BaseIdentity, *, member_graph: FakeMintGraphReader):
     graph = FakeGraph(
         nodes={**_PLACES, **_DEBT_NODES},
         detect={},
         resolve={"Kenya": "country/KEN"},
         obs={f"{dcid}|country/KEN": _OBS for dcid in _DEBT_NODES},
     )
-    document = identity.model_dump(mode="json", exclude_none=True)
     return resolve_spec_resubmit(
-        inp=ResubmitIdentityPayload(
-            identity=identity,
-            base_spec_id=recompute_identity(document).spec_id,
-            base_identity=identity,
-            resolved_stat_var_dcids=posted,
-        ),
+        inp=ResubmitIdentityPayload(identity=identity),
         graph=graph,
         sdmx=FakeSdmxClient(
             observations={}, availability={}, scope_availability=graph.scope_availability
@@ -183,15 +185,15 @@ def _resubmit(identity: BaseIdentity, posted: list[str], *, member_graph: FakeMi
     )
 
 
-def _minted_members(identity: dict, *, seed: list[str] | None = None) -> list[str]:
+def _minted_members(identity: dict) -> list[str]:
     graph = _walk_reader(_DEBT_NODES)
     resolved = resolve_definition_members(
         identity,
         spec_id="spec_membership",
         graph=graph,
-        enumerator=MemberEnumerator(graph=graph),
+        enumerator=MemberEnumerator(),
         code_index=get_index(),
-        seed=seed,
+        bounds=mint_bounds(),
     )
     return [shape.stat_var.removeprefix("dcid:") for shape in resolved.shapes]
 
@@ -251,7 +253,7 @@ def test_the_answer_and_its_emitted_identity_mint_the_same_members():
         slot for slot in spec.definition.identity.slots if slot.property == "guarantee"
     )
     assert guarantee.binding.state == "unbound"
-    answered = [sv.ref for sv in spec.resolved.stat_vars.items]
+    answered = [sv.ref.dcid for sv in spec.resolved.members]
     assert answered == _minted_members(
         spec.definition.identity.model_dump(mode="json", exclude_none=True)
     )
@@ -266,17 +268,19 @@ def test_the_answer_and_its_emitted_identity_mint_the_same_members():
 
 @pytest.mark.parametrize("walk", list(_UNSETTLED_WALKS))
 def test_an_unsettled_walk_leaves_the_sample_and_says_so(walk):
+    """A walk that fails a read or runs past its bound settles nothing and marks the
+    request's walks degraded; one that truncates without proof settles nothing, cleanly."""
     shape = _debt_shape(_BY_CREDITOR, _BY_CREDITOR_GUARANTEED)
+    walks = RoleClassWalks(_UNSETTLED_WALKS[walk]())
 
-    resolution = elected_role_class_shape(
-        shape,
-        shape_query(shape, [], ["destination"]),
-        walks=RoleClassWalks(_UNSETTLED_WALKS[walk]()),
-        arcs_graph=_arcs_graph(),
-    )
+    with recording_degraded_reads() as lost:
+        resolution = elected_role_class_shape(
+            shape, shape_query(shape, [], ["destination"]), walks=walks, arcs_graph=_arcs_graph()
+        )
 
     assert resolution.authority is MembershipAuthority.FAILED
     assert resolution.value is shape
+    assert lost.degraded is (walk != "incomplete_enumeration")
 
 
 def test_a_shape_with_no_walk_is_answered_from_its_sample():
@@ -291,15 +295,19 @@ def test_a_shape_with_no_walk_is_answered_from_its_sample():
 def test_a_failed_read_of_the_walked_familys_arcs_leaves_the_sample():
     shape = _debt_shape(_BY_CREDITOR, _BY_CREDITOR_GUARANTEED)
 
-    resolution = elected_role_class_shape(
-        shape,
-        shape_query(shape, [], ["destination"]),
-        walks=RoleClassWalks(_walk_reader(_DEBT_NODES)),
-        arcs_graph=FakeGraph(nodes={}, obs={}, detect={}, resolve={}, raise_on_call=True),
-    )
+    walks = RoleClassWalks(_walk_reader(_DEBT_NODES))
+
+    with recording_degraded_reads() as lost:
+        resolution = elected_role_class_shape(
+            shape,
+            shape_query(shape, [], ["destination"]),
+            walks=walks,
+            arcs_graph=FakeGraph(nodes={}, obs={}, detect={}, resolve={}, raise_on_call=True),
+        )
 
     assert resolution.authority is MembershipAuthority.FAILED
     assert resolution.value is shape
+    assert lost.degraded
 
 
 @pytest.mark.parametrize("walk", list(_UNSETTLED_WALKS))
@@ -309,6 +317,7 @@ def test_an_answer_whose_walk_settles_nothing_warns_and_is_not_cached(walk):
     result = _run([_TOTAL, _TOTAL_GUARANTEED], member_graph=_UNSETTLED_WALKS[walk]())
 
     assert result.status == "definite"
+    assert result.degraded is (walk != "incomplete_enumeration")
     (warning,) = [w for w in result.warnings if w.code == MEMBERSHIP_UNVERIFIED]
     base = offline_resolve(
         make_request("total population India"), materialise_graph=member_walk_reader()
@@ -335,84 +344,285 @@ def test_an_answer_whose_walk_settles_its_members_does_not_warn():
 
 
 # ---------------------------------------------------------------------------
-# A posted set
+# A resubmit
 # ---------------------------------------------------------------------------
 
 
-def test_a_posted_set_checked_by_a_settled_walk_is_authoritative():
-    query = shape_query(_debt_shape(), [], ["destination"])
-
-    resolution = posted_members_outside_role_class(
-        _posted(_TOTAL), query, walks=RoleClassWalks(_walk_reader(_DEBT_NODES))
-    )
-
-    assert (resolution.value, resolution.authority) == ((), MembershipAuthority.AUTHORITATIVE)
-
-
-@pytest.mark.parametrize("walk", list(_UNSETTLED_WALKS))
-def test_a_posted_set_whose_walk_settles_nothing_is_checked_among_itself(walk):
-    query = shape_query(_debt_shape(), [], ["destination"])
-
-    resolution = posted_members_outside_role_class(
-        _posted(_TOTAL, _BY_CREDITOR), query, walks=RoleClassWalks(_UNSETTLED_WALKS[walk]())
-    )
-
-    assert (resolution.value, resolution.authority) == (
-        (_BY_CREDITOR,),
-        MembershipAuthority.FAILED,
-    )
-
-
-def test_a_posted_set_with_no_walk_is_sampled():
-    query = shape_query(_debt_shape(), [], ["destination"])
-
-    resolution = posted_members_outside_role_class(_posted(_TOTAL), query)
-
-    assert (resolution.value, resolution.authority) == ((), MembershipAuthority.SAMPLED)
-
-
-def test_posted_members_that_declare_no_flow_role_are_checked_by_the_walk():
-    shape = _subject_only_shape(_POPULATION_FEMALE)
-    reader = member_walk_reader(_population_graph())
-
-    resolution = posted_members_outside_role_class(
-        dict(shape.sv_arc_facts or {}), shape_query(shape, [], []), walks=RoleClassWalks(reader)
-    )
-
-    assert (resolution.value, resolution.authority) == ((), MembershipAuthority.AUTHORITATIVE)
-    assert reader.calls["node_subjects"] == 1
-
-
-@pytest.mark.parametrize("walk", list(_UNSETTLED_WALKS))
-def test_a_resubmit_whose_walk_settles_nothing_warns(walk):
+@pytest.mark.parametrize(
+    ("walk", "failure"),
+    [("timeout", TimeoutError), ("graph_failure", GraphInfraError)],
+)
+def test_a_resubmit_whose_walk_fails_fails_retryably(walk, failure):
+    """A resubmit holds no recalled member to answer from, so a walk that runs past its
+    bound fails the request with a timeout (504) and one whose read fails with an
+    upstream error (503), never a silent no-data part."""
     identity = _run([_TOTAL], member_graph=_walk_reader(_DEBT_NODES)).specs[0].definition.identity
 
-    settled = _resubmit(identity, [_TOTAL], member_graph=_walk_reader(_DEBT_NODES))
-    unsettled = _resubmit(identity, [_TOTAL], member_graph=_UNSETTLED_WALKS[walk]())
+    with pytest.raises(failure):
+        _resubmit(identity, member_graph=_UNSETTLED_WALKS[walk]())
 
-    assert settled.status == unsettled.status == "definite"
+
+def test_a_resubmit_whose_family_is_past_the_ceiling_answers_scope_too_broad():
+    """A filtered set the full read cannot finish under the subject ceiling is a family the
+    mint refuses as too broad; the part says so, pointing at the identity."""
+    identity = _run([_TOTAL], member_graph=_walk_reader(_DEBT_NODES)).specs[0].definition.identity
+
+    result = _resubmit(identity, member_graph=_TruncatedWalkReader())
+
+    assert result.status == "unsupported"
+    assert result.unsupported is not None
+    assert (result.unsupported.code, result.unsupported.pointer) == (
+        "scope_too_broad",
+        "/definition/identity",
+    )
+    assert result.unsupported.definition["identity"] == identity.core_document(mode="json")
+
+
+class _WithholdingWalkReader(FakeMintGraphReader):
+    """A walk reader over the debt members whose forward reads never return `withheld`'s
+    arcs, so the walk cannot dismiss it."""
+
+    def __init__(self, withheld: str) -> None:
+        super().__init__(arcs={dcid: _walk_arcs(node) for dcid, node in _DEBT_NODES.items()})
+        self._withheld = withheld
+
+    def node_arcs_many(self, dcids, *, properties, individual_probe_budget=None, deadline=None):
+        arcs = super().node_arcs_many(
+            dcids,
+            properties=properties,
+            individual_probe_budget=individual_probe_budget,
+            deadline=deadline,
+        )
+        return {dcid: None if dcid == self._withheld else value for dcid, value in arcs.items()}
+
+
+def test_a_resubmit_whose_walk_leaves_a_candidate_undismissed_refuses_as_the_mint_does():
+    """The mint refuses a walk that leaves a candidate undismissed `member_not_resolvable`,
+    so the resubmit answers `variable_not_resolved`, not a settled `no_matching_slice`."""
+    identity = _run([_TOTAL], member_graph=_walk_reader(_DEBT_NODES)).specs[0].definition.identity
+
+    result = _resubmit(identity, member_graph=_WithholdingWalkReader(_BY_CREDITOR))
+
+    assert (result.status, result.no_data_reason) == ("no_data", "variable_not_resolved")
+
+
+def test_a_resubmit_whose_walk_settles_does_not_warn():
+    identity = _run([_TOTAL], member_graph=_walk_reader(_DEBT_NODES)).specs[0].definition.identity
+
+    settled = _resubmit(identity, member_graph=_walk_reader(_DEBT_NODES))
+
+    assert settled.status == "definite"
+    assert not settled.degraded
     assert MEMBERSHIP_UNVERIFIED not in _codes(settled)
-    assert MEMBERSHIP_UNVERIFIED in _codes(unsettled)
 
 
-def test_a_resubmit_posting_the_guaranteed_part_answers_the_total_the_mint_serves():
-    """The identity leaves the guarantee open and the resubmit posts the guaranteed part. The
-    mint seeds its walk with the part and serves the total, so the answer lists the total."""
+@pytest.mark.parametrize(
+    ("walk", "status", "code"),
+    [("timeout", 504, "timeout"), ("graph_failure", 503, "service_unavailable")],
+)
+def test_a_resubmit_whose_walk_fails_answers_a_retryable_problem(walk, status, code):
+    """Over HTTP, the walk's failure reaches the client as a retryable problem, never as a
+    no-data part a cache could keep."""
+    identity = _run([_TOTAL], member_graph=_walk_reader(_DEBT_NODES)).specs[0].definition.identity
+    graph = FakeGraph(nodes={**_PLACES, **_DEBT_NODES}, detect={}, resolve={})
+    client = TestClient(
+        search_app(
+            graph=graph,
+            resolver=make_resolver(graph),
+            llm=FakeLLM(),
+            sdmx=FakeSdmxClient(observations={}, availability={}),
+            materialise_graph=_UNSETTLED_WALKS[walk](),
+        ),
+        raise_server_exceptions=False,
+    )
+
+    resp = client.post(
+        "/api/search/resolve",
+        json={
+            "input": {
+                "kind": "dataset_resubmit",
+                "entries": [
+                    {
+                        "entry_kind": "identity",
+                        "variable_text": "external debt stocks",
+                        "identity": identity.model_dump(mode="json"),
+                    }
+                ],
+            }
+        },
+    )
+
+    body = resp.json()
+    assert (resp.status_code, body["code"], body["retryable"]) == (status, code, True)
+
+
+class _FullReadEnumerator:
+    """Records each walk's arguments and answers with a family its full read settled."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    def enumerate(self, **kwargs) -> MemberGroup:
+        self.calls.append(kwargs)
+        member = Member(stat_var=_TOTAL, constraints={}, declared_roles=("debtor",))
+        return MemberGroup(
+            five_tuple=kwargs["five_tuple"],
+            members=(member,),
+            family=(_TOTAL,),
+            candidates_considered=1,
+            candidate_cap=kwargs["subject_ceiling"],
+            truncated=False,
+            proven_complete=True,
+            root_confirmed=True,
+            full_read=True,
+        )
+
+
+def test_a_resubmit_walk_reads_unseeded_under_the_ceiling_and_its_full_read_deadline():
+    """A resubmit's walk takes no seed, reads its first page under the request deadline and
+    its full read under the full-read deadline, and the family it settles carries that
+    later bound for every read after it."""
+    enumerator = _FullReadEnumerator()
+    walks = RoleClassWalks(
+        _walk_reader(_DEBT_NODES),
+        enumerator=cast(MemberEnumerator, enumerator),
+        resubmit=ResubmitWalk(subject_ceiling=20_000, full_read_deadline=1_090.0),
+    )
+
+    resolution = walks.family(
+        shape_query(_debt_shape(), [], ["destination"]), (_BY_CREDITOR,), deadline=1_045.0
+    )
+
+    (call,) = enumerator.calls
+    assert (call["extra_candidates"], call["subject_ceiling"]) == ((), 20_000)
+    assert (call["deadline"], call["full_read_deadline"]) == (1_045.0, 1_090.0)
+    assert resolution.value is not None
+    assert resolution.value.bound == 1_090.0
+
+
+def test_a_resubmit_whose_walk_ran_the_full_read_moves_its_deadline_to_the_full_read_bound():
+    """The phases after the election share the bound the full read ran to, so grounding and
+    observations are not cut off at the request deadline the full read passed."""
+    identity = _run([_TOTAL], member_graph=_walk_reader(_DEBT_NODES)).specs[0].definition.identity
+    walks = RoleClassWalks(
+        _walk_reader(_DEBT_NODES),
+        enumerator=cast(MemberEnumerator, _FullReadEnumerator()),
+        resubmit=ResubmitWalk(subject_ceiling=20_000, full_read_deadline=1_090.0),
+    )
+    state = SimpleNamespace(
+        inp=ResubmitIdentityPayload(identity=identity),
+        deadline=1_045.0,
+        role_class_walks=walks,
+        variable_text="external debt stocks",
+    )
+
+    elected = promote_reread._elected_members(cast(_PromoteState, state))
+
+    assert elected == [_TOTAL]
+    assert state.deadline == 1_090.0
+
+
+@pytest.mark.parametrize("full_read", [False, True], ids=["first_page", "full_read"])
+def test_a_resubmits_region_reads_to_the_bound_its_walk_ran_to(
+    monkeypatch: pytest.MonkeyPatch, full_read: bool
+):
+    """The region states the bound its reads ran to, which the trailing stream takes: the
+    full-read bound after a full read, else the request deadline."""
+    identity = _run([_TOTAL], member_graph=_walk_reader(_DEBT_NODES)).specs[0].definition.identity
+    enumerator = _FullReadEnumerator() if full_read else MemberEnumerator()
+    monkeypatch.setattr(
+        "search.engine.retrieval.bound_values.shared_enumerator", lambda: enumerator
+    )
+    graph = FakeGraph(
+        nodes={**_PLACES, **_DEBT_NODES},
+        detect={},
+        resolve={"Kenya": "country/KEN"},
+        obs={f"{dcid}|country/KEN": _OBS for dcid in _DEBT_NODES},
+    )
+    deadline = time.monotonic() + 30
+
+    region = resolve_spec_resubmit(
+        inp=ResubmitIdentityPayload(identity=identity),
+        graph=graph,
+        sdmx=FakeSdmxClient(
+            observations={}, availability={}, scope_availability=graph.scope_availability
+        ),
+        coverage=_debt_coverage(),
+        options=EngineOptions(materialise_graph=_walk_reader(_DEBT_NODES), deadline=deadline),
+        full_read_deadline=deadline + 45,
+    )
+
+    assert region.status == "definite"
+    assert region.reads_deadline == (deadline + 45 if full_read else deadline)
+
+
+def test_a_resubmits_walk_is_named_by_the_posted_identitys_spec_id(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The walk's log line names the spec id of the identity the resubmit posts, so a slow
+    walk ties to its request."""
+    spec = _run([_TOTAL], member_graph=_walk_reader(_DEBT_NODES)).specs[0]
+    enumerator = _FullReadEnumerator()
+    monkeypatch.setattr(
+        "search.engine.retrieval.bound_values.shared_enumerator", lambda: enumerator
+    )
+
+    _resubmit(spec.definition.identity, member_graph=_walk_reader(_DEBT_NODES))
+
+    assert [call["spec_id"] for call in enumerator.calls] == [spec.spec_id]
+
+
+def test_a_resubmit_dropping_a_group_for_a_failed_read_is_degraded():
+    """A named group whose members read fails drops, and the answer says it stands on less
+    than it read (`RegionResult.degraded`), so no cache keeps it."""
+    identity = _run([_TOTAL], member_graph=_walk_reader(_DEBT_NODES)).specs[0].definition.identity
+    grouped = identity.model_copy(
+        update={
+            "entity_groups": {"destination": IdentityEntityGroup(dcid="africa", label="Africa")}
+        }
+    )
+
+    class _GroupReadFails(FakeGraph):
+        def node_subjects_many(self, *args, **kwargs):
+            raise GraphInfraError("members read failed")
+
+    graph = _GroupReadFails(
+        nodes={**_PLACES, **_DEBT_NODES},
+        detect={},
+        resolve={"Kenya": "country/KEN"},
+        obs={f"{dcid}|country/KEN": _OBS for dcid in _DEBT_NODES},
+    )
+    region = resolve_spec_resubmit(
+        inp=ResubmitIdentityPayload(identity=grouped),
+        graph=graph,
+        sdmx=FakeSdmxClient(
+            observations={}, availability={}, scope_availability=graph.scope_availability
+        ),
+        coverage=_debt_coverage(),
+        options=EngineOptions(materialise_graph=_walk_reader(_DEBT_NODES)),
+    )
+
+    assert region.status == "definite"
+    assert region.degraded
+    assert region.specs[0].definition.identity.entity_groups is None
+
+
+def test_a_resubmit_leaving_the_guarantee_open_answers_the_total_the_mint_serves():
+    """The identity leaves the guarantee open. The first answer recalled the guaranteed part
+    alone; the resubmit's walk, as the mint's, serves the total."""
     identity = (
         _run([_TOTAL_GUARANTEED], member_graph=_walk_reader(_DEBT_NODES))
         .specs[0]
         .definition.identity
     )
 
-    result = _resubmit(identity, [_TOTAL_GUARANTEED], member_graph=_walk_reader(_DEBT_NODES))
+    result = _resubmit(identity, member_graph=_walk_reader(_DEBT_NODES))
 
     assert result.status == "definite"
     (spec,) = result.specs
     assert spec.definition.identity == identity
-    answered = [sv.ref for sv in spec.resolved.stat_vars.items]
-    assert answered == _minted_members(
-        identity.model_dump(mode="json", exclude_none=True), seed=[_TOTAL_GUARANTEED]
-    )
+    answered = [sv.ref.dcid for sv in spec.resolved.members]
+    assert answered == _minted_members(identity.model_dump(mode="json", exclude_none=True))
     assert answered == [_TOTAL]
     assert MEMBERSHIP_UNVERIFIED not in _codes(result)
 
@@ -502,7 +712,7 @@ def test_a_subject_only_answer_whose_walk_settles_nothing_answers_its_recall_and
     )
 
     assert result.status == "definite"
-    assert [sv.ref for sv in result.specs[0].resolved.stat_vars.items] == [_POPULATION_FEMALE]
+    assert [sv.ref.dcid for sv in result.specs[0].resolved.members] == [_POPULATION_FEMALE]
     assert MEMBERSHIP_UNVERIFIED in _codes(result)
 
 

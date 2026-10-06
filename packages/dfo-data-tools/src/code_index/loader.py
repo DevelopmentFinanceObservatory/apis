@@ -103,7 +103,9 @@ def _parse_stamp(payload: Mapping) -> IndexStamp:
 
 
 def _parse_declared_default(payload: Mapping | None) -> DeclaredDefault | None:
-    """Parses a default block, requiring non-empty lowercase `when_named` terms.
+    """Parses a default block, requiring non-empty lowercase `when_named` terms, a boolean
+    `when_open` and a non-empty `note`, and a note on a default that fires on an open slot.
+    `when_open` and `note` read as false and none where absent.
 
     Matching casefolds terms and checks whole words."""
     if payload is None:
@@ -115,10 +117,22 @@ def _parse_declared_default(payload: Mapping | None) -> DeclaredDefault | None:
             f"declared default when_named entry {when_named[invalid]!r} must be a "
             "non-empty lowercase string"
         )
+    when_open = payload.get("when_open", False)
+    note = payload.get("note")
+    if not isinstance(when_open, bool):
+        raise IndexFormatError(f"declared default when_open {when_open!r} is not a boolean")
+    if note is not None and (not isinstance(note, str) or not note.strip()):
+        raise IndexFormatError(f"declared default note {note!r} is not a non-empty string")
+    if when_open and note is None:
+        raise IndexFormatError(
+            f"declared default {payload['code']!r} fires on an open slot and carries no note"
+        )
     return DeclaredDefault(
         code=payload["code"],
         when_bound_under=tuple(payload["when_bound_under"]),
         when_named=when_named,
+        when_open=when_open,
+        note=note,
     )
 
 
@@ -139,7 +153,7 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
     """Parses `datasets` rows, failing closed on a row missing a field, an
     `absent_observation` value outside `{"zero", "unknown"}`, an `opt_in`
     that is not a boolean, a `rank` that is not an integer, an empty `label`,
-    or a `provenance` or `rank` repeated across rows. Each raises
+    an empty `description`, or a `provenance` or `rank` repeated across rows. Each raises
     `IndexFormatError` naming the offending row (or the repeated value)."""
     datasets: list[DatasetDeclaration] = []
     seen: set[str] = set()
@@ -149,7 +163,7 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
             dataset = DatasetDeclaration(
                 provenance=row["provenance"],
                 label=row["label"],
-                synonyms=tuple(row["synonyms"]),
+                description=row["description"],
                 opt_in=row["opt_in"],
                 absent_observation=row["absent_observation"],
                 rank=row["rank"],
@@ -175,6 +189,10 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
             )
         if not dataset.label:
             raise IndexFormatError(f"datasets row for {dataset.provenance!r} carries no label")
+        if not dataset.description:
+            raise IndexFormatError(
+                f"datasets row for {dataset.provenance!r} carries no description"
+            )
         if dataset.provenance in seen:
             raise IndexFormatError(
                 f"provenance {dataset.provenance!r} is declared more than once in datasets"

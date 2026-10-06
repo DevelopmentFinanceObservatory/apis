@@ -16,6 +16,7 @@ from spec_registry.reader import LiveSpecReader
 from statvar_members import UNRESOLVED_NODE, MemberEnumerator, slot_bindings_from_identity
 
 from ._graph_doubles import FakeMintGraphReader
+from ._member_bounds import mint_bounds
 from .conftest import FakeDatasetStore
 
 _SPEC_ID = "spec_test"
@@ -26,8 +27,9 @@ def _resolve(identity: dict, *, graph: FakeMintGraphReader):
         identity,
         spec_id=_SPEC_ID,
         graph=graph,
-        enumerator=MemberEnumerator(graph=graph),
+        enumerator=MemberEnumerator(),
         code_index=get_index(),
+        bounds=mint_bounds(),
     ).shapes
 
 
@@ -313,8 +315,9 @@ def test_registry_storage_keeps_an_unbound_slot_through_the_round_trip():
         stored.identity,
         spec_id=spec_id,
         graph=male_female_graph,
-        enumerator=MemberEnumerator(graph=male_female_graph),
+        enumerator=MemberEnumerator(),
         code_index=get_index(),
+        bounds=mint_bounds(),
     ).shapes
     assert sorted(shape.stat_var for shape in stored_shapes) == [
         "dcid:Count_Person_Female",

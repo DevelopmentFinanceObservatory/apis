@@ -23,7 +23,6 @@ _MARKER = object()
 def _params() -> EntryParams:
     return EntryParams(
         deadline=time.monotonic() + 30,
-        include_sentence=True,
         max_candidates=5,
         pac=True,
         stream_option_coverage=False,

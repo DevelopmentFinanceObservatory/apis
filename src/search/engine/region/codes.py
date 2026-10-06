@@ -126,9 +126,10 @@ OBSERVATIONS_BULK_FETCH_FAILED = "observations_bulk_fetch_failed"
 # The selected coverage-ranked facet misses some places. Series ship for
 # covered places. The warning reports delivered and total place counts.
 OBSERVATIONS_SCOPE_PARTIAL = "observations_scope_partial"
-# More confirmed series exist than fit SEARCH_ROLE_BULK_SERIES_MAX, so only the
-# top-ranked series by latest value ship. Every omitted pair has data.
-# OBSERVATIONS_SCOPE_PARTIAL means some places lack coverage.
+# More confirmed series exist than fit SEARCH_ROLE_BULK_SERIES_MAX, so only some ship:
+# the most recent and largest when the whole read fits SEARCH_ROLE_BULK_RANK_MAX_ROWS
+# (params.order "ranked"), else a fixed selection (params.order "fixed"). Every omitted
+# pair has data. OBSERVATIONS_SCOPE_PARTIAL means some places lack coverage.
 OBSERVATIONS_SERIES_TRUNCATED = "observations_series_truncated"
 # The bulk facet merge yielded no dispatchable facet without an active filter.
 # This includes candidates with no facet id. OBSERVATIONS_NO_MATCHING_SOURCE

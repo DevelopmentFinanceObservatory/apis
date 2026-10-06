@@ -6,7 +6,6 @@ from __future__ import annotations
 import json
 
 import pytest
-from dfo_spec_kit import identity as spec_identity
 from fastapi.testclient import TestClient
 
 import search.engine.region.promote_reread as promote_reread_module
@@ -33,7 +32,6 @@ from search.models import (
     IdentityBindingValue,
     IdentitySlot,
     IdentityWindowAll,
-    PipelineStep,
     ResubmitIdentityPayload,
     Slot,
     SlotKey,
@@ -48,6 +46,7 @@ from tests.engine._fake_coverage import (
     patch_coverage,
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import member_walk_reader
 from tests.engine._search_app import search_app
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 
@@ -96,17 +95,15 @@ def test_apply_slot_expansions_leaves_a_property_less_slot_untouched():
     assert result is slot
 
 
-def test_apply_declaration_version_stamps_the_trace():
+def test_apply_declaration_version_states_the_index_hash():
     from tests.engine._builders import conjoin_spec, shape_five_tuple
 
     shape = shape_five_tuple("EconomicActivity", "amount")
     spec = conjoin_spec(shape, "x", sv_dcid="test_sv")
-    assert (
-        spec.resolved.trace.declaration_version is None
-    )  # Initial trace has no declaration version.
+    assert spec.resolved.declaration_version is None
 
     stamped = apply_declaration_version(spec, [_binding("crsPurpose", [_HEALTH])])
-    assert stamped.resolved.trace.declaration_version == get_index().stamp.content_hash
+    assert stamped.resolved.declaration_version == get_index().stamp.content_hash
 
 
 def test_apply_declaration_version_is_a_no_op_when_nothing_of_this_kind_happened():
@@ -118,7 +115,7 @@ def test_apply_declaration_version_is_a_no_op_when_nothing_of_this_kind_happened
 
     result = apply_declaration_version(spec, [_binding("gender", ["Female"])])
     assert result is spec
-    assert result.resolved.trace.declaration_version is None
+    assert result.resolved.declaration_version is None
 
 
 def test_apply_declaration_version_stamps_a_plain_spec_the_index_resolves():
@@ -133,6 +130,7 @@ def test_apply_declaration_version_stamps_a_plain_spec_the_index_resolves():
     ]
     shape = shape_five_tuple("FinancialFlow", "amount", "Nominal")
     spec = build_spec(
+        open_roles=(),
         shape=shape,
         slots=slots,
         stat_vars=[
@@ -145,14 +143,13 @@ def test_apply_declaration_version_stamps_a_plain_spec_the_index_resolves():
         ],
         entities=[],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
         measure_elected_properties=frozenset(),
     )
-    assert spec.resolved.trace.declaration_version is None
+    assert spec.resolved.declaration_version is None
 
     stamped = apply_declaration_version(spec, [])
 
-    assert stamped.resolved.trace.declaration_version == get_index().stamp.content_hash
+    assert stamped.resolved.declaration_version == get_index().stamp.content_hash
 
 
 # Check expansion fields on the resubmit response.
@@ -222,18 +219,16 @@ def _resolve_response(monkeypatch, *, member_crs_purpose: str, posted_identity: 
     graph = _crs_graph(crs_purpose=member_crs_purpose)
     sdmx = _crs_sdmx()
     client = TestClient(
-        search_app(graph=graph, resolver=make_resolver(graph), llm=FakeLLM(), sdmx=sdmx),
+        search_app(
+            graph=graph,
+            resolver=make_resolver(graph),
+            llm=FakeLLM(),
+            sdmx=sdmx,
+            materialise_graph=member_walk_reader(graph),
+        ),
         raise_server_exceptions=False,
     )
-    # ResubmitIdentityPayload requires a base identity.
-    resubmit_input = ResubmitIdentityPayload(
-        identity=posted_identity,
-        base_spec_id=spec_identity.spec_id_from_value(
-            posted_identity.model_dump(exclude_none=True)
-        ),
-        base_identity=posted_identity,
-        resolved_stat_var_dcids=[_CRS_SV],
-    )
+    resubmit_input = ResubmitIdentityPayload(identity=posted_identity)
     return client.post(
         "/api/search/resolve",
         json={
@@ -251,10 +246,8 @@ def _resolve_response(monkeypatch, *, member_crs_purpose: str, posted_identity: 
     )
 
 
-class TestResubmitDoorWiresBothFields:
-    def test_a_hierarchical_binding_carries_expansion_and_declaration_version_on_the_wire(
-        self, monkeypatch
-    ):
+class TestResubmitDoorWiresExpansion:
+    def test_a_hierarchical_binding_carries_expansion_on_the_wire(self, monkeypatch):
         """The Health parent binding expands to descendants on the wire.
 
         The member also asserts Health so resubmit seed validation accepts it.
@@ -278,10 +271,8 @@ class TestResubmitDoorWiresBothFields:
         assert _MALARIA_CONTROL in added_dcids
         assert _HEALTH not in added_dcids  # Expansion metadata lists descendants only.
 
-        assert spec["resolved"]["trace"]["declaration_version"] == get_index().stamp.content_hash
-
-    def test_an_unbound_crs_slot_carries_neither_field(self, monkeypatch):
-        """An unbound CRS slot has no expansion or declaration version on the wire."""
+    def test_an_unbound_crs_slot_carries_no_expansion(self, monkeypatch):
+        """An unbound CRS slot has no expansion on the wire."""
         resp = _resolve_response(
             monkeypatch,
             member_crs_purpose=_MALARIA_CONTROL,
@@ -294,7 +285,6 @@ class TestResubmitDoorWiresBothFields:
 
         for slot in spec["resolved"]["slots"]:
             assert slot.get("expansion") is None
-        assert spec["resolved"]["trace"].get("declaration_version") is None
 
 
 # Nearest-real results include metadata for bindings that remain bound.
@@ -408,7 +398,7 @@ class TestNearestRealWiresBothFields:
         )
         assert crs_slot.expansion is not None
         assert _MALARIA_CONTROL in {ref.dcid for ref in crs_slot.expansion.added}
-        assert resolved.trace.declaration_version == get_index().stamp.content_hash
+        assert resolved.declaration_version == get_index().stamp.content_hash
 
     def test_relaxing_the_crs_binding_itself_carries_neither_field(self):
         """Relaxing crsPurpose removes its expansion and declaration-version metadata."""
@@ -439,7 +429,7 @@ class TestNearestRealWiresBothFields:
 
         for slot in resolved.slots:
             assert slot.expansion is None
-        assert resolved.trace.declaration_version is None
+        assert resolved.declaration_version is None
 
 
 # The dataset the coverage fixture records the member's facets under.
@@ -474,7 +464,7 @@ def _index_carrying_the_fixture_family(*, member_crs_purpose: str) -> CodeIndex:
             DatasetDeclaration(
                 provenance=_TEST_PROVENANCE,
                 label="Test financing flows",
-                synonyms=(),
+                description="A test table.",
                 opt_in=False,
                 absent_observation="zero",
                 rank=1,

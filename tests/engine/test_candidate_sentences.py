@@ -13,7 +13,7 @@ def test_candidate_sentences_index_aligned_and_distinct():
     """
     req = ResolveRequest(
         input=RawTextInput(query="under-5 child mortality rate"),
-        response_options=ResolveOptions(include_sentence=True),
+        response_options=ResolveOptions(),
     )
     result = offline_resolve(req).parts[0]
 

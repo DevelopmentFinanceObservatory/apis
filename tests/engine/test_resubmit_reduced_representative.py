@@ -28,8 +28,8 @@ from tests.engine._axis_doubles import axis_confirming_reader
 from tests.engine._base_identity import (
     GDP_SHAPE,
     PERSON_COUNT_SHAPE,
-    base_from_spec,
     make_base,
+    make_identity,
     subject_entity,
     where_slots_for,
 )
@@ -47,13 +47,14 @@ from tests.engine._builders import (
 )
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import walk_options
 from tests.fixtures import FakeGraph, make_resolver
 
 _ENTITY_DCID = "country/IND"
 
 
 def _edited_identity(shape, slots, entities):
-    return build_spec_identity(shape, slots, entities=entities)[1]
+    return build_spec_identity(shape, slots, entities=entities, open_roles=())[1]
 
 
 def _differing_siblings_graph() -> FakeGraph:
@@ -76,7 +77,7 @@ class TestReducedRepresentativeShapeReconstruction:
         """Count_Person's unedited resubmit preserves its unbound age axis and id."""
         entities = [subject_entity(_ENTITY_DCID)]
         unbound_axis = _unbound_slot("how", "age", "age")
-        base_spec_id, base_identity = make_base(
+        base_spec_id, _base_identity = make_base(
             PERSON_COUNT_SHAPE,
             slots=[unbound_axis],
             entities=entities,
@@ -85,19 +86,19 @@ class TestReducedRepresentativeShapeReconstruction:
             identity=_edited_identity(
                 PERSON_COUNT_SHAPE, [unbound_axis, *where_slots_for(entities)], entities
             ),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=["Count_Person"],  # carries no constraintProperties at all
         )
         region = resolve_spec_resubmit(
             inp=inp,
             graph=FakeGraph(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
-            options=EngineOptions(
-                materialise_graph=axis_confirming_reader(
-                    "Count_Person", "Count_Person_65OrMoreYears"
-                )
+            options=walk_options(
+                FakeGraph(),
+                EngineOptions(
+                    materialise_graph=axis_confirming_reader(
+                        "Count_Person", "Count_Person_65OrMoreYears"
+                    )
+                ),
             ),
         )
         assert region.status == "definite"
@@ -126,7 +127,7 @@ class TestReducedRepresentativeShapeReconstruction:
         )
         shape = GDP_SHAPE
         gdp_sv = "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
-        base_spec_id, base_identity = make_base(
+        base_spec_id, _base_identity = make_base(
             shape,
             slots=[activity_bound],
             entities=entities,
@@ -136,34 +137,33 @@ class TestReducedRepresentativeShapeReconstruction:
             identity=_edited_identity(
                 shape, [activity_bound, *where_slots_for(entities)], entities
             ),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[gdp_sv],
         )
         region_honest = resolve_spec_resubmit(
             inp=inp_honest,
             graph=FakeGraph(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(FakeGraph()),
         )
         assert region_honest.status == "definite"
         assert region_honest.specs[0].spec_id == base_spec_id
 
         irrelevant_axis = _unbound_slot("how", axis_property, axis_label)
         posted_slots = [activity_bound, irrelevant_axis, *where_slots_for(entities)]
-        expected_spec_id, _ = build_spec_identity(shape, posted_slots, entities=entities)
+        expected_spec_id, _ = build_spec_identity(
+            shape, posted_slots, entities=entities, open_roles=()
+        )
         inp_tampered = ResubmitIdentityPayload(
             identity=_edited_identity(shape, posted_slots, entities),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[gdp_sv],
         )
         region = resolve_spec_resubmit(
             inp=inp_tampered,
             graph=FakeGraph(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
-            options=EngineOptions(materialise_graph=axis_confirming_reader(gdp_sv)),
+            options=walk_options(
+                FakeGraph(), EngineOptions(materialise_graph=axis_confirming_reader(gdp_sv))
+            ),
         )
         assert region.status == "definite"
         spec = region.specs[0]
@@ -184,7 +184,7 @@ class TestReducedRepresentativeShapeReconstruction:
         entities = [subject_entity(_ENTITY_DCID)]
         gender_bound = _value_slot("how", "gender", "gender", "Female", "Female")
         age_unbound = _unbound_slot("how", "age", "age")
-        base_spec_id, base_identity = make_base(
+        base_spec_id, _base_identity = make_base(
             PERSON_COUNT_SHAPE,
             slots=[gender_bound, age_unbound],
             entities=entities,
@@ -195,16 +195,14 @@ class TestReducedRepresentativeShapeReconstruction:
                 [gender_bound, age_unbound, *where_slots_for(entities)],
                 entities,
             ),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
             # Female is representative and lacks age. The second member asserts it.
-            resolved_stat_var_dcids=["Count_Person_Female", "Count_Person_85OrMoreYears_Female"],
         )
         region = resolve_spec_resubmit(
             inp=inp,
             graph=_differing_siblings_graph(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(_differing_siblings_graph()),
         )
         assert region.status == "definite"
         assert region.specs[0].spec_id == base_spec_id
@@ -216,7 +214,7 @@ class TestReducedRepresentativeShapeReconstruction:
         """
         entities = [subject_entity(_ENTITY_DCID)]
         unbound_axis = _unbound_slot("how", "age", "age")
-        base_spec_id, base_identity = make_base(
+        base_spec_id, _base_identity = make_base(
             PERSON_COUNT_SHAPE,
             slots=[unbound_axis],
             entities=entities,
@@ -225,19 +223,19 @@ class TestReducedRepresentativeShapeReconstruction:
             identity=_edited_identity(
                 PERSON_COUNT_SHAPE, [unbound_axis, *where_slots_for(entities)], entities
             ),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=["Count_Person"],
         )
         region = resolve_spec_resubmit(
             inp=inp,
             graph=FakeGraph(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
-            options=EngineOptions(
-                materialise_graph=axis_confirming_reader(
-                    "Count_Person", "Count_Person_65OrMoreYears"
-                )
+            options=walk_options(
+                FakeGraph(),
+                EngineOptions(
+                    materialise_graph=axis_confirming_reader(
+                        "Count_Person", "Count_Person_65OrMoreYears"
+                    )
+                ),
             ),
         )
         assert region.status == "definite"
@@ -345,7 +343,7 @@ class TestNarrowLeavesUntouchedAxisIntact:
                 ]
             ),
         )
-        base_spec_id, base_identity = make_base(
+        base_identity = make_identity(
             PERSON_COUNT_SHAPE,
             slots=[age_slot, gender_slot, residence_set_slot],
             entities=entities,
@@ -362,21 +360,19 @@ class TestNarrowLeavesUntouchedAxisIntact:
                 [age_slot, gender_slot, residence_narrowed_slot, *where_slots_for(entities)],
                 entities,
             ),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_URBAN_SV, _RURAL_SV, _RURAL_ADULT_SV],
         )
         region = resolve_spec_resubmit(
             inp=inp,
             graph=_narrow_bug_graph(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(_narrow_bug_graph()),
         )
         assert region.status == "definite", region.no_data_reason
         spec = region.specs[0]
 
         # Only the Rural_Female_Years18Onwards survivor asserts the retained age binding.
-        resolved_svs = [sv.ref for sv in spec.resolved.stat_vars.items]
+        resolved_svs = [sv.ref.dcid for sv in spec.resolved.members]
         assert resolved_svs == [_RURAL_ADULT_SV]
 
         age_result = next(
@@ -412,11 +408,6 @@ class TestMixedPresenceSurvivorProbeCannotServeANonAsserter:
                 ]
             ),
         )
-        base_spec_id, base_identity = make_base(
-            PERSON_COUNT_SHAPE,
-            slots=[age_slot, gender_slot, residence_set_slot],
-            entities=entities,
-        )
         residence_narrowed_slot = Slot(
             key=residence_set_slot.key,
             binding=BindingValue(value=SlotValue(ref=_gref("Rural"), value_kind="enum_value")),
@@ -427,9 +418,6 @@ class TestMixedPresenceSurvivorProbeCannotServeANonAsserter:
                 [age_slot, gender_slot, residence_narrowed_slot, *where_slots_for(entities)],
                 entities,
             ),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_URBAN_SV, _RURAL_SV, _RURAL_ADULT_SV],
         )
         # The sole age-asserting sibling lacks data. Age-silent Rural_Female has data.
         graph = _narrow_bug_graph(rural_adult_has_obs=False)
@@ -438,11 +426,12 @@ class TestMixedPresenceSurvivorProbeCannotServeANonAsserter:
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(graph),
         )
 
         if region.status == "definite":
             spec = region.specs[0]
-            resolved_svs = [sv.ref for sv in spec.resolved.stat_vars.items]
+            resolved_svs = [sv.ref.dcid for sv in spec.resolved.members]
             # A definite response must serve members that support its age binding.
             assert _RURAL_SV not in resolved_svs
             age_result = next(
@@ -545,7 +534,9 @@ def _elect(inp: ResubmitIdentityPayload, graph: FakeGraph):
         graph=graph,
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
-        options=EngineOptions(materialise_graph=axis_confirming_reader(*members, graph=graph)),
+        options=walk_options(
+            graph, EngineOptions(materialise_graph=axis_confirming_reader(*members, graph=graph))
+        ),
     )
 
 
@@ -595,9 +586,6 @@ class TestNarrowWithNoSurvivingAsserterRoutesThroughRefine:
                 [age_slot, gender_slot, residence_narrowed_slot, *where_slots_for(entities)],
                 entities,
             ),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_URBAN_SV, _RURAL_SV],
         )
 
     def _no_confirmed_sibling_case(self, case: str) -> tuple[ResubmitIdentityPayload, FakeGraph]:
@@ -632,9 +620,6 @@ class TestNarrowWithNoSurvivingAsserterRoutesThroughRefine:
         return (
             ResubmitIdentityPayload(
                 identity=_edited_identity(GDP_SHAPE, [slot, *where_slots_for(entities)], entities),
-                base_spec_id=base_spec_id,
-                base_identity=base_identity,
-                resolved_stat_var_dcids=["Amount_EconomicActivity_GrossDomesticProduction_Nominal"],
             ),
             FakeGraph(),
         )
@@ -646,7 +631,7 @@ class TestNarrowWithNoSurvivingAsserterRoutesThroughRefine:
         region = _elect(inp, _zero_asserter_narrow_graph(include_sibling=True))
         assert region.status == "definite", region.no_data_reason
         spec = region.specs[0]
-        resolved_svs = [sv.ref for sv in spec.resolved.stat_vars.items]
+        resolved_svs = [sv.ref.dcid for sv in spec.resolved.members]
         assert resolved_svs == [_RURAL_ADULT_STANDARD_SV]
 
         age_result = next(
@@ -685,12 +670,9 @@ class TestNarrowWithNoSurvivingAsserterRoutesThroughRefine:
         assert region.status == "definite", region.no_data_reason
         spec = region.specs[0]
 
-        echo_spec_id, echo_identity = base_from_spec(spec)
+        echo_identity = spec.definition.identity
         echo = ResubmitIdentityPayload(
             identity=echo_identity,
-            base_spec_id=echo_spec_id,
-            base_identity=echo_identity,
-            resolved_stat_var_dcids=[sv.ref for sv in spec.resolved.stat_vars.items],
         )
         region2 = _elect(echo, graph)
         assert region2.status == "definite", region2.no_data_reason
@@ -748,11 +730,11 @@ def _sparse_cross_axis_graph() -> FakeGraph:
     return FakeGraph(nodes=nodes, obs=obs)
 
 
-class TestNarrowRealizesOnlySurvivorSupportedSetValues:
-    """A sparse family can leave only some values of an untouched set axis
-    supported. The response and identity must keep only those values."""
+class TestASetAxisTheFamilyAssertsInFullStands:
+    """A set axis whose every value some family member asserts stands as posted, though
+    only some members hold data."""
 
-    def test_narrow_on_one_axis_realizes_only_the_surviving_values_of_another_set_axis(self):
+    def test_a_gender_set_the_family_asserts_in_full_stands_beside_a_narrowed_residence(self):
         entities = [subject_entity(_ENTITY_DCID)]
         residence_set_slot = Slot(
             key=SlotKey(
@@ -776,11 +758,6 @@ class TestNarrowRealizesOnlySurvivorSupportedSetValues:
                 ]
             ),
         )
-        base_spec_id, base_identity = make_base(
-            PERSON_COUNT_SHAPE,
-            slots=[residence_set_slot, gender_set_slot],
-            entities=entities,
-        )
 
         # Narrow residence to Urban. Leave the full gender set unchanged.
         residence_narrowed_slot = Slot(
@@ -793,34 +770,31 @@ class TestNarrowRealizesOnlySurvivorSupportedSetValues:
                 [residence_narrowed_slot, gender_set_slot, *where_slots_for(entities)],
                 entities,
             ),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_URBAN_SV, _SPARSE_RURAL_MALE_SV],
         )
         region = resolve_spec_resubmit(
             inp=inp,
             graph=_sparse_cross_axis_graph(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(_sparse_cross_axis_graph()),
         )
         assert region.status == "definite", region.no_data_reason
         spec = region.specs[0]
 
-        resolved_svs = [sv.ref for sv in spec.resolved.stat_vars.items]
+        resolved_svs = [sv.ref.dcid for sv in spec.resolved.members]
         assert resolved_svs == [_URBAN_SV]
 
+        # The family asserts both genders at Urban, the male count holding no data, so the
+        # gender set stands as posted.
         gender_result = next(
             s for s in spec.resolved.slots if s.key.property and s.key.property.dcid == "gender"
         )
-        assert isinstance(gender_result.binding, BindingValue)
-        assert gender_result.binding.value.ref is not None
-        assert gender_result.binding.value.ref.dcid == "Female"
-
-        gender_identity_slot = next(
-            s for s in spec.definition.identity.slots if s.property == "gender"
-        )
-        assert gender_identity_slot.binding.state == "value"
-        assert gender_identity_slot.binding.ref == "Female"
+        assert isinstance(gender_result.binding, BindingSet)
+        assert {v.ref.dcid for v in gender_result.binding.values if v.ref is not None} == {
+            "Female",
+            "Male",
+        }
+        assert spec.definition.identity == inp.identity
 
 
 # Fresh-to-resubmit identity round trip.
@@ -949,31 +923,30 @@ class TestFreshVsResubmitRoundTrip:
                 resolver=make_resolver(graph),
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 llm=_SelectedAxisBindLLM(),
-                base_steps=[],
                 base_timing={},
                 coverage=empty_coverage_snapshot(),
             )
         )
         assert fresh_result.status == "definite"
         fresh_spec = fresh_result.specs[0]
-        assert [sv.ref for sv in fresh_spec.resolved.stat_vars.items] == [_SV_DOMESTIC_GOVT]
+        assert [sv.ref.dcid for sv in fresh_spec.resolved.members] == [_SV_DOMESTIC_GOVT]
 
-        base_spec_id, base_identity = base_from_spec(fresh_spec)
+        base_identity = fresh_spec.definition.identity
         inp = ResubmitIdentityPayload(
             identity=base_identity,
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[sv.ref for sv in fresh_spec.resolved.stat_vars.items],
         )
         region = resolve_spec_resubmit(
             inp=inp,
             graph=graph,
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
-            options=EngineOptions(
-                materialise_graph=axis_confirming_reader(
-                    _SV_DOMESTIC_GOVT, _SV_BY_FUNCTION, _SV_BY_AGE, graph=graph
-                )
+            options=walk_options(
+                graph,
+                EngineOptions(
+                    materialise_graph=axis_confirming_reader(
+                        _SV_DOMESTIC_GOVT, _SV_BY_FUNCTION, _SV_BY_AGE, graph=graph
+                    )
+                ),
             ),
         )
         assert region.status == "definite", region.no_data_reason

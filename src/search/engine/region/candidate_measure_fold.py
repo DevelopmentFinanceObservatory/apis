@@ -45,9 +45,12 @@ def _fold_measure_sibling_candidates(
     """Fold measure-only siblings into the first surviving Spec's alternatives.
 
     Grouping uses ``ShapeDraft`` fields, not minted identities, because alternate bindings
-    can differ. The alternative identity starts from the retained Spec and changes only
-    axes asserted by the sibling's ``MeasurePartition``. Non-measure identity fields carry
-    over unchanged. Run before survivor-count branches, since folding can leave one Spec.
+    can differ. The alternative identity is the one a question electing the sibling's shape
+    under the retained Spec's bindings mints (`mint_sibling_identity` with the sibling's
+    shape): the retained Spec's bindings on the slots the sibling's shape declares, the
+    axes the sibling's ``MeasurePartition`` asserts, and the dataset the sibling's shape
+    names, in canonical form. Run before survivor-count branches, since folding can leave
+    one Spec.
 
     Keep a sibling as a separate candidate when it lacks a partition or a matching label.
     A folded sibling shares the retained Spec's price basis, so it is a measure option
@@ -65,7 +68,8 @@ def _fold_measure_sibling_candidates(
         for other in specs[i + 1 :]:
             if other.spec_id in consumed:
                 continue
-            if not _shapes_are_measure_siblings(shape, shapes_by_spec_id[other.spec_id]):
+            other_shape = shapes_by_spec_id[other.spec_id]
+            if not _shapes_are_measure_siblings(shape, other_shape):
                 continue
             other_partition = measure_partitions_by_spec_id.get(other.spec_id)
             if other_partition is None:
@@ -75,6 +79,7 @@ def _fold_measure_sibling_candidates(
                 other_partition,
                 measure_index.axes,
                 measure_index.partition_labels,
+                shape=other_shape,
             )
             if sibling.label is None:
                 continue

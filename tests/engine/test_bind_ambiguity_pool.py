@@ -119,7 +119,6 @@ def _run_pool(
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_FixedBindLLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
@@ -144,7 +143,7 @@ class TestPoolWidenedWhenPrimaryNeighborLacksData:
 
     def test_tied_dataless_neighbor_excluded_expenditure_included(self):
         result = self._result()
-        sv_dcids = {sv.ref for s in result.specs for sv in s.resolved.stat_vars.items}
+        sv_dcids = {sv.ref.dcid for s in result.specs for sv in s.resolved.members}
         assert len(result.specs) == 2
         assert _SV_INCIDENCE in sv_dcids
         assert _SV_EXPENDITURE in sv_dcids
@@ -168,7 +167,7 @@ class TestPoolWidenedWhenPrimaryNeighborLacksData:
             assert NEAR_NEIGHBOR_POOL_WIDENED in codes
         else:
             assert result.near_neighbor_fired is True
-            sv_dcids = {sv.ref for spec in result.specs for sv in spec.resolved.stat_vars.items}
+            sv_dcids = {sv.ref.dcid for spec in result.specs for sv in spec.resolved.members}
             assert _SV_CONDITION_COUNT not in sv_dcids
 
 
@@ -293,7 +292,6 @@ def _run_line(*, variable: str, scores: list[float]) -> RegionResult:
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_FixedBindLLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
@@ -398,7 +396,6 @@ def _run_who_template(*, variable: str, scores: list[float]) -> RegionResult:
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_FixedBindLLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
@@ -502,7 +499,6 @@ def _run_literacy_fertility(*, variable: str, scores: list[float]) -> RegionResu
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_FixedBindLLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )

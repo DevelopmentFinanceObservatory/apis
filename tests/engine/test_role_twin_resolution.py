@@ -275,7 +275,6 @@ def test_gdp_of_ghana_puts_nominal_gdp_on_the_bind_menu() -> None:
             resolver=make_resolver(graph),
             llm=llm,
             sdmx=FakeSdmxClient(observations={}),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
@@ -322,6 +321,53 @@ def test_debtor_without_creditor_resolves_to_the_total() -> None:
     assert result.open_origin_dcids is None
     assert result.facets_by_sv is not None
     assert [f.facet_id for f in result.facets_by_sv[_TOTAL]] == ["f_total"]
+
+
+def test_an_open_creditor_resolves_to_the_breakdown_and_opens_the_creditor_axis() -> None:
+    """Kenya as debtor with every creditor asked for. The by-creditor twin covers the open
+    origin, so it displaces the total and the answer lists its creditors."""
+    shape = _shape(_twin_nodes(), [_TOTAL, _BY_CREDITOR])
+
+    result = materialise(
+        shape,
+        [],
+        {"financingRecipient": ["country/KEN"]},
+        graph=FakeGraph(raise_on_call=True),
+        sdmx=FakeSdmxClient(observations={}),
+        coverage=_twin_coverage().snapshot(),
+        discover_scope=True,
+        open_axes=frozenset({"origin"}),
+    )
+
+    assert isinstance(result, Materialised)
+    assert result.sv_dcids == [_BY_CREDITOR]
+    assert result.open_axes == frozenset({"origin"})
+    assert result.open_origin_dcids == frozenset({"country/CHN"})
+
+
+@pytest.mark.parametrize("open_axes", [frozenset(), frozenset({"origin"})])
+def test_an_open_creditor_on_a_recipient_only_family_still_answers_the_total(
+    open_axes: frozenset,
+) -> None:
+    """The open role is soft. A family no member of which declares a creditor answers with
+    its total, refuses nothing, and leaves the creditor unnamed."""
+    shape = _shape({_TOTAL: _twin_nodes()[_TOTAL]}, [_TOTAL])
+
+    result = graph_confirm_resolve(
+        shape=shape,
+        bindings=[],
+        subject_dcids=["country/KEN"],
+        graph=FakeGraph(raise_on_call=True),
+        sdmx=FakeSdmxClient(observations={}),
+        discover_scope=True,
+        open_axes=open_axes,
+        coverage_snapshot=_twin_coverage().snapshot(),
+    )
+
+    assert isinstance(result, Materialised)
+    assert result.sv_dcids == [_TOTAL]
+    assert result.open_axes == frozenset()
+    assert result.open_origin_dcids is None
 
 
 def test_bound_creditor_resolves_to_the_breakdown() -> None:
@@ -385,8 +431,10 @@ def test_breakdown_with_an_extra_unbound_constraint_gives_way_to_the_total() -> 
     assert result.sv_dcids == [_TOTAL]
 
 
-def test_members_with_different_constraints_and_roles_still_refuse() -> None:
-    """A two-role lender-named member is no twin of the total, so the survivors disagree."""
+def test_a_lender_named_member_of_other_constraint_values_gives_way_to_the_total() -> None:
+    """A two-role lender-named member holds its own constraint value, so it is no twin of
+    the total. The query names no creditor and reads the total, the series published
+    without one."""
     nodes = {
         _TOTAL: {"label": "Debt total", "arcs": _debt_arcs(["financingRecipient"])},
         _LENDER_NAMED: {
@@ -405,6 +453,32 @@ def test_members_with_different_constraints_and_roles_still_refuse() -> None:
         graph=FakeGraph(raise_on_call=True),
         sdmx=FakeSdmxClient(observations={}),
         coverage=_twin_coverage().snapshot(),
+    )
+
+    assert isinstance(result, Materialised)
+    assert result.sv_dcids == [_TOTAL]
+
+
+def test_members_whose_role_sets_do_not_nest_still_refuse() -> None:
+    """A debtor-only total beside a creditor-only member of another constraint value, with
+    no place named: neither role set holds the other, so the survivors disagree."""
+    nodes = {
+        _TOTAL: {"label": "Debt total", "arcs": _debt_arcs(["financingRecipient"])},
+        _LENDER_NAMED: {
+            "label": "Debt, non-concessional",
+            "arcs": _debt_arcs(["financingProvider"], lender="PrivateNonGuaranteedCreditors"),
+        },
+    }
+    shape = _shape(nodes, [_TOTAL, _LENDER_NAMED])
+
+    result = materialise(
+        shape,
+        [],
+        {},
+        graph=FakeGraph(raise_on_call=True),
+        sdmx=FakeSdmxClient(observations={}),
+        coverage=_twin_coverage().snapshot(),
+        discover_scope=True,
     )
 
     assert isinstance(result, NoDataDraft)

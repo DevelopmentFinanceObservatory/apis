@@ -32,6 +32,7 @@ from tests.engine._axis_doubles import axis_confirming_reader
 from tests.engine._base_identity import destination_entity, make_base
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import walk_options
 from tests.engine._index_slots import query_for
 from tests.engine.test_candidates_measure_alternatives import _ROLE_NAMES, _ROLE_RECIPIENT
 from tests.engine.test_resubmit_alternative_measure_round_trip import (
@@ -193,15 +194,13 @@ def test_no_seed_resubmit_of_the_net_alternative_recovers_its_own_partition_memb
     materialise_graph = axis_confirming_reader(*(row.dcid for row in member_rows), graph=graph)
 
     identity = net_alt.definition.identity
-    inp = ResubmitIdentityPayload(
-        identity=identity, base_spec_id=net_alt.definition.spec_id, base_identity=identity
-    )
+    inp = ResubmitIdentityPayload(identity=identity)
     region = resolve_spec_resubmit(
         inp=inp,
         graph=graph,
         sdmx=sdmx,
         coverage=_coverage_for_svs(monkeypatch, (row.dcid for row in member_rows)),
-        options=EngineOptions(materialise_graph=materialise_graph),
+        options=walk_options(graph, EngineOptions(materialise_graph=materialise_graph)),
     )
 
     assert region.status == "definite", region.no_data_reason
@@ -265,16 +264,14 @@ def test_the_net_alternative_round_trips_definite_and_remints_its_own_spec_id(
     materialise_graph = axis_confirming_reader(*(row.dcid for row in augmented), graph=graph)
 
     identity = net_alt.definition.identity
-    inp = ResubmitIdentityPayload(
-        identity=identity, base_spec_id=net_alt.definition.spec_id, base_identity=identity
-    )
+    inp = ResubmitIdentityPayload(identity=identity)
 
     region = resolve_spec_resubmit(
         inp=inp,
         graph=graph,
         sdmx=sdmx,
         coverage=_coverage_for_svs(monkeypatch, (row.dcid for row in augmented)),
-        options=EngineOptions(materialise_graph=materialise_graph),
+        options=walk_options(graph, EngineOptions(materialise_graph=materialise_graph)),
     )
 
     assert region.status == "definite", region.no_data_reason

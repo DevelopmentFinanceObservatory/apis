@@ -99,7 +99,7 @@ def _plan(sv_dcids, entity_lists) -> ReadPlan:
 
 def _elected(sv_dcids: list[str]) -> list[str]:
     """The members the role path's one reducer, the role-class election, hands the plan."""
-    elected = _elect_role_class(sv_dcids, _FAMILY_FACTS, ["destination"])
+    elected = _elect_role_class(sv_dcids, _FAMILY_FACTS, ["destination"], ())
     assert elected is not None
     return elected
 
@@ -215,7 +215,7 @@ def test_a_named_destination_plan_reads_a_member_whose_constraints_are_unknown_b
         role_names={sv: RoleNames(donor=None, recipient="debtor") for sv in (_TOTAL, unread)},
     )
 
-    elected = _elect_role_class([_TOTAL, unread], facts, ["destination"])
+    elected = _elect_role_class([_TOTAL, unread], facts, ["destination"], ())
     plan = _role_plan(
         elected or [],
         member_facts=facts,
@@ -254,6 +254,7 @@ def _discover(max_pairs: int, search_settings) -> Materialised:
     )
     result = discover_role_scope(
         surviving_svs=["V"],
+        admitted_dcids=["V"],
         member_facts={},
         member_population_exact=True,
         open_flow_axis="destination",
@@ -447,6 +448,7 @@ def test_discovered_family_elects_over_the_total_the_preview_reads(search_settin
     snapshot = FakeCoverageService(index).snapshot()
     result = discover_role_scope(
         surviving_svs=_elected([_TOTAL, _HEALTH]),
+        admitted_dcids=_elected([_TOTAL, _HEALTH]),
         member_facts=_FAMILY_FACTS,
         member_population_exact=True,
         open_flow_axis="destination",
@@ -924,6 +926,7 @@ def test_named_and_discovered_pairs_elect_over_the_same_in_window_counts(search_
     )
     discovered = discover_role_scope(
         surviving_svs=["V"],
+        admitted_dcids=["V"],
         member_facts={},
         member_population_exact=True,
         open_flow_axis="destination",

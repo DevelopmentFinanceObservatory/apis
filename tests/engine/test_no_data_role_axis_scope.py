@@ -60,7 +60,6 @@ def _state(*, mat_result: Materialised | NoDataDraft) -> ResolveState:
         source_text=None,
         materialise_graph=None,
         materialise_sdmx=None,
-        pipeline_steps=[],
         timing={},
         warnings=[],
         shape_draft=_role_bearing_shape(),

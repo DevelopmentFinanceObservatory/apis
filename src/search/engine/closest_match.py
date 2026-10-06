@@ -83,7 +83,7 @@ def spec_closest_match_fact(
     elected StatVars' labels, the names the Spec holds (`alternateName` is not read at
     assembly), and its bound codes are its how-slot values and the StatVars' constraint
     values, in that order."""
-    stat_vars = spec.resolved.stat_vars.items
+    stat_vars = spec.resolved.members
     codes = [
         value.ref.dcid
         for slot in spec.resolved.slots
@@ -101,7 +101,7 @@ def spec_closest_match_fact(
         variable_text=variable_text,
         retrieval_score_weak=retrieval_score_weak,
         measure_noun=measure_noun,
-        stat_var_names=[stat_var.label for stat_var in stat_vars if stat_var.label],
+        stat_var_names=[stat_var.ref.label for stat_var in stat_vars if stat_var.ref.label],
         bound_codes=dict.fromkeys(codes),
     )
 

@@ -19,10 +19,12 @@ from collections import Counter
 from collections.abc import AsyncIterator, Hashable, Iterable, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
 from search.eval.cases import Case
+from search.eval.checks.base import MembersReader
 from search.eval.dataset import resubmit_identity
 from search.models import ResolveRequest
 
@@ -30,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 RESOLVE_PATH = "/api/search/resolve"
 SCHEMA_PATH = "/api/search/schema"
+MEMBERS_PATH = "/api/datasets/{spec_id}/members"
 DEGRADED_LEG_HEADER = "X-Search-Degraded-Leg"
 # Every request the eval sends names it, so request logs and analytics can leave it out.
 EVAL_HEADERS = {"User-Agent": "dfo-search-eval"}
@@ -113,8 +116,8 @@ def build_request(case: Case) -> dict:
 
     The body holds only the fields the case sets, so an app built from an older revision
     of the request models accepts it. Every request asks for skills, and a case that opts
-    into observations asks for them. Raises ``ValueError`` when a resubmit case names no
-    entity or StatVar to anchor an identity.
+    into observations asks for them. Raises ``ValueError`` when a resubmit case's slots
+    hold a value no identity carries.
     """
     match case.door:
         case "raw_text":
@@ -128,18 +131,12 @@ def build_request(case: Case) -> dict:
             }
         case "dataset_resubmit":
             assert case.resubmit is not None
-            base_spec_id, identity = resubmit_identity(case.resubmit)
-            identity_dump = identity.model_dump(mode="json", exclude_unset=True)
+            identity = resubmit_identity(case.resubmit)
             entry: dict = {
                 "entry_kind": "identity",
                 "variable_text": case.resubmit.variable_text,
-                "identity": identity_dump,
-                "base_identity": identity_dump,
+                "identity": identity.model_dump(mode="json", exclude_unset=True),
             }
-            if base_spec_id is not None:
-                entry["base_spec_id"] = base_spec_id
-            if case.resubmit.stat_var_dcids is not None:
-                entry["resolved_stat_var_dcids"] = case.resubmit.stat_var_dcids
             request_input = {"kind": "dataset_resubmit", "entries": [entry]}
     options: dict = {"include_skills": True}
     if case.include_observations:
@@ -157,6 +154,30 @@ async def fetch_schema(url: str, *, client: httpx.AsyncClient | None = None) -> 
         response = await http.get(f"{url.rstrip('/')}{SCHEMA_PATH}")
         response.raise_for_status()
         return response.json()
+
+
+def members_door_reader(url: str) -> MembersReader:
+    """Read the StatVars a mint of a Spec serves from the members door of the app at
+    ``url``, posting the Spec's definition so an unregistered id resolves. Each Spec is
+    read once. A failed read raises ``httpx.HTTPError``, which a check scores as an
+    infrastructure error."""
+    read: dict[str, list[str]] = {}
+
+    def members(spec_id: str, definition: Mapping[str, Any]) -> list[str]:
+        if spec_id not in read:
+            response = httpx.post(
+                f"{url.rstrip('/')}{MEMBERS_PATH.format(spec_id=spec_id)}",
+                json={"definition": definition},
+                headers=EVAL_HEADERS,
+                timeout=_DEFAULT_TIMEOUT_S,
+            )
+            response.raise_for_status()
+            read[spec_id] = [
+                member["ref"].removeprefix("dcid:") for member in response.json()["members"]
+            ]
+        return read[spec_id]
+
+    return members
 
 
 async def run_cases(
@@ -207,9 +228,9 @@ async def run_cases(
 def modal_sample(samples: Sequence[Sample]) -> tuple[int, int]:
     """Return the modal sample's index and the size of its answer group.
 
-    Samples group by HTTP status and answer: per part, the status with the spec id,
-    StatVars and role-keyed entities of a definite part, the spec ids of candidates, the
-    no-data reason or unsupported code, and the operations in order. Within the winning
+    Samples group by HTTP status and answer: per part, the status with the spec id, served
+    count, member digest and role-keyed entities of a definite part, the spec ids of
+    candidates, the no-data reason or unsupported code, and the operations in order. Within the winning
     group a second vote picks the modal set of equivalent readings. Both votes break ties
     by sample order. Raises ``ValueError`` on an empty list.
     """
@@ -387,7 +408,8 @@ def _part_key(part: Mapping) -> tuple:
             resolved = _get(part, "spec", "resolved")
             detail: tuple = (
                 _get(part, "spec", "spec_id"),
-                _stat_var_refs(resolved),
+                _get(resolved, "stat_vars", "served_count"),
+                _get(resolved, "shape", "member_digest"),
                 _sorted(
                     (entity.get("ref"), entity.get("role"))
                     for entity in _items(_get(resolved, "entities"))
@@ -411,22 +433,18 @@ def _part_key(part: Mapping) -> tuple:
 
 
 def _twin_key(body: Mapping) -> tuple:
-    """Per definite part, the StatVar sets of its equivalent readings, in no fixed order."""
+    """Per definite part, the spec ids of its equivalent readings, in no fixed order."""
     if body.get("kind") != "resolution":
         return ()
     return tuple(
         _sorted(
-            _stat_var_refs(_get(twin, "resolved"))
+            twin.get("spec_id")
             for twin in _items(_get(part, "spec", "resolved", "equivalent_readings"))
         )
         if part.get("status") == "definite"
         else ()
         for part in _items(body.get("parts"))
     )
-
-
-def _stat_var_refs(resolved: object) -> tuple:
-    return _sorted(item.get("ref") for item in _items(_get(resolved, "stat_vars", "items")))
 
 
 def _get(value: object, *path: str) -> object:

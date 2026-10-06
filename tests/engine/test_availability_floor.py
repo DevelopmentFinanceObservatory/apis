@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from search.engine.quantity import NO_REQUIREMENT, quantity_requirement
 from search.engine.region.availability import (
     _are_availability_siblings,
     _prune_availability_siblings,
@@ -137,7 +138,9 @@ def test_same_cohort_count_and_rate_still_pair_and_prune():
 
     assert _shapes_are_measure_head_siblings(rate, counts) is True
 
-    result, _ = _prune_availability_siblings([rate, counts], named_place=True)
+    result, _ = _prune_availability_siblings(
+        [rate, counts], named_place=True, quantity=NO_REQUIREMENT, denominator_kinds={}
+    )
 
     assert [s.shape_id for s in result] == ["rate"]
 
@@ -158,7 +161,11 @@ def test_population_narrowed_survivor_is_refused_and_both_sides_stay():
     assert _shapes_are_measure_head_siblings(general, rural) is True
 
     result, substitutions = _prune_availability_siblings(
-        [general, rural], named_place=True, variable="under-five mortality rate"
+        [general, rural],
+        named_place=True,
+        variable="under-five mortality rate",
+        quantity=quantity_requirement(["under-five mortality rate"]),
+        denominator_kinds={},
     )
 
     assert {s.shape_id for s in result} == {"general", "rural"}
@@ -183,7 +190,11 @@ def test_registry_twin_survivor_is_substituted_despite_the_narrowing_r3_would_re
     assert _shapes_are_measure_head_siblings(general, rural) is True
 
     result, substitutions = _prune_availability_siblings(
-        [general, rural], named_place=True, variable="under-five mortality rate"
+        [general, rural],
+        named_place=True,
+        variable="under-five mortality rate",
+        quantity=quantity_requirement(["under-five mortality rate"]),
+        denominator_kinds={},
     )
 
     assert [s.shape_id for s in result] == ["rural"]
@@ -246,7 +257,9 @@ def test_measure_head_pop_type_mismatch_leaves_the_empty_side_unpruned():
         place_available=False,
     )
 
-    result, _ = _prune_availability_siblings([rate, counts], named_place=True)
+    result, _ = _prune_availability_siblings(
+        [rate, counts], named_place=True, quantity=NO_REQUIREMENT, denominator_kinds={}
+    )
 
     assert {s.shape_id for s in result} == {"rate", "counts"}
 
@@ -265,7 +278,9 @@ def test_pair_sharing_no_rate_head_is_untouched():
         place_available=False,
     )
 
-    result, _ = _prune_availability_siblings([mortality, birth], named_place=True)
+    result, _ = _prune_availability_siblings(
+        [mortality, birth], named_place=True, quantity=NO_REQUIREMENT, denominator_kinds={}
+    )
 
     assert {s.shape_id for s in result} == {"mortality", "birth"}
 
@@ -285,7 +300,9 @@ def test_pair_with_both_sides_empty_is_untouched():
         place_available=False,
     )
 
-    result, _ = _prune_availability_siblings([rate, counts], named_place=True)
+    result, _ = _prune_availability_siblings(
+        [rate, counts], named_place=True, quantity=NO_REQUIREMENT, denominator_kinds={}
+    )
 
     assert {s.shape_id for s in result} == {"rate", "counts"}
 
@@ -296,7 +313,9 @@ def test_denominator_resolution_pairing_still_drops_its_empty_side():
 
     assert _are_availability_siblings(unresolved, resolved) is True
 
-    result, _ = _prune_availability_siblings([unresolved, resolved], named_place=True)
+    result, _ = _prune_availability_siblings(
+        [unresolved, resolved], named_place=True, quantity=NO_REQUIREMENT, denominator_kinds={}
+    )
 
     assert [s.shape_id for s in result] == ["resolved"]
 
@@ -328,7 +347,9 @@ def test_entityless_query_keeps_a_world_only_rate_and_its_country_sibling():
     """The entity-less sample keeps this structurally mismatched pair."""
     shapes = _entityless_sdg_rate_and_country_sibling()
 
-    result, _ = _prune_availability_siblings(shapes, named_place=False)
+    result, _ = _prune_availability_siblings(
+        shapes, named_place=False, quantity=NO_REQUIREMENT, denominator_kinds={}
+    )
 
     assert {s.shape_id for s in result} == {"sdg_sh_dyn_mort", "count_mortalityevent_infant"}
 
@@ -337,7 +358,9 @@ def test_pop_type_mismatched_sdg_pair_stays_unpruned_with_named_place_true():
     """The named-place rule also preserves the SDG/MortalityEvent mismatch."""
     shapes = _entityless_sdg_rate_and_country_sibling()
 
-    result, _ = _prune_availability_siblings(shapes, named_place=True)
+    result, _ = _prune_availability_siblings(
+        shapes, named_place=True, quantity=NO_REQUIREMENT, denominator_kinds={}
+    )
 
     assert {s.shape_id for s in result} == {"sdg_sh_dyn_mort", "count_mortalityevent_infant"}
 
@@ -346,7 +369,9 @@ def test_named_place_false_leaves_a_genuine_measure_head_pair_unpruned():
     """A genuine matching pair stays intact without a named place."""
     rate, counts = _same_cohort_count_and_rate_pair()
 
-    result, _ = _prune_availability_siblings([rate, counts], named_place=False)
+    result, _ = _prune_availability_siblings(
+        [rate, counts], named_place=False, quantity=NO_REQUIREMENT, denominator_kinds={}
+    )
 
     assert {s.shape_id for s in result} == {"rate", "counts"}
 
@@ -356,7 +381,9 @@ def test_denominator_resolution_pairing_prunes_an_entityless_query():
     unresolved = _shape("unresolved", meas_denom_unresolved=True, place_available=False)
     resolved = _shape("resolved", meas_denom_dcid="Count_Person", place_available=True)
 
-    result, _ = _prune_availability_siblings([unresolved, resolved], named_place=False)
+    result, _ = _prune_availability_siblings(
+        [unresolved, resolved], named_place=False, quantity=NO_REQUIREMENT, denominator_kinds={}
+    )
 
     assert [s.shape_id for s in result] == ["resolved"]
 
@@ -399,7 +426,9 @@ def test_recalled_under_five_rate_and_empty_under_14_count_are_not_measure_head_
 def test_prune_keeps_the_empty_under_14_count_when_cohorts_differ():
     """Keep the empty under-14 count because its cohort differs from the rate."""
     shapes = _derive_child_mortality_shapes()
-    survivors, _ = _prune_availability_siblings(shapes, named_place=True)
+    survivors, _ = _prune_availability_siblings(
+        shapes, named_place=True, quantity=NO_REQUIREMENT, denominator_kinds={}
+    )
     surviving_members = {sv for shape in survivors for sv in (shape.sv_arc_facts or {})}
 
     assert _UNDER_FIVE_RATE_SV in surviving_members

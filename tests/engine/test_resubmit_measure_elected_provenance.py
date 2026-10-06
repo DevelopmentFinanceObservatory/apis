@@ -21,9 +21,10 @@ from search.models import (
 )
 from series_coverage.schema import RoleNames
 from tests.engine._axis_doubles import axis_confirming_reader
-from tests.engine._base_identity import destination_entity, make_base
+from tests.engine._base_identity import destination_entity, make_base, make_identity
 from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import walk_options
 from tests.engine.test_candidates_measure_alternatives import _ROLE_RECIPIENT, _ROLES
 from tests.engine.test_resubmit_alternative_measure_round_trip import (
     _KEN,
@@ -107,7 +108,7 @@ def test_named_family_election_reads_measure_elected_on_resubmit(monkeypatch):
         _unbound_slot("crsTypeOfFlow"),
         _unbound_slot("financialFlowType"),
     ]
-    base_spec_id, identity = make_base(_shape(), slots, entities=[destination_entity(_KEN)])
+    identity = make_identity(_shape(), slots, entities=[destination_entity(_KEN)])
 
     graph = _family_graph(member_rows)
     sdmx = _sibling_sdmx(_REP_SV)
@@ -118,15 +119,13 @@ def test_named_family_election_reads_measure_elected_on_resubmit(monkeypatch):
     )
     materialise_graph = axis_confirming_reader(*(row.dcid for row in member_rows), graph=graph)
 
-    inp = ResubmitIdentityPayload(
-        identity=identity, base_spec_id=base_spec_id, base_identity=identity
-    )
+    inp = ResubmitIdentityPayload(identity=identity)
     region = resolve_spec_resubmit(
         inp=inp,
         graph=graph,
         sdmx=sdmx,
         coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
-        options=EngineOptions(materialise_graph=materialise_graph),
+        options=walk_options(graph, EngineOptions(materialise_graph=materialise_graph)),
     )
 
     assert region.status == "definite", region.no_data_reason
@@ -158,17 +157,6 @@ def test_edited_slot_reads_binder_even_on_the_forceable_family(monkeypatch):
         role_names=dict.fromkeys(seed_dcids, _ROLE_NAMES),
     )
 
-    base_slots = [
-        _unbound_slot("crsCooperationModality"),
-        _bound_slot("crsPurpose", _CRS_PURPOSE),
-        _unbound_slot("crsTypeOfFinance"),
-        _unbound_slot("crsTypeOfFlow"),
-        _unbound_slot("financialFlowType"),
-    ]
-    base_spec_id, base_identity = make_base(
-        _shape(), base_slots, entities=[destination_entity(_KEN)]
-    )
-
     narrowed_slots = [
         _bound_slot("crsCooperationModality", "CRSCooperationModalityA01"),
         _bound_slot("crsPurpose", _CRS_PURPOSE),
@@ -197,15 +185,13 @@ def test_edited_slot_reads_binder_even_on_the_forceable_family(monkeypatch):
     sdmx = FakeSdmxClient(observations=observations, availability={})
     materialise_graph = axis_confirming_reader(*seed_dcids, graph=graph)
 
-    inp = ResubmitIdentityPayload(
-        identity=narrowed_identity, base_spec_id=base_spec_id, base_identity=base_identity
-    )
+    inp = ResubmitIdentityPayload(identity=narrowed_identity)
     region = resolve_spec_resubmit(
         inp=inp,
         graph=graph,
         sdmx=sdmx,
         coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
-        options=EngineOptions(materialise_graph=materialise_graph),
+        options=walk_options(graph, EngineOptions(materialise_graph=materialise_graph)),
     )
 
     assert region.status == "definite", region.no_data_reason
@@ -236,17 +222,6 @@ def test_widening_a_base_bound_axis_still_reads_unbound_on_the_no_seed_path(monk
     """
     member_rows = _member_rows()
 
-    base_slots = [
-        _bound_slot("crsCooperationModality", "CRSCooperationModalityA01"),
-        _bound_slot("crsPurpose", _CRS_PURPOSE),
-        _unbound_slot("crsTypeOfFinance"),
-        _unbound_slot("crsTypeOfFlow"),
-        _unbound_slot("financialFlowType"),
-    ]
-    base_spec_id, base_identity = make_base(
-        _shape(), base_slots, entities=[destination_entity(_KEN)]
-    )
-
     posted_slots = [
         _unbound_slot("crsCooperationModality"),
         _bound_slot("crsPurpose", _CRS_PURPOSE),
@@ -265,15 +240,13 @@ def test_widening_a_base_bound_axis_still_reads_unbound_on_the_no_seed_path(monk
     )
     materialise_graph = axis_confirming_reader(*(row.dcid for row in member_rows), graph=graph)
 
-    inp = ResubmitIdentityPayload(
-        identity=posted_identity, base_spec_id=base_spec_id, base_identity=base_identity
-    )
+    inp = ResubmitIdentityPayload(identity=posted_identity)
     region = resolve_spec_resubmit(
         inp=inp,
         graph=graph,
         sdmx=sdmx,
         coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
-        options=EngineOptions(materialise_graph=materialise_graph),
+        options=walk_options(graph, EngineOptions(materialise_graph=materialise_graph)),
     )
 
     assert region.status == "definite", region.no_data_reason

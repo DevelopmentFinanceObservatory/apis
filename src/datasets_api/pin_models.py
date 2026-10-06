@@ -26,7 +26,7 @@ class PinRequest(BaseModel):
 class PinnedCoordinates(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    id: str = Field(description="the spec_id or collection id from the path")
+    id: str = Field(description="the spec_id from the path")
     content_version: str
     artifact_digest: str
     pinned_at: str

@@ -26,6 +26,7 @@ _TOKEN_RE = re.compile(r"[a-z][a-z'\-]*[a-z]|[a-z]")
 # dependencies. test_role_text.py checks this lexicon against _ROLE_AXES.
 _ROLE_TEXT_TO_AXIS: dict[str, RoleAxis] = {
     "from": "origin",
+    "origin": "origin",
     "donor": "origin",
     "provider": "origin",
     "funder": "origin",

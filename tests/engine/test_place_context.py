@@ -19,7 +19,6 @@ from dc_sdmx import SdmxCapExceededError
 from graph_generation import FakeGeneration, GenerationStamp
 from materialise import place_scope
 from materialise.place_scope import NO_DEFAULT_SCOPE, DefaultPlaceScope, DefaultPresence
-from search.engine.bind import SlotBindingDraft
 from search.engine.departures import warning_key
 from search.engine.errors import DefaultScopeIndexSourcedError, GraphReadFailure
 from search.engine.place import default_place_scope_message, read_default_presence
@@ -34,7 +33,6 @@ from search.engine.region.observations.bulk_scope import bulk_scope_for
 from search.engine.region.phase_place_materialise import (
     _await_alternates_presence,
     _place_children_by_dcid,
-    _walk_key,
 )
 from search.engine.region.place_context import (
     PlaceContext,
@@ -53,6 +51,7 @@ from tests.engine import test_resubmit_place_scope_default as placeless_resubmit
 from tests.engine._builders import flow_place_roles, subject_place_roles
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import walk_options
 from tests.fixtures import FakeGraph
 
 _KEN = "country/KEN"
@@ -467,6 +466,7 @@ class TestSettled:
             SimpleNamespace(
                 discovered_scope=SimpleNamespace(member_dcids=[_KEN, _TZA]),
                 scope_member_dcids=[_KEN],
+                open_axes=frozenset(),
             ),
         )
 
@@ -488,10 +488,36 @@ class TestSettled:
         )
         mat = cast(
             Materialised,
-            SimpleNamespace(discovered_scope=None, default_scope=None, scope_member_dcids=[_KEN]),
+            SimpleNamespace(
+                discovered_scope=None,
+                default_scope=None,
+                scope_member_dcids=[_KEN],
+                open_axes=frozenset(),
+            ),
         )
 
         assert context.settled(mat) is context
+
+    @pytest.mark.parametrize(
+        ("served", "settled_open"),
+        [
+            pytest.param(frozenset({"origin"}), frozenset({"origin"}), id="served"),
+            pytest.param(frozenset(), frozenset(), id="unserved"),
+        ],
+    )
+    def test_the_open_axes_narrow_to_those_the_elected_members_serve(
+        self, served: frozenset[str], settled_open: frozenset[str]
+    ) -> None:
+        roles = dataclasses.replace(
+            flow_place_roles(_FLOW, destination=[_KEN]), open_axes=frozenset({"origin"})
+        )
+        context = _served_context(_FLOW, roles, children={}, presence=None, max_probe_places=256)
+        mat = cast(
+            Materialised,
+            SimpleNamespace(discovered_scope=None, default_scope=None, open_axes=served),
+        )
+
+        assert context.settled(mat).roles.open_axes == settled_open
 
     @pytest.mark.parametrize(
         "served",
@@ -513,7 +539,10 @@ class TestSettled:
             presence=_PRESENCE,
             max_probe_places=256,
         )
-        mat = cast(Materialised, SimpleNamespace(discovered_scope=None, default_scope=served))
+        mat = cast(
+            Materialised,
+            SimpleNamespace(discovered_scope=None, default_scope=served, open_axes=frozenset()),
+        )
 
         settled = context.settled(mat)
 
@@ -542,7 +571,10 @@ class TestSettlePlace:
         last = Warning(code="z", severity="info", message="z")
         warnings = [first, *context.warnings, last]
         served = _PRESENCE.scope("Count_Death_World")
-        mat = cast(Materialised, SimpleNamespace(discovered_scope=None, default_scope=served))
+        mat = cast(
+            Materialised,
+            SimpleNamespace(discovered_scope=None, default_scope=served, open_axes=frozenset()),
+        )
 
         settled = settle_place(context, mat, warnings)
 
@@ -553,7 +585,10 @@ class TestSettlePlace:
         context = self._context()
         warnings = [*context.warnings]
         served = _PRESENCE.scope(_MALE)
-        mat = cast(Materialised, SimpleNamespace(discovered_scope=None, default_scope=served))
+        mat = cast(
+            Materialised,
+            SimpleNamespace(discovered_scope=None, default_scope=served, open_axes=frozenset()),
+        )
 
         settled = settle_place(context, mat, warnings)
 
@@ -597,7 +632,7 @@ class TestDefaultScopeStatVars:
         self, monkeypatch
     ) -> None:
         """The refusal reaches the caller of a resubmit before any presence read. A resubmit
-        derives its shape from the posted StatVars' arcs, so the shape is reported
+        derives its shape from its elected members' arcs, so the shape is reported
         index-sourced here by patching."""
         monkeypatch.setattr(
             place_context_module, "shape_member_facts", lambda shape, bound_values: ({}, True)
@@ -616,6 +651,7 @@ class TestDefaultScopeStatVars:
                 graph=graph,
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 coverage=empty_coverage_snapshot(),
+                options=walk_options(graph),
             )
         assert presence_reads == []
 
@@ -738,16 +774,3 @@ def test_the_alternates_presence_read_is_merged_into_the_requests_presence() -> 
         _MALE: _PRESENCE.scope(_MALE),
         _FEMALE: _PRESENCE.scope(_FEMALE),
     }
-
-
-def test_a_walk_started_under_another_source_binding_is_not_reused() -> None:
-    """`walk_alternate` names the dataset the shape in play's bindings name, so a walk
-    started before an adopted sibling's bindings replaced them keys apart from one under the
-    new bindings."""
-    shape = _shape(_FEMALE)
-    source = SlotBindingDraft(axis="source", property_dcid=None, kind="value", value_dcids=["ds"])
-    state = SimpleNamespace(alternate_place_roles={1: subject_place_roles()}, bindings=[source])
-    before = _walk_key(cast(Any, state), 1, shape, _FEMALE)
-    state.bindings = []
-
-    assert _walk_key(cast(Any, state), 1, shape, _FEMALE) != before

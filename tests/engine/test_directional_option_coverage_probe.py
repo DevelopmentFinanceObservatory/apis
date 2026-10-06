@@ -164,7 +164,6 @@ def test_directional_single_place_gets_no_slot_options_coverage(monkeypatch):
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
             sdmx=sdmx,
-            base_steps=[],
             base_timing={},
             coverage=_coverage(monkeypatch),
             options=EngineOptions(

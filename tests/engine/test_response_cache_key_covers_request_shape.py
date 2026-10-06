@@ -1,6 +1,6 @@
 """Freezes request field sets so new caller or response dimensions cannot bypass cache coverage.
 
-New per-caller fields must enter `scope_document` or make the request uncacheable.
+New per-caller fields must enter `scope_document`.
 """
 
 from __future__ import annotations
@@ -11,8 +11,6 @@ _EXPECTED_RESOLVE_REQUEST_FIELDS = frozenset({"schema_version", "input", "respon
 
 _EXPECTED_RESOLVE_OPTIONS_FIELDS = frozenset(
     {
-        "max_candidates",
-        "include_sentence",
         "include_option_coverage",
         "include_observations",
         "include_skills",
@@ -25,9 +23,8 @@ _GUIDANCE = (
     "per-caller dimension (auth, API key, tenant, locale, role, or anything else that "
     "could make one caller's cached answer reach another caller) or otherwise changes "
     "what answer a request resolves to. If it does either, fold it into "
-    "search.engine.response_cache_keys.scope_document, or refuse the request from "
-    "caching entirely via is_cacheable_request, before this expected set is updated to "
-    "include it. Only once that decision is made and applied should the set below move."
+    "search.engine.response_cache_keys.scope_document before this expected set is "
+    "updated to include it. Only once that is applied should the set below move."
 )
 
 

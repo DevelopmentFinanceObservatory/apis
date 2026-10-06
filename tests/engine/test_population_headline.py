@@ -287,7 +287,7 @@ def test_an_open_origin_bulk_read_counts_series_when_it_truncates(monkeypatch, s
     assert len(_served(result.specs[0])) == 3
     (warning,) = [w for w in result.warnings if w.code == OBSERVATIONS_SERIES_TRUNCATED]
     assert "showing 3 of 4 confirmed series" in warning.message
-    assert warning.params == {"shown": 3, "total": 4}
+    assert warning.params == {"shown": 3, "total": 4, "order": "ranked"}
 
 
 def test_a_windowed_bulk_read_past_the_current_year_serves_projection_years(
