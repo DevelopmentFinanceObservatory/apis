@@ -193,7 +193,6 @@ def _build_part(
     *,
     representative: RegionResult,
     folded: bool,
-    include_sentence: bool,
     max_candidates: int,
     include_observations: bool,
     include_skills: bool,
@@ -207,9 +206,7 @@ def _build_part(
     envelope, so part timing excludes it. Folded parts carry only
     ``binding_folded``. The representative's warnings appear on its first part.
 
-    Builders derive the wire restatement reason from the region's restatement
-    and reason together, keeping both fields consistent after a door override. A raised
-    departure fact reaches the part only while the part's or the envelope's warnings hold
+    A raised departure fact reaches the part only while the part's or the envelope's warnings hold
     the warning it was raised beside. On a candidates part only warnings stamped with no
     reading's `spec_id` count, since the part's departures speak for every reading it shows.
     """
@@ -239,9 +236,7 @@ def _build_part(
             variable_text=variable_text,
             warnings=warnings,
             timing_ms=timing_ms,
-            include_sentence=include_sentence,
             restatement=region.restatement,
-            restatement_reason=region.restatement_reason,
             operations=region.operations,
             include_skills=include_skills,
             skills_index=skills_index,
@@ -255,7 +250,6 @@ def _build_part(
             warnings=list(region.warnings),
             timing_ms=timing_ms,
             max_candidates=max_candidates,
-            include_sentence=include_sentence,
             include_observations=include_observations,
             # The near-neighbor gate promotes its runner-up into bind order.
             # Other ambiguous sets sort broadest-first. Score and gate metadata preserve
@@ -267,7 +261,6 @@ def _build_part(
             # dataset_resubmit preserves its posted candidate order and labels through this override.
             ordering=region.candidate_ordering_override,
             restatement=region.restatement,
-            restatement_reason=region.restatement_reason,
             operations=region.operations,
             include_skills=include_skills,
             skills_index=skills_index,
@@ -293,7 +286,6 @@ def _build_part(
             warnings=list(region.warnings),
             timing_ms=timing_ms,
             restatement=region.restatement,
-            restatement_reason=region.restatement_reason,
             operations=region.operations,
             include_skills=include_skills,
             skills_index=skills_index,
@@ -309,7 +301,6 @@ def _build_part(
         variable_text=variable_text,
         warnings=list(region.warnings),
         timing_ms=timing_ms,
-        include_sentence=include_sentence,
         nearest_real=list(region.nearest_real) if region.nearest_real else None,
         flagged_match=region.flagged_match[0] if region.flagged_match else None,
         gate=region.gate,
@@ -326,9 +317,7 @@ def _build_part(
         data_query=_data_query(region),
         qualifier_terms=list(region.unbound_qualifiers) or None,
         unit_alternatives=list(region.unit_alternatives) or None,
-        unit_alternatives_truncated=region.unit_alternatives_truncated,
         restatement=region.restatement,
-        restatement_reason=region.restatement_reason,
         operations=region.operations,
         include_skills=include_skills,
         skills_index=skills_index,
@@ -350,7 +339,6 @@ def assemble_region(
     extra_warnings: list[Warning],
     start_ms: int,
     engine_build: str,
-    include_sentence: bool,
     max_candidates: int,
     include_observations: bool = False,
     include_skills: bool = False,
@@ -397,7 +385,6 @@ def assemble_region(
         region,
         representative=region,
         folded=False,
-        include_sentence=include_sentence,
         max_candidates=max_candidates,
         include_observations=include_observations,
         include_skills=include_skills,
@@ -420,7 +407,6 @@ def combine_regions(
     extra_warnings: list[Warning],
     start_ms: int,
     engine_build: str,
-    include_sentence: bool,
     max_candidates: int,
     include_observations: bool = False,
     include_skills: bool = False,
@@ -493,7 +479,6 @@ def combine_regions(
             r,
             representative=representative_by_index.get(r.earliest_index, r),
             folded=r.earliest_index in folded_indices,
-            include_sentence=include_sentence,
             max_candidates=max_candidates,
             include_observations=include_observations,
             include_skills=include_skills,

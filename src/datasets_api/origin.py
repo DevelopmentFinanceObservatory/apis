@@ -1,4 +1,4 @@
-"""What the origin catalogue adds to a mint or preview: the build a manifest's trace records, the
+"""What the origin catalogue adds to a mint: the build a manifest's trace records, the
 `origin_catalogue_stale`, `withheld_by_registry` and `un_system_unavailable` warnings, and the
 `excluded_by_registry` refusal.
 
@@ -6,8 +6,8 @@ Each request binds one catalogue (`origin_catalogue.current_catalogue`), so a ma
 its citation sources and its warnings name one build.
 
 The graph withholds a facet whose provenance the catalogue does not admit. Finding what it
-withheld costs one facet read with no domain filter, so the re-read runs at most once per mint or
-preview, only when a requested series left an entity without rows, and under the request's
+withheld costs one facet read with no domain filter, so the re-read runs at most once per mint,
+only when a requested series left an entity without rows, and under the request's
 deadline and `WITHHELD_READ_MAX_BYTES`. It names an entity only where the catalogue admits none of the
 series' facets there (`WithheldReader.withheld_at`). A failed re-read is logged and leaves the
 answer as it was, since the answer itself was read in full.

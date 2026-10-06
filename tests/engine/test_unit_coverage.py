@@ -29,6 +29,7 @@ from materialise.recipes import RateCoverageGapError
 from materialise.window import RequestedWindow
 from search.engine.clients.graph import Facet
 from search.engine.clients.sdmx import RoleFacetCandidate
+from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import GraphDeadlineFailure, GraphInfraError
 from search.engine.extract import DateRequest
 from search.engine.region import convertibility
@@ -1235,8 +1236,13 @@ def test_a_sparse_series_without_its_dates_refuses_on_its_span(dated, deadline, 
         rate_cache=rate_cache,
     )
     assert check().refusal is not None
-    with caplog.at_level(logging.WARNING, logger=convertibility.__name__):
+    with (
+        caplog.at_level(logging.WARNING, logger=convertibility.__name__),
+        recording_degraded_reads() as lost,
+    ):
         gap = check(dated_facets=dated, deadline=deadline).refusal
+    # A dated read that failed or never ran is lost to the answer, so no cache stores it.
+    assert lost.degraded is (logged is not None)
     assert gap is not None
     exc = gap[1]
     assert isinstance(exc, RateCoverageGapError)

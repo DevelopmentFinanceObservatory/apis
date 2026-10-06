@@ -87,7 +87,6 @@ def _run(monkeypatch):
             resolver=make_resolver(graph),
             llm=_ElectNoDataAlsoPlausibleHasDataLLM(),
             sdmx=sdmx,
-            base_steps=[],
             base_timing={},
             coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
         )
@@ -120,7 +119,6 @@ def _build_part(result, alternate_match):
         result.no_data_reason,
         variable_text=result.variable_text,
         warnings=list(result.warnings),
-        include_sentence=True,
         gate=result.gate,
         alternate_match=alternate_match,
         elected_stat_vars=result.elected_stat_vars,

@@ -216,7 +216,6 @@ class TestDeriveShapesZeroMemberGroupPipelineOutcome:
                 resolver=make_resolver(graph),
                 llm=_UnusedBindLLM(),
                 sdmx=FakeSdmxClient(),
-                base_steps=[],
                 base_timing={},
                 coverage=empty_coverage_snapshot(),
             )

@@ -13,7 +13,6 @@ import httpx
 import pytest
 
 import datasets_api.doors.definition as definition_module
-import materialise.facets as facets_module
 from artifact_store import ArtifactNotFoundError, LiveArtifactInventory, StoredArtifact, Tier
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.types import StatVarRow
@@ -50,12 +49,10 @@ from .test_definition_door import (
     _RECIPIENT,
     _STAT_VAR,
     _STAT_VAR_B,
-    _STAT_VAR_B_REF,
     _STAT_VAR_REF,
     _coverage_service,
     _described_two_member_graph,
     _mint_one_spec,
-    _mint_two_member_collection,
     _multi_stat_var_sdmx_transport,
 )
 from .test_definition_door import (
@@ -161,8 +158,11 @@ def _mutable_graph(facets: dict[tuple[str, str], list[Facet]]) -> FakeMintGraphR
     """Builds a graph over the caller's mutable facet mapping."""
     return FakeMintGraphReader(
         arcs={
-            _STAT_VAR: _ARCS,
-            _STAT_VAR_B: _ARCS,
+            _STAT_VAR: {**_ARCS, "name": ("Aid",)},
+            _STAT_VAR_B: {**_ARCS, "name": ("Aid B",)},
+            # Named so a download's default name columns fill and add no render warning.
+            "GrantEquivalent": {"name": ("Grant equivalent",)},
+            _RECIPIENT: {"name": ("Kenya",)},
         },
         facets=facets,
         labels={"OECD_DAC2A": "OECD DAC2a", _RECIPIENT: "Kenya"},
@@ -227,27 +227,6 @@ def _counting_transport(body_ref: dict[str, str]) -> tuple[httpx.MockTransport, 
         return httpx.Response(
             200,
             text=body_ref["text"],
-            headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
-        )
-
-    return httpx.MockTransport(handler), counter
-
-
-def _counting_multi_transport(
-    rows_by_var: dict[str, dict[str, str]],
-) -> tuple[httpx.MockTransport, _Counter]:
-    """Returns one combined response containing a row for each requested bare StatVar.
-    `rows_by_var` values are mutable row strings without CSV headers."""
-    counter = _Counter()
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        counter.n += 1
-        variable_param = request.url.params.get("c[variableMeasured]", "")
-        requested = variable_param.split(",")
-        rows = "".join(rows_by_var[var]["text"] for var in requested if var in rows_by_var)
-        return httpx.Response(
-            200,
-            text=_CSV_HEADER + rows,
             headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
         )
 
@@ -732,84 +711,6 @@ def test_repeated_confirmations_do_not_extend_the_maximum_age():
 
 
 # --- The definition GET over a collection: same states, per-member signal ---
-
-
-def test_collection_currency_sequence():
-    facets = {
-        (_STAT_VAR, _RECIPIENT): [_FACET],
-        (_STAT_VAR_B, _RECIPIENT): [_FACET],
-    }
-    graph = _mutable_graph(facets)
-    rows_by_var = {
-        _STAT_VAR: {"text": _row(stat_var_ref=_STAT_VAR_REF, obs_value="1000")},
-        _STAT_VAR_B: {"text": _row(stat_var_ref=_STAT_VAR_B_REF, obs_value="500")},
-    }
-    transport, sdmx_calls = _counting_multi_transport(rows_by_var)
-    head_store = _FakeHeadStore()
-    client = _client(
-        graph=graph,
-        sdmx_transport=transport,
-        head_writer=head_store,
-        coverage=_CoverageFromFacets(facets),
-    )
-    collection_id, _spec_id_by_ref = _mint_two_member_collection(client)
-
-    # Match the mint's `bundle=false` rendering. Collections cannot render missing formats
-    # from a stored frame1. Minting primes one signal per member, so the first GET finds a
-    # fresh head and serves it without a re-probe.
-    first = client.get(f"/api/datasets/{collection_id}?bundle=false")
-    assert first.status_code == 200, first.text
-    first_body = first.json()
-    assert first_body["trace"]["served_from"] == "head"
-    assert head_store.head_for(collection_id).signal == (_SIGNAL[0], _SIGNAL[0])
-    sdmx_calls_after_first = sdmx_calls.n
-
-    # 2. Second GET, inside the recheck interval: no graph or SDMX call.
-    graph_calls_after_first = dict(graph.calls)
-    second = client.get(f"/api/datasets/{collection_id}?bundle=false")
-    assert second.status_code == 200, second.text
-    second_body = second.json()
-    assert second_body["trace"]["served_from"] == "head"
-    assert _content_fields(second_body) == _content_fields(first_body)
-    assert graph.calls == graph_calls_after_first
-    assert sdmx_calls.n == sdmx_calls_after_first
-
-    # 3. Past the recheck interval, unchanged probe: confirms. Both members
-    # are role-bearing, so their shared candidates come from coverage,
-    # reaching neither the graph nor SDMX.
-    head_store.age_head(collection_id, age=_PAST_INTERVAL)
-    graph_calls_before_third = dict(graph.calls)
-    third = client.get(f"/api/datasets/{collection_id}?bundle=false")
-    assert third.status_code == 200, third.text
-    third_body = third.json()
-    assert third_body["trace"]["served_from"] == "head"
-    assert third_body["trace"]["confirmed_at"] != first_body["trace"]["confirmed_at"]
-    assert _content_fields(third_body) == _content_fields(first_body)
-    assert (
-        graph.calls["observation_facets_batch_many"]
-        == graph_calls_before_third["observation_facets_batch_many"]
-    )
-    assert sdmx_calls.n == sdmx_calls_after_first
-
-    # 4. Past the recheck interval again, one member's own probe changed:
-    # re-materialises the whole collection, fetches SDMX, moves the head.
-    # A role-bearing candidate's `obs_count` is coverage's own real
-    # `n_obs`, so moving `period` widens the coverage-derived candidate's
-    # own `n_obs`/`latest_date`, which is what makes the probe disagree
-    # with the stored signal.
-    head_store.age_head(collection_id, age=_PAST_INTERVAL)
-    facets[(_STAT_VAR_B, _RECIPIENT)] = [_FACET_CHANGED]
-    rows_by_var[_STAT_VAR_B]["text"] = _row(
-        stat_var_ref=_STAT_VAR_B_REF, obs_value="900", period="2021"
-    )
-    fourth = client.get(f"/api/datasets/{collection_id}?bundle=false")
-    assert fourth.status_code == 200, fourth.text
-    fourth_body = fourth.json()
-    assert fourth_body["trace"]["served_from"] == "materialise"
-    assert fourth_body["content_version"] != first_body["content_version"]
-    # Four lanes give each of the two members a separate SDMX fetch.
-    assert sdmx_calls.n == sdmx_calls_after_first + 2
-    assert head_store.head_for(collection_id).content_version == fourth_body["content_version"]
 
 
 # --- The options route: same states, no writes ---
@@ -1301,38 +1202,6 @@ def test_head_hit_stored_frame_groupby_refuses_a_zero_row_resolved_member_missin
     assert "Malaria control" in problem["detail"]
 
 
-def test_collection_head_hit_re_materialises_on_a_rendering_miss():
-    """Collections lack a shared frame1 source, so a head hit with a missing rendering
-    re-materialises every member."""
-    facets = {
-        (_STAT_VAR, _RECIPIENT): [_FACET],
-        (_STAT_VAR_B, _RECIPIENT): [_FACET],
-    }
-    graph = _mutable_graph(facets)
-    rows_by_var = {
-        _STAT_VAR: {"text": _row(stat_var_ref=_STAT_VAR_REF, obs_value="1000")},
-        _STAT_VAR_B: {"text": _row(stat_var_ref=_STAT_VAR_B_REF, obs_value="500")},
-    }
-    transport, sdmx_calls = _counting_multi_transport(rows_by_var)
-    head_store = _FakeHeadStore()
-    client = _client(
-        graph=graph,
-        sdmx_transport=transport,
-        head_writer=head_store,
-        coverage=_CoverageFromFacets(facets),
-    )
-    collection_id, _spec_id_by_ref = _mint_two_member_collection(client)
-    sdmx_calls_after_mint = sdmx_calls.n
-
-    resp = client.get(f"/api/datasets/{collection_id}?format=parquet&bundle=false")
-
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["trace"]["served_from"] == "materialise"
-    # Four lanes give each of the two members a separate SDMX fetch.
-    assert sdmx_calls.n == sdmx_calls_after_mint + 2
-
-
 def test_signing_counts_only_the_matching_rendering_among_several_stored():
     """A head hit narrows to the ONE rendering its own request names
     (`read_snapshot_manifest`'s own `rendering_key` narrowing) plus the
@@ -1391,38 +1260,6 @@ def test_signing_counts_only_the_matching_rendering_among_several_stored():
     # docstring) -- both get signed.
     assert len(body["artifacts"]) == 2
     assert artifact_store.signing_calls == signing_calls_before + 2
-
-
-def test_collection_probe_ceiling_never_fires_for_a_role_bearing_stale_head_get(
-    monkeypatch: object,
-) -> None:
-    """The probe-pair cap applies to subject-only groups. Role-bearing candidates come from
-    coverage, so role-bearing head rechecks confirm even when the cap is 0."""
-    facets = {
-        (_STAT_VAR, _RECIPIENT): [_FACET],
-        (_STAT_VAR_B, _RECIPIENT): [_FACET],
-    }
-    graph = _mutable_graph(facets)
-    rows_by_var = {
-        _STAT_VAR: {"text": _row(stat_var_ref=_STAT_VAR_REF, obs_value="1000")},
-        _STAT_VAR_B: {"text": _row(stat_var_ref=_STAT_VAR_B_REF, obs_value="500")},
-    }
-    transport, _sdmx_calls = _counting_multi_transport(rows_by_var)
-    head_store = _FakeHeadStore()
-    client = _client(
-        graph=graph,
-        sdmx_transport=transport,
-        head_writer=head_store,
-        coverage=_CoverageFromFacets(facets),
-    )
-    collection_id, _spec_id_by_ref = _mint_two_member_collection(client)
-    head_store.age_head(collection_id, age=_PAST_INTERVAL)
-    monkeypatch.setattr(facets_module, "_MAX_COLLECTION_PROBE_PAIRS", 0)
-
-    resp = client.get(f"/api/datasets/{collection_id}?bundle=false")
-
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["trace"]["served_from"] == "head"
 
 
 _UNIT_STAT_VAR = "CurrencyRecheckDisbursements"

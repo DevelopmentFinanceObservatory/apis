@@ -77,19 +77,27 @@ opposite value to be exercised against.
 
 @dataclass(frozen=True, slots=True)
 class DeclaredDefault:
-    """Default for an open slot, triggered by a binding on another axis or a phrase.
+    """Default for an open slot, triggered by a binding on another axis, a phrase, or the
+    slot being open.
 
     `code` names a code in this system. `when_bound_under` lists dcids in
     other systems whose subtrees trigger the default. `when_named` lists
-    lowercase whole words that trigger it case-insensitively. A default fires only for an open slot, and the scoping
-    code must belong to a different system than `code`. All other
-    `apply_declared_defaults` conditions apply. Both triggers default to empty
+    lowercase whole words that trigger it case-insensitively. `when_open` fires it on every
+    open slot, with no other trigger. A default fires only for an open slot, and the
+    scoping code must belong to a different system than `code`. All other
+    `apply_declared_defaults` conditions apply. Both trigger lists default to empty
     tuples where unspecified.
+
+    `note` is the sentence an answer states whenever the default fires. A default that
+    fires on an open slot carries one, since the query holds no word that names the slot;
+    one without a note warns only where the query names the slot (`defaulted_slots_named`).
     """
 
     code: str
     when_bound_under: tuple[str, ...]
     when_named: tuple[str, ...] = ()
+    when_open: bool = False
+    note: str | None = None
 
 
 def invalid_when_named_entry(when_named: Sequence[str]) -> int | None:
@@ -180,10 +188,12 @@ against.
 class DatasetDeclaration:
     """One published table, keyed by the provenance its observations carry.
 
-    `label` and `synonyms` are the names a query or a sentence uses for the
-    dataset. `opt_in` marks a table a question answers from only when it
-    names the table (the imputed multilateral sectors table). Any other table
-    (CRS) answers any question its five-tuples fit. Several datasets may
+    `label` is the name a sentence uses for the dataset. `description` says in
+    one plain sentence what the table measures; the bind menu's source slot shows
+    it beside the label (`search.engine.bind`). `opt_in` marks a table
+    a question answers from only when it names the table, or on a five-tuple no
+    other table publishes (the imputed multilateral sectors table). Any other
+    table (CRS) answers any question its five-tuples fit. Several datasets may
     publish one five-tuple, and one StatVar row may belong to several.
     `rank` orders them: of the datasets that can serve a family, the lowest
     rank serves it (`code_index.members.elect_dataset`). Ranks are unique
@@ -208,7 +218,7 @@ class DatasetDeclaration:
 
     provenance: str
     label: str
-    synonyms: tuple[str, ...]
+    description: str
     opt_in: bool
     absent_observation: AbsentObservation
     rank: int

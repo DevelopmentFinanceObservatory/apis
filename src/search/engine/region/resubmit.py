@@ -1,11 +1,12 @@
 """Entry point for standard identity resubmission.
 
 Reject pinned StatVar identities, then delegate to `_resolve_standard_promote`,
-which rebuilds the shape from graph-confirmed StatVar arcs and resolves edits.
+which elects the identity's members and rebuilds the shape from their arcs.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 
 from materialise.member_conversion import request_conversion_reader
@@ -13,14 +14,14 @@ from origin_catalogue import recording_un_blocked_places
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import settings
-from search.engine.envelope import make_pipeline_step
+from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import EngineInputError
 from search.engine.identity_edit import check_described_arm
 from search.engine.region.resubmit_promote import _resolve_standard_promote
 from search.engine.region.result import RegionResult
 from search.engine.region.state import EngineOptions
 from search.engine.region.un_system import with_un_unavailable_warning
-from search.models import PipelineStep, ResubmitIdentityPayload
+from search.models import ResubmitIdentityPayload
 from series_coverage.shared import CoverageSnapshot
 
 logger = logging.getLogger(__name__)
@@ -55,23 +56,24 @@ def resolve_spec_resubmit(
     inp: ResubmitIdentityPayload,
     graph: EngineGraphClient,
     sdmx: EngineSdmxClient,
-    stat_vars_cap: int | None = settings().resolved_stat_vars_max,
     coverage: CoverageSnapshot,
     options: EngineOptions | None = None,
+    full_read_deadline: float | None = None,
 ) -> RegionResult:
     """Resolve an identity without extract, recall, shape, or bind steps.
 
-    Re-read posted StatVar arcs and rebuild the shape. Matching bindings promote.
-    Edits narrow the seed or construct and graph-confirm sibling StatVars. The
-    trace marks `extract` as skipped, and graph labels replace posted labels.
+    Elect the identity's members as the Datasets mint does, re-read their arcs and
+    rebuild the shape. Graph labels replace posted labels. `full_read_deadline` bounds a
+    member walk's full read of a deep-root family and every phase after it
+    (`_resolve_standard_promote`).
 
     Pinned StatVar identities raise `request_invalid` (400). Missing graph
     nodes produce `no_data`, except absent observationAbout role refs, which
     raise `invalid_role_ref` (422). Origin lists are capped at
     `max_standard_places`. Origin refs require a role-bearing shape.
-    `stat_vars_cap` bounds the returned Spec. `None` serves uncapped internal
-    options reads. `coverage` and `options` carry request-scoped enrichment
-    inputs. `options=None` uses the un-enriched baseline.
+    `coverage` and `options` carry request-scoped enrichment inputs. `options=None` uses
+    the un-enriched baseline. The result is `degraded` when the promote swallowed a read
+    (`degraded_reads`).
     """
     check_described_arm(inp.identity.shape, pointer="/input/identity/shape")
     origin_dcids = inp.identity.entities.get("origin", [])
@@ -82,21 +84,19 @@ def resolve_spec_resubmit(
             code="request_invalid",
             pointer="/input/identity/entities/origin",
         )
-    extract_step = make_pipeline_step("extract", ran=False)
-    pipeline_steps: list[PipelineStep] = [extract_step]
     _options = options if options is not None else EngineOptions()
 
     # `_phase_materialise` checks origins after rebuilding the shape.
     # Role-bearing shapes bind origins on their origin axis. Standard shapes raise
     # `role_incompatible`.
     try:
-        with recording_un_blocked_places() as un_blocked:
+        with recording_degraded_reads() as lost, recording_un_blocked_places() as un_blocked:
             result = _resolve_standard_promote(
                 inp,
                 graph,
-                pipeline_steps,
                 sdmx=sdmx,
                 deadline=_options.deadline,
+                full_read_deadline=full_read_deadline,
                 # One conversion memo serves every unit decision, coverage check and preview.
                 materialise_graph=(
                     request_conversion_reader(_options.materialise_graph)
@@ -108,7 +108,6 @@ def resolve_spec_resubmit(
                 stream_slot_options=_options.stream_slot_options,
                 include_observations=_options.include_observations,
                 stream_observations=_options.stream_observations,
-                stat_vars_cap=stat_vars_cap,
                 rate_cache=_options.rate_cache,
                 population_memo=_options.population_memo,
                 place_options_pool=_options.place_options_pool,
@@ -116,4 +115,6 @@ def resolve_spec_resubmit(
             )
     except EngineInputError as exc:
         raise _with_nested_identity_pointer(exc) from exc
-    return with_un_unavailable_warning(result, un_blocked)
+    result = with_un_unavailable_warning(result, un_blocked)
+    # A read the promote swallowed marks the part degraded, so no cache stores it.
+    return dataclasses.replace(result, degraded=True) if lost.degraded else result

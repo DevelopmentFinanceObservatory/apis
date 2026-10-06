@@ -25,10 +25,14 @@ from search.catalogue.artifact import (
 )
 from search.models import (
     RESOLVE_RESPONSE_ADAPTER,
+    DefinitePart,
     EntityRoleKey,
+    GraphRef,
     ObservationsOmissionReason,
+    Resolution,
     ResolveRequest,
     ResolveResponse,
+    StatVar,
 )
 from series_coverage.loader import LoadedCoverage, load_coverage
 from tests.conftest import base_response, minimal_spec
@@ -59,14 +63,7 @@ def definite(
     `place` in `role`."""
     spec = minimal_spec()
     spec["resolved"]["entities"] = [{"ref": place, "role": role}]
-    spec["resolved"]["stat_vars"] = {
-        "items": [
-            {"ref": stat_var, "slot_values": [], "constraint_properties": []}
-            for stat_var in stat_vars
-        ],
-        "member_count": len(stat_vars),
-        "truncated": False,
-    }
+    spec["resolved"]["stat_vars"] = {"member_count": len(stat_vars)}
     spec["resolved"]["observations"] = {
         "series": [
             {
@@ -81,7 +78,37 @@ def definite(
         "truncated": False,
     }
     part = {"status": "definite", "variable_text": "v", "warnings": [], "spec": spec}
-    return RESOLVE_RESPONSE_ADAPTER.validate_python(base_response(parts=[part]))
+    return serving(
+        RESOLVE_RESPONSE_ADAPTER.validate_python(base_response(parts=[part])), *stat_vars
+    )
+
+
+def serving(response: ResolveResponse, *stat_vars: str) -> ResolveResponse:
+    """`response` with each definite part's Spec serving `stat_vars`, as the engine states
+    them off the wire (`ResolvedSpec.members`)."""
+    assert isinstance(response, Resolution)
+    members = [
+        StatVar(
+            ref=GraphRef(dcid=dcid, label=dcid),
+            shape_id="",
+            slot_values=[],
+            constraint_properties=[],
+        )
+        for dcid in stat_vars
+    ]
+    parts = [
+        part.model_copy(
+            update={
+                "spec": part.spec.model_copy(
+                    update={"resolved": part.spec.resolved.stating_members(members)}
+                )
+            }
+        )
+        if isinstance(part, DefinitePart)
+        else part
+        for part in response.parts
+    ]
+    return response.model_copy(update={"parts": parts})
 
 
 def omitted(
@@ -100,7 +127,7 @@ def omitted(
         "truncated": False,
         "omitted": {"reason": reason, "message": reason},
     }
-    return RESOLVE_RESPONSE_ADAPTER.validate_python(response)
+    return serving(RESOLVE_RESPONSE_ADAPTER.validate_python(response), stat_var)
 
 
 def no_data() -> ResolveResponse:

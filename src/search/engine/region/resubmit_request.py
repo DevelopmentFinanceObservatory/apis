@@ -7,8 +7,9 @@ from collections.abc import Callable, Mapping
 
 from materialise import facet_axis_value
 from search.engine.axis import classify_axis
-from search.engine.clients.graph import EngineGraphClient, SubjectsCoverage, SubjectsPage
+from search.engine.clients.graph import EngineGraphClient, SubjectsCoverage
 from search.engine.config import settings
+from search.engine.degraded_reads import note_degraded_read
 from search.engine.errors import EngineInputError, GraphInfraError
 from search.engine.extract import DateRequest
 from search.engine.region.facets import _facet_source_dcid, binding_admits_value
@@ -23,6 +24,7 @@ from search.engine.spec_build import NamedGroup
 from search.engine.unit.refs import expressible as _unit_request_expressible
 from search.engine.unit.refs import satisfies as _unit_request_satisfies
 from search.models import (
+    BaseIdentity,
     Binding,
     BindingSet,
     BindingUnbound,
@@ -95,7 +97,8 @@ def _binding_from_identity(binding: IdentityBinding, value_kind: ValueKind) -> B
 def _identity_slots_to_wire(
     identity_slots: list[IdentitySlot], confirmed_arcs: Mapping[str, dict]
 ) -> list[Slot]:
-    """Rebuild slot axes from confirmed seed arcs without another graph read."""
+    """Rebuild slot axes from the elected members' confirmed arcs without another graph
+    read."""
     observed: dict[str, list[str]] = {}
     for arcs in confirmed_arcs.values():
         for prop, value in read_constraints(arcs).items():
@@ -315,80 +318,69 @@ def _requested_window_for_id(date_request: DateRequest | None) -> RequestedWindo
 
 
 def resubmit_named_groups(
-    inp: ResubmitIdentityPayload, *, graph: EngineGraphClient, deadline: float | None
+    identity: BaseIdentity, *, graph: EngineGraphClient, deadline: float | None
 ) -> tuple[NamedGroup, ...]:
-    """The posted identity's groups whose role binds the same entities as `base_identity`.
+    """The posted identity's groups the graph confirms.
 
-    A resubmit that edits a role's entities drops that role's group and keeps the rest, so
-    a group names only members the answer binds. A group posting a dcid is kept
-    only when the graph's members of that node (`<-containedInPlace`) are the role's
-    entities, and it takes the graph's label for the node, as a first answer does
-    (`place_roles.request_named_groups`). The posted label stands only where the graph gives
-    none. A group posting no dcid keeps its posted label, the query's own name for it. All
-    posted dcids are read in one members batch, and the membership-confirmed ones in one
-    labels batch. Each dropped group is logged at info with the reason. A `GraphInfraError`
-    on either read drops the dcid groups it covers, logged at warning, and the role's
-    entities still bind: a posted label never stands in for an unverified group.
+    A group is kept only when it posts a dcid and the graph's members of that node
+    (`<-containedInPlace`) are the role's entities, and it takes the graph's label for the
+    node, as a first answer does (`place_roles.request_named_groups`). The posted label
+    stands only where the graph gives none. A group posting no dcid drops, since nothing
+    ties its label to the role's entities. All posted dcids are read in one members batch,
+    and the membership-confirmed ones in one labels batch. Each dropped group is logged at
+    info with the reason. A `GraphInfraError` on either read drops the groups it covers,
+    logged at warning and noted as a lost read (`degraded_reads.note_degraded_read`), and
+    the role's entities still bind.
     """
-    identity, base = inp.identity, inp.base_identity
-    if base is None:
-        return ()
-    kept: list[tuple[IdentityEntityGroup, frozenset[str]]] = []
+    kept: list[tuple[str, IdentityEntityGroup, frozenset[str]]] = []
     for role, group in (identity.entity_groups or {}).items():
-        members = frozenset(identity.entities[role])
-        if members == frozenset(base.entities.get(role, ())):
-            kept.append((group, members))
-        else:
-            logger.info(
-                "resubmit dropped group %r on role %s: the edit changed the role's entities",
-                group.dcid or group.label,
-                role,
-            )
-    dcids = sorted({group.dcid for group, _ in kept if group.dcid is not None})
-    pages: Mapping[str, SubjectsPage] = {}
-    if dcids:
-        try:
-            pages = graph.node_subjects_many(
-                dcids,
-                property="containedInPlace",
-                max_results=settings().max_child_places,
-                deadline=deadline,
-            )
-        except GraphInfraError as exc:
-            logger.warning("resubmit dropped groups %s: members read failed: %s", dcids, exc)
-    verified: list[tuple[IdentityEntityGroup, frozenset[str]]] = []
-    for group, members in kept:
         if group.dcid is None:
-            verified.append((group, members))
+            logger.info(
+                "resubmit dropped group %r on role %s: it names no graph node", group.label, role
+            )
             continue
-        page = pages.get(group.dcid)
+        kept.append((group.dcid, group, frozenset(identity.entities[role])))
+    if not kept:
+        return ()
+    dcids = sorted({dcid for dcid, _, _ in kept})
+    try:
+        pages = graph.node_subjects_many(
+            dcids,
+            property="containedInPlace",
+            max_results=settings().max_child_places,
+            deadline=deadline,
+        )
+    except GraphInfraError as exc:
+        logger.warning("resubmit dropped groups %s: members read failed: %s", dcids, exc)
+        note_degraded_read("named group members")
+        return ()
+    verified: list[tuple[str, IdentityEntityGroup, frozenset[str]]] = []
+    for dcid, group, members in kept:
+        page = pages.get(dcid)
         if page is None:
             continue
         if page.coverage is SubjectsCoverage.complete and frozenset(page.dcids) == members:
-            verified.append((group, members))
+            verified.append((dcid, group, members))
             continue
         logger.info(
             "resubmit dropped group %s: %s (graph members %d, role entities %d)",
-            group.dcid,
+            dcid,
             "members differ"
             if page.coverage is SubjectsCoverage.complete
             else f"coverage {page.coverage}",
             len(page.dcids),
             len(members),
         )
-    confirmed = sorted({group.dcid for group, _ in verified if group.dcid is not None})
-    labels: Mapping[str, str] = {}
-    if confirmed:
-        try:
-            labels = graph.node_labels_batch(confirmed)
-        except GraphInfraError as exc:
-            logger.warning("resubmit dropped groups %s: labels read failed: %s", confirmed, exc)
-            verified = [(group, members) for group, members in verified if group.dcid is None]
+    if not verified:
+        return ()
+    confirmed = sorted({dcid for dcid, _, _ in verified})
+    try:
+        labels = graph.node_labels_batch(confirmed)
+    except GraphInfraError as exc:
+        logger.warning("resubmit dropped groups %s: labels read failed: %s", confirmed, exc)
+        note_degraded_read("named group labels")
+        return ()
     return tuple(
-        NamedGroup(
-            label=group.label if group.dcid is None else labels.get(group.dcid, group.label),
-            dcid=group.dcid,
-            member_dcids=members,
-        )
-        for group, members in verified
+        NamedGroup(label=labels.get(dcid, group.label), dcid=dcid, member_dcids=members)
+        for dcid, group, members in verified
     )

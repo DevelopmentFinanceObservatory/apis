@@ -140,7 +140,6 @@ def _run():
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_AbsentMisclassifyLLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
@@ -154,7 +153,7 @@ def test_selected_statvar_asserts_the_property_so_it_is_not_inapplicable():
     assert result.no_data_reason == "no_observations"
     assert result.flagged_match is not None
     spec = result.flagged_match[0]
-    assert [sv.ref for sv in spec.resolved.stat_vars.items] == [_SV_DOMESTIC_GOVT]
+    assert [sv.ref.dcid for sv in spec.resolved.members] == [_SV_DOMESTIC_GOVT]
     assert _PROP_FIN_SOURCE not in spec.resolved.inapplicable_slots
     # Still unbound on the wire (the query never named a financing source) --
     # this is "unbound, and not inapplicable", not a bound slot.

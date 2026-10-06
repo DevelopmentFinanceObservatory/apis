@@ -13,8 +13,8 @@ an error mapped to 500. Completion callbacks release permits when work ends.
 Shutdown cancels queued calls, then drains running calls within the shared
 budget before closing the store and pool.
 
-It mounts after the meta door. Its `dfo_subject_id` converter accepts only
-`spec_` and `col_` ids, so operation ids cannot match its route.
+It mounts after the meta door. Its `dfo_spec_id` converter accepts only
+`spec_` ids, so operation ids cannot match its route.
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import cast
@@ -72,11 +72,13 @@ from datasets_api.config import (
 )
 from datasets_api.door_executor import build_door_executor
 from datasets_api.headers import no_store_headers
-from datasets_api.manifest import decode_collection_version_body, decode_version_body
+from datasets_api.manifest import decode_version_body
 from datasets_api.manifest_models import ArtifactEntryModel, Manifest
 from datasets_api.output_options import derive_output_options
 from datasets_api.render import (
-    MEMBER_RENDERING_KEY,
+    DATA_LAYOUT_VERSION,
+    FRAME_LAYOUT,
+    LAYOUT_KEY,
     RENDITION_KEY,
     is_statistics_rendering,
     rendition_token,
@@ -85,7 +87,6 @@ from datasets_api.render import (
 from datasets_api.shutdown import ShutdownBudget
 from datasets_api.timings import door_call, phase, run_with_timings
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
-from datasets_api.version_store import rendering_key as compute_rendering_key
 from dfo_platform import ProblemSpec
 from dfo_platform.build import build_commit
 from dfo_platform.doors import DoorContribution
@@ -141,12 +142,6 @@ def classify_snapshot_exception(exc: BaseException) -> ProblemSpec | None:
     return None
 
 
-def _id_is_registered(id: str, *, spec_reader: SpecReader) -> bool:
-    if id.startswith("col_"):
-        return spec_reader.read_collection(id) is not None
-    return spec_reader.read_definition(id) is not None
-
-
 def _decode_manifest_fields(
     stored_version: StoredVersion,
     *,
@@ -160,18 +155,6 @@ def _decode_manifest_fields(
         declarations=get_index().declarations,
         settings=settings,
     )
-    if stored_version.subject_kind == "collection":
-        fields, profiles = decode_collection_version_body(stored_version.immutable_body)
-        collection = cast(dict[str, object], fields["collection"])
-        members = cast(list[dict[str, object]], collection["members"])
-        for member, profile in zip(members, profiles, strict=True):
-            member["output_options"] = (
-                derive_output_options(profile, capabilities=capabilities).model_dump(mode="json")
-                if profile is not None
-                else None
-            )
-        return fields
-
     fields, profile = decode_version_body(stored_version.immutable_body)
     fields["output_options"] = (
         derive_output_options(profile, capabilities=capabilities).model_dump(mode="json")
@@ -191,20 +174,13 @@ def _refuse_if_revoked(
     """Refuse a revoked version, and a collapsed version whose base version is revoked.
 
     The error names the requested version and carries the revoked version's reason.
-    `base_content_version` is `None` for an uncollapsed version or a collection.
+    `base_content_version` is `None` for an uncollapsed version.
     """
     revocation = snapshot_reader.read_revocation(id, content_version)
     if revocation is None and base_content_version is not None:
         revocation = snapshot_reader.read_revocation(id, base_content_version)
     if revocation is not None:
         raise SnapshotRevoked(id=id, content_version=content_version, reason=revocation.reason)
-
-
-def _base_content_version(stored_version: StoredVersion) -> str | None:
-    """The version a fully collapsed groupby version derives from, or `None` for a collection."""
-    if stored_version.subject_kind == "collection":
-        return None
-    return stored_version.base_content_version
 
 
 def read_stored_version(
@@ -220,7 +196,7 @@ def read_stored_version(
     Raises `SpecNotFound` for an unregistered id, `SnapshotNotFound` for an unknown version,
     and `SnapshotRevoked` for a revoked one, checked before any artifact read.
     """
-    if not _id_is_registered(id, spec_reader=spec_reader):
+    if spec_reader.read_definition(id) is None:
         raise SpecNotFound(id=id)
     stored_version = snapshot_reader.read_version(id, content_version)
     if stored_version is None:
@@ -228,7 +204,7 @@ def read_stored_version(
     _refuse_if_revoked(
         id=id,
         content_version=content_version,
-        base_content_version=_base_content_version(stored_version),
+        base_content_version=stored_version.base_content_version,
         snapshot_reader=snapshot_reader,
     )
     return stored_version
@@ -245,17 +221,33 @@ def servable_listable_locations(
     return _listed_locations(select_servable_locations(listable, now=now), rendition=rendition)
 
 
-def _rendering_without_member(rendering: Mapping[str, object]) -> Mapping[str, object]:
-    """Remove the member-specific key before comparing a collection artifact's rendering."""
-    if MEMBER_RENDERING_KEY not in rendering:
-        return rendering
-    return {key: value for key, value in rendering.items() if key != MEMBER_RENDERING_KEY}
-
-
 def _superseded_bundle(loc: StoredArtifactLocation, *, rendition: str) -> bool:
     """A bundle rendered under another rendition than `rendition`, or before bundles carried
     one."""
     return loc.rendering.get("bundle") is True and loc.rendering.get(RENDITION_KEY) != rendition
+
+
+def _old_bare_layout(loc: StoredArtifactLocation) -> bool:
+    """A bare data file written in another layout than `DATA_LAYOUT_VERSION` or `FRAME_LAYOUT`,
+    or before bare files carried one."""
+    return (
+        loc.rendering.get("bundle") is not True
+        and not is_statistics_rendering(loc.rendering)
+        and loc.rendering.get(LAYOUT_KEY) not in (DATA_LAYOUT_VERSION, FRAME_LAYOUT)
+    )
+
+
+def _listing_group(loc: StoredArtifactLocation, *, rendition: str) -> int:
+    """Where `loc` sorts in a snapshot listing: 0 for a current data artifact in the long
+    layout, 1 for a bare file in `FRAME_LAYOUT`, 2 for a superseded bundle or an old bare file,
+    3 for a statistics artifact."""
+    if is_statistics_rendering(loc.rendering):
+        return 3
+    if _superseded_bundle(loc, rendition=rendition) or _old_bare_layout(loc):
+        return 2
+    if loc.rendering.get(LAYOUT_KEY) == FRAME_LAYOUT:
+        return 1
+    return 0
 
 
 def _listed_locations(
@@ -263,45 +255,26 @@ def _listed_locations(
 ) -> list[StoredArtifactLocation]:
     """The servable locations a snapshot lists, in order. Bare artifacts and bundles carrying
     the current `rendition` are listed. A superseded bundle (`_superseded_bundle`) is listed
-    only when pinned, after every current data artifact and before the statistics artifacts,
-    so the first bundle matching a format is the current layout. The sort is stable, so each
-    group keeps the reader's order."""
+    only when pinned. Current long-layout data artifacts come first, then frame-layout files,
+    then superseded bundles and bare files in an old layout (`_old_bare_layout`), then the
+    statistics artifacts (`_listing_group`), so the first artifact matching a format is the
+    current long layout. Old bare files stay listed, so a version holding only those can be
+    opened. The sort is stable, so each group keeps the reader's order."""
     listed = [
         loc
         for loc in servable
         if loc.tier == Tier.pinned.value or not _superseded_bundle(loc, rendition=rendition)
     ]
-    return sorted(
-        listed,
-        key=lambda loc: (
-            is_statistics_rendering(loc.rendering),
-            _superseded_bundle(loc, rendition=rendition),
-        ),
-    )
-
-
-def _location_matches_rendering_key(loc: StoredArtifactLocation, rendering_key: str) -> bool:
-    """Match the request's rendering key to a stored artifact.
-
-    Stored keys match directly. Bare-collection member artifacts match after
-    stripping `MEMBER_RENDERING_KEY` and rehashing.
-    """
-    if loc.rendering_key == rendering_key:
-        return True
-    return (
-        MEMBER_RENDERING_KEY in loc.rendering
-        and compute_rendering_key(_rendering_without_member(loc.rendering)) == rendering_key
-    )
+    return sorted(listed, key=lambda loc: _listing_group(loc, rendition=rendition))
 
 
 def _narrow_to_rendering(
     servable: Sequence[StoredArtifactLocation], *, rendering_key: str
 ) -> list[StoredArtifactLocation]:
-    """The locations among `servable` matching `rendering_key`
-    (`_location_matches_rendering_key`), followed by every statistics artifact among them.
-    Each definition's or member's statistics artifact has its own fixed key, distinct from
-    every `MintOptions` rendering, so it is kept across renderings."""
-    narrowed = [loc for loc in servable if _location_matches_rendering_key(loc, rendering_key)]
+    """The locations among `servable` matching `rendering_key`, followed by every statistics
+    artifact among them. A statistics artifact has its own fixed key, distinct from every
+    `MintOptions` rendering, so it is kept across renderings."""
+    narrowed = [loc for loc in servable if loc.rendering_key == rendering_key]
     narrowed_keys = {loc.rendering_key for loc in narrowed}
     narrowed.extend(
         loc
@@ -373,7 +346,7 @@ def read_snapshot_manifest(
         snapshot_reader=snapshot_reader,
     )
     fields = _decode_manifest_fields(stored_version, settings=settings)
-    base_content_version = _base_content_version(stored_version)
+    base_content_version = stored_version.base_content_version
 
     read_at = now()
     servable = servable_listable_locations(
@@ -565,7 +538,7 @@ def build_snapshot_door(
 
     router = APIRouter()
 
-    @router.get("/api/datasets/{id:dfo_subject_id}/{content_version}", response_model=Manifest)
+    @router.get("/api/datasets/{id:dfo_spec_id}/{content_version}", response_model=Manifest)
     async def get_snapshot(id: str, content_version: str) -> JSONResponse:
         with door_call("snapshot", logger=logger) as call:
             manifest = await door_executor.run(

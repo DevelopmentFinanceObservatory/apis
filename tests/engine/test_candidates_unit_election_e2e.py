@@ -4,6 +4,7 @@ USD and GBP candidates retain their own native units under one USD request."""
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from dataclasses import replace
 
 import httpx
@@ -54,6 +55,8 @@ from tests.engine._harness import (
     _csv_header,
     _csv_row,
     _facet_from_fixture,
+    walk_options,
+    with_member_arcs,
 )
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise._rate_table_support import (
@@ -81,9 +84,11 @@ def _sv_arcs(*, label: str, meas_prop: str) -> dict:
     return {
         "typeOf": {"nodes": [{"dcid": "StatisticalVariable"}]},
         "name": {"nodes": [{"value": label}]},
-        "populationType": {"nodes": [{"dcid": "CandUnitElectionActivity"}]},
+        # The flow population and qualifier the DAC recipe converts, as materialise reads them.
+        "populationType": {"nodes": [{"dcid": "FinancialFlow"}]},
         "measuredProperty": {"nodes": [{"dcid": meas_prop}]},
         "statType": {"nodes": [{"dcid": "measuredValue"}]},
+        "measurementQualifier": {"nodes": [{"dcid": "Nominal"}]},
     }
 
 
@@ -242,7 +247,6 @@ def _run(*, materialise_graph: FakeGraphReader | None = None):
             resolver=make_resolver(_graph()),
             llm=_FixedBindLLM(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
-            base_steps=[],
             base_timing={},
             unit_text="USD",
             coverage=empty_coverage_snapshot(),
@@ -260,16 +264,16 @@ def _run(*, materialise_graph: FakeGraphReader | None = None):
 
 def _spec_by_sv(result, sv: str):
     for spec in result.specs:
-        if any(item.ref == sv for item in spec.resolved.stat_vars.items):
+        if any(item.ref.dcid == sv for item in spec.resolved.members):
             return spec
     raise AssertionError(f"{sv!r} not found in any surviving candidate spec")
 
 
 def _date_range_ends(result) -> dict[str, str | None]:
     return {
-        sv.ref: (sv.data_date_range.end if sv.data_date_range is not None else None)
+        sv.ref.dcid: (sv.data_date_range.end if sv.data_date_range is not None else None)
         for spec in result.specs
-        for sv in spec.resolved.stat_vars.items
+        for sv in spec.resolved.members
     }
 
 
@@ -315,7 +319,7 @@ def test_a_literal_only_election_would_have_dropped_the_converting_candidate(mon
 
     monkeypatch.setattr(candidate_grounding_module, "_candidate_unit_elections", _literal_only)
     result = _run()
-    survivors = {item.ref for spec in result.specs for item in spec.resolved.stat_vars.items}
+    survivors = {item.ref.dcid for spec in result.specs for item in spec.resolved.members}
     assert _SV_B not in survivors, (
         f"expected the literal-only perturbation to drop {_SV_B!r} (its own native GBP "
         f"facet is never a literal USD match); got status={result.status!r}, "
@@ -516,7 +520,7 @@ def test_an_alternates_dataset_disagreement_drops_it_and_the_elected_answer_stan
     _refuse_by_statvar(monkeypatch, {_SV_B: _dataset_disagreement(_SV_B)})
     result = _run()
     assert result.status == "definite", result
-    assert [item.ref for spec in result.specs for item in spec.resolved.stat_vars.items] == [_SV_A]
+    assert [item.ref.dcid for spec in result.specs for item in spec.resolved.members] == [_SV_A]
 
 
 def test_the_elected_shapes_dataset_disagreement_still_fails_the_request(monkeypatch):
@@ -629,23 +633,21 @@ def test_conversion_refusal_outranks_a_missing_facet(monkeypatch, refusal, statu
         raise refusal if _SV_B in sv_dcids else FacetNotAvailableError("no facet")
 
     monkeypatch.setattr(promote_ground_module, "decide_part_unit", _decide_part)
-    base_spec_id, base_identity = mint_identity(identity)
+    _spec_id, minted = mint_identity(identity)
     with pytest.raises(EngineInputError) as exc_info:
         resolve_spec_resubmit(
-            inp=ResubmitIdentityPayload(
-                identity=base_identity,
-                base_spec_id=base_spec_id,
-                base_identity=base_identity,
-                resolved_stat_var_dcids=[_SV_B],
-            ),
+            inp=ResubmitIdentityPayload(identity=minted),
             graph=_graph(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
-            options=EngineOptions(
-                include_observations=True,
-                materialise_graph=_materialise_graph(),
-                materialise_sdmx=_materialise_sdmx(),
-                rate_cache=RateTableCache(),
+            options=walk_options(
+                _graph(),
+                EngineOptions(
+                    include_observations=True,
+                    materialise_graph=with_member_arcs(_materialise_graph(), _graph()),
+                    materialise_sdmx=_materialise_sdmx(),
+                    rate_cache=RateTableCache(),
+                ),
             ),
         )
     assert decided == [[_SV_B]]
@@ -724,7 +726,6 @@ def _sparse_resolve(*, svs: tuple[str, ...], include_observations: bool):
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(alone=len(svs) == 1),
             sdmx=FakeSdmxClient(observations={}, availability={}),
-            base_steps=[],
             base_timing={},
             unit_text="USD",
             coverage=empty_coverage_snapshot(),
@@ -750,17 +751,16 @@ def test_a_sparse_series_answers_definite_on_the_fresh_and_resubmit_doors(includ
     assert fresh.status == "definite", fresh
     (spec,) = fresh.specs
     identity = spec.definition.identity
+    graph = _graph(b=_SPARSE_GBP_B, svs=(_SV_B,), summary_reads=True)
+    options = _sparse_options(include_observations=include_observations)
     resubmit = resolve_spec_resubmit(
-        inp=ResubmitIdentityPayload(
-            identity=identity,
-            base_spec_id=spec.spec_id,
-            base_identity=identity,
-            resolved_stat_var_dcids=[_SV_B],
-        ),
-        graph=_graph(b=_SPARSE_GBP_B, svs=(_SV_B,), summary_reads=True),
+        inp=ResubmitIdentityPayload(identity=identity),
+        graph=graph,
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
-        options=_sparse_options(include_observations=include_observations),
+        options=dataclasses.replace(
+            options, materialise_graph=with_member_arcs(options.materialise_graph, graph)
+        ),
     )
     assert resubmit.status == "definite", resubmit
     (resubmitted,) = resubmit.specs
@@ -774,7 +774,7 @@ def test_a_sparse_candidate_survives_the_candidates_door():
     refusing, so it stays beside the first candidate."""
     result = _sparse_resolve(svs=(_SV_A, _SV_B), include_observations=False)
     assert result.status == "candidates", result
-    survivors = {item.ref for spec in result.specs for item in spec.resolved.stat_vars.items}
+    survivors = {item.ref.dcid for spec in result.specs for item in spec.resolved.members}
     assert survivors == {_SV_A, _SV_B}
 
 
@@ -845,7 +845,7 @@ def test_a_carve_out_states_the_plan_its_conversion_never_read(monkeypatch):
     assert (result.status, result.no_data_reason) == ("no_data", "qualifier_not_bound")
     (flagged,) = result.flagged_match
     assert flagged.resolved.coverage.has_data is True
-    assert [sv.data_date_range.end for sv in flagged.resolved.stat_vars.items] == ["2023"]
+    assert [sv.data_date_range.end for sv in flagged.resolved.members] == ["2023"]
     assert calls == []
 
 

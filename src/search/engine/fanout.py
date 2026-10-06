@@ -9,17 +9,17 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import time
-from collections.abc import AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import get_args
 
 from pydantic import ValidationError
 
+from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from entity_resolution import Admission, EntityResolver, Resolution
 from materialise import GraphReader
 from materialise.rate_tables import RateTableCache
-from search.engine.assemble import restatement_reason_for
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
@@ -36,15 +36,14 @@ from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.qualifier_match import CodedQualifier, recall_text
 from search.engine.region import RegionResult, resolve_variable
 from search.engine.region.place_options import PlaceOptionsPool
-from search.engine.region.result import with_runnable_operations
+from search.engine.region.result import with_dropped_open_roles, with_runnable_operations
 from search.engine.region.state import EngineOptions
 from search.engine.role_text import DoorRole, role_text_for_axis
 from search.models import (
+    IdentityBindingValue,
     Operation,
     ParsedEntity,
     ParsedPart,
-    PartRestatementReason,
-    PipelineStep,
     RoleAxis,
 )
 from series_coverage.shared import CoverageSnapshot
@@ -102,8 +101,9 @@ class _FanOutResult:
     # to store, reads this flag instead of the response body. It is also True
     # when a leg's answer states `alternates_unevaluated`
     # (`RegionResult.alternates_left_out`): an alternate went unevaluated for
-    # want of a presence read, and when its presence read left a StatVar's
-    # default scope unsettled (`RegionResult.scope_unsettled`). It does not
+    # want of a presence read, when its presence read left a StatVar's
+    # default scope unsettled (`RegionResult.scope_unsettled`), and when the
+    # leg swallowed a graph read failure (`RegionResult.degraded`). It does not
     # cover the deadline backfill, which `timed_out` reports.
     degraded_leg: bool = False
 
@@ -197,15 +197,19 @@ def _leg_parsed_form(
     date_request: DateRequest | None,
     unit_text: str | None,
     source_text: str | None,
+    provenance: str | None = None,
     entity_roles: Mapping[str, list[DoorRole]] | None = None,
     operations: Sequence[Operation] = (),
+    open_axes: Collection[RoleAxis] = (),
 ) -> ParsedPart | None:
     """Build the leg's inputs as one parsed part, the form `data_query` pins into.
 
     Each entity appears once per distinct axis the door gave it, with that axis as
     `role_text`, as the parsed door reads a name repeated on opposite axes. An entity
-    without an axis appears bare. Return `None` when `ParsedPart` bounds reject any
-    input.
+    without an axis appears bare. `provenance` is the dataset the leg answers from, so a
+    reposted part answers from it. The leg's own open roles appear as their axes in
+    `open_roles`, and the axes its operations open ride on the operations. Return
+    `None` when `ParsedPart` bounds reject any input.
     """
     roles = entity_roles or {}
     try:
@@ -223,7 +227,9 @@ def _leg_parsed_form(
             time_text=_date_request_to_time_text(date_request),
             unit_text=unit_text,
             source_text=source_text,
+            provenance=provenance,
             operations=list(operations),
+            open_roles=sorted(open_axes) or None,
         )
     except ValidationError:
         return None
@@ -236,40 +242,40 @@ def _leg_restatement(
     date_request: DateRequest | None,
     unit_text: str | None,
     source_text: str | None,
+    provenance: str | None = None,
     directional: bool = False,
     entity_roles: Mapping[str, list[DoorRole]] | None = None,
     operations: Sequence[Operation] = (),
-) -> tuple[ParsedPart | None, PartRestatementReason]:
-    """Build the parsed-door echo and its reason when no echo is safe.
+    open_axes: Collection[RoleAxis] = (),
+) -> ParsedPart | None:
+    """Build the parsed-door echo, or `None` when no echo is safe.
 
     The echo is the leg's parsed form (`_leg_parsed_form`) when every direction is
     named. If one name occurs on both axes, or direction is known but no entity has
-    an axis, return `None` with `direction_unnameable`; an entity-free directional
-    leg can still echo. If `ParsedPart` bounds reject any input, return `None` with
-    `inputs_exceed_caps` rather than emit a truncated echo.
+    an axis, return `None`; an entity-free directional leg can still echo. If
+    `ParsedPart` bounds reject any input, return `None`.
     """
     roles = entity_roles or {}
     axes: set[RoleAxis] = set()
     for name in entities:
         occurrences = roles.get(name) or ()
         if len({role.axis for role in occurrences}) > 1:
-            return None, "direction_unnameable"
+            return None
         if occurrences:
             axes.add(occurrences[0].axis)
     if entities and directional and not axes:
-        return None, "direction_unnameable"
-    part = _leg_parsed_form(
+        return None
+    return _leg_parsed_form(
         variable_text,
         entities=entities,
         date_request=date_request,
         unit_text=unit_text,
         source_text=source_text,
+        provenance=provenance,
         entity_roles=roles,
         operations=operations,
+        open_axes=open_axes,
     )
-    if part is None:
-        return None, "inputs_exceed_caps"
-    return part, "no_phrase_inputs"
 
 
 def _placeholder_no_data(
@@ -280,9 +286,11 @@ def _placeholder_no_data(
     date_request: DateRequest | None = None,
     unit_text: str | None = None,
     source_text: str | None = None,
+    provenance: str | None = None,
     role_query: str | None = None,
     entity_roles: Mapping[str, list[DoorRole]] | None = None,
     operations: tuple[Operation, ...] = (),
+    open_axes: Collection[RoleAxis] = (),
 ) -> RegionResult:
     """Build a `no_data` result for a leg backfilled after a soft deadline.
 
@@ -290,15 +298,17 @@ def _placeholder_no_data(
     entity roles; without an axis, a non-empty `role_query` makes direction
     uncertain and suppresses the echo.
     """
-    restatement, reason = _leg_restatement(
+    restatement = _leg_restatement(
         variable,
         entities=entities,
         date_request=date_request,
         unit_text=unit_text,
         source_text=source_text,
+        provenance=provenance,
         directional=bool(role_query),
         entity_roles=entity_roles,
         operations=operations,
+        open_axes=open_axes,
     )
     return RegionResult(
         variable_text=variable,
@@ -309,9 +319,30 @@ def _placeholder_no_data(
         timing_by_step={},
         earliest_index=index,
         restatement=restatement,
-        restatement_reason=restatement_reason_for(restatement, reason=reason),
         operations=operations,
     )
+
+
+def answered_provenance(region: RegionResult, named: str | None) -> str | None:
+    """The dataset a leg's restatement names: the declared dataset every Spec's identity
+    binds as its source, else the dataset a no-data run settled on
+    (`RegionResult.settled_dataset`), else `named`, the dataset the leg was asked from.
+
+    A table the bind menu's source slot chose, the one opt-in table electing a shape
+    names, or the table an exclusion leaves serving is bound but was not asked for, so
+    naming it makes a reposted part read that table and no other. A no-data outcome holds
+    no `specs`, and many hold no flagged match, so the region states its table itself. A
+    leg that failed before its run settled on a table restates `named`.
+    """
+    if not region.specs:
+        return region.settled_dataset or named
+    bound: set[str | None] = set()
+    for spec in region.specs:
+        binding = (spec.definition.identity.facets or {}).get("provenance")
+        bound.add(binding.ref if isinstance(binding, IdentityBindingValue) else None)
+    if len(bound) == 1 and (source := bound.pop()) in get_index().datasets:
+        return source
+    return named
 
 
 def _bind_phrases(
@@ -330,6 +361,18 @@ def _bind_phrases(
     )
 
 
+def _asked_open_axes(
+    open_axes: frozenset[RoleAxis], operations: Sequence[Operation]
+) -> frozenset[RoleAxis]:
+    """The flow axes a leg asks every member of: its own open roles and each axis one of
+    its operations runs over. Place binding drops an axis a place binds."""
+    return open_axes | {
+        operation.over
+        for operation in operations
+        if operation.over == "origin" or operation.over == "destination"
+    }
+
+
 async def _stream_one_variable(
     v: str,
     i: int,
@@ -343,7 +386,6 @@ async def _stream_one_variable(
     admission: Admission,
     llm: SupportsLLM,
     sdmx: EngineSdmxClient,
-    base_steps: list[PipelineStep],
     base_timing: dict[str, int],
     pre_resolved: dict[str, Resolution] | None,
     deadline: float,
@@ -360,8 +402,10 @@ async def _stream_one_variable(
     unit_text: str | None = None,
     unit_text_best_effort: bool = False,
     source_text: str | None = None,
+    provenance: str | None = None,
     dropped_qualifier_phrases: list[str] | None = None,
     operations: tuple[Operation, ...] = (),
+    open_axes: frozenset[RoleAxis] = frozenset(),
     query_text: str | None = None,
     qualifiers: tuple[CodedQualifier, ...] | None = None,
     materialise_graph: GraphReader | None = None,
@@ -377,11 +421,16 @@ async def _stream_one_variable(
     non-infrastructure errors become `no_data`; `EngineInfraError`, a declared-default
     refusal (`DeclaredDefaultUnsupportedError`) and the conversion-table failures in
     `RATE_TABLE_REFUSALS` always fail the response. The qualifier sidecar is appended to the
-    recall/restatement text while `v` stays bare for structured resolution. `entity_roles`
-    also supplies the axes written into the leg's restatement. `operations` ride on the final
+    recall/restatement text while `v` stays bare for structured resolution. `provenance`
+    names the dataset the leg answers from. `entity_roles` also supplies the axes written
+    into the leg's restatement, which names the dataset its identity binds or its
+    no-data run settled on (`answered_provenance`). `operations` ride on the final
     region and its restatement, their phrases join `dropped_qualifier_phrases` for this leg's
-    bind alone, and the region opens the slots they run over. The final region is appended to
-    `landed` before its terminal marker is queued.
+    bind alone, and the region opens the slots they run over. `open_axes` are the leg's own
+    open roles. Together with the flow axes its operations run over they are the axes
+    resolution leaves open (`_asked_open_axes`), and the part warns for each of its own that
+    the answer drops (`with_dropped_open_roles`). The final region is appended to `landed` before
+    its terminal marker is queued.
     """
     # `v` plus every sidecar CodedQualifier's own phrase, verbatim -- see
     # this function's own qualifiers= comment above for why every
@@ -402,8 +451,10 @@ async def _stream_one_variable(
             unit_text=unit_text,
             unit_text_best_effort=unit_text_best_effort,
             source_text=source_text,
+            named_dataset=provenance,
             dropped_qualifier_phrases=_bind_phrases(dropped_qualifier_phrases, operations),
             operations=operations,
+            open_axes=_asked_open_axes(open_axes, operations),
             query_text=query_text,
             qualifiers=qualifiers,
             pac=pac,
@@ -412,7 +463,6 @@ async def _stream_one_variable(
             admission=admission,
             llm=llm,
             sdmx=sdmx,
-            base_steps=base_steps,
             base_timing=base_timing,
             pre_resolved=pre_resolved,
             variable_index=i,
@@ -457,21 +507,25 @@ async def _stream_one_variable(
             date_request=date_request,
             unit_text=unit_text,
             source_text=source_text,
+            provenance=provenance,
             role_query=role_query if role_query is not None else query,
             entity_roles=entity_roles,
             operations=operations,
+            open_axes=open_axes,
         )
         degraded = True
     else:
         # See RegionResult.restatement -- resolve_variable itself builds no
         # restatement (it has no ParsedPart dependency), so this leg's own
         # echo is attached here, from the exact inputs just passed to _run().
-        restatement, reason = _leg_restatement(
+        answered = answered_provenance(region, provenance)
+        restatement = _leg_restatement(
             variable_text,
             entities=entities,
             date_request=date_request,
             unit_text=unit_text,
             source_text=source_text,
+            provenance=answered,
             directional=_success_directional(
                 region,
                 role_query=role_query if role_query is not None else query,
@@ -480,23 +534,25 @@ async def _stream_one_variable(
             ),
             entity_roles=entity_roles,
             operations=operations,
+            open_axes=open_axes,
         )
         region = dataclasses.replace(
             region,
             variable_text=variable_text,
             restatement=restatement,
-            restatement_reason=restatement_reason_for(restatement, reason=reason),
             parsed_form=_leg_parsed_form(
                 variable_text,
                 entities=entities,
                 date_request=date_request,
                 unit_text=unit_text,
                 source_text=source_text,
+                provenance=answered,
                 entity_roles=entity_roles,
                 operations=operations,
+                open_axes=open_axes,
             ),
         )
-        region = with_runnable_operations(region, operations)
+        region = with_dropped_open_roles(with_runnable_operations(region, operations), open_axes)
     # Ownership attaches the instant `region` is final, ahead of the marker.
     landed.append(region)
     await queue.put(_RegionDone(index=i, region=region, degraded=degraded))
@@ -525,9 +581,11 @@ class _LegOverrides:
     per_variable_unit_texts: list[str | None] | None
     unit_text_best_effort: bool
     per_variable_source_texts: list[str | None] | None
+    per_variable_provenances: list[str | None] | None
     per_variable_qualifiers: list[tuple[CodedQualifier, ...]] | None
     per_variable_pre_resolved: list[dict[str, Resolution]] | None
     per_variable_operations: list[tuple[Operation, ...]] | None
+    per_variable_open_axes: list[frozenset[RoleAxis]] | None
 
 
 def _leg_entities(overrides: _LegOverrides, i: int) -> list[str]:
@@ -562,6 +620,14 @@ def _leg_source_text(overrides: _LegOverrides, i: int) -> str | None:
     )
 
 
+def _leg_provenance(overrides: _LegOverrides, i: int) -> str | None:
+    return (
+        overrides.per_variable_provenances[i]
+        if overrides.per_variable_provenances is not None
+        else None
+    )
+
+
 def _leg_qualifiers(overrides: _LegOverrides, i: int) -> tuple[CodedQualifier, ...] | None:
     return (
         overrides.per_variable_qualifiers[i]
@@ -575,6 +641,14 @@ def _leg_operations(overrides: _LegOverrides, i: int) -> tuple[Operation, ...]:
         overrides.per_variable_operations[i]
         if overrides.per_variable_operations is not None
         else ()
+    )
+
+
+def _leg_open_axes(overrides: _LegOverrides, i: int) -> frozenset[RoleAxis]:
+    return (
+        overrides.per_variable_open_axes[i]
+        if overrides.per_variable_open_axes is not None
+        else frozenset()
     )
 
 
@@ -620,7 +694,6 @@ def _launch_variable_tasks(
     admission: Admission,
     llm: SupportsLLM,
     sdmx: EngineSdmxClient,
-    base_steps: list[PipelineStep],
     base_timing: dict[str, int],
     deadline: float,
     queue: asyncio.Queue,
@@ -666,7 +739,6 @@ def _launch_variable_tasks(
                 llm=llm,
                 sdmx=sdmx,
                 deadline=deadline,
-                base_steps=base_steps,
                 base_timing=base_timing,
                 pre_resolved=_leg_pre_resolved(overrides, i),
                 queue=queue,
@@ -686,9 +758,11 @@ def _launch_variable_tasks(
                 unit_text=_leg_unit_text(overrides, i),
                 unit_text_best_effort=overrides.unit_text_best_effort,
                 source_text=_leg_source_text(overrides, i),
+                provenance=_leg_provenance(overrides, i),
                 qualifiers=_leg_qualifiers(overrides, i),
                 dropped_qualifier_phrases=dropped_qualifier_phrases,
                 operations=_leg_operations(overrides, i),
+                open_axes=_leg_open_axes(overrides, i),
                 query_text=query_text,
                 materialise_graph=materialise_graph,
                 materialise_sdmx=materialise_sdmx,
@@ -726,7 +800,7 @@ def _handle_fanout_item(
     """
     if isinstance(item, _RegionDone):
         progress.results[item.index] = item.region
-        if item.degraded or item.region.alternates_left_out or item.region.scope_unsettled:
+        if item.degraded or item.region.leg_degraded:
             progress.degraded_leg = True
         progress.n_pending -= 1
         return None
@@ -750,7 +824,6 @@ async def _run_variables_streaming(
     admission: Admission,
     llm: SupportsLLM,
     sdmx: EngineSdmxClient,
-    base_steps: list[PipelineStep],
     base_timing: dict[str, int],
     pre_resolved: dict[str, Resolution] | None,
     deadline: float,
@@ -769,9 +842,11 @@ async def _run_variables_streaming(
     per_variable_unit_texts: list[str | None] | None = None,
     unit_text_best_effort: bool = False,
     per_variable_source_texts: list[str | None] | None = None,
+    per_variable_provenances: list[str | None] | None = None,
     per_variable_qualifiers: list[tuple[CodedQualifier, ...]] | None = None,
     per_variable_pre_resolved: list[dict[str, Resolution]] | None = None,
     per_variable_operations: list[tuple[Operation, ...]] | None = None,
+    per_variable_open_axes: list[frozenset[RoleAxis]] | None = None,
     dropped_qualifier_phrases: list[str] | None = None,
     query_text: str | None = None,
     materialise_graph: GraphReader | None = None,
@@ -796,7 +871,10 @@ async def _run_variables_streaming(
     qualifier phrases and request-level dependencies are broadcast unchanged.
     `per_variable_operations` gives each leg its own operations, which ride on its
     region and restatement and join its bind's dropped phrases; `None` gives every
-    leg none. `query_text` is supplied only for a single-variable request.
+    leg none. `per_variable_provenances` gives each leg the dataset it is asked from;
+    `None` asks every leg from none. `per_variable_open_axes` gives each leg its own open
+    roles, and `None` gives every leg none. `query_text` is supplied only for a
+    single-variable request.
     `unit_text_best_effort` marks every leg's unit text as the raw-text door's typed phrase.
     """
     overrides = _LegOverrides(
@@ -813,9 +891,11 @@ async def _run_variables_streaming(
         per_variable_unit_texts=per_variable_unit_texts,
         unit_text_best_effort=unit_text_best_effort,
         per_variable_source_texts=per_variable_source_texts,
+        per_variable_provenances=per_variable_provenances,
         per_variable_qualifiers=per_variable_qualifiers,
         per_variable_pre_resolved=per_variable_pre_resolved,
         per_variable_operations=per_variable_operations,
+        per_variable_open_axes=per_variable_open_axes,
     )
 
     queue: asyncio.Queue = asyncio.Queue()
@@ -837,7 +917,6 @@ async def _run_variables_streaming(
         admission=admission,
         llm=llm,
         sdmx=sdmx,
-        base_steps=base_steps,
         base_timing=base_timing,
         deadline=deadline,
         queue=queue,
@@ -915,9 +994,11 @@ async def _run_variables_streaming(
                 date_request=_leg_date_request(overrides, i),
                 unit_text=_leg_unit_text(overrides, i),
                 source_text=_leg_source_text(overrides, i),
+                provenance=_leg_provenance(overrides, i),
                 role_query=_leg_role_query(overrides, i),
                 entity_roles=_leg_entity_roles(overrides, i),
                 operations=_leg_operations(overrides, i),
+                open_axes=_leg_open_axes(overrides, i),
             )
     out.regions = [progress.results[i] for i in range(len(unique))]
     out.timed_out = timed_out

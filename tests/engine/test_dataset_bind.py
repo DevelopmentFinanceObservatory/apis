@@ -1,8 +1,8 @@
 """Tests for how the dataset a variable asks for reaches its candidate shapes, its
 bindings, its slots and its sources.
 
-`dataset_mention` reads what a mention asks for; shape candidacy keeps the shapes of the
-dataset it names, or drops every opt-in dataset's shapes when it names none;
+Shape candidacy keeps the shapes of the dataset a part names (`ResolveState.named_dataset`),
+or drops every opt-in dataset's shapes when it names none;
 `region.named_source` writes the source into the bindings a family is elected from, and
 `spec_build` binds the source slot from them.
 """
@@ -17,20 +17,21 @@ from code_index.members import canonical_identity, family_for_five_tuple, invari
 from code_index.query import CodeIndex
 from code_index.shared import get_index
 from code_index.types import CodeSystemDeclaration, DatasetDeclaration, IndexStamp, StatVarRow
-from search.engine.bind import SlotBindingDraft, _build_universal_bind_prompt
-from search.engine.dataset_mention import DatasetMention, dataset_mentions
-from search.engine.qualifier_match import CodedQualifier
+from search.engine import bind as bind_module
+from search.engine.bind import (
+    SlotBindingDraft,
+    _build_universal_bind_prompt,
+    _offered_source_drafts,
+    drafted_source,
+)
 from search.engine.region import candidates as candidates_module
 from search.engine.region import phase_rank_bind as phase_rank_bind_module
-from search.engine.region.named_source import (
-    with_mention,
-    with_named_source,
-    without_dataset_drafts,
-)
-from search.engine.region.phase_rank_bind import _dataset_candidates, _read_mention
+from search.engine.region.named_source import with_named_source, without_dataset_drafts
+from search.engine.region.phase_rank_bind import _dataset_candidates
 from search.engine.region.place_context import empty_place_context
 from search.engine.retrieval import bound_values as bound_values_module
 from search.engine.retrieval.bound_values import (
+    RoleKeys,
     bind_shared_values,
     bound_source,
     canonical_pin_bindings,
@@ -104,7 +105,9 @@ def _commitments_shape() -> ShapeDraft:
     rows = [
         row
         for row in _INDEX.statvars
-        if row.population_type == _COMMITMENTS and row.measurement_denominator is None
+        if row.population_type == _COMMITMENTS
+        and row.measurement_denominator is None
+        and CRS_PROVENANCE in row.provenances
     ]
     first = rows[0]
     rows = [
@@ -127,9 +130,9 @@ def _commitments_shape() -> ShapeDraft:
     )
 
 
-def _mention(variable: str, index=_INDEX):
-    (mention,) = dataset_mentions(variable, index)
-    return mention
+def _naming(shape: ShapeDraft, source: str | None) -> ShapeDraft:
+    """`shape` naming the dataset `source`, as candidacy stamps it."""
+    return dataclasses.replace(shape, named_dataset=source)
 
 
 def _purpose(code: str) -> SlotBindingDraft:
@@ -138,32 +141,13 @@ def _purpose(code: str) -> SlotBindingDraft:
     )
 
 
-@pytest.mark.parametrize(
-    ("sidecar", "key"),
-    [
-        (("imputed multilateral",), IMPUTED_PROVENANCE),
-        (("purpose code 110", "CRS"), CRS_PROVENANCE),
-        (("purpose code 110",), None),
-        (("imputed multilateral education aid",), None),
-        ((), None),
-    ],
-)
-def test_a_variable_reads_its_mention_from_a_sidecar_phrase_that_is_a_mention_alone(sidecar, key):
-    qualifiers = tuple(CodedQualifier(phrase=phrase, spans=(), matches=()) for phrase in sidecar)
-
-    mention = _read_mention(qualifiers)
-
-    assert (mention.provenance if mention is not None else None) == key
-    assert _read_mention(None) is None
-
-
 # ---------------------------------------------------------------------------
-# The mention in the bindings
+# The named dataset in the bindings
 # ---------------------------------------------------------------------------
 
 
-def test_a_mention_binds_the_source():
-    asked = with_mention([], _mention("CRS aid"))
+def test_a_named_dataset_binds_the_source_the_family_query_reads():
+    asked = with_named_source([], _naming(_aid_family_shape(), CRS_PROVENANCE))
 
     assert asked == [source_binding(CRS_PROVENANCE)]
     assert shape_query(_aid_family_shape(), asked, ()).source == CRS_PROVENANCE
@@ -174,7 +158,7 @@ def test_every_drafted_binding_on_the_source_is_removed():
     drafts = [purpose, source_binding("provenance/Other")]
 
     assert without_dataset_drafts(drafts) == [purpose]
-    assert with_mention(drafts, _mention("CRS aid")) == [
+    assert with_named_source(drafts, _naming(_aid_family_shape(), CRS_PROVENANCE)) == [
         purpose,
         source_binding(CRS_PROVENANCE),
     ]
@@ -183,15 +167,15 @@ def test_every_drafted_binding_on_the_source_is_removed():
 def test_with_named_source_names_a_dataset_only_for_a_shape_it_publishes():
     drafted = source_binding("provenance/Other")
 
-    assert with_named_source([drafted], _imputed_family_shape(), IMPUTED_PROVENANCE) == [
+    assert with_named_source([drafted], _naming(_imputed_family_shape(), IMPUTED_PROVENANCE)) == [
         source_binding(IMPUTED_PROVENANCE)
     ]
-    assert with_named_source([drafted], _imputed_family_shape(), None) == []
-    assert with_named_source([], _aid_family_shape(), IMPUTED_PROVENANCE) == []
-    assert with_named_source([], _commitments_shape(), CRS_PROVENANCE) == [
+    assert with_named_source([drafted], _naming(_imputed_family_shape(), None)) == []
+    assert with_named_source([], _naming(_aid_family_shape(), IMPUTED_PROVENANCE)) == []
+    assert with_named_source([], _naming(_commitments_shape(), CRS_PROVENANCE)) == [
         source_binding(CRS_PROVENANCE)
     ]
-    assert with_named_source([], _population_shape(), CRS_PROVENANCE) == []
+    assert with_named_source([], _naming(_population_shape(), CRS_PROVENANCE)) == []
 
 
 # ---------------------------------------------------------------------------
@@ -200,33 +184,36 @@ def test_with_named_source_names_a_dataset_only_for_a_shape_it_publishes():
 
 
 @pytest.mark.parametrize(
-    ("variable", "kept"),
+    ("source", "kept"),
     [
-        (None, ["aid", "commitments", "population"]),
-        ("imputed multilateral aid", ["imputed"]),
-        ("CRS aid", ["aid", "commitments"]),
+        (
+            None,
+            {"aid": None, "imputed": IMPUTED_PROVENANCE, "commitments": None, "population": None},
+        ),
+        (IMPUTED_PROVENANCE, {"imputed": IMPUTED_PROVENANCE}),
+        (CRS_PROVENANCE, {"aid": CRS_PROVENANCE, "commitments": CRS_PROVENANCE}),
     ],
-    ids=["no-mention", "opt-in-mention", "default-mention"],
+    ids=["unnamed", "opt-in-named", "default-named"],
 )
-def test_a_part_elects_from_the_shapes_of_the_dataset_its_mention_names(variable, kept):
-    """A part with no mention drops the opt-in dataset's shapes alone. A part with a
-    mention keeps its dataset's shapes alone, and so drops a shape no dataset publishes."""
+def test_a_part_elects_from_the_shapes_of_the_dataset_it_names(source, kept):
+    """A part naming no dataset keeps every recalled shape, and the imputed table's shape,
+    which that table alone publishes, names it. A part naming a dataset keeps its dataset's
+    shapes alone, and so drops a shape no dataset publishes."""
     shapes = {
         "aid": _aid_family_shape(),
         "imputed": _imputed_family_shape(),
         "commitments": _commitments_shape(),
         "population": _population_shape(),
     }
-    mention = _mention(variable) if variable is not None else None
-
-    candidates = _dataset_candidates(list(shapes.values()), mention)
+    candidates = _dataset_candidates(list(shapes.values()), source, frozenset())
 
     # Candidacy stamps the datasets the part may answer from and the one it names, which
     # enter equality.
     unstamped = [
         dataclasses.replace(shape, datasets=None, named_dataset=None) for shape in candidates
     ]
-    assert [name for name, shape in shapes.items() if shape in unstamped] == kept
+    assert [name for name, shape in shapes.items() if shape in unstamped] == list(kept)
+    assert [shape.named_dataset for shape in candidates] == list(kept.values())
 
 
 @pytest.mark.parametrize(
@@ -260,9 +247,10 @@ def test_bound_source_reads_one_source_axis_value_binding(bindings, source):
 # ---------------------------------------------------------------------------
 
 
-def test_an_alternate_shape_is_materialised_under_the_elected_bindings_source(monkeypatch):
-    """A candidate's bindings name the dataset the elected bindings name when that dataset
-    publishes the candidate's shape, so its family and its source slot follow it."""
+def test_an_alternate_shape_is_materialised_under_the_dataset_its_shape_names(monkeypatch):
+    """A candidate's bindings name the dataset its shape names (`ShapeDraft.named_dataset`),
+    whatever the elected bindings name, so beside an answer naming no dataset the imputed
+    shape's family and its source slot follow its table, as a question electing it does."""
     captured: list[list[SlotBindingDraft]] = []
 
     def _capture(shape, bindings, entities, **_kwargs):
@@ -270,12 +258,18 @@ def test_an_alternate_shape_is_materialised_under_the_elected_bindings_source(mo
         return NoDataDraft(reason="no_observations")
 
     monkeypatch.setattr(candidates_module, "materialise", _capture)
-    imputed = dataclasses.replace(_imputed_family_shape(), sv_arc_facts=_imputed_arcs())
-    population = dataclasses.replace(_population_shape(), sv_arc_facts=_aid_shape().sv_arc_facts)
+    imputed, population = _dataset_candidates(
+        [
+            dataclasses.replace(_imputed_family_shape(), sv_arc_facts=_imputed_arcs()),
+            dataclasses.replace(_population_shape(), sv_arc_facts=_aid_shape().sv_arc_facts),
+        ],
+        None,
+        frozenset(),
+    )
 
     materialise_alternates(
         [imputed, population],
-        elected_bindings=[source_binding(IMPUTED_PROVENANCE)],
+        elected_bindings=[],
         elected_has_data=False,
         places=[empty_place_context(), empty_place_context()],
         named_place_dcids=(),
@@ -293,7 +287,8 @@ def test_an_alternate_whose_bindings_hold_the_pins_mints_the_canonical_spec_id(m
     imputed alternate's member holds the aid type and the flow its table declares. Its
     bindings keep both (`canonical_pin_bindings`), so its slots bind them, and its identity
     (`build_spec_identity`) hashes to the canonical spec_id, which the same identity posted
-    with both unbound reaches too."""
+    with both unbound reaches too. The alternate stands beside an answer naming no dataset,
+    and names the table its shape names, as a question electing it does."""
     captured: list[list[SlotBindingDraft]] = []
 
     def _capture(shape, bindings, entities, **_kwargs):
@@ -301,10 +296,14 @@ def test_an_alternate_whose_bindings_hold_the_pins_mints_the_canonical_spec_id(m
         return NoDataDraft(reason="no_observations")
 
     monkeypatch.setattr(candidates_module, "materialise", _capture)
-    imputed = dataclasses.replace(_imputed_family_shape(), sv_arc_facts=_imputed_arcs())
+    (imputed,) = _dataset_candidates(
+        [dataclasses.replace(_imputed_family_shape(), sv_arc_facts=_imputed_arcs())],
+        None,
+        frozenset(),
+    )
     materialise_alternates(
         [imputed],
-        elected_bindings=[source_binding(IMPUTED_PROVENANCE)],
+        elected_bindings=[],
         elected_has_data=False,
         places=[empty_place_context()],
         named_place_dcids=(),
@@ -343,6 +342,7 @@ def test_an_alternate_whose_bindings_hold_the_pins_mints_the_canonical_spec_id(m
             "measurement_qualifier": imputed.meas_qual_dcid,
         },
         slots,
+        open_roles=(),
     )
 
     document = identity.model_dump(mode="json", exclude_none=True)
@@ -546,7 +546,7 @@ def _publisher(
     return DatasetDeclaration(
         provenance=provenance,
         label=provenance,
-        synonyms=(),
+        description="A test table.",
         opt_in=opt_in,
         absent_observation="zero",
         rank=rank,
@@ -566,8 +566,9 @@ def _code_system(code_system: str) -> CodeSystemDeclaration:
 
 
 def _two_publisher_index() -> CodeIndex:
-    """The shared five-tuple is published by `_WIDE` and `_OTHER`, which serve by default,
-    and by the opt-in `_NARROW`, which alone carries `line`. Every row holds `basis` G,
+    """The shared five-tuple is published by `_WIDE` and `_OTHER`, which serve by default
+    and carry the same properties, so they form one family, and by the opt-in `_NARROW`,
+    which alone carries `line` and so forms a family of its own. Every row holds `basis` G,
     and each dataset declares it and its own `flow` as invariants. The opt-in `_ONLY` alone
     publishes its own five-tuple."""
     rows = (
@@ -614,20 +615,24 @@ def two_publishers(monkeypatch) -> CodeIndex:
     index = _two_publisher_index()
     monkeypatch.setattr(bound_values_module, "get_index", lambda: index)
     monkeypatch.setattr(phase_rank_bind_module, "get_index", lambda: index)
+    monkeypatch.setattr(bind_module, "get_index", lambda: index)
     monkeypatch.setattr(heading_pins_module, "get_index", lambda: index)
     return index
 
 
 def _publisher_shape(
-    five_tuple: tuple[str, str] = _SHARED_FIVE_TUPLE, shape_id: str = "shared"
+    five_tuple: tuple[str, str] = _SHARED_FIVE_TUPLE,
+    shape_id: str = "shared",
+    datasets: tuple[str, ...] = (_WIDE, _OTHER),
 ) -> ShapeDraft:
-    """A shape as `derive_shapes` builds it on `five_tuple`, with the slot keys and taxonomy
-    of every row of the five-tuple, whatever dataset publishes it."""
+    """A shape as `derive_shapes` builds it on `five_tuple` for the family `datasets`
+    publish, with the slot keys and taxonomy of every row of that family."""
     population_type, measured_property = five_tuple
     rows = [
         row
         for row in _two_publisher_index().statvars
         if (row.population_type, row.measured_property) == five_tuple
+        and set(row.provenances) & set(datasets)
     ]
     props = sorted({prop for row in rows for prop in row.constraint_properties})
     return ShapeDraft(
@@ -654,16 +659,14 @@ def _publisher_shape(
     )
 
 
-def _source_mention(source: str | None) -> DatasetMention | None:
-    if source is None:
-        return None
-    return DatasetMention(
-        provenance=source, start=0, end=len(source), text=source, name=source, measure_words=()
-    )
+def _narrow_shape() -> ShapeDraft:
+    """The shape of `_NARROW`'s own family on the shared five-tuple."""
+    return _publisher_shape(shape_id="narrow", datasets=(_NARROW,))
 
 
 def _candidate(source: str | None) -> ShapeDraft:
-    (shape,) = _dataset_candidates([_publisher_shape()], _source_mention(source))
+    derived = _narrow_shape() if source == _NARROW else _publisher_shape()
+    (shape,) = _dataset_candidates([derived], source, frozenset())
     return shape
 
 
@@ -676,31 +679,74 @@ def _value(prop: str, code: str) -> SlotBindingDraft:
 
 
 @pytest.mark.parametrize(
-    ("source", "kept", "datasets"),
+    ("source", "kept", "datasets", "named", "options"),
     [
-        (None, ["shared", "unindexed"], [(_WIDE, _OTHER), ()]),
-        (_WIDE, ["shared"], [(_WIDE,)]),
-        (_NARROW, ["shared"], [(_NARROW,)]),
-        (_ONLY, ["own"], [(_ONLY,)]),
+        (
+            None,
+            ["shared", "narrow", "own", "unindexed"],
+            [(_WIDE, _OTHER), (_NARROW,), (_ONLY,), ()],
+            [None, _NARROW, _ONLY, None],
+            [(_WIDE, _OTHER), (), (), ()],
+        ),
+        (_WIDE, ["shared"], [(_WIDE,)], [_WIDE], [()]),
+        (_NARROW, ["narrow"], [(_NARROW,)], [_NARROW], [()]),
+        (_ONLY, ["own"], [(_ONLY,)], [_ONLY], [()]),
     ],
     ids=["unnamed", "named-default", "named-opt-in-on-shared", "named-opt-in-alone"],
 )
 def test_a_part_keeps_the_shapes_its_datasets_publish_on_a_shared_five_tuple(
-    two_publishers, source, kept, datasets
+    two_publishers, source, kept, datasets, named, options
 ):
-    """An unnamed part keeps a shape with a publisher that is not opt-in, and one the index
-    does not carry. A named part keeps the shapes its dataset publishes, beside others or
-    alone. Each kept shape carries the datasets the part may answer it from."""
+    """An unnamed part keeps every recalled shape. On the shared five-tuple, the family of
+    the publishers that are not opt-in answers from them alone, and its source slot offers
+    both; `_NARROW`'s own family, which only the opt-in `_NARROW` publishes, names
+    `_NARROW`, as the five-tuple the opt-in `_ONLY` alone publishes names `_ONLY`. A named
+    part keeps the shapes its dataset publishes, beside others or alone: on the shared
+    five-tuple, the shape of the family its dataset belongs to. It is offered no source
+    slot. Each kept shape carries the datasets the part may answer it from."""
     shapes = [
         _publisher_shape(),
-        _publisher_shape(_OWN_FIVE_TUPLE, "own"),
+        _narrow_shape(),
+        _publisher_shape(_OWN_FIVE_TUPLE, "own", datasets=(_ONLY,)),
         dataclasses.replace(_publisher_shape(), shape_id="unindexed", pop_type_dcid="Person"),
     ]
 
-    candidates = _dataset_candidates(shapes, _source_mention(source))
+    candidates = _dataset_candidates(shapes, source, frozenset())
 
     assert [shape.shape_id for shape in candidates] == kept
     assert [shape.datasets for shape in candidates] == datasets
+    assert [shape.named_dataset for shape in candidates] == named
+    assert [shape.source_options for shape in candidates] == options
+
+
+@pytest.mark.parametrize(
+    ("value", "kept", "drafted"),
+    [
+        (_OTHER, True, (_OTHER, frozenset())),
+        (f"excluded:{_WIDE}", True, (None, frozenset({_WIDE}))),
+        (_ONLY, False, (None, frozenset())),
+        (f"excluded:{_ONLY}", False, (None, frozenset())),
+    ],
+    ids=["offered", "offered-excluded", "not-offered", "not-offered-excluded"],
+)
+def test_a_source_draft_survives_bind_only_as_a_value_its_slot_offers(
+    two_publishers, value, kept, drafted
+):
+    """The model's source draft is kept, as the source binding spells it, only when it binds
+    one value the chosen shape's slot offers; vetting reads the named or excluded table
+    from it. Any other source draft comes back unbound, and a shape offering no slot keeps
+    none."""
+    draft = SlotBindingDraft(
+        axis="source", property_dcid="provenance", kind="value", value_dcids=[value]
+    )
+    purpose = _sector("A")
+
+    checked = _offered_source_drafts([purpose, draft], _candidate(None))
+
+    assert checked[0] == purpose
+    assert (checked[1].kind == "value") is kept
+    assert drafted_source(checked) == drafted
+    assert _offered_source_drafts([draft], _candidate(_WIDE))[0].kind == "unbound"
 
 
 @pytest.mark.parametrize(
@@ -716,24 +762,27 @@ def test_the_bind_model_sees_the_codes_of_every_dataset_the_part_may_answer_from
     two_publishers, source, sectors, lines, members
 ):
     """The taxonomy and the pre-bind member facts hold the rows of the named dataset, else
-    of every eligible publisher. The slot keys stay the whole five-tuple's."""
+    of every eligible publisher of the shape's family. The slot keys stay the family's, so
+    only `_NARROW`'s shape has a `line` slot."""
     shape = _candidate(source)
     taxonomy = shape.slot_taxonomy or {}
 
     assert taxonomy["how:sector"] == sectors
     assert taxonomy.get("how:line") == lines
-    assert shape.slot_keys == _publisher_shape().slot_keys
+    derived = _narrow_shape() if source == _NARROW else _publisher_shape()
+    assert shape.slot_keys == derived.slot_keys
     assert set(five_tuple_member_facts(shape)[0]) == members
 
 
 def test_a_named_and_an_unnamed_part_on_one_five_tuple_keep_their_own_vocabularies(
     two_publishers,
 ):
-    """One derived shape kept by an unnamed part and by a part naming the opt-in dataset is
-    two shapes, so a mapping keyed on them holds both vocabularies and both pin sets."""
+    """One derived shape kept by an unnamed part and by a part naming one dataset of its
+    family is two shapes, so a mapping keyed on them holds both vocabularies and both pin
+    sets."""
     derived = _publisher_shape()
-    unnamed = _dataset_candidates([derived], None)[0]
-    named = _dataset_candidates([derived], _source_mention(_NARROW))[0]
+    unnamed = _dataset_candidates([derived], None, frozenset())[0]
+    named = _dataset_candidates([derived], _WIDE, frozenset())[0]
 
     by_shape = {unnamed: unnamed.slot_taxonomy, named: named.slot_taxonomy}
 
@@ -746,8 +795,7 @@ def test_a_named_and_an_unnamed_part_on_one_five_tuple_keep_their_own_vocabulari
     assert by_shape[named] == {
         "how:basis": ["G"],
         "how:flow": ["F1"],
-        "how:line": ["L1"],
-        "how:sector": ["A", "C"],
+        "how:sector": ["A", "B"],
     }
     assert shape_pins(unnamed) != shape_pins(named)
 
@@ -768,13 +816,14 @@ def test_the_bind_prompt_withholds_the_pins_every_dataset_of_the_part_holds(
     only `basis`, and a named part withholds every pin of its dataset. The election implies a
     withheld pin, so nothing binds it."""
     shape = _candidate(source)
+    props = {slot.property_dcid for slot in shape.slot_keys}
 
     prompt = _build_universal_bind_prompt("aid", [shape])
 
     assert shape_invariants(shape) == pins
     assert {
         prop for prop in ("basis", "flow", "line", "sector") if f"property_dcid={prop} " in prompt
-    } == {"basis", "flow", "line", "sector"} - pins.keys()
+    } == props - pins.keys()
     assert bind_shared_values(shape, []) == ([], [])
 
 
@@ -800,10 +849,10 @@ def test_the_identity_binds_the_invariants_only_of_the_dataset_its_part_names(
     named = [source_binding(source)] if source else []
     pinned = [_value(prop, code) for prop, code in pins.items()]
     drafted = [_sector(sector), *(pinned if model_binds else []), *named]
-    role_keys = {"observationAbout"}
+    role_keys = RoleKeys(bound=frozenset({"observationAbout"}))
 
     bindings = canonical_pin_bindings(shape, drafted, role_keys)
-    query = shape_query(shape, bindings, role_keys)
+    query = shape_query(shape, bindings, role_keys.bound)
 
     assert {
         b.property_dcid: b.value_dcids[0]
@@ -813,7 +862,7 @@ def test_the_identity_binds_the_invariants_only_of_the_dataset_its_part_names(
     assert canonical_pin_bindings(shape, bindings, role_keys) == bindings
     assert family_for_five_tuple(two_publishers, query).provenance == elected
     assert family_for_five_tuple(two_publishers, query) == family_for_five_tuple(
-        two_publishers, shape_query(shape, [_sector(sector), *pinned, *named], role_keys)
+        two_publishers, shape_query(shape, [_sector(sector), *pinned, *named], role_keys.bound)
     )
     assert invariant_bindings(two_publishers, query) == {}
 
@@ -828,7 +877,9 @@ def test_the_identity_binds_the_invariants_only_of_the_dataset_its_part_names(
     ids=["elected-other", "named", "none-elected"],
 )
 def test_an_identity_states_the_pins_of_its_elected_dataset(two_publishers, slots, source, pinned):
-    """With no elected family, the pins are those every eligible dataset holds alike."""
+    """With no elected family, the pins are those every eligible dataset holds alike. An
+    identity's slots are its family's properties, so only one naming `_NARROW` has a
+    `line` slot."""
     identity: dict = {
         "identity_version": "spec1",
         "shape": {
@@ -846,7 +897,11 @@ def test_an_identity_states_the_pins_of_its_elected_dataset(two_publishers, slot
                     else {"state": "unbound"}
                 ),
             }
-            for prop in ("basis", "flow", "line", "sector")
+            for prop in (
+                ("basis", "flow", "line", "sector")
+                if source == _NARROW
+                else ("basis", "flow", "sector")
+            )
         ],
         "entities": {"observationAbout": ["country/KEN"]},
         "requested_window": {"kind": "all"},
@@ -858,11 +913,11 @@ def test_an_identity_states_the_pins_of_its_elected_dataset(two_publishers, slot
 
 
 @pytest.mark.parametrize(
-    ("source", "named"), [(_NARROW, True), (_OTHER, True), (_ONLY, False), (None, False)]
+    ("source", "named"), [(_NARROW, False), (_OTHER, True), (_ONLY, False), (None, False)]
 )
-def test_with_named_source_names_any_dataset_publishing_a_shared_five_tuple(
+def test_with_named_source_names_any_dataset_publishing_the_shapes_family(
     two_publishers, source, named
 ):
-    assert with_named_source([], _publisher_shape(), source) == (
+    assert with_named_source([], _naming(_publisher_shape(), source)) == (
         [source_binding(source)] if named and source else []
     )

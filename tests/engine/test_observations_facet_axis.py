@@ -563,36 +563,12 @@ def test_facet_options_offer_a_facet_whose_dates_came_back_short(monkeypatch):
     assert by_axis["measurementMethod"] == ["Recorded"]
 
 
-def test_maybe_build_facet_options_gate_off_is_a_pure_no_op():
-    """Disabled option coverage makes no graph call."""
-    graph = _facet_axis_graph()
-    calls: list[object] = []
-    original = graph.observation_facets_batch
-
-    def _counting(*a, **k):
-        calls.append(1)
-        return original(*a, **k)
-
-    graph.observation_facets_batch = _counting  # type: ignore[method-assign]
-    options, warn = _maybe_build_facet_options(
-        facet_probe([_MULTI_AXIS_SV], {"observationAbout": ["country/USA"]}, years=None),
-        graph=graph,
-        coverage=_NO_COVERAGE,
-        include_option_coverage=False,
-        deadline=None,
-    )
-    assert options == []
-    assert warn is None
-    assert calls == []
-
-
-def test_maybe_build_facet_options_gate_on_builds():
+def test_maybe_build_facet_options_builds():
     graph = _facet_axis_graph()
     options, warn = _maybe_build_facet_options(
         facet_probe([_MULTI_AXIS_SV], {"observationAbout": ["country/USA"]}, years=None),
         graph=graph,
         coverage=_NO_COVERAGE,
-        include_option_coverage=True,
         deadline=None,
     )
     assert warn is None
@@ -611,7 +587,6 @@ def test_maybe_build_facet_options_fails_open_on_graph_error():
         facet_probe([_MULTI_AXIS_SV], {"observationAbout": ["country/USA"]}, years=None),
         graph=graph,
         coverage=_NO_COVERAGE,
-        include_option_coverage=True,
         deadline=None,
     )
     assert options == []
@@ -634,7 +609,6 @@ def test_maybe_build_facet_options_non_infra_error_propagates():
             years=None,
             graph=graph,
             coverage=_NO_COVERAGE,
-            include_option_coverage=True,
             deadline=None,
         )
 

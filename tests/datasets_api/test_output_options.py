@@ -224,12 +224,17 @@ class TestPivots:
         assert entry.reason == "pivot_not_unique"
         assert entry.varying == []
 
-    def test_not_unique_with_empty_varying_and_no_duplicate_keys_is_pruned(self):
-        # A stringification collision without duplicate keys is pruned.
+    def test_a_stringification_collision_is_unavailable_as_not_unique(self):
+        # A mint refuses this pair `pivot_not_unique`, so the options document says so.
         pivots = (_pivot("recipient", "time_period", unique=False, varying=()),)
         document = derive_output_options(_profile(pivots=pivots), capabilities=_capabilities())
 
-        assert document.pivots == []
+        assert len(document.pivots) == 1
+        entry = document.pivots[0]
+        assert (entry.state, entry.reason) == ("unavailable", "pivot_not_unique")
+        assert entry.varying is None
+        assert entry.width is None
+        assert entry.cells is None
 
     def test_collision_and_non_homogeneous_reports_not_homogeneous_not_pruned(self):
         # Homogeneity fails first, so this collision reports `pivot_not_homogeneous`.

@@ -47,7 +47,6 @@ def _fanout_kwargs(**overrides: Any) -> dict[str, Any]:
         "admission": admission,
         "llm": llm,
         "sdmx": sdmx,
-        "base_steps": [],
         "base_timing": {},
         "pre_resolved": None,
         "deadline": time.monotonic() + 3600,
@@ -120,13 +119,15 @@ def test_clean_multi_variable_run_leaves_degraded_leg_false():
     assert out.timed_out is False
 
 
-def test_a_leg_whose_default_scope_is_unsettled_sets_degraded_leg():
+@pytest.mark.parametrize("field", ["scope_unsettled", "degraded"])
+def test_a_leg_whose_region_stands_on_less_than_it_read_sets_degraded_leg(field: str):
     """A leg read over a countries fallback that holds for this request only
-    (`RegionResult.scope_unsettled`) is degraded, so the response is not cached."""
+    (`RegionResult.scope_unsettled`), or one that swallowed a member walk's failed read
+    (`RegionResult.degraded`), is degraded, so the response is not cached."""
 
     async def _stub_resolve_variable(variable: str, **kwargs: object) -> RegionResult:
         region = _no_data_region(variable)
-        return dataclasses.replace(region, scope_unsettled=kwargs["variable_index"] == 1)
+        return dataclasses.replace(region, **{field: kwargs["variable_index"] == 1})
 
     async def _scenario() -> _FanOutResult:
         out = _FanOutResult()

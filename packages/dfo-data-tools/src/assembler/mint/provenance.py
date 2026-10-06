@@ -30,8 +30,8 @@ _PROVENANCE_COLUMN = "provenance"  # frame-grammar's FACET_IDENTITY_COLUMNS name
 _LICENCE_NOT_STATED = "Not stated"
 
 # Maps materialiser warning codes to the envelope vocabulary.
-# `None` marks process-only notes. Unknown codes raise. Parity tests cover both catalogues.
-_WARNING_KIND_BY_CODE: Mapping[str, str | None] = {
+# Unknown codes raise. Parity tests cover both catalogues.
+_WARNING_KIND_BY_CODE: Mapping[str, str] = {
     # No live revision endpoint confirms the frame's upstream state.
     "revision_unavailable": "provisional",
     # The deployment selected one of several graph facet values.
@@ -40,8 +40,6 @@ _WARNING_KIND_BY_CODE: Mapping[str, str | None] = {
     "enrichment_unavailable": "coverage_gap",
     # The source declares no processing tier, so the value's transformations are unknown.
     "processing_level_undeclared": "provisional",
-    # Collection-member deduplication is a materialisation note.
-    "members_deduplicated": None,
     # The frame covers less than the requested scope.
     "coverage_below_scope": "coverage_gap",
     # Filtering left no observations.
@@ -182,11 +180,8 @@ def _translate_warnings(warnings: Sequence[Mapping[str, object]]) -> list[dict[s
                 f"manifest warning code {code!r} has no entry in mint's own "
                 "envelope-kind translation table (_WARNING_KIND_BY_CODE)"
             )
-        kind = _WARNING_KIND_BY_CODE[code]
-        if kind is None:
-            continue
         detail = str(warning["message"])[:_WARNING_DETAIL_MAX]
-        translated.append({"kind": kind, "detail": detail})
+        translated.append({"kind": _WARNING_KIND_BY_CODE[code], "detail": detail})
     return translated
 
 

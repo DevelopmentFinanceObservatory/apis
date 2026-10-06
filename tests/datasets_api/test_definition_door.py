@@ -439,6 +439,22 @@ def test_unknown_query_key_refuses_request_invalid_with_the_equivalent_body_poin
     assert body["pointer"] == "/options/bogus"
 
 
+def test_a_posted_definition_binding_and_opening_one_axis_refuses_request_invalid():
+    """`creditor` names the origin axis, so an identity binding it and opening `origin`
+    states both one creditor and every creditor."""
+    client = _client(graph=_graph())
+    spec_id = "spec_" + "0" * 32
+    identity = described_identity(entities={"creditor": ["country/CHN"]}, open_roles=["origin"])
+    definition = {"schema_version": 1, "spec_id": spec_id, "identity": identity}
+
+    resp = client.post(f"/api/datasets/{spec_id}/options", json={"definition": definition})
+
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["code"] == "request_invalid"
+    assert body["pointer"] == "/definition"
+
+
 def test_unregistered_spec_id_refuses_spec_not_found():
     client = _client(graph=_graph())
 
@@ -451,17 +467,8 @@ def test_unregistered_spec_id_refuses_spec_not_found():
     assert resp.headers["cache-control"] == "no-store"
 
 
-def test_unregistered_collection_id_refuses_spec_not_found():
-    client = _client(graph=_graph())
-
-    resp = client.get("/api/datasets/col_never_registered")
-
-    assert resp.status_code == 404
-    assert resp.json()["code"] == "spec_not_found"
-
-
-def test_id_matching_neither_namespace_refuses_the_platform_routing_404():
-    """Only `spec_` and `col_` ids reach this door. Other ids get the platform routing 404,
+def test_id_outside_the_spec_namespace_refuses_the_platform_routing_404():
+    """Only `spec_` ids reach this door. Other ids get the platform routing 404,
     `not_found`."""
     client = _client(graph=_graph())
 
@@ -869,284 +876,6 @@ def test_retrieval_names_the_spec_id_when_the_statvars_own_graph_node_disappears
 
 
 _STAT_VAR_B = "TbGrantDisbursements"
-_STAT_VAR_B_REF = f"dcid:{_STAT_VAR_B}"
-
-
-def test_collection_retrieval_re_materialises_every_member():
-    graph = FakeMintGraphReader(
-        arcs={
-            _STAT_VAR: {
-                "typeOf": ("StatisticalVariable",),
-                "observationProperties": ("recipient",),
-                "measuredProperty": ("amount",),
-            },
-            _STAT_VAR_B: {
-                "typeOf": ("StatisticalVariable",),
-                "observationProperties": ("recipient",),
-                "measuredProperty": ("amount",),
-            },
-        },
-        facets={
-            (_STAT_VAR, _RECIPIENT): [_FACET],
-            (_STAT_VAR_B, _RECIPIENT): [_FACET],
-        },
-        labels={"OECD_DAC2A": "OECD DAC2a", _RECIPIENT: "Kenya"},
-    )
-    # Keyed by the bare stat_var. `_multi_stat_var_sdmx_transport`'s
-    # handler matches a key against the outgoing request's own
-    # `c[variableMeasured]` query value, which `sdmx.data` sends bare.
-    csv_by_ref = {
-        _STAT_VAR: _CSV_BODY,
-        _STAT_VAR_B: _CSV_HEADER
-        + f"dataflow,DC:DF_OBS(1.0.0),I,{_STAT_VAR_B},{_RECIPIENT},USD,GrantEquivalent,"
-        f"NotApplicable,OECD_DAC2A,2020,500,,facet1\r\n",
-    }
-    client = _client(
-        graph=graph,
-        sdmx_transport=_multi_stat_var_sdmx_transport(csv_by_ref),
-        coverage=_coverage_service(stat_vars=(_STAT_VAR, _STAT_VAR_B)),
-    )
-    body = {
-        "schema_version": 1,
-        "input": {
-            "kind": "statvar_set",
-            "statvars": [_STAT_VAR_REF, _STAT_VAR_B_REF],
-            "scope": _SCOPE,
-        },
-        "options": {"bundle": False},
-    }
-    minted = client.post("/api/datasets", json=body)
-    assert minted.status_code == 200, minted.text
-    collection_id = minted.json()["collection"]["collection_id"]
-
-    resp = client.get(f"/api/datasets/{collection_id}")
-
-    assert resp.status_code == 200, resp.text
-    manifest = resp.json()
-    assert manifest["collection"]["collection_id"] == collection_id
-    assert len(manifest["collection"]["members"]) == 2
-
-
-def test_collection_manifest_trace_carries_per_member_observation_counts():
-    """A member with no SDMX rows stays in the collection trace with `observation_count` 0."""
-    graph = FakeMintGraphReader(
-        arcs={
-            _STAT_VAR: {
-                "typeOf": ("StatisticalVariable",),
-                "observationProperties": ("recipient",),
-                "measuredProperty": ("amount",),
-            },
-            _STAT_VAR_B: {
-                "typeOf": ("StatisticalVariable",),
-                "observationProperties": ("recipient",),
-                "measuredProperty": ("amount",),
-            },
-        },
-        facets={
-            (_STAT_VAR, _RECIPIENT): [_FACET],
-            (_STAT_VAR_B, _RECIPIENT): [_FACET],
-        },
-        labels={"OECD_DAC2A": "OECD DAC2a", _RECIPIENT: "Kenya"},
-    )
-    csv_by_ref = {
-        _STAT_VAR: _CSV_BODY,
-        _STAT_VAR_B: _CSV_HEADER,  # facet-viable, zero data rows
-    }
-    probe_only_rows_by_ref = {
-        _STAT_VAR_B: f"dataflow,DC:DF_OBS(1.0.0),I,{_STAT_VAR_B},{_RECIPIENT},USD,GrantEquivalent,"
-        "NotApplicable,OECD_DAC2A,2020,1000,,facet1\r\n",
-    }
-    client = _client(
-        graph=graph,
-        sdmx_transport=_multi_stat_var_sdmx_transport(
-            csv_by_ref, probe_only_rows_by_ref=probe_only_rows_by_ref
-        ),
-        coverage=_coverage_service(stat_vars=(_STAT_VAR, _STAT_VAR_B)),
-    )
-    body = {
-        "schema_version": 1,
-        "input": {
-            "kind": "statvar_set",
-            "statvars": [_STAT_VAR_REF, _STAT_VAR_B_REF],
-            "scope": _SCOPE,
-        },
-        "options": {"bundle": False},
-    }
-    minted = client.post("/api/datasets", json=body)
-    assert minted.status_code == 200, minted.text
-    collection_id = minted.json()["collection"]["collection_id"]
-
-    resp = client.get(f"/api/datasets/{collection_id}")
-
-    assert resp.status_code == 200, resp.text
-    manifest = resp.json()
-    entries_by_ref = {entry["ref"]: entry for entry in manifest["trace"]["resolved_stat_vars"]}
-    assert entries_by_ref.keys() == {_STAT_VAR_REF, _STAT_VAR_B_REF}
-    assert entries_by_ref[_STAT_VAR_REF]["observation_count"] == 1
-    assert entries_by_ref[_STAT_VAR_B_REF]["observation_count"] == 0
-
-
-def _two_member_graph() -> FakeMintGraphReader:
-    return FakeMintGraphReader(
-        arcs={
-            _STAT_VAR: {
-                "typeOf": ("StatisticalVariable",),
-                "observationProperties": ("recipient",),
-                "measuredProperty": ("amount",),
-            },
-            _STAT_VAR_B: {
-                "typeOf": ("StatisticalVariable",),
-                "observationProperties": ("recipient",),
-                "measuredProperty": ("amount",),
-            },
-        },
-        facets={
-            (_STAT_VAR, _RECIPIENT): [_FACET],
-            (_STAT_VAR_B, _RECIPIENT): [_FACET],
-        },
-        labels={"OECD_DAC2A": "OECD DAC2a", _RECIPIENT: "Kenya"},
-    )
-
-
-def _two_member_sdmx_transport() -> httpx.MockTransport:
-    return _multi_stat_var_sdmx_transport(
-        {
-            _STAT_VAR: _CSV_BODY,
-            _STAT_VAR_B: _CSV_HEADER
-            + f"dataflow,DC:DF_OBS(1.0.0),I,{_STAT_VAR_B},{_RECIPIENT},USD,GrantEquivalent,"
-            f"NotApplicable,OECD_DAC2A,2020,500,,facet1\r\n",
-        }
-    )
-
-
-def _mint_two_member_collection(client) -> tuple[str, dict[str, str]]:
-    """Mints the two fixture StatVars and maps their refs to spec ids."""
-    body = {
-        "schema_version": 1,
-        "input": {
-            "kind": "statvar_set",
-            "statvars": [_STAT_VAR_REF, _STAT_VAR_B_REF],
-            "scope": _SCOPE,
-        },
-        "options": {"bundle": False},
-    }
-    minted = client.post("/api/datasets", json=body)
-    assert minted.status_code == 200, minted.text
-    collection = minted.json()["collection"]
-    spec_id_by_ref = {}
-    for member in collection["members"]:
-        ref = f"dcid:{member['definition']['identity']['shape']['id']}"
-        spec_id_by_ref[ref] = member["definition"]["spec_id"]
-    return collection["collection_id"], spec_id_by_ref
-
-
-def test_collection_retrieval_names_every_differently_failing_member_by_spec_id():
-    """Disappearing and ambiguous StatVars must both be reported by their registered spec ids."""
-    graph = _two_member_graph()
-    client = _client(
-        graph=graph,
-        sdmx_transport=_two_member_sdmx_transport(),
-        coverage=_coverage_service(stat_vars=(_STAT_VAR, _STAT_VAR_B)),
-    )
-    collection_id, spec_id_by_ref = _mint_two_member_collection(client)
-    spec_id_a, spec_id_b = spec_id_by_ref[_STAT_VAR_REF], spec_id_by_ref[_STAT_VAR_B_REF]
-
-    graph._arcs = {
-        # _STAT_VAR (member A): node removed entirely, leaving no typeOf
-        # arc naming StatisticalVariable, so resolve_shape refuses it.
-        _STAT_VAR_B: {
-            "typeOf": ("StatisticalVariable",),
-            "observationProperties": ("recipient",),
-            "constraintProperties": ("grantType",),
-            "grantType": ("Grant", "Loan"),  # more than one bound value
-            "measuredProperty": ("amount",),
-        },
-    }
-
-    resp = client.get(f"/api/datasets/{collection_id}")
-
-    assert resp.status_code == 422, resp.text
-    body = resp.json()
-    assert body["code"] == "member_not_resolvable"
-    members = {issue["member"] for issue in body["issues"]}
-    assert members == {spec_id_a, spec_id_b}
-
-
-def test_collection_retrieval_aggregates_a_single_unresolvable_member_without_partial_materialisation():
-    """Resolution failures are collected before materialisation. One bad member refuses the
-    collection without rendering either member."""
-    graph = _two_member_graph()
-    artifact_store = FakeArtifactStore()
-    client = _client(
-        graph=graph,
-        artifact_store=artifact_store,
-        sdmx_transport=_two_member_sdmx_transport(),
-        coverage=_coverage_service(stat_vars=(_STAT_VAR, _STAT_VAR_B)),
-    )
-    collection_id, spec_id_by_ref = _mint_two_member_collection(client)
-    spec_id_b = spec_id_by_ref[_STAT_VAR_B_REF]
-
-    graph._arcs = {
-        **graph._arcs,
-        _STAT_VAR_B: {
-            "typeOf": ("StatisticalVariable",),
-            "observationProperties": ("recipient",),
-            "constraintProperties": ("grantType",),
-            "grantType": ("Grant", "Loan"),  # more than one bound value
-            "measuredProperty": ("amount",),
-        },
-    }
-    objects_before = dict(artifact_store._objects)
-
-    resp = client.get(f"/api/datasets/{collection_id}")
-
-    assert resp.status_code == 422, resp.text
-    body = resp.json()
-    assert body["code"] == "member_not_resolvable"
-    assert body["issues"] == [{"member": spec_id_b}]
-    assert artifact_store._objects == objects_before
-
-
-def test_collection_retrieval_batches_pinned_members_into_two_node_arcs_many_calls():
-    """A warm two-member retrieval makes four `node_arcs_many` calls. Two resolve member shapes,
-    one refreshes the shared facet provenance, and one reads citations. The first GET warms
-    enrichment. Pinned members require no `node_arcs` calls."""
-    graph = FakeMintGraphReader(
-        arcs={
-            _STAT_VAR: {
-                "typeOf": ("StatisticalVariable",),
-                "observationProperties": ("recipient",),
-                "measuredProperty": ("amount",),
-            },
-            _STAT_VAR_B: {
-                "typeOf": ("StatisticalVariable",),
-                "observationProperties": ("recipient",),
-                "measuredProperty": ("amount",),
-                "constraintProperties": ("grantType",),
-                "grantType": ("Grant",),
-            },
-        },
-        facets={
-            (_STAT_VAR, _RECIPIENT): [_FACET],
-            (_STAT_VAR_B, _RECIPIENT): [_FACET],
-        },
-        labels={"OECD_DAC2A": "OECD DAC2a", _RECIPIENT: "Kenya"},
-    )
-    client = _client(
-        graph=graph,
-        sdmx_transport=_two_member_sdmx_transport(),
-        coverage=_coverage_service(stat_vars=(_STAT_VAR, _STAT_VAR_B)),
-    )
-    collection_id, _ = _mint_two_member_collection(client)
-    warmup = client.get(f"/api/datasets/{collection_id}")
-    assert warmup.status_code == 200, warmup.text
-    graph.calls = dict.fromkeys(graph.calls, 0)
-
-    resp = client.get(f"/api/datasets/{collection_id}")
-
-    assert resp.status_code == 200, resp.text
-    assert graph.calls["node_arcs_many"] == 4
-    assert graph.calls["node_arc_values"] == 0
 
 
 def test_group_retrieval_still_resolves_through_node_arcs_not_node_arcs_many():
@@ -1359,29 +1088,6 @@ def test_registered_described_identity_names_a_zero_row_member_with_its_own_coun
     assert entries_by_ref[_ODA_LOANS_REF]["observation_count"] == 0
 
 
-def test_collection_member_enumerating_more_than_one_statvar_refuses_over_ceiling():
-    """A collection member resolving to multiple StatVars refuses as `over_ceiling`. Each
-    member must identify one StatVar series."""
-    client = _client(graph=_described_two_member_graph())
-    spec_id = recompute_identity(_DESCRIBED_TWO_MEMBER_IDENTITY).spec_id
-    reg = client.post(
-        "/api/datasets/register",
-        json={
-            "schema_version": 1,
-            "members": [
-                wire_definition_for(spec_id=spec_id, identity=_DESCRIBED_TWO_MEMBER_IDENTITY)
-            ],
-        },
-    )
-    assert reg.status_code == 200, reg.text
-    collection_id = reg.json()["collection"]["collection_id"]
-
-    resp = client.get(f"/api/datasets/{collection_id}")
-
-    assert resp.status_code == 422, resp.text
-    assert resp.json()["code"] == "over_ceiling"
-
-
 def test_registered_pin_id_the_graph_does_not_hold_refuses_member_not_resolvable_not_500():
     """A registered pin for a missing graph dcid returns 422 `member_not_resolvable`."""
     client = _client(graph=_graph())
@@ -1420,43 +1126,6 @@ def test_role_key_drift_refuses_definition_not_reproducible():
     assert body["code"] == "definition_not_reproducible"
     assert body["issues"] == [{"member": spec_id}, {"member": spec_id, "axis": "donor"}]
     assert "pointer" not in body
-
-
-def test_collection_member_spec_not_exportable_propagates_immediately_as_409():
-    """`_serve_collection` aggregates `MemberNotResolvable` errors but propagates
-    `SpecNotExportable`, refusing the whole collection."""
-    client = _client(graph=_graph())
-    healthy_identity = pinned_identity(
-        stat_var=_STAT_VAR,
-        entities={"recipient": [_RECIPIENT]},
-        facets={
-            "provenance": {"state": "value", "ref": "OECD_DAC2A"},
-            "measurementMethod": {"state": "value", "ref": "GrantEquivalent"},
-            "unit": {"state": "value", "ref": "USD"},
-        },
-    )
-    healthy_spec_id = recompute_identity(healthy_identity).spec_id
-
-    breadth_only_identity = described_identity()
-    breadth_only_spec_id = recompute_identity(breadth_only_identity).spec_id
-
-    reg_collection = client.post(
-        "/api/datasets/register",
-        json={
-            "schema_version": 1,
-            "members": [
-                wire_definition_for(spec_id=healthy_spec_id, identity=healthy_identity),
-                wire_definition_for(spec_id=breadth_only_spec_id, identity=breadth_only_identity),
-            ],
-        },
-    )
-    assert reg_collection.status_code == 200, reg_collection.text
-    collection_id = reg_collection.json()["collection"]["collection_id"]
-
-    resp = client.get(f"/api/datasets/{collection_id}")
-
-    assert resp.status_code == 409, resp.text
-    assert resp.json()["code"] == "spec_not_exportable"
 
 
 def test_no_drift_register_then_get_round_trip_serves_200():

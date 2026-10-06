@@ -92,6 +92,7 @@ def _crs_purpose_options(shape_draft: ShapeDraft):
         sv_dcids=[],
         roles={},
         graph=FakeGraph(nodes={}),
+        open_axes=frozenset(),
     )
     slot_options = result[7]
     (so,) = [o for o in slot_options if o.key.property.dcid == _PURPOSE]

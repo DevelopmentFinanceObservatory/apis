@@ -81,6 +81,15 @@ def test_parts_that_differ_only_in_operations_stay_distinct():
     assert [part.operations for part in result.parts] == [[], [_RANK_PLACES]]
 
 
+def test_parts_that_differ_only_in_their_open_roles_stay_distinct():
+    parts = [
+        ParsedPart(variable_text="aid to Kenya", open_roles=open_roles)
+        for open_roles in (None, ["donor"])
+    ]
+
+    assert [part for _, part in _dedupe_parts_with_indices(parts)] == parts
+
+
 def test_parts_that_differ_only_in_a_forecast_target_stay_distinct():
     parts = [
         ParsedPart(

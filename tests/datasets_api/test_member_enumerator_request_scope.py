@@ -1,5 +1,5 @@
-"""A fresh `MemberEnumerator` per request exposes graph changes between GETs without rebuilding
-`DefinitionDeps`. The composed app tests both request-scoped behaviour and stable dependencies.
+"""The definition door reads member groups through the process's shared enumerator, so a graph
+write reaches a GET at the next graph generation, and each request reuses one `DefinitionDeps`.
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 import httpx
 
 from dc_sdmx import SdmxClient
+from graph_generation import FakeGeneration, GenerationStamp
 from materialise.graph import Facet, FacetDefaultPolicy
 from series_coverage.schema import FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
@@ -84,6 +85,10 @@ class _MutableGraph:
         self._arcs = arcs
         self._facets = facets
         self._labels = labels
+        self.generation = FakeGeneration(token="rev1")
+
+    def generation_stamp(self) -> GenerationStamp:
+        return self.generation.stamp()
 
     def node_label(self, dcid: str) -> str | None:
         return self._labels.get(dcid)
@@ -118,6 +123,7 @@ class _MutableGraph:
         property: str,
         filters: Mapping[str, str] | None = None,
         max_results: int,
+        deadline: float | None = None,
     ):
         filters = filters or {}
         matches = sorted(
@@ -228,7 +234,8 @@ def _coverage_service() -> FakeCoverageService:
 
 
 def _register_and_client() -> tuple:
-    """Registers the described identity and returns its client, mutable arcs, and spec id."""
+    """Registers the described identity and returns its client, graph, mutable arcs, and spec
+    id."""
     arcs: dict[str, dict[str, tuple[str, ...]]] = {
         _ODA_GRANTS: _member_arcs_for("ODAGrants"),
     }
@@ -259,29 +266,28 @@ def _register_and_client() -> tuple:
         ),
     )
     assert reg.status_code == 200, reg.text
-    return client, arcs, spec_id
+    return client, graph, arcs, spec_id
 
 
-def test_a_graph_write_between_two_retrievals_of_the_same_spec_id_is_visible_immediately():
-    """A graph mutation between GETs must appear on the second request without a clock advance."""
-    client, arcs, spec_id = _register_and_client()
+def test_a_graph_write_between_two_retrievals_reaches_the_next_graph_generation():
+    """A GET under the generation that resolved a group serves it again, and the first GET
+    after the generation moves reads the write."""
+    client, graph, arcs, spec_id = _register_and_client()
 
-    first = client.get(f"/api/datasets/{spec_id}")
-    assert first.status_code == 200, first.text
-    first_refs = {entry["ref"] for entry in first.json()["trace"]["resolved_stat_vars"]}
-    assert first_refs == {_ODA_GRANTS_REF}
+    def resolved_refs() -> set[str]:
+        response = client.get(f"/api/datasets/{spec_id}")
+        assert response.status_code == 200, response.text
+        return {entry["ref"] for entry in response.json()["trace"]["resolved_stat_vars"]}
 
+    assert resolved_refs() == {_ODA_GRANTS_REF}
     arcs[_ODA_LOANS] = _member_arcs_for("ODALoans")
-
-    second = client.get(f"/api/datasets/{spec_id}")
-
-    assert second.status_code == 200, second.text
-    second_refs = {entry["ref"] for entry in second.json()["trace"]["resolved_stat_vars"]}
-    assert second_refs == {_ODA_GRANTS_REF, _ODA_LOANS_REF}
+    assert resolved_refs() == {_ODA_GRANTS_REF}
+    graph.generation.advance("rev2")
+    assert resolved_refs() == {_ODA_GRANTS_REF, _ODA_LOANS_REF}
 
 
 def test_the_definition_doors_own_deps_are_built_once_not_rebuilt_per_request(monkeypatch):
-    """Each request replaces the same base `DefinitionDeps`, while receiving a fresh enumerator."""
+    """Each request replaces the same base `DefinitionDeps`."""
     seen_base_ids: list[int] = []
     real_replace = dataclasses.replace
     lock = threading.Lock()
@@ -293,7 +299,7 @@ def test_the_definition_doors_own_deps_are_built_once_not_rebuilt_per_request(mo
 
     monkeypatch.setattr("datasets_api.doors.definition.replace", _spy_replace)
 
-    client, _arcs, spec_id = _register_and_client()
+    client, _graph, _arcs, spec_id = _register_and_client()
 
     client.get(f"/api/datasets/{spec_id}")
     client.get(f"/api/datasets/{spec_id}")

@@ -125,8 +125,8 @@ def _bare_stat_var_ref(stat_var: str) -> str:
 # few rows. Latest reads fetch one row per matched series, then reduce again
 # to the member's globally latest period.
 #
-# A single-member fetch gets its own 20 x allowance. Collection and group
-# chunks share one 20 x `ceiling` total across workers. The total bounds
+# A single-member fetch gets its own 20 x allowance. Group chunks share one
+# 20 x `ceiling` total across workers. The total bounds
 # cumulative rows, not peak memory. Each stream also has `max_rows=total`.
 # Checks run after each batch, so the total can overshoot by one batch per
 # active chunk.
@@ -134,7 +134,7 @@ _RAW_FETCH_ROWS_GUARD_MULTIPLIER = 20
 
 
 class _RawRowBudget:
-    """Thread-safe `20 * ceiling` row budget shared by all collection or group chunks.
+    """Thread-safe `20 * ceiling` row budget shared by all group chunks.
 
     It bounds cumulative rows, while peak memory depends on in-flight chunks.
     Single-member fetches use a separate local `20 * ceiling` guard.
@@ -155,68 +155,6 @@ class _RawRowBudget:
             return self._used
 
 
-class PreviewBudget:
-    """One request's raw-row and survivor budget, shared by the previews of its members.
-
-    A group or collection mint draws every member's raw rows on one `20 * ceiling` total
-    (`_RawRowBudget`) and refuses once its members' survivors together pass `ceiling`. Previews of
-    a request's members, run one after another under one budget, refuse the same way, and each
-    member's rows and `content_version` stay what it previews alone. A member's draws join the
-    budget through `commit` once its preview succeeds, so a revision retry reads against the same
-    budget as its first attempt.
-    """
-
-    def __init__(self, ceiling: int) -> None:
-        self.ceiling = ceiling
-        self.raw_total = _RAW_FETCH_ROWS_GUARD_MULTIPLIER * ceiling
-        self._raw_rows = 0
-        self._survivors = 0
-        self._members = 0
-
-    def check_raw(self, rows: int, *, stat_var: str) -> None:
-        """Raises `OverCeilingError` when a member's `rows` raw rows read so far take the request
-        past `raw_total`."""
-        used = self._raw_rows + rows
-        if used <= self.raw_total:
-            return
-        raise OverCeilingError(
-            f"the raw SDMX upstream response for stat_var {stat_var!r} was too large to filter "
-            f"synchronously (observed {used} rows across this request's members, past its shared "
-            f"raw fetch guard of {self.raw_total} rows)",
-            detail=(
-                f"the SDMX upstream read for stat_var {stat_var!r} was aborted after {used} rows "
-                f"across this request's members, past its shared raw fetch guard of "
-                f"{self.raw_total} rows. This guard bounds memory and transport on the unfiltered "
-                f"upstream response only. Whether the request's actual (post-window/facet-filter) "
-                f"coverage would have exceeded the sync materialisation ceiling of {self.ceiling} "
-                f"rows was not measured"
-            ),
-            ceiling_kind="rows",
-            count=used,
-            cap=self.raw_total,
-        )
-
-    def check_survivors(self, rows: int) -> None:
-        """Raises `OverCeilingError` when a member's `rows` survivors take the request's
-        survivors past `ceiling`."""
-        total = self._survivors + rows
-        if total <= self.ceiling:
-            return
-        message = (
-            f"aggregate materialised coverage of {total} rows across {self._members + 1} "
-            f"member(s) exceeds the sync materialisation ceiling of {self.ceiling} rows"
-        )
-        raise OverCeilingError(
-            message, detail=message, ceiling_kind="rows", count=total, cap=self.ceiling
-        )
-
-    def commit(self, *, raw_rows: int, survivors: int) -> None:
-        """Adds a previewed member's raw rows and survivors to the request's totals."""
-        self._raw_rows += raw_rows
-        self._survivors += survivors
-        self._members += 1
-
-
 def _time_period_for_window(window: RequestedWindow) -> Literal["LATEST"] | None:
     """Uses server-side `LATEST` for latest windows and no time filter otherwise.
 
@@ -231,7 +169,7 @@ class _MemberOutcome:
     """One member's frame and summary, consumed by `materialise.finish` after revision reads.
 
     `coverage` and `served_entities_by_role` replace the survivor table to
-    avoid retaining rows across a collection generation. `conversion_record`
+    avoid retaining rows across a group generation. `conversion_record`
     is `None` when no arithmetic ran. `conversion_recipe_id` is `None` for a
     native or non-request unit; a conversion plan resolves it before fetch.
     `default_scope` is the member's default place scope (`MemberProbe.scope`), for a
@@ -296,7 +234,6 @@ class _PreviewOutcome:
     `full_frame` contains all survivors only when `mint_full_frame=True`, for
     hashing a preview's content version. Otherwise it is `None` to avoid a
     second frame build. `default_scope` is `_MemberOutcome.default_scope`.
-    `raw_rows` counts the SDMX rows read before filtering.
 
     `series_conversion_records` holds one record per series of a preview read
     with `series_roles`, keyed by the series' dcids on those roles, when
@@ -314,7 +251,6 @@ class _PreviewOutcome:
     conversion_record: ConversionRecord | None
     conversion_recipe_id: str | None
     default_scope: DefaultPlaceScope = NO_DEFAULT_SCOPE
-    raw_rows: int = 0
     series_conversion_records: dict[tuple[str, ...], ConversionRecord] = field(default_factory=dict)
     series_total_rows: dict[tuple[str, ...], int] = field(default_factory=dict)
 
@@ -335,12 +271,9 @@ class _PreparedPreview:
     table: pa.Table
     currencies: EntityCurrencies | None
     series_currencies: Mapping[tuple[str, ...], EntityCurrencies | None]
-    raw_rows: int
     limit: int
     ceiling: int
     mint_full_frame: bool
-    refuse_over_ceiling: bool
-    budget: PreviewBudget | None
     series_roles: tuple[str, ...]
     series_limit: int | None
 
@@ -368,8 +301,8 @@ def _select_member_facets(
     """Resolves all facet axes for one member from the probed candidates, ranked with
     `breadth`, each facet's series count under `request.window` (`MemberProbe.breadth_in`).
 
-    The helper performs no graph reads, so collection fan-out can plan each
-    member before fetching observations. Declared defaults resolve first, and
+    The helper performs no graph reads, so a group can plan each member
+    before fetching observations. Declared defaults resolve first, and
     the deployment-fallback pool keeps the facets that carry them before
     `request.window` narrows it to facets overlapping the requested years
     (`facets.fallback_pool`). It evaluates all axes and aggregates
@@ -835,7 +768,7 @@ def _probe_member(
 ) -> MemberProbe:
     """Returns one member's probe (`facets.probe_facets`).
 
-    `precomputed_probe` is a one-request collection probe and skips the graph read.
+    `precomputed_probe` is a one-request `CollectionFacetProbe` and skips the graph read.
     """
     if precomputed_probe is not None:
         return precomputed_probe.members[0]
@@ -1103,9 +1036,7 @@ def _finish_member_table(
 class _MemberFetchPlan:
     """Holds one member's selections, dispatch IDs, admission, and conversion plan.
 
-    Collection plans are built in request order before fetch, so planning
-    errors follow that order. Group plans carry the group's shared selections
-    and each member's own admission.
+    Group plans carry the group's shared selections and each member's own admission.
     """
 
     selections: dict[str, FacetSelection]
@@ -1113,41 +1044,6 @@ class _MemberFetchPlan:
     admission: RowAdmission
     conversion_plan: MemberConversionPlan | None
     default_scope: DefaultPlaceScope = NO_DEFAULT_SCOPE
-
-
-def _plan_member_fetch(
-    request: MaterialisationRequest,
-    probe: MemberProbe,
-    *,
-    graph: GraphReader,
-    sdmx: SdmxClient,
-    rate_cache: RateTableCache | None,
-    deadline: float | None = None,
-) -> _MemberFetchPlan:
-    """Resolves selections, dispatch IDs, and conversion before observation fetch.
-
-    Ref and unbound unit bindings need no rate cache. Request-form bindings
-    without one raise `MaterialisationUsageError` before fetch.
-    """
-    selections = _select_member_facets(
-        request, probe.candidates, graph=graph, breadth=probe.breadth_in(request.window)
-    )
-    conversion_plan = _plan_conversion(
-        request=request,
-        selections=selections,
-        graph=graph,
-        sdmx=sdmx,
-        rate_cache=rate_cache,
-        deadline=deadline,
-    )
-    dispatch_ids = joint_dispatch_facet_ids(probe.candidates, selections)
-    return _MemberFetchPlan(
-        selections=selections,
-        dispatch_ids=dispatch_ids,
-        admission=probe.admission,
-        conversion_plan=conversion_plan,
-        default_scope=probe.scope,
-    )
 
 
 def request_batch_key(request: MaterialisationRequest) -> tuple[object, ...]:
@@ -1298,10 +1194,10 @@ def _generate_chunk(
     Non-latest batches filter per member. Exceeding the member's `_streaming_ceiling`
     raises `OverCeilingError`, with up to one batch of overshoot; a conversion that omits
     rows counts its rows after omission instead (`_streaming_ceiling`). Latest chunks are
-    homogeneous. SDMX returns one row per series, then `_finish_member_fetch`
+    homogeneous. SDMX returns one row per series, then the caller's `_servable_rows`
     reduces to the member's global latest period and checks its coverage.
 
-    `raw_budget` is shared by every collection or group chunk. Each stream
+    `raw_budget` is shared by every group chunk. Each stream
     uses `raw_budget.total` as `max_rows`, while each arriving batch draws
     from the shared total. A batch can overshoot that total before the check
     raises `OverCeilingError`. An SDMX cap error raises the same error.
@@ -1406,7 +1302,7 @@ def _generate_chunk(
                     if index in latest_indices:
                         # Raw, pre-reduction rows for a `"latest"` member:
                         # bounded by the shared `raw_budget` draw above
-                        # only. `_finish_member_fetch` reduces this buffer
+                        # only. The caller's `_servable_rows` reduces this buffer
                         # to its single latest period and checks the
                         # resulting coverage against `ceiling` afterward.
                         parts[index].append(member_batch)
@@ -1525,7 +1421,7 @@ def _raw_guard_message(
     raw_budget: _RawRowBudget,
     ceiling: int,
 ) -> tuple[str, str]:
-    """Formats a shared raw-fetch refusal for collection and group chunks.
+    """Formats a shared raw-fetch refusal for group chunks.
 
     `observed` and `cap_kind` describe either the stream cap or the shared
     row-budget breach. Filtering has not run, so surviving coverage remains
@@ -1573,40 +1469,6 @@ def _raw_guard_message(
     )
 
 
-def _finish_member_fetch(
-    request: MaterialisationRequest,
-    plan: _MemberFetchPlan,
-    fetch_result: _MemberFetchResult,
-    *,
-    ceiling: int,
-) -> _MemberOutcome:
-    """Keeps the member's servable rows (`_servable_rows`), then passes them to
-    `_finish_member_table`."""
-    table, currencies = _servable_rows(
-        fetch_result.table,
-        window=request.window,
-        selections=plan.selections,
-        admission=plan.admission,
-        conversion_plan=plan.conversion_plan,
-        ceiling_check=partial(
-            _check_servable_ceiling,
-            request,
-            fetch_result.table,
-            conversion_plan=plan.conversion_plan,
-            ceiling=ceiling,
-        ),
-    )
-    return _finish_member_table(
-        request,
-        plan.selections,
-        table,
-        ceiling=ceiling,
-        conversion_plan=plan.conversion_plan,
-        currencies=currencies,
-        default_scope=plan.default_scope,
-    )
-
-
 _FRAME_CHUNK_TARGET_ROWS = 100_000
 """Group rows are coalesced into chunks of about 100,000 before frame and Parquet writes.
 
@@ -1621,12 +1483,11 @@ place the whole group in its first dispatch wave and defeat row coalescing.
 `lanes = max(member_concurrency, ceil(request_count / 8))` bounds each
 chunk to about eight members and resident member tables to roughly
 `member_concurrency * 8`. Kenya-scale fetches use about 35 requests instead
-of 110. Collection chunks can be wider because their tables are released
-as each member outcome is built."""
+of 110."""
 
 
 def dispatch_lanes(member_concurrency: int, request_count: int) -> int:
-    """Returns the lane count used by group and collection fetches.
+    """Returns the lane count used by group fetches.
 
     Admission estimates use the same formula so predicted and dispatched
     request counts agree.
@@ -1912,10 +1773,8 @@ class _GroupRowStreamer:
         chunk's own shared fetch (one `stream_observation_batches` call
         naming every member in `chunk` at once), then each member's own
         servable rows (`_servable_rows`) and per-series unit
-        conversion (`_convert_by_series`), the same tail
-        `_finish_member_fetch` runs for `materialise_collection`'s own
-        chunk fetch, minus the per-member `check_ceiling` call a group
-        must not run (`stream_rows` runs one pooled ceiling check instead,
+        conversion (`_convert_by_series`), without a per-member
+        `check_ceiling` call (`stream_rows` runs one pooled ceiling check
         after every row chunk has closed). Keys its own returned dict, and
         reads `chunk.member_indices` in `dcid_requests`/`dcid_plans`'s own
         dcid-sorted position space, not `requests`' own.
@@ -2119,8 +1978,7 @@ def _assemble_group_outcome(
     `materialise.finish._finish_group` combines it with the revision
     snapshot afterward (`content_version.mint_version_from_digest`),
     without a second read of these rows. A `materialise_group` call mints
-    exactly one `content_version` this way, unlike `materialise_collection`,
-    which mints one version per member.
+    exactly one `content_version` this way.
 
     The ceiling check runs once, here, after every row chunk has already
     closed and every member's own conversion has already run, so a
@@ -2320,8 +2178,6 @@ def _prepare_preview_member(
     coverage_index: CoverageIndex | None = None,
     deadline: float | None = None,
     mint_full_frame: bool = False,
-    refuse_over_ceiling: bool = False,
-    budget: PreviewBudget | None = None,
     precomputed: Sequence[Facet] | None = None,
     series_roles: Sequence[str] = (),
     series_limit: int | None = None,
@@ -2350,25 +2206,15 @@ def _prepare_preview_member(
     carried on `_PreviewOutcome.conversion_record`.
 
     `limit` only ever bounds what's delivered (`frame`), never what's read
-    or counted (`total_rows`). With `refuse_over_ceiling`, survivors past
-    `ceiling` raise the mint's `OverCeilingError`: mid-stream, which stops
-    the read (`_streaming_ceiling`), and over the rows served after conversion omissions and
-    the `"latest"` reduction, as `_finish_member_table` checks. The preview then refuses where a mint of the same request
-    refuses and holds no more survivors than the mint does. Without it,
-    `_collect_surviving_batches` keeps every survivor and `ceiling` sizes
-    only the raw-fetch guard. The `"latest"`-window carve-out
-    (`time_period="LATEST"` on the fetch, narrowing it server-side to one
-    row per matched series, via `_time_period_for_window`, same as
-    `_generate_member`, then `_servable_rows` buffers every batch
-    under the raw-fetch guard and filters afterward, since the client-side
-    reduction that picks the single latest period across the member is a
-    global max over the whole member, not decidable per batch) gets the
-    identical true-count-then-truncate treatment.
-
-    `budget`, shared with the request's other members, draws each raw batch
-    on the request's raw total and checks the member's survivors against the
-    request's aggregate ceiling before the full frame is built. The caller
-    commits the outcome's `raw_rows` and `total_rows` once the member succeeds.
+    or counted (`total_rows`). Every survivor is kept, and `ceiling` sizes
+    only the raw-fetch guard. A `"latest"` window fetches with
+    `time_period="LATEST"` (`_time_period_for_window`, as `_generate_member`
+    does), which narrows the read server-side to one row per matched series.
+    `_servable_rows` then buffers every batch under the raw-fetch guard and
+    filters afterward, since the client-side reduction that picks the single
+    latest period across the member is a global max over the whole member,
+    not decidable per batch. It gets the same true-count-then-truncate
+    treatment.
 
     `mint_full_frame`, when true, also builds `_PreviewOutcome.full_frame`
     over every survivor row. That build is the same one a mint's own
@@ -2434,15 +2280,6 @@ def _prepare_preview_member(
     )
 
     dispatch_ids = joint_dispatch_facet_ids(probe.candidates, selections)
-    raw_rows = 0
-
-    def _drawn(batches: Iterator[pa.RecordBatch]) -> Iterator[pa.RecordBatch]:
-        nonlocal raw_rows
-        for batch in batches:
-            raw_rows += batch.num_rows
-            if budget is not None:
-                budget.check_raw(raw_rows, stat_var=request.stat_var)
-            yield batch
 
     if dispatch_ids:
         raw_guard = _RAW_FETCH_ROWS_GUARD_MULTIPLIER * ceiling
@@ -2467,7 +2304,6 @@ def _prepare_preview_member(
         ) as (roles, sdmx_batches):
             _check_role_divergence(roles, request)
             schema = observation_schema(roles)
-            sdmx_batches = _drawn(sdmx_batches)
             if request.window.kind == "latest":
                 # The fetch above already carries `time_period="LATEST"`,
                 # so `sdmx_batches` holds one row per matched series. The
@@ -2479,16 +2315,6 @@ def _prepare_preview_member(
                 # kinds fold that same filtering into the single-pass loop
                 # that filters each batch as it streams.
                 batches = list(sdmx_batches)
-            elif refuse_over_ceiling:
-                batches = _collect_surviving_batches(
-                    sdmx_batches,
-                    schema=schema,
-                    window=request.window,
-                    selections=selections,
-                    admission=probe.admission,
-                    ceiling=_streaming_ceiling(conversion_plan, ceiling),
-                    stat_var=request.stat_var,
-                )
             else:
                 batches = [
                     batch
@@ -2518,17 +2344,6 @@ def _prepare_preview_member(
     # finish; conversion must see only that period.
     currencies: EntityCurrencies | None = None
     series_currencies: dict[tuple[str, ...], EntityCurrencies | None] = {}
-    preview_ceiling_check = (
-        partial(
-            _check_servable_ceiling,
-            request,
-            table,
-            conversion_plan=conversion_plan,
-            ceiling=ceiling,
-        )
-        if refuse_over_ceiling
-        else None
-    )
     if series_roles and table.num_rows:
         prepared_tables: list[pa.Table] = []
         for key, rows in _split_by_roles(table, series_roles):
@@ -2538,7 +2353,6 @@ def _prepare_preview_member(
                 selections=selections,
                 admission=probe.admission,
                 conversion_plan=conversion_plan,
-                ceiling_check=preview_ceiling_check,
             )
             prepared_tables.append(rows)
         table = pa.concat_tables(prepared_tables)
@@ -2549,7 +2363,6 @@ def _prepare_preview_member(
             selections=selections,
             admission=probe.admission,
             conversion_plan=conversion_plan,
-            ceiling_check=preview_ceiling_check,
         )
     return _PreparedPreview(
         request=request,
@@ -2559,12 +2372,9 @@ def _prepare_preview_member(
         table=table,
         currencies=currencies,
         series_currencies=series_currencies,
-        raw_rows=raw_rows,
         limit=limit,
         ceiling=ceiling,
         mint_full_frame=mint_full_frame,
-        refuse_over_ceiling=refuse_over_ceiling,
-        budget=budget,
         series_roles=tuple(series_roles),
         series_limit=series_limit,
     )
@@ -2579,21 +2389,8 @@ def _finish_preview_member(
     if time_period is not None:
         table = table.filter(pc.equal(table["TIME_PERIOD"], pa.scalar(time_period)))
     conversion_plan = prepared.conversion_plan
-    preview_ceiling_check = (
-        partial(
-            _check_servable_ceiling,
-            request,
-            table,
-            conversion_plan=conversion_plan,
-            ceiling=prepared.ceiling,
-        )
-        if prepared.refuse_over_ceiling
-        else None
-    )
     series_conversion_records: dict[tuple[str, ...], ConversionRecord] = {}
     if prepared.series_roles and (table.num_rows or prepared.series_currencies):
-        if preview_ceiling_check is not None:
-            preview_ceiling_check()
         series_tables = dict(_split_by_roles(table, prepared.series_roles))
         empty = table.slice(0, 0)
         converted: list[pa.Table] = []
@@ -2611,8 +2408,6 @@ def _finish_preview_member(
         table = pa.concat_tables(converted)
         conversion_record = merged_record(list(series_conversion_records.values()))
     else:
-        if preview_ceiling_check is not None:
-            preview_ceiling_check()
         table, conversion_record = apply_member_conversion(
             conversion_plan,
             table,
@@ -2629,10 +2424,6 @@ def _finish_preview_member(
     coverage = columnar.coverage(
         table, declared_roles=request.declared_roles, applied_window=applied_window
     )
-    if prepared.refuse_over_ceiling:
-        check_ceiling(coverage, ceiling=prepared.ceiling)
-    if prepared.budget is not None:
-        prepared.budget.check_survivors(coverage.rows)
 
     # Built from `table` before the truncation branch below replaces the
     # name with the delivered subset. `_PreviewOutcome.full_frame` is the
@@ -2681,7 +2472,6 @@ def _finish_preview_member(
         conversion_record=conversion_record,
         conversion_recipe_id=conversion_recipe_id,
         default_scope=prepared.probe.scope,
-        raw_rows=prepared.raw_rows,
         series_conversion_records=series_conversion_records,
         series_total_rows=series_total_rows,
     )

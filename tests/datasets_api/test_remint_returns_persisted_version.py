@@ -82,12 +82,22 @@ class _StaleCatalogue(FakeCatalogue):
         return True
 
 
+_NAMED_NODES: dict[str, dict[str, tuple[str, ...]]] = {
+    _RECIPIENT: {"name": ("Kenya",)},
+    "GrantEquivalent": {"name": ("Grant equivalent",)},
+}
+"""Names for the download's default name columns, so a render adds no `enrichment_unavailable`
+warning and a re-mint's response matches the first mint's. `_arcs` adds them to the arcs the
+graph reads, which tests mutate in place."""
+
+
 def _arcs(stat_vars: list[str]) -> dict[str, dict[str, tuple[str, ...]]]:
     arcs: dict[str, dict[str, tuple[str, ...]]] = {
         stat_var.removeprefix("dcid:"): {
             "typeOf": ("StatisticalVariable",),
             "observationProperties": ("recipient",),
             "measuredProperty": ("amount",),
+            "name": (stat_var,),
         }
         for stat_var in stat_vars
     }
@@ -98,6 +108,7 @@ def _arcs(stat_vars: list[str]) -> dict[str, dict[str, tuple[str, ...]]]:
         "licenseAttribution": (_FIRST_ATTRIBUTION,),
     }
     arcs[_DATASET] = {"typeOf": ("Dataset",), "name": (_FIRST_NAME,)}
+    arcs.update(_NAMED_NODES)
     return arcs
 
 
@@ -176,12 +187,9 @@ def _bundle_source_titles(artifact_store, manifest: dict) -> list[str]:
 
 
 def _snapshot(client, manifest: dict) -> dict:
-    subject_id = (
-        manifest["definition"]["spec_id"]
-        if manifest.get("definition")
-        else manifest["collection"]["collection_id"]
+    resp = client.get(
+        f"/api/datasets/{manifest['definition']['spec_id']}/{manifest['content_version']}"
     )
-    resp = client.get(f"/api/datasets/{subject_id}/{manifest['content_version']}")
     assert resp.status_code == 200, resp.text
     return resp.json()
 
@@ -233,23 +241,10 @@ def test_a_definition_remint_after_a_rename_returns_the_stored_citation(version_
     assert second["artifacts"][0]["artifact_digest"] == first["artifacts"][0]["artifact_digest"]
 
 
-def test_a_collection_remint_after_a_rename_returns_the_stored_citation(version_store):
-    first, second, (client, artifact_store) = _remint_after_a_rename(
-        version_store=version_store, stat_vars=["dcid:RemintMemberA", "dcid:RemintMemberB"]
-    )
-
-    assert second["collection"] is not None
-    assert [source["label"] for source in second["citation"]["sources"]] == [_FIRST_NAME]
-    assert second["citation"] == first["citation"]
-    assert _stored_fields(second) == _stored_fields(_snapshot(client, second))
-    assert _bundle_source_titles(artifact_store, second) == [_FIRST_NAME]
-    assert second["artifacts"][0]["artifact_digest"] == first["artifacts"][0]["artifact_digest"]
-
-
 @pytest.mark.parametrize(
     "stat_vars",
-    [["dcid:RemintOriginDefinition"], ["dcid:RemintOriginA", "dcid:RemintOriginB"]],
-    ids=["definition", "collection"],
+    [["dcid:RemintOriginDefinition"]],
+    ids=["definition"],
 )
 def test_a_remint_of_a_stored_version_carries_this_call_s_origin_warnings(
     version_store, monkeypatch: pytest.MonkeyPatch, stat_vars: list[str]
@@ -277,8 +272,8 @@ def test_a_remint_of_a_stored_version_carries_this_call_s_origin_warnings(
 
 @pytest.mark.parametrize(
     "stat_vars",
-    [["dcid:RemintStaleDefinition"], ["dcid:RemintStaleA", "dcid:RemintStaleB"]],
-    ids=["definition", "collection"],
+    [["dcid:RemintStaleDefinition"]],
+    ids=["definition"],
 )
 def test_a_remint_of_a_stored_version_carries_this_call_s_stale_catalogue_warning(
     version_store, monkeypatch: pytest.MonkeyPatch, stat_vars: list[str]
@@ -304,8 +299,8 @@ def _stale_messages(manifest: dict) -> list[str]:
 
 @pytest.mark.parametrize(
     "stat_vars",
-    [["dcid:RemintRestaleDefinition"], ["dcid:RemintRestaleA", "dcid:RemintRestaleB"]],
-    ids=["definition", "collection"],
+    [["dcid:RemintRestaleDefinition"]],
+    ids=["definition"],
 )
 def test_a_remint_under_another_stale_build_carries_only_that_build_s_warning(
     version_store, monkeypatch: pytest.MonkeyPatch, stat_vars: list[str]
@@ -329,8 +324,8 @@ def test_a_remint_under_another_stale_build_carries_only_that_build_s_warning(
 
 @pytest.mark.parametrize(
     "stat_vars",
-    [["dcid:RemintFreshDefinition"], ["dcid:RemintFreshA", "dcid:RemintFreshB"]],
-    ids=["definition", "collection"],
+    [["dcid:RemintFreshDefinition"]],
+    ids=["definition"],
 )
 def test_a_remint_under_a_fresh_build_drops_the_stored_stale_warning(
     version_store, monkeypatch: pytest.MonkeyPatch, stat_vars: list[str]
@@ -354,8 +349,8 @@ def test_a_remint_under_a_fresh_build_drops_the_stored_stale_warning(
 
 @pytest.mark.parametrize(
     "stat_vars",
-    [["dcid:RemintDocumentedDefinition"], ["dcid:RemintDocumentedA", "dcid:RemintDocumentedB"]],
-    ids=["definition", "collection"],
+    [["dcid:RemintDocumentedDefinition"]],
+    ids=["definition"],
 )
 def test_a_remint_after_a_documentation_change_keeps_the_first_mint_s_snapshot_and_date(
     version_store, clock, stat_vars: list[str]
@@ -382,34 +377,6 @@ def test_a_remint_after_a_documentation_change_keeps_the_first_mint_s_snapshot_a
     assert (
         second["artifacts"][0]["artifact_digest"] == first.json()["artifacts"][0]["artifact_digest"]
     )
-    if "collection" in second:
-        assert [member["prepared_at"] for member in second["collection"]["members"]] == [
-            _prepared(0)
-        ] * len(stat_vars)
-
-
-def test_a_collection_member_minted_alone_first_keeps_its_own_prepared_at(version_store, clock):
-    """A collection's `prepared_at` is its own first mint; each member's is that member
-    version's, which precedes the collection's for a member minted alone first."""
-    stat_vars = ["dcid:PreparedMemberA", "dcid:PreparedMemberB"]
-    client, _artifact_store = _client(
-        version_store=version_store, stat_vars=stat_vars, arcs=_arcs(stat_vars)
-    )
-    alone = client.post("/api/datasets", json=_bundled(stat_vars[:1]))
-    assert alone.status_code == 200, alone.text
-
-    collection = client.post("/api/datasets", json=_bundled(stat_vars)).json()
-
-    members = {
-        member["definition"]["spec_id"]: member for member in collection["collection"]["members"]
-    }
-    alone_spec_id = alone.json()["definition"]["spec_id"]
-    assert members[alone_spec_id]["content_version"] == alone.json()["content_version"]
-    assert collection["prepared_at"] == _prepared(1)
-    assert {spec_id: member["prepared_at"] for spec_id, member in members.items()} == {
-        spec_id: _prepared(0) if spec_id == alone_spec_id else _prepared(1) for spec_id in members
-    }
-    assert _stored_fields(collection) == _stored_fields(_snapshot(client, collection))
 
 
 def test_a_first_mint_after_a_rename_cites_the_new_name(version_store):
@@ -440,8 +407,17 @@ def test_a_collapse_minted_over_a_renamed_base_cites_the_base_s_stored_citation(
     `prepared_at` for its record, bundle, and repeat-mint response.
     """
     arcs: dict[str, dict[str, tuple[str, ...]]] = {
-        groupby_fixture._MEMBER_A: {**groupby_fixture._MEMBER_ARCS, "testAxis": ("TestAxisA",)},
-        groupby_fixture._MEMBER_B: {**groupby_fixture._MEMBER_ARCS, "testAxis": ("TestAxisB",)},
+        **_NAMED_NODES,
+        groupby_fixture._MEMBER_A: {
+            **groupby_fixture._MEMBER_ARCS,
+            "testAxis": ("TestAxisA",),
+            "name": ("Member A",),
+        },
+        groupby_fixture._MEMBER_B: {
+            **groupby_fixture._MEMBER_ARCS,
+            "testAxis": ("TestAxisB",),
+            "name": ("Member B",),
+        },
         groupby_fixture._PROVENANCE: {"typeOf": ("Provenance",), "isPartOf": (_DATASET,)},
         _DATASET: {"typeOf": ("Dataset",), "name": (_FIRST_NAME,)},
     }
@@ -622,54 +598,10 @@ def test_a_collapse_whose_base_a_concurrent_mint_wrote_first_takes_the_base_s_pr
     assert _digests(_bundle_entries(again)) == _digests(_bundle_entries(collapsed))
 
 
-def test_a_collection_member_a_concurrent_mint_wrote_first_takes_that_record_s_prepared_at(
-    version_store, clock
-):
-    """A member minted alone lands between the collection's pre-render read of it and its
-    member write. The collection's entry for that member, as returned and as stored, carries
-    the member record's `prepared_at`, and the collection bundle is linked and dated as the
-    collection record is."""
-    stat_vars = ["dcid:PreparedRaceA", "dcid:PreparedRaceB"]
-    arcs = _arcs(stat_vars)
-    client, artifact_store = _client(version_store=version_store, stat_vars=stat_vars, arcs=arcs)
-    alone = client.post("/api/datasets", json=_bundled(stat_vars[:1])).json()
-    alone_spec_id = alone["definition"]["spec_id"]
-    reader = _WinnerLandsAfterFirstRead(
-        LiveSnapshotReader(store=version_store), subject_id=alone_spec_id
-    )
-    racing, _ = _client(
-        version_store=version_store,
-        stat_vars=stat_vars,
-        arcs=arcs,
-        artifact_store=artifact_store,
-        snapshot_reader=reader,
-    )
-
-    collection = racing.post("/api/datasets", json=_bundled(stat_vars)).json()
-
-    def member_dates(manifest: dict) -> dict[str, str]:
-        return {
-            member["definition"]["spec_id"]: member["prepared_at"]
-            for member in manifest["collection"]["members"]
-        }
-
-    assert reader.version_reads >= 1  # The pre-render read missed the winner.
-    assert alone["prepared_at"] == _prepared(0)
-    expected = {
-        spec_id: _prepared(0) if spec_id == alone_spec_id else _prepared(1)
-        for spec_id in member_dates(collection)
-    }
-    assert member_dates(collection) == expected
-    snapshot = _snapshot(racing, collection)
-    assert member_dates(snapshot) == expected
-    assert _digests(_bundle_entries(snapshot)) == _digests(_bundle_entries(collection))
-    assert _bundle_created(artifact_store, collection) == collection["prepared_at"]
-
-
 @pytest.mark.parametrize(
     "stat_vars",
-    [["dcid:RaceBundleDefinition"], ["dcid:RaceBundleA", "dcid:RaceBundleB"]],
-    ids=["definition", "collection"],
+    [["dcid:RaceBundleDefinition"]],
+    ids=["definition"],
 )
 def test_a_bundle_minted_by_the_loser_of_a_first_mint_is_dated_as_the_winner_s_record(
     version_store, clock, stat_vars: list[str]
@@ -761,16 +693,15 @@ def test_a_first_mint_lists_the_bundle_a_concurrent_loser_linked_before_it(versi
     ("stat_vars", "render_name", "subject_kind"),
     [
         (["dcid:FailedRenderDefinition"], "render_and_store", "spec"),
-        (["dcid:FailedRenderA", "dcid:FailedRenderB"], "render_and_store_collection", "collection"),
     ],
-    ids=["definition", "collection"],
+    ids=["definition"],
 )
 def test_a_rendering_that_fails_after_the_record_leaves_the_version_with_its_statistics(
     version_store, monkeypatch: pytest.MonkeyPatch, stat_vars, render_name, subject_kind
 ):
     """The record is written before the requested rendering, so a rendering that fails leaves a
     version on record. Its series statistics and frame1 were linked first, so a snapshot read
-    lists the statistics and the store holds frame1 (a collection's on its member records)."""
+    lists the statistics and the store holds frame1."""
     client, _ = _client(version_store=version_store, stat_vars=stat_vars, arcs=_arcs(stat_vars))
 
     def failing_render(**_kwargs):
@@ -1043,139 +974,4 @@ def test_a_head_hit_under_the_same_settings_serves_the_linked_bundle(
     assert got.json()["trace"]["served_from"] == "head"
     assert [bundle["artifact_digest"] for bundle in _bundle_entries(got.json())] == [
         minted_bundle["artifact_digest"]
-    ]
-
-
-def test_a_collection_on_record_names_its_bundle_from_the_stored_member_refs(version_store):
-    """A collection already on record renders each member under the `provenance_refs` its
-    stored body carries, so the mint and a snapshot read give its bundle one name and the
-    zip's data file is named from the same refs."""
-    stat_vars = ["dcid:StoredRefsA", "dcid:StoredRefsB"]
-    client, artifact_store = _client(
-        version_store=version_store, stat_vars=stat_vars, arcs=_arcs(stat_vars)
-    )
-    first = client.post("/api/datasets", json=_bundled(stat_vars)).json()
-    collection_id, content_version = first["collection"]["collection_id"], first["content_version"]
-    # A body backfilled for members with no record of their own, and its old bundle unlinked.
-    with version_store.transaction() as tx:
-        row = tx.fetch_one(
-            "SELECT immutable_body FROM datasets.version_record "
-            "WHERE subject_id = %s AND content_version = %s",
-            (collection_id, content_version),
-        )
-        body = dict(row["immutable_body"])
-        for member in body["collection"]["members"]:
-            member["provenance_refs"] = []
-        tx.execute(
-            "UPDATE datasets.version_record SET immutable_body = %s "
-            "WHERE subject_id = %s AND content_version = %s",
-            (body, collection_id, content_version),
-        )
-        tx.execute(
-            "DELETE FROM datasets.version_artifact WHERE subject_id = %s AND content_version = %s",
-            (collection_id, content_version),
-        )
-
-    remint = client.post("/api/datasets", json=_bundled(stat_vars)).json()
-    (bundle,) = _bundle_entries(remint)
-    key = (Tier(bundle["tier"]), bundle["artifact_digest"])
-    minted_disposition = artifact_store.signed_headers[key]
-    (first_bundle,) = _bundle_entries(first)
-    first_disposition = artifact_store.signed_headers[
-        (Tier(first_bundle["tier"]), first_bundle["artifact_digest"])
-    ]
-    _snapshot(client, remint)
-
-    assert artifact_store.signed_headers[key] == minted_disposition != first_disposition
-    with zipfile.ZipFile(BytesIO(artifact_store.fetch(bundle["url"]))) as zf:
-        data_files = sorted(name for name in zf.namelist() if name.startswith("data/"))
-    with zipfile.ZipFile(BytesIO(artifact_store.fetch(first_bundle["url"]))) as zf:
-        first_data_files = sorted(name for name in zf.namelist() if name.startswith("data/"))
-    assert data_files != first_data_files
-
-
-def test_a_collection_on_record_reshapes_each_member_under_its_live_ref(
-    version_store, monkeypatch: pytest.MonkeyPatch
-):
-    """Stored member refs of `[]` name a collection's files, but each member's reshape, whose
-    groupby missing-as-zero rule reads the member's dataset, takes the live provenance ref."""
-    stat_vars = ["dcid:LiveRefsA", "dcid:LiveRefsB"]
-    client, _ = _client(version_store=version_store, stat_vars=stat_vars, arcs=_arcs(stat_vars))
-    first = client.post("/api/datasets", json=_mint_body(statvars=stat_vars)).json()
-    collection_id, content_version = first["collection"]["collection_id"], first["content_version"]
-    with version_store.transaction() as tx:
-        row = tx.fetch_one(
-            "SELECT immutable_body FROM datasets.version_record "
-            "WHERE subject_id = %s AND content_version = %s",
-            (collection_id, content_version),
-        )
-        body = dict(row["immutable_body"])
-        for member in body["collection"]["members"]:
-            member["provenance_refs"] = []
-        tx.execute(
-            "UPDATE datasets.version_record SET immutable_body = %s "
-            "WHERE subject_id = %s AND content_version = %s",
-            (body, collection_id, content_version),
-        )
-    rendered: list[tuple[list[str], list[str]]] = []
-    render_collection = serve.render_and_store_collection
-
-    def _recording_render(*, members, **kwargs):
-        members = tuple(members)
-        rendered.extend((list(m.provenance_refs), list(m.cited_refs)) for m in members)
-        return render_collection(members=members, **kwargs)
-
-    monkeypatch.setattr(serve, "render_and_store_collection", _recording_render)
-
-    remint = client.post("/api/datasets", json=_mint_body(statvars=stat_vars))
-
-    assert remint.status_code == 200, remint.text
-    assert rendered == [
-        (member["provenance_refs"], []) for member in first["collection"]["members"]
-    ]
-    assert all(refs for refs, _cited in rendered)
-
-
-def test_a_collection_on_record_dates_its_bare_member_files_from_the_stored_members(
-    version_store, monkeypatch: pytest.MonkeyPatch
-):
-    """A collection already on record renders each member under the `prepared_at` its stored
-    member entry carries, the date a snapshot read names that member's bare file with, even
-    when the member's own record carries another."""
-    stat_vars = ["dcid:StoredDatesA", "dcid:StoredDatesB"]
-    client, _ = _client(version_store=version_store, stat_vars=stat_vars, arcs=_arcs(stat_vars))
-    first = client.post("/api/datasets", json=_mint_body(statvars=stat_vars)).json()
-    collection_id, content_version = first["collection"]["collection_id"], first["content_version"]
-    stored_date = datetime(2026, 9, 1, 7, 0, tzinfo=UTC)
-    # A member entry backfilled with the collection's instant while the member's own record,
-    # written later, carries another date.
-    with version_store.transaction() as tx:
-        row = tx.fetch_one(
-            "SELECT immutable_body FROM datasets.version_record "
-            "WHERE subject_id = %s AND content_version = %s",
-            (collection_id, content_version),
-        )
-        body = dict(row["immutable_body"])
-        body["collection"]["members"][0]["prepared_at"] = "2026-09-01T07:00:00Z"
-        tx.execute(
-            "UPDATE datasets.version_record SET immutable_body = %s "
-            "WHERE subject_id = %s AND content_version = %s",
-            (body, collection_id, content_version),
-        )
-    rendered_dates: list[datetime] = []
-    render_collection = serve.render_and_store_collection
-
-    def _recording_render(*, members, **kwargs):
-        members = tuple(members)
-        rendered_dates.extend(member.prepared_at for member in members)
-        return render_collection(members=members, **kwargs)
-
-    monkeypatch.setattr(serve, "render_and_store_collection", _recording_render)
-
-    remint = client.post("/api/datasets", json=_mint_body(statvars=stat_vars))
-
-    assert remint.status_code == 200, remint.text
-    assert rendered_dates == [
-        stored_date,
-        datetime.fromisoformat(first["collection"]["members"][1]["prepared_at"]),
     ]

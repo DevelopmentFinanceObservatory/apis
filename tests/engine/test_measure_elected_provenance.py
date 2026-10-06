@@ -98,7 +98,6 @@ def _run_purpose_and_flow_type(monkeypatch):
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations=_OBS, availability={}),
             llm=_BindPurposeAndFlowTypeLLM(),
-            base_steps=[],
             base_timing={},
             coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
         )

@@ -6,17 +6,18 @@ defines its own structural graph protocol, independent of `materialise`."""
 
 from __future__ import annotations
 
-from statvar_members.cache import MemberEnumerator
+from statvar_members.cache import MemberEnumerator, shared_enumerator
 from statvar_members.digest import member_digest
 from statvar_members.enumerate import (
     CANDIDATE_CAP,
     DEFAULT_MEMBER_CAP,
-    POSTED_MEMBER_CAP,
+    DEFAULT_SUBJECT_CEILING,
     DegenerateObservationProperties,
     Member,
     MemberEnumerationTooLarge,
     MemberGroup,
     MemberQueryUnanchored,
+    MemberReadDeadline,
     MemberRoleDisagreement,
     MultiValuedConstraint,
     NotAStatisticalVariable,
@@ -24,6 +25,7 @@ from statvar_members.enumerate import (
     RoleClassElection,
     RoleClassFacts,
     SlotBinding,
+    admitting_roles,
     antichain_minimal_ids,
     constraints_resolve,
     covers_role_keys,
@@ -31,6 +33,7 @@ from statvar_members.enumerate import (
     dominates_constraint_keys,
     elect_role_class,
     elect_role_class_of,
+    electing_role_keys,
     enumerate_members,
     five_tuple_arcs_match,
     five_tuple_from_identity,
@@ -51,7 +54,7 @@ from statvar_members.types import (
 __all__ = [
     "CANDIDATE_CAP",
     "DEFAULT_MEMBER_CAP",
-    "POSTED_MEMBER_CAP",
+    "DEFAULT_SUBJECT_CEILING",
     "UNRESOLVED_NODE",
     "AbsentReading",
     "DegenerateObservationProperties",
@@ -62,6 +65,7 @@ __all__ = [
     "MemberEnumerator",
     "MemberGroup",
     "MemberQueryUnanchored",
+    "MemberReadDeadline",
     "MemberRoleDisagreement",
     "MultiValuedConstraint",
     "NotAStatisticalVariable",
@@ -70,6 +74,7 @@ __all__ = [
     "RoleClassFacts",
     "SlotBinding",
     "SubjectPage",
+    "admitting_roles",
     "antichain_minimal_ids",
     "constraints_resolve",
     "covers_role_keys",
@@ -77,6 +82,7 @@ __all__ = [
     "dominates_constraint_keys",
     "elect_role_class",
     "elect_role_class_of",
+    "electing_role_keys",
     "enumerate_members",
     "five_tuple_arcs_match",
     "five_tuple_from_identity",
@@ -85,5 +91,6 @@ __all__ = [
     "role_class_covers",
     "role_class_facts",
     "root_can_prove_complete",
+    "shared_enumerator",
     "slot_bindings_from_identity",
 ]

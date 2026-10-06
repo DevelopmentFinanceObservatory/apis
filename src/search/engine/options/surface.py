@@ -50,7 +50,7 @@ from search.engine.region.convertibility import (
     elected_unit_refs,
 )
 from search.engine.region.resubmit_request import _source_dcids_from_facets_provenance
-from search.engine.region.un_system import un_unavailable_warning
+from search.engine.region.un_system import NO_LABELS, un_unavailable_warning
 from search.engine.retrieval.coverage import CoverageForm, answer_coverage
 from search.engine.retrieval.elected_dataset import published
 from search.engine.retrieval.read_plan import plan_standard, plan_years
@@ -545,20 +545,11 @@ def _observation_about_options_set(
     failures; coverage-only reads fail open with a warning.
 
     Request-form units use `decide_part_unit` across all present candidates;
-    only each StatVar's elected unit refs qualify. The result is truncated if
-    either its candidate list was capped or its source population is truncated.
+    only each StatVar's elected unit refs qualify. The result is truncated when its
+    candidate list was capped.
     """
     parent_dcid, child_type = _resolve_scope_target(req, target)
-    candidates, candidates_truncated = _fetch_candidates(graph, parent_dcid, child_type)
-    # A truncated resolved population (options.population.OptionsPopulation
-    # .truncated -- a graph enumeration whose own candidate page hit its cap
-    # while still confirming a member, and whose antichain reduction cannot
-    # prove that confirmed set complete; see that module's own docstring)
-    # reports truncated here too, even when the candidate list itself was
-    # never clipped: the option list this function returns was built from a
-    # sampled population, not a confirmed-complete one, and a caller reading
-    # `truncated` has no other signal that the list may be incomplete.
-    truncated = candidates_truncated or target.population.truncated
+    candidates, truncated = _fetch_candidates(graph, parent_dcid, child_type)
 
     sv_dcids = list(target.population.stat_var_dcids)
     if not candidates or not sv_dcids:
@@ -699,8 +690,8 @@ def _directional_options_set(
 
     Coverage already contains members with data, so no separate presence
     probe is needed. Sort members before labelling for deterministic output;
-    omit dcids without labels. No network cap applies to this local lookup.
-    `OptionsSet.truncated` carries the source population's truncation flag.
+    omit dcids without labels. No network cap applies to this local lookup, so the
+    set is never truncated.
     """
     sv_dcids = list(target.population.stat_var_dcids)
     coverage_index = coverage_snapshot.index
@@ -715,7 +706,7 @@ def _directional_options_set(
         )
     )
     if not members:
-        return OptionsSet(items=[], truncated=target.population.truncated)
+        return OptionsSet(items=[], truncated=False)
 
     labels = graph.node_labels_batch(members)
     items = [
@@ -723,7 +714,7 @@ def _directional_options_set(
         for dcid in members
         if (label := labels.get(dcid)) is not None
     ]
-    return OptionsSet(items=items, truncated=target.population.truncated)
+    return OptionsSet(items=items, truncated=False)
 
 
 # ---------------------------------------------------------------------------
@@ -773,7 +764,13 @@ def build_options_response(
             )
             probe_warning = None
 
-    warnings = [w for w in (probe_warning, un_unavailable_warning(un_blocked)) if w is not None]
+    # The door holds the population's dcids and no member names, so the warning names
+    # its variables `""`.
+    warnings = [
+        w
+        for w in (probe_warning, un_unavailable_warning(un_blocked, labels=NO_LABELS))
+        if w is not None
+    ]
 
     diagnostics = make_diagnostics(build_commit(), warnings, {}, now_ms() - start_ms)
     return OptionsResponse(diagnostics=diagnostics, for_=req.for_, options=options)

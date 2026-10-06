@@ -25,15 +25,13 @@ from search.models import (
     ResubmitIdentityEntry,
 )
 from tests.engine._axis_doubles import TOTAL_POPULATION_INDIA_FAMILY, axis_confirming_reader
-from tests.engine._base_identity import (
-    base_from_spec,
-)
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import (
     PINNED_DATE,
     materialise_double_from_obs,
     parse_sse,
     run_pinned,
+    with_member_arcs,
 )
 from tests.engine._search_app import search_app
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
@@ -93,7 +91,7 @@ def test_buffered_definite_spec_gets_inline_observations_matching_coverage():
     series = spec.resolved.observations.series[0]
     # Chosen-facet consistency: the preview describes the SAME (stat_var, entity)
     # pair coverage already reports.
-    assert series.stat_var.ref == spec.resolved.stat_vars.items[0].ref
+    assert series.stat_var.ref == spec.resolved.members[0].ref.dcid
     assert [e.ref for e in series.entities] == ["country/IND"]
     assert isinstance(spec.resolved.coverage, CoverageExact)
     assert spec.resolved.coverage.observation_count == spec.resolved.observations.total_obs
@@ -101,7 +99,13 @@ def test_buffered_definite_spec_gets_inline_observations_matching_coverage():
     assert values == [100.0, 101.0, 102.0]
 
 
-def test_include_observations_defaults_off_without_extra_fetches():
+def test_include_observations_defaults_off_without_extra_fetches(monkeypatch):
+    # Facet options read dated facets for every answer (`_maybe_build_facet_options`), so
+    # they are stubbed out to count only what observations would add.
+    monkeypatch.setattr(
+        region_phase_answer, "_maybe_build_facet_options", lambda *_args, **_kwargs: ([], None)
+    )
+
     class _CountingGraph(FakeGraph):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
@@ -383,16 +387,12 @@ def test_resubmit_buffered_gets_inline_observations():
     assert base.status == "definite"
     spec = base.spec
 
-    base_spec_id, base_identity = base_from_spec(spec)
     resubmit_req = ResolveRequest(
         input=DatasetResubmitInput(
             entries=[
                 ResubmitIdentityEntry(
                     variable_text="a resubmitted identity",
                     identity=spec.definition.identity,
-                    base_spec_id=base_spec_id,
-                    base_identity=base_identity,
-                    resolved_stat_var_dcids=[sv.ref for sv in spec.resolved.stat_vars.items],
                 )
             ]
         ),
@@ -404,7 +404,7 @@ def test_resubmit_buffered_gets_inline_observations():
             graph=graph,
             llm=FakeLLM(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
-            materialise_graph=materialise_graph,
+            materialise_graph=with_member_arcs(materialise_graph, graph),
             materialise_sdmx=materialise_sdmx,
         )
     ).parts[0]
@@ -435,11 +435,10 @@ def test_resubmit_sse_streams_trailing_observations_event():
         resolver=make_resolver(graph),
         llm=FakeLLM(),
         sdmx=FakeSdmxClient(observations={}, availability={}),
-        materialise_graph=materialise_graph,
+        materialise_graph=with_member_arcs(materialise_graph, graph),
         materialise_sdmx=materialise_sdmx,
     )
     client = TestClient(app, raise_server_exceptions=False)
-    base_spec_id, base_identity = base_from_spec(spec)
     resp = client.post(
         "/api/search/resolve",
         json={
@@ -450,9 +449,6 @@ def test_resubmit_sse_streams_trailing_observations_event():
                         "entry_kind": "identity",
                         "variable_text": "a resubmitted identity",
                         "identity": spec.definition.identity.model_dump(mode="json"),
-                        "base_spec_id": base_spec_id,
-                        "base_identity": base_identity.model_dump(mode="json"),
-                        "resolved_stat_var_dcids": [sv.ref for sv in spec.resolved.stat_vars.items],
                     }
                 ],
             },

@@ -10,7 +10,6 @@ from search.models import (
     BindingSet,
     CoverageBare,
     EntityOptions,
-    PipelineStep,
     SlotKey,
     SlotOption,
     SlotOptions,
@@ -39,6 +38,7 @@ def _slot_options(prop: str, *dcids: str, truncated: bool = True) -> SlotOptions
 def _spec_with_extra_slots(shape, constraint_val: str, *extra_slots, sv_dcid: str = "test_sv"):
     """Build a spec with extra slots to test unbound-slot roster merging (#590)."""
     return build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
         slots=[_cv_slot("constraintProp", constraint_val), *extra_slots],
@@ -49,7 +49,6 @@ def _spec_with_extra_slots(shape, constraint_val: str, *extra_slots, sv_dcid: st
         ],
         entities=[],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
     )
 
 

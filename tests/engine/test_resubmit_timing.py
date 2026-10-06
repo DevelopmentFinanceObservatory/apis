@@ -26,11 +26,11 @@ from search.models import (
     ResolveRequest,
     ResubmitIdentityPayload,
 )
-from tests.engine._base_identity import GDP_SHAPE, make_base, make_identity, subject_entity
+from tests.engine._base_identity import GDP_SHAPE, make_identity, subject_entity
 from tests.engine._builders import unbound_slot as _unbound_slot
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import offline_resolve
+from tests.engine._harness import offline_resolve, walk_options
 from tests.engine.test_resubmit_regressions import (
     _SOURCE_BOUND_OUT_OF_WINDOW_OBS,
     _WINDOW_REQUESTED,
@@ -44,10 +44,6 @@ _ENTITY_DCID = "country/IND"
 
 def _standard_promote_input() -> ResubmitIdentityPayload:
     entities = [subject_entity(_ENTITY_DCID)]
-    base_spec_id, base_identity = make_base(
-        GDP_SHAPE,
-        entities=entities,
-    )
     return ResubmitIdentityPayload(
         identity=make_identity(
             GDP_SHAPE,
@@ -56,9 +52,6 @@ def _standard_promote_input() -> ResubmitIdentityPayload:
             [_unbound_slot("how", "activitySource", "activity source")],
             entities=entities,
         ),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[_GDP_SV_DCID],
     )
 
 
@@ -102,7 +95,7 @@ def test_standard_promote_resubmit_with_coverage_populates_materialise_answer_op
         graph=FakeGraph(),
         sdmx=FakeSdmxClient(),
         coverage=empty_coverage_snapshot(),
-        options=EngineOptions(include_option_coverage=True),
+        options=walk_options(FakeGraph(), EngineOptions(include_option_coverage=True)),
     )
     assert region.status == "definite"
     by_step = region.timing_by_step
@@ -117,7 +110,7 @@ def test_standard_promote_resubmit_without_coverage_still_times_materialise_answ
         graph=FakeGraph(),
         sdmx=FakeSdmxClient(),
         coverage=empty_coverage_snapshot(),
-        options=EngineOptions(include_option_coverage=False),
+        options=walk_options(FakeGraph(), EngineOptions(include_option_coverage=False)),
     )
     assert region.status == "definite"
     by_step = region.timing_by_step
@@ -138,7 +131,7 @@ def test_standard_promote_resubmit_times_every_phase(monkeypatch):
         graph=FakeGraph(),
         sdmx=FakeSdmxClient(),
         coverage=empty_coverage_snapshot(),
-        options=EngineOptions(include_option_coverage=False),
+        options=walk_options(FakeGraph(), EngineOptions(include_option_coverage=False)),
     )
     assert region.status == "definite"
     by_step = region.timing_by_step
@@ -158,29 +151,27 @@ def test_standard_promote_resubmit_times_every_phase(monkeypatch):
 
 
 def test_standard_promote_early_no_data_exit_times_ran_phases(monkeypatch):
-    """An absent posted StatVar preserves timings through the phase that returns
+    """An identity electing no member preserves timings through the phase that returns
     no_data."""
     tick = itertools.count(1_000)
     _patch_promote_now_ms(monkeypatch, tick)
 
     entities = [subject_entity(_ENTITY_DCID)]
-    base_spec_id, base_identity = make_base(GDP_SHAPE, entities=entities)
     inp = ResubmitIdentityPayload(
         identity=make_identity(
-            GDP_SHAPE,
-            [_unbound_slot("how", "activitySource", "activity source")],
-            entities=entities,
+            {**GDP_SHAPE, "population_type": "NoSuchActivity"}, entities=entities
         ),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=["not_a_real_dcid_absent_from_the_graph"],
     )
 
     region = resolve_spec_resubmit(
-        inp=inp, graph=FakeGraph(), sdmx=FakeSdmxClient(), coverage=empty_coverage_snapshot()
+        inp=inp,
+        graph=FakeGraph(),
+        sdmx=FakeSdmxClient(),
+        coverage=empty_coverage_snapshot(),
+        options=walk_options(FakeGraph()),
     )
     assert region.status == "no_data"
-    assert region.no_data_reason == "variable_not_resolved"
+    assert region.no_data_reason == "no_matching_slice"
     by_step = region.timing_by_step
     for key in ("validate", "reread_arcs"):
         assert key in by_step, f"expected {key!r} in timing_by_step, got {by_step!r}"
@@ -202,7 +193,10 @@ def test_window_no_observations_answer_times_every_ran_phase(monkeypatch):
         graph=FakeGraph(obs=_SOURCE_BOUND_OUT_OF_WINDOW_OBS),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
-        options=EngineOptions(include_observations=False),
+        options=walk_options(
+            FakeGraph(obs=_SOURCE_BOUND_OUT_OF_WINDOW_OBS),
+            EngineOptions(include_observations=False),
+        ),
     )
     assert region.status == "no_data"
     assert region.no_data_reason == "no_observations"

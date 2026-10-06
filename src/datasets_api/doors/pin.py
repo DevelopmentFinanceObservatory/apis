@@ -23,8 +23,8 @@ canonical frame (the frame1 rendering). The door promotes a working-tier frame1
 to the pinned tier and records the same principal's reference to it, with the
 same revocation recheck, on every pin call, including a repeat pin of an
 artifact that is already pinned, so a retry or a re-pin heals a version whose
-frame1 is still working-tier. A version with no servable frame1 (a collection,
-a mint whose frame1 write failed or exceeded `FRAME1_MAX_ROWS`, or a frame1
+frame1 is still working-tier. A version with no servable frame1 (a mint whose
+frame1 write failed or exceeded `FRAME1_MAX_ROWS`, or a frame1
 that aged out unpinned) pins the named artifact alone. The frame1 copy skips the budget check
 and counts toward later calls.
 
@@ -71,7 +71,7 @@ from dataset_store.snapshot import (
     servable_location_of_media_type,
     working_tier_expired,
 )
-from datasets_api import routing  # noqa: F401 -- registers dfo_subject_id before route construction
+from datasets_api import routing  # noqa: F401 -- registers dfo_spec_id before route construction
 from datasets_api.codes_snapshot import (
     ArtifactExpired,
     ArtifactNotFound,
@@ -160,12 +160,6 @@ def classify_pin_exception(exc: BaseException) -> ProblemSpec | None:
     return None
 
 
-def _id_is_registered(id: str, *, spec_reader: SpecReader) -> bool:
-    if id.startswith("col_"):
-        return spec_reader.read_collection(id) is not None
-    return spec_reader.read_definition(id) is not None
-
-
 def pin_artifact(
     *,
     id: str,
@@ -193,7 +187,7 @@ def pin_artifact(
     and link rechecks propagate unlogged. Other reference-write failures are logged and
     re-raised. Pinned copies persist, so a retry attempts only the reference writes.
     """
-    if not _id_is_registered(id, spec_reader=spec_reader):
+    if spec_reader.read_definition(id) is None:
         raise SpecNotFound(id=id)
 
     if snapshot_reader.read_version(id, content_version) is None:
@@ -409,9 +403,7 @@ def build_pin_door(
 
     router = APIRouter()
 
-    @router.post(
-        "/api/datasets/{id:dfo_subject_id}/{content_version}/pin", response_model=PinResponse
-    )
+    @router.post("/api/datasets/{id:dfo_spec_id}/{content_version}/pin", response_model=PinResponse)
     async def post_pin(
         id: str, content_version: str, body: PinRequest, request: Request
     ) -> JSONResponse:

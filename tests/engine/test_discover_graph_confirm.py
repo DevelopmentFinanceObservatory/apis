@@ -59,7 +59,9 @@ def test_constraint_property_label_misses_humanize_only_at_fresh_wire_slots() ->
     for property_dcid in properties:
         assert f"property_dcid={property_dcid} ({property_dcid})" in prompt
 
-    grounded = _ground_answer(shape, bindings=[], sv_dcids=[], roles={}, graph=FakeGraph(nodes={}))
+    grounded = _ground_answer(
+        shape, bindings=[], sv_dcids=[], roles={}, graph=FakeGraph(nodes={}), open_axes=frozenset()
+    )
     slots = grounded[2]
     slot_keys = grounded[3]
     assert [slot.key.label for slot in slots[: len(properties)]] == expected_labels

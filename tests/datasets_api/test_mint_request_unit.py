@@ -11,6 +11,7 @@ import io
 
 import httpx
 import pyarrow.parquet as pq
+import pytest
 
 from datasets_api.revision import SentinelRevisionReader
 from dc_sdmx import SdmxClient
@@ -197,12 +198,32 @@ def test_currency_string_request_on_a_dollar_facet_mints_and_converts():
     assert _first_value(manifest, artifact_store) == 900.0
 
 
-def test_a_converted_csv_artifact_carries_the_unit_cell_as_canonical_json():
-    """The CSV `unit` cell is the frame grammar's JCS serialisation of the unit request, the
-    same object frame1 and the preview carry."""
+_UNIT_COLUMNS = ("unit", "unit_label", "currency", "price_basis", "base_year")
+
+
+@pytest.mark.parametrize(
+    ("unit", "expected"),
+    [
+        pytest.param(
+            {"currency": "EUR", "prices": "current"},
+            ("CurrencyEUR", "Current euros", "EUR", "current", ""),
+            id="iso-currency",
+        ),
+        # A role-currency request converts each row to its entity's own currency, which the
+        # frame's unit cell names (`country/KEN` uses `CurrencyKES`).
+        pytest.param(
+            {"currency": {"role": "destination"}, "prices": "current"},
+            ("CurrencyKES", "Current Kenyan shillings", "KES", "current", ""),
+            id="role-currency",
+        ),
+    ],
+)
+def test_a_converted_csv_artifact_splits_the_unit_cell(unit, expected):
+    """The frame's converted `unit` cell is written as the unit node, its label, the currency,
+    the price basis and the base year."""
     artifact_store = FakeArtifactStore()
     client = _client(artifact_store=artifact_store)
-    body = _statvar_set_body(unit={"currency": "EUR", "prices": "current"})
+    body = _statvar_set_body(unit=unit)
     body["options"] = {"format": "csv", "bundle": False}
 
     resp = client.post("/api/datasets", json=body)
@@ -210,7 +231,48 @@ def test_a_converted_csv_artifact_carries_the_unit_cell_as_canonical_json():
     assert resp.status_code == 200, resp.text
     csv_artifact = next(a for a in resp.json()["artifacts"] if a["media_type"] == "text/csv")
     rows = list(csv.DictReader(io.StringIO(artifact_store.fetch(csv_artifact["url"]).decode())))
-    assert [row["unit"] for row in rows] == ['{"currency":"EUR","prices":"current"}']
+    assert [tuple(row[column] for column in _UNIT_COLUMNS) for row in rows] == [expected]
+
+
+@pytest.mark.parametrize(
+    ("unit", "expected"),
+    [
+        pytest.param(
+            {"currency": "EUR", "prices": "current"},
+            '{"currency":"EUR","prices":"current"}',
+            id="iso-currency",
+        ),
+        pytest.param(
+            {"currency": {"role": "destination"}, "prices": "current"},
+            '{"currency":"KES","prices":"current"}',
+            id="role-currency",
+        ),
+    ],
+)
+def test_a_frame_layout_artifact_carries_the_unit_cell_as_canonical_json(unit, expected):
+    """A frame-layout file keeps the frame's columns, `status` included, and writes the
+    converted `unit` cell as the frame grammar's JCS serialisation of the unit request."""
+    artifact_store = FakeArtifactStore()
+    client = _client(artifact_store=artifact_store)
+    body = _statvar_set_body(unit=unit)
+    body["options"] = {"format": "parquet", "bundle": False, "layout": "frame"}
+
+    resp = client.post("/api/datasets", json=body)
+
+    assert resp.status_code == 200, resp.text
+    (artifact,) = (a for a in resp.json()["artifacts"] if a["rendering"] == body["options"])
+    table = pq.read_table(io.BytesIO(artifact_store.fetch(artifact["url"])))
+    assert table.column_names == [
+        "stat_var",
+        "recipient",
+        "time_period",
+        "value",
+        "unit",
+        "measurementMethod",
+        "provenance",
+        "status",
+    ]
+    assert table.column("unit").to_pylist() == [expected]
 
 
 def test_role_shaped_currency_naming_a_role_the_spec_carries_mints():

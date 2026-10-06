@@ -134,30 +134,3 @@ def test_published_manifest_admits_every_field_a_fully_populated_definition_mani
     )
 
     published_schema.Manifest.model_validate(runtime_manifest.model_dump(mode="json"))
-
-
-def test_published_manifest_admits_every_field_a_fully_populated_collection_manifest_emits():
-    member = manifest_models.CollectionMemberModel(
-        definition=manifest_models.DefinitionModel(
-            schema_version=1, spec_id="spec_a", identity={"identity_version": "spec1"}
-        ),
-        content_version="cv_aaaaaaaaaaaaaaaa",
-        prepared_at=_PREPARED_AT,
-        provenance_refs=["OECD_DAC2A"],
-        coverage=_fully_populated_coverage(),
-        series_count=1,
-        output_options=_fully_populated_output_options(),
-    )
-    runtime_manifest = manifest_models.Manifest(
-        collection=manifest_models.CollectionModel(collection_id="col_a", members=[member]),
-        content_version="cv_bbbbbbbbbbbbbbbb",
-        prepared_at=_PREPARED_AT,
-        coverage=_fully_populated_coverage(),
-        citation=_fully_populated_citation(),
-        trace={"graph_revision": "rev1", "resolved_stat_vars": [], "facets": []},
-        warnings=_fully_populated_warnings(),
-        artifacts=_fully_populated_artifacts(),
-        series_coverage_stamp="ff2ac3045785c9df092841c4ef3f166b",
-    )
-
-    published_schema.Manifest.model_validate(runtime_manifest.model_dump(mode="json"))

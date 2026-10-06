@@ -1,4 +1,4 @@
-"""Collection and group members that bind no entity: each one gets the candidates, rows and
+"""Group members that bind no entity: each one gets the candidates, rows and
 `content_version` the same request gets alone, whatever its siblings hold and whatever the
 request order. Members are fetched at every place where any of them holds data, as availability
 reports them (`materialise.place_scope.places_with_data`).
@@ -16,7 +16,6 @@ from dc_sdmx import SdmxClient
 from materialise import (
     EnrichmentLookup,
     MaterialisationRequest,
-    materialise_collection,
     materialise_group,
     materialise_spec,
     place_scope,
@@ -230,119 +229,7 @@ def _sdmx() -> tuple[SdmxClient, list[httpx.Request]]:
     ), recorded
 
 
-def _filters(recorded: list[httpx.Request]) -> dict[str, dict[str, str]]:
-    """The entity filters each StatVar was fetched under."""
-    return {
-        bare: {
-            key: value
-            for key, value in request.url.params.items()
-            if key in (f"c[{_ABOUT}]", "c[donor]", "c[recipient]")
-        }
-        for request in recorded
-        for bare in str(request.url.params["c[variableMeasured]"]).split(",")
-    }
-
-
 _SERVICE = {"materialiser_build": "build-123", "capability_version": "cap-v1"}
-
-
-@pytest.mark.parametrize("supply_probe", [False, True])
-@pytest.mark.parametrize("order", _ORDERS)
-def test_materialise_collection_mints_each_unbound_member_as_it_mints_alone(order, supply_probe):
-    coverage = _coverage_for([(_BARE_A, "facet1")])
-    graph = _graph()
-    requests = [(spec_id, _MEMBERS[spec_id]()) for spec_id in order]
-    probe = (
-        probe_collection_facets(
-            [request for _, request in requests],
-            settle=True,
-            graph=graph,
-            availability=graph.scope_availability(),
-            coverage=coverage,
-        )
-        if supply_probe
-        else None
-    )
-    sdmx, recorded = _sdmx()
-
-    result = materialise_collection(
-        requests,
-        sdmx=sdmx,
-        graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
-        coverage=coverage,
-        precomputed_probe=probe,
-        **_SERVICE,
-    )
-
-    # Each subject-only member at its own places, and coverage's one donor for the
-    # role-bearing member.
-    assert _filters(recorded) == {
-        _BARE_A: {"c[donor]": "country/DONOR"},
-        _BARE_B: {f"c[{_ABOUT}]": f"{_KEN},Earth"},
-        _BARE_C: {f"c[{_ABOUT}]": "Earth"},
-    }
-    assert [spec_id for spec_id, _ in result.members] == list(order)
-    rows = {_ROLE_SPEC: 1, _COUNTRY_SPEC: 2, _WORLD_SPEC: 1}
-    for spec_id, member in result.members:
-        assert member.coverage.rows == rows[spec_id]
-        alone_sdmx, _alone_recorded = _sdmx()
-        alone = materialise_spec(
-            _MEMBERS[spec_id](),
-            sdmx=alone_sdmx,
-            graph=graph,
-            enrichment=EnrichmentLookup(graph),
-            revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
-            coverage=coverage,
-            **_SERVICE,
-        )
-        assert member.content_version == alone.content_version
-
-
-def test_members_with_country_data_fetch_their_own_countries_and_mint_as_alone(monkeypatch):
-    # `_BARE_B` holds data at Kenya and `togo` at Togo. Together and alone, each is fetched at
-    # its own.
-    togo = "Count_Togo"
-    monkeypatch.setitem(globals(), "_SUBJECT_DATA", ((_BARE_B, _KEN), (togo, _TGO)))
-    graph = _graph()
-    requests = [
-        ("spec_" + "b" * 32, _subject_only(_BARE_B)),
-        ("spec_" + "d" * 32, _subject_only(togo)),
-    ]
-    sdmx, recorded = _sdmx()
-
-    result = materialise_collection(
-        requests,
-        sdmx=sdmx,
-        graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
-        **_SERVICE,
-    )
-
-    assert _filters(recorded) == {
-        _BARE_B: {f"c[{_ABOUT}]": _KEN},
-        togo: {f"c[{_ABOUT}]": _TGO},
-    }
-    assert result.default_scope == (_KEN, _TGO)
-    own_country = {_BARE_B: _KEN, togo: _TGO}
-    for (_spec_id, request), (_, member) in zip(requests, result.members, strict=True):
-        bare = request.stat_var.removeprefix("dcid:")
-        alone_sdmx, alone_recorded = _sdmx()
-        alone = materialise_spec(
-            request,
-            sdmx=alone_sdmx,
-            graph=graph,
-            enrichment=EnrichmentLookup(graph),
-            revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
-            **_SERVICE,
-        )
-        assert _filters(alone_recorded) == {bare: {f"c[{_ABOUT}]": own_country[bare]}}
-        assert member.coverage == alone.coverage
-        assert member.coverage.rows == 1
-        assert member.content_version == alone.content_version
-        assert alone.default_scope == (own_country[bare],)
 
 
 def _group_of_country_and_world_members(*, probe=None):
@@ -400,23 +287,15 @@ def _mint(mint, requests):
 
 
 @pytest.mark.parametrize("order", list(itertools.permutations([_BARE_B, _BARE_C])))
-def test_a_member_returns_the_rows_it_returns_alone_in_a_group_and_in_a_collection(order):
+def test_a_member_returns_the_rows_it_returns_alone_in_a_group(order):
     # `_BARE_B` holds Kenya data and a worldwide total; `_BARE_C` a worldwide total alone.
     # Each returns its own places' rows whatever its companions hold.
     alone = {
         bare: _rows_by_member(_mint(materialise_spec, _subject_only(bare)))[bare] for bare in order
     }
     group = _rows_by_member(_mint(materialise_group, [_subject_only(bare) for bare in order]))
-    collection = _mint(
-        materialise_collection,
-        [(f"spec_{index:032d}", _subject_only(bare)) for index, bare in enumerate(order)],
-    )
-    in_collection = {
-        bare: _rows_by_member(member)[bare]
-        for bare, (_spec_id, member) in zip(order, collection.members, strict=True)
-    }
 
-    assert group == in_collection == alone
+    assert group == alone
     assert {_KEN in repr(row) for row in alone[_BARE_B]} == {True, False}
     assert alone[_BARE_C] and all("Earth" in repr(row) for row in alone[_BARE_C])
 
@@ -458,10 +337,10 @@ def _wide_sdmx() -> SdmxClient:
     )
 
 
-def _wide_mint(graph: FakeGraphReader) -> tuple[str, dict[str, tuple[int, str]]]:
-    """The collection's `content_version`, and each member's rows and `content_version`."""
-    result = materialise_collection(
-        [(f"spec_{index:032d}", _subject_only(bare)) for index, bare in enumerate(_WIDE)],
+def _wide_mint(graph: FakeGraphReader) -> tuple[str, dict[str, int]]:
+    """The group's `content_version`, and each member's row count."""
+    result = materialise_group(
+        [_subject_only(bare) for bare in _WIDE],
         sdmx=_wide_sdmx(),
         graph=graph,
         enrichment=EnrichmentLookup(graph),
@@ -469,8 +348,7 @@ def _wide_mint(graph: FakeGraphReader) -> tuple[str, dict[str, tuple[int, str]]]
         **_SERVICE,
     )
     return result.content_version, {
-        spec_id: (member.coverage.rows, member.content_version)
-        for spec_id, member in result.members
+        stat_var: len(rows) for stat_var, rows in _rows_by_member(result).items()
     }
 
 
@@ -490,7 +368,8 @@ def test_a_cold_mint_past_a_busy_settle_pool_mints_what_a_warm_re_mint_mints(mon
 
     assert cold == warm
     # Kenya, Togo and Earth: every member at every place it holds data at.
-    assert {rows for rows, _version in cold[1].values()} == {3}
+    assert set(cold[1]) == set(_WIDE)
+    assert set(cold[1].values()) == {3}
     probed = probe_collection_candidates(
         requests, settle=True, graph=graph, availability=ScopeAvailability(data=_WIDE_DATA)
     )

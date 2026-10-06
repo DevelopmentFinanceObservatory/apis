@@ -78,7 +78,7 @@ def _electing(
             declared: DatasetDeclaration(
                 provenance=declared,
                 label=labels[declared],
-                synonyms=(),
+                description="A test table.",
                 opt_in=False,
                 absent_observation=absent,
                 rank=100 + rank,
@@ -205,7 +205,6 @@ def test_every_offered_source_is_one_the_mint_serves(two_dataset_world: World) -
             answer.result.facet_probe,
             graph=world.graph(),
             coverage=world.index,
-            include_option_coverage=True,
             deadline=None,
         )
         assert warning is None

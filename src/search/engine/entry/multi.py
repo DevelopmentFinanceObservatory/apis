@@ -38,9 +38,9 @@ async def _stream_combined_regions(
 ) -> AsyncGenerator[Event]:
     """Combine regions and stream trailing enrichment.
 
-    `degraded_leg` and `scope` carry raw-text cache health. Other entry paths
-    leave them unset. `is_storable` decides cache eligibility from this report
-    and the response.
+    `degraded_leg` and `scope` carry cache health. `scope` records it, and the
+    `DoneEvent` carries `degraded_leg` to the buffered route's header. `is_storable`
+    decides cache eligibility from this report and the response.
     """
     if scope is not None:
         scope.note_health(timed_out=timed_out, degraded_leg=degraded_leg)
@@ -58,7 +58,6 @@ async def _stream_combined_regions(
             extra_warnings=extra_warnings,
             start_ms=start_ms,
             engine_build=build_commit(),
-            include_sentence=params.include_sentence,
             max_candidates=params.max_candidates,
             include_observations=params.include_observations,
             include_skills=params.include_skills,
@@ -70,7 +69,6 @@ async def _stream_combined_regions(
                 _maybe_build_facet_options,
                 graph=graph,
                 coverage=params.coverage.index,
-                include_option_coverage=True,
                 deadline=params.deadline,
             ),
         )
@@ -100,6 +98,7 @@ async def _stream_combined_regions(
         yield DoneEvent(
             elapsed_ms=now_ms() - start_ms,
             timed_out=timed_out,
+            degraded_leg=degraded_leg,
             trace_id=get_trace_id(),
             telemetry=DoneTelemetry(llm_usage=total_usage),
             warnings=warnings,

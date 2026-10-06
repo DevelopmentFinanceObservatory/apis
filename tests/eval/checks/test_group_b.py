@@ -139,13 +139,9 @@ def test_skills_runs_inside_parts_under_a_per_part_expectation(ctx: ScoreContext
     assert results["skills"].detail.startswith("parts[0]")
 
 
-def with_trace(response: dict[str, Any], *, extract_ran: bool, skipped: bool = True) -> dict:
+def with_echo(response: dict[str, Any], *, skipped: bool) -> dict:
     response = copy.deepcopy(response)
     response["query_echo"]["extract_skipped"] = skipped
-    for part in response["parts"]:
-        if "spec" in part:
-            trace = part["spec"]["resolved"]["trace"]["pipeline_trace"]
-            trace[:] = [{"step": "extract", "ran": extract_ran}, {"step": "bind", "ran": True}]
     return response
 
 
@@ -160,20 +156,10 @@ UNSUPPORTED_FACET = {
     "capability_version": "1",
     "retryable": False,
 }
-NO_DATA = base_response(
-    status="no_data", parts=[{"status": "no_data", "no_data": {"reason": "no_observations"}}]
-)
 
 ENTRY_PATH_ROWS = [
-    pytest.param(PARSED, with_trace(definite([]), extract_ran=False), PASS, id="parsed-skips"),
-    pytest.param(PARSED, with_trace(definite([]), extract_ran=True), FAIL, id="trace-ran-extract"),
-    pytest.param(
-        PARSED,
-        with_trace(definite([]), extract_ran=False, skipped=False),
-        FAIL,
-        id="echo-not-skipped",
-    ),
-    pytest.param(PARSED, with_trace(NO_DATA, extract_ran=True), PASS, id="no-data-has-no-trace"),
+    pytest.param(PARSED, with_echo(definite([]), skipped=True), PASS, id="parsed-skips"),
+    pytest.param(PARSED, with_echo(definite([]), skipped=False), FAIL, id="echo-not-skipped"),
     pytest.param(make_case({"definite": {}}), definite([]), NA, id="raw-text"),
     pytest.param(PARSED, UNSUPPORTED_FACET, NA, id="problem-document"),
 ]

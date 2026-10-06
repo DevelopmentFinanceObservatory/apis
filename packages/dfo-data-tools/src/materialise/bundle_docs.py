@@ -149,7 +149,6 @@ def build_readme(
     codes: Sequence[CodeEntry],
     codes_path: str | None,
     definition_id: str | None,
-    is_collection: bool,
     reproducing_call: ReproducingCall | None,
     export: ComponentExport | None,
 ) -> str:
@@ -158,35 +157,23 @@ def build_readme(
     is.
 
     `sources` are the distinct sources across `members`, and `codes_path` is the codes table's
-    bundle path, `None` when the bundle has none. `definition_id` is the spec or collection id
-    the Version section names. A collection gets a Members section and no website or rebuild
-    line, because the website opens only standalone definitions. A card export (`export` set)
+    bundle path, `None` when the bundle has none. `definition_id` is the spec id the Version
+    section names. A card export (`export` set)
     names the card revision and its frame's identity in place of a Version section.
     """
     sections = [
         _readme_heading(context, export),
-        _files_section(members, codes=codes, codes_path=codes_path, is_collection=is_collection),
-    ]
-    if is_collection:
-        sections.append(_members_section(members))
-    sections += [
+        _files_section(members, codes=codes, codes_path=codes_path),
         _variables_section(codes, codes_path=codes_path, files=len(members)),
         _columns_section(members, codes_path=codes_path),
         _licence_section(sources),
         _citation_section(sources, context=context, export=export),
-        _get_again_section(
-            context,
-            reproducing_call=reproducing_call,
-            is_collection=is_collection,
-            export=export,
-        ),
+        _get_again_section(context, reproducing_call=reproducing_call, export=export),
         _open_section(members[0].artifact.path, codes_path=codes_path),
         _about_section(context),
     ]
     if export is None:
-        sections.append(
-            _version_section(context, definition_id=definition_id, is_collection=is_collection)
-        )
+        sections.append(_version_section(context, definition_id=definition_id))
     return "\n\n".join(section for section in sections if section) + "\n"
 
 
@@ -215,16 +202,10 @@ def _files_section(
     *,
     codes: Sequence[CodeEntry],
     codes_path: str | None,
-    is_collection: bool,
 ) -> str:
     rows: list[tuple[str, str]] = []
     for member in members:
-        if is_collection:
-            contents = _cell(member.title)
-        elif member.description:
-            contents = f"The data. {_cell(member.description)}"
-        else:
-            contents = "The data"
+        contents = f"The data. {_cell(member.description)}" if member.description else "The data"
         rows.append((member.artifact.path, contents))
     if codes_path is not None:
         rows.append((codes_path, "The plain name of every code in the data" + _code_example(codes)))
@@ -245,20 +226,6 @@ def _code_example(codes: Sequence[CodeEntry]) -> str:
     places = [entry for entry in codes if entry.kind == "place"]
     example = min(places or codes, key=lambda entry: entry.code)
     return f", such as {_code_cell(example.code)} for {_cell(example.label)}"
-
-
-def _members_section(members: Sequence[MemberProvenance]) -> str:
-    lines = ["## Members", ""]
-    for member in members:
-        line = f"- {_inline(member.title)}: {_code(member.artifact.path)}"
-        if member.row_count is not None:
-            line += f", {_plural(member.row_count, 'row')}"
-        line += "."
-        if member.sources:
-            names = ", ".join(_inline(source.name) for source in member.sources)
-            line += f" Sources: {names}." if len(member.sources) > 1 else f" Source: {names}."
-        lines.append(line)
-    return "\n".join(lines)
 
 
 def _variables_section(codes: Sequence[CodeEntry], *, codes_path: str | None, files: int) -> str:
@@ -421,7 +388,6 @@ def _get_again_section(
     context: BundleContext,
     *,
     reproducing_call: ReproducingCall | None,
-    is_collection: bool,
     export: ComponentExport | None,
 ) -> str:
     lines = ["## Get this data again", "", "No API key is needed.", ""]
@@ -436,7 +402,7 @@ def _get_again_section(
         )
         return "\n".join(lines)
 
-    if context.links.site is not None and not is_collection:
+    if context.links.site is not None:
         lines.append(f"- On the website: {context.links.site}. {_SITE_RETENTION}")
     lines.append(
         f'- This exact version: `curl "{context.links.version}"` returns fresh download links. '
@@ -446,7 +412,7 @@ def _get_again_section(
         options = reproducing_call.options if reproducing_call is not None else {}
         latest = _query_url(context.links.latest, options)
         lines.append(f'- The latest data for the same definition: `curl "{latest}"`.')
-    if context.rebuild_request is not None and not is_collection:
+    if context.rebuild_request is not None:
         body = json.dumps(context.rebuild_request, ensure_ascii=False)
         endpoint = site_path(context, "/api/datasets")
         fence = "`" * max(3, _longest_backtick_run(body) + 1)
@@ -502,13 +468,10 @@ def _about_section(context: BundleContext) -> str:
     )
 
 
-def _version_section(
-    context: BundleContext, *, definition_id: str | None, is_collection: bool
-) -> str:
+def _version_section(context: BundleContext, *, definition_id: str | None) -> str:
     facts = [f"Version {version_tag(context.version)} (content version {context.version})"]
     if definition_id is not None:
-        kind = "collection definition" if is_collection else "dataset definition"
-        facts.append(f"{kind} {_inline(definition_id)}")
+        facts.append(f"dataset definition {_inline(definition_id)}")
     facts.append(f"prepared {_prepared(context).isoformat()}")
     return f"## Version\n\n{', '.join(facts)}. One version always holds the same numbers."
 

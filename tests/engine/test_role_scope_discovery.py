@@ -3,6 +3,7 @@ Synthetic fixtures pin filters, windows, dimensions, and no-data outcomes."""
 
 from __future__ import annotations
 
+import dataclasses
 import functools
 
 import pytest
@@ -360,15 +361,22 @@ def test_origin_only_signature_discovers_the_origin_axis(monkeypatch, seed):
     assert isinstance(via_materialise, Materialised)
 
 
-def test_origin_only_signature_with_origin_bound_reports_role_not_resolved():
-    """An origin-only shape whose origin already carries a bound entity has no open axis
-    left for discover_scope to discover. The coverage index names its member, so the
-    mint reads its candidates there, and Search confirms coverage against a destination
-    this request does not bind: the role placement is unresolved, not the variable. No
-    SDMX call is made."""
+@pytest.mark.parametrize(
+    "seed",
+    [
+        functools.partial(_coverage_seed_for, "financingProvider"),
+        _provider_only_seed,
+    ],
+    ids=["two-role-coverage", "provider-only-coverage"],
+)
+@pytest.mark.parametrize("discover_scope", [False, True])
+def test_origin_only_signature_confirms_at_its_bound_origin(seed, discover_scope):
+    """An origin-only shape whose origin carries a bound entity is confirmed there, its
+    one role read from its axis: the member holding coverage at the bound provider answers,
+    with no destination to check. No SDMX call is made."""
     shape = _shape(declared_roles=("financingProvider",))
     sdmx = FakeSdmxClient(observations={}, availability={})
-    rows, role_names = _coverage_seed_for("financingProvider", ["country/FRA"], [_SV])
+    rows, role_names = seed(["country/FRA"], [_SV])
 
     result = graph_confirm_resolve(
         shape=shape,
@@ -377,15 +385,69 @@ def test_origin_only_signature_with_origin_bound_reports_role_not_resolved():
         origin_dcids=["country/FRA"],
         graph=FakeGraph(raise_on_call=True),
         sdmx=sdmx,
-        discover_scope=True,
+        discover_scope=discover_scope,
         coverage_snapshot=FakeCoverageService(
             build_coverage_index(rows, role_names=role_names)
         ).snapshot(),
     )
 
-    assert isinstance(result, NoDataDraft)
-    assert result.reason == "role_not_resolved"
+    assert isinstance(result, Materialised)
+    assert result.has_data
+    assert result.sv_dcids == [_SV]
+    assert result.discovered_scope is None
+    assert result.destination_confirmed is None
     assert sdmx.availability_calls == []
+
+
+def _constrained(arcs: dict, flow_type: str) -> dict:
+    return {
+        **arcs,
+        "constraintProperties": {"nodes": [{"dcid": "flowType"}]},
+        "flowType": {"nodes": [{"dcid": flow_type}]},
+    }
+
+
+@pytest.mark.parametrize("discover_scope", [False, True])
+def test_a_bound_origin_confirms_the_donor_total_beside_an_optional_recipient(discover_scope):
+    """A shape holds a donor-only total and, at another constraint value, a flow that also
+    declares a recipient, so its recipient role is optional. A request binding the donor
+    alone elects the total, whose anchor axis is origin, and confirms it at the bound donor
+    whether or not an open axis may be discovered, as a relaxed suggestion's read asks."""
+    provider, pair = ("financingProvider",), ("financingProvider", "financingRecipient")
+    shape = dataclasses.replace(
+        _shape(declared_roles=pair),
+        sv_arc_facts={
+            _SV_A: _constrained(_role_arcs(provider), "Service"),
+            _SV_B: _constrained(_role_arcs(pair), "Arrears"),
+        },
+        optional_roles=frozenset({"financingRecipient"}),
+    )
+    coverage = build_coverage_index(
+        [
+            (_SV_A, "f1", "country/FRA", ABSENT_ENTITY, [2020]),
+            (_SV_B, "f1", "country/FRA", "country/KEN", [2020]),
+        ],
+        role_names={
+            _SV_A: RoleNames(donor="financingProvider", recipient=None),
+            _SV_B: RoleNames(donor="financingProvider", recipient="financingRecipient"),
+        },
+    )
+
+    result = graph_confirm_resolve(
+        shape=shape,
+        bindings=[],
+        subject_dcids=[],
+        origin_dcids=["country/FRA"],
+        graph=FakeGraph(raise_on_call=True),
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+        discover_scope=discover_scope,
+        coverage_snapshot=FakeCoverageService(coverage).snapshot(),
+    )
+
+    assert isinstance(result, Materialised)
+    assert result.has_data
+    assert result.sv_dcids == [_SV_A]
+    assert result.discovered_scope is None
 
 
 def test_origin_only_signature_with_named_subject_skips_discovery():

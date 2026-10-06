@@ -17,6 +17,7 @@ from search.eval.runner import (
     build_request,
     extend_run,
     fetch_schema,
+    members_door_reader,
     modal_sample,
     run_cases,
 )
@@ -48,7 +49,6 @@ _RESUBMIT = {
             },
         }
     ],
-    "stat_var_dcids": ["Amount_FinancialFlow_Disbursement_Nominal"],
     "entity_dcids": ["country/TZA"],
     "origin_dcids": ["InternationalMonetaryFund"],
 }
@@ -67,20 +67,20 @@ def _case(case_id: str = "case-1", **fields) -> Case:
 def _definite(
     *,
     spec_id: str = "s1",
-    stat_vars: tuple[str, ...] = ("Count_Person",),
+    served_count: int = 1,
+    member_digest: str | None = None,
     entities: tuple[tuple[str, str], ...] = (("country/KEN", "observationAbout"),),
     operations: list[dict] | None = None,
-    twins: list[tuple[str, ...]] | None = None,
+    twins: list[str] | None = None,
     timed_out: bool = False,
 ) -> dict:
     resolved: dict = {
-        "stat_vars": {"items": [{"ref": sv} for sv in stat_vars]},
+        "shape": {"member_digest": member_digest},
+        "stat_vars": {"served_count": served_count},
         "entities": [{"ref": ref, "role": role} for ref, role in entities],
     }
     if twins is not None:
-        resolved["equivalent_readings"] = [
-            {"resolved": {"stat_vars": {"items": [{"ref": sv} for sv in twin]}}} for twin in twins
-        ]
+        resolved["equivalent_readings"] = [{"spec_id": twin} for twin in twins]
     part: dict = {"status": "definite", "spec": {"spec_id": spec_id, "resolved": resolved}}
     if operations is not None:
         part["operations"] = operations
@@ -168,8 +168,7 @@ def test_a_resubmit_request_carries_one_identity_entry_without_null_fields():
     assert request["input"]["kind"] == "dataset_resubmit"
     assert entry["entry_kind"] == "identity"
     assert entry["variable_text"] == _RESUBMIT["variable_text"]
-    assert entry["identity"] == entry["base_identity"]
-    assert entry["resolved_stat_var_dcids"] == ["Amount_FinancialFlow_Disbursement_Nominal"]
+    assert set(entry) == {"entry_kind", "variable_text", "identity"}
     assert None not in entry.values()
     assert "schema_version" not in request
 
@@ -392,7 +391,8 @@ def test_a_three_way_tie_picks_the_first_sample():
     ("first", "second", "same"),
     [
         (_definite(), _definite(entities=(("country/KEN", "destination"),)), False),
-        (_definite(stat_vars=("A", "B")), _definite(stat_vars=("B", "A")), True),
+        (_definite(served_count=2), _definite(served_count=3), False),
+        (_definite(member_digest="a"), _definite(member_digest="b"), False),
         (
             _definite(operations=[{"verb": "rank", "over": "entity", "phrase": "top 5"}]),
             _definite(
@@ -422,11 +422,12 @@ def test_a_three_way_tie_picks_the_first_sample():
             {"kind": "catalogue", "scope": {"place": {"dcid": "country/KEN"}}},
             True,
         ),
-        (_definite(twins=[("X",)]), _definite(twins=[("Y",)]), True),
+        (_definite(twins=["X"]), _definite(twins=["Y"]), True),
     ],
     ids=[
         "entity-role",
-        "statvar-order",
+        "served-count",
+        "member-digest",
         "operation-phrase",
         "operation-axis",
         "declined-reason",
@@ -446,9 +447,9 @@ def test_the_http_status_separates_otherwise_equal_bodies():
 
 def test_the_modal_twin_set_picks_the_representative_within_the_winning_group():
     samples = [
-        _sample(_definite(twins=[("X",)])),
-        _sample(_definite(twins=[("Y",)])),
-        _sample(_definite(twins=[("Y",)])),
+        _sample(_definite(twins=["X"])),
+        _sample(_definite(twins=["Y"])),
+        _sample(_definite(twins=["Y"])),
     ]
     assert modal_sample(samples) == (1, 3)
 
@@ -495,3 +496,36 @@ def test_the_runner_names_the_eval_in_its_user_agent():
             return client.headers["user-agent"]
 
     assert asyncio.run(user_agent()) == "dfo-search-eval"
+
+
+# Members door
+
+
+def test_the_members_door_reader_posts_each_definition_once():
+    """A Spec's served StatVars come from the app's members door, read once per spec id
+    with the Spec's definition, as bare dcids."""
+    posts = []
+
+    def post(url, *, json, headers, timeout):
+        posts.append((url, json))
+        body = {"members": [{"ref": "dcid:Count_Person"}, {"ref": "dcid:Count_Person_Female"}]}
+        return httpx.Response(200, json=body, request=httpx.Request("POST", url))
+
+    read = members_door_reader("http://app/")
+    definition = {"schema_version": 1, "spec_id": "spec_1", "identity": {}}
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(runner.httpx, "post", post)
+        first, again = read("spec_1", definition), read("spec_1", definition)
+
+    assert first == again == ["Count_Person", "Count_Person_Female"]
+    assert posts == [("http://app/api/datasets/spec_1/members", {"definition": definition})]
+
+
+def test_a_refused_members_read_raises_for_the_check_to_score_as_infrastructure():
+    def post(url, *, json, headers, timeout):
+        return httpx.Response(404, json={}, request=httpx.Request("POST", url))
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(runner.httpx, "post", post)
+        with pytest.raises(httpx.HTTPStatusError):
+            members_door_reader("http://app")("spec_1", {})

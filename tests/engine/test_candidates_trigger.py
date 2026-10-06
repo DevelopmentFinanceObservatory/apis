@@ -70,7 +70,7 @@ class TestStd02GDPIndia:
         inner = result.parts[0]
         assert inner.status == "definite"
         assert isinstance(inner, DefinitePart)
-        sv_dcids = [sv.ref for sv in inner.spec.resolved.stat_vars.items]
+        sv_dcids = [sv.ref.dcid for sv in inner.spec.resolved.members]
         assert "Amount_EconomicActivity_GrossDomesticProduction_Nominal" in sv_dcids
 
 
@@ -92,9 +92,7 @@ class TestStd03BirthRateEthiopia:
 
     def test_svs_are_birth_rate_and_fertility_rate(self):
         resp = _candidates(self._QUERY)
-        sv_dcids = {
-            sv.ref for spec in resp.candidates.specs for sv in spec.resolved.stat_vars.items
-        }
+        sv_dcids = {sv.ref.dcid for spec in resp.candidates.specs for sv in spec.resolved.members}
         assert sv_dcids == {
             "Count_BirthEvent_LiveBirth_AsFractionOf_Count_Person",
             "FertilityRate_Person_Female",
@@ -131,12 +129,10 @@ class TestStd04bBirthsEthiopia:
         inner = result.parts[0]
         assert isinstance(inner, NoDataPart)
         assert inner.no_data.gate == "only_alternate_has_data"
-        assert [ref.dcid for ref in inner.no_data.elected_stat_vars or []] == [
-            "Count_BirthEvent_LiveBirth"
-        ]
+        assert inner.no_data.elected_count == 1
         alternate = inner.no_data.alternate_match
         assert alternate is not None
-        assert [sv.ref for sv in alternate.resolved.stat_vars.items] == [
+        assert [sv.ref.dcid for sv in alternate.resolved.members] == [
             "Count_BirthEvent_LiveBirth_AsFractionOf_Count_Person"
         ]
 
@@ -208,7 +204,7 @@ class TestStd06bFertilityRateKenya:
         inner = result.parts[0]
         assert inner.status == "definite"
         assert isinstance(inner, DefinitePart)
-        sv_dcids = [sv.ref for sv in inner.spec.resolved.stat_vars.items]
+        sv_dcids = [sv.ref.dcid for sv in inner.spec.resolved.members]
         assert "FertilityRate_Person_Female" in sv_dcids
 
 
@@ -227,7 +223,7 @@ class TestStd07InfantMortalityEthiopia:
         inner = result.parts[0]
         assert inner.status == "definite"
         assert isinstance(inner, DefinitePart)
-        sv_dcids = [sv.ref for sv in inner.spec.resolved.stat_vars.items]
+        sv_dcids = [sv.ref.dcid for sv in inner.spec.resolved.members]
         assert "Count_Death_0Years_AsFractionOf_Count_BirthEvent_LiveBirth" in sv_dcids
 
 
@@ -256,7 +252,7 @@ class TestSdg06EducationSpendingKenya:
         inner = result.parts[0]
         assert inner.status == "definite"
         assert isinstance(inner, DefinitePart)
-        sv_dcids = [sv.ref for sv in inner.spec.resolved.stat_vars.items]
+        sv_dcids = [sv.ref.dcid for sv in inner.spec.resolved.members]
         assert (
             "Amount_EconomicActivity_ExpenditureActivity_EducationExpenditure_Government_"
             "AsFractionOf_Amount_EconomicActivity_ExpenditureActivity_Government"
@@ -285,7 +281,7 @@ class TestCandR1GDPBrazil:
         assert offline_resolve(_req(self._QUERY)).status == "definite"
 
     def test_sv_is_nominal_gdp(self):
-        sv_dcids = [sv.ref for sv in self._definite().spec.resolved.stat_vars.items]
+        sv_dcids = [sv.ref.dcid for sv in self._definite().spec.resolved.members]
         assert sv_dcids == ["Amount_EconomicActivity_GrossDomesticProduction_Nominal"]
 
     def test_entity_is_brazil(self):

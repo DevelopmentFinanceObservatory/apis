@@ -43,6 +43,7 @@ def _grounded_place(*, dcid: str, graph_label: str, query_text: str | None):
         [(dcid, "observationAbout")],
         graph,
         query_entity_text_by_dcid={dcid: query_text} if query_text else None,
+        open_axes=frozenset(),
     )
     entities = [_build_entity(*entity_data, grounded[1]) for entity_data in grounded[5]]
     shape = build_shape_model(_SHAPE, grounded[3], grounded[0], member_count=1, members=None)
@@ -91,6 +92,7 @@ def test_query_place_text_is_used_when_the_graph_label_is_missing() -> None:
         [(dcid, "observationAbout")],
         graph,
         query_entity_text_by_dcid={dcid: "Eswatini"},
+        open_axes=frozenset(),
     )
     entities = [_build_entity(*entity_data, grounded[1]) for entity_data in grounded[5]]
     shape = build_shape_model(_SHAPE, grounded[3], grounded[0], member_count=1, members=None)
@@ -144,6 +146,7 @@ def test_query_entity_text_never_relabels_stat_vars_or_sources() -> None:
             "Count_Person_Swaziland": "not an entity label",
             "dc/base/SwazilandData": "not a source label",
         },
+        open_axes=frozenset(),
     )
 
     assert grounded[4][0].label == "Swaziland population"
@@ -199,7 +202,6 @@ def test_pipeline_threads_accepted_place_text_to_resolved_entity_and_sentence() 
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
-            base_steps=[],
             base_timing={},
             emit=emit,
             coverage=empty_coverage_snapshot(),

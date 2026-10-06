@@ -1,9 +1,12 @@
-"""Tests for case requests and Langfuse item ids."""
+"""Tests for case requests, resubmit identities and Langfuse item ids."""
+
+import re
 
 import pytest
 
-from search.eval.cases import Case, validate_case
+from search.eval.cases import Case, Resubmit, validate_case
 from search.eval.dataset import item_id_for_case, resubmit_identity
+from search.models import BindingValue, GraphRef, IdentityBindingValue, Slot, SlotKey, SlotValue
 
 _RESUBMIT_CASE = {
     "id": "resubmit-tza",
@@ -46,7 +49,6 @@ _RESUBMIT_CASE = {
                 },
             },
         ],
-        "stat_var_dcids": ["Amount_FinancialFlow_Disbursement_Nominal"],
         "entity_dcids": ["country/TZA"],
         "origin_dcids": ["InternationalMonetaryFund"],
         "facets": {
@@ -67,9 +69,8 @@ def _case(raw: dict) -> Case:
 
 
 def test_resubmit_identity_carries_roles_window_and_facets():
-    base_spec_id, identity = resubmit_identity(_case(_RESUBMIT_CASE).resubmit)
+    identity = resubmit_identity(_case(_RESUBMIT_CASE).resubmit)
     dumped = identity.model_dump(mode="json")
-    assert base_spec_id is not None
     assert dumped["entities"] == {
         "destination": ["country/TZA"],
         "origin": ["InternationalMonetaryFund"],
@@ -83,17 +84,68 @@ def test_resubmit_identity_carries_roles_window_and_facets():
     assert [slot["property"] for slot in dumped["slots"]] == ["financialFlowType"]
 
 
-def test_resubmit_identity_refuses_a_payload_with_no_anchor():
-    raw = _RESUBMIT_CASE | {
-        "resubmit": _RESUBMIT_CASE["resubmit"]
-        | {"stat_var_dcids": None, "entity_dcids": None, "origin_dcids": None}
-    }
-    with pytest.raises(ValueError, match="identity definition"):
-        resubmit_identity(_case(raw).resubmit)
-
-
 def test_item_id_for_case_is_scoped_by_dataset_name():
     assert (
         item_id_for_case(_case(_RESUBMIT_CASE), "search-crs")
         == "search-crs:search-case-resubmit-tza"
     )
+
+
+_COUNT_PERSON_SHAPE = {
+    "kind": "statvar_schema",
+    "population_type": "Person",
+    "measured_property": "count",
+    "stat_type": "measuredValue",
+}
+
+
+def _source_slot(dcid: str) -> Slot:
+    return Slot(
+        key=SlotKey(axis="source", property=None, label="data source"),
+        binding=BindingValue(
+            value=SlotValue(ref=GraphRef(dcid=dcid, label=dcid), value_kind="source")
+        ),
+    )
+
+
+def _resubmit(**fields) -> Resubmit:
+    return Resubmit.model_validate(
+        {"variable_text": "population", "shape": _COUNT_PERSON_SHAPE, "slots": [], **fields}
+    )
+
+
+def test_resubmit_identity_keys_subject_entities_under_observation_about():
+    identity = resubmit_identity(_resubmit(entity_dcids=["country/KEN"]))
+
+    assert identity.entities == {"observationAbout": ["country/KEN"]}
+
+
+def test_resubmit_identity_reads_legacy_provenance_as_the_source_slot():
+    """Legacy provenance and a source slot produce the same identity and keep the facets."""
+    facets = {
+        "provenance": IdentityBindingValue(ref="dc/base/WorldDevelopmentIndicators"),
+        "measurementMethod": IdentityBindingValue(ref="dc/measurementMethod/MethodA"),
+        "unit": IdentityBindingValue(ref="Count_Person"),
+    }
+    legacy = resubmit_identity(_resubmit(entity_dcids=["country/KEN"], facets=facets))
+    source = resubmit_identity(
+        _resubmit(
+            entity_dcids=["country/KEN"],
+            slots=[_source_slot("dc/base/WorldDevelopmentIndicators")],
+            facets={key: value for key, value in facets.items() if key != "provenance"},
+        )
+    )
+
+    assert legacy == source
+    assert legacy.facets == facets
+
+
+def test_resubmit_identity_refuses_a_source_slot_beside_legacy_provenance():
+    with pytest.raises(ValueError, match=re.escape("source-axis slot and facets.provenance")):
+        resubmit_identity(
+            _resubmit(
+                entity_dcids=["country/KEN"],
+                slots=[_source_slot("dc/base/SomeSource")],
+                facets={"provenance": IdentityBindingValue(ref="dc/base/OtherSource")},
+            )
+        )

@@ -829,9 +829,6 @@ class _FakeSpecReader:
             if spec_id in spec_ids
         }
 
-    def read_collection(self, collection_id: str):
-        raise NotImplementedError("not exercised by LiveFrameStore")
-
 
 def _stored_definition(*, spec_id: str, slots: list[dict[str, object]]) -> StoredDefinition:
     return StoredDefinition(

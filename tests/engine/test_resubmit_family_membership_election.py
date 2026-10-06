@@ -9,6 +9,7 @@ from search.engine.region import resolve_spec_resubmit
 from search.engine.region.state import EngineOptions
 from search.models import ResubmitIdentityPayload
 from tests.engine._axis_doubles import axis_confirming_reader
+from tests.engine._harness import walk_options
 from tests.engine.test_resubmit_edit_detection import (
     _PURPOSE_ROLLUP,
     _coverage_for,
@@ -25,7 +26,7 @@ def test_family_noop_resubmit_with_a_truncated_seed_resolves_the_same_member_cou
 ):
     """A 200-member seed must not truncate the family returned by the packaged
     election. With or without that seed, the response retains the full count."""
-    base_spec_id, base_identity = _health_base(purpose=_PURPOSE_ROLLUP)
+    _base_spec_id, base_identity = _health_base(purpose=_PURPOSE_ROLLUP)
     member_dcids = _elected_members(_PURPOSE_ROLLUP)
     member_rows = _member_rows(member_dcids)
     graph = _health_graph(member_rows, places=["country/KEN"])
@@ -37,14 +38,9 @@ def test_family_noop_resubmit_with_a_truncated_seed_resolves_the_same_member_cou
         "fixture drift: expected the real family to exceed the 200-item serving cap"
     )
 
-    inp_no_seed = ResubmitIdentityPayload(
-        identity=base_identity, base_spec_id=base_spec_id, base_identity=base_identity
-    )
+    inp_no_seed = ResubmitIdentityPayload(identity=base_identity)
     inp_truncated_seed = ResubmitIdentityPayload(
         identity=base_identity,
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=truncated_seed,
     )
 
     coverage = _coverage_for(member_dcids, "country/KEN", monkeypatch)
@@ -53,14 +49,14 @@ def test_family_noop_resubmit_with_a_truncated_seed_resolves_the_same_member_cou
         graph=graph,
         sdmx=sdmx,
         coverage=coverage,
-        options=EngineOptions(materialise_graph=materialise_graph),
+        options=walk_options(graph, EngineOptions(materialise_graph=materialise_graph)),
     )
     region_truncated_seed = resolve_spec_resubmit(
         inp=inp_truncated_seed,
         graph=graph,
         sdmx=sdmx,
         coverage=coverage,
-        options=EngineOptions(materialise_graph=materialise_graph),
+        options=walk_options(graph, EngineOptions(materialise_graph=materialise_graph)),
     )
 
     assert region_no_seed.status == "definite"
@@ -74,7 +70,7 @@ def test_family_noop_resubmit_with_a_truncated_seed_resolves_the_same_member_cou
 def test_an_elected_member_absent_from_the_live_graph_is_dropped_not_fatal(monkeypatch):
     """An elected member absent from the graph is dropped, leaving the other
     real family members available for resolution."""
-    base_spec_id, base_identity = _health_base(purpose=_PURPOSE_ROLLUP)
+    _base_spec_id, base_identity = _health_base(purpose=_PURPOSE_ROLLUP)
     member_dcids = _elected_members(_PURPOSE_ROLLUP)
     present_dcids = list(member_dcids)[:-1]
     absent_dcid = member_dcids[-1]
@@ -88,19 +84,17 @@ def test_an_elected_member_absent_from_the_live_graph_is_dropped_not_fatal(monke
     # row, which the live graph simply has nothing for.
     materialise_graph = axis_confirming_reader(*present_dcids, graph=graph)
 
-    inp = ResubmitIdentityPayload(
-        identity=base_identity, base_spec_id=base_spec_id, base_identity=base_identity
-    )
+    inp = ResubmitIdentityPayload(identity=base_identity)
     region = resolve_spec_resubmit(
         inp=inp,
         graph=graph,
         sdmx=sdmx,
         coverage=_coverage_for(present_dcids, "country/KEN", monkeypatch),
-        options=EngineOptions(materialise_graph=materialise_graph),
+        options=walk_options(graph, EngineOptions(materialise_graph=materialise_graph)),
     )
 
     assert region.status == "definite", (
         region.no_data_reason if region.status != "definite" else None
     )
-    served_refs = {sv.ref for sv in region.specs[0].resolved.stat_vars.items}
+    served_refs = {sv.ref.dcid for sv in region.specs[0].resolved.members}
     assert absent_dcid not in served_refs

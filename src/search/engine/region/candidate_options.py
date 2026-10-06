@@ -23,6 +23,7 @@ from search.engine.region.option_coverage import (
 )
 from search.engine.region.relaunch import _relaunch_slot_options
 from search.engine.region.state import ResolveState
+from search.engine.region.un_system import member_labels
 from search.engine.retrieval.elected_dataset import elected_datasets
 from search.engine.retrieval.read_plan import preview_years
 from search.engine.retrieval.retrieve import NoDataDraft
@@ -74,10 +75,12 @@ def _make_slot_options_task(
                 _cand_bindings,
                 _cand_slot_options,
                 grounded.cand_places[s.spec_id].roles.resolved_entities,
+                grounded.cand_places[s.spec_id].roles.open_axes,
                 _cand_place_dcids,
                 grounded.cand_entity_options_raw.get(s.spec_id),
                 _candidate_facet_probe(state, grounded, s),
                 bool(s.definition.identity.facets),
+                member_labels((s,)),
             )
         )
     if not probes:
@@ -112,10 +115,12 @@ def _make_slot_options_relaunch(
         shape_draft=_shape,
         bindings=_bindings,
         entities=grounded.cand_places[original_spec.spec_id].roles.resolved_entities,
+        open_axes=grounded.cand_places[original_spec.spec_id].roles.open_axes,
         place_dcids=_place_dcids,
         entity_options=grounded.cand_entity_options_raw.get(original_spec.spec_id),
         default_facet_probe=_candidate_facet_probe(state, grounded, original_spec),
         facets_pinned=bool(original_spec.definition.identity.facets),
+        variable_labels=member_labels((original_spec,)),
     )
 
 
@@ -226,9 +231,11 @@ async def _attach_candidate_facet_options(
 ) -> list[Spec]:
     """Attach facet options to each surviving spec using its captured entities.
 
-    The probe controls the coverage gate and warning behaviour. Discarded candidates never
-    trigger a read.
+    A streamed request with option coverage delivers them in trailing events
+    (`_make_slot_options_task`) instead. Discarded candidates never trigger a read.
     """
+    if state.stream_slot_options:
+        return survivors
     _results = await asyncio.gather(
         *(
             asyncio.to_thread(
@@ -236,7 +243,6 @@ async def _attach_candidate_facet_options(
                 _candidate_facet_probe(state, grounded, s),
                 graph=state.graph,
                 coverage=state.coverage.index,
-                include_option_coverage=state.include_option_coverage,
                 deadline=state.deadline,
             )
             for s in survivors
@@ -267,6 +273,7 @@ async def _attach_candidate_slot_options(
         _bindings,
         _raw_options,
         entities=grounded.cand_places[spec.spec_id].roles.resolved_entities,
+        open_axes=grounded.cand_places[spec.spec_id].roles.open_axes,
         date_request=state.date_request,
         materialise_graph=state.materialise_graph,
         place_dcids=_place_dcids,

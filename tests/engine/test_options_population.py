@@ -4,12 +4,13 @@ Covers filtering, empty populations, truncation, and the graph branch's 700-memb
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from code_index.query import CodeIndex
 from code_index.shared import get_index
 from code_index.types import IndexStamp, StatVarRow
-from search.engine.config import settings
 from search.engine.errors import EngineInputError
 from search.engine.options import population as population_module
 from search.engine.options.population import options_population
@@ -23,8 +24,11 @@ from search.models import (
     IdentityShapeSchema,
     IdentitySlot,
     IdentityWindowAll,
+    RoleAxis,
 )
+from statvar_members import DEFAULT_MEMBER_CAP, MemberReadDeadline
 from statvar_members.types import UNRESOLVED_NODE
+from tests.datasets_api._graph_doubles import FirstPageWithholdingGraphReader
 from tests.statvar_members.conftest import (
     FakeMemberArcReader,
     FlakyMemberArcReader,
@@ -47,7 +51,8 @@ _NON_INDEX_SHAPE = IdentityShapeSchema(
 
 
 def _crs_population_dcids() -> list[str]:
-    """Returns index members for `_CRS_SHAPE`, independently of `options_population`."""
+    """Returns the CRS family's index members for `_CRS_SHAPE`, independently of
+    `options_population`."""
     index = get_index()
     target = ("FinancialFlow", "grantEquivalent", "measuredValue", "Nominal", None)
     return [
@@ -61,6 +66,7 @@ def _crs_population_dcids() -> list[str]:
             row.measurement_denominator,
         )
         == target
+        and "provenance/OECDCreditorReportingSystem" in row.provenances
     ]
 
 
@@ -104,7 +110,6 @@ def test_a_crs_index_carried_shape_sources_the_full_index_population():
     assert result.source == "index"
     assert set(result.stat_var_dcids) == set(population_dcids)
     assert result.declared_roles == ("financingProvider", "financingRecipient")
-    assert result.truncated is False
 
 
 def test_a_bound_crs_purpose_narrows_the_index_population():
@@ -264,7 +269,6 @@ def test_a_non_index_shape_sources_via_statvar_members_enumerate_members():
     assert result.source == "graph"
     assert result.stat_var_dcids == ("LifeExpectancy_Person",)
     assert result.declared_roles == ("observationAbout",)
-    assert result.truncated is False
 
 
 def test_an_empty_non_index_population_refuses():
@@ -291,14 +295,30 @@ def test_a_truncated_non_index_population_with_a_confirmed_member_resolves():
 
     assert result.source == "graph"
     assert result.stat_var_dcids == ("LifeExpectancy_Person",)
-    assert result.declared_roles == ("observationAbout",)
     # Its constraint keys match the unbound identity; unbound gender defaults to aggregate.
     # This lets the antichain prove completeness despite the truncated graph page.
-    assert result.truncated is False
+    assert result.declared_roles == ("observationAbout",)
 
 
-def test_a_truncated_non_index_population_not_proven_complete_stays_truncated():
-    """Male and Female are incomparable members, so the truncated page cannot prove completeness."""
+def test_a_deep_root_population_settles_from_the_whole_filtered_set():
+    """The first page truncates and leaves out the root, so it cannot prove itself complete.
+    The walk reads the whole filtered set, as the mint does, and the root dominates the
+    gendered members."""
+    arcs = {
+        dcid: {
+            "typeOf": ("StatisticalVariable",),
+            "populationType": ("Person",),
+            "measuredProperty": ("count",),
+            "statType": ("measuredValue",),
+            "constraintProperties": ("gender",) if gender else (),
+            **({"gender": (gender,)} if gender else {}),
+        }
+        for dcid, gender in (
+            ("Count_Person", None),
+            ("Count_Person_Male", "Male"),
+            ("Count_Person_Female", "Female"),
+        )
+    }
     shape = IdentityShapeSchema(
         population_type="Person", measured_property="count", stat_type="measuredValue"
     )
@@ -306,54 +326,54 @@ def test_a_truncated_non_index_population_not_proven_complete_stays_truncated():
         shape, slots=[IdentitySlot(property="gender", binding=IdentityBindingUnbound())]
     )
 
-    result = options_population(identity, graph=male_female_only_reader(force_truncated=True))
-
-    assert result.source == "graph"
-    assert set(result.stat_var_dcids) == {"Count_Person_Male", "Count_Person_Female"}
-    assert result.declared_roles == ("observationAbout",)
-    assert result.truncated is True
-
-
-def test_a_truncated_single_member_population_not_proven_complete_stays_truncated():
-    """The sole confirmed member has an unbound `vintage` key, so the truncated population stays marked."""
-    arcs = {
-        "Count_Person_Vintage2020": {
-            "typeOf": ("StatisticalVariable",),
-            "populationType": ("Person",),
-            "measuredProperty": ("count",),
-            "statType": ("measuredValue",),
-            "measurementQualifier": (),
-            "measurementDenominator": (),
-            "constraintProperties": ("vintage",),
-            "observationProperties": (),
-            "vintage": ("Vintage2020",),
-        },
-    }
-    shape = IdentityShapeSchema(
-        population_type="Person", measured_property="count", stat_type="measuredValue"
-    )
-    identity = _identity(
-        shape, slots=[IdentitySlot(property="vintage", binding=IdentityBindingUnbound())]
-    )
-
     result = options_population(
-        identity, graph=FakeMemberArcReader(arcs=arcs, force_truncated=True)
+        identity,
+        graph=FirstPageWithholdingGraphReader(withheld=frozenset({"Count_Person"}), arcs=arcs),
     )
 
-    assert result.source == "graph"
-    assert result.stat_var_dcids == ("Count_Person_Vintage2020",)
-    assert result.truncated is True
+    assert result.stat_var_dcids == ("Count_Person",)
 
 
-def test_a_truncated_non_index_population_with_no_confirmed_member_reads_scope_too_broad():
-    """A truncated page with no confirmed member refuses as `scope_too_broad`."""
+def test_a_graph_walk_past_its_deadline_raises_a_timeout():
+    """The door answers a `TimeoutError` 504, so a walk past the request deadline never
+    reads as an empty or truncated population."""
     identity = _identity(
-        _NON_INDEX_SHAPE,
-        slots=[IdentitySlot(property="gender", binding=IdentityBindingValue(ref="Nonbinary"))],
+        _NON_INDEX_SHAPE, slots=[IdentitySlot(property="gender", binding=IdentityBindingUnbound())]
     )
+
+    with pytest.raises(MemberReadDeadline):
+        options_population(identity, graph=kenya_reader(), deadline=time.monotonic() - 1)
+
+
+_COUNT_SHAPE = IdentityShapeSchema(
+    population_type="Person", measured_property="count", stat_type="measuredValue"
+)
+
+
+@pytest.mark.parametrize(
+    ("shape", "binding", "graph"),
+    [
+        pytest.param(
+            _NON_INDEX_SHAPE,
+            IdentityBindingValue(ref="Nonbinary"),
+            lambda: kenya_reader(force_truncated=True),
+            id="no_confirmed_member",
+        ),
+        pytest.param(
+            _COUNT_SHAPE,
+            IdentityBindingUnbound(),
+            lambda: male_female_only_reader(force_truncated=True),
+            id="incomparable_members",
+        ),
+    ],
+)
+def test_a_population_past_the_subject_ceiling_reads_scope_too_broad(shape, binding, graph):
+    """A filtered set the full read cannot finish under the subject ceiling refuses
+    `scope_too_broad`, whatever its first page confirmed, as the mint refuses it."""
+    identity = _identity(shape, slots=[IdentitySlot(property="gender", binding=binding)])
 
     with pytest.raises(EngineInputError) as exc_info:
-        options_population(identity, graph=kenya_reader(force_truncated=True))
+        options_population(identity, graph=graph())
 
     assert exc_info.value.code == "scope_too_broad"
     assert exc_info.value.status == 422
@@ -372,7 +392,7 @@ def test_a_non_index_population_past_the_member_cap_refuses():
             "constraintProperties": (),
             "observationProperties": (),
         }
-        for i in range(settings().options_member_cap + 1)
+        for i in range(DEFAULT_MEMBER_CAP + 1)
     }
     shape = IdentityShapeSchema(
         population_type="Person", measured_property="count", stat_type="measuredValue"
@@ -411,7 +431,10 @@ _IDS_MEMBERS = {
 
 
 def _ids_identity(
-    entities: dict[str, list[str]], *, extra_slots: tuple[str, ...] = ()
+    entities: dict[str, list[str]],
+    *,
+    extra_slots: tuple[str, ...] = (),
+    open_roles: tuple[RoleAxis, ...] | None = None,
 ) -> BaseIdentity:
     return BaseIdentity(
         shape=_IDS_SHAPE,
@@ -420,6 +443,7 @@ def _ids_identity(
             for name in (*_IDS_CONSTRAINTS, *extra_slots)
         ],
         entities=entities,
+        open_roles=open_roles,
         requested_window=IdentityWindowAll(),
     )
 
@@ -510,33 +534,72 @@ def test_index_role_twins_resolve_by_the_identitys_bound_roles(monkeypatch, enti
     assert result.declared_roles == _IDS_MEMBERS[expected][1]
 
 
+@pytest.mark.parametrize("source", ["graph", "index"])
+def test_an_open_creditor_resolves_the_role_twins_to_the_breakdown(monkeypatch, source):
+    """The identity's open creditor joins the role keys on both sources, so the
+    by-creditor twin covers them and the total does not."""
+    if source == "index":
+        _use_index(monkeypatch, _ids_index(_IDS_MEMBERS))
+        reader = FakeMemberArcReader(arcs={})
+    else:
+        reader = _ids_reader(_IDS_MEMBERS)
+
+    result = options_population(
+        _ids_identity({"destination": ["country/KEN"]}, open_roles=("origin",)), graph=reader
+    )
+
+    assert result.source == source
+    assert result.stat_var_dcids == (_IDS_BY_CREDITOR,)
+
+
 _IDS_WITH_LENDER = {
     **_IDS_MEMBERS,
     _IDS_LENDER: (_IDS_LENDER_CONSTRAINTS, ("financingProvider", "financingRecipient")),
 }
 
 
-def test_graph_survivors_that_disagree_refuse_role_signature_incompatible():
+@pytest.mark.parametrize("source", ["graph", "index"])
+def test_a_total_beside_a_lender_series_resolves_the_total(monkeypatch, source):
+    """The lender series holds its own constraint values and declares the creditor beside
+    the debtor. The identity names no creditor, so the population is the total, the
+    series published without one."""
+    if source == "index":
+        _use_index(monkeypatch, _ids_index(_IDS_WITH_LENDER))
+        reader = FakeMemberArcReader(arcs={})
+    else:
+        reader = _ids_reader(_IDS_WITH_LENDER)
+
+    result = options_population(_ids_identity({"destination": ["country/KEN"]}), graph=reader)
+
+    assert result.source == source
+    assert result.stat_var_dcids == (_IDS_TOTAL,)
+    assert result.declared_roles == ("financingRecipient",)
+
+
+_IDS_NOT_NESTED = {
+    _IDS_TOTAL: (_IDS_CONSTRAINTS, ("financingRecipient",)),
+    _IDS_LENDER: (_IDS_LENDER_CONSTRAINTS, ("financingProvider",)),
+}
+
+
+@pytest.mark.parametrize("source", ["graph", "index"])
+def test_survivors_whose_role_sets_do_not_nest_refuse_role_signature_incompatible(
+    monkeypatch, source
+):
+    """A debtor-only total beside a creditor-only series of other constraint values:
+    neither role set holds the other, so no one role signature describes the population."""
+    if source == "index":
+        _use_index(monkeypatch, _ids_index(_IDS_NOT_NESTED))
+        reader = FakeMemberArcReader(arcs={})
+    else:
+        reader = _ids_reader(_IDS_NOT_NESTED)
+
     with pytest.raises(EngineInputError) as exc_info:
-        options_population(
-            _ids_identity({"destination": ["country/KEN"]}), graph=_ids_reader(_IDS_WITH_LENDER)
-        )
+        options_population(_ids_identity({}), graph=reader)
 
     assert exc_info.value.code == "role_signature_incompatible"
     assert exc_info.value.status == 422
     assert exc_info.value.pointer == "/identity"
-
-
-def test_index_survivors_that_disagree_refuse_role_signature_incompatible(monkeypatch):
-    _use_index(monkeypatch, _ids_index(_IDS_WITH_LENDER))
-
-    with pytest.raises(EngineInputError) as exc_info:
-        options_population(
-            _ids_identity({"destination": ["country/KEN"]}), graph=FakeMemberArcReader(arcs={})
-        )
-
-    assert exc_info.value.code == "role_signature_incompatible"
-    assert exc_info.value.status == 422
 
 
 def test_index_member_refining_another_over_an_unbound_constraint_is_dropped(monkeypatch):

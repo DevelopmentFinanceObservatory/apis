@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
@@ -38,7 +38,6 @@ from search.models import (
     Operation,
     Ordering,
     ParsedPart,
-    PartRestatementReason,
     ResolvedQualifier,
     RoleAxis,
     SlotOptions,
@@ -51,6 +50,7 @@ from search.models import (
 
 if TYPE_CHECKING:
     from search.engine.region.option_coverage import RoleServedFilter
+    from search.engine.region.promote_relaunch import PromoteRelaunch
     from search.engine.retrieval.read_plan import ReadPlan
 
 FacetPredicate = Callable[[Facet], bool]
@@ -122,6 +122,10 @@ class RegionResult:
     # (STANDARD-only) elected Spec with no observation at the resolved place.
     # Contains one Spec and differs from `nearest_real`.
     flagged_match: tuple[Spec, ...] | None = None
+    # The dataset a no-data outcome's run settled on (`ResolveState.settled_dataset`),
+    # which the part's restatement names (`fanout.answered_provenance`). `None` when the
+    # run settled on none, and on every other outcome.
+    settled_dataset: str | None = None
     # Failed quality-gate code, independent of which near-match field is populated.
     gate: NoDataGate | None = None
     # Unelected data-bearing variable, present only for `only_alternate_has_data`.
@@ -163,10 +167,9 @@ class RegionResult:
     # Why a no_data outcome fired (models.NoData's own `cause`), populated
     # only for no_data_reason=="rate_coverage_gap".
     cause: Cause | None = None
-    # Capped currencies a `unit_not_resolved` refusal offers, and whether the cap cut
-    # any. Empty for every other outcome and for a refusal with no candidates.
+    # Capped currencies a `unit_not_resolved` refusal offers. Empty for every other
+    # outcome and for a refusal with no candidates.
     unit_alternatives: tuple[UnitAlternative, ...] = ()
-    unit_alternatives_truncated: bool = False
     # The `year_unavailable` fact of an answer holding data at the place but none in the
     # years asked (`departures.window_gap_fact`). It holds the years asked and the span the
     # series runs. No warning discloses it, so it rides outside `departure_facts`.
@@ -227,6 +230,11 @@ class RegionResult:
     # Relaunch under a merged spec id. The eligibility gate preserves the
     # identity. The closure captures the same graph and materialise clients.
     place_options_relaunch: Callable[[str], asyncio.Task[list[PlaceOptionsEvent]]] | None = None
+    # What a resubmitted definite part's three relaunch closures read, apart from the
+    # request's clients (`promote_relaunch.bind_relaunches`). The response cache's memo
+    # stores the region without closures and binds them again for the request it serves.
+    # None off the resubmit's definite path.
+    promote_relaunch: PromoteRelaunch | None = None
     # Role-to-entity lists probed by resubmit resolution. Place-set values are
     # expanded to members. Populated on definite resubmit results.
     observation_entities: dict[str, list[str]] | None = None
@@ -250,10 +258,6 @@ class RegionResult:
     # for a candidate set. `with_runnable_operations` reads it to tell which flow axes the
     # answer's data carries. None on every other result.
     answered_roles: tuple[str, ...] | None = None
-    # Reason part assembly omits restatement. The resolving leg sets it when
-    # known. Assembly uses `no_phrase_inputs` otherwise. It is `None` when a
-    # restatement is present.
-    restatement_reason: PartRestatementReason | None = None
     # Served measure partition and sibling partitions. Same-shape merges need
     # these to mint new identities after member materialisations are gone.
     measure_partition: MeasurePartition | None = None
@@ -293,6 +297,17 @@ class RegionResult:
     # a later request may read it over every place with data. The fan-out reports such a leg
     # as degraded (`_FanOutResult.degraded_leg`) so it is not cached.
     scope_unsettled: bool = False
+    # Whether the answer swallowed a read that failed or ran past its deadline and stands on
+    # less than it would have read (`degraded_reads`): a member walk that settled nothing, a
+    # named group dropped, the dates the unit gate could not read, or the withheld-registry
+    # re-read. The fan-out reports such a leg as degraded (`_FanOutResult.degraded_leg`), so
+    # neither cache layer stores the response, and the part memo stores no such region.
+    degraded: bool = False
+    # The `time.monotonic()` instant this region's reads, its trailing streams included, run
+    # to: the request deadline, or the later full-read bound when a resubmit's member walk
+    # read the whole filtered set (`promote_reread._elected_members`). `None` when the region
+    # was built without a deadline.
+    reads_deadline: float | None = None
     # The departure facts raised beside this region's warnings, each under its warning's
     # key (`departures.FactsByWarning`). Part assembly keeps those whose warning the part
     # still holds, so a fact here whose warning was dropped reaches no part.
@@ -320,6 +335,13 @@ class RegionResult:
         gap-fill or a same-shape merge included."""
         return any(warning.code == ALTERNATES_UNEVALUATED for warning in self.warnings)
 
+    @property
+    def leg_degraded(self) -> bool:
+        """Whether this region's answer stands on less than a later request may read:
+        `degraded`, `alternates_left_out` or `scope_unsettled`. Every door reports such a
+        region as a degraded leg (`DoneEvent.degraded_leg`), so no cache stores it."""
+        return self.degraded or self.alternates_left_out or self.scope_unsettled
+
 
 def answered_roles(shape: ShapeDraft) -> tuple[str, ...]:
     """Return the roles a Spec built from `shape` answers under
@@ -332,11 +354,12 @@ def with_runnable_operations(region: RegionResult, operations: Sequence[Operatio
     one it cannot.
 
     Every door stamps a part's operations through this function. An operation over a flow
-    axis is unrunnable on a role-bearing answer that declares no role on that axis
-    (`RegionResult.answered_roles`): a recipient-only total holds one series per recipient,
-    so a rank over creditors has nothing to rank. The identity carries no operation, so
-    the by-creditor rows answer only a named creditor, and the answer is the family the
-    mint resolves. The operation leaves the part, and the part warns
+    axis opens that axis (`fanout._stream_one_variable`), so a family with a by-creditor
+    twin elects the twin, whose answer declares the role and keeps the operation, and its
+    identity states the axis in `open_roles`. The operation is unrunnable on a role-bearing
+    answer that declares no role on that axis (`RegionResult.answered_roles`): a
+    recipient-only family holds one series per recipient, so a rank over creditors has
+    nothing to rank. The operation leaves the part, and the part warns
     `query_qualifier_dropped`, recording a `breakdown_not_applied` departure under that
     warning. A subject-only answer, and a result that answers nothing,
     keep every operation.
@@ -357,12 +380,74 @@ def with_runnable_operations(region: RegionResult, operations: Sequence[Operatio
         # A parsed entry of a resubmit is stamped by the fan-out and again by its door.
         if warning not in warnings:
             warnings.append(warning)
-        departure_facts[warning_key(warning)] = breakdown_not_applied(operation)
+        departure_facts[warning_key(warning)] = breakdown_not_applied(
+            cast(RoleAxis, operation.over), asked=operation.phrase
+        )
     return dataclasses.replace(
         region,
         operations=tuple(operation for operation in operations if operation not in unrunnable),
         warnings=tuple(warnings),
         departure_facts=departure_facts,
+    )
+
+
+def with_dropped_open_roles(region: RegionResult, open_axes: Collection[RoleAxis]) -> RegionResult:
+    """Return `region` warning `query_qualifier_dropped` for each of `open_axes`, the part's
+    own open roles, that its answer drops.
+
+    A place the part names without `role_text` takes the axis place binding gives it, and a
+    bound axis wins over an open one (`place_roles.PlaceRoles.open_axes`), so the answer
+    holds that place's series where every member was asked for. A role-bearing answer that
+    declares no role on an open axis (`RegionResult.answered_roles`) is the total over it,
+    as for an operation over that axis (`with_runnable_operations`): the part warns and
+    records a `breakdown_not_applied` departure, once per axis, so an axis a dropped
+    operation already departs on raises nothing more. A subject-only answer, and a result
+    that answers nothing, warn only for a bound axis.
+    """
+    bound = {key for spec in region.specs for key in spec.definition.identity.entities}
+    roles = tuple(role for role in region.answered_roles or () if role != "observationAbout")
+    declared = {axis_for_role(role) for role in roles}
+    departed = {
+        fact.over
+        for fact in region.departure_facts.values()
+        if fact.code == "breakdown_not_applied"
+    }
+    warnings = list(region.warnings)
+    departure_facts = dict(region.departure_facts)
+    for axis in sorted(open_axes):
+        if axis in bound:
+            warnings.append(_bound_open_role_warning(axis))
+        elif roles and axis not in declared and axis not in departed:
+            warning = _undeclared_open_role_warning(axis)
+            warnings.append(warning)
+            departure_facts[warning_key(warning)] = breakdown_not_applied(axis, asked=None)
+    return dataclasses.replace(region, warnings=tuple(warnings), departure_facts=departure_facts)
+
+
+def _bound_open_role_warning(axis: RoleAxis) -> Warning:
+    """The `query_qualifier_dropped` warning for an open role a named place binds."""
+    noun = axis_noun(axis)
+    return Warning(
+        code=QUERY_QUALIFIER_DROPPED,
+        severity="degraded",
+        message=(
+            f"The requested breakdown over every {noun} was not applied: the part names "
+            f"a {noun}, and the answer is for that {noun}."
+        ),
+    )
+
+
+def _undeclared_open_role_warning(axis: RoleAxis) -> Warning:
+    """The `query_qualifier_dropped` warning for an open role the answer declares no role
+    on."""
+    noun = axis_noun(axis)
+    return Warning(
+        code=QUERY_QUALIFIER_DROPPED,
+        severity="degraded",
+        message=(
+            f"The requested breakdown over every {noun} was not applied: the answer is the "
+            f"total over every {noun}, and a breakdown by {noun} needs a named {noun}."
+        ),
     )
 
 

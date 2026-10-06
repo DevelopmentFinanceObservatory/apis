@@ -16,6 +16,7 @@ from tests.engine._base_identity import GDP_SHAPE, make_base, make_identity, sub
 from tests.engine._builders import value_slot
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import walk_options
 from tests.fixtures import FakeGraph
 
 _ENTITY_DCID = "country/KEN"
@@ -102,41 +103,47 @@ def _b_identity(slots: list = _CONSTRAINT_SLOTS) -> tuple[str, BaseIdentity]:
 
 def test_named_family_round_trip_with_no_seed():
     """Recover the named-family member without a posted seed."""
-    spec_id, identity = _b_identity()
-    inp = ResubmitIdentityPayload(identity=identity, base_spec_id=spec_id, base_identity=identity)
+    _spec_id, identity = _b_identity()
+    inp = ResubmitIdentityPayload(identity=identity)
     region = resolve_spec_resubmit(
-        inp=inp, graph=_graph(), sdmx=FakeSdmxClient(), coverage=empty_coverage_snapshot()
+        inp=inp,
+        graph=_graph(),
+        sdmx=FakeSdmxClient(),
+        coverage=empty_coverage_snapshot(),
+        options=walk_options(_graph()),
     )
     assert region.status == "definite"
-    assert [sv.ref for sv in region.specs[0].resolved.stat_vars.items] == [_B_SV]
+    assert [sv.ref.dcid for sv in region.specs[0].resolved.members] == [_B_SV]
 
 
-def test_standard_catch_all_shape_without_seed_still_refuses():
-    """A catch-all identity without a seed still refuses at the seed pointer."""
+def test_a_standard_identity_declaring_none_of_its_members_constraints_answers_no_data():
+    """A catch-all identity elects its members by the graph walk. GDP's members each assert
+    `activitySource`, which the identity does not declare, so no member answers."""
     entities = [subject_entity(_ENTITY_DCID)]
-    spec_id, identity = make_base(GDP_SHAPE, entities=entities)
-    inp = ResubmitIdentityPayload(
-        identity=make_identity(GDP_SHAPE, entities=entities),
-        base_spec_id=spec_id,
-        base_identity=identity,
+    inp = ResubmitIdentityPayload(identity=make_identity(GDP_SHAPE, entities=entities))
+    region = resolve_spec_resubmit(
+        inp=inp,
+        graph=_graph(),
+        sdmx=FakeSdmxClient(),
+        coverage=empty_coverage_snapshot(),
+        options=walk_options(_graph()),
     )
-    with pytest.raises(EngineInputError) as exc_info:
-        resolve_spec_resubmit(
-            inp=inp, graph=_graph(), sdmx=FakeSdmxClient(), coverage=empty_coverage_snapshot()
-        )
-    assert exc_info.value.code == "request_invalid"
-    assert exc_info.value.pointer == "/input/resolved_stat_var_dcids"
+    assert (region.status, region.no_data_reason) == ("no_data", "no_matching_slice")
 
 
 def test_recovered_member_disagreeing_with_posted_shape_raises_shape_mismatch():
     """Recovered arcs that disagree with the posted five-tuple raise
     `shape_mismatch`."""
-    spec_id, identity = _b_identity()
-    inp = ResubmitIdentityPayload(identity=identity, base_spec_id=spec_id, base_identity=identity)
+    _spec_id, identity = _b_identity()
+    inp = ResubmitIdentityPayload(identity=identity)
     graph = _graph(sv_arcs=_sv_arcs(stat_type="medianValue"))
     with pytest.raises(EngineInputError) as exc_info:
         resolve_spec_resubmit(
-            inp=inp, graph=graph, sdmx=FakeSdmxClient(), coverage=empty_coverage_snapshot()
+            inp=inp,
+            graph=graph,
+            sdmx=FakeSdmxClient(),
+            coverage=empty_coverage_snapshot(),
+            options=walk_options(graph),
         )
     assert exc_info.value.code == "shape_mismatch"
 
@@ -155,10 +162,14 @@ def test_named_family_with_no_recoverable_members_refuses_as_no_data():
         value_slot("how", "crsPurpose", "crsPurpose", "NoSuchPurposeCode"),
         value_slot("how", "financialFlowType", "financialFlowType", "Disbursement"),
     ]
-    spec_id, identity = _b_identity(bogus_slots)
-    inp = ResubmitIdentityPayload(identity=identity, base_spec_id=spec_id, base_identity=identity)
+    _spec_id, identity = _b_identity(bogus_slots)
+    inp = ResubmitIdentityPayload(identity=identity)
     region = resolve_spec_resubmit(
-        inp=inp, graph=_graph(), sdmx=FakeSdmxClient(), coverage=empty_coverage_snapshot()
+        inp=inp,
+        graph=_graph(),
+        sdmx=FakeSdmxClient(),
+        coverage=empty_coverage_snapshot(),
+        options=walk_options(_graph()),
     )
     assert region.status == "no_data"
 
@@ -175,15 +186,16 @@ def test_named_family_with_an_empty_election_answers_no_data_beside_a_posted_see
         datasets=real_index.datasets.values(),
     )
     monkeypatch.setattr(promote_reread, "get_index", lambda: empty_statvars_index)
-    spec_id, identity = _b_identity()
+    _spec_id, identity = _b_identity()
     inp = ResubmitIdentityPayload(
         identity=identity,
-        base_spec_id=spec_id,
-        base_identity=identity,
-        resolved_stat_var_dcids=[_B_SV],
     )
     region = resolve_spec_resubmit(
-        inp=inp, graph=_graph(), sdmx=FakeSdmxClient(), coverage=empty_coverage_snapshot()
+        inp=inp,
+        graph=_graph(),
+        sdmx=FakeSdmxClient(),
+        coverage=empty_coverage_snapshot(),
+        options=walk_options(_graph()),
     )
     assert region.status == "no_data"
     assert region.no_data_reason == "variable_not_resolved"

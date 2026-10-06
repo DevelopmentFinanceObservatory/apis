@@ -85,7 +85,6 @@ def _run(
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
             sdmx=sdmx or FakeSdmxClient(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
@@ -99,7 +98,7 @@ def _assert_pre_materialise_role_refusal(result, *, sv_dcid: str, window: TimeWi
     assert result.flagged_match is not None
     assert result.elected_stat_vars is not None
     flagged = result.flagged_match[0]
-    assert [stat_var.ref for stat_var in flagged.resolved.stat_vars.items] == [sv_dcid]
+    assert [stat_var.ref.dcid for stat_var in flagged.resolved.members] == [sv_dcid]
     assert [stat_var.dcid for stat_var in result.elected_stat_vars] == [sv_dcid]
     assert flagged.resolved.coverage.kind == "bare"
     assert flagged.resolved.coverage.has_data is False
@@ -114,9 +113,6 @@ def _assert_pre_materialise_role_refusal(result, *, sv_dcid: str, window: TimeWi
     assert flagged.resolved.facet_options == []
     assert flagged.resolved.facets == {}
     assert flagged.resolved.observations is None
-    pipeline_steps = {step.step: step.ran for step in flagged.resolved.trace.pipeline_trace}
-    assert pipeline_steps["materialise"] is False
-    assert pipeline_steps["answer"] is False
 
 
 def test_directional_query_on_a_declaring_recall_below_the_floor_keeps_the_elected_shape(
@@ -256,14 +252,13 @@ def test_single_anchor_destination_on_a_declaring_recall_answers_as_subject():
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
             sdmx=FakeSdmxClient(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
     )
     assert result.status == "definite"
     assert len(result.specs) == 1
-    assert {sv.ref for sv in result.specs[0].resolved.stat_vars.items} == {_PLAIN_SV}
+    assert {sv.ref.dcid for sv in result.specs[0].resolved.members} == {_PLAIN_SV}
 
 
 def test_single_anchor_source_on_a_declaring_recall_answers_as_subject():
@@ -298,14 +293,13 @@ def test_single_anchor_source_on_a_declaring_recall_answers_as_subject():
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
             sdmx=FakeSdmxClient(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
     )
     assert result.status == "definite"
     assert len(result.specs) == 1
-    assert {sv.ref for sv in result.specs[0].resolved.stat_vars.items} == {_PLAIN_SV}
+    assert {sv.ref.dcid for sv in result.specs[0].resolved.members} == {_PLAIN_SV}
 
 
 def test_no_confirmed_statvar_returns_variable_not_resolved():
@@ -328,7 +322,6 @@ def test_no_confirmed_statvar_returns_variable_not_resolved():
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
             sdmx=FakeSdmxClient(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )

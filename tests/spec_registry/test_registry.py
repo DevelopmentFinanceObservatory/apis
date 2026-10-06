@@ -1,4 +1,4 @@
-"""Tests spec definition and collection writes, quarantine, and store errors."""
+"""Tests spec definition writes, quarantine, and store errors."""
 
 from __future__ import annotations
 
@@ -7,12 +7,10 @@ import logging
 import threading
 from collections.abc import Generator
 from contextlib import contextmanager
-from pathlib import Path
 
 import pytest
 
 from dataset_store.errors import PoolTimeoutError
-from spec_registry.collection_id import mint_collection_id
 from spec_registry.errors import (
     IdentityCollision,
     IdentityQuarantined,
@@ -24,7 +22,6 @@ from spec_registry.identity import recompute_identity
 from spec_registry.registry import (
     IDENTITY_COLLISION_QUARANTINED_MARKER,
     LiveSpecRegistry,
-    MemberDefinition,
 )
 
 from .conftest import FakeDatasetStore, FakeRegistryState, minimal_identity, shape_for
@@ -87,16 +84,6 @@ class _QuarantineInsertFailingDatasetStore:
     def transaction(self) -> Generator[_QuarantineInsertFailingTransaction, None, None]:
         with self._inner.transaction() as tx:
             yield _QuarantineInsertFailingTransaction(tx, self._exc)
-
-
-def _member(tag: str) -> MemberDefinition:
-    identity_definition = minimal_identity(shape=shape_for(tag))
-    spec_id = recompute_identity(identity_definition).spec_id
-    return MemberDefinition(
-        identity_definition=identity_definition,
-        schema_version=1,
-        supplied_spec_id=spec_id,
-    )
 
 
 def _canonical_definition(*, identity_definition: object, schema_version: int) -> dict:
@@ -176,37 +163,6 @@ def test_register_definition_persists_the_canonical_projection_regardless_of_wir
     assert stored["identity"] == json.loads(row_identity_bytes)
 
 
-def test_register_collection_member_persists_the_canonical_projection_regardless_of_wire_variant() -> (
-    None
-):
-    store = FakeDatasetStore()
-    registry = LiveSpecRegistry(store=store)
-    ordered = minimal_identity(shape=shape_for("s2c"), entities={"a": ["x1"], "b": ["y1"]})
-    reordered = minimal_identity(shape=shape_for("s2c"), entities={"b": ["y1"], "a": ["x1"]})
-    spec_id = recompute_identity(ordered).spec_id
-    assert recompute_identity(reordered).spec_id == spec_id
-
-    registry.register_collection(
-        members=[
-            MemberDefinition(
-                identity_definition=ordered, schema_version=1, supplied_spec_id=spec_id
-            )
-        ]
-    )
-    registry.register_collection(
-        members=[
-            MemberDefinition(
-                identity_definition=reordered, schema_version=1, supplied_spec_id=spec_id
-            )
-        ]
-    )
-
-    stored = store.state.spec_definition[(spec_id, 1)]["definition"]
-    assert stored == _canonical_definition(identity_definition=ordered, schema_version=1)
-    row_identity_bytes = store.state.spec_registry[spec_id]["identity_bytes"]
-    assert stored["identity"] == json.loads(row_identity_bytes)
-
-
 def test_register_definition_spec_id_mismatch() -> None:
     registry = LiveSpecRegistry(store=FakeDatasetStore())
     identity_definition = minimal_identity(shape=shape_for("s3"))
@@ -219,29 +175,6 @@ def test_register_definition_spec_id_mismatch() -> None:
         )
     assert excinfo.value.supplied == "spec_wrong"
     assert excinfo.value.computed == recompute_identity(identity_definition).spec_id
-    assert excinfo.value.position is None
-
-
-def test_register_collection_spec_id_mismatch_carries_the_failing_position() -> None:
-    registry = LiveSpecRegistry(store=FakeDatasetStore())
-    good = _member("good")
-    bad_identity = minimal_identity(shape=shape_for("bad"))
-
-    with pytest.raises(SpecIdMismatch) as excinfo:
-        registry.register_collection(
-            members=[
-                good,
-                MemberDefinition(
-                    identity_definition=bad_identity,
-                    schema_version=1,
-                    supplied_spec_id="spec_wrong",
-                ),
-            ]
-        )
-
-    assert excinfo.value.position == 1
-    assert excinfo.value.supplied == "spec_wrong"
-    assert excinfo.value.computed == recompute_identity(bad_identity).spec_id
 
 
 def test_register_definition_byte_mismatch_quarantines(caplog: pytest.LogCaptureFixture) -> None:
@@ -312,60 +245,6 @@ def test_concurrent_identical_inserts_converge() -> None:
     assert {r.spec_id for r in results} == {spec_id}
     assert sorted(r.inserted for r in results) == [False, True]
     assert len(shared_state.spec_registry) == 1
-
-
-def test_register_collection_mints_from_the_vector_fixture_goldens() -> None:
-    vectors = json.loads(
-        (Path(__file__).parent / "fixtures" / "collection_id_vectors.json").read_bytes()
-    )
-    vector = next(v for v in vectors if v["name"] == "sort_code_point_order")
-
-    # Golden member IDs feed collection minting as inputs.
-    assert mint_collection_id(vector["members"]) == vector["collection_id"]
-
-
-def test_register_collection_mixed_new_and_existing_members_dedupes_and_orders_by_position() -> (
-    None
-):
-    store = FakeDatasetStore()
-    registry = LiveSpecRegistry(store=store)
-
-    existing = _member("existing")
-    registry.register_definition(
-        identity_definition=existing.identity_definition,
-        schema_version=existing.schema_version,
-        supplied_spec_id=existing.supplied_spec_id,
-    )
-
-    new_member = _member("brand_new")
-    # The duplicate in one call is silently deduplicated.
-    members = [existing, new_member, existing]
-
-    result = registry.register_collection(members=members)
-
-    expected_sorted = sorted({existing.supplied_spec_id, new_member.supplied_spec_id})
-    assert result.member_spec_ids == expected_sorted
-    assert result.collection_id == mint_collection_id(
-        [existing.supplied_spec_id, new_member.supplied_spec_id]
-    )
-    assert result.inserted is True
-
-    stored_positions = store.state.collection_member[result.collection_id]
-    assert [stored_positions[i] for i in sorted(stored_positions)] == expected_sorted
-
-
-def test_register_collection_idempotent_repeat() -> None:
-    store = FakeDatasetStore()
-    registry = LiveSpecRegistry(store=store)
-    members = [_member("m1"), _member("m2")]
-
-    first = registry.register_collection(members=members)
-    second = registry.register_collection(members=members)
-
-    assert first.collection_id == second.collection_id
-    assert first.inserted is True
-    assert second.inserted is False
-    assert len(store.state.collection_registry) == 1
 
 
 # Quarantined identifiers refuse both the held and colliding identities.
@@ -471,39 +350,6 @@ def test_register_definition_untouched_identifier_registers_despite_an_unrelated
     assert second.inserted is False
 
 
-def test_register_collection_refuses_reposting_the_held_identity_once_quarantined() -> None:
-    store = FakeDatasetStore()
-    registry = LiveSpecRegistry(store=store)
-    members = [_member("c1"), _member("c2")]
-    spec_ids = [m.supplied_spec_id for m in members]
-    collection_id = mint_collection_id(spec_ids)
-
-    # Seed the held collection and quarantine row after registering its members.
-    for member in members:
-        registry.register_definition(
-            identity_definition=member.identity_definition,
-            schema_version=member.schema_version,
-            supplied_spec_id=member.supplied_spec_id,
-        )
-    store.state.collection_registry[collection_id] = {"trace_id": None}
-    store.state.collection_member[collection_id] = dict(enumerate(sorted(spec_ids)))
-    store.state.identity_quarantine.append(
-        {
-            "id_kind": "collection",
-            "subject_id": collection_id,
-            "held_bytes": b"held",
-            "incoming_bytes": b"incoming",
-            "trace_id": "trace-quarantine",
-        }
-    )
-
-    with pytest.raises(IdentityQuarantined) as excinfo:
-        registry.register_collection(members=members)
-
-    assert excinfo.value.subject_id == collection_id
-    assert excinfo.value.id_kind == "collection"
-
-
 # Store failures expose retryability without driver details.
 
 
@@ -519,17 +365,6 @@ def test_register_definition_pool_timeout_raises_retryable_unavailable() -> None
             schema_version=1,
             supplied_spec_id=spec_id,
         )
-
-    assert "PoolTimeoutError" in str(excinfo.value)
-    assert "no connection freed up" not in str(excinfo.value)
-
-
-def test_register_collection_pool_timeout_raises_retryable_unavailable() -> None:
-    pool_timeout = PoolTimeoutError("no connection freed up within 30.0s (pool size 2)")
-    registry = LiveSpecRegistry(store=_RaisingFakeDatasetStore(pool_timeout))
-
-    with pytest.raises(SpecRegistryUnavailable) as excinfo:
-        registry.register_collection(members=[_member("c3")])
 
     assert "PoolTimeoutError" in str(excinfo.value)
     assert "no connection freed up" not in str(excinfo.value)

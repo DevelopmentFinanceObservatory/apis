@@ -66,7 +66,7 @@ def test_a_member_with_an_unresolved_constraint_is_not_listed(
 ):
     facts = {sv: ArcsMemberFacts(arcs=arcs) for sv, arcs in members.items()}
 
-    assert role_members_served(facts, {}, ["destination"]) == served
+    assert role_members_served(facts, {}, ["destination"], ()) == served
 
 
 def test_the_mint_serves_the_total_beside_an_unresolved_member_of_another_role_set():
@@ -118,7 +118,7 @@ def test_a_member_declaring_a_constraint_with_no_value_arc_is_not_listed():
         "Other": ArcsMemberFacts(arcs=other),
     }
 
-    assert role_members_served(facts, {}, ["destination"]) == ["Total"]
+    assert role_members_served(facts, {}, ["destination"], ()) == ["Total"]
 
     walk_arcs = {
         "typeOf": ("StatisticalVariable",),

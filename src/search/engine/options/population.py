@@ -4,14 +4,17 @@ The packaged index supplies the population of an identity whose membership it
 decides (`index_decides_membership`, the Datasets mint's test). Its synthetic
 `ShapeDraft` sets `sv_arc_facts_complete=False` so `shape_member_facts` reads
 the family the index resolves; an empty indexed result remains empty. Other
-identities use deterministic `statvar_members.enumerate_members` graph
-enumeration with registry-defined absent readings, as the mint does.
+identities use the mint's graph walk, through the enumerator every surface shares
+(`statvar_members.shared_enumerator`), with registry-defined absent readings: a first
+page that truncates without proof reads the whole filtered set up to
+`settings().resubmit_subject_ceiling` subjects, as the mint and a resubmit do.
 
 Index populations are uncapped; the ODA-to-Kenya family has 3,812 members.
-Graph enumeration uses `CANDIDATE_CAP` and `settings().options_member_cap`.
-An empty complete result raises `population_empty`; an empty truncated result
-raises `scope_too_broad`. Confirmed members from truncated pages are retained,
-and `truncated` is false when antichain reduction proves the set complete.
+Graph enumeration uses the shared enumerator's member cap and the request deadline. A
+walk past the deadline raises `MemberReadDeadline`, a `TimeoutError` the door answers 504.
+An empty result raises `population_empty`. A set past the subject ceiling raises
+`scope_too_broad`, as the mint refuses it. A first page a confirmed root proves complete
+answers without the full read.
 Role disagreement raises `role_signature_incompatible`; enumeration data
 integrity failures raise `request_invalid`. The search-owned
 `population_empty` code is registered on `search.options` as a 422 response.
@@ -26,6 +29,7 @@ from typing import Literal, cast
 
 from code_index.query import dedupe_first_seen
 from code_index.shared import get_index
+from materialise import GraphReader
 from materialise.facets import ElectedDataset
 from search.engine.config import settings
 from search.engine.errors import EngineInputError, RoleSignatureError
@@ -50,14 +54,13 @@ from search.models import (
 from statvar_members import (
     AbsentReading,
     DegenerateObservationProperties,
-    MemberArcReader,
     MemberEnumerationTooLarge,
     MemberQueryUnanchored,
     MemberRoleDisagreement,
     MultiValuedConstraint,
     NotAStatisticalVariable,
     SlotBinding,
-    enumerate_members,
+    shared_enumerator,
 )
 from statvar_members import FiveTuple as MemberFiveTuple
 
@@ -70,13 +73,6 @@ class OptionsPopulation:
     to the other. `declared_roles` is shared by all members, including
     `("observationAbout",)` for subject-only populations.
 
-    `truncated` is true when graph enumeration hit `CANDIDATE_CAP`, confirmed
-    members, and antichain reduction could not prove the set complete. It is
-    false for index results, complete pages, or pages whose antichain proves
-    no unseen candidate dominates a confirmed member. That proof does not
-    rule out an unreported duplicate. The surface carries this flag into
-    `OptionsSet.truncated`.
-
     `datasets` holds the elected dataset of each member of an index-resolved family, which
     every facet read of the population is kept to (`retrieval.elected_dataset`).
     """
@@ -84,7 +80,6 @@ class OptionsPopulation:
     stat_var_dcids: tuple[str, ...]
     declared_roles: tuple[str, ...]
     source: Literal["index", "graph"]
-    truncated: bool = False
     datasets: ElectedDatasets = dataclasses.field(default_factory=dict, compare=False)
 
 
@@ -157,7 +152,8 @@ def _member_slot_bindings(slots: Sequence[IdentitySlot]) -> dict[str, SlotBindin
 
 
 def _widen_hierarchical_slots(slots: Mapping[str, SlotBinding]) -> dict[str, SlotBinding]:
-    """Expand value and set bindings to self-inclusive code descendants.
+    """Expand value and set bindings to self-inclusive code descendants
+    (`CodeIndex.expansion`).
 
     Leaves, flat code systems, and unknown dcids pass through unchanged.
     This accepts typed `IdentitySlot` bindings; the shared wire adapter
@@ -168,10 +164,10 @@ def _widen_hierarchical_slots(slots: Mapping[str, SlotBinding]) -> dict[str, Slo
     for prop, binding in slots.items():
         match binding:
             case ("value", ref):
-                refs = index.descendants(ref)
+                refs = index.expansion(ref)
                 widened[prop] = ("set", refs) if len(refs) > 1 else binding
             case ("set", refs):
-                widened[prop] = ("set", dedupe_first_seen(index.descendants(ref) for ref in refs))
+                widened[prop] = ("set", dedupe_first_seen(index.expansion(ref) for ref in refs))
             case _:
                 widened[prop] = binding
     return widened
@@ -187,8 +183,13 @@ def _role_signature_incompatible(source: str, cause: Exception) -> EngineInputEr
     )
 
 
-def options_population(identity: BaseIdentity, graph: MemberArcReader) -> OptionsPopulation:
+def options_population(
+    identity: BaseIdentity, graph: GraphReader, *, deadline: float | None = None
+) -> OptionsPopulation:
     """The StatVar population `identity`'s shape denotes, server-derived.
+
+    `deadline` bounds the graph walk's reads, its full read included; `None` leaves them
+    unbounded.
 
     `identity.shape` must already be the described arm (`IdentityShapeSchema`)
     -- the caller runs `identity_edit.check_described_arm` first, exactly as
@@ -201,8 +202,8 @@ def options_population(identity: BaseIdentity, graph: MemberArcReader) -> Option
             enumeration, its own candidate page read in full
             (`code="population_empty"`, 422 -- a new Search-own code; see
             this module's own docstring for the registry-lag note), a
-            non-index enumeration exceeds `settings().options_member_cap` or truncates its
-            own candidate page while confirming no member
+            non-index enumeration exceeds the shared enumerator's member cap or passes
+            the subject ceiling
             (`code="scope_too_broad"`, 422, mirroring `options/surface.py`'s
             own use of that code for the same "too broad to enumerate"
             shape), the elected members disagree on declared entity roles on
@@ -217,7 +218,6 @@ def options_population(identity: BaseIdentity, graph: MemberArcReader) -> Option
     )
 
     source: Literal["index", "graph"]
-    truncated = False
     datasets: dict[str, ElectedDataset] = {}
     if index_decides_membership(identity):
         source = "index"
@@ -235,13 +235,16 @@ def options_population(identity: BaseIdentity, graph: MemberArcReader) -> Option
         five_tuple = _member_five_tuple(shape)
         slots = _widen_hierarchical_slots(_member_slot_bindings(identity.slots))
         try:
-            group = enumerate_members(
+            group = shared_enumerator().enumerate(
+                graph=graph,
+                stamp_key=graph.generation_stamp().key,
                 five_tuple=five_tuple,
                 slots=slots,
-                graph=graph,
                 readings=_absent_readings(),
-                member_cap=settings().options_member_cap,
                 role_keys=frozenset(identity.entities),
+                open_role_keys=identity.open_roles or (),
+                subject_ceiling=settings().resubmit_subject_ceiling,
+                deadline=deadline,
             )
         except MemberEnumerationTooLarge as exc:
             raise EngineInputError(
@@ -266,37 +269,20 @@ def options_population(identity: BaseIdentity, graph: MemberArcReader) -> Option
                 status=400,
                 pointer="/identity",
             ) from exc
-        if not group.members and group.truncated:
-            # A truncated page confirmed no member from inside its own
-            # candidate window -- not proof the identity denotes no
-            # population, since a dominating member could sit past the
-            # window (see `MemberGroup.truncated`'s own docstring). Reading
-            # this as `population_empty` would tell the caller the identity
-            # names nothing, which the graph never established; reading it
-            # as `scope_too_broad`, the same code the index and directional
-            # branches already raise for "too wide to tell," says only what
-            # is actually known.
+        if group.truncated and not group.proven_complete:
+            # The walk read the whole filtered set and it runs past the subject ceiling,
+            # which the mint refuses as too broad. Its first page proves nothing about
+            # the members past it, so no member it confirmed answers for the population.
             raise EngineInputError(
-                "the identity's raw candidate population exceeds the graph "
-                "enumeration window before any consistent member was confirmed, so "
-                "whether the identity denotes a real, narrower population cannot be told "
-                "from an empty one; bind an additional what/how slot to narrow it",
+                "the identity's candidate population exceeds the graph walk's subject "
+                "ceiling, so its members cannot be settled; bind an additional what/how "
+                "slot to narrow it",
                 code="scope_too_broad",
                 status=422,
                 pointer="/identity",
             )
         stat_var_dcids = tuple(sorted(member.stat_var for member in group.members))
         declared_roles = group.members[0].declared_roles if group.members else ("observationAbout",)
-        # A truncated page that still confirmed a member is used as-is (see
-        # this module's own docstring) -- but the population it came from is
-        # a sample, not a confirmed-complete membership, unless the
-        # antichain reduction itself proves otherwise
-        # (`group.proven_complete`, `statvar_members.enumerate
-        # ._antichain_proven_complete`'s own docstring has the domination
-        # argument). That state carries forward on the result rather than
-        # being discarded once the scope_too_broad-vs-population_empty
-        # branch above has read it.
-        truncated = group.truncated and not group.proven_complete
 
     if not stat_var_dcids:
         raise EngineInputError(
@@ -311,6 +297,5 @@ def options_population(identity: BaseIdentity, graph: MemberArcReader) -> Option
         stat_var_dcids=stat_var_dcids,
         declared_roles=declared_roles,
         source=source,
-        truncated=truncated,
         datasets=datasets,
     )

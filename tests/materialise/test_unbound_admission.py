@@ -13,7 +13,6 @@ from dc_sdmx import SdmxClient
 from materialise import (
     EnrichmentLookup,
     MaterialisationRequest,
-    materialise_collection,
     materialise_group,
     materialise_preview,
     materialise_spec,
@@ -146,59 +145,6 @@ def test_a_preview_binding_no_entity_counts_a_facet_only_at_the_default_places_a
     assert _fetched(recorded) == {_BARE_B: f"{_KEN},{_TGO}"}
     assert preview.total_rows == 1
     assert _rows([preview.frame]) == [(_BARE_B, _KEN, "2015")]
-
-
-@pytest.mark.parametrize("supply_probe", [False, True])
-@pytest.mark.parametrize("window", ["all", "latest"])
-def test_collection_members_fetched_at_their_own_places_each_serve_under_their_own_admission(
-    window, supply_probe
-):
-    # Each member is fetched at its own places. `_SHARED_FACET` is admitted at Togo for
-    # `_BARE_C` and not for `_BARE_B`.
-    graph = _graph()
-    requests = [
-        ("spec_" + "b" * 32, _unbound(_BARE_B, window=window)),
-        ("spec_" + "c" * 32, _unbound(_BARE_C, window=window)),
-    ]
-    probe = (
-        probe_collection_facets(
-            [request for _, request in requests],
-            settle=True,
-            graph=graph,
-            availability=graph.scope_availability(),
-        )
-        if supply_probe
-        else None
-    )
-    sdmx, recorded = _sdmx()
-
-    result = materialise_collection(
-        requests,
-        sdmx=sdmx,
-        graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
-        precomputed_probe=probe,
-        **_SERVICE,
-    )
-
-    assert _fetched(recorded) == {_BARE_B: f"{_KEN},{_TGO}", _BARE_C: _TGO}
-    served = {spec_id: _rows(member.frame_chunks()) for spec_id, member in result.members}
-    assert served == {
-        "spec_" + "b" * 32: [(_BARE_B, _KEN, "2015")],
-        "spec_" + "c" * 32: [(_BARE_C, _TGO, "2015")],
-    }
-    for (_spec_id, request), (_, member) in zip(requests, result.members, strict=True):
-        alone_sdmx, _alone_recorded = _sdmx()
-        alone = materialise_spec(
-            request,
-            sdmx=alone_sdmx,
-            graph=graph,
-            enrichment=EnrichmentLookup(graph),
-            revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
-            **_SERVICE,
-        )
-        assert member.content_version == alone.content_version
 
 
 @pytest.mark.parametrize("supply_probe", [False, True])

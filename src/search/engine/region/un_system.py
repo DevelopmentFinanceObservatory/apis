@@ -6,8 +6,11 @@ them, and the origin client answers those empty and notes them in the caller's
 variables joins the record as an `UnReadFailure` while our part serves. Each read that binds
 a record reports what it holds with this warning, so neither reads as no data.
 
-The warning's `params` hold the refused place dcids (`places`) and the variables of the
-failed reads (`variables`), so a client tells the two apart without reading the message.
+The warning's `params` hold the refused place dcids (`places`), the variables of the
+failed reads (`variables`) and their graph names (`variable_labels`), so a client tells the two
+apart and names the variables without reading the message. The names come from the members of
+the Specs the emitter holds (`member_labels`); the warning makes no read, since the UN reads
+it reports have just failed.
 
 On a region's answer the warning carries an `entity_unavailable` departure naming the refused
 places the answer names as subjects, when every StatVar the answer reads is a UN one. Those
@@ -20,7 +23,8 @@ departs nowhere and stays with the warning.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
+from types import MappingProxyType
 from typing import Final
 
 from origin_catalogue import UnBlockedPlaces
@@ -39,6 +43,20 @@ _MAX_NAMED: Final = 5
 _SUBJECT_ROLE: Final = "observationAbout"
 
 
+# The labels an emitter holding no Spec passes. Every variable is named `""`.
+NO_LABELS: Final[Mapping[str, str]] = MappingProxyType({})
+
+
+def member_labels(specs: Iterable[Spec]) -> dict[str, str]:
+    """Each served member's graph name over `specs`, by dcid, `""` for a member whose label
+    echoes its dcid because the graph holds no name for it."""
+    return {
+        member.ref.dcid: member.ref.label if member.ref.label != member.ref.dcid else ""
+        for spec in specs
+        for member in spec.resolved.members
+    }
+
+
 def _named(items: Sequence[str]) -> str:
     named = ", ".join(items[:_MAX_NAMED])
     if len(items) > _MAX_NAMED:
@@ -46,10 +64,11 @@ def _named(items: Sequence[str]) -> str:
     return named
 
 
-def un_unavailable_warning(record: UnBlockedPlaces) -> Warning | None:
+def un_unavailable_warning(record: UnBlockedPlaces, *, labels: Mapping[str, str]) -> Warning | None:
     """The warning naming the refused places and failed reads in `record`, or `None` when it
-    holds neither. Its `params` list the refused place dcids as `places` and the variables
-    of the failed reads as `variables`, each empty when the record holds none."""
+    holds neither. Its `params` list the refused place dcids as `places`, the variables of
+    the failed reads as `variables`, each empty when the record holds none, and each
+    variable's name from `labels`, `""` where it holds none, as `variable_labels`."""
     places = record.places()
     failures = record.failures()
     sentences: list[str] = []
@@ -65,15 +84,17 @@ def un_unavailable_warning(record: UnBlockedPlaces) -> Warning | None:
     )
     if not sentences:
         return None
+    variables = list(
+        dict.fromkeys(variable for failure in failures for variable in failure.variables)
+    )
     return Warning(
         code=UN_SYSTEM_UNAVAILABLE,
         severity="warn",
         message=" ".join(sentences),
         params={
             "places": list(places),
-            "variables": list(
-                dict.fromkeys(variable for failure in failures for variable in failure.variables)
-            ),
+            "variables": variables,
+            "variable_labels": [labels.get(variable, "") for variable in variables],
         },
     )
 
@@ -88,16 +109,15 @@ def refused_places(warning: Warning) -> frozenset[str]:
 
 
 def with_un_unavailable_warning(result: RegionResult, record: UnBlockedPlaces) -> RegionResult:
-    """`result` with the warning for what `record` holds, when it holds anything, and the
-    `entity_unavailable` departure on the refused places its answer names
-    (`refused_places_fact`)."""
-    warning = un_unavailable_warning(record)
+    """`result` with the warning for what `record` holds, when it holds anything, its
+    variables named by the members of `result`'s Specs, and the `entity_unavailable`
+    departure on the refused places its answer names (`refused_places_fact`)."""
+    specs = result.specs or result.flagged_match or ()
+    warning = un_unavailable_warning(record, labels=member_labels(specs))
     if warning is None:
         return result
     warned = dataclasses.replace(result, warnings=(*result.warnings, warning))
-    fact = refused_places_fact(
-        result.specs or result.flagged_match or (), refused=refused_places(warning)
-    )
+    fact = refused_places_fact(specs, refused=refused_places(warning))
     if fact is None:
         return warned
     return with_departure_facts(warned, {warning_key(warning): fact})
@@ -130,10 +150,12 @@ def refused_places_fact(
 
 def _reads_only_un(spec: Spec) -> bool:
     """Whether every StatVar `spec` reads lives on the UN deployment."""
-    return all(is_un_dcid(stat_var.ref) for stat_var in spec.resolved.stat_vars.items)
+    return all(is_un_dcid(stat_var.ref.dcid) for stat_var in spec.resolved.members)
 
 
 __all__ = [
+    "NO_LABELS",
+    "member_labels",
     "refused_places",
     "refused_places_fact",
     "un_unavailable_warning",

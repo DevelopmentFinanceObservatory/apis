@@ -113,7 +113,6 @@ def _run(
             graph=graph,
             resolver=make_resolver(graph),
             llm=_ElectedBindLLM(),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(scope_availability=graph.scope_availability),
             coverage=empty_coverage_snapshot(),
@@ -394,7 +393,6 @@ def test_place_less_per_capita_no_matching_slice_defers_to_mint_with_flagged_mat
             graph=graph,
             resolver=make_resolver(graph),
             llm=_PerCapitaSplitOwnershipBindLLM(),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(
                 availability={"recipient": ["country/KEN"]},
@@ -439,7 +437,6 @@ def test_place_less_per_capita_fully_asserted_member_reports_denominator_not_ava
             graph=graph,
             resolver=make_resolver(graph),
             llm=_PerCapitaFullyAssertedBindLLM(),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(
                 availability={"recipient": ["country/KEN"]},

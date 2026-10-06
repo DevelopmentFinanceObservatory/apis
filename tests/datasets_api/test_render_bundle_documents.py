@@ -1,5 +1,5 @@
-"""Renders a CRS-shaped dataset and a two-member collection through `render`, unzips each and
-validates it with frictionless: hashes, sizes, the codes table and every foreign key to it."""
+"""Renders a CRS-shaped dataset through `render`, unzips it and validates it with frictionless:
+hashes, sizes, the codes table and every foreign key to it."""
 
 from __future__ import annotations
 
@@ -25,9 +25,7 @@ from datasets_api.manifest_models import (
 )
 from datasets_api.mint_models import MintOptions, PivotOptions
 from datasets_api.render import (
-    CollectionMemberRendering,
     render_and_store,
-    render_and_store_collection,
 )
 from dc_graph.errors import GraphReadError
 from dfo_platform.config import PublicSiteSettings
@@ -127,50 +125,8 @@ _CRS_CITATION = CitationSource(
     ),
 )
 
-_SDG = "undata/p/SDG"
-_GDP = "dc/base/OECDQuarterlyGDP"
-_SDG_SPEC_ID = "spec_67a1875bb528111c0df7119f8a8c2518"
-_GDP_SPEC_ID = "spec_c0c0d549a6fbda966dea8e9c21ce0a89"
-_COLLECTION_ID = "col_3e90842653f9720d1fad65ddd1a15239"
 _SDG_STAT_VAR = "dcid:undata/sdg/SH_ACS_UNHC_25"
 _GDP_STAT_VAR = "dcid:Adjusted_GrowthRate_GrossDomesticProduct_EconomicActivity_QuarterOnChange"
-_MEMBER_COLUMNS = (
-    "stat_var",
-    "observationAbout",
-    "time_period",
-    "value",
-    "unit",
-    "measurementMethod",
-    "provenance",
-    "status",
-)
-_SDG_TABLE = Table(
-    columns=_MEMBER_COLUMNS,
-    rows=tuple(
-        (_SDG_STAT_VAR, place, year, 79.0, "undata/UNIT_MEASURE-INDEX", None, _SDG, None)
-        for place in ("country/DEU", "country/NGA")
-        for year in ("2000", "2001")
-    ),
-)
-_GDP_TABLE = Table(
-    columns=_MEMBER_COLUMNS,
-    rows=tuple(
-        (_GDP_STAT_VAR, "country/DEU", period, -1.9, "Percent", "ChainLinkedVolume", _GDP, None)
-        for period in ("2020-03", "2020-06", "2020-09")
-    ),
-)
-_COLLECTION_CITATIONS = {
-    _SDG: CitationSource(
-        ref=_SDG, label="SDG Global Database", url="https://unstats.un.org/sdgs/dataportal"
-    ),
-    _GDP: CitationSource(
-        ref=_GDP,
-        label="OECD GDP",
-        license="PublicDomain",
-        license_type="PublicDomain",
-        url="https://data-explorer.oecd.org/",
-    ),
-}
 
 _NAMES = {
     **{
@@ -223,47 +179,6 @@ def _render_crs(*, graph: FakeMintGraphReader | None = None) -> dict[str, bytes]
     return _unzip(store.fetch(rendered.artifact.url))
 
 
-def _member(spec_id: str, table: Table, provenance: str) -> CollectionMemberRendering:
-    return CollectionMemberRendering(
-        spec_id=spec_id,
-        frame_chunks=lambda: iter((table,)),
-        provenance_refs=(provenance,),
-        cited_refs=(provenance,),
-        content_version=f"cv_{spec_id}",
-        prepared_at=PREPARED_AT,
-        entity_columns=("observationAbout",),
-        resolved_stat_var_refs=(),
-    )
-
-
-def _render_collection() -> dict[str, bytes]:
-    store = FakeArtifactStore()
-    rendered = render_and_store_collection(
-        members=(
-            _member(_SDG_SPEC_ID, _SDG_TABLE, _SDG),
-            _member(_GDP_SPEC_ID, _GDP_TABLE, _GDP),
-        ),
-        options=MintOptions(format="csv", bundle=True),
-        spec={
-            "schema_version": 1,
-            "collection_id": _COLLECTION_ID,
-            "members": [_SDG_SPEC_ID, _GDP_SPEC_ID],
-        },
-        citations=_COLLECTION_CITATIONS,
-        reproducing_call=None,
-        content_version="cv_collection",
-        prepared_at=PREPARED_AT,
-        site=_SITE,
-        artifact_store=store,
-        enrichment=EnrichmentLookup(FakeMintGraphReader(arcs=_GRAPH_ARCS)),
-        pivot_max_output_cells=5_000_000,
-        code_index=get_index(),
-    )
-    artifacts = rendered.artifacts
-    (artifact,) = artifacts
-    return _unzip(store.fetch(artifact.url))
-
-
 def _unzip(data: bytes) -> dict[str, bytes]:
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
         return {name: zf.read(name) for name in zf.namelist()}
@@ -311,17 +226,35 @@ def test_a_crs_bundle_validates_and_names_every_code_column_and_link(tmp_path):
         "stat_var",
         "financingProvider",
         "financingRecipient",
+        "crsCooperationModality",
+        "crsPurpose",
+        "crsTypeOfFinance",
+        "crsTypeOfFlow",
         "unit",
         "provenance",
     ]
     fields = {field["name"]: field for field in data["schema"]["fields"]}
     assert fields["financingProvider"]["description"] == "The provider the value flows from."
-    assert fields["stat_var_crsPurpose"]["description"] == "The sector of the variable, in words."
+    assert fields["financingProvider_label"]["description"] == "The name of the provider."
+    assert fields["crsPurpose"]["description"] == "The sector of the variable, as a code."
+    assert fields["crsPurpose_label"]["description"] == "The sector of the variable, in words."
+    assert fields["currency"]["description"] == ("The ISO 4217 code of the currency `value` is in.")
+    assert fields["provenance_label"]["description"] == "The name of the source dataset."
 
     assert _codes(files) == {
         "CurrencyUSD": ("US dollar", "unit"),
         "country/DEU": ("Germany", "place"),
         "country/NGA": ("Nigeria", "place"),
+        "CRSCooperationModalityB01": (
+            "core support to non-governmental organisations, other private bodies, "
+            "public-private partnerships, and research institutes",
+            "modality",
+        ),
+        "CRSPurposeCode11110": ("education policy and administrative management", "sector"),
+        "CRSPurposeCode11120": ("education facility and training", "sector"),
+        "CRSPurposeCode11130": ("teacher training", "sector"),
+        "CRSTypeOfFinance110": ("standard grant", "instrument"),
+        "CRSTypeOfFlow10": ("official development assistance", "flow"),
         **{stat_var: (f"Variable {n}", "variable") for n, stat_var in enumerate(_CRS_STAT_VARS)},
         _CRS: ("OECD Creditor Reporting System (CRS)", "source"),
     }
@@ -376,7 +309,7 @@ _SITE_LINK = f"https://site.example/data?spec={_CRS_SPEC_ID}&v={_CRS_VERSION}"
             False,
             id="flag-off",
         ),
-        # `statvar_set` and `source_codes` both mint this pinned arm, which Search's
+        # `statvar_set` mints this pinned arm, which Search's
         # `dataset_resubmit` refuses, so the website cannot open it.
         pytest.param(_PINNED_CRS_SPEC, _SITE, False, id="pinned"),
     ],
@@ -419,43 +352,6 @@ def test_a_failed_label_read_labels_each_code_with_itself_and_still_validates(tm
     assert codes[_CRS_STAT_VARS[0]] == (_CRS_STAT_VARS[0], "variable")
     assert codes[_CRS] == ("OECD Creditor Reporting System (CRS)", "source")
     assert "bundle code label read failed" in caplog.text
-
-
-def test_a_two_member_collection_validates_with_one_codes_table(tmp_path):
-    files = _render_collection()
-    descriptor = _validate(tmp_path, files)
-
-    assert {name for name in files if name.startswith("data/")} == {
-        "data/sdg-global-database.csv",
-        "data/oecd-gdp.csv",
-        "data/codes.csv",
-    }
-    sdg, gdp, codes_resource = descriptor["resources"]
-    assert (sdg["name"], gdp["name"], codes_resource["name"]) == (
-        "sdg-global-database",
-        "oecd-gdp",
-        "codes",
-    )
-    assert _foreign_keys(gdp) == [
-        "stat_var",
-        "observationAbout",
-        "unit",
-        "measurementMethod",
-        "provenance",
-    ]
-    assert "measurementMethod" not in _foreign_keys(sdg)
-    assert _codes(files)["ChainLinkedVolume"] == ("Chain-linked volume", "method")
-    assert descriptor["description"] == (
-        "7 rows · 2 variables · 2 places · 2000\u20132020 · 2 units"
-    )
-    links = descriptor["dfo"]["links"]
-    assert "site" not in links
-    assert links["version"] == f"https://site.example/api/datasets/{_COLLECTION_ID}/cv_collection"
-
-    readme = files["README.md"].decode()
-    assert "/data?spec=" not in readme
-    assert "4 rows" in readme
-    assert "3 rows" in readme
 
 
 @pytest.mark.parametrize(

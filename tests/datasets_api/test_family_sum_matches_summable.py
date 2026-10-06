@@ -35,6 +35,7 @@ from tests.code_index.aid_identity import (
 from tests.engine._builders import unbound_slot, value_slot
 
 from ._graph_doubles import FakeMintGraphReader
+from ._member_bounds import mint_bounds
 
 _SUMMABLE_AXES = ("crsCooperationModality", "crsPurpose", "crsTypeOfFinance", "crsTypeOfFlow")
 # The imputed five-tuple declares two of the CRS code systems.
@@ -79,8 +80,9 @@ def _mint_sum(
         identity,
         spec_id="spec_test",
         graph=graph,
-        enumerator=MemberEnumerator(graph=graph),
+        enumerator=MemberEnumerator(),
         code_index=code_index,
+        bounds=mint_bounds(),
     ).shapes
     dataset = shapes[0].dataset
     assert dataset is not None

@@ -1,11 +1,13 @@
-"""Pure key builders and storage gates for the two-layer response cache.
+"""Pure key builders and storage gates for the two-layer response cache and its part memo.
 
-Both layers hash RFC 8785 canonical JSON with SHA-256. Their shared scope
+Every key hashes RFC 8785 canonical JSON with SHA-256. The layers' shared scope
 includes request options, the engine fingerprint, day, graph generation,
 coverage stamp, and conversion catalogue revision; token changes invalidate
 both layers.
 Layer 1 adds the normalised query; layer 2 adds the effective extraction
-and raw-text signals. The `l1_` and `l2_` prefixes separate keys.
+and raw-text signals, or a parsed request's whole input. The part memo keys a
+resubmitted identity on its whole payload, the engine options and the same stamps.
+The `l1_`, `l2_` and `m_` prefixes separate keys.
 Entry encoding and storability checks also live here.
 """
 
@@ -22,27 +24,51 @@ import rfc8785
 from search.engine.envelope import make_diagnostics, make_query_echo, now_ms
 from search.engine.extract import ExtractedDate, ExtractedEntity
 from search.engine.qualifier_match import CodedQualifier, QualifierMatch, recall_text
-from search.engine.region.codes import MEMBERSHIP_UNVERIFIED, UNIT_CONVERSION_UNAVAILABLE
+from search.engine.region.codes import (
+    AVAILABILITY_PROBE_FAILED,
+    MEMBERSHIP_UNVERIFIED,
+    OBSERVATIONS_BULK_FETCH_FAILED,
+    OBSERVATIONS_PROBE_FAILED,
+    OBSERVATIONS_TIMED_OUT,
+    OPTION_COVERAGE_PROBE_FAILED,
+    OPTION_COVERAGE_TIMED_OUT,
+    ROLE_DECLARATION_UNVERIFIED,
+    UN_SYSTEM_UNAVAILABLE,
+    UNIT_CONVERSION_UNAVAILABLE,
+)
+from search.engine.region.result import RegionResult
 from search.models import (
     RESOLVE_RESPONSE_ADAPTER,
     NoDataPart,
     Operation,
+    ParsedInput,
     Part,
     ResolveOptions,
     ResolveResponse,
+    ResubmitIdentityPayload,
+    Warning,
 )
 
 _INTERNAL_WHITESPACE = re.compile(r"\s+")
 # Warnings that mark an answer a dependency could not complete: the skills index, the UN
-# System Data Commons, the member walk that settles a role-bearing answer's members, or the
-# conversion catalogue its unit conversion offer reads.
+# System Data Commons, the member walk that settles a role-bearing answer's members, the
+# role declarations a population re-reads, the conversion catalogue its unit conversion
+# offer reads, and the option-coverage, availability and observation reads that failed or
+# ran past the deadline.
 _UNSTORABLE_WARNING_CODES = frozenset(
     {
         "skills_index_unavailable",
         "skills_index_incomplete",
-        "un_system_unavailable",
+        UN_SYSTEM_UNAVAILABLE,
         MEMBERSHIP_UNVERIFIED,
+        ROLE_DECLARATION_UNVERIFIED,
         UNIT_CONVERSION_UNAVAILABLE,
+        OPTION_COVERAGE_PROBE_FAILED,
+        OPTION_COVERAGE_TIMED_OUT,
+        AVAILABILITY_PROBE_FAILED,
+        OBSERVATIONS_PROBE_FAILED,
+        OBSERVATIONS_TIMED_OUT,
+        OBSERVATIONS_BULK_FETCH_FAILED,
     }
 )
 
@@ -57,22 +83,17 @@ def normalise_query(query: str) -> str:
 
 
 def _resolved_options(options: ResolveOptions | None, *, max_candidates: int) -> dict[str, object]:
-    """Apply option defaults and use the server-clamped candidate cap.
-
-    Requests with different raw caps that resolve to the same effective cap
-    share a key; changing the server ceiling changes it.
-    """
+    """Apply option defaults beside the server's candidate cap, so changing the cap
+    changes the key."""
     if options is None:
         return {
             "max_candidates": max_candidates,
-            "include_sentence": True,
             "include_option_coverage": False,
             "include_observations": False,
             "include_skills": False,
         }
     return {
         "max_candidates": max_candidates,
-        "include_sentence": True if options.include_sentence is None else options.include_sentence,
         "include_option_coverage": bool(options.include_option_coverage),
         "include_observations": bool(options.include_observations),
         "include_skills": bool(options.include_skills),
@@ -92,17 +113,21 @@ def scope_document(
     graph_generation: str,
     coverage_stamp: str,
     conversion_catalogue: str | None,
+    origin_catalogue: str,
+    un_system_enabled: bool,
 ) -> dict:
     """Build shared key material from caller-supplied values.
 
     Includes the schema, defaulted response options, effective candidate cap,
     place-as-constraint default, build/model/seed fingerprint, day, graph and
-    coverage stamps, and the revision of the conversion catalogue the request
-    bound (None when it bound none). The cap and place default can change answers
-    without changing the build commit. A catalogue reload changes the revision
-    and not the graph generation. Each stamp is captured once and invalidates both
-    layers when it changes. Transport is omitted because option-coverage and
-    observation requests are refused by `is_cacheable_request`.
+    coverage stamps, the revision of the conversion catalogue the request
+    bound (None when it bound none), and the build of the origin catalogue it bound with
+    its UN System setting, which decide what provenances an answer admits. The cap and
+    place default can change answers without changing the build commit. A catalogue
+    reload changes the revision or build and not the graph generation. Each stamp is
+    captured once and invalidates both layers when it changes. Transport is omitted because a request with trailing
+    events uses neither layer, and without them both transports answer the same
+    response.
     """
     return {
         "schema_version": schema_version,
@@ -115,6 +140,8 @@ def scope_document(
         "graph_generation": graph_generation,
         "coverage_stamp": coverage_stamp,
         "conversion_catalogue": conversion_catalogue,
+        "origin_catalogue": origin_catalogue,
+        "un_system_enabled": un_system_enabled,
     }
 
 
@@ -239,15 +266,47 @@ def layer2_key(
     return _digest("l2", document)
 
 
-def is_cacheable_request(options: ResolveOptions | None) -> bool:
-    """Reject option-coverage and observation requests; `None` is cacheable.
+def parsed_key(*, parsed: ParsedInput, scope: dict) -> str:
+    """Key a parsed request's whole input over the shared scope, on layer 2.
 
-    Probe failures can appear in SSE `done` warnings without changing the
-    response body, so these requests are uncacheable on every transport.
-    """
-    if options is None:
-        return True
-    return not (options.include_option_coverage or options.include_observations)
+    The posted parts are the extraction a raw-text request derives, and every field of
+    them, and the raw query its echo carries, reaches the answer."""
+    document = {"scope": scope, "parsed": parsed.model_dump(mode="json")}
+    return _digest("l2", document)
+
+
+def part_memo_key(
+    *,
+    payload: ResubmitIdentityPayload,
+    engine_flags: Mapping[str, bool],
+    build_commit: str,
+    graph_generation: str,
+    coverage_stamp: str,
+    conversion_catalogue: str | None,
+    origin_catalogue: str,
+    un_system_enabled: bool,
+    today: str,
+) -> str:
+    """Key one resubmitted identity's region in the part memo.
+
+    The payload is the identity alone, and the whole of it enters, `entity_groups` included,
+    since each field changes the answer and the answer echoes the identity posted.
+    `engine_flags` are the four enrichment flags of the call's `EngineOptions`. The build commit covers the
+    code index, and the graph generation, coverage stamp, conversion catalogue revision,
+    origin catalogue build with its UN System setting, and UTC day cover what the graph,
+    coverage and conversion reads return and what the answer admits."""
+    document = {
+        "payload": payload.model_dump(mode="json"),
+        "engine_flags": dict(engine_flags),
+        "build_commit": build_commit,
+        "graph_generation": graph_generation,
+        "coverage_stamp": coverage_stamp,
+        "conversion_catalogue": conversion_catalogue,
+        "origin_catalogue": origin_catalogue,
+        "un_system_enabled": un_system_enabled,
+        "today": today,
+    }
+    return _digest("m", document)
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +328,7 @@ def to_entry(response: ResolveResponse) -> tuple[bytes, int]:
 def from_entry(
     entry: bytes,
     *,
-    query: str,
+    query: str | None,
     extract_skipped: bool,
     start_ms: int,
     llm_usage: dict | None,
@@ -278,12 +337,17 @@ def from_entry(
     """Revalidate stored JSON and restore request-specific response fields.
 
     Replace `query_echo` and `diagnostics` so wording, trace id, timing, and
-    usage describe this hit; stored warnings carry over unchanged. JSON
+    usage describe this hit; stored warnings carry over unchanged. A `None`
+    query keeps the stored echo, which a parsed request's key covers whole. JSON
     validation reads the retained bytes directly. `timing_by_step` is omitted
     when the hit has no named cache step.
     """
     restored = RESOLVE_RESPONSE_ADAPTER.validate_json(entry)
-    echo = make_query_echo(query, extract_skipped=extract_skipped)
+    echo = (
+        restored.query_echo
+        if query is None
+        else make_query_echo(query, extract_skipped=extract_skipped)
+    )
     diagnostics = make_diagnostics(
         restored.diagnostics.engine_build,
         restored.diagnostics.warnings,
@@ -292,6 +356,10 @@ def from_entry(
         llm_usage=llm_usage,
     )
     return restored.model_copy(update={"query_echo": echo, "diagnostics": diagnostics})
+
+
+def _has_unstorable_warning(warnings: Sequence[Warning]) -> bool:
+    return any(w.code in _UNSTORABLE_WARNING_CODES for w in warnings)
 
 
 def _is_unresolved_placeholder(part: Part) -> bool:
@@ -312,9 +380,18 @@ def is_storable(response: ResolveResponse, *, timed_out: bool, degraded_leg: boo
     all_warnings = list(response.diagnostics.warnings)
     for part in parts:
         all_warnings.extend(part.warnings)
-    if any(w.code in _UNSTORABLE_WARNING_CODES for w in all_warnings):
+    if _has_unstorable_warning(all_warnings):
         return False
 
     placeholder = [p for p in parts if _is_unresolved_placeholder(p)]
     resolved = [p for p in parts if not _is_unresolved_placeholder(p)]
     return not (placeholder and resolved)
+
+
+def is_region_storable(region: RegionResult) -> bool:
+    """Return whether a resubmitted identity's region is complete and safe to memoise.
+
+    Reject a region that is a degraded leg (`RegionResult.leg_degraded`: it swallowed a read
+    failure, a presence read left its default scope unsettled, or it left an alternate
+    unevaluated), or that carries a warning `is_storable` rejects."""
+    return not (region.leg_degraded or _has_unstorable_warning(region.warnings))

@@ -300,7 +300,7 @@ def test_real_index_every_partition_taken_as_elected_disambiguates_and_carries_a
         MeasurePartition(values=tuple(zip(axis_names, key, strict=True)), members=tuple(dcids))
         for key, dcids in grouped.items()
     )
-    assert len(partitions) == 5
+    assert len(partitions) == 8
 
     for elected_partition in partitions:
         siblings = sibling_partitions(elected_partition, partitions, axes)

@@ -176,13 +176,20 @@ class TestMilestoneStatVarSetMintServesACorrectCsvFromASignedUrl:
         fetched = artifact_store.fetch(artifact["url"])
         assert fetched.decode("utf-8").splitlines()[0].split(",") == [
             "stat_var",
+            "stat_var_label",
             "recipient",
+            "recipient_label",
             "time_period",
             "value",
             "unit",
+            "unit_label",
+            "currency",
+            "price_basis",
+            "base_year",
             "measurementMethod",
+            "measurementMethod_label",
             "provenance",
-            "status",
+            "provenance_label",
         ]
         assert hashlib.sha256(fetched).hexdigest() == artifact["artifact_digest"].removeprefix(
             "sha256:"
@@ -452,31 +459,13 @@ def test_role_bearing_mint_with_no_facet_axis_bound_mints_a_dataset():
     assert facets["provenance"]["selection_reason"] == "sole_candidate"
 
 
-def test_two_identical_statvars_dedup_to_a_one_member_collection_with_the_warning():
-    """Duplicate StatVars collapse to one collection member and add `members_deduplicated`."""
-    client = _client(artifact_store=FakeArtifactStore())
-    body = {
-        **_HAPPY_PATH_BODY,
-        "input": {**_HAPPY_PATH_BODY["input"], "statvars": [_STAT_VAR_REF, _STAT_VAR_REF]},
-    }
-
-    resp = client.post("/api/datasets", json=body)
-
-    assert resp.status_code == 200, resp.text
-    manifest = resp.json()
-    assert "definition" not in manifest
-    assert manifest["collection"]["collection_id"].startswith("col_")
-    assert len(manifest["collection"]["members"]) == 1
-    assert any(w["code"] == "members_deduplicated" for w in manifest["warnings"])
-
-
-def test_member_not_resolvable_names_every_failing_statvar():
+def test_member_not_resolvable_names_the_failing_statvar():
     client = _client(artifact_store=FakeArtifactStore())
     body = {
         "schema_version": 1,
         "input": {
             "kind": "statvar_set",
-            "statvars": [f"{_STAT_VAR_REF}", "dcid:UnknownShape"],
+            "statvars": ["dcid:UnknownShape"],
             "scope": {
                 "entities": {"recipient": ["country/KEN"]},
                 "facets": {

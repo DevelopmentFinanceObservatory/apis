@@ -1,16 +1,16 @@
-"""A no-entity resubmit with split ownership of two bound properties returns
-no_data under NO_MEMBER_ASSERTS_BOUND_PROPERTIES. Neither sibling asserts both.
+"""A no-entity resubmit with split ownership of two bound properties elects no member and
+returns no_data. Neither sibling asserts both.
 """
 
 from __future__ import annotations
 
 from search.engine.region import resolve_spec_resubmit
-from search.engine.region.codes import NO_MEMBER_ASSERTS_BOUND_PROPERTIES
 from search.models import ResubmitIdentityPayload
-from tests.engine._base_identity import make_base, make_identity
+from tests.engine._base_identity import make_identity
 from tests.engine._builders import value_slot as _value_slot
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import walk_options
 from tests.fixtures import FakeGraph
 
 _POP_TYPE = "TestSplitOwnershipEvent"
@@ -74,43 +74,23 @@ _NODES = {
 }
 
 
-def test_no_entity_split_ownership_neither_asserter_wins_flags_gate():
-    """A plain resubmit (no edit, no place entity) of two StatVars that each
-    assert only one of the two bound properties must degrade to honest
-    no_data(no_matching_slice), never a "definite" spec claiming both bound
-    axes on a member that asserts only one. flagged_match must carry the
-    representative under gate=no_member_asserts_bound_properties, mirroring
-    the fresh path's equivalent no-entity outcome."""
+def test_no_entity_split_ownership_neither_asserter_answers_no_matching_slice():
+    """A resubmit binding two properties, each asserted by a different StatVar, elects no
+    member, as the mint does, and answers no_data(no_matching_slice), never a definite spec
+    claiming both bound axes on a member that asserts only one."""
     gender_slot = _value_slot("how", _PROP_GENDER, "gender", _VAL_FEMALE, "Female")
     residence_slot = _value_slot("how", _PROP_RESIDENCE, "place of residence", _VAL_URBAN, "Urban")
 
     graph = FakeGraph(nodes=_NODES, resolve={}, obs={})
 
-    base_spec_id, base_identity = make_base(
-        _SHAPE,
-        slots=[gender_slot, residence_slot],
-    )
-    inp = ResubmitIdentityPayload(
-        identity=make_identity(_SHAPE, [gender_slot, residence_slot]),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[_SV_A, _SV_B],
-    )
+    inp = ResubmitIdentityPayload(identity=make_identity(_SHAPE, [gender_slot, residence_slot]))
 
     region = resolve_spec_resubmit(
         inp=inp,
         graph=graph,
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
+        options=walk_options(graph),
     )
 
-    assert region.status == "no_data"
-    assert region.no_data_reason == "no_matching_slice"
-    assert region.flagged_match is not None
-    flagged_spec = region.flagged_match[0]
-    # No place entity here to be unavailable AT -- distinct from the
-    # entity-probe's own flagged-unavailable carrier; see
-    # test_fresh_path_emission_guard.py's matching no-entity assertion.
-    assert flagged_spec.resolved.available_at_place is None
-    assert flagged_spec.resolved.confidence is None
-    assert region.gate == NO_MEMBER_ASSERTS_BOUND_PROPERTIES
+    assert (region.status, region.no_data_reason) == ("no_data", "no_matching_slice")

@@ -2,27 +2,31 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping, Sequence
 
 import pytest
-from pydantic import BaseModel, ValidationError
+from pydantic import ValidationError
 
 from code_index.query import CodeIndex
 from code_index.shared import get_index
 from code_index.types import IndexStamp, StatVarRow
-from datasets_api.adapter import check_reproducible, resolve_definition_members
+from datasets_api.adapter import (
+    MemberReadBounds,
+    check_reproducible,
+    resolve_definition_members,
+)
 from datasets_api.codes_materialise import (
     DefinitionNotReproducible,
     MemberNotResolvable,
     RoleSignatureIncompatible,
     SpecNotExportable,
 )
-from datasets_api.kinds import collection_id as collection_id_kind
-from datasets_api.mint_models import SpecIdInput, StatVarSetInput
-from datasets_api.models import MAX_COLLECTION_MEMBERS
+from datasets_api.mint_models import StatVarSetInput
 from materialise import graph as materialise_graph
 from materialise.errors import OverCeilingError
-from statvar_members import MemberEnumerator
+from materialise.trace import MemberFamily
+from statvar_members import MemberEnumerator, MemberReadDeadline, member_digest
 from statvar_members.enumerate import CANDIDATE_CAP
 from statvar_members.types import UNRESOLVED_NODE
 
@@ -83,16 +87,22 @@ def _resolve(
     identity: Mapping[str, object],
     *,
     graph: FakeMintGraphReader,
-    seed: Sequence[str] | None = None,
+    bounds: MemberReadBounds | None = None,
 ):
+    """Resolve `identity` under `bounds`, a mint's own when `None`."""
     return resolve_definition_members(
         identity,
         spec_id=_SPEC_ID,
         graph=graph,
-        enumerator=MemberEnumerator(graph=graph),
+        enumerator=MemberEnumerator(),
         code_index=get_index(),
-        seed=seed,
+        bounds=bounds if bounds is not None else _bounds(),
     ).shapes
+
+
+def _bounds(*, subject_ceiling: int = 20_000) -> MemberReadBounds:
+    """Bounds whose deadline no test reaches, built at collection time for parametrize."""
+    return MemberReadBounds(subject_ceiling=subject_ceiling, deadline=time.monotonic() + 3_600)
 
 
 def test_two_members_sharing_no_dominating_series_both_survive():
@@ -171,21 +181,26 @@ def test_truncated_reverse_query_refuses_over_ceiling_not_zero_members():
     identity = _two_member_identity()
 
     with pytest.raises(OverCeilingError) as exc_info:
-        _resolve(identity, graph=graph)
+        _resolve(identity, graph=graph, bounds=_PAGE_WINDOW)
 
     assert exc_info.value.ceiling_kind == "candidate_window"
     assert exc_info.value.count == CANDIDATE_CAP
     assert exc_info.value.cap == CANDIDATE_CAP
     detail = str(exc_info.value)
-    # No posted root proves a set-bound family complete, so the remedy names `statvar_set`
-    # alone, in the `dcid:` form `statvars` requires.
+    # The remedy narrows the identity or names `statvar_set`, in the `dcid:` form `statvars`
+    # requires. No request field adds a member.
     assert "resolved_stat_var_dcids" not in detail
     assert 'kind "statvar_set"' in detail
     assert "written dcid:<ref>" in detail
     assert "a different, pinned spec" in detail
-    assert str(MAX_COLLECTION_MEMBERS) in detail
+    assert "one request per StatVar" in detail
     assert "member_cap=" not in detail
     assert str(CANDIDATE_CAP) in detail
+
+
+# A ceiling equal to the first page's window: the full read reads no further than the page,
+# so a family broader than the window refuses `candidate_window` at the window's size.
+_PAGE_WINDOW = _bounds(subject_ceiling=CANDIDATE_CAP)
 
 
 def _value_bound_broad_family() -> tuple[dict, dict[str, dict[str, tuple[str, ...]]]]:
@@ -218,106 +233,71 @@ def _value_bound_broad_family() -> tuple[dict, dict[str, dict[str, tuple[str, ..
     return identity, arcs
 
 
-def test_candidate_window_remedy_leads_with_the_seed_when_a_root_can_prove_the_family():
+def test_the_full_read_settles_a_root_past_the_first_page():
+    """The root sorts after more `vintage` variants than the first page holds, none of them
+    in the identity's family. The full read reaches the root, so it alone is served and the
+    family it settles is stated."""
     identity, arcs = _value_bound_broad_family()
 
-    with pytest.raises(OverCeilingError) as exc_info:
-        _resolve(identity, graph=FakeMintGraphReader(arcs=arcs))
-
-    assert exc_info.value.ceiling_kind == "candidate_window"
-    detail = str(exc_info.value)
-    # The seed remedy comes first and names the bare form `resolved_stat_var_dcids` takes.
-    # `statvar_set` follows in the `dcid:` form `statvars` requires.
-    seed_remedy = detail.index("this same spec_id again with resolved_stat_var_dcids")
-    statvar_set_remedy = detail.index('kind "statvar_set"')
-    assert seed_remedy < statvar_set_remedy
-    assert "(no dcid: prefix)" in detail[seed_remedy:statvar_set_remedy]
-    assert "written dcid:<ref>" in detail[statvar_set_remedy:]
-    assert "a different, pinned spec" in detail[statvar_set_remedy:]
-
-
-def test_candidate_window_remedy_names_no_seed_no_posted_root_could_prove():
-    """With no entity bound, only a subject-only root elects the role class, and this
-    family's members all declare a recipient. A posted root is refused again, so the
-    remedy names `statvar_set` alone."""
-    identity, arcs = _value_bound_broad_family()
-    identity["entities"] = {}
-
-    with pytest.raises(OverCeilingError) as unseeded:
-        _resolve(identity, graph=FakeMintGraphReader(arcs=arcs))
-    with pytest.raises(OverCeilingError):
-        _resolve(identity, graph=FakeMintGraphReader(arcs=arcs), seed=["Count_Female_Zroot"])
-
-    assert "resolved_stat_var_dcids" not in str(unseeded.value)
-    assert 'kind "statvar_set"' in str(unseeded.value)
-
-
-def test_candidate_window_remedy_leaves_the_seed_out_where_the_door_takes_none():
-    identity, arcs = _value_bound_broad_family()
-    graph = FakeMintGraphReader(arcs=arcs)
-
-    with pytest.raises(OverCeilingError) as exc_info:
-        resolve_definition_members(
-            identity,
-            spec_id=_SPEC_ID,
-            graph=graph,
-            enumerator=MemberEnumerator(graph=graph),
-            code_index=get_index(),
-            accepts_seed=False,
-        )
-
-    detail = str(exc_info.value)
-    assert "resolved_stat_var_dcids" not in detail
-    assert 'kind "statvar_set"' in detail
-
-
-def test_a_collection_member_past_the_candidate_window_is_not_advised_to_post_a_seed():
-    identity, arcs = _value_bound_broad_family()
-    graph = FakeMintGraphReader(arcs=arcs)
-
-    with pytest.raises(OverCeilingError) as exc_info:
-        collection_id_kind._resolve_member(
-            identity,
-            spec_id=_SPEC_ID,
-            graph=graph,
-            enumerator=MemberEnumerator(graph=graph),
-            code_index=get_index(),
-        )
-
-    assert exc_info.value.ceiling_kind == "candidate_window"
-    assert "resolved_stat_var_dcids" not in str(exc_info.value)
-
-
-def test_the_seed_the_candidate_window_remedy_names_mints_the_refused_family():
-    identity, arcs = _value_bound_broad_family()
-
-    shapes = _resolve(identity, graph=FakeMintGraphReader(arcs=arcs), seed=["Count_Female_Zroot"])
+    shapes = _resolve(identity, graph=FakeMintGraphReader(arcs=arcs), bounds=_bounds())
 
     assert [shape.stat_var for shape in shapes] == ["dcid:Count_Female_Zroot"]
-    # The root proves the served member complete, and the candidates past the window stay
-    # unread, so the walk does not state the family.
-    assert shapes[0].family is None
+    assert shapes[0].family == MemberFamily(
+        digest=member_digest(frozenset({"Count_Female_Zroot"})), count=1
+    )
+
+
+def test_a_root_the_walk_does_not_reach_refuses_candidate_window():
+    """Under a ceiling below the whole set, the full read stops at the ceiling. The remedy
+    narrows the identity or mints the StatVars directly."""
+    identity, arcs = _value_bound_broad_family()
+    cap = CANDIDATE_CAP + 1
+
+    with pytest.raises(OverCeilingError) as exc_info:
+        _resolve(
+            identity,
+            graph=FakeMintGraphReader(arcs=arcs),
+            bounds=_bounds(subject_ceiling=cap),
+        )
+
+    assert exc_info.value.ceiling_kind == "candidate_window"
+    assert (exc_info.value.count, exc_info.value.cap) == (cap, cap)
+    detail = str(exc_info.value)
+    assert "resolved_stat_var_dcids" not in detail
+    assert "another slot binding" in detail
+    assert 'kind "statvar_set"' in detail
+    assert "written dcid:<ref>" in detail
+
+
+def test_a_walk_past_its_deadline_raises_the_transient_deadline():
+    """Running out of time is no ceiling: the walk's own `MemberReadDeadline` reaches the
+    door, which answers a retryable timeout."""
+    identity, arcs = _value_bound_broad_family()
+    expired = MemberReadBounds(subject_ceiling=20_000, deadline=time.monotonic() - 1)
+
+    with pytest.raises(MemberReadDeadline) as exc_info:
+        _resolve(identity, graph=FakeMintGraphReader(arcs=arcs), bounds=expired)
+
+    assert (exc_info.value.candidates_considered, exc_info.value.candidate_cap) == (
+        0,
+        CANDIDATE_CAP,
+    )
 
 
 @pytest.mark.parametrize(
-    ("model", "field", "ref", "accepted"),
-    [
-        (SpecIdInput, "resolved_stat_var_dcids", "Count_Person_Female", True),
-        (SpecIdInput, "resolved_stat_var_dcids", "dcid:Count_Person_Female", False),
-        (StatVarSetInput, "statvars", "dcid:Count_Person_Female", True),
-        (StatVarSetInput, "statvars", "Count_Person_Female", False),
-    ],
+    ("ref", "accepted"),
+    [("dcid:Count_Person_Female", True), ("Count_Person_Female", False)],
 )
-def test_each_input_accepts_only_the_dcid_form_the_candidate_window_remedy_names(
-    model: type[BaseModel], field: str, ref: str, accepted: bool
+def test_statvar_set_takes_the_dcid_form_the_candidate_window_remedy_names(
+    ref: str, accepted: bool
 ):
-    body = {field: [ref]} | ({"spec_id": "spec_a"} if model is SpecIdInput else {})
+    body = {"statvars": [ref]}
 
     if accepted:
-        assert getattr(model.model_validate(body), field) == [ref]
+        assert StatVarSetInput.model_validate(body).statvars == [ref]
     else:
         with pytest.raises(ValidationError):
-            model.model_validate(body)
+            StatVarSetInput.model_validate(body)
 
 
 def test_truncated_unproven_page_with_one_confirmed_member_still_refuses_over_ceiling():
@@ -349,7 +329,7 @@ def test_truncated_unproven_page_with_one_confirmed_member_still_refuses_over_ce
     ]
 
     with pytest.raises(OverCeilingError) as exc_info:
-        _resolve(identity, graph=graph)
+        _resolve(identity, graph=graph, bounds=_PAGE_WINDOW)
 
     assert exc_info.value.ceiling_kind == "candidate_window"
     assert exc_info.value.count == CANDIDATE_CAP
@@ -363,7 +343,7 @@ class _FewCandidateTruncatedWalkGraphReader(FakeMintGraphReader):
     with a continuation token. `node_arcs_many` reads from the same arc map.
     """
 
-    def node_subjects(self, dcid, *, property, filters=None, max_results):
+    def node_subjects(self, dcid, *, property, filters=None, max_results, deadline=None):
         page = super().node_subjects(
             dcid, property=property, filters=filters, max_results=max_results
         )
@@ -393,7 +373,7 @@ def test_truncated_page_holding_fewer_candidates_than_the_cap_reports_the_count_
     ]
 
     with pytest.raises(OverCeilingError) as exc_info:
-        _resolve(identity, graph=graph)
+        _resolve(identity, graph=graph, bounds=_PAGE_WINDOW)
 
     assert exc_info.value.ceiling_kind == "candidate_window"
     assert exc_info.value.count == 37
@@ -456,7 +436,7 @@ def test_hierarchical_parent_value_binding_on_a_broad_family_refuses_over_ceilin
     }
 
     with pytest.raises(OverCeilingError) as exc_info:
-        _resolve(identity, graph=graph)
+        _resolve(identity, graph=graph, bounds=_PAGE_WINDOW)
 
     assert exc_info.value.ceiling_kind == "candidate_window"
     assert exc_info.value.count == CANDIDATE_CAP
@@ -515,7 +495,7 @@ def test_hierarchical_parent_set_binding_on_a_broad_family_refuses_over_ceiling_
     }
 
     with pytest.raises(OverCeilingError) as exc_info:
-        _resolve(identity, graph=graph)
+        _resolve(identity, graph=graph, bounds=_PAGE_WINDOW)
 
     assert exc_info.value.ceiling_kind == "candidate_window"
     assert exc_info.value.count == CANDIDATE_CAP
@@ -945,27 +925,6 @@ def test_described_arm_shapes_come_wholly_from_enumeration_never_a_second_read()
     assert all(shape.declared_roles == ("recipient",) for shape in shapes)
 
 
-# Seeds join reverse-query candidates and use the same checks as walked members.
-
-_FOREIGN_STAT_VAR = "Amount_EconomicActivity"
-
-
-def _graph_with_foreign_stat_var() -> FakeMintGraphReader:
-    return FakeMintGraphReader(
-        arcs={
-            _ODA_GRANTS: _member_arcs(scheme="ODAGrants"),
-            _ODA_LOANS: _member_arcs(scheme="ODALoans"),
-            _FOREIGN_STAT_VAR: {
-                "typeOf": ("StatisticalVariable",),
-                "populationType": ("EconomicActivity",),
-                "measuredProperty": ("amount",),
-                "observationProperties": (),
-                "constraintProperties": (),
-            },
-        }
-    )
-
-
 def _unbound_gender_identity() -> dict:
     return {
         "identity_version": "spec1",
@@ -1008,75 +967,6 @@ def _root_and_gendered_arcs() -> dict[str, dict[str, tuple[str, ...]]]:
     }
 
 
-class _WithheldFromWalkGraphReader(FakeMintGraphReader):
-    """Marks the walk truncated and withholds dcids while retaining arcs for seed checks."""
-
-    def __init__(
-        self, *, arcs: dict[str, dict[str, tuple[str, ...]]], withheld: frozenset[str]
-    ) -> None:
-        super().__init__(arcs=arcs)
-        self._withheld = withheld
-
-    def node_subjects(self, dcid, *, property, filters=None, max_results):
-        page = super().node_subjects(
-            dcid, property=property, filters=filters, max_results=max_results
-        )
-        return type(page)(
-            dcids=tuple(d for d in page.dcids if d not in self._withheld), truncated=True
-        )
-
-
-def test_a_root_seed_makes_a_truncated_page_prove_complete():
-    # The unseeded page contains only the two gendered members.
-    graph_without_seed = _WithheldFromWalkGraphReader(
-        arcs=_root_and_gendered_arcs(), withheld=frozenset({"Count_Person"})
-    )
-    with pytest.raises(OverCeilingError):
-        _resolve(_unbound_gender_identity(), graph=graph_without_seed)
-
-    # The root dominates both gendered members, proving the truncated page complete.
-    graph_with_seed = _WithheldFromWalkGraphReader(
-        arcs=_root_and_gendered_arcs(), withheld=frozenset({"Count_Person"})
-    )
-    shapes = _resolve(_unbound_gender_identity(), graph=graph_with_seed, seed=("Count_Person",))
-
-    assert [shape.stat_var for shape in shapes] == ["dcid:Count_Person"]
-
-
-def test_a_non_root_seed_does_not_prove_completeness():
-    # A root with empty constraint keys dominates the identity.
-    # This seed carries `gender`.
-    arcs = {
-        **_root_and_gendered_arcs(),
-        "Count_Person_Nonbinary": {
-            "typeOf": ("StatisticalVariable",),
-            "populationType": ("Person",),
-            "measuredProperty": ("count",),
-            "observationProperties": (),
-            "constraintProperties": ("gender",),
-            "gender": ("Nonbinary",),
-        },
-    }
-    graph = _WithheldFromWalkGraphReader(
-        arcs=arcs, withheld=frozenset({"Count_Person", "Count_Person_Nonbinary"})
-    )
-
-    with pytest.raises(OverCeilingError):
-        _resolve(_unbound_gender_identity(), graph=graph, seed=("Count_Person_Nonbinary",))
-
-
-def test_a_foreign_seed_dcid_is_excluded_and_changes_nothing():
-    # A seed that matches neither the five-tuple nor a slot is excluded.
-    graph = _graph_with_foreign_stat_var()
-
-    shapes = _resolve(_two_member_identity(), graph=graph, seed=(_FOREIGN_STAT_VAR,))
-
-    assert sorted(shape.stat_var for shape in shapes) == [
-        "dcid:ODAGrantsAmount",
-        "dcid:ODALoansAmount",
-    ]
-
-
 def test_statvar_members_unresolved_node_marker_matches_materialise_graphs():
     # The two packages define this marker separately, so their reader contract must keep it equal.
     assert UNRESOLVED_NODE == materialise_graph.UNRESOLVED_NODE
@@ -1097,8 +987,9 @@ _IDS_ROLES = {
 }
 
 
-def _ids_identity(entities: dict[str, list[str]]) -> dict:
+def _ids_identity(entities: dict[str, list[str]], open_roles: tuple[str, ...] = ()) -> dict:
     return {
+        **({"open_roles": list(open_roles)} if open_roles else {}),
         "identity_version": "spec1",
         "shape": {
             "kind": "statvar_schema",
@@ -1160,23 +1051,25 @@ def _ids_twin_index() -> CodeIndex:
 
 @pytest.mark.parametrize("path", ["graph", "index"])
 @pytest.mark.parametrize(
-    ("entities", "expected"),
+    ("entities", "open_roles", "expected"),
     [
-        ({}, _IDS_TOTAL),
-        ({"destination": ["country/KEN"]}, _IDS_TOTAL),
-        ({"origin": ["country/CHN"], "destination": ["country/KEN"]}, _IDS_BY_CREDITOR),
+        ({}, (), _IDS_TOTAL),
+        ({"destination": ["country/KEN"]}, (), _IDS_TOTAL),
+        ({"origin": ["country/CHN"], "destination": ["country/KEN"]}, (), _IDS_BY_CREDITOR),
+        ({"destination": ["country/KEN"]}, ("origin",), _IDS_BY_CREDITOR),
     ],
 )
-def test_role_twins_resolve_by_the_identitys_bound_roles(path, entities, expected):
+def test_role_twins_resolve_by_the_identitys_bound_roles(path, entities, open_roles, expected):
     graph = _ids_twin_graph()
     code_index = _ids_twin_index() if path == "index" else get_index()
 
     shapes = resolve_definition_members(
-        _ids_identity(entities),
+        _ids_identity(entities, open_roles),
         spec_id=_SPEC_ID,
         graph=graph,
-        enumerator=MemberEnumerator(graph=graph),
+        enumerator=MemberEnumerator(),
         code_index=code_index,
+        bounds=_bounds(),
     ).shapes
 
     assert [shape.stat_var for shape in shapes] == [f"dcid:{expected}"]

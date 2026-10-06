@@ -8,9 +8,23 @@ Decode runs first and adds `stat_var_{code_system}` columns, so selection and pi
 select; a list that names none keeps every default column and only adds the enrichments. Unknown
 tokens list the parseable qualified tokens as `alternatives`.
 
+Long (unpivoted) output is written in the layout `materialise.projection` defines: each decoded
+`stat_var_<code_system>` column becomes a `<code_system>` code column and a `<code_system>_label`
+column, each entity, `measurementMethod` and `provenance` gets a `_label` name column (and
+`stat_var` one when no axis decodes), `unit` splits into `unit`, `unit_label`, `currency`,
+`price_basis` and `base_year`, enrichments sit beside their entity, the order is fixed whatever
+order `columns` names, and `status` is left out. Names are cited source labels, else graph
+names read per chunk within the metadata deadline (`_LongLayout`). A missing name, a failed or
+late read, or an axis label two codes share leaves the cell empty and adds
+`enrichment_unavailable`. A failed read also leaves the artifact unlinked. `measurementMethod_label`
+holds only a name that differs from the method's dcid and raises no warning. A selection keeps every
+decoded column unless it names some, and `status` and `<role>_label` tokens are accepted and
+ignored. Requests, pivot output, frames and collapse frames keep the grammar names, and so
+does a bare parquet file requested with `options.layout = "frame"` (`FRAME_LAYOUT`), which is
+written as reshaped, with no projection and no name read.
+
 `groupby` and `pivot` read across chunks. Other reshapes stream rows to the writer. A recognised but
 disabled enrichment token raises `capability_unavailable`. Unknown tokens raise `column_unknown`.
-Collections store one artifact per member when bare, or one package with a resource per member.
 
 A mint of at most `FRAME1_MAX_ROWS` rows also streams canonical frame1 to the store for
 presentation. Frame1 is an unsigned internal rendering on the version record. Series statistics
@@ -19,15 +33,16 @@ are stored separately from the requested rendering.
 
 from __future__ import annotations
 
-import functools
 import hashlib
 import itertools
 import json
+import logging
 import sys
 import time
 import zipfile
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import IO, cast
 from urllib.parse import urlencode
@@ -39,13 +54,13 @@ from artifact_store import (
     StoredArtifact,
     Tier,
 )
-from code_index.labels import family_label
+from code_index.labels import PRICES_BY_QUALIFIER, family_label
 from code_index.members import absent_member_reads_zero
 from code_index.query import CodeIndex
 from code_index.shared import get_measure_index
 from code_index.types import level_axes, summable_axes
 from dataset_store.snapshot import StoredArtifactLocation
-from datasets_api.adapter import pinned_member_ref
+from datasets_api.adapter import pinned_member_ref, shape_measurement_qualifier
 from datasets_api.artifact_delivery import (
     artifact_content_disposition,
     artifact_file_name,
@@ -73,9 +88,11 @@ from datasets_api.manifest_models import ArtifactEntryModel, CitationSource, Man
 from datasets_api.mint_models import MintOptions
 from datasets_api.query_options import QueryOptionsInvalid
 from datasets_api.timings import phase
+from datasets_api.unit_labels import unit_currency, unit_label
 from datasets_api.version_store import rendering_key
 from datasets_api.versions import ArtifactRecord
 from datasets_api.warnings import DATASETS_WARNING_CATALOGUE
+from dc_graph import GraphReadError
 from dfo_platform import Alternative
 from dfo_platform.config import PublicSiteSettings
 from dfo_platform.validation import pointer_segment
@@ -117,6 +134,15 @@ from materialise.formats import (
     write_parquet,
 )
 from materialise.frame_build import build_frame, unit_cell_for_rebuild
+from materialise.profile import OutputProfile, PivotFeasibility
+from materialise.projection import (
+    LongProjection,
+    PriceBasis,
+    UnitNaming,
+    axis_source_column,
+    long_output_selection,
+    plan_long_projection,
+)
 from materialise.reshape import (
     SUPPORTED_ENRICHMENTS,
     ColumnClassification,
@@ -140,6 +166,8 @@ from materialise.reshape import (
     select_columns,
 )
 from materialise.reshape import Table as ReshapeTable
+
+logger = logging.getLogger(__name__)
 
 _ZIP_FIXED_DATE_TIME = (1980, 1, 1, 0, 0, 0)
 
@@ -201,7 +229,7 @@ class GroupbyCollapseRendering:
     axis's column included. It is independent of selected columns, pivot, and format. An absent
     mint preimage yields `None` for `content_version`.
     `contributing_member_count` counts distinct StatVars with rows. Callers use it to warn about
-    sums or refuse collection-member collapses."""
+    sums."""
 
     frame: Frame
     role_columns: tuple[str, ...]
@@ -586,7 +614,6 @@ def _reshape_groupby(
     subject_label: str | None,
     groupby_preimage: MintPreimage | None,
     frame_chunks: Iterable[Table] | None,
-    frame_keeps_axes: bool = True,
 ) -> _GroupbyOutcome:
     """Applies `groupby` when options and `code_index` are set. Otherwise inputs pass through.
     Unknown `by` axes fail before frame classification. The collapse set is the frame's decoded,
@@ -605,8 +632,7 @@ def _reshape_groupby(
     output. The streamed path preserves whole-table refusal order. When every unsummed axis holds
     one value (`groupby.yields_grammar_frame`), the sum becomes a grammar frame: `stat_var` is
     the sole contributor's dcid on a full collapse and `dcid:{subject_id}` otherwise, and each
-    kept code axis is a role column. With `frame_keeps_axes` false, a sum that keeps a code axis
-    stays the summed table and only a full collapse becomes a frame. Multiple contributors add a
+    kept code axis is a role column. Multiple contributors add a
     `stat_vars_summed` warning labelled `subject_label`. A grammar frame requires `subject_id`
     unless it is a sole contributor's full collapse.
     With `groupby_preimage`, the frame gets a version from its own content, base revision, facets,
@@ -653,8 +679,7 @@ def _reshape_groupby(
             current,
             decode_plan=decode_plan,
             axes_to_collapse=axes_to_collapse,
-            grammar_frame=(frame_keeps_axes or not kept)
-            and yields_grammar_frame(
+            grammar_frame=yields_grammar_frame(
                 decoded_code_systems=decoded_code_systems,
                 declarations=code_index.declarations,
                 lookup=decode_plan.lookup if decode_plan is not None else {},
@@ -705,12 +730,20 @@ def _reshape_select_pivot_enrich(
     pivot_max_output_cells: int,
     warnings: list[MaterialisationWarning],
     collapse: GroupbyCollapseRendering | None,
+    code_index: CodeIndex | None,
 ) -> ReshapeResult:
     """Applies pending decode, `options.columns`, and `options.pivot`. Real and decoded columns take
     precedence over enrichment tokens. Enabled `{entity}_{field}` tokens use one batched lookup.
     Recognised disabled fields raise `CapabilityUnavailable`, and unknown tokens raise
     `ColumnUnknownError` with alternatives. Decode, selection, then pivot run in that order. A token
     list with no table or decoded column does not select, so every default column stays.
+
+    Without a pivot the output is long and `long_output_selection` widens the selection: decoded
+    axis columns come with `stat_var` unless the list names some of them. Long output leaves out
+    `status` and writes each role's `<role>_label` by default (`materialise.projection`), so both
+    tokens are accepted and ignored there, and a selection naming `<role>_label` keeps `<role>`.
+    A frame-layout request (`FRAME_LAYOUT`) is not long output: its selection is the list as
+    parsed, as for pivot output.
 
     `warning_order` preserves decode-request then enrichment-request order for merging chunk
     warnings. Raises `ColumnUnknownError` for unknown columns and `CapabilityUnavailable` for
@@ -722,12 +755,19 @@ def _reshape_select_pivot_enrich(
         else ()
     )
     post_decode_columns = (*current.columns, *decoded_column_names)
+    long_output = options.pivot is None and options.layout is None
 
     parsed: ParsedColumns | None = None
+    named_roles: tuple[str, ...] = ()
     if options.columns is not None:
+        tokens: Sequence[str] = options.columns
+        if long_output:
+            tokens, named_roles = _long_output_tokens(
+                options.columns, table_columns=post_decode_columns, entity_columns=entity_columns
+            )
         try:
             parsed = parse_column_tokens(
-                options.columns,
+                tokens,
                 table_columns=post_decode_columns,
                 entity_columns=entity_columns,
                 supported_fields=SUPPORTED_ENRICHMENTS,
@@ -765,6 +805,12 @@ def _reshape_select_pivot_enrich(
     )
 
     select = (parsed.select or None) if parsed is not None else None
+    if select is not None:
+        select = (*select, *(role for role in named_roles if role not in select))
+    if long_output:
+        select = long_output_selection(
+            select, axis_columns=_axis_columns(post_decode_columns, code_index=code_index)
+        )
     enrichment_plan: EnrichmentPlan | None = None
     if parsed is not None and parsed.enrichments:
         refs = _enrichment_refs(current, enrichments=parsed.enrichments)
@@ -825,7 +871,6 @@ def _reshape(
     subject_label: str | None = None,
     groupby_preimage: MintPreimage | None = None,
     frame_chunks: Iterable[Table] | None = None,
-    frame_keeps_axes: bool = True,
 ) -> ReshapeResult:
     """Applies decode, groupby, selection, enrichment, and pivot before rendering. Inert transforms
     leave the input table unchanged.
@@ -836,8 +881,7 @@ def _reshape(
     `provenance_refs` govern its source-wide missing-as-zero rule. `subject_id` and
     `groupby_preimage` are used only for the collapse frame's identity, and `subject_label` only for the
     `stat_vars_summed` warning's family label. `frame_chunks` streams the first
-    collapse axis. `None` processes `table` in memory. `frame_keeps_axes` false leaves a sum that
-    keeps a code axis as the summed table, with no collapse frame.
+    collapse axis. `None` processes `table` in memory.
 
     Raises `ColumnUnknownError` for unknown columns, `CapabilityUnavailable` for disabled
     enrichment, `RollupNotSummableError` when a family has no summable axis, and `ValueError` when
@@ -859,7 +903,6 @@ def _reshape(
         subject_label=subject_label,
         groupby_preimage=groupby_preimage,
         frame_chunks=frame_chunks,
-        frame_keeps_axes=frame_keeps_axes,
     )
     return _reshape_select_pivot_enrich(
         groupby_outcome.table,
@@ -870,6 +913,7 @@ def _reshape(
         pivot_max_output_cells=pivot_max_output_cells,
         warnings=list(groupby_outcome.warnings),
         collapse=groupby_outcome.collapse,
+        code_index=code_index,
     )
 
 
@@ -903,30 +947,13 @@ def stored_artifact_file_name(location: StoredArtifactLocation, *, manifest: Man
     """Name a linked artifact from its sources' cited names, `prepared_at` and version, as the
     mint names it.
 
-    A definition's sources are its citation's. A collection artifact's are every member's
-    `provenance_refs` in member order. A bare collection member artifact takes its member's
-    own refs, content version and `prepared_at`. A ref the citation lacks stands as its name.
+    A definition's sources are its citation's. A ref the citation lacks stands as its name.
     """
-    content_version = manifest.content_version
-    prepared_at = manifest.prepared_at
-    if manifest.collection is None:
-        refs = [source.ref for source in manifest.citation.sources]
-    else:
-        refs = [ref for member in manifest.collection.members for ref in member.provenance_refs]
-    member_spec_id = location.rendering.get(MEMBER_RENDERING_KEY)
-    if manifest.collection is not None and isinstance(member_spec_id, str):
-        member = next(
-            (m for m in manifest.collection.members if m.definition.spec_id == member_spec_id),
-            None,
-        )
-        if member is not None:
-            refs = member.provenance_refs
-            content_version = member.content_version
-            prepared_at = member.prepared_at
+    refs = [source.ref for source in manifest.citation.sources]
     return artifact_file_name(
         source_names=cited_source_names(refs, manifest.citation.sources_by_ref()),
-        prepared_at=prepared_at,
-        content_version=content_version,
+        prepared_at=manifest.prepared_at,
+        content_version=manifest.content_version,
         media_type=location.media_type,
         rendering=location.rendering,
         statistics=is_statistics_rendering(location.rendering),
@@ -997,10 +1024,9 @@ def _member_provenance(
     scan: TableScan,
     options: MintOptions,
     code_index: CodeIndex | None,
-    row_count: bool,
 ) -> MemberProvenance:
     """One bundle member, titled by its sources and years, with each column documented from
-    `scan`. `row_count` sets the member's row count, which collection bundles print."""
+    `scan`."""
     entry = BundleArtifactEntry(
         path=data_path,
         bytes=written.size_bytes,
@@ -1021,15 +1047,23 @@ def _member_provenance(
         columns=column_docs(scan, code_system_names=code_system_names, rendering=rendering),
         # A pivot spreads observations across columns, so only an unpivoted file holds one per row.
         description="One row per observation." if options.pivot is None else None,
-        row_count=scan.rows if row_count else None,
     )
 
 
-def _table_scan(role_columns: Sequence[str], *, options: MintOptions) -> TableScan:
-    """A scan of one data file written under `options`, told the pivot that shaped it."""
+def _table_scan(
+    role_columns: Sequence[str], *, options: MintOptions, code_index: CodeIndex | None
+) -> TableScan:
+    """A scan of one data file written under `options`, told the pivot that shaped it and the
+    axis code columns long output writes, each code taking its code system's plain name as its
+    kind."""
     pivot = options.pivot
     return TableScan(
         role_columns=role_columns,
+        axis_kinds=(
+            {name: declaration.plain_name for name, declaration in code_index.declarations.items()}
+            if code_index is not None and pivot is None
+            else None
+        ),
         pivot_index=pivot.index if pivot is not None else None,
         pivot_columns=pivot.columns if pivot is not None else None,
     )
@@ -1040,24 +1074,24 @@ def _codes(
     *,
     citations: Mapping[str, CitationSource],
     family: tuple[str, str] | None,
-    enrichment: EnrichmentLookup,
-    deadline: float | None,
-    metadata_read_seconds: float,
+    code_index: CodeIndex | None,
+    reads: _NameReads,
 ) -> BundleCodes:
-    """The codes table of the scanned files. Cited sources take their cited names, and a
-    collapsed family's `(ref, label)` takes its label. The graph names every other code, within
-    `deadline` or `metadata_read_seconds` from now, whichever ends later."""
+    """The codes table of the scanned files. Cited sources take their cited names, a collapsed
+    family's `(ref, label)` takes its label, and an axis code takes its `code_index` label, the
+    name its `<code_system>_label` cell holds. The graph names every other code through the
+    render's `reads`, so the read shares the render's deadline and makes none after a failed
+    name read."""
     known = {ref: cited.label for ref, cited in citations.items()}
     if family is not None:
         known[family[0]] = family[1]
-    return bundle_codes(
-        scans,
-        known_labels=known,
-        lookup=functools.partial(
-            enrichment.lookup,
-            deadline=metadata_deadline(deadline, floor_seconds=metadata_read_seconds),
-        ),
-    )
+    if code_index is not None:
+        for scan in scans:
+            for column in scan.axis_kinds:
+                for code in scan.codes(column):
+                    if (row := code_index.code_by_dcid(code)) is not None:
+                        known[code] = row.label
+    return bundle_codes(scans, known_labels=known, lookup=reads.lookup)
 
 
 def _family(
@@ -1100,18 +1134,16 @@ def _bundle_context(
     site: PublicSiteSettings,
 ) -> BundleContext:
     """The bundle context of one version: headed and named by its distinct sources and years,
-    summarised from `scans`, and linked under the public site. Only a standalone definition
-    gets a rebuild request. The website link (when `site.site_dataset_links` is on) goes only to
-    a standalone definition with a described identity: the website replays the identity through
-    Search's `dataset_resubmit`, which refuses the pinned arm (`kind: "stat_var"`) that
-    `statvar_set` and `source_codes` mint."""
-    is_collection = "collection_id" in spec
-    subject_id = str(spec.get("collection_id") if is_collection else spec.get("spec_id"))
+    summarised from `scans`, and linked under the public site. The website link (when
+    `site.site_dataset_links` is on) goes only to a definition with a described identity: the
+    website replays the identity through Search's `dataset_resubmit`, which refuses the pinned
+    arm (`kind: "stat_var"`) that `statvar_set` mints."""
+    subject_id = str(spec.get("spec_id"))
     names = _source_names([source for member in members for source in member.sources])
     origin = site.public_site_url
     site_link = (
         f"{origin}/data?{urlencode({'spec': subject_id, 'v': content_version})}"
-        if site.site_dataset_links and not is_collection and _site_replayable(spec)
+        if site.site_dataset_links and _site_replayable(spec)
         else None
     )
     return BundleContext(
@@ -1126,7 +1158,7 @@ def _bundle_context(
             latest=f"{origin}/api/datasets/{subject_id}",
             site=site_link,
         ),
-        rebuild_request=None if is_collection else _rebuild_request(spec, options),
+        rebuild_request=_rebuild_request(spec, options),
     )
 
 
@@ -1244,6 +1276,259 @@ def _commit_stored(
     )
 
 
+def _long_output_tokens(
+    columns: Sequence[str], *, table_columns: Sequence[str], entity_columns: Sequence[str]
+) -> tuple[list[str], tuple[str, ...]]:
+    """The `options.columns` tokens a long output parses, and the roles whose name the list
+    asked for. Long output writes `status` nowhere and each role's `<role>_label` by default
+    (`materialise.projection`), so both tokens are dropped. A list that selects keeps each named
+    role's entity column, which its label sits beside."""
+    label_tokens = {
+        f"{role}_label": role for role in entity_columns if f"{role}_label" not in table_columns
+    }
+    tokens = [token for token in columns if token != _STATUS_COLUMN and token not in label_tokens]
+    named_roles = tuple(dict.fromkeys(label_tokens[t] for t in columns if t in label_tokens))
+    return tokens, named_roles
+
+
+def _axis_columns(columns: Sequence[str], *, code_index: CodeIndex | None) -> tuple[str, ...]:
+    """The decoded `stat_var_<code_system>` columns among `columns`, in code-system order."""
+    if code_index is None:
+        return ()
+    return tuple(
+        column
+        for code_system in sorted(code_index.declarations)
+        if (column := axis_source_column(code_system)) in columns
+    )
+
+
+def _axis_codes(code_index: CodeIndex | None) -> dict[str, dict[str, str | None]]:
+    """Each declared code system's `{label: code dcid}`, the lookup a long output's axis code
+    columns read (`materialise.projection.plan_long_projection`). A label two codes of one system
+    share maps to `None`, so its rows get an empty code cell and an `enrichment_unavailable`
+    warning naming the code column."""
+    if code_index is None:
+        return {}
+    codes: dict[str, dict[str, str | None]] = {
+        code_system: {} for code_system in code_index.declarations
+    }
+    for row in code_index.codes:
+        by_label = codes.get(row.code_system)
+        if by_label is None:
+            continue
+        by_label[row.label] = None if row.label in by_label else row.dcid
+    return codes
+
+
+def _native_price_basis(
+    code_index: CodeIndex | None,
+    *,
+    resolved_stat_var_refs: Sequence[str],
+    shape_qualifier: str | None,
+) -> Callable[[object], PriceBasis | None]:
+    """The price basis of a native currency unit on a row, from the row's `stat_var`: the
+    `measurementQualifier` the code index records for that StatVar (`PRICES_BY_QUALIFIER`).
+    A summed family ref takes the basis every resolved StatVar shares, when the index knows
+    them all and they agree. Any other row takes `shape_qualifier`, the identity shape's
+    `measurementQualifier`, which every member shares. The code index holds the CRS StatVars
+    only, so a series from another source gets its basis from the shape."""
+    shape_basis = PRICES_BY_QUALIFIER.get(shape_qualifier) if shape_qualifier else None
+    if code_index is None:
+        return lambda _stat_var: shape_basis
+    by_bare = {ref.removeprefix(_STAT_VAR_REF_PREFIX): ref for ref in resolved_stat_var_refs}
+    by_ref: dict[object, PriceBasis | None] = {
+        by_bare[row.dcid]: PRICES_BY_QUALIFIER.get(row.measurement_qualifier or "")
+        for row in code_index.statvars
+        if row.dcid in by_bare
+    }
+    bases = set(by_ref.values())
+    shared = next(iter(bases)) if len(bases) == 1 and len(by_ref) == len(by_bare) else shape_basis
+    return lambda stat_var: by_ref.get(stat_var, shared)
+
+
+@dataclass
+class _NameReads:
+    """Where a render's names come from, shared by the data file and the bundle's codes table.
+    `known` names a cell value outright: a cited source's label, a summed family's label. Every
+    other value is named by its graph `name`, read through `enrichment` by `lookup` against one
+    absolute `deadline`: the render's `deadline` or `metadata_read_seconds` from the render's
+    start, whichever ends later. After one read fails, `lookup` refuses without reading, so a
+    graph outage costs the render at most one read's wait."""
+
+    enrichment: EnrichmentLookup
+    known: Mapping[str, str]
+    deadline: float | None
+    failed: bool = False
+
+    @classmethod
+    def for_render(
+        cls,
+        *,
+        enrichment: EnrichmentLookup,
+        citations: Mapping[str, CitationSource],
+        family: tuple[str, str] | None,
+        deadline: float | None,
+        metadata_read_seconds: float,
+    ) -> _NameReads:
+        known = {ref: cited.label for ref, cited in citations.items()}
+        if family is not None:
+            known[family[0]] = family[1]
+        return cls(
+            enrichment=enrichment,
+            known=known,
+            deadline=metadata_deadline(deadline, floor_seconds=metadata_read_seconds),
+        )
+
+    def lookup(self, nodes: Sequence[str]) -> Mapping[str, Mapping[str, str]]:
+        """`enrichment`'s fields of `nodes`. Raises `GraphReadError` when this read fails or
+        an earlier one of the render did."""
+        if self.failed:
+            raise GraphReadError("an earlier name read of this render failed")
+        try:
+            return self.enrichment.lookup(nodes, deadline=self.deadline)
+        except GraphReadError:
+            self.failed = True
+            raise
+
+
+@dataclass
+class _LongLayout:
+    """Puts long output in its published layout (`materialise.projection`) at the writer
+    boundary. The layout is planned from the first table it sees, and every later chunk of the
+    same render has the same columns.
+
+    Each chunk's names come from `reads` before it is projected, and a value is asked for once
+    per layout. A graph read that fails or runs out of time leaves the names it would have given
+    empty and stops further reads for the whole render (`_NameReads`), so the render completes
+    with those cells empty. `warnings` then counts the empty name and code cells per column as
+    `enrichment_unavailable`.
+
+    A frame-layout request (`FRAME_LAYOUT`) gets a layout with `frame` set, whose `apply`
+    returns each table unchanged and reads no names, so its file holds the frame's grammar
+    columns."""
+
+    entity_columns: Sequence[str]
+    axis_codes: Mapping[str, Mapping[str, str | None]]
+    unit_naming: UnitNaming
+    reads: _NameReads
+    frame: bool = False
+    projection: LongProjection | None = None
+    names: dict[str, str] = field(default_factory=dict)
+    asked: set[str] = field(default_factory=set)
+    unavailable: Counter[str] = field(default_factory=Counter)
+
+    @classmethod
+    def for_render(
+        cls,
+        *,
+        options: MintOptions,
+        entity_columns: Sequence[str],
+        code_index: CodeIndex | None,
+        resolved_stat_var_refs: Sequence[str],
+        shape_qualifier: str | None,
+        reads: _NameReads,
+    ) -> _LongLayout:
+        if options.layout == FRAME_LAYOUT:
+            return cls(
+                entity_columns=entity_columns,
+                axis_codes={},
+                unit_naming=UnitNaming(
+                    currency_of=unit_currency,
+                    native_price_basis=lambda _stat_var: None,
+                    label=unit_label,
+                ),
+                reads=reads,
+                frame=True,
+            )
+        return cls(
+            entity_columns=entity_columns,
+            axis_codes=_axis_codes(code_index),
+            unit_naming=UnitNaming(
+                currency_of=unit_currency,
+                native_price_basis=_native_price_basis(
+                    code_index,
+                    resolved_stat_var_refs=resolved_stat_var_refs,
+                    shape_qualifier=shape_qualifier,
+                ),
+                label=unit_label,
+            ),
+            reads=reads,
+        )
+
+    def apply(self, table: Table) -> Table:
+        if self.frame:
+            return table
+        if self.projection is None:
+            self.projection = plan_long_projection(
+                table.columns,
+                entity_columns=self.entity_columns,
+                axis_codes=self.axis_codes,
+                unit_naming=self.unit_naming,
+            )
+        self._read_names(self.projection.refs_to_name(table))
+        projected = self.projection.apply(table, names=self.names)
+        self.unavailable.update(projected.unavailable)
+        return cast(Table, projected.table)
+
+    def _read_names(self, refs: Sequence[str]) -> None:
+        new = [ref for ref in refs if ref not in self.asked]
+        self.asked.update(new)
+        to_read: list[str] = []
+        for ref in new:
+            if ref in self.reads.known:
+                self.names[ref] = self.reads.known[ref]
+            else:
+                to_read.append(ref)
+        if not to_read or self.reads.failed:
+            return
+        # StatVar cells carry the frame's `dcid:` spelling. The graph names the bare dcid.
+        bare = {ref: ref.removeprefix(_STAT_VAR_REF_PREFIX) for ref in to_read}
+        try:
+            fields = self.reads.lookup(tuple(dict.fromkeys(bare.values())))
+        except GraphReadError:
+            logger.warning(
+                "download name read failed; %d values keep empty name cells",
+                len(to_read),
+                exc_info=True,
+            )
+            return
+        for ref, node in bare.items():
+            if name := fields.get(node, {}).get("label"):
+                self.names[ref] = name
+
+    def names_complete(self) -> bool:
+        """Whether every name read of the render so far answered."""
+        return not self.reads.failed
+
+    def warnings(
+        self, warnings: Sequence[MaterialisationWarning]
+    ) -> tuple[MaterialisationWarning, ...]:
+        """`warnings` with each `enrichment_unavailable` column named as the output names it,
+        then one `enrichment_unavailable` per name or code column with empty cells, in column
+        order."""
+        renamed = self.projection.renamed if self.projection is not None else {}
+        out: list[MaterialisationWarning] = []
+        for warning in warnings:
+            if warning["code"] == "enrichment_unavailable":
+                entry = cast(EnrichmentUnavailableWarning, warning)
+                if entry["column"] in renamed:
+                    warning = EnrichmentUnavailableWarning(
+                        code="enrichment_unavailable",
+                        severity=entry["severity"],
+                        message=entry["message"],
+                        column=renamed[entry["column"]],
+                        count=entry["count"],
+                    )
+            out.append(warning)
+        columns = self.projection.columns if self.projection is not None else ()
+        out.extend(
+            enrichment_unavailable_warning(column=column, count=self.unavailable[column])
+            for column in columns
+            if self.unavailable[column]
+        )
+        return tuple(out)
+
+
 def _reshape_needs_whole_table(options: MintOptions) -> bool:
     """Returns true for groupby and pivot, which read across rows. Decode, selection, and
     enrichment are row-wise and can stream."""
@@ -1285,6 +1570,22 @@ def _merge_enrichment_warnings(
     return (*(merged[column] for column in sorted_columns), *passthrough)
 
 
+def _stored_pivot_facts(
+    output_profile: OutputProfile | None, plan: PivotPlan
+) -> PivotFeasibility | None:
+    """The stored profile's facts for the plan's `(index, columns)` pair, when it has them."""
+    if output_profile is None:
+        return None
+    return next(
+        (
+            facts
+            for facts in output_profile.pivots
+            if (facts.index, facts.columns) == (plan.index, plan.columns)
+        ),
+        None,
+    )
+
+
 def _stream_bare_pivot(
     frame_chunks: Iterable[Table],
     *,
@@ -1297,6 +1598,7 @@ def _stream_bare_pivot(
     provenance_refs: Sequence[str],
     subject_id: str,
     groupby_preimage: MintPreimage | None,
+    output_profile: OutputProfile | None = None,
 ) -> ReshapeResult:
     """Folds pivot output from chunked rows in one pass. Decode and selection run per chunk, and
     the output stays within `column_cap` and `cell_cap`.
@@ -1307,6 +1609,11 @@ def _stream_bare_pivot(
 
     Enrichment lookups collect per-ref row counts for whole-table missing-value warnings. Pivot
     output carries the index and pivoted values.
+
+    `output_profile` describes the frame these chunks carry. Its facts for the requested pair let
+    the fold refuse a cap before scanning and name the `varying` columns of a non-unique pair. A
+    request whose `no_summable_axis` refusal can apply ignores them, since that refusal reads every
+    chunk.
     """
     frame_chunks_iter = iter(frame_chunks)
     first_chunk = next(frame_chunks_iter, None)
@@ -1419,6 +1726,22 @@ def _stream_bare_pivot(
                 decoded = select_columns(decoded, keep=select, classification=classification)
             yield decoded
 
+    # The refusal needs every contributing StatVar, so a fold that reads one chunk and stops on a
+    # stored cap fact would decide it on a prefix. Such a request reads the whole stream.
+    rollup_unsummable = (
+        options.groupby is not None
+        and code_index is not None
+        and _STAT_VAR_COLUMN not in options.groupby.by
+        and not declared_axes_present(
+            decoded_code_systems=tuple(
+                code_system for _entity_column, code_system in decode_plan.requests
+            )
+            if decode_plan is not None
+            else (),
+            declarations=code_index.declarations,
+        )
+    )
+
     try:
         outcome = fold_pivot_chunks(
             _decoded_selected_chunks(),
@@ -1428,32 +1751,20 @@ def _stream_bare_pivot(
             cell_cap=pivot_plan.cell_cap,
             classification=classification,
             value_column=pivot_plan.value_column,
+            known=None if rollup_unsummable else _stored_pivot_facts(output_profile, pivot_plan),
         )
     except ColumnUnknownError as exc:
         exc.pointer = "/options/pivot"
         raise
 
-    if options.groupby is not None and code_index is not None:
-        decoded_code_systems = (
-            tuple(code_system for _entity_column, code_system in decode_plan.requests)
-            if decode_plan is not None
-            else ()
+    if rollup_unsummable and len(distinct_dcids) > 1:
+        raise RollupNotSummableError(
+            f"groupby.by omits {_STAT_VAR_COLUMN!r} but this frame decodes no "
+            "declared-summable axis to collapse its contributing StatVars over; "
+            "this family's members carry no summable axis, so they cannot be summed",
+            axis=_STAT_VAR_COLUMN,
+            precondition="no_summable_axis",
         )
-        if (
-            _STAT_VAR_COLUMN not in options.groupby.by
-            and not declared_axes_present(
-                decoded_code_systems=decoded_code_systems,
-                declarations=code_index.declarations,
-            )
-            and len(distinct_dcids) > 1
-        ):
-            raise RollupNotSummableError(
-                f"groupby.by omits {_STAT_VAR_COLUMN!r} but this frame decodes no "
-                "declared-summable axis to collapse its contributing StatVars over; "
-                "this family's members carry no summable axis, so they cannot be summed",
-                axis=_STAT_VAR_COLUMN,
-                precondition="no_summable_axis",
-            )
 
     if outcome.violation is not None:
         raise outcome.violation
@@ -1495,11 +1806,14 @@ def _stream_bare_pivot(
 class _StreamedRender:
     """Carries writer chunks and their result callback. Call `finish` after the writer drains. It
     reads accumulated table and warnings and may raise a deferred `no_summable_axis` refusal.
-    Callers run it inside `open_put` so that refusal aborts the artifact."""
+    Callers run it inside `open_put` so that refusal aborts the artifact. `names_complete`,
+    read after the writer drains, is `False` when a long output's name read failed
+    (`_LongLayout`), so the caller leaves the artifact unlinked."""
 
     chunks_for_writer: Iterable[Table]
     collapse: GroupbyCollapseRendering | None
     finish: Callable[[], tuple[Table, tuple[MaterialisationWarning, ...]]]
+    names_complete: Callable[[], bool] = lambda: True
 
 
 def _reshape_stream_plain(
@@ -1512,9 +1826,20 @@ def _reshape_stream_plain(
     code_index: CodeIndex | None,
     resolved_stat_var_refs: Sequence[str],
     provenance_refs: Sequence[str],
+    shape_qualifier: str | None,
+    name_reads: _NameReads,
 ) -> _StreamedRender:
-    """Streams row-wise decode, selection, and enrichment by reshaping each chunk before passing it
-    to the writer. `_merge_enrichment_warnings` combines per-chunk counts."""
+    """Streams row-wise decode, selection, and enrichment by reshaping each chunk and putting it
+    in the long layout before passing it to the writer. `_merge_enrichment_warnings` combines
+    per-chunk counts."""
+    layout = _LongLayout.for_render(
+        options=options,
+        entity_columns=entity_columns,
+        code_index=code_index,
+        resolved_stat_var_refs=resolved_stat_var_refs,
+        shape_qualifier=shape_qualifier,
+        reads=name_reads,
+    )
     collected_warnings: list[MaterialisationWarning] = []
     first_reshaped_chunk: list[Table] = []
     first_warning_order: list[tuple[str, ...]] = []
@@ -1532,10 +1857,11 @@ def _reshape_stream_plain(
                 provenance_refs=provenance_refs,
             )
             collected_warnings.extend(chunk_result.warnings)
+            projected = layout.apply(chunk_result.table)
             if not first_reshaped_chunk:
-                first_reshaped_chunk.append(chunk_result.table)
+                first_reshaped_chunk.append(projected)
                 first_warning_order.append(chunk_result.warning_order)
-            yield chunk_result.table
+            yield projected
 
     def _finish() -> tuple[Table, tuple[MaterialisationWarning, ...]]:
         assert first_reshaped_chunk, (
@@ -1543,10 +1869,17 @@ def _reshape_stream_plain(
         )
         return (
             first_reshaped_chunk[0],
-            _merge_enrichment_warnings(collected_warnings, order=first_warning_order[0]),
+            layout.warnings(
+                _merge_enrichment_warnings(collected_warnings, order=first_warning_order[0])
+            ),
         )
 
-    return _StreamedRender(chunks_for_writer=_reshaped_chunks(), collapse=None, finish=_finish)
+    return _StreamedRender(
+        chunks_for_writer=_reshaped_chunks(),
+        collapse=None,
+        finish=_finish,
+        names_complete=layout.names_complete,
+    )
 
 
 def _reshape_stream(
@@ -1562,17 +1895,18 @@ def _reshape_stream(
     subject_id: str,
     subject_label: str | None,
     groupby_preimage: MintPreimage | None,
-    frame_keeps_axes: bool,
+    shape_qualifier: str | None,
+    name_reads: _NameReads,
+    output_profile: OutputProfile | None = None,
 ) -> _StreamedRender:
-    """Reslices chunks, then dispatches every member through one of four paths:
+    """Reslices chunks, then dispatches the frame through one of four paths:
 
     - Plain decode, selection, and enrichment stream each reshaped chunk to the writer.
     - A collapsing groupby folds `stat_var` across chunks, then writes the reduced table.
     - A bare pivot folds output within its width and cell caps.
     - A no-op groupby streams per chunk and checks its refusal after the writer drains.
 
-    The same dispatch serves definitions and collection members. Groupby and pivot folds bound
-    output size. Other paths retain chunk-sized row data.
+    Groupby and pivot folds bound output size. Other paths retain chunk-sized row data.
     """
     frame_chunks_iter = iter(_reslice_chunks(frame_chunks))
     first_chunk = next(frame_chunks_iter, None)
@@ -1590,6 +1924,8 @@ def _reshape_stream(
             code_index=code_index,
             resolved_stat_var_refs=resolved_stat_var_refs,
             provenance_refs=provenance_refs,
+            shape_qualifier=shape_qualifier,
+            name_reads=name_reads,
         )
 
     will_stream_groupby_collapse = False
@@ -1626,12 +1962,29 @@ def _reshape_stream(
             subject_label=subject_label,
             groupby_preimage=groupby_preimage,
             frame_chunks=rest_of_frame_chunks,
-            frame_keeps_axes=frame_keeps_axes,
         )
+        if options.pivot is not None:
+            return _StreamedRender(
+                chunks_for_writer=(result.table,),
+                collapse=result.collapse,
+                finish=lambda: (result.table, result.warnings),
+            )
+        # The collapse frame keeps its grammar columns. Only the written table is projected.
+        layout = _LongLayout.for_render(
+            options=options,
+            entity_columns=entity_columns,
+            code_index=code_index,
+            resolved_stat_var_refs=resolved_stat_var_refs,
+            shape_qualifier=shape_qualifier,
+            reads=name_reads,
+        )
+        collapsed = layout.apply(result.table)
+        collapsed_warnings = layout.warnings(result.warnings)
         return _StreamedRender(
-            chunks_for_writer=(result.table,),
+            chunks_for_writer=(collapsed,),
             collapse=result.collapse,
-            finish=lambda: (result.table, result.warnings),
+            finish=lambda: (collapsed, collapsed_warnings),
+            names_complete=layout.names_complete,
         )
 
     if first_chunk is not None and options.pivot is not None and not will_stream_groupby_collapse:
@@ -1648,6 +2001,7 @@ def _reshape_stream(
             provenance_refs=provenance_refs,
             subject_id=subject_id,
             groupby_preimage=groupby_preimage,
+            output_profile=output_profile,
         )
         return _StreamedRender(
             chunks_for_writer=(result.table,),
@@ -1659,6 +2013,14 @@ def _reshape_stream(
         refuse_unknown_by_axes(by=options.groupby.by, declarations=code_index.declarations)
     passthrough_options = (
         options.model_copy(update={"groupby": None}) if options.groupby is not None else options
+    )
+    layout = _LongLayout.for_render(
+        options=options,
+        entity_columns=entity_columns,
+        code_index=code_index,
+        resolved_stat_var_refs=resolved_stat_var_refs,
+        shape_qualifier=shape_qualifier,
+        reads=name_reads,
     )
     collected_warnings: list[MaterialisationWarning] = []
     first_reshaped_chunk: list[Table] = []
@@ -1688,10 +2050,11 @@ def _reshape_stream(
                 provenance_refs=provenance_refs,
             )
             collected_warnings.extend(chunk_result.warnings)
+            projected = layout.apply(chunk_result.table)
             if not first_reshaped_chunk:
-                first_reshaped_chunk.append(chunk_result.table)
+                first_reshaped_chunk.append(projected)
                 first_warning_order.append(chunk_result.warning_order)
-            yield chunk_result.table
+            yield projected
 
     def _finish() -> tuple[Table, tuple[MaterialisationWarning, ...]]:
         if (
@@ -1715,10 +2078,13 @@ def _reshape_stream(
             "render_and_store requires frame_chunks to yield at least one chunk"
         )
         merged = _merge_enrichment_warnings(collected_warnings, order=first_warning_order[0])
-        return first_reshaped_chunk[0], merged
+        return first_reshaped_chunk[0], layout.warnings(merged)
 
     return _StreamedRender(
-        chunks_for_writer=_groupby_passthrough_chunks(), collapse=None, finish=_finish
+        chunks_for_writer=_groupby_passthrough_chunks(),
+        collapse=None,
+        finish=_finish,
+        names_complete=layout.names_complete,
     )
 
 
@@ -1726,8 +2092,9 @@ def _reshape_stream(
 class RenderedDefinition:
     """The `render_and_store` result. `collapse` is set for a groupby collapse to a frame.
     `datasets_api.serve` uses it to write the collapsed version's frame1 and version record.
-    `labels_complete` is `False` when a bundle's code label read failed
-    (`BundleCodes.label_read_complete`), and the caller then leaves the artifact unlinked."""
+    `labels_complete` is `False` when a bundle's code label read
+    (`BundleCodes.label_read_complete`) or a long output's name read failed, and the caller
+    then leaves the artifact unlinked."""
 
     artifact: ArtifactEntryModel
     warnings: tuple[MaterialisationWarning, ...]
@@ -1753,19 +2120,21 @@ def render_and_store(
     code_index: CodeIndex | None = None,
     resolved_stat_var_refs: Sequence[str],
     groupby_preimage: MintPreimage | None = None,
+    output_profile: OutputProfile | None = None,
     deadline: float | None = None,
     metadata_read_seconds: float = 0.0,
 ) -> RenderedDefinition:
     """Renders one definition to a stored artifact and returns its reshape warnings. It consumes
-    `frame_chunks` once in order. `_reshape_stream` shares dispatch with collection members.
+    `frame_chunks` once in order.
 
     A bundle is built from the version's facts: `citations` (the version's
     `CitationModel.sources_by_ref()`, with empty documentation and licence fields filled by
     `datasets_api.manifest.healed_citation`) names and documents each source, and `prepared_at`
     is the version's first-mint instant. Its data file is `data/<sources slug>.<format>`, its
     columns are documented and its codes listed from the rows the writer streams, and the codes
-    are named by one batched graph read through `enrichment`, bounded by `deadline` or
-    `metadata_read_seconds` from the read's start, whichever ends later. A fresh render of one
+    are named by one batched graph read through `enrichment`. Every graph name read of the
+    render shares one deadline, `deadline` or `metadata_read_seconds` from the render's start,
+    whichever ends later, and none follows a failed one (`_NameReads`). A fresh render of one
     version therefore matches the artifact linked for it while the graph's documentation and
     code names are unchanged. `site` supplies the origin of every link.
 
@@ -1781,7 +2150,7 @@ def render_and_store(
     `code_index.labels.family_label` over `spec`'s identity.
     """
     check_options_supported(options, code_index=code_index)
-    subject_id = str(spec.get("spec_id") or spec.get("collection_id"))
+    subject_id = str(spec.get("spec_id"))
     identity = spec.get("identity")
     subject_label = (
         family_label(
@@ -1791,6 +2160,17 @@ def render_and_store(
         )
         if code_index is not None and isinstance(identity, Mapping)
         else None
+    )
+    name_reads = _NameReads.for_render(
+        enrichment=enrichment,
+        citations=citations,
+        family=(
+            (f"{_STAT_VAR_REF_PREFIX}{subject_id}", subject_label)
+            if subject_label is not None
+            else None
+        ),
+        deadline=deadline,
+        metadata_read_seconds=metadata_read_seconds,
     )
     with phase("render"):
         rendering = Rendering()
@@ -1806,7 +2186,13 @@ def render_and_store(
             subject_id=subject_id,
             subject_label=subject_label,
             groupby_preimage=groupby_preimage,
-            frame_keeps_axes=True,
+            shape_qualifier=(
+                shape_measurement_qualifier(cast("Mapping[str, object]", identity))
+                if isinstance(identity, Mapping)
+                else None
+            ),
+            name_reads=name_reads,
+            output_profile=output_profile,
         )
         chunks_for_writer = streamed.chunks_for_writer
         collapse = streamed.collapse
@@ -1834,7 +2220,7 @@ def render_and_store(
                     # Cast it to `IO[bytes]` for `zipfile`'s nominal parameter type.
                     with zipfile.ZipFile(cast(IO[bytes], sink), "w") as zf:
                         (data_path,) = _data_paths((sources,), format_=options.format)
-                        scan = _table_scan(entity_columns, options=options)
+                        scan = _table_scan(entity_columns, options=options, code_index=code_index)
                         with zf.open(
                             zipfile.ZipInfo(data_path, date_time=_ZIP_FIXED_DATE_TIME),
                             mode="w",
@@ -1854,11 +2240,12 @@ def render_and_store(
                             family=_family(
                                 collapse, subject_id=subject_id, subject_label=subject_label
                             ),
-                            enrichment=enrichment,
-                            deadline=deadline,
-                            metadata_read_seconds=metadata_read_seconds,
+                            code_index=code_index,
+                            reads=name_reads,
                         )
-                        labels_complete = bundle_codes_read.label_read_complete
+                        labels_complete = (
+                            bundle_codes_read.label_read_complete and streamed.names_complete()
+                        )
                         codes = bundle_codes_read.entries
                         member = _member_provenance(
                             spec_id=subject_id,
@@ -1870,7 +2257,6 @@ def render_and_store(
                             scan=scan,
                             options=options,
                             code_index=code_index,
-                            row_count=False,
                         )
                         files = assemble_bundle(
                             spec=spec,
@@ -1900,7 +2286,7 @@ def render_and_store(
                     )
                     table, warnings = streamed.finish()
                     media_type = written.media_type
-                    labels_complete = True
+                    labels_complete = streamed.names_complete()
             stored = sink.result()
         except ArtifactRecordConflictError as exc:
             # See `_store_artifact`'s own identical clause: this call sites
@@ -1925,12 +2311,7 @@ def render_and_store(
     )
 
 
-MEMBER_RENDERING_KEY = "member"
-"""Tags each bare collection artifact with its member `spec_id`, keeping rendering keys distinct
-under the shared subject and version. Snapshot retrieval removes this key before applying request
-rendering filters."""
-
-BUNDLE_LAYOUT_VERSION = 1
+BUNDLE_LAYOUT_VERSION = 2
 """The bundle layout `rendition_token` hashes. Bump it with any change to a bundle's files or
 their contents for unchanged data and settings (a file added, renamed or reworded, a column or
 code described differently), so every version renders and links a new bundle on its next
@@ -1938,6 +2319,24 @@ request while each old bundle stays listed under its own rendering key."""
 
 RENDITION_KEY = "rendition"
 """The bundle rendering's rendition token (`rendition_token`). A bare rendering has none."""
+
+LAYOUT_KEY = "layout"
+"""The bare rendering's data layout (`DATA_LAYOUT_VERSION`). A bundle has none, since its
+rendition token covers the layout of the data file inside it."""
+
+DATA_LAYOUT_VERSION = 2
+"""The column layout of a bare data file. Bump it with any change to a bare file's columns or
+cells for unchanged data and options, so a request renders a new file under a new rendering key
+and cannot match one written in the old layout. Version 2 is the long layout of
+`materialise.projection`. A rendering without `LAYOUT_KEY` predates it."""
+
+FRAME_LAYOUT = "frame"
+"""The `options.layout` value that asks for a bare parquet file in the frame layout: the
+frame's grammar columns as reshaped (`stat_var`, the roles, decoded `stat_var_<code_system>`
+axes, `time_period`, `value`, `unit` with a converted unit as its JCS request text,
+`measurementMethod`, `provenance`, `status`), the file machine readers parse. Its rendering
+carries `LAYOUT_KEY = FRAME_LAYOUT` from the request and no `DATA_LAYOUT_VERSION` stamp. A
+change to this layout ships under a new value."""
 
 
 def rendition_token(site: PublicSiteSettings) -> str:
@@ -1955,13 +2354,18 @@ def artifact_rendering(options: MintOptions, *, site: PublicSiteSettings) -> dic
     """The `rendering` an artifact rendered under `options` is stored, linked and matched under.
 
     It is `options` without unset fields (`exclude_none=True`, so a defaulted `format` or
-    `bundle` always appears and an unset reshape never does), plus `RENDITION_KEY` for a bundle.
-    The rendering key hashes this dict (`version_store.rendering_key`), so a layout or settings
-    change gives new bundles a new key and leaves old links matching only themselves.
+    `bundle` always appears and an unset reshape never does), plus `RENDITION_KEY` for a bundle
+    and `LAYOUT_KEY = DATA_LAYOUT_VERSION` for a bare file in the long layout. A frame-layout
+    request's `options` already carry `LAYOUT_KEY = FRAME_LAYOUT`, so its rendering is the
+    options dump as sent. The rendering key hashes this dict
+    (`version_store.rendering_key`), so a layout or settings change gives new artifacts a new
+    key and leaves old links matching only themselves.
     """
     rendering = options.model_dump(mode="json", exclude_none=True)
     if options.bundle:
         rendering[RENDITION_KEY] = rendition_token(site)
+    elif options.layout is None:
+        rendering[LAYOUT_KEY] = DATA_LAYOUT_VERSION
     return rendering
 
 
@@ -1971,299 +2375,6 @@ def artifact_rendering_key(options: MintOptions, *, site: PublicSiteSettings) ->
     definition door's currency check, the bundle-link check and the operations poll all derive
     a request's key here, so they narrow a version to the same rendering."""
     return rendering_key(artifact_rendering(options, site=site))
-
-
-@dataclass(frozen=True)
-class CollectionMemberRendering:
-    """Input for one collection member. `frame_chunks` is called once when that member renders.
-    Members render in order, keeping only one member's rows in memory.
-
-    `content_version` is the member's token, separate from the collection version, and
-    `prepared_at` its first-mint instant, which names its bare file. `entity_columns`
-    are its declared roles, which may differ across members. `provenance_refs` are the member's
-    live refs, which govern the member-specific absent-observation rule for groupby.
-    `cited_refs` name and cite its files: the bundle's name, the member's `data/` path, its
-    README sources and its bare file's name. They are the stored member entry's refs for a
-    collection already on record, and equal `provenance_refs` otherwise.
-    `resolved_stat_var_refs` includes zero-row members in groupby population checks.
-    """
-
-    spec_id: str
-    frame_chunks: Callable[[], Iterator[Table]]
-    provenance_refs: Sequence[str]
-    cited_refs: Sequence[str]
-    content_version: str
-    prepared_at: datetime
-    entity_columns: Sequence[str]
-    resolved_stat_var_refs: Sequence[str]
-    """This member's own resolved StatVar population, zero-row members
-    included -- threaded straight through to `_reshape` (see that
-    function's own docstring). A collection's members each materialise
-    their own frame independently, so each carries its own population
-    rather than sharing one across the collection.
-    """
-
-
-def _reshape_collection_member(
-    member: CollectionMemberRendering,
-    *,
-    options: MintOptions,
-    enrichment: EnrichmentLookup,
-    pivot_max_output_cells: int,
-    code_index: CodeIndex | None,
-) -> _StreamedRender:
-    """Streams one member's chunks through shared reshape dispatch. Each member serves under its
-    base content version, so a sum that keeps a code axis (in `by` or through `groupby.levels`)
-    renders the summed table with no collapse frame, and a full collapse with multiple
-    contributors raises `RollupNotSummableError`.
-    The check runs before member bytes are written. Sole-contributor full collapses succeed.
-    The member id supplies the family ref. The version preimage is absent."""
-    streamed = _reshape_stream(
-        member.frame_chunks(),
-        options=options,
-        entity_columns=member.entity_columns,
-        enrichment=enrichment,
-        pivot_max_output_cells=pivot_max_output_cells,
-        code_index=code_index,
-        resolved_stat_var_refs=member.resolved_stat_var_refs,
-        provenance_refs=member.provenance_refs,
-        subject_id=member.spec_id,
-        # A collection member refuses a summed collapse below, so no warning needs the label.
-        subject_label=None,
-        groupby_preimage=None,
-        frame_keeps_axes=False,
-    )
-    if streamed.collapse is not None and streamed.collapse.contributing_member_count > 1:
-        raise RollupNotSummableError(
-            f"groupby sums collection member {member.spec_id!r} into one frame across "
-            f"{streamed.collapse.contributing_member_count} contributing "
-            "StatVars; a collection has no per-member content_version to mint the "
-            "collapsed identity under -- request this member individually through "
-            f"GET /api/datasets/{member.spec_id} instead",
-            axis="stat_var",
-            precondition="collection_member_family_collapse",
-        )
-    return streamed
-
-
-def _stream_member_artifact(
-    streamed: _StreamedRender,
-    *,
-    format_: str,
-    rendering: Rendering,
-    subject_id: str,
-    content_version: str,
-    artifact_store: ArtifactStore,
-) -> tuple[WrittenArtifact, StoredArtifact, Table, tuple[MaterialisationWarning, ...]]:
-    """Streams writer output into `open_put` and calls `finish` before closing the sink, so deferred
-    refusals abort the write. Adds `subject_id` and `content_version` to artifact conflicts before
-    re-raising them."""
-    with phase("store"):
-        try:
-            with artifact_store.open_put(tier=Tier.working) as sink:
-                written = _FORMAT_WRITERS[format_](
-                    streamed.chunks_for_writer, rendering=rendering, sink=sink
-                )
-                table, warnings = streamed.finish()
-            stored = sink.result()
-        except ArtifactRecordConflictError as exc:
-            exc.subject_id = subject_id
-            exc.content_version = content_version
-            raise
-    return written, stored, table, warnings
-
-
-@dataclass(frozen=True)
-class RenderedCollection:
-    """The `render_and_store_collection` result: the stored artifacts, the reshape warnings in
-    member order, and whether a bundle's code label read answered, as in
-    `RenderedDefinition`."""
-
-    artifacts: list[ArtifactEntryModel]
-    warnings: tuple[MaterialisationWarning, ...]
-    labels_complete: bool = True
-
-
-def render_and_store_collection(
-    *,
-    members: Iterable[CollectionMemberRendering],
-    options: MintOptions,
-    spec: dict[str, object],
-    citations: Mapping[str, CitationSource],
-    reproducing_call: ReproducingCall | None,
-    content_version: str,
-    prepared_at: datetime,
-    site: PublicSiteSettings,
-    artifact_store: ArtifactStore,
-    enrichment: EnrichmentLookup,
-    pivot_max_output_cells: int,
-    code_index: CodeIndex | None = None,
-    deadline: float | None = None,
-    metadata_read_seconds: float = 0.0,
-) -> RenderedCollection:
-    """Consumes members once, in order, and renders one at a time. It holds at most one member's
-    table and output bytes. The next member starts after the current write commits.
-
-    Bare mode stores one artifact per member under that member's version. `MEMBER_RENDERING_KEY`
-    keeps artifacts distinct under the shared collection subject and version. Bundle mode stores one
-    collection-version artifact with a resource per member. Its rendering key covers the package.
-    Member files stream into the ZIP before `datapackage.json`, whose sizes and digests are known
-    after every writer finishes.
-
-    Returns reshape warnings in member order. A supplied `code_index` passes to each member's
-    reshape. `None` skips decoding. `citations` is the manifest's `sources_by_ref()`, covering
-    every member's refs.
-
-    A bundle writes each member at `data/<member slug>.<format>`
-    (`bundle_naming.member_slugs`) beside one codes table for every member, prints each
-    member's row count, and takes `prepared_at`, `site`, `deadline` and `metadata_read_seconds` as
-    `render_and_store` does. A collection bundle gets no website link and no rebuild request.
-    """
-    check_options_supported(options, code_index=code_index)
-    rendering = Rendering()
-    reshape_warnings: list[MaterialisationWarning] = []
-    rendering_options = artifact_rendering(options, site=site)
-
-    if not options.bundle:
-        artifacts: list[ArtifactEntryModel] = []
-        for member in members:
-            with phase("render"):
-                streamed = _reshape_collection_member(
-                    member,
-                    options=options,
-                    enrichment=enrichment,
-                    pivot_max_output_cells=pivot_max_output_cells,
-                    code_index=code_index,
-                )
-            written, stored, table, member_warnings = _stream_member_artifact(
-                streamed,
-                format_=options.format,
-                rendering=rendering,
-                subject_id=member.spec_id,
-                content_version=member.content_version,
-                artifact_store=artifact_store,
-            )
-            del streamed
-            reshape_warnings.extend(member_warnings)
-            artifacts.append(
-                _commit_stored(
-                    stored,
-                    media_type=written.media_type,
-                    rendering={**rendering_options, MEMBER_RENDERING_KEY: member.spec_id},
-                    subject_id=member.spec_id,
-                    content_version=member.content_version,
-                    source_names=cited_source_names(member.cited_refs, citations),
-                    prepared_at=member.prepared_at,
-                    artifact_store=artifact_store,
-                )
-            )
-            del table
-        return RenderedCollection(artifacts=artifacts, warnings=tuple(reshape_warnings))
-
-    members = tuple(members)
-    member_sources = [_sources(member.cited_refs, citations) for member in members]
-    data_paths = _data_paths(member_sources, format_=options.format)
-    bundle_members: list[MemberProvenance] = []
-    scans: list[TableScan] = []
-    try:
-        with (
-            artifact_store.open_put(tier=Tier.working) as sink,
-            zipfile.ZipFile(cast(IO[bytes], sink), "w") as zf,
-        ):
-            for member, sources, data_path in zip(members, member_sources, data_paths, strict=True):
-                with phase("render"):
-                    streamed = _reshape_collection_member(
-                        member,
-                        options=options,
-                        enrichment=enrichment,
-                        pivot_max_output_cells=pivot_max_output_cells,
-                        code_index=code_index,
-                    )
-                with phase("store"):
-                    scan = _table_scan(member.entity_columns, options=options)
-                    with zf.open(
-                        zipfile.ZipInfo(data_path, date_time=_ZIP_FIXED_DATE_TIME),
-                        mode="w",
-                        force_zip64=True,
-                    ) as entry:
-                        written = _FORMAT_WRITERS[options.format](
-                            scan.observe(streamed.chunks_for_writer),
-                            rendering=rendering,
-                            sink=entry,
-                        )
-                    # Finish before the sink closes so a deferred refusal aborts the bundle.
-                    table, member_warnings = streamed.finish()
-                    del streamed
-                    reshape_warnings.extend(member_warnings)
-                    scans.append(scan)
-                    bundle_members.append(
-                        _member_provenance(
-                            spec_id=member.spec_id,
-                            written=written,
-                            frame=table,
-                            rendering=rendering,
-                            data_path=data_path,
-                            sources=sources,
-                            scan=scan,
-                            options=options,
-                            code_index=code_index,
-                            row_count=True,
-                        )
-                    )
-                # See the bare path's identical `del table` above: drops
-                # this member's own table before the next member's own
-                # `frame_chunks()` is ever called.
-                del table
-            with phase("store"):
-                # A collection refuses a summed collapse, so no member writes a family ref.
-                bundle_codes_read = _codes(
-                    scans,
-                    citations=citations,
-                    family=None,
-                    enrichment=enrichment,
-                    deadline=deadline,
-                    metadata_read_seconds=metadata_read_seconds,
-                )
-                codes = bundle_codes_read.entries
-                files = assemble_bundle(
-                    spec=spec,
-                    members=tuple(bundle_members),
-                    reproducing_call=reproducing_call,
-                    context=_bundle_context(
-                        spec=spec,
-                        content_version=content_version,
-                        members=bundle_members,
-                        scans=scans,
-                        codes=codes,
-                        options=options,
-                        prepared_at=prepared_at,
-                        site=site,
-                    ),
-                    codes=codes,
-                )
-                for name in sorted(files):
-                    zf.writestr(zipfile.ZipInfo(name, date_time=_ZIP_FIXED_DATE_TIME), files[name])
-        stored = sink.result()
-    except ArtifactRecordConflictError as exc:
-        exc.subject_id = str(spec.get("collection_id"))
-        exc.content_version = content_version
-        raise
-
-    artifact = _commit_stored(
-        stored,
-        media_type="application/zip",
-        rendering=rendering_options,
-        subject_id=str(spec.get("collection_id")),
-        content_version=content_version,
-        source_names=_source_names([source for sources in member_sources for source in sources]),
-        prepared_at=prepared_at,
-        artifact_store=artifact_store,
-    )
-    return RenderedCollection(
-        artifacts=[artifact],
-        warnings=tuple(reshape_warnings),
-        labels_complete=bundle_codes_read.label_read_complete,
-    )
 
 
 _FRAME1_RENDERING: Mapping[str, object] = {"format": "frame1"}
@@ -2279,18 +2390,15 @@ _STATISTICS_RENDERING_KEY = "statistics"
 _STATISTICS_RENDERING_VALUE = "series"
 
 
-def _statistics_rendering(*, member: str | None) -> Mapping[str, object]:
-    """Returns the fixed statistics rendering key, adding `MEMBER_RENDERING_KEY` for a collection
-    member so its artifact stays distinct under the shared version."""
-    rendering: dict[str, object] = {_STATISTICS_RENDERING_KEY: _STATISTICS_RENDERING_VALUE}
-    if member is not None:
-        rendering[MEMBER_RENDERING_KEY] = member
-    return rendering
+_STATISTICS_RENDERING: Mapping[str, object] = {
+    _STATISTICS_RENDERING_KEY: _STATISTICS_RENDERING_VALUE
+}
+"""Fixed rendering key for series statistics, independent of request options."""
 
 
 def is_statistics_rendering(rendering: Mapping[str, object]) -> bool:
-    """Matches `series-statistics/1` rendering keys, including collection-member keys. Snapshot
-    retrieval uses this to include statistics independently of the requested format."""
+    """Matches the `series-statistics/1` rendering key. Snapshot retrieval uses this to include
+    statistics independently of the requested format."""
     return rendering.get(_STATISTICS_RENDERING_KEY) == _STATISTICS_RENDERING_VALUE
 
 
@@ -2302,15 +2410,13 @@ def render_and_store_series_statistics(
     source_names: Sequence[str],
     prepared_at: datetime,
     artifact_store: ArtifactStore,
-    member: str | None = None,
 ) -> ArtifactEntryModel:
     """Stores each materialisation's `series-statistics/1` Parquet as a listable, signed artifact,
-    independent of the requested format. Manifests list it when `series_count` is set. Collection
-    members include their id in the rendering key to stay distinct under the shared version."""
+    independent of the requested format. Manifests list it when `series_count` is set."""
     return _store_artifact(
         data=data,
         media_type=STATISTICS_MEDIA_TYPE,
-        rendering=_statistics_rendering(member=member),
+        rendering=_STATISTICS_RENDERING,
         subject_id=subject_id,
         content_version=content_version,
         source_names=source_names,

@@ -308,11 +308,11 @@ def _identifying_names(spec: Spec) -> tuple[str | None, ...]:
         shape.measurement_qualifier,
         shape.measurement_denominator,
     )
-    items = spec.resolved.stat_vars.items
-    stat_vars = [name for item in items if (name := _graph_name(item.ref, item.label))]
+    members = spec.resolved.sentence_facts.members
+    stat_vars = [name for member in members if (name := _graph_name(member.dcid, member.label))]
     return (
         *(_graph_name(ref.dcid, ref.label) if ref is not None else None for ref in refs),
-        ", ".join(stat_vars) if stat_vars and len(stat_vars) == len(items) else None,
+        ", ".join(stat_vars) if stat_vars and len(stat_vars) == len(members) else None,
     )
 
 

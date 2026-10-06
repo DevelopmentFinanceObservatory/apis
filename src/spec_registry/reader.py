@@ -1,4 +1,4 @@
-"""Read-only registry interface and its stored definition and collection records.
+"""Read-only registry interface and its stored definition records.
 Missing ids return `None`. Quarantined ids raise `IdentityQuarantined` even when a row exists.
 Calls are synchronous, so async callers must use a worker thread.
 """
@@ -33,12 +33,6 @@ class StoredDefinition:
     identity_digest: str
 
 
-@dataclass(frozen=True)
-class StoredCollection:
-    collection_id: str
-    member_spec_ids: list[str]
-
-
 class SpecReader(Protocol):
     def read_definition(
         self, spec_id: str, *, schema_version: int | None = None
@@ -54,10 +48,6 @@ class SpecReader(Protocol):
 
         Raises `IdentityQuarantined` for the first quarantined id in sorted order.
         """
-        ...
-
-    def read_collection(self, collection_id: str) -> StoredCollection | None:
-        """Return `None` if absent. Raise `IdentityQuarantined` if quarantined."""
         ...
 
 
@@ -76,53 +66,6 @@ class LiveSpecReader:
         if not spec_ids:
             return {}
         return self._read_many(list(dict.fromkeys(spec_ids)), schema_version=None)
-
-    def read_collection(self, collection_id: str) -> StoredCollection | None:
-        failure: str | None = None
-        unavailable = False
-        registry_row = None
-        member_rows: list = []
-        quarantine_hit = False
-        try:
-            with self._store.transaction() as tx:
-                quarantine_hit = (
-                    tx.fetch_one(
-                        "SELECT 1 FROM datasets.identity_quarantine "
-                        "WHERE id_kind = %s AND subject_id = %s LIMIT 1",
-                        ("collection", collection_id),
-                    )
-                    is not None
-                )
-                registry_row = tx.fetch_one(
-                    "SELECT collection_id FROM datasets.collection_registry "
-                    "WHERE collection_id = %s",
-                    (collection_id,),
-                )
-                if registry_row is not None:
-                    member_rows = tx.fetch_all(
-                        "SELECT spec_id FROM datasets.collection_member "
-                        "WHERE collection_id = %s ORDER BY position",
-                        (collection_id,),
-                    )
-        except PoolTimeoutError as exc:
-            failure = f"reading collection_id {collection_id!r} failed: {safe_diagnostics(exc)}"
-            unavailable = True
-        except Exception as exc:
-            failure = f"reading collection_id {collection_id!r} failed: {safe_diagnostics(exc)}"
-
-        if failure is not None:
-            if unavailable:
-                raise SpecRegistryUnavailable(failure)
-            raise SpecRegistryStoreError(failure)
-
-        if quarantine_hit:
-            raise IdentityQuarantined(subject_id=collection_id, id_kind="collection")
-        if registry_row is None:
-            return None
-        return StoredCollection(
-            collection_id=collection_id,
-            member_spec_ids=[cast(str, row["spec_id"]) for row in member_rows],
-        )
 
     def _read_many(
         self, spec_ids: list[str], *, schema_version: int | None

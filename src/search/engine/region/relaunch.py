@@ -18,7 +18,7 @@ from search.engine.region.facet_probe import FacetProbe
 from search.engine.region.option_coverage import _launch_slot_options_task
 from search.engine.region.state import ResolveState
 from search.engine.shape import ShapeDraft
-from search.models import BaseIdentity, EntityOptions, SlotOptions
+from search.models import BaseIdentity, EntityOptions, RoleAxis, SlotOptions
 
 
 def _relaunch_slot_options(
@@ -30,22 +30,26 @@ def _relaunch_slot_options(
     shape_draft: ShapeDraft,
     bindings: list[SlotBindingDraft],
     entities: Mapping[str, list[str]],
+    open_axes: frozenset[RoleAxis],
     place_dcids: list[str] | None,
     entity_options: list[EntityOptions] | None,
     default_facet_probe: FacetProbe,
     facets_pinned: bool,
+    variable_labels: Mapping[str, str],
 ) -> asyncio.Task[_OptionProbeResult]:
     """Relaunch with this survivor's probe context and supplied spec id and slot options.
 
     A supplied facet probe overrides the survivor's own, letting a merged result judge its
     options over every member. Each caller binds the other context when building the result,
-    `facets_pinned` among it: whether the survivor's identity binds a facet."""
+    `facets_pinned` (whether the survivor's identity binds a facet) and `variable_labels`
+    (the survivor's member names) among it."""
     return _launch_slot_options_task(
         spec_id,
         shape_draft,
         bindings,
         opts,
         entities=entities,
+        open_axes=open_axes,
         date_request=state.date_request,
         graph=state.graph,
         sdmx=state.sdmx,
@@ -56,6 +60,7 @@ def _relaunch_slot_options(
         coverage=state.coverage.index,
         deadline=state.deadline,
         facets_pinned=facets_pinned,
+        variable_labels=variable_labels,
     )
 
 

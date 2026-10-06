@@ -15,6 +15,7 @@ import pytest
 
 from entity_resolution import Entity, Group
 from search.engine.bind import _UniversalBindOutput
+from search.engine.quantity import NO_REQUIREMENT, DenominatorKind, quantity_requirement
 from search.engine.region import resolve_variable
 from search.engine.region.availability import (
     _ENTITYLESS_AVAILABILITY_PROBE_PLACES,
@@ -181,13 +182,17 @@ class TestAreAvailabilitySiblings:
 # _prune_availability_siblings
 # ---------------------------------------------------------------------------
 
+_ADULTS = "Count_Person_15OrMoreYears"
+
 
 class TestPruneAvailabilitySiblings:
     def test_drops_unresolved_when_its_resolved_sibling_has_data(self):
         unresolved = _shape("unresolved", meas_denom_unresolved=True, place_available=False)
         resolved = _shape("resolved", meas_denom_dcid="Count_Person", place_available=True)
 
-        result, _ = _prune_availability_siblings([unresolved, resolved], named_place=True)
+        result, _ = _prune_availability_siblings(
+            [unresolved, resolved], named_place=True, quantity=NO_REQUIREMENT, denominator_kinds={}
+        )
 
         assert [s.shape_id for s in result] == ["resolved"]
 
@@ -196,7 +201,9 @@ class TestPruneAvailabilitySiblings:
         unresolved = _shape("unresolved", meas_denom_unresolved=True, place_available=True)
         resolved = _shape("resolved", meas_denom_dcid="Count_Person", place_available=False)
 
-        result, _ = _prune_availability_siblings([unresolved, resolved], named_place=True)
+        result, _ = _prune_availability_siblings(
+            [unresolved, resolved], named_place=True, quantity=NO_REQUIREMENT, denominator_kinds={}
+        )
 
         assert [s.shape_id for s in result] == ["unresolved"]
 
@@ -204,7 +211,9 @@ class TestPruneAvailabilitySiblings:
         unresolved = _shape("unresolved", meas_denom_unresolved=True, place_available=False)
         resolved = _shape("resolved", meas_denom_dcid="Count_Person", place_available=False)
 
-        result, _ = _prune_availability_siblings([unresolved, resolved], named_place=True)
+        result, _ = _prune_availability_siblings(
+            [unresolved, resolved], named_place=True, quantity=NO_REQUIREMENT, denominator_kinds={}
+        )
 
         assert {s.shape_id for s in result} == {"unresolved", "resolved"}
 
@@ -229,7 +238,9 @@ class TestPruneAvailabilitySiblings:
             place_available=resolved_available,
         )
 
-        result, _ = _prune_availability_siblings([unresolved, resolved], named_place=True)
+        result, _ = _prune_availability_siblings(
+            [unresolved, resolved], named_place=True, quantity=NO_REQUIREMENT, denominator_kinds={}
+        )
 
         assert {s.shape_id for s in result} == {"unresolved", "resolved"}
 
@@ -249,7 +260,9 @@ class TestPruneAvailabilitySiblings:
         ],
     )
     def test_non_sibling_denominator_pairs_are_not_pruned(self, first, second):
-        result, _ = _prune_availability_siblings([first, second], named_place=True)
+        result, _ = _prune_availability_siblings(
+            [first, second], named_place=True, quantity=NO_REQUIREMENT, denominator_kinds={}
+        )
         assert {shape.shape_id for shape in result} == {first.shape_id, second.shape_id}
 
     @pytest.mark.parametrize(
@@ -288,8 +301,37 @@ class TestPruneAvailabilitySiblings:
         ],
     )
     def test_role_bearing_pairs_are_not_pruned(self, first, second):
-        result, _ = _prune_availability_siblings([first, second], named_place=True)
+        result, _ = _prune_availability_siblings(
+            [first, second], named_place=True, quantity=NO_REQUIREMENT, denominator_kinds={}
+        )
         assert {shape.shape_id for shape in result} == {first.shape_id, second.shape_id}
+
+    @pytest.mark.parametrize(
+        ("kinds", "survivors"),
+        [
+            pytest.param({_ADULTS: "person"}, {"per_adult"}, id="person-count"),
+            pytest.param({_ADULTS: "other"}, {"unresolved", "per_adult"}, id="other-series"),
+        ],
+    )
+    def test_a_per_capita_leg_substitutes_the_sibling_its_kinds_read_as_per_person(
+        self, kinds: dict[str, DenominatorKind], survivors: set[str]
+    ):
+        """The prune judges the sibling's denominator as bind and materialise do: a
+        `Count_Person_15OrMoreYears` sibling with data replaces the empty shape of a leg
+        naming "per capita" only when the leg's kinds read it as a count of persons."""
+        variable = "alcohol consumption per capita"
+        empty = _shape("unresolved", meas_denom_unresolved=True, place_available=False)
+        per_adult = _shape("per_adult", meas_denom_dcid=_ADULTS, place_available=True)
+
+        result, _ = _prune_availability_siblings(
+            [empty, per_adult],
+            named_place=True,
+            variable=variable,
+            quantity=quantity_requirement([variable]),
+            denominator_kinds=kinds,
+        )
+
+        assert {s.shape_id for s in result} == survivors
 
 
 # ---------------------------------------------------------------------------
@@ -640,7 +682,6 @@ def _run(
             graph=graph,
             resolver=make_resolver(graph),
             llm=_UnusedLLM(),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             pre_resolved=pre_resolved,
@@ -686,11 +727,22 @@ def _two_measure_head_drops(
     `elected` false the survivor is a shape other than the one bind elects."""
     substitutions: list[tuple[ShapeDraft, ShapeDraft]] = []
 
-    def _prune(shapes, *, named_place, variable="", qualifier_matches=(), qualifier_readings=()):
+    def _prune(
+        shapes,
+        *,
+        named_place,
+        quantity,
+        denominator_kinds,
+        variable="",
+        qualifier_matches=(),
+        qualifier_readings=(),
+    ):
         survivors, _ = _prune_availability_siblings(
             shapes,
             named_place=named_place,
             variable=variable,
+            quantity=quantity,
+            denominator_kinds=denominator_kinds,
             qualifier_matches=qualifier_matches,
             qualifier_readings=qualifier_readings,
         )
@@ -944,7 +996,9 @@ class TestPruneSiblingCoveringFewerPlaces:
     def test_drops_the_spelling_whose_data_covers_a_proper_subset_of_the_places(self):
         shapes = self._pair({"country/USA", "country/DEU", "country/KEN"}, {"country/DEU"})
 
-        result, substitutions = _prune_availability_siblings(shapes, named_place=False)
+        result, substitutions = _prune_availability_siblings(
+            shapes, named_place=False, quantity=NO_REQUIREMENT, denominator_kinds={}
+        )
 
         assert [s.shape_id for s in result] == ["unresolved"]
         assert substitutions == []
@@ -952,21 +1006,27 @@ class TestPruneSiblingCoveringFewerPlaces:
     def test_keeps_both_when_each_holds_a_place_the_other_lacks(self):
         shapes = self._pair({"country/USA", "country/DEU"}, {"country/DEU", "country/KEN"})
 
-        result, _ = _prune_availability_siblings(shapes, named_place=False)
+        result, _ = _prune_availability_siblings(
+            shapes, named_place=False, quantity=NO_REQUIREMENT, denominator_kinds={}
+        )
 
         assert {s.shape_id for s in result} == {"unresolved", "resolved"}
 
     def test_keeps_both_when_they_hold_the_same_places(self):
         shapes = self._pair({"country/DEU"}, {"country/DEU"})
 
-        result, _ = _prune_availability_siblings(shapes, named_place=False)
+        result, _ = _prune_availability_siblings(
+            shapes, named_place=False, quantity=NO_REQUIREMENT, denominator_kinds={}
+        )
 
         assert {s.shape_id for s in result} == {"unresolved", "resolved"}
 
     def test_keeps_both_when_one_sides_places_are_unknown(self):
         shapes = self._pair({"country/USA", "country/DEU"}, None)
 
-        result, _ = _prune_availability_siblings(shapes, named_place=False)
+        result, _ = _prune_availability_siblings(
+            shapes, named_place=False, quantity=NO_REQUIREMENT, denominator_kinds={}
+        )
 
         assert {s.shape_id for s in result} == {"unresolved", "resolved"}
 
@@ -994,5 +1054,7 @@ class TestPruneSiblingCoveringFewerPlaces:
             "unresolved": frozenset({"country/KEN", "country/DEU"}),
             "resolved": frozenset({"country/DEU"}),
         }
-        pruned, _ = _prune_availability_siblings(result, named_place=False)
+        pruned, _ = _prune_availability_siblings(
+            result, named_place=False, quantity=NO_REQUIREMENT, denominator_kinds={}
+        )
         assert [s.shape_id for s in pruned] == ["unresolved"]

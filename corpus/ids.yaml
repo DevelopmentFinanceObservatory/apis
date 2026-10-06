@@ -586,3 +586,37 @@
     kind: [catalogue, resolution]
     candidates: {include_families: [ids.debt_stock, ids.debt_service]}
     scope_place: country/ZMB
+
+- id: dq-ids-056
+  query: 'parsed: Nigeria debt service for PPG debt, 2024'
+  door: parsed
+  parsed:
+    - variable_text: debt service for PPG debt
+      entities: [{text: Nigeria}]
+      time_text: '2024'
+  why: PPG is public and publicly guaranteed; IDS publishes Nigeria's PPG debt service for 2024.
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: year, operation: none, breakdown: none, door: parsed, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: ids.debt_service, bound: {guaranteeStatus: PublicOrPubliclyGuaranteed}}
+      entities: [{dcid: country/NGA, role: destination}]
+      window: {kind: range, start: 2024, end: 2024}
+
+- id: dq-ids-057
+  query: 'parsed: Nigeria debt service for PPG debt by creditor, 2024'
+  door: parsed
+  parsed:
+    - variable_text: debt service for PPG debt
+      entities: [{text: Nigeria}]
+      open_roles: [creditor]
+      time_text: '2024'
+  why: An open creditor axis on PPG debt service elects the ByCreditor member, one series per creditor.
+  tags: {theme: debt, entity: country, direction: destination_only, unit: default, time: year, operation: none, breakdown: creditor_class, door: parsed, phrasing: technical}
+  expect:
+    definite:
+      measure:
+        family: ids.debt_service
+        bound: {guaranteeStatus: PublicOrPubliclyGuaranteed}
+        stat_vars: [Amount_FinancialFlow_ServicingPayment_PublicOrPubliclyGuaranteed_ByCreditor_Nominal]
+      entities: [{dcid: country/NGA, role: destination}]
+      window: {kind: range, start: 2024, end: 2024}

@@ -190,7 +190,6 @@ def _run(monkeypatch):
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations=_OBS, availability={}),
             llm=_BindPurposeToExtraLLM(),
-            base_steps=[],
             base_timing={},
             coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
         )
@@ -206,8 +205,8 @@ def test_index_only_winner_renders_its_bound_slot_value_on_the_wire(monkeypatch)
     result = _run(monkeypatch)
     assert result.status == "definite"
     spec = result.specs[0]
-    assert [sv.ref for sv in spec.resolved.stat_vars.items] == [_EXTRA_SV]
-    stat_var = spec.resolved.stat_vars.items[0]
+    assert [sv.ref.dcid for sv in spec.resolved.members] == [_EXTRA_SV]
+    stat_var = spec.resolved.members[0]
     purpose_values = [
         sv.value for sv in stat_var.slot_values if sv.key.property.dcid == _PROP_PURPOSE
     ]

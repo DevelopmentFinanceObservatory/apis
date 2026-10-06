@@ -22,7 +22,6 @@ from materialise import (
     EnrichmentLookup,
     MaterialisationRequest,
     materialise_group,
-    materialise_group_preview,
 )
 from materialise import facets as facets_module
 from materialise.errors import CollectionProbeCeilingExceededError, FacetNotAvailableError
@@ -398,34 +397,6 @@ def test_unbound_members_are_each_probed_and_fetched_at_their_own_countries_with
         frozenset({_BARE_C}): (_COUNTRY_Y,),
     }
     assert result.coverage.rows == 3
-
-
-def test_a_group_preview_of_unbound_members_carries_the_places_its_mint_serves():
-    graph = _RecordingGraph(
-        facets={
-            (_BARE_A, _COUNTRY_X): [_facet("f-shared")],
-            (_BARE_C, _COUNTRY_Y): [_facet("f-shared")],
-        },
-        child_places=_EARTH_COUNTRIES,
-    )
-    requests = [
-        _unbound(_about_request(_BARE_A, _COUNTRY_X)),
-        _unbound(_about_request(_BARE_C, _COUNTRY_X)),
-    ]
-    served = {_BARE_A: _COUNTRY_X, _BARE_C: _COUNTRY_Y}
-    mint_sdmx, _ = _about_sdmx(served, availability=graph.scope_availability())
-    preview_sdmx, _ = _about_sdmx(served, availability=graph.scope_availability())
-
-    minted = _group(requests, sdmx=mint_sdmx, graph=graph)
-    previewed = materialise_group_preview(
-        requests,
-        sdmx=preview_sdmx,
-        graph=graph,
-        revision_reader=FakeRevisionReader([_SNAPSHOT_A, _SNAPSHOT_A]),
-        limit=10,
-    )
-
-    assert previewed.default_scope == minted.default_scope == (_COUNTRY_X, _COUNTRY_Y)
 
 
 def test_unbound_members_with_data_only_at_earth_fetch_earth():

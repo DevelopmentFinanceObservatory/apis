@@ -47,7 +47,11 @@ from materialise.errors import (
 )
 from materialise.formats import ExcelLimitError, ParquetSizeBoundError
 from materialise.graph import Facet, GraphDeadlineExceededError, GraphReadError
-from materialise.reshape import ColumnNotDroppableError, PivotNotHomogeneousError
+from materialise.reshape import (
+    ColumnNotDroppableError,
+    PivotNotHomogeneousError,
+    PivotNotUniqueError,
+)
 from series_coverage.schema import FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
 from spec_registry.identity import recompute_identity
@@ -811,6 +815,25 @@ class TestFormatSizeRefusalsAreNonRetryable:
         assert spec.detail == "parquet output exceeds its 1000-byte size bound"
 
 
+def test_pivot_not_unique_names_each_duplicate_key_then_each_varying_column():
+    exc = PivotNotUniqueError(
+        "pivot on index='recipient', columns='time_period' is not unique",
+        duplicate_keys=(("country/KEN", "2015"),),
+        truncated=False,
+        varying=(("provider", 30), ("sector", 4)),
+    )
+
+    spec = classify_mint_exception(exc)
+
+    assert spec is not None
+    assert spec.code == "pivot_not_unique"
+    assert [(i.pointer, i.member, i.axis) for i in spec.issues] == [
+        ("/options/pivot", "('country/KEN', '2015')", None),
+        ("/options/pivot", None, "provider"),
+        ("/options/pivot", None, "sector"),
+    ]
+
+
 class TestPivotNotHomogeneousCarriesPointerIssuesAndTruncated:
     """`PivotNotHomogeneousError` maps to `/options/pivot` with one issue per offender."""
 
@@ -1054,51 +1077,6 @@ def test_artifact_write_failure_does_not_log_the_reconciliation_marker(caplog):
     assert not any(ARTIFACT_INVENTORY_WRITE_FAILED_MARKER in r.getMessage() for r in errors)
 
 
-def test_source_codes_mixed_refusal_carries_per_index_pointers():
-    graph = _default_graph(
-        extra_arcs={
-            "GOOD1": {"member": (_STAT_VAR_REF,)},
-            "AMBIG1": {"member": ("dcid:a", "dcid:b")},
-            "AMBIG2": {"member": ("dcid:a", "dcid:c")},
-        }
-    )
-    client = _client(graph=graph)
-    body = {
-        "schema_version": 1,
-        "input": {
-            "kind": "source_codes",
-            "codes": ["GOOD1", "AMBIG1", "GOOD1", "AMBIG2"],
-            "scope": _SCOPE,
-        },
-        "options": {"bundle": False},
-    }
-
-    resp = client.post("/api/datasets", json=body)
-
-    assert resp.status_code == 422, resp.text
-    problem = resp.json()
-    assert problem["code"] == "code_ambiguous"
-    pointers = {issue["pointer"] for issue in problem["issues"]}
-    assert pointers == {"/input/codes/1", "/input/codes/3"}
-
-
-def test_source_codes_not_found_at_a_non_zero_index_points_at_that_slot():
-    graph = _default_graph(extra_arcs={"GOOD1": {"member": (_STAT_VAR_REF,)}})
-    client = _client(graph=graph)
-    body = {
-        "schema_version": 1,
-        "input": {"kind": "source_codes", "codes": ["GOOD1", "MISSING"], "scope": _SCOPE},
-        "options": {"bundle": False},
-    }
-
-    resp = client.post("/api/datasets", json=body)
-
-    assert resp.status_code == 404, resp.text
-    problem = resp.json()
-    assert problem["code"] == "code_not_found"
-    assert problem["pointer"] == "/input/codes/1"
-
-
 def test_no_bound_entity_mints_instead_of_refusing_ahead_of_the_facet_axes():
     fetches: list[httpx.Request] = []
 
@@ -1289,8 +1267,8 @@ class TestConversionRefusalsMapTo422ThroughTheRealMintDoor:
         assert problem["cause"]["truncated"] is False
 
 
-# A subject-only collection whose SDMX body names no place on its last row.
-_SUBJECT_STAT_VARS = ("LifeExpectancy_Person", "LifeExpectancy_Person_Female")
+# A subject-only StatVar whose SDMX body names no place on its last row.
+_SUBJECT_STAT_VARS = ("LifeExpectancy_Person",)
 _SUBJECT_ENTITY = "country/KEN"
 _SUBJECT_FACET = Facet(
     facet_id="facet1",
@@ -1315,7 +1293,7 @@ def test_a_row_without_a_place_mid_stream_refuses_upstream_error_through_the_min
         "STRUCTURE,STRUCTURE_ID,ACTION,variableMeasured,observationAbout,unit,measurementMethod,"
         "observationPeriod,provenance,TIME_PERIOD,OBS_VALUE,scalingFactor,facetId\r\n"
         + "".join(_subject_row(sv, _SUBJECT_ENTITY) for sv in _SUBJECT_STAT_VARS)
-        + _subject_row(_SUBJECT_STAT_VARS[1], "NotApplicable")
+        + _subject_row(_SUBJECT_STAT_VARS[0], "NotApplicable")
     )
     graph = FakeMintGraphReader(
         arcs={

@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import calendar
-from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
-from search.models import ResolvedStatVar, TimeWindow
+from search.models import DateRange, TimeWindow
 
 # Supported facet date precisions, tried from least to most specific.
 _RESOLVED_DATE_FORMATS = ("%Y", "%Y-%m", "%Y-%m-%d")
@@ -30,14 +29,6 @@ def _format_resolved_date(text: str) -> str:
             return f"{calendar.month_name[parsed.month]} {parsed.year}"
         return f"{parsed.day} {calendar.month_name[parsed.month]} {parsed.year}"
     return text
-
-
-def _served_bounds(stat_vars: Sequence[ResolvedStatVar]) -> tuple[str | None, str | None]:
-    """The earliest start and latest end over the StatVars' served ranges, each `None` when
-    no range states that bound. ISO dates of one precision order as strings."""
-    starts = [sv.data_date_range.start for sv in stat_vars if sv.data_date_range is not None]
-    ends = [sv.data_date_range.end for sv in stat_vars if sv.data_date_range is not None]
-    return min(filter(None, starts), default=None), max(filter(None, ends), default=None)
 
 
 PeriodKind = Literal["in", "span", "since", "until"]
@@ -72,17 +63,15 @@ class Period:
                 return f"until {end}"
 
 
-def served_period(
-    stat_vars: Sequence[ResolvedStatVar] | None, window: TimeWindow | None
-) -> Period | None:
+def served_period(served: DateRange | None, window: TimeWindow | None) -> Period | None:
     """The span the answer serves as the period a heading states, or None when unknown.
 
-    Each StatVar's range holds the dates the answer's read plan serves for it
-    (`read_plan.served_dates`), inside the years a request named and all years when it
-    named none, so the span runs from the earliest start to the latest end. With no
-    served range the coverage ``window`` states the period in years.
+    ``served`` is the earliest start and latest end over the served members' ranges
+    (`ResolvedStatVars.data_date_range`), each the dates the answer's read plan serves for
+    a member (`read_plan.served_dates`), inside the years a request named and all years
+    when it named none. With no served bound the coverage ``window`` states the period in years.
     """
-    start, end = _served_bounds(stat_vars or ())
+    start, end = (served.start, served.end) if served is not None else (None, None)
     if start is None and end is None and window is not None:
         start = str(window.start_year) if window.start_year is not None else None
         end = str(window.end_year) if window.end_year is not None else None

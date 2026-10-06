@@ -1712,6 +1712,16 @@ class TestAnalysePivot:
         assert analysis.duplicate_keys == (("providerA", "2020"),)
         # The varying count covers all three recipients in the frame.
         assert analysis.varying == (("recipient", 3),)
+        with pytest.raises(PivotNotUniqueError) as excinfo:
+            pivot(
+                table,
+                index="provider",
+                columns="time_period",
+                column_cap=100,
+                cell_cap=1000,
+                classification=classification,
+            )
+        assert excinfo.value.varying == analysis.varying
 
     def test_the_only_varying_column_can_be_provenance(self):
         table = Table(

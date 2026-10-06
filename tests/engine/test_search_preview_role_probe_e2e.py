@@ -159,7 +159,6 @@ def test_single_named_recipient_role_bearing_shape_gets_its_series(monkeypatch):
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
             sdmx=sdmx,
-            base_steps=[],
             base_timing={},
             coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
             options=EngineOptions(

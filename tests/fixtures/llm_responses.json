@@ -4438,23 +4438,6 @@
     "dropped_qualifiers": [],
     "dates": []
   },
-  "Extraction@5dd935b34a35:8faa2e30a8d4a2995d9c69020f154bac99eaad5d": {
-    "kind": "resolution",
-    "variables": [
-      "imputed multilateral education aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to"
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [],
-    "dates": []
-  },
   "Extraction@5dd935b34a35:3752d3b48a15254e50bd58a86a367dbf4c7b19c2": {
     "kind": "resolution",
     "variables": [
@@ -4493,44 +4476,6 @@
     ],
     "dates": []
   },
-  "Extraction@5dd935b34a35:eba19a7773145202ad71095317238a8b8a12ce45": {
-    "kind": "resolution",
-    "variables": [
-      "education aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to"
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "without imputed multilateral"
-    ],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:139ff4751dbf8a0af64062111a86f6c7da8772c6": {
-    "kind": "resolution",
-    "variables": [
-      "education aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to"
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "not counting imputed multilateral"
-    ],
-    "dates": []
-  },
   "Extraction@5dd935b34a35:ff4249df299ec394026771082ca92d9b57da57fc": {
     "kind": "resolution",
     "variables": [
@@ -4542,96 +4487,6 @@
         "span": "Kenya",
         "flow_role": "destination",
         "role_span": "to"
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:6bfd58e2b6282026dff36bf3a5dc43eed1603e88": {
-    "kind": "resolution",
-    "variables": [
-      "education aid",
-      "imputed multilateral aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to"
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:bc7cf1b2704c97aad59c36a3dbb0c088f7c1c5de": {
-    "kind": "resolution",
-    "variables": [
-      "education aid",
-      "imputed multilateral education aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to"
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:a17fdce9ef9d9cde61d31b65f894ce127f1a1984": {
-    "kind": "resolution",
-    "variables": [
-      "CRS education aid",
-      "imputed multilateral education aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to"
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:d38b70687a37fcbf8b53e03414e3fc0cdfbfbb32": {
-    "kind": "resolution",
-    "variables": [
-      "education aid",
-      "imputed multilateral aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenia",
-        "flow_role": "destination",
-        "role_span": "a"
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:230c1b58fc5c9605015ad3da26785a1a77df6fe8": {
-    "kind": "resolution",
-    "variables": [
-      "education aid",
-      "imputed multilateral aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "au"
       }
     ],
     "operations": [],
@@ -4655,720 +4510,6 @@
     "dropped_qualifiers": [],
     "dates": []
   },
-  "Extraction@5dd935b34a35:5d10b4f8ca828fb9b8caaa32aab10a536915aac7": {
-    "kind": "resolution",
-    "variables": [
-      "population including refugees"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "unspecified",
-        "role_span": null
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:746d3a2a6d85909d44d21dd3406ba935dd75bd06": {
-    "kind": "resolution",
-    "variables": [
-      "GDP including the informal economy"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "unspecified",
-        "role_span": null
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:25c732de13e9f8717c24229e0db372c470607e4e": {
-    "kind": "resolution",
-    "variables": [
-      "health spending including private spending"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "unspecified",
-        "role_span": null
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:ef01bfc7b3fb7472a09f1633b28b999a0a15aad0": {
-    "kind": "resolution",
-    "variables": [
-      "education aid",
-      "imputed multilateral student aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to"
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:979facbf3c01e0dd039a6c80a95606b3f30131e5": {
-    "kind": "resolution",
-    "variables": [
-      "education aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to"
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "counting imputed multilateral"
-    ],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:8990cf00658f3f9809439d4cc90121c4b6e626ad": {
-    "kind": "resolution",
-    "variables": [
-      "education aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to"
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "not excluding imputed multilateral"
-    ],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:49f751c57475406658577dd4c7f608c90619a864": {
-    "kind": "resolution",
-    "variables": [
-      "education aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to"
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "with and without imputed multilateral"
-    ],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:a41f23d58769771ce94752e6f3a1bc077d0f9a9f": {
-    "kind": "resolution",
-    "variables": [
-      "education aid including imputed multilateral"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenia",
-        "flow_role": "destination",
-        "role_span": "a"
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:c75d6943a3b77bafc162b0c3a274e0ec17428d78": {
-    "kind": "resolution",
-    "variables": [
-      "education aid including imputed multilateral"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "à"
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:1719ec74a3315212782c5d97b38fab460d9fe77a": {
-    "kind": "resolution",
-    "variables": [
-      "education aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to"
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "from imputed multilateral sources"
-    ],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:4540d80f0185eb0bb3a1bbc3de6fb90f7f164ec7": {
-    "kind": "resolution",
-    "variables": [
-      "education aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to"
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "nothing except imputed multilateral"
-    ],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:327115772fd75303a49ad8348df2a98b5ed6421c": {
-    "kind": "resolution",
-    "variables": [
-      "education aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to"
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "do not include imputed multilateral aid"
-    ],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:da98df23a55217fadaaf8081a9e28a156113f933": {
-    "kind": "resolution",
-    "variables": [
-      "education aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to"
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "don't include imputed multilateral aid in"
-    ],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:c461e68a38a0eb54038f5b37abfaf464f243339d": {
-    "kind": "resolution",
-    "variables": [
-      "education aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to"
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "imputed multilateral excluded"
-    ],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:8096822a85ab275a2ddd2dce851853bba09c2ac4": {
-    "kind": "resolution",
-    "variables": [
-      "education aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to"
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "not including imputed multilateral"
-    ],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:8eb5e35ad70b293ee99bd691857404bfc93cf5c7": {
-    "kind": "resolution",
-    "variables": [
-      "education aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to"
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "minus imputed multilateral"
-    ],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:c82e338649c819434e3bd07543e35969ce8a1c83": {
-    "kind": "resolution",
-    "variables": [
-      "education aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to"
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "apart from imputed multilateral"
-    ],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:259fe5ba6125fbd224b8faa1f4f51984737493a7": {
-    "kind": "resolution",
-    "variables": [
-      "education aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to"
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "not from the ONE Imputed Multilateral Sectors"
-    ],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:973e391633143df73b90cfd4d48859df2da69aa2": {
-    "kind": "resolution",
-    "variables": [
-      "education aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenia",
-        "flow_role": "destination",
-        "role_span": "a"
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "excluyendo imputed multilateral"
-    ],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:5eca8420343e516ea0903f8f369e709abb377d6c": {
-    "kind": "resolution",
-    "variables": [
-      "education aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "à"
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [
-      "hors imputed multilateral"
-    ],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:e943a1e09fcfdc647cf79b2153444a5d81b5b9ad": {
-    "kind": "resolution",
-    "variables": [
-      "non-CRS education aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to"
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:21063782c7f163049180b5c13de0529368311fde": {
-    "kind": "resolution",
-    "variables": [
-      "education aid"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "destination",
-        "role_span": "to"
-      }
-    ],
-    "operations": [
-      {
-        "verb": "rank",
-        "variable": 0,
-        "phrase": "top 5 donors",
-        "over": "origin"
-      }
-    ],
-    "dropped_qualifiers": [
-      "including imputed multilateral"
-    ],
-    "dates": []
-  },
-  "Extraction@5dd935b34a35:2035f61c87cb154b6211b31492ce3012898a1e28": {
-    "kind": "resolution",
-    "variables": [
-      "population",
-      "CRS"
-    ],
-    "entities": [
-      {
-        "text": "Kenya",
-        "span": "Kenya",
-        "flow_role": "unspecified",
-        "role_span": null
-      }
-    ],
-    "operations": [],
-    "dropped_qualifiers": [],
-    "dates": []
-  },
-  "MentionReadings@bf01d55f8e47:ee11817f850127e93da503b49496dfd7b28e8e3d": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "also",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:38f130e4e9bcf0cf06f2f26530c756782c498902": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "also",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:dcd11832f4a82312d5e6c81e25f2c8e8d37ebc08": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 1
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:1f817e6745cd22939a0e5f573fdea4bfc4546684": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "also",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:142b9f25611a2c171d685f7b220154595c561826": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "also",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:7496184df0040a1988826e97dfe7709a547ba6b0": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "also",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:e6b3e764c34f93358fdccf21f36178deebe741dc": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "also",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:9698753375c7ca23b533fc107288eb65cc0d2034": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "also",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:53922f5a820b25f9a83a0519dc8a0479328255ec": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "also",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:8807718e8dea6ee5e56b0967ff9c31d1cd3fd1af": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "also",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:aef5d1119ab480244ac2beb5788cac56be911268": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "also",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:605e023e5a66c091b3f510dbd1760fa28d6341a8": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:d71201d69307e09ce898655b91de217acd3b976e": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:1b59e15e4c31a3ec0341e0161fe6603d9e4fc40a": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:6eb2a0aba80b1104097a225225b792d71331e874": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:30edd244aa8c7563f6a11b4d2896facf6c7adf27": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 0
-      },
-      {
-        "mention": 1,
-        "relation": "only",
-        "variable": 1
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:90c90807d024818a85c42451de3cf7c856ccefc2": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "excluded",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:b8eda48b792456f0e0f19b411f51c0ed16f10e92": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "excluded",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:f3ca67e85eec6e18fe3ea5b7ef0bc324ab0384b6": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "excluded",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:4fd698db69e79404eb6b23d3d39534ba598a9404": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "excluded",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:c29d8e5be8a98cca803cd34a7464cfe125442227": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "excluded",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:5f4a05531b6af8b041e6d45a75207054ea61e929": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "excluded",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:0aaa0159f2967d46ed4b1486b8821e12eab92b0a": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "excluded",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:f677a1cdc7c4834f1fd48848cdd2dc67571e3ad7": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "excluded",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:7caea7e823dbed6de99a683c2d5adee436dace41": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "excluded",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:46065bcfc64d5935fb118a199a50a3814de966a6": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "excluded",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:cd0f360383c5296833beb0f9da46703c2367af71": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "excluded",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:7773fd87c2597599fa336e41e2dd1a9ad7b2c8c3": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "excluded",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:30ce051bb34d21cc88a7d5b0dd5de4af57a2070f": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "excluded",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:02206481814e807a849ffba5047ce051fd01688b": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "also",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:8e2f3f93d96a00fe3f9dd50f25e642e7a8883e63": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 1
-      }
-    ]
-  },
   "Extraction@5dd935b34a35:51b98db58895eb7947055f41fcaca220f777ef6a": {
     "kind": "resolution",
     "variables": [
@@ -5385,15 +4526,6 @@
     "operations": [],
     "dropped_qualifiers": [],
     "dates": []
-  },
-  "MentionReadings@bf01d55f8e47:ad0f31720f809a1e6120552f3535a100f2fab8f8": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 0
-      }
-    ]
   },
   "Extraction@5dd935b34a35:dedf299f09b1b0aeb20a4baf35268ff36754b392": {
     "kind": "resolution",
@@ -8383,504 +7515,6 @@
     ],
     "ask": null,
     "unplaced": []
-  },
-  "_UniversalBindOutput@ede71de59275:619f7cbacc7e7e3d1d65f135bf58ae91e23803aa": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "crsPurpose",
-        "kind": "value",
-        "value_dcids": [
-          "CRSPurposeCode110"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "unplaced": []
-  },
-  "_UniversalBindOutput@ede71de59275:551621bc385df65d21af91feed192a7a304ead76": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "crsCooperationModality",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsPurpose",
-        "kind": "value",
-        "value_dcids": [
-          "CRSPurposeCode110"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFinance",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFlow",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "unplaced": []
-  },
-  "_UniversalBindOutput@ede71de59275:8dc5a6add48e8247c80a7031b4a84f989b31dad9": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "crsCooperationModality",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsPurpose",
-        "kind": "value",
-        "value_dcids": [
-          "CRSPurposeCode100"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFinance",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFlow",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "unplaced": []
-  },
-  "_UniversalBindOutput@ede71de59275:4f4540d4cb0f3ace02f00c79608065e6effb2c55": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "crsPurpose",
-        "kind": "value",
-        "value_dcids": [
-          "CRSPurposeCode100"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "unplaced": []
-  },
-  "_UniversalBindOutput@ede71de59275:e2bde4f5fb8609fb71a7d7fb30f5afe2dfa2a84e": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "crsPurpose",
-        "kind": "value",
-        "value_dcids": [
-          "CRSPurposeCode110"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "unplaced": []
-  },
-  "_UniversalBindOutput@ede71de59275:3cedfc4aef708ae8f121717860335a36a97115eb": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "crsCooperationModality",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsPurpose",
-        "kind": "value",
-        "value_dcids": [
-          "CRSPurposeCode110"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFinance",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFlow",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "unplaced": []
-  },
-  "_UniversalBindOutput@ede71de59275:fa912439f7a6c1b461edb9a76c7ae3620133323b": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "crsCooperationModality",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsPurpose",
-        "kind": "value",
-        "value_dcids": [
-          "CRSPurposeCode100"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFinance",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFlow",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "unplaced": [
-      "non-CRS"
-    ]
-  },
-  "_UniversalBindOutput@ede71de59275:70f052fedfdf1a57d675cfa3f6ab3e9120cb5aa7": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "crsCooperationModality",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsPurpose",
-        "kind": "value",
-        "value_dcids": [
-          "CRSPurposeCode110"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFinance",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFlow",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "unplaced": []
-  },
-  "_UniversalBindOutput@ede71de59275:0b59cfc85d5dcd52e4d37a8049a4791363d25aad": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "crsCooperationModality",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsPurpose",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFinance",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFlow",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "unplaced": [
-      "imputed multilateral",
-      "student",
-      "aid"
-    ]
-  },
-  "_UniversalBindOutput@ede71de59275:5004b00b694d8c3a2d51d7b628ed85198262c91f": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "crsCooperationModality",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsPurpose",
-        "kind": "value",
-        "value_dcids": [
-          "CRSPurposeCode100"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFinance",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFlow",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "unplaced": [
-      "top donors"
-    ]
-  },
-  "_UniversalBindOutput@ede71de59275:f2784b43e2c1210a9e9c7f2008855f69f4ccb386": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "crsCooperationModality",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsPurpose",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFinance",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFlow",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "unplaced": []
-  },
-  "_UniversalBindOutput@ede71de59275:a5a2f915abe0477df6b577b900702984d11b9d21": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "crsCooperationModality",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsPurpose",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFinance",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFlow",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "unplaced": [
-      "top 5 donantes"
-    ]
-  },
-  "_UniversalBindOutput@ede71de59275:1f779d9015dcfb2c8beca92ca2e95af79dfdab5a": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "crsCooperationModality",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsPurpose",
-        "kind": "value",
-        "value_dcids": [
-          "CRSPurposeCode110"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFinance",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFlow",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "unplaced": []
-  },
-  "_UniversalBindOutput@ede71de59275:d794f89a8b8ad4e47d9f3cbfb6029c4778f8a16e": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "crsPurpose",
-        "kind": "value",
-        "value_dcids": [
-          "CRSPurposeCode110"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "unplaced": [
-      "top 5 donors"
-    ]
   },
   "_UniversalBindOutput@ede71de59275:c077accb9be746da154e9a27d44cf3b768eca9c2": {
     "chosen_shape_index": 0,
@@ -13598,15 +12232,6 @@
     ],
     "dates": []
   },
-  "MentionReadings@bf01d55f8e47:ab30497da5eeffdbd004ba6bd488dc8f3d2c8fe4": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 0
-      }
-    ]
-  },
   "Extraction@5dd935b34a35:de95135339b2b7b518efa0ca80f85bae931d6d44": {
     "kind": "resolution",
     "variables": [
@@ -14514,186 +13139,6 @@
       }
     ]
   },
-  "MentionReadings@bf01d55f8e47:d638ec513e866dab95e8a51cdc18bad9147f83c7": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:af39f10c9bf2856cdc5b8e05c5313dbfdae936b8": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:9f55c5e806d5f37ed1b6c67cf56a35d6ece25a00": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:01cb76e27b4ad325e7428cdecb4eb1c418e60507": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:debde1a350cc4cd450a9d11a4b7e42520e50a563": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:7b72b898cdcfc4192e500f74cb15cea4f55d809f": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:abf22f730cb3d62cbd2aa566c8398b69856ce3de": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:7166e7924e7460b78b5089ee7a2280ccf6099800": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:bdbaf07993b606611e8bc96113128b8c5631f8ab": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:aa7395279a479715c370bed495b19b6e8db1ea53": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:633a56cc11cc1ae41aa8477121ec7ed68869dc84": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:214214b37a4fb32fe76b3b5ae7604a173d64406b": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:7e649d4df1f872a26c762bfcdf6427370d3d6a57": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:f44ddcddd7c18329cd1e5a0bb21b094b3249c1a1": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:9127fc394fbeed70f068efa5c85c1edc0ac41f72": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:18635f91174a3c7efb1bd1fe060c30c3dc1101cb": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:3b1b70b7eb9037b54f9ef7c7796d4f5e1d0f5597": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:53717f4a07e92d4dcaa7b8d44c1656f1f1716c1d": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:af1df605d0c3550f8babd83eb2d0f258388439d4": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 0
-      }
-    ]
-  },
-  "MentionReadings@bf01d55f8e47:3e99a63c9a2da56d2c8c5de4eb2b577364df605c": {
-    "readings": [
-      {
-        "mention": 0,
-        "relation": "only",
-        "variable": 0
-      }
-    ]
-  },
   "_UniversalBindOutput@ede71de59275:d6f134f483925779840440cc3c584a57436d8cbe": {
     "chosen_shape_index": 1,
     "bindings": [
@@ -14768,5 +13213,1039 @@
     ],
     "ask": null,
     "unplaced": []
+  },
+  "_UniversalBindOutput@ede71de59275:019b8ae99415e36b8d380c54df6155a843252e38": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "crsCooperationModality",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsPurpose",
+        "kind": "value",
+        "value_dcids": [
+          "CRSPurposeCode100"
+        ],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsTypeOfFlow",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "unplaced": []
+  },
+  "_UniversalBindOutput@ede71de59275:76f4e7a95bb5c426f79fa817f318a7c2a8d48d5e": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "crsCooperationModality",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsPurpose",
+        "kind": "value",
+        "value_dcids": [
+          "CRSPurposeCode110"
+        ],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsTypeOfFlow",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "unplaced": [
+      "top donors"
+    ]
+  },
+  "_UniversalBindOutput@ede71de59275:6312060380d872dfbe4c1f2547726b8948fd0cdf": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "crsCooperationModality",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsPurpose",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsTypeOfFlow",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "unplaced": []
+  },
+  "_UniversalBindOutput@ede71de59275:487d483511ac4b2b854fa9bfa8dc656e33095fe7": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "crsCooperationModality",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsPurpose",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsTypeOfFlow",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "unplaced": []
+  },
+  "Extraction@5dd935b34a35:0413ed5977ce98cacb968fafa52645f62e6d467a": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "according to DAC Table 2a"
+    ],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:47fa042f5091a6d9d4a6e3fbf858876bf5fbb2b8": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "excluding the CRS"
+    ],
+    "dates": []
+  },
+  "_SourceSlotBindOutput@a52906e9900f:49886b136f9300dc69c12ad667731c34735d4083": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "crsCooperationModality",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsPurpose",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsTypeOfFlow",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "source",
+        "property_dcid": "provenance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "unplaced": [],
+    "source_phrase": null
+  },
+  "_SourceSlotBindOutput@a52906e9900f:7b989ddb5931e0e430cd82497507539f71fe453d": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "crsCooperationModality",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsPurpose",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsTypeOfFlow",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "source",
+        "property_dcid": "provenance",
+        "kind": "value",
+        "value_dcids": [
+          "provenance/TestDacTable2a"
+        ],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "unplaced": [],
+    "source_phrase": "according to DAC Table 2a"
+  },
+  "_SourceSlotBindOutput@a52906e9900f:6e5b7e393976f5e775faeacaddb16ade92cd43ff": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "crsCooperationModality",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsPurpose",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsTypeOfFlow",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "source",
+        "property_dcid": "provenance",
+        "kind": "value",
+        "value_dcids": [
+          "excluded:provenance/OECDCreditorReportingSystem"
+        ],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "unplaced": [],
+    "source_phrase": "excluding the CRS"
+  },
+  "Extraction@5dd935b34a35:e6be9da01d331d5c397f9e568b5e3e6d3c3e1175": {
+    "kind": "resolution",
+    "variables": [
+      "imputed education aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:236ac8fae91e351f87ae43851d9a6bd231c9880c": {
+    "kind": "resolution",
+    "variables": [
+      "imputed health ODA"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:0453e81cfd9206a471291ff4e9968b0793c7904c": {
+    "kind": "resolution",
+    "variables": [
+      "imputed multilateral flows"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:e6a4a22efdcd7fae1d45a1d1489008b4418c641b": {
+    "kind": "resolution",
+    "variables": [
+      "imputed multilateral outflows"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:dd45b4c4cedd376613328e396cc070d251575dba": {
+    "kind": "resolution",
+    "variables": [
+      "multilateral aid imputed"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "flow_role": "origin",
+        "role_span": "'s"
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "imputed to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:2e1c6cddf589a3ceb8ab30a26dbde072ff3dd699": {
+    "kind": "resolution",
+    "variables": [
+      "imputed multilateral aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:647a64b12a90ac42a93eaadd77872bb116db7b6e": {
+    "kind": "resolution",
+    "variables": [
+      "imputed multilateral aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenia",
+        "flow_role": "destination",
+        "role_span": "a"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:c77b0c6df005a70ec1cd8fdea33efe267878932d": {
+    "kind": "resolution",
+    "variables": [
+      "multilateral ODA"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "au"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:1f647a8b09badd57aceefbf8d6b4adac3c320e2c": {
+    "kind": "resolution",
+    "variables": [
+      "education aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "excluding the CRS"
+    ],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:dde7b47f52c35cf74d449f4e3ea460eb9629ba99": {
+    "kind": "resolution",
+    "variables": [
+      "imputed multilateral grants"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:c51bec241acfea85249ad8a5158a806059b255fe": {
+    "kind": "resolution",
+    "variables": [
+      "ODA"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "flow_role": "origin",
+        "role_span": "'s"
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:e1f931005589934e9db33f3eac03b6952bfa3169": {
+    "kind": "resolution",
+    "variables": [
+      "multilateral aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:2de5cb0145326796afc59523096a8e2ac7c4442e": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "flow_role": "origin",
+        "role_span": "'s"
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "through multilateral agencies"
+    ],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:5bb326532395eefe0c5150df4c28dc5bbd940f4c": {
+    "kind": "resolution",
+    "variables": [
+      "aid attributed to donors via multilaterals"
+    ],
+    "entities": [],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:33c2e7f10bfbe7d12e5c04cb80cd0e3302f25659": {
+    "kind": "resolution",
+    "variables": [
+      "ODA by sector"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:ea53b5681e903a0f04a5d5121899db8f80484ba3": {
+    "kind": "resolution",
+    "variables": [
+      "Imputed Multilateral Sectors data"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "for"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "ONE"
+    ],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:f1cf877f3c0c6dedebf893eb6bb7fb06ee6f9afa": {
+    "kind": "resolution",
+    "variables": [
+      "multilateral aid"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "flow_role": "origin",
+        "role_span": "'s"
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:45234251ee2a10269be775b41424658dbf335ed8": {
+    "kind": "resolution",
+    "variables": [
+      "imputed student costs"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "flow_role": "origin",
+        "role_span": "from"
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:1a04af77f63ad646986e1a7c01033f2250f76add": {
+    "kind": "resolution",
+    "variables": [
+      "imputed rent"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "unspecified",
+        "role_span": null
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:2f5a912f4fb728291fe95b8d7ea14e8a7cf5d86c": {
+    "kind": "resolution",
+    "variables": [
+      "education aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      },
+      {
+        "text": "CRS",
+        "span": "CRS",
+        "flow_role": "origin",
+        "role_span": "from"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:3b34ec563ce707a8a36e1bca6631ed2a95db2e7f": {
+    "kind": "resolution",
+    "variables": [
+      "education aid",
+      "imputed health aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:56c192e4deb5acd5997ca2ab77cc2e721ad26368": {
+    "kind": "resolution",
+    "variables": [
+      "imputed education aid",
+      "imputed health aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:658f70afc0cacb71b551482e1c06a9c1aa9dfb5d": {
+    "kind": "resolution",
+    "variables": [
+      "imputed multilateral aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [
+      {
+        "verb": "rank",
+        "variable": 0,
+        "phrase": "top 5 donors",
+        "over": "origin"
+      }
+    ],
+    "dropped_qualifiers": [
+      "top 5 donors"
+    ],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:0729a9181e245741bc3dd1a79c2cab9ee42a7082": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "not imputed"
+    ],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:4f63eab7ed3f799f2e5445351465acb67e97b2f8": {
+    "kind": "resolution",
+    "variables": [
+      "ODA"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "excluding the CRS"
+    ],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:304538ef2bb12cf3ddcdfe4fbf8d4cc560695d20": {
+    "kind": "resolution",
+    "variables": [
+      "education aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "excluding multilateral donors"
+    ],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:cb9db14e65382ec88530c59d3774ef87e9b70b3d": {
+    "kind": "resolution",
+    "variables": [
+      "GDP"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "'s"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:bf364d3204436892b4cdd9b3263bd13faf824946": {
+    "kind": "resolution",
+    "variables": [
+      "education aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "à"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:273d58b5e15442f8680df6da4514af0e07a73b74": {
+    "kind": "resolution",
+    "variables": [
+      "multilateral aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenia",
+        "flow_role": "destination",
+        "role_span": "a"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:cc09915c13e1438dcc4ac36bdfc135e12b35ecb6": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "aid to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:e7e0b21d7cd48194f3a7ef41c7ab7bae8e1f57cd": {
+    "kind": "resolution",
+    "variables": [
+      "education aid"
+    ],
+    "entities": [
+      {
+        "text": "OECD",
+        "span": "OECD",
+        "flow_role": "origin",
+        "role_span": "OECD"
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:42a727e0b7af54d4adae829d512b15532c364705": {
+    "kind": "resolution",
+    "variables": [
+      "ODA"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [
+      "DAC2a"
+    ],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:7c8d7ca3d830d1ac76988a69b99aab0aa5c74e31": {
+    "kind": "resolution",
+    "variables": [
+      "total ODA"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "flow_role": "origin",
+        "role_span": "by"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:e0ee4f9ad52adec30e30e093220faf059abbdc9c": {
+    "kind": "resolution",
+    "variables": [
+      "multilateral ODA"
+    ],
+    "entities": [
+      {
+        "text": "Germany",
+        "span": "Germany",
+        "flow_role": "origin",
+        "role_span": "'s"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:738f32c47c3396fc76b51d0ac156c8b2f9972dd0": {
+    "kind": "resolution",
+    "variables": [
+      "CRS education aid",
+      "imputed education aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@5dd935b34a35:c9beafaf12b6f5b9182bbfd2eeffe0d82e78c5a3": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to"
+      },
+      {
+        "text": "Catholic Relief Services",
+        "span": "Catholic Relief Services (CRS)",
+        "flow_role": "origin",
+        "role_span": "from"
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
   }
 }

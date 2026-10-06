@@ -106,7 +106,6 @@ def _run(
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
             sdmx=sdmx,
-            base_steps=[],
             base_timing={},
             coverage=coverage if coverage is not None else empty_coverage_snapshot(),
         )
@@ -291,7 +290,6 @@ def test_directional_binding_replays_to_the_same_status(monkeypatch):
             resolver=make_resolver(fresh_graph),
             llm=_FixedBindLLM(),
             sdmx=_sdmx({}),
-            base_steps=[],
             base_timing={},
             coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
         )

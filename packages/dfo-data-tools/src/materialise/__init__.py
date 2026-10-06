@@ -26,11 +26,9 @@ from materialise.facets import (
     probe_collection_facets,
     role_bearing_facets,
 )
-from materialise.generation import PreviewBudget
 from materialise.graph import GraphReader
 from materialise.pipeline import (
     DEFAULT_MEMBER_CONCURRENCY,
-    CollectionMaterialisationResult,
     ConcatenatedFrameChunks,
     MaterialisationRequest,
     MaterialisationResult,
@@ -38,9 +36,7 @@ from materialise.pipeline import (
     PreviewResult,
     decide_member_unit,
     finish_materialise_preview,
-    materialise_collection,
     materialise_group,
-    materialise_group_preview,
     materialise_preview,
     materialise_spec,
     prepare_materialise_preview,
@@ -61,7 +57,6 @@ __all__ = [
     "DEFAULT_MEMBER_CONCURRENCY",
     "MATERIALISE_CODE_CATALOGUE",
     "CollectionFacetProbe",
-    "CollectionMaterialisationResult",
     "ColumnProfile",
     "ColumnUnknownError",
     "ConcatenatedFrameChunks",
@@ -87,7 +82,6 @@ __all__ = [
     "OverCeilingError",
     "ParsedColumns",
     "PreparedPreview",
-    "PreviewBudget",
     "PreviewResult",
     "RequestedWindow",
     "ResolvedStatVar",
@@ -101,9 +95,7 @@ __all__ = [
     "decide_member_unit",
     "facet_axis_value",
     "finish_materialise_preview",
-    "materialise_collection",
     "materialise_group",
-    "materialise_group_preview",
     "materialise_preview",
     "materialise_spec",
     "parse_column_tokens",

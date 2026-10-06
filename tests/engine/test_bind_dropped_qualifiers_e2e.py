@@ -113,7 +113,6 @@ def test_requested_all_on_the_flow_slot_suppresses_the_declared_default_end_to_e
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_FlowRequestedAllLLM(requested_all_phrase=_BREADTH_PHRASE),
-            base_steps=[],
             base_timing={},
             dropped_qualifier_phrases=[_BREADTH_PHRASE],
             coverage=empty_coverage_snapshot(),

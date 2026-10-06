@@ -285,7 +285,7 @@ def test_group_signal_is_none_when_the_shared_facet_carries_no_provenance():
     probe = _coverage_probe(((shared_no_provenance_a,), (shared_no_provenance_b,)))
     graph = FakeMintGraphReader()
 
-    assert derive_signals(requests, probe, graph=graph, combine=True) is None
+    assert derive_signals(requests, probe, graph=graph) is None
 
 
 def test_member_signal_is_none_when_a_request_form_unit_resolves_to_a_non_currency_native_unit():
@@ -314,8 +314,7 @@ def test_member_signal_is_none_when_a_request_form_unit_resolves_to_a_non_curren
     probe = _coverage_probe(((candidate,),))
     graph = FakeMintGraphReader()
 
-    assert derive_signals([request], probe, graph=graph, combine=True) is None
-    assert derive_signals([request], probe, graph=graph, combine=False) is None
+    assert derive_signals([request], probe, graph=graph) is None
 
 
 def test_group_signal_refuses_when_declared_policies_name_no_jointly_carried_combination():
@@ -377,7 +376,7 @@ def test_group_signal_refuses_when_declared_policies_name_no_jointly_carried_com
         }
     )
 
-    assert derive_signals(requests, probe, graph=graph, combine=True) is None
+    assert derive_signals(requests, probe, graph=graph) is None
 
 
 def test_group_signal_sums_every_dispatched_facet_in_an_index_sourced_group_not_just_the_top_one():
@@ -422,7 +421,7 @@ def test_group_signal_sums_every_dispatched_facet_in_an_index_sourced_group_not_
     probe = _coverage_probe(((facet_grants,), (facet_loans,)))
     graph = FakeMintGraphReader()
 
-    signals = derive_signals(requests, probe, graph=graph, combine=True)
+    signals = derive_signals(requests, probe, graph=graph)
 
     assert signals is not None
     (signal,) = signals
@@ -476,13 +475,13 @@ def test_group_signal_widens_when_a_row_moves_on_the_non_top_dispatched_facet_of
     graph = FakeMintGraphReader()
     probe = _coverage_probe(((facet_grants,), (facet_loans,)))
 
-    (before,) = derive_signals(requests, probe, graph=graph, combine=True)
+    (before,) = derive_signals(requests, probe, graph=graph)
     assert before.dispatch_facet_id == "facetGrants"
     assert before.latest_date == "2020"
 
     moved_loans = replace(facet_loans, latest_date="2022")
     moved_probe = _coverage_probe(((facet_grants,), (moved_loans,)))
-    (after,) = derive_signals(requests, moved_probe, graph=graph, combine=True)
+    (after,) = derive_signals(requests, moved_probe, graph=graph)
 
     assert after.latest_date == "2022"
     assert after != before
@@ -539,11 +538,11 @@ def test_group_signal_is_unaffected_by_a_facet_outside_the_agreement_key():
     graph = FakeMintGraphReader()
     probe = _coverage_probe(((facet_grants,), (facet_loans, facet_other_provenance)))
 
-    (before,) = derive_signals(requests, probe, graph=graph, combine=True)
+    (before,) = derive_signals(requests, probe, graph=graph)
 
     moved_other = replace(facet_other_provenance, latest_date="2099")
     moved_probe = _coverage_probe(((facet_grants,), (facet_loans, moved_other)))
-    (after,) = derive_signals(requests, moved_probe, graph=graph, combine=True)
+    (after,) = derive_signals(requests, moved_probe, graph=graph)
 
     assert after == before
 
@@ -587,4 +586,4 @@ def test_group_signal_refuses_the_same_group_when_no_member_is_index_sourced():
     probe = _coverage_probe(((facet_grants,), (facet_loans,)))
     graph = FakeMintGraphReader()
 
-    assert derive_signals(requests, probe, graph=graph, combine=True) is None
+    assert derive_signals(requests, probe, graph=graph) is None

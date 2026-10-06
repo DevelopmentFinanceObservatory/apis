@@ -7,7 +7,6 @@ from __future__ import annotations
 import pytest
 
 from search.engine import config
-from search.models import _RESUBMIT_MAX_RESOLVED_STAT_VARS
 
 
 class TestNumericBounds:
@@ -20,7 +19,6 @@ class TestNumericBounds:
             ("SEARCH_RELEVANCE_THRESHOLD", "1.5"),
             ("SEARCH_WEAK_SCORE_THRESHOLD", "0"),
             ("SEARCH_WEAK_SCORE_THRESHOLD", "2.0"),
-            ("SEARCH_RESOLVED_STAT_VARS_MAX", "0"),
             ("SEARCH_MAX_CANDIDATES", "0"),
             ("SEARCH_MAX_VARIABLES", "0"),
             ("SEARCH_MAX_ENTITIES", "0"),
@@ -37,6 +35,8 @@ class TestNumericBounds:
             ("SEARCH_MAX_QUERY_CHARS", "0"),
             ("SEARCH_REQUEST_TIMEOUT_S", "0"),
             ("SEARCH_REQUEST_TIMEOUT_S", "-1"),
+            ("SEARCH_RESUBMIT_FULL_READ_TIMEOUT_S", "30"),
+            ("SEARCH_RESUBMIT_SUBJECT_CEILING", "0"),
             ("SEARCH_DETECT_K", "0"),
             ("SEARCH_OBS_PROPERTIES_CACHE_SIZE", "0"),
             ("SEARCH_RESOLVE_TARGET", "everything"),
@@ -45,7 +45,6 @@ class TestNumericBounds:
             ("SEARCH_TOPIC_EXPAND_MARGIN", "-0.1"),
             ("SEARCH_TOPIC_EXPAND_MAX_MEMBERS", "0"),
             ("SEARCH_MAX_CHILD_PLACES", "0"),
-            ("SEARCH_OPTIONS_MEMBER_CAP", "0"),
             ("SEARCH_RECALL_SCORE_FLOOR", "-0.1"),
             ("SEARCH_RECALL_SCORE_FLOOR", "1.0"),
             ("SEARCH_LLM_MEMO_TTL_S", "-1"),
@@ -203,11 +202,6 @@ class TestBroadReadCaps:
         # The broad-read cap does not raise the separately measured preview cap (#704).
         assert config.settings().obs_preview_max_rows == 20_000
         assert config.settings().obs_preview_max_rows != config.settings().sdmx_max_rows
-
-    def test_resolved_stat_vars_max_lets_a_client_post_every_item_back(self):
-        # A client lists every served member of a family such as ODA from Germany (1,626)
-        # and can echo them all as resolved_stat_var_dcids.
-        assert config.settings().resolved_stat_vars_max == _RESUBMIT_MAX_RESOLVED_STAT_VARS
 
 
 class TestUnitDefaultCurrency:

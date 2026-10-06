@@ -74,6 +74,7 @@ def test_every_datasets_path_is_present(app: FastAPI):
         "/api/datasets/operations/{operation_id}",
         "/api/datasets/{id}",
         "/api/datasets/{id}/options",
+        "/api/datasets/{id}/members",
         "/api/datasets/{id}/{content_version}",
         "/api/datasets/{id}/{content_version}/pin",
         "/api/datasets/{id}/{content_version}/observations",
@@ -98,17 +99,11 @@ def test_every_datasets_2xx_response_carries_a_non_empty_schema(app: FastAPI):
             assert body_schema, f"{method.upper()} {path} {status} has no application/json schema"
 
 
-def test_register_2xx_response_is_the_union_of_both_response_models(app: FastAPI):
+def test_register_2xx_response_is_the_definition_response_model(app: FastAPI):
     schema = app.openapi()
     register_op = schema["paths"]["/api/datasets/register"]["post"]
     body_schema = register_op["responses"]["200"]["content"]["application/json"]["schema"]
-    branches = body_schema.get("oneOf") or body_schema.get("anyOf")
-    assert branches, "register's 200 response schema is not a oneOf/anyOf"
-    refs = {branch["$ref"] for branch in branches}
-    assert refs == {
-        "#/components/schemas/DefinitionResponse",
-        "#/components/schemas/CollectionResponse",
-    }
+    assert body_schema == {"$ref": "#/components/schemas/DefinitionResponse"}
 
 
 def test_schema_route_2xx_response_matches_the_document_it_describes(app: FastAPI):

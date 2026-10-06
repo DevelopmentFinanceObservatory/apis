@@ -77,7 +77,6 @@ def _run(*, rate_cache: RateTableCache | None):
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_SoleShapeLLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
             options=EngineOptions(

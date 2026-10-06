@@ -24,9 +24,7 @@ from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
-from search.engine.dataset_mention import DatasetMention
 from search.engine.departures import WarningKey, warning_key, window_gap_fact
-from search.engine.envelope import make_pipeline_step
 from search.engine.events import EventSink
 from search.engine.extract import DateRequest
 from search.engine.interpret import Recall
@@ -37,6 +35,7 @@ from search.engine.qualifier_match import (
     QualifierSpan,
     QualifierTie,
 )
+from search.engine.quantity import DenominatorKind, QuantityRequirement, quantity_requirement
 from search.engine.region.convertibility import UnitCoverage
 from search.engine.region.materialise_step import Departed, family_total_absent_departures
 from search.engine.region.observations.entities import open_role_axis
@@ -51,6 +50,7 @@ from search.engine.region.result import (
 from search.engine.retrieval.bound_values import (
     MeasurePartition,
     RoleClassWalks,
+    WalkedMembers,
     entity_role_keys,
     identity_query,
     index_decides_membership,
@@ -84,11 +84,10 @@ from search.models import (
     NearestRealSpec,
     NoDataGate,
     Operation,
-    PipelineStep,
-    PipelineStepName,
     ProvenanceRef,
     ResolvedFacet,
     ResolvedQualifier,
+    RoleAxis,
     Shape,
     Slot,
     SlotOptions,
@@ -154,10 +153,6 @@ class EngineOptions:
     deadline: float | None = None
 
 
-# Terminal step names and wire order; mark_remaining_not_ran adds missing, unrecorded steps.
-_TERMINAL_STEPS: tuple[PipelineStepName, ...] = ("shape", "bind", "materialise", "answer")
-
-
 def _bound_role_dcids(
     shape: ShapeDraft, resolved_entities: Mapping[str, Sequence[str]]
 ) -> dict[EntityRoleKey, tuple[str, ...]]:
@@ -218,8 +213,9 @@ def served_stat_vars(
 ) -> list[str]:
     """The StatVars a Datasets mint serves for the Spec `shape` grounds under `bindings` with
     its places bound as `roles`, in member order (`_served_members` over `shape_query`)."""
+    role_keys = entity_role_keys(roles.resolved_entities, open_axes=roles.open_axes)
     return _served_members(
-        shape, shape_query(shape, bindings, entity_role_keys(shape, roles.resolved_entities))
+        shape, shape_query(shape, bindings, role_keys.bound, open_role_keys=role_keys.open)
     )
 
 
@@ -227,10 +223,10 @@ def identity_served_stat_vars(identity: BaseIdentity, shape: ShapeDraft) -> list
     """The StatVars a Datasets mint serves for a resubmitted `identity`, in member order.
 
     `shape` holds its members exactly (`ShapeDraft.sv_arc_facts_complete`): the family the
-    mint's walk resolves with the posted members as seeds once that walk settles them, and
-    the posted members otherwise (`elected_role_class_shape`). The mint resolves an identity
-    the code index decides through the index and ignores the posted members
-    (`index_decides_membership`), so for that identity the index's family answers."""
+    mint's walk resolves for the identity (`elected_role_class_shape`), a walk that takes
+    no recalled members as seeds (`ResubmitWalk`). The mint resolves an identity the code
+    index decides through the index (`index_decides_membership`), so for that identity the
+    index's family answers."""
     if index_decides_membership(identity):
         shape = replace(shape, sv_arc_facts_complete=False)
     return _served_members(shape, identity_query(identity))
@@ -243,13 +239,15 @@ def _served_members(shape: ShapeDraft, query: FamilyQuery) -> list[str]:
     decides, that is the elected dataset's family (`code_index.members.index_family`), and
     the mint serves its antichain-minimal rows. For a shape the index does not decide, it is
     the walked family once the mint's walk settles the members, which the shape then holds
-    exactly (`elected_role_class_shape`), and the recalled or posted members otherwise,
-    which the answer flags `membership_unverified`. A role-bearing population is reduced to
+    exactly (`elected_role_class_shape`), and the members the shape holds otherwise, which
+    the answer flags `membership_unverified`. A role-bearing population is reduced to
     the members the answer lists (`role_resolve.role_members_served`), and any other to its
     antichain-minimal members."""
     member_facts, index_sourced = shape_member_facts(shape, query)
     if is_role_bearing(shape) and not index_sourced:
-        return role_members_served(member_facts, query_bound_values(query), query.role_keys)
+        return role_members_served(
+            member_facts, query_bound_values(query), query.role_keys, query.open_role_keys
+        )
     return minimal_constraint_svs(
         list(member_facts), {sv: member.read_constraints() for sv, member in member_facts.items()}
     )
@@ -287,6 +285,9 @@ class ResolveState:
     # This leg's admitted operations. One over `category` opens the slots it names on
     # the elected shape (`phase_rank_bind._open_operation_slots`).
     operations: tuple[Operation, ...] = ()
+    # The flow axes this leg asks every member of. `bind_place_roles` leaves open those no
+    # place binds (`PlaceRoles.open_axes`).
+    open_axes: frozenset[RoleAxis] = frozenset()
     # Verbatim query for qualifier matching; set only for a single-variable
     # raw-text request, where query-level phrases have an unambiguous owner.
     query_text: str | None = None
@@ -328,10 +329,6 @@ class ResolveState:
     pool: Literal["ours", "un_system"] = "ours"
 
     # --- (b) evolving pipeline state ------------------------------------------
-    pipeline_steps: list[PipelineStep]
-    # The timed pipeline steps recorded so far; read by the terminal builders
-    # to mark the remaining steps not-ran.
-    ran_steps: set[PipelineStepName] = field(default_factory=set)
     timing: dict[str, int]
     # Shared warnings list; mutations here affect every stage holding the list.
     warnings: list[Warning]
@@ -343,6 +340,9 @@ class ResolveState:
     family_total_absent: dict[str, FamilyTotalAbsent] = field(default_factory=dict)
     # Accumulates LLM token usage for this variable's pipeline calls.
     var_usage: dict | None = None
+    # What the mint states of the members the walk settled for the shape in play, `None`
+    # when no walk settled them (`MembershipResolution.walked`).
+    walked: WalkedMembers | None = None
     # Keep a place-less `no_matching_slice` deferral on the single-shape path,
     # where minting can attach its required `flagged_match`.
     force_single_shape_path: bool = False
@@ -376,14 +376,18 @@ class ResolveState:
     group_label_by_dcid: dict[str, str] = field(default_factory=dict)
     # Group-member dcids to resolver names; the query names the group, not each member.
     group_member_names_by_dcid: dict[str, str] = field(default_factory=dict)
-    # Pre-filter recall count of the pool in use, excluding Topics, for diagnostics.
-    n_recalled: int = 0
     # Start tick for the shape timing span, including derivation and ranking.
     shape_t0: int = 0
     # All confirmed shapes, before eligibility and ranking filters.
     shapes_found: list[ShapeDraft] = field(default_factory=list)
     # Whether any confirmed group has directional roles, independent of the elected shape.
     role_bearing_recalled: bool = False
+    # The normalisation this leg names, read once from its variable and its sidecar
+    # qualifier phrases (`quantity.quantity_requirement`).
+    quantity_requirement: QuantityRequirement = field(init=False)
+    # The kinds of the eligible shapes' StatVar denominators, read in one batch before bind
+    # only when the leg names a per-person form (`phase_rank_bind._read_denominator_kinds`).
+    denominator_kinds: dict[str, DenominatorKind] = field(default_factory=dict)
     # Top-K eligible shapes, after score-floor and denominator-availability pruning.
     eligible_shapes: list[ShapeDraft] = field(default_factory=list)
     # Empty measure-head shapes the availability prune dropped, each with the sibling holding
@@ -410,9 +414,18 @@ class ResolveState:
     # Normalised phrases matched in `variable` or `query_text`, plus tie phrases.
     # Excludes dropped-only phrases, whose warning ownership belongs to raw-text entry.
     variable_matched_qualifier_phrases: frozenset[str] = frozenset()
-    # The dataset mention the request's reading bound to this variable, the one thing a
-    # source binds from. Vetting writes it into the bindings as the source binding.
-    dataset_mention: DatasetMention | None = None
+    # The dataset the part names as its source and the datasets it excludes, the one place
+    # a part's datasets enter: shape candidacy (`phase_rank_bind._dataset_candidates`)
+    # reads both, vetting adds the bind menu's source slot here and restamps the menu
+    # under it (`phase_election._apply_source_slot`), then sets the named one to the
+    # elected shape's (`ShapeDraft.named_dataset`) and writes it into the bindings as the
+    # source binding. The parsed door names the dataset a part posts in
+    # `ParsedPart.provenance`. A part naming none answers from its family's default
+    # datasets (`CodeIndex.family_of`), from the one opt-in dataset publishing the shape it
+    # elects, or from the dataset the source slot names or leaves after its exclusions. A part naming or
+    # excluding one runs no UN second pass (`pipeline._fill_gap`).
+    named_dataset: str | None = None
+    excluded_datasets: frozenset[str] = frozenset()
     # Ambiguous qualifier matches across variable, single-variable query text, and
     # dropped phrases. Bind narrows them to one value or alternatives.
     query_qualifier_ties: tuple[QualifierTie, ...] = ()
@@ -594,6 +607,11 @@ class ResolveState:
     # Grounded entities used for spec identity hashing.
     identity_entities: list[Entity] = field(default_factory=list)
 
+    def __post_init__(self) -> None:
+        self.quantity_requirement = quantity_requirement(
+            [self.variable, *(coded.phrase for coded in self.qualifiers or ())]
+        )
+
     @property
     def tie_unresolved(self) -> bool:
         """Whether a near-neighbour tie fired and an alternate is unevaluated. Unread data is
@@ -615,13 +633,6 @@ class ResolveState:
         self.warnings.append(warning)
         self.departure_facts[warning_key(warning)] = fact
 
-    def mark_remaining_not_ran(self) -> None:
-        """Append missing terminal steps in wire order, once per step name."""
-        already_present = {s.step for s in self.pipeline_steps}
-        for step in _TERMINAL_STEPS:
-            if step not in self.ran_steps and step not in already_present:
-                self.pipeline_steps.append(make_pipeline_step(step, ran=False))
-
     def label_dcids(self, dcids: Sequence[str]) -> list[str]:
         """Label DCIDs from query text, one batched graph lookup, or the DCID fallback."""
         label_text_by_dcid = self.entity_label_text_by_dcid
@@ -635,6 +646,23 @@ class ResolveState:
         return family_total_absent_departures(
             specs, self.family_total_absent, variable_text=self.variable, label_of=self.label_dcids
         )
+
+    def settled_dataset(self, candidate: _Candidate | None = None) -> str | None:
+        """The dataset the part's run has settled on for `candidate`, else for the elected
+        shape: the one the part or its source slot names (`named_dataset`), else the one
+        the shape names (`ShapeDraft.named_dataset`), which is the opt-in dataset electing
+        it chose or the one the part's exclusions leave serving it
+        (`phase_election._name_served_dataset`). `None` when neither names one: the part
+        answers from its family's default datasets, or its exclusions leave the election
+        where it was. A dataset the part excludes is never the settled one.
+
+        Before bind elects a shape the answer is the dataset the part names. A candidate's
+        shape names its own dataset, since vetting stamps every shape the part is offered.
+        """
+        shape = self.shape_draft if candidate is None else candidate.shape
+        named = shape.named_dataset if isinstance(shape, ShapeDraft) else None
+        dataset = named if candidate is not None else self.named_dataset or named
+        return None if dataset in self.excluded_datasets else dataset
 
     def no_data(
         self,
@@ -652,12 +680,12 @@ class ResolveState:
         cause: Cause | None = None,
         unbound_qualifiers: tuple[ResolvedQualifier, ...] = (),
         unit_alternatives: tuple[UnitAlternative, ...] = (),
-        unit_alternatives_truncated: bool = False,
         candidate: _Candidate | None = None,
     ) -> RegionResult:
         """Build a no-data result, preserving `cause`. A `no_observations` answer over an
         elected result holding data outside the years read carries its `year_unavailable`
-        fact (`window_gap_fact`), whatever else the answer names.
+        fact (`window_gap_fact`), whatever else the answer names. The result carries the
+        dataset the run settled on (`settled_dataset`), with or without a flagged match.
 
         Shape-derived fields (the elected StatVars, the open role axis and the bound role
         dcids) describe `candidate` when the candidates door answers with its refusal, else
@@ -667,7 +695,6 @@ class ResolveState:
         `family_total_absent`. `elected_stat_vars` names members without a
         Spec and raises none.
         """
-        self.mark_remaining_not_ran()
         if candidate is None:
             _shape, _mat_result, _place = self.shape_draft, self.mat_result, self.place
         else:
@@ -686,6 +713,7 @@ class ResolveState:
             departure_facts={**self.departure_facts, **raised_facts(family)},
             timing_by_step=dict(self.timing),
             flagged_match=flagged_match,
+            settled_dataset=self.settled_dataset(candidate),
             gate=gate,
             alternate_match=alternate_match,
             nearest_real=nearest_real,
@@ -708,7 +736,6 @@ class ResolveState:
             ),
             unbound_qualifiers=unbound_qualifiers,
             unit_alternatives=unit_alternatives,
-            unit_alternatives_truncated=unit_alternatives_truncated,
             no_data_role_axis=(
                 open_role_axis(_shape, _place.roles.resolved_entities)
                 if isinstance(_mat_result, NoDataDraft) and _mat_result.reason == "no_observations"

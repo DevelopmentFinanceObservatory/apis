@@ -26,6 +26,7 @@ from search.engine.options.options_response_cache import OptionsResponseCache
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.response_cache import ResponseCache
+from search.engine.response_cache_memo import PartMemo
 from skills_index import SharedSkillsIndex
 
 
@@ -65,6 +66,7 @@ class SearchDeps:
     rate_cache: RateTableCache | None
     skills_index: SharedSkillsIndex | None
     response_cache: ResponseCache | None
+    part_memo: PartMemo | None
     options_response_cache: OptionsResponseCache | None
     population_memo: OptionsPopulationMemo | None
     place_options_pool: PlaceOptionsPool | None
@@ -86,6 +88,7 @@ def search_deps(
     rate_cache: RateTableCache | None = None,
     skills_index: SharedSkillsIndex | None = None,
     response_cache: ResponseCache | None = None,
+    part_memo: PartMemo | None = None,
     options_response_cache: OptionsResponseCache | None = None,
     population_memo: OptionsPopulationMemo | None = None,
     place_options_pool: PlaceOptionsPool | None = None,
@@ -107,6 +110,7 @@ def search_deps(
         rate_cache=rate_cache,
         skills_index=skills_index,
         response_cache=response_cache,
+        part_memo=part_memo,
         options_response_cache=options_response_cache,
         population_memo=population_memo,
         place_options_pool=place_options_pool,

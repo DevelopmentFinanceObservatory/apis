@@ -351,6 +351,7 @@ def _discover(index, date_request, search_settings, max_pairs: int = 120) -> Mat
     search_settings(obs_preview_max_pairs=max_pairs)
     result = discover_role_scope(
         surviving_svs=["V"],
+        admitted_dcids=["V"],
         member_facts={},
         member_population_exact=True,
         open_flow_axis="destination",
@@ -481,6 +482,7 @@ def test_a_discovered_provider_scope_counts_the_creditors_of_the_named_debtors(
     search_settings(obs_preview_max_pairs=max_pairs)
     result = discover_role_scope(
         surviving_svs=["V"],
+        admitted_dcids=["V"],
         member_facts={},
         member_population_exact=True,
         open_flow_axis="origin",

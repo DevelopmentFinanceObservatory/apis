@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 
+import search.engine.app as app_module
+from code_index.shared import get_index
+from code_index.types import DatasetDeclaration
 from materialise.errors import UpstreamVersionChangedError
 from materialise.rate_tables import RateTableInvalidError
 from search.engine.config import SEARCH_MAX_PARTS
@@ -229,6 +233,138 @@ class TestCapRefusalsEndToEnd:
         assert resp.status_code == 400
         assert resp.json()["code"] == "request_invalid"
 
+    @pytest.mark.parametrize(
+        ("part", "pointer"),
+        [
+            pytest.param(
+                {"variable_text": "debt service", "open_roles": ["sponsor"]},
+                "/input/parts/0/open_roles/0",
+                id="unrecognised-word",
+            ),
+            pytest.param(
+                {
+                    "variable_text": "debt service",
+                    "entities": [{"text": "China", "role_text": "lender"}],
+                    "open_roles": ["recipient", "creditor"],
+                },
+                "/input/parts/0/open_roles/1",
+                id="role-an-entity-binds",
+            ),
+        ],
+    )
+    def test_an_open_role_the_part_cannot_leave_open_refuses_request_invalid(
+        self, part: dict, pointer: str
+    ) -> None:
+        client = make_client()
+        resp = client.post(
+            "/api/search/resolve", json={"input": {"kind": "parsed", "parts": [part]}}
+        )
+        assert resp.status_code == 400
+        assert (resp.json()["code"], resp.json()["pointer"]) == ("request_invalid", pointer)
+
+
+class TestPartProvenance:
+    def test_the_request_schema_lists_the_declared_datasets_from_the_code_index(self, monkeypatch):
+        """Each declared dataset is one `const` value of `ParsedPart.provenance`, in rank
+        order, carrying its label, description and opt-in flag from the index."""
+        declared = [
+            DatasetDeclaration(
+                provenance=f"provenance/Table{rank}",
+                label=f"Table {rank}",
+                description=f"What table {rank} measures.",
+                opt_in=rank == 1,
+                absent_observation="zero",
+                rank=rank,
+            )
+            for rank in (1, 0)
+        ]
+        index = SimpleNamespace(datasets={dataset.provenance: dataset for dataset in declared})
+        monkeypatch.setattr(app_module, "get_index", lambda: index)
+
+        schema = app_module._schema_payload()["request"]
+
+        field = schema["$defs"]["ParsedPart"]["properties"]["provenance"]
+        (named,) = [branch for branch in field["anyOf"] if branch.get("type") == "string"]
+        assert named["oneOf"] == [
+            {
+                "const": "provenance/Table0",
+                "title": "Table 0",
+                "description": "What table 0 measures.",
+                "x-opt-in": False,
+            },
+            {
+                "const": "provenance/Table1",
+                "title": "Table 1",
+                "description": "What table 1 measures.",
+                "x-opt-in": True,
+            },
+        ]
+
+    def test_the_served_schema_lists_the_packaged_index_datasets(self):
+        client = make_client()
+        body = client.get("/api/search/schema").json()
+        field = body["request"]["$defs"]["ParsedPart"]["properties"]["provenance"]
+        (named,) = [branch for branch in field["anyOf"] if branch.get("type") == "string"]
+        assert {(value["const"], value["x-opt-in"]) for value in named["oneOf"]} == {
+            (dataset.provenance, dataset.opt_in) for dataset in get_index().datasets.values()
+        }
+
+    @pytest.mark.parametrize("provenance", [None, "declared"], ids=["absent", "declared"])
+    def test_an_absent_or_declared_provenance_is_accepted(self, provenance: str | None):
+        if provenance == "declared":
+            provenance = next(iter(get_index().datasets))
+        client = make_client()
+        resp = client.post(
+            "/api/search/resolve",
+            json={
+                "input": {
+                    "kind": "parsed",
+                    "parts": [{"variable_text": "fertility rate", "provenance": provenance}],
+                }
+            },
+        )
+        assert resp.status_code == 200
+
+    @pytest.mark.parametrize(
+        ("request_input", "pointer"),
+        [
+            (
+                {
+                    "kind": "parsed",
+                    "parts": [
+                        {"variable_text": "fertility rate"},
+                        {"variable_text": "fertility rate", "provenance": "provenance/Unknown"},
+                    ],
+                },
+                "/input/parts/1/provenance",
+            ),
+            (
+                {
+                    "kind": "dataset_resubmit",
+                    "entries": [
+                        {
+                            "entry_kind": "parsed",
+                            "part": {
+                                "variable_text": "fertility rate",
+                                "provenance": "provenance/Unknown",
+                            },
+                        }
+                    ],
+                },
+                "/input/entries/0/part/provenance",
+            ),
+        ],
+        ids=["parsed", "dataset-resubmit"],
+    )
+    def test_an_undeclared_provenance_refuses_request_invalid_pointing_at_the_field(
+        self, request_input: dict, pointer: str
+    ):
+        client = make_client()
+        resp = client.post("/api/search/resolve", json={"input": request_input})
+        assert resp.status_code == 400
+        body = resp.json()
+        assert (body["code"], body["pointer"]) == ("request_invalid", pointer)
+
 
 class TestQueryEchoShape:
     def test_echo_reflects_parsed_entry_path(self):
@@ -308,7 +444,6 @@ class TestUnitNotResolvedCarriesUnitAlternatives:
             {"currency": "XAF", "label": "Central African CFA franc"},
             {"currency": "XOF", "label": "West African CFA franc"},
         ]
-        assert no_data["unit_alternatives_truncated"] is False
 
     def test_an_unparseable_phrase_carries_no_unit_alternatives(self):
         resp = _post_unit_text(_fertility_kenya_graph(), "zorkmids")
@@ -316,7 +451,6 @@ class TestUnitNotResolvedCarriesUnitAlternatives:
         no_data = resp.json()["parts"][0]["no_data"]
         assert no_data["reason"] == "unit_not_resolved"
         assert "unit_alternatives" not in no_data
-        assert "unit_alternatives_truncated" not in no_data
 
 
 class TestConstantPricesCompleteFromTheConversionTables:
@@ -421,7 +555,9 @@ class TestSchemaReflectsPartsShape:
             "time_text",
             "unit_text",
             "source_text",
+            "provenance",
             "operations",
+            "open_roles",
         }
         assert defs["ParsedInput"]["additionalProperties"] is False
         assert defs["ParsedPart"]["additionalProperties"] is False

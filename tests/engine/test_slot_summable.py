@@ -25,7 +25,6 @@ from search.models import (
     BaseIdentity,
     BindingUnbound,
     CoverageBare,
-    PipelineStep,
     Slot,
     SlotKey,
     StatVar,
@@ -280,7 +279,11 @@ class TestAgreesWithGroupby:
                 apply_slot_summability(_slots_of(document), _identity(document))
             ).items()
         }
-        assert {code_system: flags[code_system] for code_system in get_index().declarations} == {
+        assert {
+            code_system: flags[code_system]
+            for code_system in get_index().declarations
+            if code_system in flags
+        } == {
             "crsPurpose": True,
             "crsTypeOfFinance": True,
             "crsCooperationModality": True,
@@ -293,6 +296,7 @@ class TestBuildSpec:
     def _spec(self, slots: list[Slot], *, pop: str = "EconomicActivity", mq: str | None = None):
         shape = shape_five_tuple(pop, "amount", mq)
         return build_spec(
+            open_roles=(),
             shape=shape,
             slots=slots,
             stat_vars=[
@@ -305,7 +309,6 @@ class TestBuildSpec:
             ],
             entities=[],
             coverage=CoverageBare(has_data=True),
-            pipeline_trace=[PipelineStep(step="extract", ran=True)],
             measure_elected_properties=frozenset(),
         )
 
@@ -333,9 +336,12 @@ class TestBuildSpec:
             value_slot("what", "gender", "gender", "Female"),
         ]
         shape = identity_shape_from_wire(shape_five_tuple("EconomicActivity", "amount"))
-        unstamped = build_spec_identity(shape, slots, entities=[])
+        unstamped = build_spec_identity(shape, slots, entities=[], open_roles=())
         stamped = build_spec_identity(
-            shape, [s.model_copy(update={"summable": True}) for s in slots], entities=[]
+            shape,
+            [s.model_copy(update={"summable": True}) for s in slots],
+            entities=[],
+            open_roles=(),
         )
 
         assert stamped == unstamped

@@ -131,7 +131,6 @@ def _run(
             llm=_CandidateBindLLM(
                 chosen_shape_index=chosen_shape_index, also_plausible=also_plausible
             ),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
@@ -141,7 +140,7 @@ def _run(
 
 
 def _sv_refs(spec) -> set[str]:
-    return {sv.ref for sv in spec.resolved.stat_vars.items}
+    return {sv.ref.dcid for sv in spec.resolved.members}
 
 
 def _warning_codes(result) -> set[str]:
@@ -418,9 +417,8 @@ def test_divert_without_near_neighbor_warning_is_unaffected():
     assert NEAR_NEIGHBOR_AMBIGUOUS not in _warning_codes(result)
 
 
-# A twin carries no rendered sentence and no facet_options, even when both
-# include_sentence and include_option_coverage are genuinely on for the
-# request: with_sentence (search.engine.assemble) only ever renders
+# A twin carries no rendered sentence and no facet_options, even when
+# include_option_coverage is on for the request: with_sentence (search.engine.assemble) only ever renders
 # interpretations[0]/extras/candidates/nearest_real/flagged_match, and the
 # facet_options probe (_attach_candidate_facet_options, region/pipeline.py)
 # only ever runs on post-divert survivors -- a twin is neither.
@@ -446,7 +444,6 @@ def test_diverted_twin_carries_no_sentence_or_facet_options_with_both_flags_on()
         extra_warnings=[],
         start_ms=now_ms(),
         engine_build="test",
-        include_sentence=True,
         max_candidates=5,
     )
 

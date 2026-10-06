@@ -26,7 +26,7 @@ def _dataset(provenance: str, *, rank: int = 0) -> dict:
     return {
         "provenance": provenance,
         "label": provenance,
-        "synonyms": [],
+        "description": "A test table.",
         "opt_in": False,
         "absent_observation": "unknown",
         "rank": rank,

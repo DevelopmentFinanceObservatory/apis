@@ -20,14 +20,9 @@ from tests.conftest import base_response, minimal_spec
 
 
 class TestSlotExpansionRoundtrip:
-    """`expansion` and `declaration_version` are optional fields that round-trip when present."""
+    """`expansion` is an optional field that round-trips when present."""
 
-    def test_absent_by_default(self):
-        payload = minimal_spec()
-        spec = Spec.model_validate(payload)
-        assert spec.resolved.trace.declaration_version is None
-
-    def test_slot_expansion_and_trace_declaration_version_roundtrip(self):
+    def test_slot_expansion_roundtrip(self):
         payload = minimal_spec()
         payload["resolved"]["slots"] = [
             {
@@ -50,19 +45,16 @@ class TestSlotExpansionRoundtrip:
                 },
             }
         ]
-        payload["resolved"]["trace"]["declaration_version"] = "test-content-hash"
 
         spec = Spec.model_validate(payload)
         slot = spec.resolved.slots[0]
         assert slot.expansion is not None
         assert [ref.dcid for ref in slot.expansion.added] == ["CRSPurposeCode12262"]
-        assert spec.resolved.trace.declaration_version == "test-content-hash"
 
         dumped = spec.model_dump(mode="json")
         assert dumped["resolved"]["slots"][0]["expansion"]["added"][0]["dcid"] == (
             "CRSPurposeCode12262"
         )
-        assert dumped["resolved"]["trace"]["declaration_version"] == "test-content-hash"
         assert Spec.model_validate(dumped).model_dump(mode="json") == dumped
 
     def test_expansion_forbids_extra_fields(self):

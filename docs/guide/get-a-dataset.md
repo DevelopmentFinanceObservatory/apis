@@ -25,6 +25,8 @@ export DFO_API=https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app
    | `options.format`   | string  | `"csv"` | `"csv"`, `"xlsx"` or `"parquet"`.                                                                                                |
    | `options.bundle`   | boolean | `true`  | `true` wraps the table in a zip with its documentation, described in [The bundle](#the-bundle). `false` returns the table alone. |
 
+   A table without a bundle comes in the long layout, with a name beside each code and the unit split into its parts. A program that parses the frame itself can send `"options": {"format": "parquet", "bundle": false, "layout": "frame"}` instead. That file holds the frame's own columns: `stat_var`, each role, each decoded code system as `stat_var_<code_system>` holding its label, `time_period`, `value`, `unit` (a converted unit as JSON text such as `{"currency":"EUR","prices":"current"}`), `measurementMethod`, `provenance` and `status`. `layout` with a bundle, a pivot or any format other than Parquet refuses `400 request_invalid` at `/options/layout`.
+
    A small request returns `200` with the manifest. This example has 30 rows.
 
    ```json
@@ -36,7 +38,7 @@ export DFO_API=https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app
          "rendering": {
            "format": "parquet",
            "bundle": true,
-           "rendition": "v1-…"
+           "rendition": "v2-…"
          },
          "media_type": "application/zip",
          "bytes": 11590
@@ -117,8 +119,8 @@ export DFO_API=https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app
    {"operation": {"operation_id": "op_35021afd…", "status": "done", "poll": "/api/datasets/operations/op_35021afd…", "retry_after_ms": 1500}}
    cv_b785befb9f87471de96eb31cd7c56f5c {'rows': 2177, 'dimensions': [{'label': 'financingProvider', 'count': 63}, {'label': 'financingRecipient', 'count': 1}, {'label': 'years', 'count': 30}], 'window': {'kind': 'all', 'origin': 'default', 'end_year': 2024, 'start_year': 1995}}
    …
-   (2177, 13)
-   ['stat_var', 'financingProvider', 'financingRecipient', 'time_period', 'value', 'unit', 'measurementMethod', 'provenance', 'status', 'stat_var_crsCooperationModality', 'stat_var_crsPurpose', 'stat_var_crsTypeOfFinance', 'stat_var_crsTypeOfFlow']
+   (2177, 24)
+   ['stat_var', 'financingProvider', 'financingProvider_label', 'financingRecipient', 'financingRecipient_label', 'crsCooperationModality', 'crsCooperationModality_label', 'crsPurpose', 'crsPurpose_label', 'crsTypeOfFinance', 'crsTypeOfFinance_label', 'crsTypeOfFlow', 'crsTypeOfFlow_label', 'time_period', 'value', 'unit', 'unit_label', 'currency', 'price_basis', 'base_year', 'measurementMethod', 'measurementMethod_label', 'provenance', 'provenance_label']
    ```
 
    ```python
@@ -175,9 +177,9 @@ export DFO_API=https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app
 1. **Pick the file by its `rendering`.** A manifest lists every file stored for that `content_version`, including files other callers asked for. The Nigeria health manifest has four artifacts.
 
    ```json
-   {"rendering":{"bundle":true,"format":"parquet","rendition":"v1-…"},"media_type":"application/zip","bytes":31807}
-   {"rendering":{"bundle":true,"format":"csv","rendition":"v1-…"},"media_type":"application/zip","bytes":738167}
-   {"rendering":{"bundle":false,"format":"csv"},"media_type":"text/csv","bytes":732347}
+   {"rendering":{"bundle":true,"format":"parquet","rendition":"v2-…"},"media_type":"application/zip","bytes":31807}
+   {"rendering":{"bundle":true,"format":"csv","rendition":"v2-…"},"media_type":"application/zip","bytes":738167}
+   {"rendering":{"bundle":false,"format":"csv","layout":2},"media_type":"text/csv","bytes":732347}
    {"rendering":{"statistics":"series"},"media_type":"application/vnd.apache.parquet","bytes":29579}
    ```
 
@@ -208,7 +210,7 @@ export DFO_API=https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app
 
    :::
 
-   `{"statistics": "series"}` is a one-row-per-series summary with the first and latest value, minimum, maximum and change. It is always Parquet, whatever format you requested. Match files by the fields of `rendering`. A bundle's `rendering` also carries a `rendition` token that changes when the bundle's layout or the website setting behind its links changes, so compare `bundle` and `format` and leave the whole object alone. A version can also hold a pinned bundle from an earlier layout. The manifest lists it after the current one, so the first match is the current layout when a current bundle exists, and the pinned bundle otherwise. Media type alone can select the summary when you need the data rows.
+   `{"statistics": "series"}` is a one-row-per-series summary with the first and latest value, minimum, maximum and change. It is always Parquet, whatever format you requested. Match files by the fields of `rendering`. A bundle's `rendering` also carries a `rendition` token that changes when the bundle's layout or the website setting behind its links changes, and a bare file's carries a `layout` number that changes when its columns change, so compare `bundle` and `format` and leave the whole object alone. A file asked for with `"layout": "frame"` carries `"layout": "frame"` and is listed after the long-layout files, so a match on `bundle` and `format` alone finds the long layout first when the version holds a long file, and the frame file when it holds only frame files; add `layout` to the match to find the frame file. A version can also hold a pinned bundle from an earlier layout. The manifest lists it after the current one, so the first match is the current layout when a current bundle exists, and the pinned bundle otherwise. Media type alone can select the summary when you need the data rows.
 
    ```python title="Right"
    # Match the rendering fields you asked for. The first match is the current layout when a current bundle exists, and otherwise a pinned older bundle
@@ -260,7 +262,7 @@ A bundle is a zip that explains itself to a reader who has never heard of the DF
 | `CITATION.cff`      | The citation, in a format reference managers read.                                                                                       |
 | `datapackage.json`  | A Frictionless Data Package 2.0 descriptor: typed columns, foreign keys to `codes.csv`, hashes, and the call that reproduces the bundle. |
 
-`data/codes.csv` is absent when the table holds no codes. A collection bundle holds one `data/<slug>.<ext>` file per member, named from that member's sources, and one `data/codes.csv` shared by all of them.
+`data/codes.csv` is absent when the table holds no codes.
 
 The DFO is the author of the extract in `CITATION.cff`. Each source publisher appears as a reference with its own licence, link and attribution text.
 
@@ -360,7 +362,7 @@ To override a choice, bind the axis in `input.scope.facets`.
 }
 ```
 
-<!-- TODO: verify a scope.facets mint against dev. The write-free preview of this request answered 422 default_facet_undefined on 28 September 2026, with and without the scope block, so the example has not run. -->
+<!-- TODO: verify a scope.facets mint against dev. The example has not run. -->
 
 Axis bindings require a concrete ref. A concrete ref fixes the choice and can select a narrower set of rows.
 

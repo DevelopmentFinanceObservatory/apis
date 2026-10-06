@@ -11,24 +11,42 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import sys
 import time
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
+from code_index import CodeIndex, IndexStamp, StatVarRow
+from code_index import shared as code_index_shared
 from code_index.shared import get_index, get_measure_index
+from code_index.types import CodeRow, CodeSystemDeclaration
+from datasets_api.adapter import resolve_definition_members
+from entity_resolution import Admission
+from search.engine import core as search_core
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.departures import warning_key
-from search.engine.errors import FamilyNotResolvableError, RoleSignatureError
-from search.engine.fanout import _success_directional
+from search.engine.entry.parsed import _open_axes_for_part
+from search.engine.errors import EngineInputError, FamilyNotResolvableError, RoleSignatureError
+from search.engine.fanout import _FanOutResult, _run_variables_streaming, _success_directional
 from search.engine.options.population_memo import _population_key
 from search.engine.qualifier_match import QualifierMatch
-from search.engine.region import candidate_collapse, resolve_spec_resubmit, resolve_variable
+from search.engine.region import (
+    candidate_collapse,
+    promote_materialise,
+    resolve_spec_resubmit,
+    resolve_variable,
+)
 from search.engine.region.phase_rank_bind import _phase_prune_and_rank
+from search.engine.region.promote_materialise import _phase_materialise
+from search.engine.region.promote_state import _PromoteState
 from search.engine.region.result import with_runnable_operations
 from search.engine.region.state import EngineOptions
 from search.engine.retrieval.bound_values import (
     MembershipResolution,
     RoleClassWalks,
+    RoleKeys,
     bind_shared_values,
     collapse_measure_families,
     elect_five_tuple_family,
@@ -38,28 +56,46 @@ from search.engine.retrieval.bound_values import (
     index_carries_shape,
     measure_family_cache_key,
     measure_family_partitions,
-    posted_members_outside_role_class,
     shape_member_facts,
     shape_query,
 )
 from search.engine.retrieval.derive import derive_shapes
+from search.engine.retrieval.member_facts import ArcsMemberFacts
+from search.engine.retrieval.retrieve import Materialised
 from search.engine.role_text import DoorRole
 from search.engine.shape import (
     ShapeDraft,
     required_role_names,
 )
 from search.heading.departure_fact import DepartureFact
-from search.models import BaseIdentity, Operation, ResubmitIdentityPayload
+from search.models import (
+    BaseIdentity,
+    CoverageBare,
+    DatasetResubmitInput,
+    Operation,
+    ParsedEntity,
+    ParsedPart,
+    ResolveRequest,
+    ResubmitCandidate,
+    ResubmitCandidatesEntry,
+    ResubmitIdentityEntry,
+    ResubmitIdentityPayload,
+    RoleAxis,
+)
 from series_coverage.schema import ABSENT_ENTITY, RoleNames
 from series_coverage.shared import CoverageSnapshot
-from spec_registry.identity import recompute_identity
+from statvar_members import MemberEnumerator, member_digest
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
+from tests.datasets_api._member_bounds import mint_bounds
+from tests.engine._builders import bound_place_context, flow_place_roles
 from tests.engine._fake_coverage import (
+    FIXTURE_PROVENANCE,
     FakeCoverageService,
     build_coverage_index,
     empty_coverage_snapshot,
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import offline_resolve
 from tests.engine.test_bind_slot_reserve import _state as _prune_state
 from tests.fixtures import FakeGraph, make_resolver
 
@@ -121,26 +157,35 @@ _DEBT_NODES = {
 
 
 def _one_role_coverage(nodes: dict, obs: dict) -> CoverageSnapshot:
-    """The series coverage index of the recipient-only members among `nodes`, with a row at
-    each place `obs` holds them at. The index holds one-role series with no donor
-    (`series_coverage.schema.ABSENT_ENTITY`), so Search reads their facets there."""
-    recipient_only = {
-        dcid
+    """The series coverage index of the one-role members among `nodes`, with a row at each
+    place `obs` holds them at. The index holds a one-role series on its own role's axis,
+    with `series_coverage.schema.ABSENT_ENTITY` on the other, so Search reads its facets
+    there."""
+    lone_role = {
+        dcid: roles[0]
         for dcid, node in nodes.items()
-        if [
-            n["dcid"]
-            for n in node.get("arcs", {}).get("observationProperties", {}).get("nodes", [])
-        ]
-        == ["financingRecipient"]
+        if len(
+            roles := [
+                n["dcid"]
+                for n in node.get("arcs", {}).get("observationProperties", {}).get("nodes", [])
+            ]
+        )
+        == 1
+        and roles[0] in ("financingRecipient", "financingProvider")
     }
     rows = [
-        (dcid, f"f_{dcid}", ABSENT_ENTITY, place, list(range(2015, 2023)))
+        (dcid, f"f_{dcid}", place, ABSENT_ENTITY, list(range(2015, 2023)))
+        if lone_role[dcid] == "financingProvider"
+        else (dcid, f"f_{dcid}", ABSENT_ENTITY, place, list(range(2015, 2023)))
         for key in obs
         for dcid, place in [key.split("|", 1)]
-        if dcid in recipient_only
+        if dcid in lone_role
     ]
     role_names = {
-        dcid: RoleNames(donor=None, recipient="financingRecipient") for dcid in recipient_only
+        dcid: RoleNames(donor=role, recipient=None)
+        if role == "financingProvider"
+        else RoleNames(donor=None, recipient=role)
+        for dcid, role in lone_role.items()
     }
     return FakeCoverageService(build_coverage_index(rows, role_names=role_names)).snapshot()
 
@@ -213,7 +258,6 @@ def test_a_question_naming_no_place_offers_a_one_role_shape_to_the_election():
             graph=graph,
             resolver=make_resolver(graph),
             llm=_RecordingLLM(),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
@@ -290,15 +334,36 @@ def test_the_election_runs_over_the_members_that_match_the_bindings():
     assert list(narrowed.sv_arc_facts or {}) == [_BY_CREDITOR, _BY_CREDITOR_GUARANTEED]
 
 
-def test_entity_role_keys_are_the_keys_the_identity_carries():
-    shape = _debt_shape()
-
-    assert entity_role_keys(shape, {"financingRecipient": ["country/KEN"]}) == {"destination"}
-    assert entity_role_keys(
-        shape, {"financingRecipient": ["country/KEN"], "financingProvider": ["country/CHN"]}
-    ) == {"destination", "origin"}
-    assert entity_role_keys(shape, {"observationAbout": ["country/KEN"]}) == {"observationAbout"}
-    assert entity_role_keys(shape, {"financingRecipient": []}) == frozenset()
+@pytest.mark.parametrize(
+    ("entities", "open_axes", "expected"),
+    [
+        ({"financingRecipient": ["country/KEN"]}, (), RoleKeys(bound=frozenset({"destination"}))),
+        (
+            {"financingRecipient": ["country/KEN"], "financingProvider": ["country/CHN"]},
+            (),
+            RoleKeys(bound=frozenset({"destination", "origin"})),
+        ),
+        (
+            {"observationAbout": ["country/KEN"]},
+            (),
+            RoleKeys(bound=frozenset({"observationAbout"})),
+        ),
+        ({"financingRecipient": []}, (), RoleKeys()),
+        (
+            {"financingRecipient": ["country/KEN"]},
+            ("origin",),
+            RoleKeys(bound=frozenset({"destination"}), open=frozenset({"origin"})),
+        ),
+        (
+            {"financingRecipient": ["country/KEN"]},
+            ("destination",),
+            RoleKeys(bound=frozenset({"destination"})),
+        ),
+    ],
+    ids=["recipient", "both", "subject", "empty", "open-creditor", "open-but-bound"],
+)
+def test_entity_role_keys_are_the_keys_the_identity_carries(entities, open_axes, expected):
+    assert entity_role_keys(entities, open_axes=open_axes) == expected
 
 
 def _walk_arcs(node: dict) -> dict[str, tuple[str, ...]]:
@@ -369,22 +434,6 @@ def test_a_less_constrained_class_outside_a_sample_with_every_role_bound_answers
     assert settled.label == "External debt stocks, by creditor"
 
 
-def test_a_posted_member_with_every_role_bound_is_outside_a_less_constrained_family():
-    (shape,) = derive_shapes(
-        confirmed_svs=[_CODED_TOTAL],
-        graph=FakeGraph(nodes=_CODED_NODES, obs={}, detect={}, resolve={}),
-    )
-    posted = {_CODED_TOTAL: _CODED_NODES[_CODED_TOTAL]["arcs"]}
-
-    outside = posted_members_outside_role_class(
-        posted,
-        shape_query(shape, [], ["destination"]),
-        walks=RoleClassWalks(_walk_reader(_CODED_NODES)),
-    ).value
-
-    assert outside == (_CODED_TOTAL,)
-
-
 def test_a_walk_that_finds_the_samples_role_class_changes_nothing():
     by_creditor = {_BY_CREDITOR: _DEBT_NODES[_BY_CREDITOR]}
     shape = _debt_shape(_BY_CREDITOR)
@@ -400,36 +449,60 @@ def _walk_reader(nodes: dict) -> FakeMintGraphReader:
     return FakeMintGraphReader(arcs={dcid: _walk_arcs(node) for dcid, node in nodes.items()})
 
 
-_TIE_NODES = {
+_BY_CREDITOR_NODES = {
     "Tie_ByCreditor": _node("Debt, by creditor", _PAIR, positionType="AmountOutstanding"),
     "Tie_ByCreditor_G": _node(
         "Guaranteed debt, by creditor", _PAIR, positionType="AmountOutstanding", guarantee="Public"
     ),
+}
+# A recipient-only total with other constraint keys: its role set lies inside the
+# by-creditor members', so a question naming no creditor reads it.
+_NESTED_NODES = {
+    **_BY_CREDITOR_NODES,
     "Tie_Total_G": _node("Guaranteed debt total", _RECIPIENT, guarantee="Public"),
+}
+# A member placing the destination under a role the by-creditor members do not declare:
+# neither role set holds the other.
+_TIE_NODES = {
+    **_BY_CREDITOR_NODES,
+    "Tie_Owed_G": _node("Guaranteed debt owed", ["debtor"], guarantee="Public"),
 }
 
 
-def _tie_sample_shape() -> ShapeDraft:
-    sample = {dcid: _TIE_NODES[dcid] for dcid in ("Tie_ByCreditor", "Tie_ByCreditor_G")}
+def _by_creditor_sample_shape() -> ShapeDraft:
     (shape,) = derive_shapes(
-        confirmed_svs=list(sample), graph=FakeGraph(nodes=sample, obs={}, detect={}, resolve={})
+        confirmed_svs=list(_BY_CREDITOR_NODES),
+        graph=FakeGraph(nodes=_BY_CREDITOR_NODES, obs={}, detect={}, resolve={}),
     )
     return shape
 
 
-def test_a_tie_only_the_walk_sees_is_not_answered_from_the_sample():
-    """The sample holds by-creditor members. The graph also holds a recipient-only member
-    with other constraint keys, which the election cannot order against them. The mint
-    refuses the identity, so the sample does not answer it."""
-    shape = _tie_sample_shape()
-    arcs_graph = FakeGraph(nodes=_TIE_NODES, obs={}, detect={}, resolve={})
+def test_a_total_of_other_constraint_keys_only_the_walk_sees_answers():
+    """The sample holds by-creditor members. The graph also holds a recipient-only total
+    with other constraint keys. With the recipient alone bound, the mint reads the total,
+    the series published without a creditor, and the shape takes its member and name."""
+    settled = _narrowed(
+        _by_creditor_sample_shape(),
+        "destination",
+        walks=RoleClassWalks(_walk_reader(_NESTED_NODES)),
+        arcs_graph=FakeGraph(nodes=_NESTED_NODES, obs={}, detect={}, resolve={}),
+    )
 
+    assert list(settled.sv_arc_facts or {}) == ["Tie_Total_G"]
+    assert settled.declared_roles == ("financingRecipient",)
+    assert settled.label == "Guaranteed debt total"
+
+
+def test_a_tie_only_the_walk_sees_is_not_answered_from_the_sample():
+    """The sample holds by-creditor members. The graph also holds a member that places
+    the recipient under a role of its own, and neither role set holds the other. The mint
+    refuses the identity, so the sample does not answer it."""
     with pytest.raises(RoleSignatureError):
         _narrowed(
-            shape,
+            _by_creditor_sample_shape(),
             "destination",
             walks=RoleClassWalks(_walk_reader(_TIE_NODES)),
-            arcs_graph=arcs_graph,
+            arcs_graph=FakeGraph(nodes=_TIE_NODES, obs={}, detect={}, resolve={}),
         )
 
 
@@ -494,117 +567,56 @@ def test_a_walk_that_meets_a_member_at_fault_is_not_answered_from_the_sample():
         )
 
 
-def _posted(*members: str) -> dict[str, dict]:
-    return {dcid: _DEBT_NODES[dcid]["arcs"] for dcid in members}
-
-
-def test_a_posted_by_creditor_member_is_outside_the_family_of_a_recipient_only_identity():
-    """The identity binds the debtor alone, so the mint resolves the recipient-only total
-    and refuses the posted by-creditor row."""
-    shape = _debt_shape()
-    query = shape_query(shape, [], ["destination"])
-    walks = RoleClassWalks(_walk_reader(_DEBT_NODES))
-
-    assert posted_members_outside_role_class(_posted(_BY_CREDITOR), query, walks=walks).value == (
-        _BY_CREDITOR,
-    )
-    assert posted_members_outside_role_class(_posted(_TOTAL), query, walks=walks).value == ()
-    creditor_named = shape_query(shape, [], ["origin", "destination"])
-    assert (
-        posted_members_outside_role_class(_posted(_BY_CREDITOR), creditor_named, walks=walks).value
-        == ()
-    )
-
-
-def test_a_posted_set_inside_the_walked_family_is_answered_as_posted():
-    shape = _debt_shape()
-    reader = _walk_reader(_DEBT_NODES)
-
-    outside = posted_members_outside_role_class(
-        _posted(_TOTAL),
-        shape_query(shape, [], ["destination"]),
-        walks=RoleClassWalks(reader),
-    ).value
-
-    assert outside == ()
-    assert reader.calls["node_subjects"] == 1
-
-
-def _resubmit(identity: BaseIdentity, posted: list[str], *, member_graph: bool = True):
+def _resubmit(
+    identity: BaseIdentity,
+    *,
+    member_graph: bool = True,
+    coverage: CoverageSnapshot | None = None,
+    nodes: dict | None = None,
+):
+    nodes = nodes or _DEBT_NODES
     graph = FakeGraph(
-        nodes={**_PLACES, **_DEBT_NODES},
+        nodes={**_PLACES, **nodes},
         detect={},
         resolve={"Kenya": "country/KEN"},
-        obs={f"{dcid}|country/KEN": _OBS for dcid in _DEBT_NODES},
+        obs={f"{dcid}|country/KEN": _OBS for dcid in nodes},
     )
-    document = identity.model_dump(mode="json", exclude_none=True)
     return resolve_spec_resubmit(
-        inp=ResubmitIdentityPayload(
-            identity=identity,
-            base_spec_id=recompute_identity(document).spec_id,
-            base_identity=identity,
-            resolved_stat_var_dcids=posted,
-        ),
+        inp=ResubmitIdentityPayload(identity=identity),
         graph=graph,
         sdmx=FakeSdmxClient(observations={}, availability={}),
-        coverage=_one_role_coverage(
-            {**_PLACES, **_DEBT_NODES}, {f"{dcid}|country/KEN": _OBS for dcid in _DEBT_NODES}
+        coverage=coverage
+        or _one_role_coverage(
+            {**_PLACES, **nodes}, {f"{dcid}|country/KEN": _OBS for dcid in nodes}
         ),
-        options=EngineOptions(
-            materialise_graph=_walk_reader(_DEBT_NODES) if member_graph else None
-        ),
+        options=EngineOptions(materialise_graph=_walk_reader(nodes) if member_graph else None),
     )
 
 
-def test_a_resubmit_posting_a_member_the_mint_refuses_is_not_answered_definite():
+def test_a_resubmit_of_a_recipient_only_identity_answers_the_mints_family():
     """The first pass answers the recipient-only family under `destination: KEN`. A
-    resubmit of that identity with the by-creditor row posted names a member the mint
-    refuses `MemberSelectionMismatch`, so Search reports no matching slice."""
-    first = _run(entities=["Kenya"], obs={f"{_TOTAL}|country/KEN": _OBS})
-    identity = first.specs[0].definition.identity
-
-    refused = _resubmit(identity, [_BY_CREDITOR])
-    kept = _resubmit(identity, [_TOTAL])
-
-    assert (refused.status, refused.no_data_reason) == ("no_data", "no_matching_slice")
-    assert kept.status == "definite"
-    assert [sv.ref for sv in kept.specs[0].resolved.stat_vars.items] == [_TOTAL]
-
-
-def test_a_resubmit_posting_two_role_sets_names_the_member_the_mint_refuses():
-    """The identity binds the debtor alone. The mint's walk keeps the recipient-only
-    total, so the mint refuses the posted by-creditor row `MemberSelectionMismatch` and
-    Search reports no matching slice."""
+    resubmit of that identity elects the same family, the recipient-only total, as the
+    mint's walk does, whatever by-creditor rows the graph holds."""
     first = _run(entities=["Kenya"], obs={f"{_TOTAL}|country/KEN": _OBS})
 
-    region = _resubmit(first.specs[0].definition.identity, [_TOTAL, _BY_CREDITOR])
+    region = _resubmit(first.specs[0].definition.identity)
 
-    assert (region.status, region.no_data_reason) == ("no_data", "no_matching_slice")
-
-
-def test_without_a_walk_the_posted_members_elect_their_role_class():
-    query = shape_query(_debt_shape(), [], ["destination"])
-
-    assert posted_members_outside_role_class(_posted(_TOTAL, _BY_CREDITOR), query).value == (
-        _BY_CREDITOR,
-    )
-    with pytest.raises(RoleSignatureError):
-        posted_members_outside_role_class(
-            {dcid: _TIE_NODES[dcid]["arcs"] for dcid in ("Tie_ByCreditor", "Tie_Total_G")},
-            shape_query(_tie_sample_shape(), [], ["destination"]),
-        )
+    assert region.status == "definite"
+    assert [sv.ref.dcid for sv in region.specs[0].resolved.members] == [_TOTAL]
 
 
-def test_a_place_whose_walk_meets_a_tie_reports_the_role_signature_refusal():
+def _guaranteed_debt_of_kenya(nodes: dict, *, obs: dict | None = None):
+    """Resolve "guaranteed debt of Kenya" with the by-creditor members recalled and the
+    mint's walk reading `nodes`."""
     query = "guaranteed debt of Kenya"
-    sample = [dcid for dcid in _TIE_NODES if dcid != "Tie_Total_G"]
+    obs = obs or {}
     graph = FakeGraph(
-        nodes={**_PLACES, **_TIE_NODES},
-        detect={query: {"svs": sample, "cosine_scores": [0.9, 0.88]}},
+        nodes={**_PLACES, **nodes},
+        detect={query: {"svs": list(_BY_CREDITOR_NODES), "cosine_scores": [0.9, 0.88]}},
         resolve={"Kenya": "country/KEN"},
-        obs={},
+        obs=obs,
     )
-    result = asyncio.run(
+    return asyncio.run(
         resolve_variable(
             query,
             entities=["Kenya"],
@@ -616,15 +628,26 @@ def test_a_place_whose_walk_meets_a_tie_reports_the_role_signature_refusal():
             graph=graph,
             resolver=make_resolver(graph),
             llm=_BindLLM(),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
-            coverage=empty_coverage_snapshot(),
-            options=EngineOptions(materialise_graph=_walk_reader(_TIE_NODES)),
+            coverage=_one_role_coverage(nodes, obs),
+            options=EngineOptions(materialise_graph=_walk_reader(nodes)),
         )
     )
 
+
+def test_a_place_whose_walk_meets_a_tie_reports_the_role_signature_refusal():
+    result = _guaranteed_debt_of_kenya(_TIE_NODES)
+
     assert (result.status, result.no_data_reason) == ("no_data", "role_signature_incompatible")
+
+
+def test_a_place_whose_walk_finds_a_total_of_other_constraint_keys_answers_the_total():
+    result = _guaranteed_debt_of_kenya(_NESTED_NODES, obs={"Tie_Total_G|country/KEN": _OBS})
+
+    assert result.status == "definite"
+    assert [sv.ref.dcid for sv in result.specs[0].resolved.members] == ["Tie_Total_G"]
+    assert result.specs[0].definition.identity.entities == {"destination": ["country/KEN"]}
 
 
 # ---------------------------------------------------------------------------
@@ -745,7 +768,6 @@ def test_a_recalled_index_row_does_not_take_the_debt_shapes_family():
             graph=graph,
             resolver=make_resolver(graph),
             llm=_BindLLM(),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=_one_role_coverage(
@@ -758,7 +780,7 @@ def test_a_recalled_index_row_does_not_take_the_debt_shapes_family():
     assert result.status == "definite"
     spec = result.specs[0]
     assert spec.resolved.shape.label == "Debt service"
-    assert [sv.ref for sv in spec.resolved.stat_vars.items] == [_SERVICE]
+    assert [sv.ref.dcid for sv in spec.resolved.members] == [_SERVICE]
     assert spec.definition.identity.entities == {"destination": ["country/KEN"]}
     assert {
         slot.property: getattr(slot.binding, "ref", None) for slot in spec.definition.identity.slots
@@ -832,7 +854,15 @@ class _BindLLM:
         ), None
 
 
-def _run(*, entities: list[str], entity_roles=None, obs: dict, query: str = _QUERY):
+def _run(
+    *,
+    entities: list[str],
+    entity_roles=None,
+    obs: dict,
+    query: str = _QUERY,
+    open_axes: frozenset[RoleAxis] = frozenset(),
+    coverage: CoverageSnapshot | None = None,
+):
     members = list(_DEBT_NODES)
     graph = FakeGraph(
         nodes={**_PLACES, **_DEBT_NODES},
@@ -845,6 +875,7 @@ def _run(*, entities: list[str], entity_roles=None, obs: dict, query: str = _QUE
             query,
             entities=entities,
             entity_roles=entity_roles,
+            open_axes=open_axes,
             date_request=None,
             detect_query=query,
             role_query=query,
@@ -852,12 +883,561 @@ def _run(*, entities: list[str], entity_roles=None, obs: dict, query: str = _QUE
             graph=graph,
             resolver=make_resolver(graph),
             llm=_BindLLM(),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
-            coverage=_one_role_coverage(_DEBT_NODES, obs),
+            coverage=coverage or _one_role_coverage(_DEBT_NODES, obs),
         )
     )
+
+
+def _twin_coverage() -> CoverageSnapshot:
+    """The coverage index of the recipient-only total at Kenya and its by-creditor twin at
+    Kenya from China."""
+    return FakeCoverageService(
+        build_coverage_index(
+            [
+                (_TOTAL, f"f_{_TOTAL}", ABSENT_ENTITY, "country/KEN", list(range(2015, 2023))),
+                (_BY_CREDITOR, "f_by_creditor", "country/CHN", "country/KEN", [2020, 2021]),
+            ],
+            role_names={
+                _TOTAL: RoleNames(donor=None, recipient="financingRecipient"),
+                _BY_CREDITOR: RoleNames(donor="financingProvider", recipient="financingRecipient"),
+            },
+        )
+    ).snapshot()
+
+
+def test_an_open_creditor_answers_with_the_by_creditor_members():
+    """Kenya with every creditor asked for. The place binds the recipient, the creditor
+    axis stays open, and the by-creditor class covers both, so it displaces the total and
+    the answer reads its series at each creditor."""
+    result = _run(
+        entities=["Kenya"],
+        obs={f"{_TOTAL}|country/KEN": _OBS},
+        open_axes=frozenset({"origin"}),
+        coverage=_twin_coverage(),
+    )
+
+    assert result.status == "definite"
+    spec = result.specs[0]
+    assert [sv.ref.dcid for sv in spec.resolved.members] == [_BY_CREDITOR]
+    assert spec.definition.identity.entities == {"destination": ["country/KEN"]}
+    assert spec.definition.identity.open_roles == ["origin"]
+
+
+def _run_leg(
+    *,
+    nodes: dict,
+    coverage: CoverageSnapshot,
+    operations: tuple[Operation, ...] = (),
+    open_axes: frozenset[RoleAxis] = frozenset(),
+    query: str = "top creditors of external debt stocks of Kenya",
+    recalled: list[str] | None = None,
+):
+    """Resolve one fan-out leg over Kenya, as a door hands it its operations and its own
+    open roles. Recall finds `recalled`, every member of `nodes` by default."""
+    recalled = list(nodes) if recalled is None else recalled
+    graph = FakeGraph(
+        nodes={**_PLACES, **nodes},
+        detect={query: {"svs": recalled, "cosine_scores": [0.9] * len(recalled)}},
+        resolve={"Kenya": "country/KEN"},
+        obs={f"{dcid}|country/KEN": _OBS for dcid in nodes},
+    )
+    out = _FanOutResult()
+
+    async def drain() -> None:
+        async for _event in _run_variables_streaming(
+            [query],
+            entities=["Kenya"],
+            date_request=None,
+            query=query,
+            pac=True,
+            graph=graph,
+            resolver=make_resolver(graph),
+            admission=Admission(graph=graph),
+            llm=_BindLLM(),
+            sdmx=FakeSdmxClient(observations={}, availability={}),
+            base_timing={},
+            pre_resolved=None,
+            deadline=time.monotonic() + 3600,
+            degrade_on_error=False,
+            use_semaphore=False,
+            out=out,
+            per_variable_operations=[operations],
+            per_variable_open_axes=[open_axes],
+            coverage=coverage,
+        ):
+            pass
+
+    asyncio.run(drain())
+    (region,) = out.regions
+    return region
+
+
+_RECIPIENT_ONLY_NODES = {dcid: _DEBT_NODES[dcid] for dcid in (_TOTAL, _TOTAL_GUARANTEED)}
+
+
+def test_a_rank_over_creditors_on_a_twin_family_keeps_the_operation_and_the_open_creditor():
+    """The rank runs over creditors, so the leg leaves the creditor open. The by-creditor
+    twin covers it and displaces the total, the answer holds a row per creditor, and the
+    identity states the open creditor beside the bound debtor."""
+    region = _run_leg(nodes=_DEBT_NODES, coverage=_twin_coverage(), operations=(_RANK_CREDITORS,))
+
+    assert region.status == "definite"
+    spec = region.specs[0]
+    assert [sv.ref.dcid for sv in spec.resolved.members] == [_BY_CREDITOR]
+    assert spec.definition.identity.entities == {"destination": ["country/KEN"]}
+    assert spec.definition.identity.open_roles == ["origin"]
+    assert region.operations == (_RANK_CREDITORS,)
+    assert not [w for w in region.warnings if w.code == "query_qualifier_dropped"]
+
+
+def test_a_parsed_part_asking_every_creditor_answers_as_a_rank_over_creditors_does():
+    part = ParsedPart(
+        variable_text="external debt stocks",
+        entities=[ParsedEntity(text="Kenya")],
+        open_roles=["creditor"],
+    )
+    open_axes = _open_axes_for_part(part, pointer_prefix="/input/parts/0")
+
+    opened = _run_leg(nodes=_DEBT_NODES, coverage=_twin_coverage(), open_axes=open_axes)
+    ranked = _run_leg(nodes=_DEBT_NODES, coverage=_twin_coverage(), operations=(_RANK_CREDITORS,))
+
+    assert open_axes == {"origin"}
+    assert opened.specs[0].spec_id == ranked.specs[0].spec_id
+    assert opened.specs[0].definition.identity.open_roles == ["origin"]
+    assert opened.parsed_form is not None
+    assert opened.parsed_form.open_roles == ["origin"]
+
+
+def _debt_index(*dcids: str) -> CodeIndex:
+    """The code index holding the members `dcids` of `_DEBT_NODES`, so it decides the debt
+    family's members."""
+    return CodeIndex(
+        stamp=IndexStamp(
+            graph_endpoint="test",
+            exported_at="2026-01-01T00:00:00Z",
+            code_counts={},
+            statvar_shape_counts={},
+            content_hash="test",
+        ),
+        declarations=(
+            CodeSystemDeclaration(
+                code_system="positionType",
+                hierarchical=False,
+                disjoint_from_children=False,
+                summable=True,
+                absent_reading="not_declared",
+                plain_name="position",
+            ),
+        ),
+        codes=(
+            CodeRow(
+                dcid="AmountOutstanding",
+                code_system="positionType",
+                code="AmountOutstanding",
+                label="amount outstanding",
+                synonyms=(),
+                parent=None,
+            ),
+        ),
+        statvars=[
+            StatVarRow(
+                dcid=dcid,
+                population_type="FinancialPosition",
+                measured_property="amount",
+                stat_type="measuredValue",
+                measurement_qualifier="Nominal",
+                measurement_denominator=None,
+                observation_properties=tuple(
+                    n["dcid"] for n in _DEBT_NODES[dcid]["arcs"]["observationProperties"]["nodes"]
+                ),
+                constraint_properties={"positionType": "AmountOutstanding"},
+                provenances=(FIXTURE_PROVENANCE,),
+            )
+            for dcid in dcids
+        ],
+    )
+
+
+def _use_index(monkeypatch: pytest.MonkeyPatch, index: CodeIndex) -> None:
+    """Serve `index` wherever a loaded module reads the packaged index."""
+    packaged = code_index_shared.get_index
+    for module in list(sys.modules.values()):
+        if vars(module).get("get_index") is packaged:
+            monkeypatch.setattr(module, "get_index", lambda: index)
+
+
+def test_an_open_creditor_elects_the_index_familys_twin_that_recall_missed(monkeypatch):
+    """Recall finds only the recipient-only total, so the recalled shape declares no creditor
+    role, and the code index decides the family, which holds the by-creditor twin. The open
+    creditor reaches the election, the twin answers, and the part states the creditor it
+    serves. The identity leaves it open, the rank over creditors runs, and nothing warns
+    that the breakdown was dropped."""
+    coverage = _twin_coverage()
+    _use_index(monkeypatch, _debt_index(_TOTAL, _BY_CREDITOR))
+
+    region = _run_leg(
+        nodes=_DEBT_NODES,
+        coverage=coverage,
+        operations=(_RANK_CREDITORS,),
+        open_axes=frozenset({"origin"}),
+        recalled=[_TOTAL],
+    )
+
+    assert region.status == "definite"
+    spec = region.specs[0]
+    assert [sv.ref.dcid for sv in spec.resolved.members] == [_BY_CREDITOR]
+    assert spec.definition.identity.open_roles == ["origin"]
+    assert region.operations == (_RANK_CREDITORS,)
+    assert not [w for w in region.warnings if w.code == "query_qualifier_dropped"]
+
+
+def test_an_open_creditor_on_an_index_family_with_no_twin_answers_the_total_and_warns(
+    monkeypatch,
+):
+    """No member of the index family declares a creditor, so the total answers, its identity
+    leaves no role open, and the part warns that the breakdown was not applied."""
+    coverage = _twin_coverage()
+    _use_index(monkeypatch, _debt_index(_TOTAL))
+
+    region = _run_leg(
+        nodes=_DEBT_NODES,
+        coverage=coverage,
+        open_axes=frozenset({"origin"}),
+        recalled=[_TOTAL],
+    )
+
+    assert region.status == "definite"
+    spec = region.specs[0]
+    assert [sv.ref.dcid for sv in spec.resolved.members] == [_TOTAL]
+    assert spec.definition.identity.open_roles is None
+    assert [w.code for w in region.warnings if w.code == "query_qualifier_dropped"] == [
+        "query_qualifier_dropped"
+    ]
+
+
+def test_a_resubmitted_open_creditor_identity_keeps_its_open_role_and_spec_id():
+    first = _run_leg(nodes=_DEBT_NODES, coverage=_twin_coverage(), operations=(_RANK_CREDITORS,))
+    spec = first.specs[0]
+
+    region = _resubmit(spec.definition.identity, coverage=_twin_coverage())
+
+    assert region.status == "definite"
+    assert region.spec.definition.identity.open_roles == ["origin"]
+    assert region.spec.spec_id == spec.spec_id
+    assert [sv.ref.dcid for sv in region.spec.resolved.members] == [_BY_CREDITOR]
+
+
+def test_an_open_creditor_identity_states_the_members_the_mint_resolves_for_it():
+    """A resubmit of the open-creditor identity states the served count and family digest
+    the Datasets mint resolves from the same identity: the by-creditor members."""
+    first = _run_leg(nodes=_DEBT_NODES, coverage=_twin_coverage(), operations=(_RANK_CREDITORS,))
+    identity = first.specs[0].definition.identity
+    assert identity.open_roles == ["origin"]
+
+    region = _resubmit(identity, coverage=_twin_coverage())
+    (minted,) = resolve_definition_members(
+        identity.model_dump(mode="json", exclude_none=True),
+        spec_id=first.specs[0].spec_id,
+        graph=_walk_reader(_DEBT_NODES),
+        enumerator=MemberEnumerator(),
+        code_index=get_index(),
+        bounds=mint_bounds(),
+    ).shapes
+
+    assert minted.stat_var == f"dcid:{_BY_CREDITOR}"
+    assert minted.family is not None
+    assert minted.family.digest == member_digest([_BY_CREDITOR, _BY_CREDITOR_GUARANTEED])
+    assert region.spec.resolved.stat_vars.served_count == 1
+    assert region.spec.resolved.shape.member_count == minted.family.count == 2
+    assert region.spec.resolved.shape.member_digest == minted.family.digest
+
+
+def _resubmit_entry(
+    identity: BaseIdentity,
+    *,
+    coverage: CoverageSnapshot,
+    nodes: dict,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Resolve `identity` through the `dataset_resubmit` door as its one entry."""
+    graph = FakeGraph(
+        nodes={**_PLACES, **nodes},
+        detect={},
+        resolve={"Kenya": "country/KEN"},
+        obs={f"{dcid}|country/KEN": _OBS for dcid in nodes},
+    )
+    monkeypatch.setattr(
+        search_core, "get_coverage_service", lambda: SimpleNamespace(snapshot=lambda: coverage)
+    )
+    entry = ResubmitIdentityEntry(variable_text="external debt stocks", identity=identity)
+    return offline_resolve(
+        ResolveRequest(input=DatasetResubmitInput(entries=[entry])),
+        graph=graph,
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+        materialise_graph=_walk_reader(nodes),
+    )
+
+
+def _recipient_only_identity() -> tuple[BaseIdentity, str, CoverageSnapshot]:
+    """The recipient-only total's identity at Kenya, its spec_id, and its coverage."""
+    coverage = _one_role_coverage(_RECIPIENT_ONLY_NODES, {f"{_TOTAL}|country/KEN": _OBS})
+    first = _run_leg(nodes=_RECIPIENT_ONLY_NODES, coverage=coverage)
+    return first.specs[0].definition.identity, first.specs[0].spec_id, coverage
+
+
+def test_a_resubmit_naming_an_open_creditor_no_member_serves_refuses(monkeypatch):
+    """The posted identity asks for every creditor, and no member of the family declares
+    one, so the resubmit cannot give a series per creditor and refuses. The identity is the
+    whole definition: an answer for the total would carry the spec_id of another identity."""
+    identity, _, coverage = _recipient_only_identity()
+    opened = identity.model_copy(update={"open_roles": ["origin"]})
+
+    with pytest.raises(EngineInputError) as exc_info:
+        _resubmit_entry(
+            opened, coverage=coverage, nodes=_RECIPIENT_ONLY_NODES, monkeypatch=monkeypatch
+        )
+
+    assert (exc_info.value.code, exc_info.value.status, exc_info.value.pointer) == (
+        "open_role_unavailable",
+        422,
+        "/input/entries/0/identity/open_roles",
+    )
+
+
+def test_a_resubmit_opening_a_creditor_the_twin_serves_answers_the_by_creditor_members(
+    monkeypatch,
+):
+    """The recipient-only identity, edited to ask for every creditor, over a family that
+    holds the by-creditor twin. The twin serves the open role, so the part answers with it
+    under the identity posted and nothing warns that the breakdown was dropped."""
+    first = _run_leg(nodes=_DEBT_NODES, coverage=_twin_coverage(), query=_QUERY)
+    identity = first.specs[0].definition.identity
+    assert identity.open_roles is None
+    opened = identity.model_copy(update={"open_roles": ["origin"]})
+
+    result = _resubmit_entry(
+        opened, coverage=_twin_coverage(), nodes=_DEBT_NODES, monkeypatch=monkeypatch
+    )
+
+    (part,) = result.parts
+    assert part.status == "definite"
+    assert part.spec.definition.identity.open_roles == ["origin"]
+    assert part.spec.spec_id != first.specs[0].spec_id
+    assert part.spec.resolved.shape.member_digest == member_digest(
+        [_BY_CREDITOR, _BY_CREDITOR_GUARANTEED]
+    )
+    assert part.spec.resolved.stat_vars.served_count == 1
+    assert not [w for w in part.warnings if w.code == "query_qualifier_dropped"]
+
+
+def _resubmit_candidates(
+    identity: BaseIdentity,
+    *,
+    coverage: CoverageSnapshot,
+    nodes: dict,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Resolve `identity` posted twice as a candidates entry of the `dataset_resubmit` door."""
+    graph = FakeGraph(
+        nodes={**_PLACES, **nodes},
+        detect={},
+        resolve={"Kenya": "country/KEN"},
+        obs={f"{dcid}|country/KEN": _OBS for dcid in nodes},
+    )
+    monkeypatch.setattr(
+        search_core, "get_coverage_service", lambda: SimpleNamespace(snapshot=lambda: coverage)
+    )
+    candidate = ResubmitCandidate(identity=identity)
+    entry = ResubmitCandidatesEntry(
+        variable_text="external debt stocks",
+        ordering="broadest_first",
+        truncated=False,
+        candidates=[candidate, candidate],
+    )
+    return offline_resolve(
+        ResolveRequest(input=DatasetResubmitInput(entries=[entry])),
+        graph=graph,
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+        materialise_graph=_walk_reader(nodes),
+    )
+
+
+def test_a_candidate_whose_open_creditor_no_member_serves_refuses(monkeypatch):
+    """A candidate's open role is a promise, like an identity entry's. No member of the
+    family declares a creditor, so the candidate set refuses."""
+    identity, _, coverage = _recipient_only_identity()
+    opened = identity.model_copy(update={"open_roles": ["origin"]})
+
+    with pytest.raises(EngineInputError) as exc_info:
+        _resubmit_candidates(
+            opened, coverage=coverage, nodes=_RECIPIENT_ONLY_NODES, monkeypatch=monkeypatch
+        )
+
+    # Both candidates refuse, and whichever promote raises first names the pointer.
+    assert (exc_info.value.code, exc_info.value.status) == ("open_role_unavailable", 422)
+    assert exc_info.value.pointer in {
+        f"/input/entries/0/candidates/{j}/identity/open_roles" for j in (0, 1)
+    }
+
+
+def test_a_candidate_whose_open_creditor_its_twin_serves_keeps_its_spec_id(monkeypatch):
+    first = _run_leg(nodes=_DEBT_NODES, coverage=_twin_coverage(), operations=(_RANK_CREDITORS,))
+    spec = first.specs[0]
+
+    result = _resubmit_candidates(
+        spec.definition.identity,
+        coverage=_twin_coverage(),
+        nodes=_DEBT_NODES,
+        monkeypatch=monkeypatch,
+    )
+
+    (part,) = result.parts
+    assert part.status == "candidates"
+    assert [s.spec_id for s in part.candidates.specs] == [spec.spec_id, spec.spec_id]
+    assert [s.definition.identity.open_roles for s in part.candidates.specs] == [["origin"]] * 2
+
+
+@pytest.mark.parametrize(
+    ("open_axes", "open_roles"),
+    [
+        pytest.param(frozenset({"origin"}), ["origin"], id="open-creditor"),
+        pytest.param(frozenset(), None, id="no-open-axis"),
+    ],
+)
+def test_a_parsed_unsupported_definition_keeps_the_open_axes_the_part_asks_for(
+    open_axes, open_roles
+):
+    """No election confirms an open axis on an unsupported part, so its definition keeps
+    the axes the part asks for, as the resubmit door's keeps the posted ones."""
+    from search.engine.region.phase_shared import _unsupported_definition
+
+    shape = _debt_shape(_TOTAL)
+    roles = dataclasses.replace(
+        flow_place_roles(shape, destination=["country/KEN"]), open_axes=open_axes
+    )
+    state = SimpleNamespace(
+        shape_draft=shape, bindings=[], place=bound_place_context(roles), date_request=None
+    )
+
+    definition = _unsupported_definition(cast(Any, state))
+
+    assert cast(dict, definition["identity"]).get("open_roles") == open_roles
+
+
+def _open_creditor_promote_state(
+    monkeypatch: pytest.MonkeyPatch, *, posted_open: list[RoleAxis], result: Materialised
+) -> _PromoteState:
+    """A resubmit state at materialisation over the debt family at Kenya, whose identity
+    names `posted_open` as its open roles. The materialise returns `result`."""
+    monkeypatch.setattr(promote_materialise, "run_materialise", lambda *_, **__: result)
+    shape = _debt_shape()
+    roles = dataclasses.replace(
+        flow_place_roles(shape, destination=["country/KEN"]), open_axes=frozenset(posted_open)
+    )
+    state = _PromoteState(
+        inp=cast(
+            Any, SimpleNamespace(identity=SimpleNamespace(facets=None, open_roles=posted_open))
+        ),
+        graph=cast(Any, FakeGraph(raise_on_call=True)),
+        sdmx=cast(Any, None),
+        deadline=None,
+        include_option_coverage=False,
+        stream_slot_options=False,
+        include_observations=False,
+        stream_observations=False,
+        materialise_graph=cast(Any, object()),
+        materialise_sdmx=cast(Any, object()),
+        coverage=empty_coverage_snapshot(),
+    )
+    state.shape_draft = shape
+    state.place = bound_place_context(roles)
+    state.bindings = []
+    return state
+
+
+def _elected(sv: str, *, has_data: bool, open_axes: frozenset[RoleAxis]) -> Materialised:
+    return Materialised(
+        sv_dcids=[sv],
+        member_facts={sv: ArcsMemberFacts(arcs=_debt_shape().sv_arc_facts[sv])},
+        has_data=has_data,
+        coverage=CoverageBare(has_data=has_data),
+        open_axes=open_axes,
+    )
+
+
+def test_an_answer_whose_members_serve_the_open_creditor_keeps_it_and_settles_the_shape(
+    monkeypatch,
+):
+    """The by-creditor member answers and serves the creditor the identity leaves open. The
+    place keeps the axis open, the shape declares the member's two roles, and the resubmit
+    answers without refusing."""
+    state = _open_creditor_promote_state(
+        monkeypatch,
+        posted_open=["origin"],
+        result=_elected(_BY_CREDITOR, has_data=True, open_axes=frozenset({"origin"})),
+    )
+
+    assert _phase_materialise(state) is None
+
+    assert state.mat_result.open_axes == frozenset({"origin"})
+    assert state.place.roles.open_axes == frozenset({"origin"})
+    assert frozenset(state.shape_draft.declared_roles) == frozenset(_PAIR)
+
+
+def test_an_answer_whose_members_serve_no_open_creditor_refuses_the_identitys_open_role(
+    monkeypatch,
+):
+    """The guaranteed total, which declares no creditor, answers an identity that asks for
+    every creditor. Its members give no series per creditor, so the phase refuses."""
+    state = _open_creditor_promote_state(
+        monkeypatch,
+        posted_open=["origin"],
+        result=_elected(_TOTAL_GUARANTEED, has_data=True, open_axes=frozenset()),
+    )
+
+    with pytest.raises(EngineInputError) as exc_info:
+        _phase_materialise(state)
+
+    assert (exc_info.value.code, exc_info.value.status, exc_info.value.pointer) == (
+        "open_role_unavailable",
+        422,
+        "/input/identity/open_roles",
+    )
+
+
+def test_a_recipient_only_answer_settles_the_shape_on_the_recipient_alone(monkeypatch):
+    """The identity leaves no role open and the guaranteed total answers. The place leaves
+    no axis open and the shape declares the recipient alone, as the answer's members do."""
+    state = _open_creditor_promote_state(
+        monkeypatch,
+        posted_open=[],
+        result=_elected(_TOTAL_GUARANTEED, has_data=True, open_axes=frozenset()),
+    )
+
+    assert _phase_materialise(state) is None
+
+    assert state.mat_result.open_axes == frozenset()
+    assert state.place.roles.open_axes == frozenset()
+    assert state.shape_draft.declared_roles == ("financingRecipient",)
+
+
+def test_an_open_role_a_named_place_binds_drops_and_warns():
+    """Kenya, named without a direction, binds the recipient, so the open recipient the
+    part asks for drops. The bound role wins and the part says so."""
+    region = _run_leg(
+        nodes=_DEBT_NODES, coverage=_twin_coverage(), open_axes=frozenset({"destination"})
+    )
+
+    assert region.status == "definite"
+    spec = region.specs[0]
+    assert spec.definition.identity.entities == {"destination": ["country/KEN"]}
+    assert spec.definition.identity.open_roles is None
+    assert [w.message for w in region.warnings if w.code == "query_qualifier_dropped"] == [
+        "The requested breakdown over every recipient was not applied: the part names a "
+        "recipient, and the answer is for that recipient."
+    ]
 
 
 def test_a_place_named_without_a_direction_answers_with_the_recipient_only_members():
@@ -875,7 +1455,7 @@ def test_a_place_named_without_a_direction_answers_with_the_recipient_only_membe
 
     assert result.status == "definite"
     spec = result.specs[0]
-    assert [sv.ref for sv in spec.resolved.stat_vars.items] == [_TOTAL]
+    assert [sv.ref.dcid for sv in spec.resolved.members] == [_TOTAL]
     assert spec.definition.identity.entities == {"destination": ["country/KEN"]}
 
 
@@ -942,7 +1522,6 @@ def _run_one_role(
             graph=graph,
             resolver=make_resolver(graph),
             llm=_BindLLM(),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=coverage or _one_role_coverage(nodes, obs),
@@ -951,10 +1530,10 @@ def _run_one_role(
 
 
 @pytest.mark.parametrize("directed", [True, False])
-def test_a_creditor_only_series_is_not_resolved(directed):
-    """The series declares the creditor alone. The coverage index holds one-role series on
-    the recipient axis only, and the mint reads every role-bearing StatVar's facets from
-    that index, so no facet source serves it and Search reports the role unresolved."""
+def test_a_creditor_only_series_is_confirmed_at_its_creditor(directed):
+    """The series declares the creditor alone. The coverage index holds a one-role series on
+    its own role's axis, so the creditor named, with or without a stated direction, binds
+    the origin and Search confirms the series there."""
     result = _run_one_role(
         "external debt lent by China",
         nodes=_CREDITOR_NODES,
@@ -963,7 +1542,8 @@ def test_a_creditor_only_series_is_not_resolved(directed):
         obs={f"{_OWED_TO_CREDITOR}|country/CHN": _OBS},
     )
 
-    assert (result.status, result.no_data_reason) == ("no_data", "role_not_resolved")
+    assert (result.status, result.no_data_reason) == ("definite", None)
+    assert [sv.ref.dcid for sv in result.specs[0].resolved.members] == [_OWED_TO_CREDITOR]
 
 
 def test_a_one_role_series_the_coverage_index_names_is_confirmed_there():
@@ -994,9 +1574,12 @@ def test_a_one_role_series_the_coverage_index_names_is_confirmed_there():
 # ---------------------------------------------------------------------------
 
 
-def _debt_identity(entities: dict[str, list[str]]) -> BaseIdentity:
+def _debt_identity(
+    entities: dict[str, list[str]], open_roles: list[RoleAxis] | None = None
+) -> BaseIdentity:
     return BaseIdentity.model_validate(
         {
+            **({"open_roles": open_roles} if open_roles else {}),
             "identity_version": "spec1",
             "shape": {
                 "kind": "statvar_schema",
@@ -1020,6 +1603,9 @@ def test_the_population_memo_keys_on_role_keys_and_not_on_the_entities_under_the
         _debt_identity({"destination": ["country/KEN"], "origin": ["country/CHN"]})
     )
     assert recipient != _population_key(_debt_identity({}))
+    assert recipient != _population_key(
+        _debt_identity({"destination": ["country/KEN"]}, open_roles=["origin"])
+    )
 
 
 def test_the_measure_family_cache_keys_on_role_keys_and_exclusions():
@@ -1032,6 +1618,9 @@ def test_the_measure_family_cache_keys_on_role_keys_and_exclusions():
     )
     assert measure_family_cache_key(shape, axes, query) != measure_family_cache_key(
         shape, axes, dataclasses.replace(query, excluded=frozenset({"provenance/Excluded"}))
+    )
+    assert measure_family_cache_key(shape, axes, query) != measure_family_cache_key(
+        shape, axes, shape_query(shape, [], ["destination"], open_role_keys=["origin"])
     )
 
 
@@ -1082,7 +1671,6 @@ def test_a_subject_only_candidate_beside_a_role_bearing_election_binds_its_place
             graph=graph,
             resolver=make_resolver(graph),
             llm=_TwoReadingsLLM(),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=_one_role_coverage(
@@ -1093,7 +1681,7 @@ def test_a_subject_only_candidate_beside_a_role_bearing_election_binds_its_place
 
     assert result.status == "candidates"
     entities_by_member = {
-        spec.resolved.stat_vars.items[0].ref: spec.definition.identity.entities
+        spec.resolved.members[0].ref.dcid: spec.definition.identity.entities
         for spec in result.specs
     }
     assert entities_by_member == {
@@ -1130,7 +1718,6 @@ def _run_with_operations(*, obs: dict, operations: tuple[Operation, ...]):
             graph=graph,
             resolver=make_resolver(graph),
             llm=_BindLLM(),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=_one_role_coverage(_DEBT_NODES, obs),
@@ -1139,16 +1726,20 @@ def _run_with_operations(*, obs: dict, operations: tuple[Operation, ...]):
 
 
 def test_a_rank_over_creditors_is_left_off_a_recipient_only_answer_with_a_warning():
-    """The identity binds the recipient alone, so the answer is the plain total the mint
-    resolves. The rank has no creditor to run over, and the part says so."""
-    result = _run_with_operations(
-        obs={f"{_TOTAL}|country/KEN": _OBS}, operations=(_RANK_CREDITORS, _GROWTH)
+    """No member of the family declares the creditor, so the open creditor the rank asks
+    for elects as it would unasked. The identity binds the recipient alone and states no
+    open role, and the answer is the plain total the mint resolves. The rank has no
+    creditor to run over, and the part says so."""
+    stamped = _run_leg(
+        nodes=_RECIPIENT_ONLY_NODES,
+        coverage=_one_role_coverage(_RECIPIENT_ONLY_NODES, {f"{_TOTAL}|country/KEN": _OBS}),
+        operations=(_RANK_CREDITORS, _GROWTH),
     )
 
-    assert result.status == "definite"
-    assert {sv.ref for sv in result.specs[0].resolved.stat_vars.items} == {_TOTAL}
-    assert result.answered_roles == ("financingRecipient",)
-    stamped = with_runnable_operations(result, (_RANK_CREDITORS, _GROWTH))
+    assert stamped.status == "definite"
+    assert {sv.ref.dcid for sv in stamped.specs[0].resolved.members} == {_TOTAL}
+    assert stamped.specs[0].definition.identity.open_roles is None
+    assert stamped.answered_roles == ("financingRecipient",)
     assert stamped.operations == (_GROWTH,)
     dropped = [w for w in stamped.warnings if w.code == "query_qualifier_dropped"]
     assert [w.message for w in dropped] == [
@@ -1168,6 +1759,48 @@ def test_a_rank_over_creditors_is_left_off_a_recipient_only_answer_with_a_warnin
     )
 
 
+_OPEN_CREDITOR_DROPPED = (
+    "The requested breakdown over every provider was not applied: the answer is the total "
+    "over every provider, and a breakdown by provider needs a named provider."
+)
+_RANK_CREDITORS_DROPPED = (
+    'The requested "top creditors" was not applied: the answer is the total over every '
+    "provider, and a breakdown by provider needs a named provider."
+)
+
+
+@pytest.mark.parametrize(
+    ("operations", "dropped_message", "asked"),
+    [
+        ((), _OPEN_CREDITOR_DROPPED, None),
+        ((_RANK_CREDITORS,), _RANK_CREDITORS_DROPPED, _RANK_CREDITORS.phrase),
+    ],
+    ids=["open-role-alone", "open-role-beside-a-rank-over-it"],
+)
+def test_an_open_creditor_on_a_recipient_only_answer_warns_once(
+    operations: tuple[Operation, ...], dropped_message: str, asked: str | None
+):
+    """No member declares the creditor, so the open creditor the part asks for elects as it
+    would unasked and the answer is the total over every creditor. The part warns once for
+    the axis, and a rank over it that already warned raises nothing more."""
+    stamped = _run_leg(
+        nodes=_RECIPIENT_ONLY_NODES,
+        coverage=_one_role_coverage(_RECIPIENT_ONLY_NODES, {f"{_TOTAL}|country/KEN": _OBS}),
+        operations=operations,
+        open_axes=frozenset({"origin"}),
+    )
+
+    assert stamped.status == "definite"
+    assert stamped.specs[0].definition.identity.open_roles is None
+    dropped = [w for w in stamped.warnings if w.code == "query_qualifier_dropped"]
+    assert [w.message for w in dropped] == [dropped_message]
+    assert stamped.departure_facts == {
+        warning_key(dropped[0]): DepartureFact(
+            code="breakdown_not_applied", binding_ref="origin:", asked=asked, over="origin"
+        )
+    }
+
+
 def test_an_operation_over_no_flow_axis_stays_on_a_recipient_only_answer():
     result = _run_with_operations(obs={f"{_TOTAL}|country/KEN": _OBS}, operations=(_GROWTH,))
 
@@ -1181,7 +1814,7 @@ def test_a_resubmitted_identity_drops_a_posted_operation_its_family_cannot_run()
     """The resubmit door stamps a posted operation through the same rule: the identity
     binds the debtor alone, and a posted rank over creditors leaves its part with a warning."""
     first = _run(entities=["Kenya"], obs={f"{_TOTAL}|country/KEN": _OBS})
-    region = _resubmit(first.specs[0].definition.identity, [_TOTAL])
+    region = _resubmit(first.specs[0].definition.identity)
 
     stamped = with_runnable_operations(region, (_RANK_CREDITORS,))
 
@@ -1254,7 +1887,6 @@ def test_a_role_bearing_candidate_beside_a_subject_only_election_answers_its_own
             graph=graph,
             resolver=make_resolver(graph),
             llm=_SubjectFirstLLM(),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=_one_role_coverage(
@@ -1265,7 +1897,7 @@ def test_a_role_bearing_candidate_beside_a_subject_only_election_answers_its_own
 
     assert result.status == "candidates"
     assert {
-        spec.resolved.stat_vars.items[0].ref: spec.definition.identity.entities
+        spec.resolved.members[0].ref.dcid: spec.definition.identity.entities
         for spec in result.specs
     } == {
         _GNI_PPP: {"observationAbout": ["country/KEN"]},
@@ -1448,7 +2080,6 @@ def _run_beside_by_creditor(*, obs: dict, also_plausible: list[int]):
             graph=graph,
             resolver=make_resolver(graph),
             llm=_ElectFirstLLM(also_plausible),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=coverage,
@@ -1457,12 +2088,14 @@ def _run_beside_by_creditor(*, obs: dict, also_plausible: list[int]):
 
 
 def test_a_candidate_set_answers_under_the_roles_of_its_candidates():
-    """The recipient-only total has no data at Kenya and two by-creditor shapes do. The
-    candidates hold a row per creditor, so a rank over creditors runs on them."""
-    result = _run_beside_by_creditor(obs={}, also_plausible=[1, 2])
+    """A rank over creditors needs the origin axis, so the recipient-only total, which
+    declares none, is no candidate (`lacks_query_axis`), and the two by-creditor shapes
+    are the menu. The candidates hold a row per creditor, so a rank over creditors runs on
+    them."""
+    result = _run_beside_by_creditor(obs={}, also_plausible=[1])
 
     assert result.status == "candidates"
-    assert {spec.resolved.stat_vars.items[0].ref for spec in result.specs} == {
+    assert {spec.resolved.members[0].ref.dcid for spec in result.specs} == {
         _LOANS_BY_CREDITOR,
         _GRANTS_BY_CREDITOR,
     }
@@ -1474,9 +2107,10 @@ def test_a_candidate_set_answers_under_the_roles_of_its_candidates():
 
 def test_a_definite_answer_from_an_alternate_answers_under_the_alternates_roles(monkeypatch):
     """A bound unit can leave the elected Spec out of the candidate set
-    (`candidate_collapse._apply_bound_unit_filter`), and one by-creditor alternate then
-    answers alone. The answer holds a row per creditor, so a rank over creditors runs, and
-    the leg is directional: Kenya is the recipient of a two-role series."""
+    (`candidate_collapse._apply_bound_unit_filter`), and the other by-creditor shape then
+    answers alone as the alternate. The answer holds a row per creditor, so a rank over
+    creditors runs, and the leg is directional: Kenya is the recipient of a two-role
+    series."""
 
     def _drop_the_elected(state, unique_specs, grounded):
         return [spec for spec in unique_specs if spec.spec_id != grounded.elected_spec_id]
@@ -1486,7 +2120,7 @@ def test_a_definite_answer_from_an_alternate_answers_under_the_alternates_roles(
     result = _run_beside_by_creditor(obs={f"{_RECEIVED}|country/KEN": _OBS}, also_plausible=[1])
 
     assert result.status == "definite"
-    assert [sv.ref for sv in result.specs[0].resolved.stat_vars.items] == [_LOANS_BY_CREDITOR]
+    assert [sv.ref.dcid for sv in result.specs[0].resolved.members] == [_GRANTS_BY_CREDITOR]
     assert result.answered_roles == tuple(_PAIR)
     stamped = with_runnable_operations(result, (_RANK_CREDITORS,))
     assert stamped.operations == (_RANK_CREDITORS,)

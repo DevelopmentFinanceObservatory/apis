@@ -61,7 +61,6 @@ def test_grants_question_with_no_flow_type_defaults_crs_type_of_flow_to_oda():
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_FlowOpenLLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
@@ -98,7 +97,6 @@ def test_a_flow_type_named_in_text_keeps_its_own_binding_not_the_default():
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_FlowOpenLLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
@@ -128,7 +126,6 @@ def test_non_concessional_aid_still_refuses_qualifier_not_bound():
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_FlowOpenLLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )

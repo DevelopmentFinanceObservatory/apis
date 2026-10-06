@@ -5,8 +5,8 @@ from typing import Literal
 from pydantic import Field
 
 from .base import StrictModel
-from .grammar import GraphRef, ProvenanceRef, RequestedWindow, SlotKey, TimeWindow
-from .vocab import BindingKind, BindingProvenance, DateSource, PipelineStepName
+from .grammar import GraphRef, ProvenanceRef, RequestedWindow, SlotKey
+from .vocab import BindingKind, BindingProvenance
 
 
 class ResolvedFilter(StrictModel):
@@ -72,14 +72,6 @@ class ResolvedQualifier(StrictModel):
     )
 
 
-class PipelineStep(StrictModel):
-    """One step in the resolution pipeline, with whether it ran and its latency."""
-
-    step: PipelineStepName = Field(description="which pipeline step this record describes")
-    ran: bool = Field(description="false when this step was skipped for the request")
-    ms: int | None = Field(default=None, description="step latency, when measured")
-
-
 class TraceConversion(StrictModel):
     """A Spec-level record of a unit-conversion recipe. The engine converts
     per series and records each converted series' recipe and tables in
@@ -117,16 +109,6 @@ class TraceDefaultReading(StrictModel):
 class ResolutionTrace(StrictModel):
     """Consolidated record of how the query was understood."""
 
-    resolved_stat_vars: list[GraphRef] = Field(
-        description=(
-            "the first StatVars behind this spec, in resolved.stat_vars.items order, at "
-            "most 200; resolved.stat_vars.items carries the served list"
-        )
-    )
-    resolved_stat_vars_truncated: bool = Field(
-        default=False,
-        description="true when resolved_stat_vars leaves out StatVars behind this spec",
-    )
     resolved_entities: list[GraphRef] = Field(description="every entity")
     resolved_sources: list[ProvenanceRef] = Field(
         description="every dataset/source (a Data Commons provenance)"
@@ -144,32 +126,17 @@ class ResolutionTrace(StrictModel):
             "still validates."
         ),
     )
-    applied_window: TimeWindow | None = Field(
-        default=None, description="the date signal actually applied"
-    )
-    date_source: DateSource | None = Field(default=None, description="why that window was applied")
-    pipeline_trace: list[PipelineStep] = Field(
-        description="the pipeline steps, in order, with skip and timing"
-    )
-    n_recalled: int | None = Field(
-        default=None,
-        description=(
-            "count of recall's candidate SVs excluding Topic-typed candidates, before "
-            "derive_shapes confirms and groups them into shapes; larger than the confirmed "
-            "candidate-shape count"
-        ),
-    )
     requested_window: RequestedWindow | None = Field(
         default=None,
         description=(
             "the date window originally requested (query intent), independent of "
-            "applied_window's coverage narrowing; None when no date was requested. "
+            "coverage narrowing; None when no date was requested. "
             'The literal "latest" means the query explicitly asked for the '
             "most-recent/current value -- distinct from None (no date "
             'signal at all), since a resubmit of a "latest" spec must re-resolve '
             "to whatever year is CURRENTLY latest, not pin to the year this "
             "response happened to resolve. spec_id is anchored on this value, not "
-            "on applied_window, so identity stays stable across a resubmit even "
+            "on the served window, so identity stays stable across a resubmit even "
             "when coverage narrows the dates. Preserve the returned "
             "Spec.definition.identity when resubmitting; if editing it, carry this "
             "value at ResubmitIdentityPayload.identity.requested_window to keep that "
@@ -183,30 +150,6 @@ class ResolutionTrace(StrictModel):
             "verbatim with GET /api/search/capabilities and every problem-details "
             "body's own capability_version. None only in hand-built fixtures that "
             "predate this field; every engine-produced Spec populates it."
-        ),
-    )
-    unit_lexicon_version: str | None = Field(
-        default=None,
-        description=(
-            "the unit binder's lexicon version (currency codes/names/aliases, "
-            "price-basis phrases, year bounds) that produced this Spec's unit "
-            "facet, when one was bound; None when no unit request was bound for "
-            "this Spec, or in hand-built fixtures that predate this field."
-        ),
-    )
-    declaration_version: str | None = Field(
-        default=None,
-        description=(
-            "the packaged code index's content_hash (code_index.shared.get_index()."
-            "stamp), identifying which CodeSystemDeclaration set (hierarchical, "
-            "disjoint_from_children, summable, absent_reading) and which "
-            "DatasetDeclaration set (opt_in, absent_observation) governed this "
-            "Spec's constraint resolution -- including any slot expansion (see "
-            "Slot.expansion) and the dataset its members come from; set whenever "
-            "the index decides which StatVars the Spec's identity denotes, even "
-            "with no code-system slot bound. None when the index neither decides "
-            "the membership nor declares a bound slot's code system, or in "
-            "hand-built fixtures that predate this field."
         ),
     )
     default_reading: TraceDefaultReading | None = Field(

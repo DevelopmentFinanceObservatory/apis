@@ -54,6 +54,7 @@ def test_no_taxonomy_yields_no_slot_options():
         sv_dcids=["Count_Person"],
         roles={},
         graph=FakeGraph(),
+        open_axes=frozenset(),
     )
     slot_options = result[7]
     assert slot_options == []
@@ -63,7 +64,7 @@ def test_total_population_india_now_has_residence_classification_taxonomy():
     """Count_Person exposes its Rural and Urban residence options."""
     r = _resolve("total population India")
     spec = r.spec
-    assert [sv.ref for sv in spec.resolved.stat_vars.items] == ["Count_Person"]
+    assert [sv.ref.dcid for sv in spec.resolved.members] == ["Count_Person"]
     by_prop = {so.key.property.dcid: so for so in spec.resolved.slot_options if so.key.property}
     residence_opts = by_prop["placeOfResidenceClassification"]
     assert residence_opts.key.axis == "how"

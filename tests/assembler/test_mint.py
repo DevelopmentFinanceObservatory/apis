@@ -1659,20 +1659,10 @@ def test_every_datasets_warning_catalogue_code_has_an_envelope_kind_entry():
     assert missing == []
 
 
-def test_provenance_warnings_excludes_members_deduplicated(release):
-    """`members_deduplicated` is bookkeeping, so no envelope warning is emitted."""
-    resolved_frame = _resolved_frame_with_warnings(
-        [{"code": "members_deduplicated", "severity": "info", "message": "converged two members"}]
-    )
-    provenance = _mint_line_chart_provenance(resolved_frame=resolved_frame, release=release)
-    assert provenance["warnings"] == []
-
-
 def test_provenance_warnings_translate_independently_and_preserve_order(release):
     resolved_frame = _resolved_frame_with_warnings(
         [
             {"code": "revision_unavailable", "severity": "info", "message": "no live revision"},
-            {"code": "members_deduplicated", "severity": "info", "message": "converged members"},
             {"code": "coverage_below_scope", "severity": "warn", "message": "short of scope"},
         ]
     )

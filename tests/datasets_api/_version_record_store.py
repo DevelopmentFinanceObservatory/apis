@@ -24,14 +24,6 @@ CREATE TABLE datasets.version_record (
     base_content_version TEXT,
     PRIMARY KEY (subject_id, content_version)
 );
-CREATE TABLE datasets.version_member (
-    subject_id TEXT NOT NULL,
-    content_version TEXT NOT NULL,
-    position INTEGER NOT NULL,
-    member_spec_id TEXT NOT NULL,
-    member_content_version TEXT NOT NULL,
-    PRIMARY KEY (subject_id, content_version, position)
-);
 CREATE TABLE datasets.version_artifact (
     subject_id TEXT NOT NULL,
     content_version TEXT NOT NULL,

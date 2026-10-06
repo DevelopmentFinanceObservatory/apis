@@ -11,7 +11,6 @@ from dfo_frame_grammar import (
     FRAME_GRAMMAR_VERSION,
     Frame,
     FrameTrace,
-    mint_collection_content_version,
     mint_content_version,
     recompute_content_version,
     stream_frame_sha256,
@@ -281,8 +280,3 @@ def frame_trace_fragment(
 def recompute_version(canonical_bytes: bytes, fragment: FrameTrace) -> str:
     """Recomputes the content version from canonical frame bytes and a `FrameTrace`."""
     return recompute_content_version(canonical_bytes, fragment)
-
-
-def mint_collection_version(members: Iterable[tuple[str, str]]) -> str:
-    """Mints a collection version. Duplicate `spec_id`s raise `ContentVersionError`."""
-    return mint_collection_content_version(members)

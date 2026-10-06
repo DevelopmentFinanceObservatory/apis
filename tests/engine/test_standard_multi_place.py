@@ -115,7 +115,6 @@ def _run(
             graph=graph,
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
-            base_steps=[],
             base_timing={},
             emit=emit,
             variable_index=variable_index,
@@ -440,7 +439,6 @@ class TestCandidatesEveryShapeCarriesFullPlaceSet:
                 graph=graph,
                 resolver=make_resolver(graph),
                 llm=self._CandidatesBindLLM(),
-                base_steps=[],
                 base_timing={},
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 coverage=empty_coverage_snapshot(),
@@ -455,7 +453,7 @@ class TestCandidatesEveryShapeCarriesFullPlaceSet:
 def _assert_where_is_full_place_set(spec) -> None:
     where = next(s for s in spec.resolved.slots if s.key.axis == "where")
     assert isinstance(where.binding, BindingSet), (
-        f"expected BindingSet for spec {spec.resolved.stat_vars.items[0].ref!r}, "
+        f"expected BindingSet for spec {spec.resolved.members[0].ref.dcid!r}, "
         f"got {type(where.binding).__name__}"
     )
     assert {v.ref.dcid for v in where.binding.values} == {"country/GTM", "country/SLV"}

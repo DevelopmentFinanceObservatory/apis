@@ -60,10 +60,7 @@
     {
       "provenance": "provenance/OECDCreditorReportingSystem",
       "label": "OECD Creditor Reporting System (CRS)",
-      "synonyms": [
-        "CRS",
-        "creditor reporting system"
-      ],
+      "description": "A test table.",
       "opt_in": false,
       "absent_observation": "zero",
       "rank": 0,

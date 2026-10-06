@@ -24,13 +24,13 @@ from search.models import (
 )
 from tests.engine._base_identity import (
     PERSON_COUNT_SHAPE,
-    make_base,
     make_identity,
     subject_entity,
 )
 from tests.engine._builders import gref as _gref
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._harness import walk_options
 from tests.fixtures import FakeGraph
 
 pytestmark = pytest.mark.usefixtures("request_log")
@@ -92,7 +92,6 @@ def _where_slot(region):
 
 
 def _resubmit(where_slot: Slot, obs: dict):
-    base_spec_id, base_identity = make_base(PERSON_COUNT_SHAPE)
     binding = where_slot.binding
     values = [binding.value] if isinstance(binding, BindingValue) else binding.values
     inp = ResubmitIdentityPayload(
@@ -100,15 +99,13 @@ def _resubmit(where_slot: Slot, obs: dict):
             PERSON_COUNT_SHAPE,
             entities=[subject_entity(value.ref.dcid, value.ref.label) for value in values],
         ),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[_SV],
     )
     return resolve_spec_resubmit(
         inp=inp,
         graph=_graph(obs),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
+        options=walk_options(_graph(obs)),
     )
 
 
@@ -245,10 +242,6 @@ def test_unresolvable_base_entity_alongside_valid_where_set_is_inert():
         ],
     }
     where_slot = _where_set_slot([("country/GTM", "Guatemala"), ("country/SLV", "El Salvador")])
-    base_spec_id, base_identity = make_base(
-        PERSON_COUNT_SHAPE,
-        entities=[subject_entity("country/ZZZ")],  # Absent from the graph.
-    )
     inp = ResubmitIdentityPayload(
         identity=make_identity(
             PERSON_COUNT_SHAPE,
@@ -257,15 +250,13 @@ def test_unresolvable_base_entity_alongside_valid_where_set_is_inert():
                 for value in where_slot.binding.values
             ],
         ),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[_SV],
     )
     region = resolve_spec_resubmit(
         inp=inp,
         graph=_graph(obs),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
+        options=walk_options(_graph(obs)),
     )
     assert region.status == "definite"
     where = _where_slot(region)

@@ -176,7 +176,6 @@ def _run(
             resolver=make_resolver(graph),
             llm=_FixedBindLLM(),
             sdmx=sdmx,
-            base_steps=[],
             base_timing={},
             coverage=coverage if coverage is not None else empty_coverage_snapshot(),
             options=EngineOptions(include_option_coverage=include_option_coverage),
@@ -343,7 +342,6 @@ def test_candidates_single_survivor_collapse_populates_entity_options(monkeypatc
             resolver=make_resolver(graph),
             llm=_CollapseBindLLM(),
             sdmx=_providers_sdmx(),
-            base_steps=[],
             base_timing={},
             coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
             options=EngineOptions(include_option_coverage=True),
@@ -351,7 +349,7 @@ def test_candidates_single_survivor_collapse_populates_entity_options(monkeypatc
     )
     assert result.status == "definite", result
     spec = result.specs[0]
-    assert spec.resolved.stat_vars.items[0].ref == _SV_DCID
+    assert spec.resolved.members[0].ref.dcid == _SV_DCID
     assert spec.resolved.role_axis_facts == [
         RoleAxisFact(role="origin", member_count=2, members_available=True)
     ]

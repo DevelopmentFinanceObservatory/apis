@@ -17,7 +17,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from artifact_store.signing import SIGNED_URL_REUSE_WINDOW, SIGNED_URL_TTL_CEILING
 from dfo_platform.config import PublicSiteSettings, env_validation_error_message
 from materialise import DEFAULT_MEMBER_CONCURRENCY
-from origin_catalogue.graph import UN_BASE_URL, UN_BASE_URL_ENV
+from origin_catalogue.graph import (
+    ARCS_CACHE_SIZE,
+    LABEL_TYPE_CACHE_SIZE,
+    OBS_CACHE_SIZE,
+    OBS_PROPERTIES_CACHE_SIZE,
+    UN_BASE_URL,
+    UN_BASE_URL_ENV,
+    GraphClientOptions,
+)
+from statvar_members import DEFAULT_SUBJECT_CEILING
 
 
 class DatasetsConfigError(Exception):
@@ -73,6 +82,18 @@ class DatasetsBuildSettings(BaseSettings):
     # that fills a stored citation's empty fields, and the code label read. Each gets at least
     # this long from when it starts, however much of the request deadline is left.
     metadata_read_seconds: float = Field(default=15, gt=0)
+
+    # Subjects a described arm's member walk reads when its first reverse page truncates
+    # without a confirmed root. The walk takes the whole filtered set up to this many and
+    # confirms it by the subjects' arcs. The default, shared with Search's resubmit, covers the deepest measured
+    # families (Person/count by gender, about 13,800) and bounds the read near 40 s and
+    # 40 MB. A larger set refuses over_ceiling (candidate_window).
+    member_subject_ceiling: int = Field(default=DEFAULT_SUBJECT_CEILING, ge=1)
+
+    # Seconds a member walk's graph reads may run, counted from the start of resolution and
+    # capped by the request's own deadline. A walk past it answers timeout (504, retryable),
+    # since a retry walks again.
+    member_read_seconds: float = Field(default=60, gt=0)
 
     # Seconds before the next GET probes facet currency again. Default 900s keeps probes below
     # upstream weekly-to-monthly release cadence.
@@ -187,6 +208,22 @@ class DatasetsSettings(BaseSettings):
     sdmx_base_url: str = Field(min_length=1)
     artifact_bucket_working: str = Field(min_length=1)
     artifact_bucket_pinned: str = Field(min_length=1)
+    # Graph client cache sizes, defaulting to Search's, since both surfaces read the same graph.
+    # Zero turns a cache off.
+    graph_label_type_cache_size: int = Field(default=LABEL_TYPE_CACHE_SIZE, ge=0)
+    graph_arcs_cache_size: int = Field(default=ARCS_CACHE_SIZE, ge=0)
+    graph_obs_properties_cache_size: int = Field(default=OBS_PROPERTIES_CACHE_SIZE, ge=0)
+    graph_obs_cache_size: int = Field(default=OBS_CACHE_SIZE, ge=0)
+
+    def graph_cache_options(self) -> GraphClientOptions:
+        """The cache sizes every Datasets `build_graph_client` call passes."""
+        return GraphClientOptions(
+            label_cache_size=self.graph_label_type_cache_size,
+            type_cache_size=self.graph_label_type_cache_size,
+            arcs_cache_size=self.graph_arcs_cache_size,
+            obs_properties_cache_size=self.graph_obs_properties_cache_size,
+            obs_cache_size=self.graph_obs_cache_size,
+        )
 
     @classmethod
     def from_env(cls) -> DatasetsSettings:

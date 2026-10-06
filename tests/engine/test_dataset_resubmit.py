@@ -20,10 +20,9 @@ from search.engine.concurrency import create_owned_task
 from search.engine.core import resolve_events
 from search.engine.enrichment import _launch_trailing_tasks
 from search.engine.entry import dataset_resubmit as _dataset_resubmit_mod
-from search.engine.entry.dataset_entries import _build_candidates_region, _candidate_promote_input
+from search.engine.entry.dataset_entries import _build_candidates_region
 from search.engine.errors import EngineInputError, GraphInfraError
 from search.engine.events import StepEvent
-from search.engine.identity_edit import check_edit_incomplete
 from search.engine.region import pipeline as _pipeline_mod
 from search.engine.region import relaunch as _relaunch_mod
 from search.engine.region import resolve_spec_resubmit
@@ -32,7 +31,6 @@ from search.engine.region.observations import dispatch as _observations_dispatch
 from search.engine.region.result import RegionResult
 from search.engine.spec_id import build_spec_identity
 from search.models import (
-    BaseIdentity,
     DatasetResubmitInput,
     IdentityEntityGroup,
     Operation,
@@ -56,12 +54,8 @@ from tests.engine._axis_doubles import (
     axis_confirming_reader,
 )
 from tests.engine._base_identity import (
-    DECLARING_SHAPE,
     GDP_SHAPE,
     PERSON_COUNT_SHAPE,
-    base_from_spec,
-    destination_entity,
-    make_base,
     make_identity,
     subject_entity,
     where_slots_for,
@@ -70,7 +64,7 @@ from tests.engine._builders import sv_arcs as _sv_arcs
 from tests.engine._builders import value_slot as _value_slot
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import make_request, offline_resolve
+from tests.engine._harness import make_request, offline_resolve, walk_options, with_member_arcs
 from tests.engine._search_app import search_app
 from tests.fixtures import FakeGraph, FakeLLM, _load_json, make_resolver
 
@@ -121,6 +115,8 @@ _ACTIVITY_SOURCE_SLOT = Slot.model_validate(
 
 
 def _client(*, materialise_graph=None) -> TestClient:
+    """A Search app over the shared fixture graph, whose resubmits walk the mint's member
+    enumeration over that graph, through `materialise_graph` when given."""
     graph = FakeGraph()
     return TestClient(
         search_app(
@@ -128,7 +124,7 @@ def _client(*, materialise_graph=None) -> TestClient:
             resolver=make_resolver(graph),
             llm=FakeLLM(),
             sdmx=FakeSdmxClient(),
-            materialise_graph=materialise_graph,
+            materialise_graph=with_member_arcs(materialise_graph, graph),
         ),
         raise_server_exceptions=True,
     )
@@ -155,32 +151,24 @@ def _wire_request(entries: list, *, raw_query: str | None = None) -> dict:
     }
     if raw_query is not None:
         input_body["raw_query"] = raw_query
-    return {"input": input_body, "response_options": {"include_sentence": True}}
+    return {"input": input_body, "response_options": {}}
 
 
 def _gdp_entry(entity_dcid: str, variable_text: str) -> ResubmitIdentityEntry:
     """Build a GDP identity entry; its StatVar declares `activitySource`."""
     entities = [subject_entity(entity_dcid)]
-    base_spec_id, base_identity = make_base(GDP_SHAPE, entities=entities)
     identity = make_identity(GDP_SHAPE, [_ACTIVITY_SOURCE_SLOT], entities=entities)
     return ResubmitIdentityEntry(
         variable_text=variable_text,
         identity=identity,
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=["Amount_EconomicActivity_GrossDomesticProduction_Nominal"],
     )
 
 
 def _identity_entry_from_spec(spec, variable_text: str) -> ResubmitIdentityEntry:
     """Build an identity entry from a resolved or candidate spec."""
-    base_spec_id, base_identity = base_from_spec(spec)
     return ResubmitIdentityEntry(
         variable_text=variable_text,
         identity=spec.definition.identity,
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[sv.ref for sv in spec.resolved.stat_vars.items],
     )
 
 
@@ -192,7 +180,6 @@ def _candidates_entry_from_part(part, *, candidates, variable_text: str) -> Resu
         candidates=[
             ResubmitCandidate(
                 identity=spec.definition.identity,
-                resolved_stat_var_dcids=[sv.ref for sv in spec.resolved.stat_vars.items],
             )
             for spec in candidates
         ],
@@ -204,7 +191,7 @@ def _spec_with_sv(part, ref: str):
     (spec,) = [
         spec
         for spec in part.candidates.specs
-        if ref in {sv.ref for sv in spec.resolved.stat_vars.items}
+        if ref in {sv.ref.dcid for sv in spec.resolved.members}
     ]
     return spec
 
@@ -249,34 +236,29 @@ def test_n_part_envelope_composes_sentence_over_every_part():
     assert {0, 1, 2} <= part_indices
 
 
-def test_a_resubmit_echoes_the_identity_groups_and_a_spec_sentence_without_departures():
-    """C134: the rebuilt part's identity echoes the posted `entity_groups`, and its spec
-    sentence holds heading and byline tokens only, the same sentence a fresh render of
-    the spec states."""
+def test_a_resubmit_drops_a_label_only_group_and_states_a_spec_sentence_without_departures():
+    """C134: a posted group naming no graph node drops from the rebuilt part's identity, since
+    nothing ties its label to the role's entities, and the spec sentence holds heading and
+    byline tokens only, the same sentence a fresh render of the spec states."""
     group = IdentityEntityGroup(dcid=None, label="South Asia's largest economy")
     entities = [subject_entity(_INDIA)]
-    base_spec_id, base_identity = build_spec_identity(
-        GDP_SHAPE, [], entities=entities, entity_groups={"observationAbout": group}
-    )
     _spec_id, identity = build_spec_identity(
         GDP_SHAPE,
         [_ACTIVITY_SOURCE_SLOT],
         entities=entities,
         entity_groups={"observationAbout": group},
+        open_roles=(),
     )
     entry = ResubmitIdentityEntry(
         variable_text="GDP",
         identity=identity,
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=["Amount_EconomicActivity_GrossDomesticProduction_Nominal"],
     )
 
     result = offline_resolve(ResolveRequest(input=DatasetResubmitInput(entries=[entry])))
 
     (part,) = result.parts
     assert part.status == "definite"
-    assert part.spec.definition.identity.entity_groups == {"observationAbout": group}
+    assert part.spec.definition.identity.entity_groups is None
     plan = part.spec.resolved.sentence_plan
     assert plan
     assert {token.segment for token in plan} <= {"heading", "byline"}
@@ -395,11 +377,9 @@ def test_promoting_a_candidate_hoists_shared_qualifiers_once_both_parts_agree():
 # ---------------------------------------------------------------------------
 # 3. Fold: two same-shape identities that fail the fold gate as posted
 #    (a window disagreement) resolve UNFOLDED; editing one to agree resolves
-#    FOLDED, with binding_folded on the later part. check_shape_unchanged
-#    means an identity entry can never move a part to a different five-tuple
-#    (a shape change), so this is built from two identities already sharing
-#    one shape and differing only in gender (a single "value" slot) plus,
-#    initially, their requested window.
+#    FOLDED, with binding_folded on the later part. This is built from two
+#    identities sharing one shape and differing only in gender (a single
+#    "value" slot) plus, initially, their requested window.
 # ---------------------------------------------------------------------------
 
 _GENDER_ENTITY = "country/IND"
@@ -440,20 +420,17 @@ def _gender_fold_graph() -> FakeGraph:
 
 def _gender_entry(gender: str, sv_dcid: str, *, window: TimeWindow | None) -> ResubmitIdentityEntry:
     entities = [subject_entity(_GENDER_ENTITY)]
-    base_spec_id, base_identity = make_base(PERSON_COUNT_SHAPE, entities=entities)
     gender_slot = _value_slot("how", "gender", "gender", gender, gender)
     _, identity = build_spec_identity(
         PERSON_COUNT_SHAPE,
         [gender_slot, *where_slots_for(entities)],
         entities=entities,
         requested_window=window,
+        open_roles=(),
     )
     return ResubmitIdentityEntry(
         variable_text="count",
         identity=identity,
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[sv_dcid],
     )
 
 
@@ -522,17 +499,13 @@ def test_candidates_entry_preserves_posted_order_even_reversed():
     assert result.status == "candidates"
     part = result.parts[0]
     assert part.status == "candidates"
-    resolved_svs = [
-        [sv.ref for sv in spec.resolved.stat_vars.items] for spec in part.candidates.specs
-    ]
-    posted_svs = [[sv.ref for sv in spec.resolved.stat_vars.items] for spec in reversed_order]
+    resolved_svs = [[sv.ref.dcid for sv in spec.resolved.members] for spec in part.candidates.specs]
+    posted_svs = [[sv.ref.dcid for sv in spec.resolved.members] for spec in reversed_order]
     # A fresh sort would reproduce natural_order; asserting against that
     # (rather than only against posted_svs) makes a regression to re-sorting
     # actually fail this test.
     assert resolved_svs == posted_svs
-    assert resolved_svs != [
-        [sv.ref for sv in spec.resolved.stat_vars.items] for spec in natural_order
-    ]
+    assert resolved_svs != [[sv.ref.dcid for sv in spec.resolved.members] for spec in natural_order]
     assert part.candidates.ordering == birth_rate_part.candidates.ordering
     assert part.candidates.max_candidates == birth_rate_part.candidates.max_candidates
     assert part.candidates.truncated == birth_rate_part.candidates.truncated
@@ -609,11 +582,9 @@ def test_collapsed_candidates_entry_carries_the_warning_on_the_wire():
         candidates=[
             ResubmitCandidate(
                 identity=survivor.definition.identity,
-                resolved_stat_var_dcids=[sv.ref for sv in survivor.resolved.stat_vars.items],
             ),
             ResubmitCandidate(
                 identity=no_data_entry.identity,
-                resolved_stat_var_dcids=no_data_entry.resolved_stat_var_dcids,
             ),
         ],
     )
@@ -627,26 +598,6 @@ def test_collapsed_candidates_entry_carries_the_warning_on_the_wire():
     assert warning.message == (
         "2 candidates were posted; 1 still resolves to a definite answer, so the part "
         "is reported as that answer and not as the posted candidate set."
-    )
-
-
-def test_candidate_promote_input_destination_only_binds_destination_not_subject():
-    """A destination-only candidate binds under `destination` (#C81).
-    Binding under `observationAbout` would make `check_edit_incomplete` reject a valid role.
-    """
-    identity = make_identity(DECLARING_SHAPE, [], entities=[destination_entity(_KEN)])
-    candidate = ResubmitCandidate(identity=identity, resolved_stat_var_dcids=["some/StatVar"])
-
-    inp = _candidate_promote_input(candidate)
-
-    assert inp.base_identity is not None
-    assert inp.base_identity.entities == {"destination": [_KEN]}
-    # The diff this feeds must not raise for a role the client never posted.
-    check_edit_incomplete(
-        inp.base_identity,
-        posted_entity_roles=set(inp.identity.entities),
-        removed_facets=frozenset(),
-        removed_entities=frozenset(),
     )
 
 
@@ -866,13 +817,9 @@ def test_malformed_entry_fails_whole_request_with_repointed_pointer_and_missing_
     detail names every missing dcid for the one rejected role."""
     missing_dcids = ["country/ZZZ_NOT_A_PLACE", "country/ZZZ_ALSO_NOT_A_PLACE"]
     entities = [subject_entity(dcid) for dcid in missing_dcids]
-    base_spec_id, base_identity = make_base(GDP_SHAPE, entities=entities)
     invalid_entry = ResubmitIdentityEntry(
         variable_text="GDP2",
         identity=make_identity(GDP_SHAPE, [_ACTIVITY_SOURCE_SLOT], entities=entities),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=["Amount_EconomicActivity_GrossDomesticProduction_Nominal"],
     )
     entries = [_gdp_entry(_INDIA, "GDP1"), invalid_entry]
     client = _client()
@@ -923,7 +870,7 @@ def test_resolution_outcome_is_a_200_part_siblings_unaffected():
 def test_n_equals_1_resolves_like_a_single_resubmit():
     """A one-entry dataset_resubmit request is routed through the same
     `assemble_region` single-part shortcut a bare identity request hits, and
-    must carry the identical posted identity and seed."""
+    must carry the identical posted identity."""
     entry = _gdp_entry(_INDIA, "GDP")
     dataset_result = offline_resolve(ResolveRequest(input=DatasetResubmitInput(entries=[entry])))
     assert dataset_result.status == "definite"
@@ -931,15 +878,13 @@ def test_n_equals_1_resolves_like_a_single_resubmit():
 
     plain_input = ResubmitIdentityPayload(
         identity=entry.identity,
-        base_spec_id=entry.base_spec_id,
-        base_identity=BaseIdentity.model_validate(entry.base_identity.model_dump(mode="json")),
-        resolved_stat_var_dcids=entry.resolved_stat_var_dcids,
     )
     plain_region = resolve_spec_resubmit(
         inp=plain_input,
         graph=FakeGraph(),
         sdmx=FakeSdmxClient(),
         coverage=empty_coverage_snapshot(),
+        options=walk_options(FakeGraph()),
     )
     assert plain_region.status == "definite"
     assert dataset_result.parts[0].spec.spec_id == plain_region.specs[0].spec_id

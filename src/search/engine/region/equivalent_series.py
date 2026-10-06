@@ -17,7 +17,7 @@ from importlib.resources.abc import Traversable
 from types import MappingProxyType
 from typing import NoReturn, cast
 
-from search.engine.unit.lexicon import ISO_4217_CODES
+from search.currency_codes import ISO_4217_CODES
 
 _PACKAGE = "search.engine.region"
 _DATA_FILENAME = "equivalent_series.json"

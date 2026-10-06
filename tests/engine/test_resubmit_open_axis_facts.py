@@ -6,14 +6,14 @@ from __future__ import annotations
 
 from search.engine.region import resolve_spec_resubmit
 from search.models import GraphRef, ResubmitIdentityPayload
-from tests.engine._base_identity import GDP_SHAPE, make_base, make_identity, subject_entity
+from tests.engine._base_identity import GDP_SHAPE, make_identity, subject_entity
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine.test_resubmit_standard_widen_and_seed import (
+from tests.engine._harness import walk_options
+from tests.engine.test_resubmit_standard_widen import (
     _ACTIVITY_SOURCE_BOUND,
     _ACTIVITY_SOURCE_UNBOUND,
     _GDP_ENTITY_DCID,
-    _GDP_SV_DCID,
 )
 from tests.fixtures import FakeGraph
 
@@ -22,22 +22,15 @@ def test_a_widened_axis_the_served_member_still_declares_is_reported_open():
     """The widened activitySource stays unbound and reports the member's
     GrossDomesticProduction value as an open-axis fact."""
     entities = [subject_entity(_GDP_ENTITY_DCID)]
-    base_spec_id, base_identity = make_base(
-        GDP_SHAPE,
-        slots=[_ACTIVITY_SOURCE_BOUND],
-        entities=entities,
-    )
     inp = ResubmitIdentityPayload(
         identity=make_identity(GDP_SHAPE, [_ACTIVITY_SOURCE_UNBOUND], entities=entities),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[_GDP_SV_DCID],
     )
     region = resolve_spec_resubmit(
         inp=inp,
         graph=FakeGraph(),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
+        options=walk_options(FakeGraph()),
     )
 
     assert region.status == "definite"
@@ -69,22 +62,15 @@ def test_a_widened_axis_the_served_member_still_declares_is_reported_open():
 def test_a_request_with_no_open_axis_still_publishes_none():
     """A bound activitySource leaves no constraint axis open."""
     entities = [subject_entity(_GDP_ENTITY_DCID)]
-    base_spec_id, base_identity = make_base(
-        GDP_SHAPE,
-        slots=[_ACTIVITY_SOURCE_BOUND],
-        entities=entities,
-    )
     inp = ResubmitIdentityPayload(
         identity=make_identity(GDP_SHAPE, [_ACTIVITY_SOURCE_BOUND], entities=entities),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[_GDP_SV_DCID],
     )
     region = resolve_spec_resubmit(
         inp=inp,
         graph=FakeGraph(),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
+        options=walk_options(FakeGraph()),
     )
 
     assert region.status == "definite"

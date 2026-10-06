@@ -11,28 +11,86 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import httpx
+
 from code_index.query import CodeIndex
 from code_index.shared import get_index
+from datasets_api.adapter import resolve_definition_members
 from series_coverage.compatibility import record_if_compatible
 from series_coverage.io import read_current, write_current
 from series_coverage.loader import LoadedCoverage
 from series_coverage.schema import CoverageManifest, CoveragePointer, FacetMetadata, RoleNames
 from series_coverage.shared import CoverageService
-from tests.code_index.aid_identity import CRS_PROVENANCE
+from spec_registry import recompute_identity
+from statvar_members import MemberEnumerator
+from tests.code_index.aid_identity import CRS_PROVENANCE, education_aid_identity
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 from tests.series_coverage.support import pointer_path
 
 from ._graph_doubles import FakeMintGraphReader
+from ._member_bounds import mint_bounds
 from .test_definition_door import _client
-from .test_preview_family import (
-    _PROVIDER,
-    _RECIPIENT,
-    _YEARS,
-    _family,
-    _input,
-    _populated,
-    _sdmx_transport,
+
+_PROVIDER = "country/FRA"
+_RECIPIENT = "country/KEN"
+_YEARS = (2019, 2020, 2021)
+
+_CSV_HEADER = (
+    "STRUCTURE,STRUCTURE_ID,ACTION,variableMeasured,financingProvider,financingRecipient,unit,"
+    "measurementMethod,observationPeriod,provenance,TIME_PERIOD,OBS_VALUE,scalingFactor,"
+    "facetId\r\n"
 )
+
+
+def _family() -> tuple[str, ...]:
+    """The bare dcids the mint serves for the identity, in resolution order."""
+    graph = FakeMintGraphReader()
+    resolved = resolve_definition_members(
+        education_aid_identity(),
+        spec_id="spec_test",
+        graph=graph,
+        enumerator=MemberEnumerator(),
+        code_index=get_index(),
+        bounds=mint_bounds(),
+    )
+    return tuple(shape.stat_var.removeprefix("dcid:") for shape in resolved.shapes)
+
+
+def _populated(family: tuple[str, ...]) -> tuple[str, str]:
+    """Two members that hold observations at Kenya, neither the first resolved."""
+    return family[3], family[40]
+
+
+def _sdmx_transport(populated: tuple[str, ...]) -> httpx.MockTransport:
+    """Answers each fetch with the rows of the populated members it names."""
+
+    def _respond(request: httpx.Request) -> httpx.Response:
+        named = str(request.url.params.get("c[variableMeasured]", "")).split(",")
+        body = _CSV_HEADER + "".join(
+            f"dataflow,DC:DF_OBS(1.0.0),I,{dcid},{_PROVIDER},{_RECIPIENT},USD,GrantEquivalent,"
+            f"NotApplicable,{CRS_PROVENANCE},{year},{100 + position},,facet1\r\n"
+            for position, dcid in enumerate(populated)
+            if dcid in named
+            for year in _YEARS
+        )
+        return httpx.Response(
+            200,
+            text=body,
+            headers={"content-type": "application/vnd.sdmx.data+csv;version=2.0.0"},
+        )
+
+    return httpx.MockTransport(_respond)
+
+
+def _input() -> dict:
+    identity = education_aid_identity()
+    spec_id = recompute_identity(identity).spec_id
+    return {
+        "kind": "spec_id",
+        "spec_id": spec_id,
+        "definition": {"schema_version": 1, "spec_id": spec_id, "identity": identity},
+    }
+
 
 _MOVED = "provenance/RepublishedUnderAnotherDataset"
 _MINT_BODY = {"schema_version": 1, "options": {"bundle": False}}

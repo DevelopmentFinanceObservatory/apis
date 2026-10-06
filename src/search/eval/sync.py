@@ -53,7 +53,14 @@ from search.eval.checks import (
 )
 from search.eval.dataset import item_id_for_case
 from search.eval.gate import Judgement, Observation, Outcome, exit_code, judge
-from search.eval.runner import EVAL_HEADERS, SCHEMA_PATH, CaseRun, build_request, run_cases
+from search.eval.runner import (
+    EVAL_HEADERS,
+    SCHEMA_PATH,
+    CaseRun,
+    build_request,
+    members_door_reader,
+    run_cases,
+)
 
 if TYPE_CHECKING:
     from langfuse import Langfuse
@@ -331,6 +338,7 @@ def _run_nightly(
             graph=clients.graph,
             sdmx=clients.sdmx,
             coverage=clients.coverage,
+            members=members_door_reader(url),
         )
         return nightly(by_file, url=url, ctx=ctx, langfuse=langfuse)
 

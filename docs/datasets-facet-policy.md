@@ -182,14 +182,13 @@ entity that holds data, and the probe and the fetch read the same source.
   them.
 
 A StatVar's scope depends on that StatVar alone. StatVars probed together,
-the members of a group and the members of a collection alike, share one
-presence read and one facet read at the union of their scopes, and each is
-admitted and fetched at its own places, so a member gets the scope, rows
-and `content_version` it gets when minted by itself. A group's table holds
-each member's rows at its own places: a member holding only a worldwide
-total adds an Earth row beside its companions' country rows, and a member
-holding country data adds no Earth row, whatever its companions hold. A
-`statvar_set` mint naming several StatVars is a collection.
+the members of a group, share one presence read and one facet read at the
+union of their scopes, and each is admitted and fetched at its own places,
+so a member gets the scope, rows and `content_version` it gets when minted
+by itself. A group's table holds each member's rows at its own places: a
+member holding only a worldwide total adds an Earth row beside its
+companions' country rows, and a member holding country data adds no Earth
+row, whatever its companions hold.
 
 The probe groups requests by declared roles and entity scope
 (`materialise.facets.request_scope_key`), and the fetch groups by the
@@ -288,7 +287,7 @@ a concrete ref instead locks the result down, but resolves a different, and
 possibly narrower, set of rows.
 
 Group materialisation selects one facet across every member of a
-collection, a rule of its own, since it reconciles several members' own
+group, a rule of its own, since it reconciles several members' own
 candidate sets before a single selection can be made. It applies the same
 window step to the merged shared candidates before ranking them in the same
 order, counting the places each facet covers across the members

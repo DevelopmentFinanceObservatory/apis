@@ -9,6 +9,7 @@ unchanged resubmit of it, an also-plausible candidate and under a unit request o
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 from dataclasses import dataclass
 
 import httpx
@@ -37,7 +38,6 @@ from search.models import (
 from search.render.plan import render_sentence, render_sentence_plan
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine import test_parsed_pipeline as parsed
-from tests.engine._base_identity import base_from_spec
 from tests.engine._fake_coverage import (
     CoverageRow,
     FakeCoverageService,
@@ -53,6 +53,8 @@ from tests.engine._harness import (
     _csv_row,
     door_roles_for_test_query,
     materialise_double_from_obs,
+    walk_options,
+    with_member_arcs,
 )
 from tests.fixtures import FakeGraph, make_resolver
 from tests.materialise.conftest import FakeGraphReader
@@ -78,6 +80,8 @@ def _flow_arcs(measured_property: str = "amount") -> dict:
         "populationType": {"nodes": [{"dcid": "EconomicActivity"}]},
         "measuredProperty": {"nodes": [{"dcid": measured_property}]},
         "statType": {"nodes": [{"dcid": "measuredValue"}]},
+        # The qualifier a unit request converts, as materialise reads it (`_UNIT_ARCS`).
+        "measurementQualifier": {"nodes": [{"dcid": "Nominal"}]},
         "observationProperties": {"nodes": [{"dcid": "creditor"}, {"dcid": "debtor"}]},
     }
 
@@ -184,7 +188,6 @@ def _role_answer(
             resolver=make_resolver(graph),
             llm=llm or _BindLLM(),
             sdmx=sdmx or FakeSdmxClient(observations={}, availability={}),
-            base_steps=[],
             base_timing={},
             unit_text=unit_text,
             coverage=FakeCoverageService(index).snapshot(),
@@ -203,23 +206,21 @@ def _resubmit(
     options: EngineOptions | None = None,
 ):
     """Post `spec`'s own identity back, with `facets` added as a new binding."""
-    base_spec_id, base_identity = base_from_spec(spec)
     identity = spec.definition.identity
     if facets is not None:
         identity = BaseIdentity.model_validate(
             {**identity.model_dump(mode="python"), "facets": facets}
         )
+    graph = FakeGraph(nodes=_nodes(), detect={}, resolve={}, obs={})
+    options = options or EngineOptions()
     return resolve_spec_resubmit(
-        inp=ResubmitIdentityPayload(
-            identity=identity,
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[sv.ref for sv in spec.resolved.stat_vars.items],
-        ),
-        graph=FakeGraph(nodes=_nodes(), detect={}, resolve={}, obs={}),
+        inp=ResubmitIdentityPayload(identity=identity),
+        graph=graph,
         sdmx=sdmx or FakeSdmxClient(observations={}, availability={}),
         coverage=FakeCoverageService(index).snapshot(),
-        options=options or EngineOptions(),
+        options=dataclasses.replace(
+            options, materialise_graph=with_member_arcs(options.materialise_graph, graph)
+        ),
     )
 
 
@@ -580,7 +581,6 @@ def test_a_standard_answer_cites_the_sources_its_plan_serves(monkeypatch, time_t
 
 def _resubmit_fertility(monkeypatch, spec: Spec, *, facets: dict | None = None):
     plans = _spy_plans(monkeypatch, promote_ground)
-    base_spec_id, base_identity = base_from_spec(spec)
     identity = spec.definition.identity
     if facets is not None:
         identity = BaseIdentity.model_validate(
@@ -590,15 +590,18 @@ def _resubmit_fertility(monkeypatch, spec: Spec, *, facets: dict | None = None):
     region = resolve_spec_resubmit(
         inp=ResubmitIdentityPayload(
             identity=identity,
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[sv.ref for sv in spec.resolved.stat_vars.items],
         ),
         graph=parsed._graph_with_two_unit_facets_on_fertility_kenya(),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
-        options=EngineOptions(
-            materialise_graph=materialise_graph, materialise_sdmx=materialise_sdmx
+        options=walk_options(
+            parsed._graph_with_two_unit_facets_on_fertility_kenya(),
+            EngineOptions(
+                materialise_graph=with_member_arcs(
+                    materialise_graph, parsed._graph_with_two_unit_facets_on_fertility_kenya()
+                ),
+                materialise_sdmx=materialise_sdmx,
+            ),
         ),
     )
     assert region.status == "definite", (region.status, region.no_data_reason)
@@ -688,7 +691,6 @@ def _two_place_answer(obs: dict, places: tuple[str, ...], date_request: DateRequ
             graph=graph,
             resolver=make_resolver(graph),
             llm=_BindLLM(),
-            base_steps=[],
             base_timing={},
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
@@ -698,21 +700,17 @@ def _two_place_answer(obs: dict, places: tuple[str, ...], date_request: DateRequ
 
 
 def _two_place_resubmit(spec: Spec, obs: dict, *, facets: dict | None = None):
-    base_spec_id, base_identity = base_from_spec(spec)
     payload = spec.definition.identity.model_dump(mode="python")
     if facets is not None:
         payload["facets"] = facets
     return resolve_spec_resubmit(
         inp=ResubmitIdentityPayload(
             identity=BaseIdentity.model_validate(payload),
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[sv.ref for sv in spec.resolved.stat_vars.items],
         ),
         graph=_two_place_graph(obs),
         sdmx=FakeSdmxClient(observations={}, availability={}),
         coverage=empty_coverage_snapshot(),
-        options=EngineOptions(),
+        options=walk_options(_two_place_graph(obs), EngineOptions()),
     )
 
 

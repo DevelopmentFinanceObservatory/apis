@@ -329,15 +329,16 @@ def apply_declared_defaults(
     default. Any raw qualifier match or tie for that code system blocks the default,
     including unresolved ambiguity. Then either another query-derived ``value``/
     ``mentioned`` binding enters the declared scope on a non-engine-authored property, or
-    the variable/query text names a ``when_named`` word outside negation or exclusion.
+    the variable/query text names a ``when_named`` word outside negation or exclusion, or
+    the default fires on every open slot (``when_open``).
     Exclude engine-authored properties from the binding trigger because their default
     evidence is ``mentioned``. Text triggers remain independent.
 
     Only ``crsTypeOfFlow`` gets the pipeline's separate ``qualifier_not_bound`` refusal
     for no-vocabulary qualifiers. Every declaration reads the same original bindings, so
     trigger decisions are order-independent. The wire records fired defaults as ``declared_default``
-    provenance. A fired default warns only where the query names its slot
-    (``defaulted_slots_named``).
+    provenance. A fired default with a declared note states it (``defaulted_slot_notes``);
+    one without warns only where the query names its slot (``defaulted_slots_named``).
 
     Returns the listified input and ``[]`` when unchanged. Otherwise returns the repaired
     bindings and the pre-default entries. Iteration follows binding and declaration order.
@@ -365,12 +366,14 @@ def apply_declared_defaults(
         scoping_dcids = frozenset(
             dcid for scope in default.when_bound_under for dcid in index.descendants(scope)
         )
-        triggered = _some_binding_triggers_default(
-            bindings, scoping_dcids, engine_authored_properties
-        ) or any(
-            _names_trigger_word(default.when_named, text)
-            for text in (variable, query_text)
-            if text is not None
+        triggered = (
+            default.when_open
+            or _some_binding_triggers_default(bindings, scoping_dcids, engine_authored_properties)
+            or any(
+                _names_trigger_word(default.when_named, text)
+                for text in (variable, query_text)
+                if text is not None
+            )
         )
         if not triggered:
             continue
@@ -464,12 +467,13 @@ def defaulted_slots_named(
     names a slot by its declared plain name, singular or plural (``names_plain_name``), so
     "top 5 aid flows" names the flow slot. A default fires only on a slot no operation and
     no ``requested_all`` claim opened, so each pair is a slot the query asked about and
-    the answer fixed to one value.
+    the answer fixed to one value. A default with a declared note speaks through it
+    (``defaulted_slot_notes``) and is left out here.
     """
     named: list[tuple[str, str]] = []
     for binding in defaulted:
         declaration = index.declarations.get(binding.property_dcid or "")
-        if declaration is None or declaration.default is None:
+        if declaration is None or declaration.default is None or declaration.default.note:
             continue
         if not any(names_plain_name(text, declaration.plain_name) for text in texts):
             continue
@@ -478,6 +482,18 @@ def defaulted_slots_named(
             (declaration.plain_name, row.label if row is not None else declaration.default.code)
         )
     return named
+
+
+def defaulted_slot_notes(defaulted: Sequence[SlotBindingDraft], *, index: CodeIndex) -> list[str]:
+    """Return the declared note of each fired default that carries one
+    (``DeclaredDefault.note``), in the order of ``defaulted``, the pre-default entries
+    ``apply_declared_defaults`` returns. The note is stated whatever the query's words."""
+    notes: list[str] = []
+    for binding in defaulted:
+        declaration = index.declarations.get(binding.property_dcid or "")
+        if declaration is not None and declaration.default is not None and declaration.default.note:
+            notes.append(declaration.default.note)
+    return notes
 
 
 def declared_default_slots_named(text: str, *, index: CodeIndex) -> tuple[str, ...]:

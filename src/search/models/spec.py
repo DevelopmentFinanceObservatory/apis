@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Literal
 
 from pydantic import (
@@ -16,7 +17,7 @@ from .grammar import DataCommonsRef, GraphRef, SentenceToken, Shape, Slot, Sourc
 from .identity import BaseIdentity, IdentityEntityGroup
 from .observations import SpecObservations
 from .options import EntityOptions, FacetOptions, SlotOptions
-from .statvar import ResolvedStatVars
+from .statvar import ResolvedStatVars, SentenceFacts, StatVar
 from .trace import ResolutionTrace
 from .vocab import SCHEMA_VERSION, Axis, Confidence, EntityRoleKey, FacetBasis, RoleAxis
 
@@ -183,10 +184,8 @@ class SpecDefinition(StrictModel):
         description=(
             "the identity-core projection this Spec's spec_id was minted from, "
             "serialised once and never re-derived; post it back byte-for-byte as "
-            "ResubmitIdentityPayload.identity to edit this Spec, and also as "
-            "base_identity (with Spec.spec_id as base_spec_id) to verify the "
-            "baseline. Directional edits change identity.entities.origin or "
-            "identity.entities.destination directly"
+            "ResubmitIdentityPayload.identity to edit this Spec. Directional edits "
+            "change identity.entities.origin or identity.entities.destination directly"
         )
     )
 
@@ -223,8 +222,7 @@ class SpecAlternativeMeasure(StrictModel):
     ResolvedSpec's own required fields have no defaults, so producing one as
     a Spec would mean fabricating a resolution that never ran.
 
-    Post `definition` back as `identity`/`base_identity` on a
-    dataset_resubmit identity entry, with no `resolved_stat_var_dcids`, to
+    Post `definition` back as `identity` on a dataset_resubmit identity entry to
     switch onto this measure: the identity's own what/how slots (this
     partition's per-partition-declared axes included, e.g. CRS cooperation
     modality) name the family the packaged code index's own election
@@ -303,14 +301,15 @@ class RelatedMeasure(StrictModel):
 
     `definition` is minted from the member's own five-tuple and constraint values, with this
     Spec's entities and requested window and no facets, since a unit or source this Spec
-    pins belongs to its own measure. Post `definition` back as `identity`/`base_identity` on a
-    dataset_resubmit identity entry, with `resolved_stat_var_dcids` as the seed, to switch
-    onto this measure.
+    pins belongs to its own measure. Post `definition` back as `identity` on a
+    dataset_resubmit identity entry to switch onto this measure.
     """
 
-    label: str = Field(description="the StatVar's graph name, or its dcid when it has none")
-    resolved_stat_var_dcids: list[str] = Field(
-        description="the one StatVar this measure reads, the seed a resubmit of it posts"
+    stat_var: GraphRef = Field(
+        description=(
+            "the StatVar this measure reads, labelled with its graph name, or its dcid when it "
+            "has none"
+        )
     )
     definition: SpecDefinition = Field(
         description="the measure's own {schema_version, spec_id, identity}"
@@ -549,6 +548,15 @@ class UnitConversion(StrictModel):
     )
 
 
+class MembersNotStated(LookupError):
+    """A Spec rebuilt from its wire form holds no served members or sentence facts: the
+    engine states them in `build_spec`, and the wire carries neither. Reading one there is
+    a programming error, raised so the reader does not answer from an empty list."""
+
+    def __init__(self, fact: str) -> None:
+        super().__init__(f"ResolvedSpec.{fact} is not stated on a Spec rebuilt from its wire form")
+
+
 class ResolvedSpec(StrictModel):
     """What the graph held at resolution time: the engine's report of what it
     did with the ask. Meant for display and diagnostics, never hashed;
@@ -691,8 +699,10 @@ class ResolvedSpec(StrictModel):
             "the candidate set each facet axis (provenance/measurementMethod/unit) was "
             "chosen from, one entry per axis with at least one value observed on the "
             "resolved candidates' unfiltered facets; an axis with no observed value is "
-            "omitted, never an empty entry. Empty unless "
-            "response_options.include_option_coverage is true. Unlike slot_options, "
+            "omitted, never an empty entry. Computed for every definite Spec and every "
+            "candidate. Over SSE with response_options.include_option_coverage set, "
+            "the entries arrive as trailing facet_options events and this list stays "
+            "empty. Unlike slot_options, "
             "this has no bind-time baseline to fall back to. spec_id does not depend on "
             "this field."
         ),
@@ -700,8 +710,8 @@ class ResolvedSpec(StrictModel):
     rendered_sentence: str | None = Field(
         default=None,
         description=(
-            "the editable confirmation sentence for this spec, present under the "
-            "include_sentence option; None otherwise. It holds the heading and the "
+            "the editable confirmation sentence for this spec, present on every Spec "
+            "a part shows; None on an equivalent_readings entry. It holds the heading and the "
             "byline only (see SentenceToken.segment): 'Germany's gross ODA "
             "disbursements to Kenya, 1973 to 2024. Current US dollars · OECD "
             "Creditor Reporting System (CRS).' It states what this Spec is and "
@@ -812,16 +822,6 @@ class ResolvedSpec(StrictModel):
             "when measure_label is None."
         ),
     )
-    measure_label_named_values: list[tuple[str, str]] = Field(
-        default_factory=list,
-        description=(
-            "the (constraint property dcid, code dcid) pairs outside the partition that "
-            "measure_label's authored text names, such as dac2aAidType DAC2aAidType106 "
-            "for 'imputed multilateral ODA'. A renderer keeps a how slot carrying one "
-            "of these values silent, since measure_label already says it. Always [] "
-            "when measure_label is None."
-        ),
-    )
     measure_axis_values: list[MeasureAxisValue] = Field(
         default_factory=list,
         description=(
@@ -897,6 +897,17 @@ class ResolvedSpec(StrictModel):
     # from the cache holds neither. Equality compares the wire state (`__eq__`).
     _unserved_entities: tuple[tuple[str, str], ...] = PrivateAttr(default=())
     _data_years: tuple[int, int] | None = PrivateAttr(default=None)
+    # The members the answer serves and what the renderer reads of them, set by
+    # `engine.spec_build.build_spec`. A Spec rebuilt from its wire form holds neither, and
+    # reading one there raises `MembersNotStated`.
+    _members: tuple[StatVar, ...] | None = PrivateAttr(default=None)
+    _sentence_facts: SentenceFacts | None = PrivateAttr(default=None)
+    # Facts the engine reads and the wire does not carry: the code pairs the measure label
+    # names, which the sentence renderer keeps silent, and the two versions a same-shape
+    # merge requires its members to share (`same_shape._check_merge_gates`).
+    _measure_label_named_values: tuple[tuple[str, str], ...] = PrivateAttr(default=())
+    _unit_lexicon_version: str | None = PrivateAttr(default=None)
+    _declaration_version: str | None = PrivateAttr(default=None)
 
     @property
     def unserved_entities(self) -> tuple[tuple[str, str], ...]:
@@ -915,6 +926,50 @@ class ResolvedSpec(StrictModel):
         this span as where the data starts and ends."""
         return self._data_years
 
+    @property
+    def members(self) -> tuple[StatVar, ...]:
+        """Every StatVar the answer serves, in served order, uncapped.
+
+        Raises:
+            MembersNotStated: the Spec was rebuilt from its wire form.
+        """
+        if self._members is None:
+            raise MembersNotStated("members")
+        return self._members
+
+    @property
+    def sentence_facts(self) -> SentenceFacts:
+        """What the sentence renderer reads of the served members (`SentenceFacts.of`).
+
+        Raises:
+            MembersNotStated: the Spec was rebuilt from its wire form without the facts.
+        """
+        if self._sentence_facts is None:
+            raise MembersNotStated("sentence_facts")
+        return self._sentence_facts
+
+    @property
+    def measure_label_named_values(self) -> tuple[tuple[str, str], ...]:
+        """The `(constraint property dcid, code dcid)` pairs outside the measure partition
+        that `measure_label`'s authored text names, such as `(dac2aAidType,
+        DAC2aAidType106)` for 'imputed multilateral ODA'. The renderer keeps a how slot
+        carrying one of these values silent, since the measure label already says it.
+        Empty when `measure_label` is None."""
+        return self._measure_label_named_values
+
+    @property
+    def unit_lexicon_version(self) -> str | None:
+        """The unit binder's lexicon version (`engine.unit.bind.LEXICON_VERSION`) that
+        produced this Spec's unit facet; None when no unit request was bound."""
+        return self._unit_lexicon_version
+
+    @property
+    def declaration_version(self) -> str | None:
+        """The packaged code index's `content_hash` when the index decided this Spec's
+        membership or declares a bound slot's code system
+        (`retrieval.bound_values.declaration_version`); None otherwise."""
+        return self._declaration_version
+
     def __eq__(self, other: object) -> bool:
         """Equal when the wire state is: the private read facts above are inputs to the
         part's departures, which a cached response carries already written."""
@@ -932,6 +987,40 @@ class ResolvedSpec(StrictModel):
         """A copy whose `data_years` are `years`."""
         stated = self.model_copy()
         stated._data_years = years
+        return stated
+
+    def stating_members(self, members: Sequence[StatVar]) -> ResolvedSpec:
+        """A copy whose `members` are `members` and whose `sentence_facts` are theirs."""
+        stated = self.model_copy()
+        stated._members = tuple(members)
+        stated._sentence_facts = SentenceFacts.of(members)
+        return stated
+
+    def stating_sentence_facts(self, facts: SentenceFacts) -> ResolvedSpec:
+        """A copy whose `sentence_facts` are `facts`, for a Spec rebuilt from its wire form
+        that the renderer replays (the sentence golden). Its `members` stay unstated."""
+        stated = self.model_copy()
+        stated._sentence_facts = facts
+        return stated
+
+    def stating_measure_label_named_values(
+        self, named_values: tuple[tuple[str, str], ...]
+    ) -> ResolvedSpec:
+        """A copy whose `measure_label_named_values` are `named_values`."""
+        stated = self.model_copy()
+        stated._measure_label_named_values = named_values
+        return stated
+
+    def stating_unit_lexicon_version(self, version: str | None) -> ResolvedSpec:
+        """A copy whose `unit_lexicon_version` is `version`."""
+        stated = self.model_copy()
+        stated._unit_lexicon_version = version
+        return stated
+
+    def stating_declaration_version(self, version: str | None) -> ResolvedSpec:
+        """A copy whose `declaration_version` is `version`."""
+        stated = self.model_copy()
+        stated._declaration_version = version
         return stated
 
     @field_validator("facets")
@@ -987,8 +1076,7 @@ class Spec(StrictModel):
             "is the identity-core projection this spec_id was minted from, serialised "
             "once and never re-derived; hashing it reproduces spec_id by construction. "
             "Post definition.identity back byte-for-byte as ResubmitIdentityPayload.identity "
-            "(and as base_identity with spec_id as base_spec_id) to edit this Spec. "
-            "Directional entities remain nested in identity.entities."
+            "to edit this Spec. Directional entities remain nested in identity.entities."
         )
     )
     resolved: ResolvedSpec = Field(

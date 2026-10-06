@@ -5,12 +5,16 @@ and delegates other reads to an inner reader.
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
+from graph_generation import GenerationStamp
 from materialise import GraphReader
 from materialise.graph import UNRESOLVED_NODE, SubjectPage
 from tests.fixtures import FakeGraph
+
+_GENERATION_TOKENS = itertools.count()
 
 
 @dataclass
@@ -23,6 +27,14 @@ class AxisConfirmingGraphReader:
     family_arcs: Mapping[str, Mapping[str, object]]
     inner: GraphReader | None = None
     graph: FakeGraph | None = None
+    _token: str = field(
+        default_factory=lambda: f"axis-confirming-{next(_GENERATION_TOKENS)}", init=False
+    )
+
+    def generation_stamp(self) -> GenerationStamp:
+        """A token of this double's own, so two doubles' families never share a member group
+        the shared enumerator cached."""
+        return GenerationStamp(token=self._token)
 
     def _asserted_dcids(self, arcs: Mapping[str, object], prop: str) -> set[str]:
         nodes = arcs.get(prop, {}).get("nodes", [])  # type: ignore[union-attr]

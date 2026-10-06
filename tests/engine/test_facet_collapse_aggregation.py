@@ -99,7 +99,6 @@ def test_collapse_to_definite_aggregates_resolved_facets_with_no_bound_unit():
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_CollapseBindLLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
             options=EngineOptions(

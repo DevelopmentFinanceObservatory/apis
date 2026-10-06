@@ -736,14 +736,16 @@ def _coverage(case: _Case) -> FakeCoverageService:
     )
 
 
-# Both doors read observations and probe option coverage. A resubmit serving a member that
-# asserts none of the identity's constraint properties confirms them against the shape's
-# family on the materialise graph, which holds no family here.
-_OPTIONS = EngineOptions(
-    include_observations=True,
-    include_option_coverage=True,
-    materialise_graph=FakeGraphReader(),
-)
+def _options(walked: Mapping[str, Mapping[str, tuple[str, ...]]]) -> EngineOptions:
+    """Both doors read observations and probe option coverage. The materialise graph holds
+    the StatVars of `walked` alone, so the mint's member walk settles exactly them: none on
+    a first answer, which answers from recall, and on a resubmit the members its spec
+    serves, as the walk over the live graph settles the family a first answer served."""
+    return EngineOptions(
+        include_observations=True,
+        include_option_coverage=True,
+        materialise_graph=FakeGraphReader(arcs=walked),
+    )
 
 
 def _first_answer(case: _Case, graph: _Graph) -> RegionResult:
@@ -767,10 +769,9 @@ def _first_answer(case: _Case, graph: _Graph) -> RegionResult:
             sdmx=FakeSdmxClient(
                 observations={}, availability={}, scope_availability=graph.scope_availability
             ),
-            base_steps=[],
             base_timing={},
             coverage=_coverage(case).snapshot(),
-            options=_OPTIONS,
+            options=_options({}),
         )
     )
 
@@ -778,21 +779,21 @@ def _first_answer(case: _Case, graph: _Graph) -> RegionResult:
 def _resubmit(
     case: _Case, spec: Spec, graph: _Graph, stat_vars: Sequence[str] | None = None
 ) -> RegionResult:
-    """`spec` resubmitted with its StatVars as the membership, or `stat_vars` when given."""
+    """`spec` resubmitted over a graph whose family holds its StatVars, or `stat_vars` when
+    given."""
     identity = spec.definition.identity
+    arcs = graph.member_arcs()
+    walked = {sv: arcs[sv] for sv in stat_vars or _stat_vars(spec)}
     return resolve_spec_resubmit(
         inp=ResubmitIdentityPayload(
             identity=identity,
-            base_spec_id=spec.spec_id,
-            base_identity=identity,
-            resolved_stat_var_dcids=list(stat_vars or _stat_vars(spec)),
         ),
         graph=graph,
         sdmx=FakeSdmxClient(
             observations={}, availability={}, scope_availability=graph.scope_availability
         ),
         coverage=_coverage(case).snapshot(),
-        options=_OPTIONS,
+        options=_options(walked),
     )
 
 
@@ -816,7 +817,7 @@ def _kind(result: RegionResult) -> str:
 
 
 def _stat_vars(spec: Spec) -> tuple[str, ...]:
-    return tuple(sv.ref for sv in spec.resolved.stat_vars.items)
+    return tuple(sv.ref.dcid for sv in spec.resolved.members)
 
 
 def _answered(result: RegionResult) -> Spec:

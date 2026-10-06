@@ -151,7 +151,7 @@ class TestXlsxMintServesACorrectWorkbookFromASignedUrl:
         )
         workbook = openpyxl.load_workbook(io.BytesIO(fetched))
         header = [cell.value for cell in next(workbook.active.iter_rows(max_row=1))]
-        assert header[:2] == ["stat_var", "recipient"]
+        assert header[:3] == ["stat_var", "stat_var_label", "recipient"]
 
 
 class TestParquetMintServesACorrectFileFromASignedUrl:
@@ -170,7 +170,7 @@ class TestParquetMintServesACorrectFileFromASignedUrl:
             "sha256:"
         )
         table = pq.read_table(io.BytesIO(fetched))
-        assert table.column_names[:2] == ["stat_var", "recipient"]
+        assert table.column_names[:3] == ["stat_var", "stat_var_label", "recipient"]
 
 
 def test_a_bundled_xlsx_mint_wraps_the_written_workbook_in_a_data_package():

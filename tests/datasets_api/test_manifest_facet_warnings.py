@@ -22,9 +22,7 @@ from .conftest import FakeDatasetStore
 from .test_pin_door import FakeArtifactReferenceWriter
 
 _STAT_VAR_A = "FacetWarningGrantA"
-_STAT_VAR_B = "FacetWarningGrantB"
 _REF_A = f"dcid:{_STAT_VAR_A}"
-_REF_B = f"dcid:{_STAT_VAR_B}"
 _BASE_URL = "https://datacommons.one.org/core/api"
 
 _CSV_HEADER = (
@@ -260,26 +258,3 @@ def test_caller_bound_axis_carries_no_warning_for_that_axis():
     manifest = resp.json()
     assert _facet_entry(manifest, "provenance")["basis"] == "bound"
     assert _facet_warnings(manifest) == []
-
-
-def test_collection_path_aggregates_the_warning_across_members():
-    # Only member A disagrees, so the collection carries one warning.
-    facets_by_stat_var = {
-        _STAT_VAR_A: [_WINNING_FACET, _DISAGREEING_FACET],
-        _STAT_VAR_B: [_WINNING_FACET, _AGREEING_FACET],
-    }
-    graph = _graph(facets_by_stat_var)
-    client = _client(
-        graph=graph,
-        csv_by_stat_var=_csv_by_stat_var(facets_by_stat_var),
-        coverage=_coverage_service(facets_by_stat_var),
-    )
-
-    resp = client.post("/api/datasets", json=_body(statvars=[_REF_A, _REF_B]))
-
-    assert resp.status_code == 200, resp.text
-    manifest = resp.json()
-    assert manifest["collection"]["collection_id"].startswith("col_")
-    warnings = _facet_warnings(manifest)
-    assert len(warnings) == 1
-    assert "'provenance'" in warnings[0]["message"]

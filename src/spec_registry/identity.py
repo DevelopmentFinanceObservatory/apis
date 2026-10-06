@@ -7,8 +7,11 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from typing import cast
 
 from dfo_spec_kit import identity
+
+from dfo_platform.roles import role_key_axis
 
 # The adapter receives parsed values, so it enforces the kit's 65,536-byte cap on compact JSON.
 _MAX_IDENTITY_DOCUMENT_BYTES = 65_536
@@ -17,6 +20,22 @@ _MAX_IDENTITY_DOCUMENT_BYTES = 65_536
 # stays outside the identity core and the hash (`BaseIdentity.core_document()`), so a Search
 # definition posted here verifies against the spec_id Search minted.
 _NON_CORE_MEMBERS = frozenset({"entity_groups"})
+
+
+def _refuse_bound_open_axes(projection: dict[str, object]) -> None:
+    """Refuse a projection that binds a role in `entities` on the axis of one of its
+    `open_roles`. The kit compares the two by key, and `entities` keys keep the caller's
+    spelling, so `{"creditor": [...]}` beside an open `origin` passes it. A role is bound
+    or open, and never both."""
+    entities = cast("dict[str, object]", projection.get("entities", {}))
+    open_roles = cast("list[str]", projection.get("open_roles", []))
+    bound_axes = {role_key_axis(role) for role in entities}
+    both = [axis for axis in open_roles if axis in bound_axes]
+    if both:
+        raise identity.IdentityError(
+            "schema_violation",
+            f"open_roles names {both[0]!r}, an axis entities binds a role on",
+        )
 
 
 @dataclass(frozen=True)
@@ -44,8 +63,9 @@ def recompute_identity(identity_definition: object) -> RecomputedIdentity:
     Members outside the identity core (`_NON_CORE_MEMBERS`) are dropped first, so neither the
     hash nor the returned canonical document carries them.
 
-    Raises the kit's `IdentityError` on schema failure or when compact JSON exceeds 65,536
-    bytes.
+    Raises the kit's `IdentityError` on schema failure, when compact JSON exceeds 65,536
+    bytes, or when `entities` binds a role on the axis of one of `open_roles`
+    (`_refuse_bound_open_axes`).
     """
     compact = json.dumps(identity_definition, separators=(",", ":"), ensure_ascii=False).encode(
         "utf-8"
@@ -62,6 +82,7 @@ def recompute_identity(identity_definition: object) -> RecomputedIdentity:
             key: value for key, value in identity_definition.items() if key not in _NON_CORE_MEMBERS
         }
     projection = identity.build_projection(identity_definition)
+    _refuse_bound_open_axes(projection)
     canonical = identity.canonicalize(projection)
     spec_id = identity.mint_spec_id(canonical)
     identity_digest = hashlib.sha256(canonical).hexdigest()

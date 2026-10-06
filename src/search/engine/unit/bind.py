@@ -48,7 +48,7 @@ hash. ``request_basis`` is metadata.
 ``request_hash`` is ``unit_`` plus 32 hex digits from
 RFC 8785 canonical JSON and SHA-256 over the completed request. Validation runs
 before hashing. ``LEXICON_VERSION`` accompanies every outcome, and
-``install_unit_facet`` copies it and the completion metadata into the response.
+``with_unit_lexicon_version`` states it on the Spec the outcome bound.
 """
 
 from __future__ import annotations
@@ -64,12 +64,12 @@ from dfo_spec_kit import identity
 
 from code_index.labels import PricesKind
 from materialise.roles import axis_noun
+from search.currency_codes import ISO_4217_CODES
 from search.models import (
     EntityRoleKey,
     IdentityCurrency,
     IdentityCurrencyRole,
-    ResolutionTrace,
-    Warning,
+    Spec,
 )
 
 from .lexicon import (
@@ -78,7 +78,6 @@ from .lexicon import (
     CONNECTIVE_WORDS,
     CURRENCY_ALIASES,
     CURRENCY_DISPLAY_NAMES,
-    ISO_4217_CODES,
     LEXICON_VERSION,
     MAX_PHRASE_WORDS,
     MAX_YEAR,
@@ -97,13 +96,12 @@ __all__ = [
     "RequestBasis",
     "UnitDefaultPolicy",
     "UnitDefaultPolicyError",
-    "UnitFacetInstallation",
     "UnitNotResolved",
     "UnitRequestUnsupported",
     "bind_unit_text",
-    "install_unit_facet",
     "names_price_basis",
     "names_unit_request",
+    "with_unit_lexicon_version",
 ]
 
 # The binder emits "bound" and "declared_default". "fallback" remains valid because
@@ -632,8 +630,8 @@ def bind_unit_text(
     The same arguments, and the same year from ``policy.base_year``, produce the
     same outcome and request hash. A "beside" currency uses the sole bound role.
     Fixed-role currencies keep their named axis. Callers dispatch on ``.code`` and
-    install successful results with ``install_unit_facet`` to preserve the lexicon
-    version and request basis. Whatever ``policy.base_year`` raises propagates.
+    state a bound outcome's lexicon version with ``with_unit_lexicon_version``. Whatever
+    ``policy.base_year`` raises propagates.
     Applies no length cap; a caller exposing it to request bodies must enforce one.
     """
     assembled = _parse(text, bound_roles=bound_roles)
@@ -657,31 +655,10 @@ def names_unit_request(text: str) -> bool:
     return isinstance(_parse(text, bound_roles=frozenset()), _Assembled)
 
 
-# ---------------------------------------------------------------------------
-# Response-ready bundle of wire request, warnings, trace version, and provenance.
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class UnitFacetInstallation:
-    """Response fields for a successful unit bind, including provenance and warnings."""
-
-    request: dict[str, object]
-    warnings: tuple[Warning, ...]
-    trace: ResolutionTrace
-    request_basis: dict[str, RequestBasis]
-
-
-def install_unit_facet(
-    outcome: BoundUnitRequest,
-    *,
-    warnings: tuple[Warning, ...],
-    trace: ResolutionTrace,
-) -> UnitFacetInstallation:
-    """Bundle the wire request, warnings, lexicon version, and completion provenance."""
-    return UnitFacetInstallation(
-        request=outcome.as_wire_request(),
-        warnings=warnings,
-        trace=trace.model_copy(update={"unit_lexicon_version": outcome.lexicon_version}),
-        request_basis=outcome.request_basis,
+def with_unit_lexicon_version(spec: Spec, outcome: BoundUnitRequest) -> Spec:
+    """`spec` stating the lexicon version `outcome` was bound under
+    (`ResolvedSpec.unit_lexicon_version`), which a same-shape merge requires its members
+    to share."""
+    return spec.model_copy(
+        update={"resolved": spec.resolved.stating_unit_lexicon_version(outcome.lexicon_version)}
     )

@@ -243,14 +243,25 @@ def test_is_storable_false_on_skills_index_unavailable_warning():
     assert is_storable(tainted, timed_out=False, degraded_leg=False) is False
 
 
-def test_is_storable_false_on_skills_index_incomplete_warning_on_a_part():
+@pytest.mark.parametrize(
+    "code",
+    [
+        "skills_index_incomplete",
+        "role_declaration_unverified",
+        "option_coverage_probe_failed",
+        "option_coverage_timed_out",
+        "availability_probe_failed",
+        "observations_probe_failed",
+        "observations_timed_out",
+        "observations_bulk_fetch_failed",
+    ],
+)
+def test_is_storable_false_on_a_failed_or_timed_out_read_warning_on_a_part(code):
+    """A buffered request's coverage and observation reads report their failures in the
+    part, so the write-time check alone keeps an incomplete answer out of the cache."""
     base = _base_response()
     tainted_part = base.parts[0].model_copy(
-        update={
-            "warnings": [
-                Warning(code="skills_index_incomplete", severity="warn", message="building")
-            ]
-        }
+        update={"warnings": [Warning(code=code, severity="warn", message="failed")]}
     )
     tainted = base.model_copy(update={"parts": [tainted_part]})
 

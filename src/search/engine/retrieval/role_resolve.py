@@ -82,6 +82,34 @@ class _ScopeDecision:
     role_open_origin: bool
 
 
+def _anchor_axis(names: Mapping[RoleAxis, str]) -> RoleAxis:
+    """The flow axis a role-bearing answer is confirmed at: destination when the shape places
+    a role there, else origin, the member axis of `role_scope.role_index_for_named_entities`.
+    A shape whose one role is an origin role, such as a provider-only flow, is confirmed at
+    its bound origin."""
+    return "destination" if "destination" in names else "origin"
+
+
+def _binds_an_entity(
+    names: Mapping[RoleAxis, str], *, subject_dcids: Sequence[str], origin_dcids: Sequence[str]
+) -> bool:
+    """Whether the request binds an entity confirmation can start from: one on the shape's
+    anchor axis (`_anchor_axis`), or a destination entity, which a shape with no destination
+    role refuses `role_incompatible` at confirmation (`_confirm_role_bearing`)."""
+    return bool(subject_dcids) or (_anchor_axis(names) == "origin" and bool(origin_dcids))
+
+
+def _may_bind_an_entity(
+    names: Mapping[RoleAxis, str], *, subject_dcids: Sequence[str], origin_dcids: Sequence[str]
+) -> bool:
+    """Whether the request can bind an entity (`_binds_an_entity`) under some subset of the
+    roles in `names`: a destination entity, or an origin entity where `names` places an
+    origin role. The members admission elects can declare fewer roles than the shape, and a
+    donor-only total of a shape with an optional recipient is confirmed at its bound
+    origin."""
+    return bool(subject_dcids) or ("origin" in names and bool(origin_dcids))
+
+
 def _decide_scope(
     *,
     discover_scope: bool,
@@ -191,20 +219,21 @@ def _refresh_declared_roles(
     *,
     index_sourced: bool,
     minted_role_keys: list[str],
+    open_role_keys: list[str],
     graph: EngineGraphClient,
     deadline: float | None,
 ) -> bool:
     """Refresh index roles from the graph; return whether they remain unverified.
 
-    Recall-sourced members and populations with no minted role keys need no
-    refresh. On success, live roles replace frozen index roles. On failure,
+    Recall-sourced members and populations that elect under no role key, bound or open,
+    need no refresh. On success, live roles replace frozen index roles. On failure,
     timeout, or a population above ``role_refresh_max_members``, frozen roles
     remain and the result is marked unverified. Batch reads use 12 dcids per
     POST; the widest CRS family has 13,090 members (about 417 POSTs). The
     deadline-aware scheduler stops dispatching when the request budget expires,
     so partial reads are never treated as verified.
     """
-    if not (index_sourced and minted_role_keys):
+    if not (index_sourced and (minted_role_keys or open_role_keys)):
         return False
 
     if len(surviving_svs) > settings().role_refresh_max_members:
@@ -269,7 +298,8 @@ def _drop_undeclared_role_members(
 def _elect_role_class(
     surviving_svs: list[str],
     member_facts: dict[str, MemberFacts],
-    minted_role_keys: list[str],
+    role_keys: Collection[str],
+    open_role_keys: Collection[str],
 ) -> list[str] | None:
     """Reduce admitted members to the role class the mint elects, or return `None` on a
     tie.
@@ -281,14 +311,16 @@ def _elect_role_class(
     constraints are unknown takes no part in the election and is kept. Admission
     (`_filter_and_rank_surviving`) already keeps only members the mint can admit
     (`_mint_admits`), and `_drop_undeclared_role_members` only members declaring every
-    bound role.
+    bound role. `open_role_keys` are the open axes no entity binds, which join `role_keys`
+    softly (`statvar_members.electing_role_keys`).
     """
     electing = [sv for sv in surviving_svs if member_facts[sv].constraints_known()]
     election = elect_role_class(
         {sv: member_facts[sv].read_constraints() for sv in electing},
         {sv: member_facts[sv].read_declared_roles() for sv in electing},
         electing,
-        role_keys=minted_role_keys,
+        role_keys=role_keys,
+        open_role_keys=open_role_keys,
         readings=absent_readings(get_index()),
     )
     if election.tied:
@@ -314,7 +346,8 @@ class _RoleBearingConfirmation:
     # None when the years asked lie outside the coverage horizon, so nothing is read.
     plan: ReadPlan | None
     facets_by_sv: dict[str, list[Facet]]
-    destination_confirmed: set[str]
+    # None when the shape declares no destination role, so none is checked.
+    destination_confirmed: set[str] | None
     coverage_index: CoverageIndex
     # When a range read serves no point, each member's lifetime facets at the bound places:
     # data the answer holds outside the years asked.
@@ -335,8 +368,9 @@ def _role_plan(
     years: RoleYears,
     coverage_index: CoverageIndex,
 ) -> ReadPlan:
-    """Plan a named-destination role answer's preview read (`read_plan.plan_role_read`) over
-    `confirmed_svs`, members the role-class election kept (`_elect_role_class`).
+    """Plan a role answer's preview read (`read_plan.plan_role_read`) over `confirmed_svs`,
+    members the role-class election kept (`_elect_role_class`), at the entities bound on the
+    shape's anchor axis (`_anchor_axis`) and any bound on the other.
 
     `years` are the ones confirmation used (`read_plan.role_years`). A per-pair plan reads
     each role pair holding a point in those years with its candidate facets from that pair's
@@ -351,13 +385,18 @@ def _role_plan(
     """
     # A pair binds, and the headline names, every role the shape places, bound or open,
     # so an open origin reads one series per donor, as the bulk read serves it.
-    role_names: dict[Role, str] = {"recipient": names["destination"]}
-    if names.get("origin"):
-        role_names["donor"] = names["origin"]
-    entity_lists = [subject_dcids, origin_dcids] if origin_dcids else [subject_dcids]
-    entities = {names["destination"]: list(subject_dcids)}
-    if "origin" in names:
-        entities[names["origin"]] = list(origin_dcids)
+    by_axis: dict[RoleAxis, Sequence[str]] = {
+        "destination": subject_dcids,
+        "origin": origin_dcids,
+    }
+    coverage_role: dict[RoleAxis, Role] = {"destination": "recipient", "origin": "donor"}
+    role_names: dict[Role, str] = {
+        coverage_role[axis]: names[axis] for axis in ("destination", "origin") if axis in names
+    }
+    entity_lists = [by_axis[axis] for axis in ("destination", "origin") if by_axis[axis]]
+    entities = {
+        names[axis]: list(by_axis[axis]) for axis in ("destination", "origin") if axis in names
+    }
     time_period = list(years.listed) if years.listed is not None else None
     plan = plan_role_read(
         confirmed_svs,
@@ -399,6 +438,7 @@ def _confirm_role_bearing(
     subject_dcids: list[str],
     origin_dcids: Sequence[str],
     surviving_svs: list[str],
+    bindings_admitted_dcids: tuple[str, ...],
     member_facts: dict[str, MemberFacts],
     member_population_exact: bool,
     roles_unverified: bool,
@@ -412,8 +452,9 @@ def _confirm_role_bearing(
 ) -> Materialised | NoDataDraft | UnsupportedDraft | _RoleBearingConfirmation:
     """Confirm members against coverage's fixed recipient/donor role labels.
 
-    Returns a terminal result when a role cannot be placed or an open axis is
-    discovered. Otherwise, a matching coverage row confirms an observation
+    Members are confirmed at the entities bound on the shape's anchor axis (`_anchor_axis`)
+    and any bound on the other axis. Returns a terminal result when a role cannot be placed
+    or an open axis is discovered. Otherwise, a matching coverage row confirms an observation
     for that variable and facet. All matching facets are retained; this local
     table lookup has no read cap.
     """
@@ -426,6 +467,7 @@ def _confirm_role_bearing(
             # Origin-only shapes can discover that axis when it is unbound.
             return discover_role_scope(
                 surviving_svs=surviving_svs,
+                admitted_dcids=bindings_admitted_dcids,
                 member_facts=member_facts,
                 member_population_exact=member_population_exact,
                 role_declaration_unverified=roles_unverified,
@@ -438,11 +480,12 @@ def _confirm_role_bearing(
                 coverage_snapshot=coverage_snapshot,
                 facet_label=facet_label,
             )
-        return NoDataDraft(reason="role_incompatible")
-
-    if not subject_dcids:
+        if subject_dcids or not origin_dcids:
+            return NoDataDraft(reason="role_incompatible")
+    elif not subject_dcids:
         destination_result = discover_role_scope(
             surviving_svs=surviving_svs,
+            admitted_dcids=bindings_admitted_dcids,
             member_facts=member_facts,
             member_population_exact=member_population_exact,
             role_declaration_unverified=roles_unverified,
@@ -460,7 +503,9 @@ def _confirm_role_bearing(
         return destination_result
 
     coverage_index = coverage_snapshot.index
-    bound_roles: BoundRoles = {"recipient": frozenset(subject_dcids)}
+    bound_roles: BoundRoles = {}
+    if subject_dcids:
+        bound_roles = {"recipient": frozenset(subject_dcids)}
     if origin_dcids:
         bound_roles = {**bound_roles, "donor": frozenset(origin_dcids)}
 
@@ -477,7 +522,7 @@ def _confirm_role_bearing(
         # The years asked lie outside the coverage horizon, so nothing is read.
         years = None
     except WindowTooLong as too_long:
-        return scope_too_broad(axis="destination", detail=str(too_long))
+        return scope_too_broad(axis=_anchor_axis(names), detail=str(too_long))
 
     # Metadata is keyed by facet_id; missing entries leave fields unknown.
     facet_metadata = coverage_index.facet_metadata
@@ -560,7 +605,7 @@ def _confirm_role_bearing(
         confirmed_svs=confirmed_svs,
         plan=plan,
         facets_by_sv=facets_by_sv,
-        destination_confirmed=destination_confirmed,
+        destination_confirmed=destination_confirmed if destination is not None else None,
         coverage_index=coverage_index,
     )
 
@@ -579,6 +624,9 @@ class _AdmittedPopulation:
     bindings_admitted_dcids: tuple[str, ...]
     roles_unverified: bool
     member_population_exact: bool
+    open_axes: frozenset[RoleAxis]
+    """The open axes asked for that the survivors declare a role on, which the answer's
+    identity names as its open roles."""
 
 
 def _admit_population(
@@ -589,6 +637,7 @@ def _admit_population(
     names: dict[RoleAxis, str],
     subject_dcids: list[str],
     origin_dcids: Sequence[str],
+    open_role_keys: list[str],
     graph: EngineGraphClient,
     deadline: float | None,
 ) -> NoDataDraft | _AdmittedPopulation:
@@ -597,9 +646,18 @@ def _admit_population(
     Every member must assert each bound constraint property at a bound value.
     A role-bearing population elects one role class under the axes this resolve
     binds: members must declare every bound role, then the mint's election
-    (`_elect_role_class`) drops a member refining another over an unbound
-    constraint and a breakdown twin over unbound roles, and refuses a tie. ``names`` is recomputed from that
+    (`_elect_role_class`) under the bound and open axes drops a
+    member refining another over an unbound constraint and a breakdown twin over unnamed
+    roles, and refuses a tie. ``names`` is recomputed from that
     set, so a shape's optional role that no survivor declares drops out.
+
+    The population read here is one family already: the index's elected rows, a walked
+    family, or the recalled members of one role set (`shape_member_facts`). Electing among
+    it joins every open axis its role set places, so the open axes the answer serves are
+    read from the survivors' roles (`_AdmittedPopulation.open_axes`). The election that
+    chose the family among every candidate can have set one of them aside
+    (`statvar_members.electing_role_keys`); the mint elects the same members under either
+    set of keys.
 
     Empty populations return ``NoDataDraft`` with one of four reasons:
     ``variable_not_resolved`` (no members, or none whose unbound constraints all
@@ -653,6 +711,7 @@ def _admit_population(
         member_facts,
         index_sourced=index_sourced,
         minted_role_keys=minted_role_keys,
+        open_role_keys=open_role_keys,
         graph=graph,
         deadline=deadline,
     )
@@ -665,7 +724,7 @@ def _admit_population(
     if not surviving_svs:
         return NoDataDraft(reason="role_incompatible")
 
-    elected = _elect_role_class(surviving_svs, member_facts, minted_role_keys)
+    elected = _elect_role_class(surviving_svs, member_facts, minted_role_keys, open_role_keys)
     if elected is None:
         return NoDataDraft(reason="role_signature_incompatible")
     surviving_svs = elected
@@ -684,6 +743,7 @@ def _admit_population(
         bindings_admitted_dcids=bindings_admitted_dcids,
         roles_unverified=roles_unverified,
         member_population_exact=member_population_exact,
+        open_axes=frozenset(axis for axis in names if axis in open_role_keys),
     )
 
 
@@ -691,15 +751,17 @@ def role_members_served(
     member_facts: dict[str, MemberFacts],
     bound_values: Mapping[str, Sequence[str]],
     role_keys: Collection[str],
+    open_role_keys: Collection[str],
 ) -> list[str]:
     """The members of a role-bearing population the code index does not decide that a
-    role-bearing answer lists under `bound_values` and `role_keys`, in population order:
+    role-bearing answer lists under `bound_values`, `role_keys` and `open_role_keys`, in
+    population order:
     those the mint's walk can admit (`_mint_admits`), reduced to the role class the
     mint elects (`_elect_role_class`). Members the election ties all stay. For a population
     the mint's walk settled (`elected_role_class_shape`), these are the walked family's
     elected members, the ones the mint serves."""
     holding = [sv for sv, member in member_facts.items() if _mint_admits(member, bound_values)]
-    return _elect_role_class(holding, member_facts, list(role_keys)) or holding
+    return _elect_role_class(holding, member_facts, role_keys, open_role_keys) or holding
 
 
 def _zero_observation_carrier(
@@ -715,6 +777,7 @@ def _zero_observation_carrier(
     member_population_exact: bool,
     held_outside_years: Mapping[str, list[Facet]],
     dateless_plan: ReadPlan | None,
+    open_axes: frozenset[RoleAxis],
 ) -> Materialised:
     """Build the carrier for an admitted population with no point in the years read.
 
@@ -749,6 +812,7 @@ def _zero_observation_carrier(
         available_at_place=bool(held),
         window_gap=window_gap(dateless_plan, years) if held and years is not None else None,
         open_origin_dcids=open_origin_dcids,
+        open_axes=open_axes,
         role_declaration_unverified=roles_unverified,
         member_facts=member_facts,
         population=MemberPopulation(
@@ -765,7 +829,7 @@ def _assemble_materialised(
     confirmed_svs: list[str],
     plan: ReadPlan,
     facets_by_sv: dict[str, list[Facet]],
-    destination_confirmed: set[str],
+    destination_confirmed: set[str] | None,
     open_origin_dcids: frozenset[str] | None,
     roles_unverified: bool,
     member_facts: dict[str, MemberFacts],
@@ -777,6 +841,7 @@ def _assemble_materialised(
     obs_label: str,
     coverage_index: CoverageIndex,
     coverage_snapshot: CoverageSnapshot,
+    open_axes: frozenset[RoleAxis],
 ) -> Materialised:
     """Build coverage, headline, and population fields for a data-bearing result.
 
@@ -800,6 +865,7 @@ def _assemble_materialised(
         read_plan=plan,
         destination_confirmed=destination_confirmed,
         open_origin_dcids=open_origin_dcids,
+        open_axes=open_axes,
         role_declaration_unverified=roles_unverified,
         member_facts=member_facts,
         headline=headline,
@@ -826,6 +892,7 @@ def graph_confirm_resolve(
     facet_label: str = "sources",
     obs_label: str = "observations",
     discover_scope: bool = False,
+    open_axes: frozenset[RoleAxis] = frozenset(),
     coverage_snapshot: CoverageSnapshot,
 ) -> Materialised | NoDataDraft | UnsupportedDraft:
     """Filter a role-bearing shape's members by bound values, then confirm observations.
@@ -845,11 +912,21 @@ def graph_confirm_resolve(
     The same ``coverage_snapshot`` supplies the index and result stamp, avoiding
     reads across an artifact swap.
 
+    ``open_axes`` are the flow axes the request asks for every member of. Each one no
+    entity binds joins the role-class election softly, whatever roles the recalled shape
+    declares, since recall is a sample of the family. A family with a by-creditor twin
+    answers with the twin, and one whose members all lack the axis elects as it would
+    without it (`statvar_members.electing_role_keys`). The result's ``open_axes`` holds
+    those the elected members declare, which are the identity's open roles.
+
     Returns ``Materialised``, ``NoDataDraft``, or ``UnsupportedDraft``. A bound
     destination with no observations returns an unavailable ``Materialised``
     with empty facets and ``population.confirmed == 0``; the other empty-member
     cases return named no-data outcomes.
     """
+    # Import here to avoid a circular import at module level (retrieve imports role_resolve).
+    from search.engine.retrieval.retrieve import Materialised
+
     if not is_role_bearing(shape):
         raise ValueError(
             f"shape {shape.shape_id!r} declares no role; a standard shape resolves through "
@@ -857,10 +934,12 @@ def graph_confirm_resolve(
         )
     origin_dcids = list(origin_dcids or [])
     names = role_names_by_axis(shape)
-    # The shape's roles include optional ones, so this scope can only widen the
-    # survivors' own; a request with nothing to discover here has nothing later.
+    # The shape's roles include optional ones the survivors of admission may lack. Its
+    # scope can only widen theirs, and their anchor axis can be origin where the shape's is
+    # destination, so only a request that binds no entity the survivors could be confirmed
+    # at, and has nothing to discover here, is refused before admission.
     if (
-        not subject_dcids
+        not _may_bind_an_entity(names, subject_dcids=subject_dcids, origin_dcids=origin_dcids)
         and not _decide_scope(
             discover_scope=discover_scope,
             names=names,
@@ -873,26 +952,27 @@ def graph_confirm_resolve(
     # Both resolvers share bound-value parsing but apply different member filters.
     bound_values = bound_values_from_bindings(bindings)
 
+    bound_axes: list[RoleAxis] = [
+        axis
+        for axis, dcids in (("destination", subject_dcids), ("origin", origin_dcids))
+        if axis in names and dcids
+    ]
+    open_role_keys: list[str] = sorted(frozenset(open_axes).difference(bound_axes))
     admitted = _admit_population(
         shape,
-        query=shape_query(
-            shape,
-            bindings,
-            [
-                axis
-                for axis, dcids in (("destination", subject_dcids), ("origin", origin_dcids))
-                if axis in names and dcids
-            ],
-        ),
+        query=shape_query(shape, bindings, bound_axes, open_role_keys=open_role_keys),
         bound_values=bound_values,
         names=names,
         subject_dcids=subject_dcids,
         origin_dcids=origin_dcids,
+        open_role_keys=open_role_keys,
         graph=graph,
         deadline=deadline,
     )
     if not isinstance(admitted, _AdmittedPopulation):
         return admitted
+    # The open axes the elected members declare. The others stay unnamed.
+    elected_open_axes = admitted.open_axes
     surviving_svs = admitted.surviving_svs
     refuse_declared_defaults(graph, surviving_svs)
     member_facts = admitted.member_facts
@@ -905,7 +985,10 @@ def graph_confirm_resolve(
         subject_dcids=subject_dcids,
         origin_dcids=origin_dcids,
     )
-    if not subject_dcids and not scope.discovering:
+    if (
+        not _binds_an_entity(names, subject_dcids=subject_dcids, origin_dcids=origin_dcids)
+        and not scope.discovering
+    ):
         return _no_subject_outcome(names=names)
     bindings_admitted = admitted.bindings_admitted
     bindings_admitted_dcids = admitted.bindings_admitted_dcids
@@ -917,6 +1000,7 @@ def graph_confirm_resolve(
         subject_dcids=subject_dcids,
         origin_dcids=origin_dcids,
         surviving_svs=surviving_svs,
+        bindings_admitted_dcids=bindings_admitted_dcids,
         member_facts=member_facts,
         member_population_exact=member_population_exact,
         roles_unverified=roles_unverified,
@@ -929,6 +1013,8 @@ def graph_confirm_resolve(
         facet_label=facet_label,
     )
     if not isinstance(confirmation, _RoleBearingConfirmation):
+        if isinstance(confirmation, Materialised):
+            confirmation.open_axes = elected_open_axes
         return confirmation
     confirmed_svs = confirmation.confirmed_svs
     plan = confirmation.plan
@@ -958,6 +1044,7 @@ def graph_confirm_resolve(
             member_population_exact=member_population_exact,
             held_outside_years=confirmation.held_outside_years,
             dateless_plan=confirmation.dateless_plan,
+            open_axes=elected_open_axes,
         )
 
     return _assemble_materialised(
@@ -976,4 +1063,5 @@ def graph_confirm_resolve(
         obs_label=obs_label,
         coverage_index=coverage_index,
         coverage_snapshot=coverage_snapshot,
+        open_axes=elected_open_axes,
     )

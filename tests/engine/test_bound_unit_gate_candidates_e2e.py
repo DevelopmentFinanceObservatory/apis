@@ -41,7 +41,7 @@ def _three_way(**kwargs):
 
 
 def _spec_svs(result) -> set[frozenset[str]]:
-    return {frozenset(sv.ref for sv in s.resolved.stat_vars.items) for s in result.specs}
+    return {frozenset(sv.ref.dcid for sv in s.resolved.members) for s in result.specs}
 
 
 def test_the_candidates_gate_reads_no_preview(monkeypatch):

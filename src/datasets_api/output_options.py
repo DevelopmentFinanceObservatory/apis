@@ -2,8 +2,6 @@
 
 Frame facts are computed at materialisation. Formats, enabled enrichments, and pivot caps are
 joined at each read. Disabled enrichments and single-distinct pivot pairs are omitted.
-Stringification-only pivot collisions lack an inspectable key group for scope to narrow, so the
-profile omits them.
 """
 
 from __future__ import annotations
@@ -62,11 +60,7 @@ def derive_output_options(
             for coverage in profile.enrichments
             if (option := _enrichment_option(coverage, capabilities=capabilities)) is not None
         ],
-        pivots=[
-            option
-            for analysis in profile.pivots
-            if (option := _pivot_option(analysis, capabilities=capabilities)) is not None
-        ],
+        pivots=[_pivot_option(analysis, capabilities=capabilities) for analysis in profile.pivots],
         groupby=_groupby_options(capabilities=capabilities),
     )
 
@@ -104,12 +98,11 @@ def _enrichment_option(
     )
 
 
-def _pivot_option(
-    analysis: PivotFeasibility, *, capabilities: Capabilities
-) -> PivotOptionModel | None:
-    """Duplicate keys precede homogeneity checks.
+def _pivot_option(analysis: PivotFeasibility, *, capabilities: Capabilities) -> PivotOptionModel:
+    """Duplicate keys precede homogeneity checks, which precede a stringification collision.
 
-    Prunes uninspectable stringification collisions after both caps.
+    A collision, where distinct `columns` values share an output column name, is unavailable as
+    `pivot_not_unique` with no `varying`, since no duplicate key group exists to name.
     """
     if analysis.duplicate_keys:
         return PivotOptionModel(
@@ -130,19 +123,20 @@ def _pivot_option(
             reason=_PIVOT_NOT_HOMOGENEOUS_REASON,
         )
 
+    if not analysis.unique:
+        return PivotOptionModel(
+            index=analysis.index,
+            columns=analysis.columns,
+            state="unavailable",
+            reason=_PIVOT_NOT_UNIQUE_REASON,
+        )
+
     unavailable_formats = [
         UnavailableFormatModel(format=format_name, reason=reason)
         for format_name in _FORMAT_COLUMN_CAP_KEYS
         if (reason := _pivot_format_refusal(analysis, format_name, capabilities=capabilities))
         is not None
     ]
-
-    if not analysis.unique:
-        # `duplicate_keys` is empty, so the only source of
-        # non-uniqueness left is a stringification collision. No
-        # duplicated key group exists to name, so no scope change through
-        # columns can fix it. This entry is omitted.
-        return None
 
     return PivotOptionModel(
         index=analysis.index,

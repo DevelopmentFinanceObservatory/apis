@@ -446,7 +446,7 @@ def _is_elected_variable(flagged_match: Spec, elected_stat_vars: list[GraphRef] 
     """Whether a flagged match and the elected request name identical StatVars."""
     if not elected_stat_vars:
         return False
-    flagged_stat_vars = {stat_var.ref for stat_var in flagged_match.resolved.stat_vars.items}
+    flagged_stat_vars = {stat_var.ref.dcid for stat_var in flagged_match.resolved.members}
     elected = {stat_var.dcid for stat_var in elected_stat_vars}
     return bool(flagged_stat_vars) and flagged_stat_vars == elected
 

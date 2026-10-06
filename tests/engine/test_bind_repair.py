@@ -21,6 +21,7 @@ from search.engine.bind_repair import (
     _label_named_in_text,
     apply_declared_defaults,
     declared_default_slots_named,
+    defaulted_slot_notes,
     defaulted_slots_named,
     detect_degenerate_bindings,
     repair_draft_bindings,
@@ -1014,7 +1015,6 @@ class TestDetectDegenerateBindingsIntegrationStandard:
                 graph=graph,
                 resolver=make_resolver(graph),
                 llm=self._DegenerateGenderLLM(),
-                base_steps=[],
                 base_timing={},
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 coverage=empty_coverage_snapshot(),
@@ -1153,7 +1153,6 @@ class TestRestoreStarvedAxisBindingIntegrationStandard:
                 graph=self._graph(),
                 resolver=make_resolver(self._graph()),
                 llm=self._StarvedGenderLLM(),
-                base_steps=[],
                 base_timing={},
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 coverage=empty_coverage_snapshot(),
@@ -1169,7 +1168,7 @@ class TestRestoreStarvedAxisBindingIntegrationStandard:
         assert len(result.flagged_match) == 1
         flagged = result.flagged_match[0]
         assert result.gate == "no_member_has_data_at_place"
-        assert [sv.ref for sv in flagged.resolved.stat_vars.items] == [self._FEMALE_SV], (
+        assert [sv.ref.dcid for sv in flagged.resolved.members] == [self._FEMALE_SV], (
             "the flagged match must name the gendered member the restored "
             "binding pointed at, never the ungendered aggregate"
         )
@@ -1187,7 +1186,6 @@ class TestRestoreStarvedAxisBindingIntegrationStandard:
                 graph=self._graph(),
                 resolver=make_resolver(self._graph()),
                 llm=self._StarvedGenderAbsentLLM(),
-                base_steps=[],
                 base_timing={},
                 sdmx=FakeSdmxClient(observations={}, availability={}),
                 coverage=empty_coverage_snapshot(),
@@ -1630,9 +1628,108 @@ class TestDefaultedSlotsNamed:
         )
 
         assert defaulted_slots_named(defaulted, index=get_index(), texts=texts) == expected
+        # The CRS default declares no note, so it speaks only where the query names its slot.
+        assert defaulted_slot_notes(defaulted, index=get_index()) == []
 
     def test_declared_default_slots_named_reads_only_slots_with_a_default(self):
         """Every declared plain name appears, but only the flow slot has a default."""
         text = "aid flows by sector, instrument and modality"
 
         assert declared_default_slots_named(text, index=get_index()) == ("crsTypeOfFlow",)
+
+
+def _dac1_shape() -> ShapeDraft:
+    """A DAC1 gross-disbursement shape whose aid-type slot offers total ODA and bilateral ODA."""
+    return shape_draft_from(
+        shape_id="dac1_gross",
+        label="DAC1 gross disbursements",
+        pop_type_dcid="FinancialFlow",
+        meas_prop_dcid="amount",
+        stat_type_dcid="measuredValue",
+        meas_qual_dcid="Nominal",
+        meas_denom_dcid=None,
+        constraint_props=["dac1AidType"],
+        prop_labels={"dac1AidType": "aid type"},
+        prop_observed_values={"dac1AidType": ["DAC1AidType1010", "DAC1AidType1015"]},
+        sv_arc_facts={},
+        slot_taxonomy={"how:dac1AidType": ["DAC1AidType1010", "DAC1AidType1015"]},
+        place_available=True,
+        value_labels=None,
+        recalled=False,
+    )
+
+
+def _aid_type(kind: DraftBindingKind = "unbound", value: str | None = None) -> SlotBindingDraft:
+    return SlotBindingDraft(
+        axis="how",
+        property_dcid="dac1AidType",
+        kind=kind,
+        value_dcids=[value] if value else [],
+        evidence="mentioned",
+    )
+
+
+class TestOpenSlotDefault:
+    """`dac1AidType` declares total ODA as a default that fires on every open slot
+    (`DeclaredDefault.when_open`) and states its note."""
+
+    def test_fires_on_a_question_naming_no_aid_type(self):
+        repaired, defaulted = apply_declared_defaults(
+            [_aid_type()], _dac1_shape(), index=get_index(), variable="aid from Japan"
+        )
+
+        assert [b.value_dcids for b in repaired] == [["DAC1AidType1010"]]
+        notes = defaulted_slot_notes(defaulted, index=get_index())
+        assert notes == [get_index().declarations["dac1AidType"].default.note]
+        assert defaulted_slots_named(defaulted, index=get_index(), texts=["aid type"]) == []
+
+    @pytest.mark.parametrize(
+        ("binding", "matches"),
+        [
+            pytest.param(
+                _aid_type(),
+                (
+                    QualifierMatch(
+                        code_system="dac1AidType",
+                        code_dcid="DAC1AidType1015",
+                        label="bilateral official development assistance",
+                        source="label",
+                        matched_text="bilateral ODA",
+                    ),
+                ),
+                id="named-in-text",
+            ),
+            pytest.param(_aid_type("value", "DAC1AidType1015"), (), id="bound"),
+            pytest.param(
+                SlotBindingDraft(
+                    axis="how",
+                    property_dcid="dac1AidType",
+                    kind="unbound",
+                    evidence="requested_all",
+                ),
+                (),
+                id="requested-all",
+            ),
+        ],
+    )
+    def test_is_silent_where_the_query_names_an_aid_type(self, binding, matches):
+        _repaired, defaulted = apply_declared_defaults(
+            [binding],
+            _dac1_shape(),
+            index=get_index(),
+            variable="bilateral ODA from Japan",
+            query_qualifier_matches=matches,
+        )
+
+        assert defaulted == []
+
+    def test_the_crs_flow_default_still_needs_its_trigger(self):
+        """An open CRS flow slot with no grant bound and no "aid" in the text stays open."""
+        _repaired, defaulted = apply_declared_defaults(
+            [_finance(kind="unbound"), _flow_unbound()],
+            _grants_shape(),
+            index=get_index(),
+            variable="official flows to Kenya",
+        )
+
+        assert defaulted == []

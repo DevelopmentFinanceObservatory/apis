@@ -1,7 +1,7 @@
 """Postgres writers for immutable version records and mutable subject heads.
 
-`LiveVersionRecordWriter` stores a version, collection members, and artifact
-links in one transaction. Version and member inserts use `ON CONFLICT DO NOTHING`,
+`LiveVersionRecordWriter` stores a version and its artifact links in one
+transaction. Version inserts use `ON CONFLICT DO NOTHING`,
 so records are immutable and retries are idempotent. Store errors become
 `DatasetsStoreUnavailable` after the transaction exits.
 
@@ -158,23 +158,6 @@ class LiveVersionRecordWriter:
                         record.base_content_version,
                     ),
                 )
-                for position, (member_spec_id, member_content_version) in enumerate(
-                    record.member_versions
-                ):
-                    tx.execute(
-                        "INSERT INTO datasets.version_member "
-                        "(subject_id, content_version, position, member_spec_id, "
-                        "member_content_version) "
-                        "VALUES (%s, %s, %s, %s, %s) "
-                        "ON CONFLICT (subject_id, content_version, position) DO NOTHING",
-                        (
-                            record.subject_id,
-                            record.content_version,
-                            position,
-                            member_spec_id,
-                            member_content_version,
-                        ),
-                    )
                 for artifact in record.artifacts:
                     _insert_artifact(
                         tx,

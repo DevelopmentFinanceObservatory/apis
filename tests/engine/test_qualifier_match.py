@@ -27,6 +27,7 @@ from search.engine.qualifier_match import (
     match_qualifiers,
     match_unsupported_qualifier_phrases,
 )
+from tests.engine._index_slots import crs_shape_systems
 
 # ---------------------------------------------------------------------------
 # The packaged, committed index -- the same file any real caller parses.
@@ -36,7 +37,8 @@ _REAL_INDEX = get_index()
 
 
 def _matches(query: str) -> tuple[QualifierMatch, ...]:
-    return match_qualifiers(query, _REAL_INDEX)
+    """The matches of `query` with a CRS shape in play, as the prune step reads them."""
+    return match_qualifiers(query, _REAL_INDEX, shape_systems=crs_shape_systems())
 
 
 def _by_system(matches: tuple[QualifierMatch, ...]) -> dict[str, QualifierMatch]:
@@ -184,11 +186,11 @@ def test_plural_allowance_resolves_a_genuine_singular_label():
 
 def test_label_present_in_two_real_code_systems_stays_unmatched():
     # "budget support" is a real collision: registered as the label on both
-    # CRSCooperationModalityA and CRSPurposeCode510. A wrong guess here is
-    # worse than none -- left to the binder.
-    assert _REAL_INDEX.codes_by_normalized_text("budget support") and (
-        len(_REAL_INDEX.codes_by_normalized_text("budget support")) == 2
-    )
+    # CRSCooperationModalityA and CRSPurposeCode510, two systems one CRS shape declares. A
+    # wrong guess here is worse than none -- left to the binder.
+    (crs_systems,) = crs_shape_systems()
+    rows = _REAL_INDEX.codes_by_normalized_text("budget support")
+    assert len([row for row in rows if row.code_system in crs_systems]) == 2
     by_system = _by_system(_matches("ODA grants for budget support"))
     assert "crsPurpose" not in by_system
     assert "crsCooperationModality" not in by_system
@@ -766,8 +768,9 @@ def test_budget_support_yields_one_tie_of_two_rows():
     # "budget support" is registered as the label on both
     # CRSCooperationModalityA and CRSPurposeCode510 -- match_qualifiers
     # refuses it outright (see test_qualifier_recognise_spans' own
-    # coverage); match_qualifier_ties surfaces it instead.
-    ties = match_qualifier_ties("budget support", _REAL_INDEX)
+    # coverage); match_qualifier_ties surfaces it instead, with the rows a CRS shape
+    # declares.
+    ties = match_qualifier_ties("budget support", _REAL_INDEX, shape_systems=crs_shape_systems())
     assert len(ties) == 1
     tie = ties[0]
     assert tie.matched_text == "budget support"
@@ -785,7 +788,9 @@ def test_budget_support_yields_one_tie_of_two_rows():
 
 
 def test_debt_relief_grants_yields_two_ties_four_rows_and_two_rows():
-    ties = _ties_by_text(match_qualifier_ties("debt relief grants", _REAL_INDEX))
+    ties = _ties_by_text(
+        match_qualifier_ties("debt relief grants", _REAL_INDEX, shape_systems=crs_shape_systems())
+    )
     assert set(ties) == {"debt relief", "grants"}
 
     debt_relief = ties["debt relief"]
@@ -815,7 +820,32 @@ def test_match_qualifier_ties_excludes_a_measure_value_only_tie():
 
 
 def test_match_qualifier_ties_empty_when_nothing_is_ambiguous():
-    assert match_qualifier_ties("ODA standard grants for health", _REAL_INDEX) == ()
+    assert (
+        match_qualifier_ties(
+            "ODA standard grants for health", _REAL_INDEX, shape_systems=crs_shape_systems()
+        )
+        == ()
+    )
+
+
+def test_a_tie_across_two_families_systems_resolves_per_shape():
+    """ "ODA" names the CRS flow type and the DAC1 aid type, systems no one shape declares
+    together. With a CRS shape alone in play it is the CRS match; with a DAC1 shape beside
+    it, each shape's own code is a match, and it is no tie."""
+    (crs_systems,) = crs_shape_systems()
+    dac1_systems = frozenset({"dac1AidType", "financialFlowType", "nettingBasis"})
+
+    assert match_qualifier_ties("ODA", _REAL_INDEX) != ()
+    assert [m.code_dcid for m in match_qualifiers("ODA", _REAL_INDEX)] == []
+    assert [
+        m.code_dcid for m in match_qualifiers("ODA", _REAL_INDEX, shape_systems=(crs_systems,))
+    ] == ["CRSTypeOfFlow10"]
+    both = (crs_systems, dac1_systems)
+    assert {m.code_dcid for m in match_qualifiers("ODA", _REAL_INDEX, shape_systems=both)} == {
+        "CRSTypeOfFlow10",
+        "DAC1AidType1010",
+    }
+    assert match_qualifier_ties("ODA", _REAL_INDEX, shape_systems=both) == ()
 
     assert match_qualifiers("amount", _REAL_INDEX, get_measure_index()) == ()
 
@@ -833,11 +863,13 @@ def test_each_code_systems_markers_come_from_its_name():
         "crsPurpose": ["purpose"],
         "crsTypeOfFinance": ["finance"],
         "crsTypeOfFlow": ["flow"],
+        "dac1AidType": ["dac1"],
         "dac2aAidType": ["dac2a"],
     }
+    # "aid" names both aid-type systems, so it marks neither, measure word or not.
     assert {
         system: sorted(m.measure_words) for system, m in markers.items() if m.measure_words
-    } == {"dac2aAidType": ["aid"]}
+    } == {}
 
 
 @pytest.mark.parametrize(
@@ -863,6 +895,6 @@ def test_a_bare_code_after_its_systems_marker_matches(text: str, code_dcid: str)
     "text", ["aid to 106 countries", "education aid 106", "aid 106", "type 106"]
 )
 def test_a_word_that_names_the_measure_marks_no_code_on_its_own(text: str):
-    """ "aid" is a word of `dac2aAidType` and the word a declared default reads as naming
-    the measure, so it marks the system only beside another word of the name."""
+    """ "aid" is the word a declared default reads as naming the measure, and a word of both
+    `dac2aAidType` and `dac1AidType`, so it marks neither system alone."""
     assert [m for m in _matches(text) if m.source == "code"] == []

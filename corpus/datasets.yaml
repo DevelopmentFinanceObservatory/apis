@@ -1,0 +1,465 @@
+- id: imputed-aid-kenya
+  query: imputed aid to Kenya
+  why: Imputed aid is the imputed table's measure; electing it names the table, so the provenance is bound.
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: named}
+  expect:
+    definite:
+      measure: {family: mls.imputed}
+      provenance: {bound: true}
+      entities: [{dcid: country/KEN, role: destination}]
+      operations: []
+
+- id: dataset-imputed-education-aid-kenya
+  query: imputed education aid to Kenya
+  why: Bind elects the imputed table's measure, which names that table, and "education" binds crsPurpose 110, the group its sector rows sit under.
+  tags: {theme: education, entity: country, direction: destination_only, door: raw_text, dataset: named, breakdown: sector}
+  known_failure: {issue: 1164, checks: [measure, provenance]}
+  expect:
+    definite:
+      measure: {family: mls.imputed, bound: {crsPurpose: CRSPurposeCode110}}
+      provenance: {bound: true}
+      entities: [{dcid: country/KEN, role: destination}]
+      operations: []
+
+- id: dataset-imputed-health-oda-kenya
+  query: imputed health ODA to Kenya
+  why: Bind elects the imputed table's measure, which names that table, and "health" binds crsPurpose 120.
+  tags: {theme: health, entity: country, direction: destination_only, door: raw_text, dataset: named, breakdown: sector}
+  known_failure: {issue: 1193, checks: [measure, provenance]}
+  expect:
+    definite:
+      measure: {family: mls.imputed, bound: {crsPurpose: CRSPurposeCode120}}
+      provenance: {bound: true}
+      entities: [{dcid: country/KEN, role: destination}]
+      operations: []
+
+- id: dataset-imputed-multilateral-flows-kenya
+  query: imputed multilateral flows to Kenya
+  why: Imputed multilateral flows are the imputed table's measure; electing it names the table, so the provenance is bound.
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: named}
+  expect:
+    definite:
+      measure: {family: mls.imputed}
+      provenance: {bound: true}
+      entities: [{dcid: country/KEN, role: destination}]
+      operations: []
+
+- id: dataset-imputed-disbursements-kenya
+  query: imputed disbursements to Kenya
+  why: Imputed disbursements are the imputed table's measure; "disbursements" is the flow type the table publishes.
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: named}
+  known_failure: {issue: 1164, checks: [measure, provenance]}
+  expect:
+    definite:
+      measure: {family: mls.imputed}
+      provenance: {bound: true}
+      entities: [{dcid: country/KEN, role: destination}]
+      operations: []
+
+- id: dataset-germany-multilateral-aid-imputed-kenya
+  query: Germany's multilateral aid imputed to Kenya
+  why: Multilateral aid imputed to a recipient is the imputed table's measure; Germany is the donor the outflows are attributed to.
+  tags: {theme: aid, entity: two_roles, direction: both, door: raw_text, dataset: named}
+  expect:
+    definite:
+      measure: {family: mls.imputed}
+      provenance: {bound: true}
+      entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
+      operations: []
+
+- id: dataset-imputed-multilateral-aids-kenya
+  query: imputed multilateral aids to Kenya
+  why: Imputed multilateral aid is the imputed table's measure; "aids" is the plural of aid and binds no sector.
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: named}
+  known_failure: {issue: 1164, checks: [measure]}
+  expect:
+    definite:
+      measure: {family: mls.imputed, open: [crsPurpose]}
+      provenance: {bound: true}
+      entities: [{dcid: country/KEN, role: destination}]
+      operations: []
+
+- id: dataset-imputed-aid-kenya-es
+  query: ayuda multilateral imputada a Kenia
+  why: Spanish for "imputed multilateral aid to Kenya", the imputed table's measure.
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: named, language: es}
+  expect:
+    definite:
+      measure: {family: mls.imputed}
+      provenance: {bound: true}
+      entities: [{dcid: country/KEN, role: destination}]
+      operations: []
+
+- id: dataset-imputed-aid-kenya-fr
+  query: aide multilatérale imputée au Kenya
+  why: French for "imputed multilateral aid to Kenya", the imputed table's measure.
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: named, language: fr}
+  expect:
+    definite:
+      measure: {family: mls.imputed}
+      provenance: {bound: true}
+      entities: [{dcid: country/KEN, role: destination}]
+      operations: []
+
+- id: dataset-crs-education-aid-kenya
+  query: CRS education aid to Kenya
+  why: The CRS family has one dataset, so "CRS" has no source slot to bind; bind drops it and the CRS answers with the provenance unbound.
+  tags: {theme: education, entity: country, direction: destination_only, door: raw_text, dataset: named, breakdown: sector}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode110}}
+      provenance: {bound: false}
+      entities: [{dcid: country/KEN, role: destination}]
+      operations: []
+
+- id: dataset-education-aid-kenya-including-imputed
+  query: education aid to Kenya including imputed multilateral
+  why: '"Including imputed multilateral" adds a second variable: education aid answers from the CRS, the imputed measure from its table.'
+  tags: {theme: education, entity: country, direction: destination_only, door: raw_text, dataset: named, breakdown: sector, conjunction: two_variables}
+  known_failure: {issue: 1194, checks: [measure, parts]}
+  expect:
+    parts:
+      - definite:
+          measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode110}}
+          entities: [{dcid: country/KEN, role: destination}]
+          operations: []
+      - definite:
+          measure: {family: mls.imputed, bound: {crsPurpose: CRSPurposeCode110}}
+          provenance: {bound: true}
+          entities: [{dcid: country/KEN, role: destination}]
+          operations: []
+
+- id: dataset-education-aid-kenya-excluding-crs
+  query: education aid to Kenya excluding the CRS
+  why: The CRS family has one dataset, so the exclusion has no source slot to bind; bind drops it and the CRS answers with the provenance unbound.
+  tags: {theme: education, entity: country, direction: destination_only, door: raw_text, dataset: excluded, breakdown: sector}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode110}}
+      provenance: {bound: false}
+      entities: [{dcid: country/KEN, role: destination}]
+      operations: []
+
+- id: education-aid-kenya-excluding-imputed
+  query: education aid to Kenya excluding imputed multilateral
+  why: The imputed table is its own family, so the exclusion has no source slot to bind; bind drops it and the CRS answers unbound.
+  tags: {theme: education, entity: country, direction: destination_only, door: raw_text, dataset: excluded, breakdown: sector}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode110}}
+      provenance: {bound: false}
+      entities: [{dcid: country/KEN, role: destination}]
+      operations: []
+
+# The refusal carries no flagged match, so the case cannot assert the elected imputed table.
+- id: dataset-imputed-multilateral-grants-kenya
+  query: imputed multilateral grants to Kenya
+  why: The imputed table publishes no instrument split, so "grants" finds no slot and the part refuses.
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: named}
+  known_failure: {issue: 1193, checks: [disposition]}
+  expect:
+    no_data: {reason: qualifier_not_bound, category: absent}
+
+- id: dataset-germany-oda-kenya
+  query: Germany's ODA to Kenya
+  why: Bilateral ODA from a donor to a recipient is the CRS's default measure.
+  tags: {theme: aid, entity: two_roles, direction: both, door: raw_text, dataset: none}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
+      operations: []
+
+- id: dataset-multilateral-aid-kenya
+  query: multilateral aid to Kenya
+  why: Multilateral aid reaching a recipient is what the imputed table measures, so bind elects its measure and the provenance is bound.
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: described}
+  known_failure: {issue: 1164, checks: [measure, provenance]}
+  expect:
+    definite:
+      measure: {family: mls.imputed}
+      provenance: {bound: true}
+      entities: [{dcid: country/KEN, role: destination}]
+      operations: []
+
+- id: dataset-germany-aid-kenya-through-multilaterals
+  query: Germany's aid to Kenya through multilateral agencies
+  why: A donor's aid reaching a recipient through multilaterals is what the imputed table measures, so bind elects its measure.
+  tags: {theme: aid, entity: two_roles, direction: both, door: raw_text, dataset: described}
+  known_failure: {issue: 1164, checks: [measure, provenance]}
+  expect:
+    definite:
+      measure: {family: mls.imputed}
+      provenance: {bound: true}
+      entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
+      operations: []
+
+- id: dataset-aid-attributed-to-donors-via-multilaterals
+  query: aid attributed to donors via multilaterals
+  why: Only the imputed table measures multilateral outflows attributed back to their donors, so bind elects its measure.
+  tags: {theme: aid, entity: none, door: raw_text, dataset: described}
+  expect:
+    definite:
+      measure: {family: mls.imputed}
+      provenance: {bound: true}
+      entities: []
+      operations: []
+
+- id: dataset-oda-kenya-by-sector
+  query: ODA to Kenya by sector
+  why: '"By sector" asks for a breakdown the CRS publishes, and nothing in the question points to another table.'
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: none, breakdown: sector}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      entities: [{dcid: country/KEN, role: destination}]
+      operations: []
+
+- id: dataset-one-imputed-sectors-kenya
+  query: ONE Imputed Multilateral Sectors data for Kenya
+  why: The full label describes the imputed table's measure; "Sectors" is part of the name, so no sector binds.
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: named}
+  expect:
+    definite:
+      measure: {family: mls.imputed, open: [crsPurpose]}
+      provenance: {bound: true}
+      entities: [{dcid: country/KEN, role: destination}]
+      operations: []
+
+- id: dataset-germany-multilateral-aid-kenya
+  query: Germany's multilateral aid to Kenya
+  why: A donor's multilateral aid reaching a recipient is what the imputed table measures, so bind elects its measure.
+  tags: {theme: aid, entity: two_roles, direction: both, door: raw_text, dataset: described}
+  known_failure: {issue: 1164, checks: [measure, provenance]}
+  expect:
+    definite:
+      measure: {family: mls.imputed}
+      provenance: {bound: true}
+      entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
+      operations: []
+
+# include_families asserts inclusion only; the exact count of two candidates is unasserted.
+- id: dataset-imputed-student-costs-kenya
+  query: imputed student costs from Germany to Kenya
+  why: '"Imputed student costs" is a CRS cooperation modality published on two CRS shapes, so both are offered and no table is named.'
+  tags: {theme: education, entity: two_roles, direction: both, door: raw_text, dataset: none}
+  expect:
+    candidates:
+      measure: {bound: {crsCooperationModality: CRSCooperationModalityE02}}
+      provenance: {bound: false}
+      entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
+      operations: []
+      include_families: [crs.grant_equivalent, crs.commitment]
+
+- id: dataset-imputed-rent-kenya
+  query: imputed rent in Kenya
+  why: Imputed rent is a national-accounts measure no served dataset publishes, so the variable resolves to nothing.
+  tags: {theme: economy, entity: country, door: raw_text, dataset: none}
+  expect:
+    no_data: {reason: variable_not_resolved, category: unresolved}
+
+- id: dataset-education-aid-kenya-from-crs
+  query: education aid to Kenya from the CRS
+  why: The CRS family has one dataset, so "from the CRS" has no source slot to bind; bind drops it and the CRS answers with the provenance unbound.
+  tags: {theme: education, entity: country, direction: destination_only, door: raw_text, dataset: named, breakdown: sector}
+  known_failure: {issue: 1164, checks: [disposition]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode110}}
+      provenance: {bound: false}
+      entities: [{dcid: country/KEN, role: destination}]
+      operations: []
+
+- id: dataset-education-and-imputed-health-aid-kenya
+  query: education aid and imputed health aid to Kenya
+  why: Only the second variable is the imputed measure, so education aid answers from the CRS and health aid from the imputed table.
+  tags: {theme: [education, health], entity: country, direction: destination_only, door: raw_text, dataset: named, breakdown: sector, conjunction: two_variables}
+  expect:
+    parts:
+      - definite:
+          measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode110}}
+          entities: [{dcid: country/KEN, role: destination}]
+          operations: []
+      - definite:
+          measure: {family: mls.imputed, bound: {crsPurpose: CRSPurposeCode120}}
+          provenance: {bound: true}
+          entities: [{dcid: country/KEN, role: destination}]
+          operations: []
+
+- id: dataset-imputed-education-and-health-aid-kenya
+  query: imputed education and health aid to Kenya
+  why: One "imputed" marks both variables; their parts share a five-tuple, so each carries the merged spec binding both sectors.
+  tags: {theme: [education, health], entity: country, direction: destination_only, door: raw_text, dataset: named, breakdown: sector, conjunction: two_variables}
+  expect:
+    parts:
+      - definite:
+          measure: {family: mls.imputed, bound: {crsPurpose: [CRSPurposeCode110, CRSPurposeCode120]}}
+          provenance: {bound: true}
+          entities: [{dcid: country/KEN, role: destination}]
+          operations: []
+      - definite:
+          measure: {family: mls.imputed, bound: {crsPurpose: [CRSPurposeCode110, CRSPurposeCode120]}}
+          provenance: {bound: true}
+          entities: [{dcid: country/KEN, role: destination}]
+          operations: []
+
+- id: dataset-top-donors-imputed-aid-kenya
+  query: top 5 donors of imputed multilateral aid to Kenya
+  why: The imputed table's measure answers, and the question ranks donors, so the part ranks over origin.
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: named, operation: rank}
+  expect:
+    definite:
+      measure: {family: mls.imputed}
+      provenance: {bound: true}
+      entities: [{dcid: country/KEN, role: destination}]
+      operations: [{verb: rank, over: origin}]
+
+- id: dataset-aid-kenya-not-imputed
+  query: aid to Kenya, not imputed
+  why: The imputed table is its own family, so "not imputed" has no source slot to bind; bind drops it and the CRS answers unbound.
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: excluded}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      provenance: {bound: false}
+      entities: [{dcid: country/KEN, role: destination}]
+      operations: []
+
+- id: dataset-oda-kenya-excluding-crs
+  query: ODA to Kenya excluding the CRS
+  why: The CRS family has one dataset, so the exclusion has no source slot to bind; bind drops it and the CRS answers with the provenance unbound.
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: excluded}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      provenance: {bound: false}
+      entities: [{dcid: country/KEN, role: destination}]
+      operations: []
+
+# raw_text cannot require query_qualifier_dropped, so a definite answer that drops the phrase passes.
+- id: dataset-education-aid-kenya-excluding-multilateral-donors
+  query: education aid to Kenya excluding multilateral donors
+  why: The phrase excludes providers, not a table, so the CRS serves; the phrase finds no slot and either refuses or is dropped.
+  tags: {theme: education, entity: country, direction: destination_only, door: raw_text, dataset: none, breakdown: sector}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode110}}
+      entities: [{dcid: country/KEN, role: destination}]
+      operations: []
+    no_data:
+      reason: qualifier_not_bound
+      measure: {shape: {measured_property: amount}}
+
+- id: dataset-kenya-gdp-from-crs
+  query: Kenya's GDP from the CRS
+  why: The GDP family has one dataset, so "from the CRS" has no source slot to bind; bind drops it and GDP answers with the provenance unbound.
+  tags: {theme: economy, entity: country, door: raw_text, dataset: named}
+  expect:
+    definite:
+      measure: {family: base.gdp}
+      provenance: {bound: false}
+      entities: [{dcid: country/KEN, role: observationAbout}]
+      operations: []
+
+- id: dataset-education-aid-kenya-snpc-fr
+  query: aide à l'éducation au Kenya selon le SNPC
+  why: SNPC is the CRS's French name; the CRS family has one dataset, so it has no source slot to bind and the provenance stays unbound.
+  tags: {theme: education, entity: country, direction: destination_only, door: raw_text, dataset: named, breakdown: sector, language: fr}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode110}}
+      provenance: {bound: false}
+      entities: [{dcid: country/KEN, role: destination}]
+      operations: []
+
+- id: dataset-multilateral-aid-kenya-es
+  query: ayuda multilateral a Kenia
+  why: Spanish for "multilateral aid to Kenya", which the imputed table measures, as in the English case.
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: described, language: es}
+  known_failure: {issue: 1164, checks: [measure, provenance]}
+  expect:
+    definite:
+      measure: {family: mls.imputed}
+      provenance: {bound: true}
+      entities: [{dcid: country/KEN, role: destination}]
+      operations: []
+
+- id: dataset-inputed-aid-kenya
+  query: inputed aid to Kenya
+  why: '"Inputed" is a misspelling of "imputed", so the question asks for the imputed table''s measure.'
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: named, phrasing: misspelt}
+  known_failure: {issue: 1164, checks: [measure, provenance]}
+  expect:
+    definite:
+      measure: {family: mls.imputed}
+      provenance: {bound: true}
+      entities: [{dcid: country/KEN, role: destination}]
+      operations: []
+
+- id: dataset-oecd-education-aid-kenya
+  query: OECD data on education aid to Kenya
+  why: '"OECD data" names a publisher, which no source slot carries, so bind drops it and the CRS answers with the provenance unbound.'
+  tags: {theme: education, entity: country, direction: destination_only, door: raw_text, dataset: none, breakdown: sector}
+  known_failure: {issue: 1164, checks: [measure, entities, provenance]}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode110}}
+      provenance: {bound: false}
+      entities: [{dcid: country/KEN, role: destination}]
+      operations: []
+
+- id: dataset-dac2a-oda-kenya
+  query: DAC2a ODA to Kenya
+  why: The code index declares no DAC2a table, so "DAC2a" has no source slot to bind; bind drops it and the CRS answers unbound.
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: undeclared}
+  expect:
+    definite:
+      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      provenance: {bound: false}
+      entities: [{dcid: country/KEN, role: destination}]
+      operations: []
+
+- id: dataset-total-oda-reported-to-dac-germany
+  query: total ODA reported to the DAC by Germany
+  why: A donor total with no recipient answers from DAC1 as total ODA; "the DAC" names a body with no source slot, so the provenance stays unbound.
+  tags: {theme: aid, entity: country, direction: origin_only, door: raw_text, dataset: none}
+  expect:
+    definite:
+      measure: {family: dac1.disbursement_gross, bound: {dac1AidType: DAC1AidType1010}}
+      provenance: {bound: false}
+      entities: [{dcid: country/DEU, role: origin}]
+      operations: []
+
+- id: dataset-germany-multilateral-oda
+  query: Germany's multilateral ODA
+  why: With no recipient this is Germany's core contributions to multilateral agencies, which DAC1 reports as multilateral ODA.
+  tags: {theme: aid, entity: country, direction: origin_only, door: raw_text, dataset: none}
+  expect:
+    definite:
+      measure: {family: dac1.disbursement_gross, bound: {dac1AidType: DAC1AidType2000}}
+      entities: [{dcid: country/DEU, role: origin}]
+      operations: []
+
+- id: dataset-crs-and-imputed-education-aid-kenya
+  query: CRS and imputed figures for education aid to Kenya
+  why: Two figures asked for one measure make two variables; the imputed one names its table, and "CRS" binds nothing on the CRS part.
+  tags: {theme: education, entity: country, direction: destination_only, door: raw_text, dataset: named, breakdown: sector, conjunction: two_variables}
+  expect:
+    parts:
+      - definite:
+          measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode110}}
+          provenance: {bound: false}
+          entities: [{dcid: country/KEN, role: destination}]
+          operations: []
+      - definite:
+          measure: {family: mls.imputed, bound: {crsPurpose: CRSPurposeCode110}}
+          provenance: {bound: true}
+          entities: [{dcid: country/KEN, role: destination}]
+          operations: []
+
+- id: dataset-aid-kenya-catholic-relief-services
+  query: aid to Kenya from Catholic Relief Services (CRS)
+  why: '"CRS" abbreviates Catholic Relief Services here, an NGO no dataset names as a donor, so the entity does not resolve.'
+  tags: {theme: aid, entity: organisation, direction: both, door: raw_text, dataset: none}
+  expect:
+    no_data: {reason: entity_not_resolved, category: unresolved}

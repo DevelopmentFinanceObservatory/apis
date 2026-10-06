@@ -78,7 +78,6 @@ def test_africa_resolves_and_expands_to_its_member_countries():
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=FakeLLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
@@ -107,7 +106,6 @@ def test_dcid_absent_from_graph_node_table_yields_entity_not_resolved():
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=FakeLLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
@@ -147,7 +145,6 @@ def test_lagos_resolves_to_a_place_other_kind_and_admission_lets_it_through():
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=FakeLLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )

@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from dataset_store.snapshot import StoredArtifactLocation
+from datasets_api.adapter import MemberReadBounds
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.definition import DefinitionDeps, classify_definition_exception
 from datasets_api.mint_models import MintOptions
@@ -32,10 +33,11 @@ from series_coverage.index import Estimate
 from series_coverage.shared import CoverageService
 from tests.series_coverage.support import build_test_artifact, index_for, pointer_path
 
+from ._graph_doubles import FakeMintGraphReader
 from ._operation_store import FakeOperationDatasetStore
+from .test_resolve_definition_members_guards import _resolve, _value_bound_broad_family
 
 _SUBJECT_ID = "spec_abc123"
-_COLLECTION_ID = "col_abc123"
 # `run_operation` requires `lease_seconds`. This matches the settings default used by callers
 # such as `build_worker_app` when they omit it.
 _DEFAULT_LEASE_SECONDS = DatasetsBuildSettings().operation_lease_seconds
@@ -136,9 +138,13 @@ def _claimed_operation(
     *,
     lease_seconds: float = 1_700,
     subject_id: str = _SUBJECT_ID,
+    member_dcids: list[str] | None = None,
 ):
+    request_identity: dict[str, object] = {"subject_id": subject_id}
+    if member_dcids is not None:
+        request_identity["member_dcids"] = member_dcids
     operation = operation_store.create_or_get(
-        request_identity={"subject_id": subject_id},
+        request_identity=request_identity,
         options=_OPTIONS,
         coverage_stamp="cov_1",
         origin_catalogue_build_id="fake-catalogue",
@@ -162,7 +168,7 @@ def test_heartbeat_renews_the_lease_while_materialisation_is_still_running(
 
     release_event = threading.Event()
 
-    def _slow_resolve(*, spec_id, deps, seed=None):
+    def _slow_resolve(*, spec_id, deps):
         release_event.wait(timeout=5)
         raise RuntimeError("test stops the resolve before it returns")
 
@@ -209,7 +215,7 @@ def test_heartbeat_reports_nonzero_rows_written_mid_run(monkeypatch: pytest.Monk
 
     release_event = threading.Event()
 
-    def _stub_resolve(*, spec_id, deps, seed=None):
+    def _stub_resolve(*, spec_id, deps):
         return object(), []
 
     def _slow_serve_definition(
@@ -254,7 +260,7 @@ def test_non_final_transient_failure_releases_the_lease_and_raises():
     operation_store = _operation_store()
     operation = _claimed_operation(operation_store)
 
-    def _raise_transient(*, spec_id, deps, seed=None):
+    def _raise_transient(*, spec_id, deps):
         raise ConnectionError("upstream SDMX call failed")
 
     def _run():
@@ -282,7 +288,7 @@ def test_final_attempt_transient_failure_marks_failed_with_internal_error():
     operation_store = _operation_store()
     operation = _claimed_operation(operation_store)
 
-    def _raise_transient(*, spec_id, deps, seed=None):
+    def _raise_transient(*, spec_id, deps):
         raise ConnectionError("upstream SDMX call failed")
 
     with pytest.MonkeyPatch.context() as mp:
@@ -322,7 +328,6 @@ def test_run_operation_takes_one_coverage_snapshot_and_forwards_its_stamp_and_in
     captured: dict[str, object] = {}
     stub_manifest = SimpleNamespace(
         definition=SimpleNamespace(spec_id=_SUBJECT_ID),
-        collection=None,
         content_version="cv_stub",
     )
 
@@ -333,7 +338,7 @@ def test_run_operation_takes_one_coverage_snapshot_and_forwards_its_stamp_and_in
         captured["coverage_index"] = coverage_index
         return stub_manifest
 
-    def _stub_resolve(*, spec_id, deps, seed=None):
+    def _stub_resolve(*, spec_id, deps):
         return object(), []
 
     with pytest.MonkeyPatch.context() as mp:
@@ -359,7 +364,7 @@ def test_deterministic_failure_fails_regardless_of_final_attempt():
     operation_store = _operation_store()
     operation = _claimed_operation(operation_store)
 
-    def _raise_deterministic(*, spec_id, deps, seed=None):
+    def _raise_deterministic(*, spec_id, deps):
         raise SpecNotFound(id=spec_id)
 
     with pytest.MonkeyPatch.context() as mp:
@@ -382,6 +387,83 @@ def test_deterministic_failure_fails_regardless_of_final_attempt():
     classified = classify_definition_exception(SpecNotFound(id=_SUBJECT_ID))
     assert classified is not None
     assert stored.refusal == classified
+
+
+@pytest.mark.parametrize(
+    ("resolved", "state", "refusal_code"),
+    [
+        (("Count_Person_Male", "Count_Person_Female"), "done", None),
+        (("Count_Person",), "failed", "upstream_version_changed"),
+    ],
+    ids=["unchanged", "changed"],
+)
+def test_a_definition_whose_members_changed_since_submission_fails_retryable_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+    resolved: tuple[str, ...],
+    state: str,
+    refusal_code: str | None,
+):
+    """The worker resolves the members again from the identity alone. Members other than the
+    stored `member_dcids` fail the row on its first attempt, retryable, and serve nothing."""
+    operation_store = _operation_store()
+    operation = _claimed_operation(
+        operation_store, member_dcids=["Count_Person_Female", "Count_Person_Male"]
+    )
+    served: list[object] = []
+
+    def _resolve(*, spec_id, deps):
+        return object(), [SimpleNamespace(stat_var=f"dcid:{dcid}") for dcid in resolved]
+
+    def _serve(**kwargs):
+        served.append(kwargs["requests"])
+        return _stub_manifest()
+
+    monkeypatch.setattr(worker_module, "_resolve_spec_requests", _resolve)
+    monkeypatch.setattr(
+        worker_module, "sync_estimate", lambda requests, **_: Estimate(rows=1, requests=1)
+    )
+    monkeypatch.setattr(worker_module, "serve_definition", _serve)
+
+    run_operation(
+        operation=operation,
+        deps=_deps(),
+        operation_store=operation_store,
+        lease_seconds=30,
+        is_final_attempt=False,
+    )
+
+    stored = operation_store.get(operation.id)
+    assert stored is not None
+    assert (stored.state, stored.refusal_code) == (state, refusal_code)
+    assert len(served) == (1 if state == "done" else 0)
+    if state == "failed":
+        assert stored.retryable is True
+
+
+def test_a_member_walk_past_its_deadline_fails_retryable_so_a_resubmission_walks_again():
+    """The worker's walk runs in its own process with a cold cache. A walk that runs out of
+    time records `timeout`, retryable, so `create_or_get` re-runs an identical submission."""
+    identity, arcs = _value_bound_broad_family()
+    operation_store = _operation_store()
+    operation = _claimed_operation(operation_store)
+
+    def _walk_past_deadline(*, spec_id, deps):
+        expired = MemberReadBounds(subject_ceiling=20_000, deadline=time.monotonic() - 1)
+        _resolve(identity, graph=FakeMintGraphReader(arcs=arcs), bounds=expired)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(worker_module, "_resolve_spec_requests", _walk_past_deadline)
+        run_operation(
+            operation=operation,
+            deps=_deps(),
+            operation_store=operation_store,
+            lease_seconds=30,
+            is_final_attempt=True,
+        )
+
+    stored = operation_store.get(operation.id)
+    assert stored is not None
+    assert (stored.state, stored.refusal_code, stored.retryable) == ("failed", "timeout", True)
 
 
 def _claimed_operation_with_malformed_options(operation_store: LiveOperationStore):
@@ -449,11 +531,10 @@ def test_complete_returning_none_logs_an_error_naming_the_operation(
 
     stub_manifest = SimpleNamespace(
         definition=SimpleNamespace(spec_id=_SUBJECT_ID),
-        collection=None,
         content_version="cv_stub_orphaned",
     )
 
-    def _stub_resolve(*, spec_id, deps, seed=None):
+    def _stub_resolve(*, spec_id, deps):
         return object(), []
 
     def _serve_and_expire_out_from_under(
@@ -495,14 +576,13 @@ def test_complete_returning_none_logs_an_error_naming_the_operation(
     assert stored_op.content_version is None
 
 
-def _stub_resolve(*, spec_id, deps, seed=None):
+def _stub_resolve(*, spec_id, deps):
     return object(), []
 
 
 def _stub_manifest(content_version: str = "cv_stub") -> SimpleNamespace:
     return SimpleNamespace(
         definition=SimpleNamespace(spec_id=_SUBJECT_ID),
-        collection=None,
         content_version=content_version,
     )
 
@@ -570,7 +650,7 @@ def test_a_run_whose_attempt_was_reclaimed_before_it_started_writes_nothing(
     operation_store = _operation_store(now=lambda: now_box["t"])
     operation = _claimed_operation(operation_store, lease_seconds=30)
 
-    def _resolve_then_lose_the_lease(*, spec_id, deps, seed=None):
+    def _resolve_then_lose_the_lease(*, spec_id, deps):
         now_box["t"] = now_box["t"] + timedelta(seconds=31)
         assert operation_store.claim_lease(operation.id, submission_count=0, lease_seconds=60)
         return object(), []
@@ -760,14 +840,6 @@ def test_execution_estimate_over_the_async_ceiling_fails_over_ceiling_without_fe
     assert stored.estimate == over
 
 
-def _stub_collection_manifest() -> SimpleNamespace:
-    return SimpleNamespace(
-        definition=None,
-        collection=SimpleNamespace(collection_id=_COLLECTION_ID),
-        content_version="cv_collection",
-    )
-
-
 @pytest.mark.parametrize(
     ("subject_id", "linked", "is_final_attempt", "state", "refusal_code", "retryable"),
     [
@@ -779,15 +851,6 @@ def _stub_collection_manifest() -> SimpleNamespace:
             None,
             None,
             id="linked-completes",
-        ),
-        pytest.param(
-            _COLLECTION_ID,
-            _linked(_COLLECTION_ID, "cv_collection", _OPTIONS),
-            False,
-            "done",
-            None,
-            None,
-            id="collection-linked-completes",
         ),
         pytest.param(
             _SUBJECT_ID,
@@ -825,8 +888,7 @@ def test_run_completes_only_when_the_requests_rendering_is_servable(
     left unlinked after a failed graph label or documentation read is transient."""
     operation_store = _operation_store()
     operation = _claimed_operation(operation_store, subject_id=subject_id)
-    is_collection = subject_id == _COLLECTION_ID
-    completed = _stub_collection_manifest() if is_collection else _stub_manifest()
+    completed = _stub_manifest()
 
     def _serve(
         *, stored, requests, options, deps, ceiling, coverage_stamp, coverage_index, progress
@@ -835,9 +897,7 @@ def test_run_completes_only_when_the_requests_rendering_is_servable(
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(worker_module, "_resolve_spec_requests", _stub_resolve)
-        mp.setattr(worker_module, "_resolve_collection_requests", lambda **_: (object(), []))
         mp.setattr(worker_module, "serve_definition", _serve)
-        mp.setattr(worker_module, "serve_collection", _serve)
         released = state == "pending"
         with pytest.raises(OperationTransientFailure) if released else contextlib.nullcontext():
             run_operation(

@@ -14,7 +14,6 @@ import pytest
 from search.engine.closest_match import substituted_measure_fact
 from search.engine.conjoin import assemble_region
 from search.engine.departures import (
-    dataset_not_applied,
     measure_not_applied,
     price_basis_not_applied,
     warning_key,
@@ -70,7 +69,6 @@ def _assemble(region: RegionResult) -> Part:
         extra_warnings=[],
         start_ms=now_ms(),
         engine_build="test",
-        include_sentence=True,
         max_candidates=10,
     )
     (part,) = response.parts
@@ -331,53 +329,6 @@ def test_a_qualifier_the_heading_states_does_not_depart():
     assert [d.asked for d in part.departures] == ["grant equivalent"]
 
 
-_MENTION = Warning(
-    code=QUERY_QUALIFIER_DROPPED,
-    severity="degraded",
-    message='The requested qualifier "imputed multilateral ODA" was not applied.',
-)
-
-
-def _from_source(spec: Spec, label: str) -> Spec:
-    """`spec` with `label` as the one source its byline names."""
-    trace = spec.resolved.trace.model_copy(
-        update={"resolved_sources": [GraphRef(dcid=f"dc/s/{label.split()[0]}", label=label)]}
-    )
-    return spec.model_copy(update={"resolved": spec.resolved.model_copy(update={"trace": trace})})
-
-
-@pytest.mark.parametrize(
-    ("sources", "shown"),
-    [
-        # A definite part's byline names its one source.
-        (("SDG Global Database",), "SDG Global Database"),
-        # mls-011: both readings come from one source.
-        (("SDG Global Database", "SDG Global Database"), "SDG Global Database"),
-        # Readings from several sources name none of them.
-        (("SDG Global Database", "World Development Indicators"), None),
-    ],
-)
-def test_a_dataset_departure_names_the_source_the_part_shows(sources, shown):
-    """mls-011 "Imputed multilateral ODA from G7 countries": the dataset asked for is not
-    the one read, so the departure states the source the bylines name."""
-    specs = [
-        _from_source(_spec(_PERSON_SHAPE, f"Val{index}", sv_dcid=f"sv_{index}"), source)
-        for index, source in enumerate(sources)
-    ]
-    status = "definite" if len(specs) == 1 else "candidates"
-    region = dataclasses.replace(
-        _region(specs[0], "imputed multilateral ODA", status=status, extra_specs=tuple(specs[1:])),
-        warnings=(_MENTION,),
-        departure_facts={warning_key(_MENTION): dataset_not_applied("imputed multilateral ODA")},
-    )
-
-    part = _assemble(region)
-
-    _assert_departures(
-        part, [dataclasses.replace(dataset_not_applied("imputed multilateral ODA"), shown=shown)]
-    )
-
-
 def test_a_part_states_one_closest_match():
     """An answer on the elected shape's measure sibling raises its `closest_match` beside
     its warning; under a weak score the lexical rule would raise a second, which the part
@@ -607,12 +558,12 @@ _ELECTED_NO_DATA = Warning(
 
 def _labelled(spec: Spec, label: str) -> Spec:
     """`spec` with its one StatVar named `label`."""
-    (stat_var,) = spec.resolved.stat_vars.items
-    stat_vars = spec.resolved.stat_vars.model_copy(
-        update={"items": [stat_var.model_copy(update={"label": label})]}
-    )
+    (stat_var,) = spec.resolved.members
+    ref = stat_var.ref.model_copy(update={"label": label})
     return spec.model_copy(
-        update={"resolved": spec.resolved.model_copy(update={"stat_vars": stat_vars})}
+        update={
+            "resolved": spec.resolved.stating_members([stat_var.model_copy(update={"ref": ref})])
+        }
     )
 
 

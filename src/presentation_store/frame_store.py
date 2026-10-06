@@ -21,8 +21,7 @@ re-runs only the citation read until one completes, so a failing read never refe
 bytes. `load()` re-checks revocation and working-tier servability on every call, cache hit or
 not, so a later takedown refuses the next load. `pin()` records a
 presentation reference and promotes working artifacts to pinned. Definition mints store
-frame1 renderings. Collection mints omit them, so collection-only frames can lack a loadable
-rendering.
+frame1 renderings.
 """
 
 from __future__ import annotations

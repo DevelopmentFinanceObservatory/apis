@@ -28,6 +28,7 @@ from tests.search_catalogue.support import (
     definite,
     no_data,
     omitted,
+    serving,
     timed_out,
 )
 
@@ -68,7 +69,7 @@ def test_a_preview_of_another_country_fails_even_when_the_place_resolved():
     response = definite("Count_Person", place="country/GEO").model_dump(mode="json")
     [series] = response["parts"][0]["spec"]["resolved"]["observations"]["series"]
     series["entities"] = [{"role": "observationAbout", "ref": "country/KEN"}]
-    response = RESOLVE_RESPONSE_ADAPTER.validate_python(response)
+    response = serving(RESOLVE_RESPONSE_ADAPTER.validate_python(response), "Count_Person")
     assert judge(
         response, stat_var="Count_Person", place="country/GEO", role="observationAbout"
     ) == ("preview_scope_mismatch", ("Count_Person",))
@@ -85,7 +86,7 @@ def test_aid_from_a_country_fails_an_example_asking_for_aid_to_it():
     [series] = preview_reversed["parts"][0]["spec"]["resolved"]["observations"]["series"]
     series["entities"] = [{"role": "origin", "ref": "country/GEO"}]
     assert judge(
-        RESOLVE_RESPONSE_ADAPTER.validate_python(preview_reversed),
+        serving(RESOLVE_RESPONSE_ADAPTER.validate_python(preview_reversed), _AID),
         stat_var=_AID,
         place="country/GEO",
         role="destination",
@@ -175,7 +176,10 @@ def test_other_answers_fail(response, reason):
 def test_an_answer_split_into_several_parts_fails_even_when_one_holds_the_pin():
     [pinned] = definite("Count_Person").model_dump(mode="json")["parts"]
     [missing] = no_data().model_dump(mode="json")["parts"]
-    response = RESOLVE_RESPONSE_ADAPTER.validate_python(base_response(parts=[pinned, missing]))
+    response = serving(
+        RESOLVE_RESPONSE_ADAPTER.validate_python(base_response(parts=[pinned, missing])),
+        "Count_Person",
+    )
     assert _judge(response) == ("multiple_parts", ("Count_Person",))
 
 

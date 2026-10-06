@@ -205,7 +205,6 @@ def _run_candidate_unit(
             graph=graph,
             resolver=make_resolver(graph),
             llm=_CandidateUnitBindLLM(also_plausible if also_plausible is not None else [1]),
-            base_steps=[],
             base_timing={},
             unit_text=unit_text,
             sdmx=FakeSdmxClient(observations={}, availability={}),
@@ -249,7 +248,7 @@ def test_candidates_bound_unit_stamps_unit_lexicon_version_on_every_spec():
     assert result.status == "candidates"
     assert len(result.specs) == 2
     for spec in result.specs:
-        assert spec.resolved.trace.unit_lexicon_version is not None, (
+        assert spec.resolved.unit_lexicon_version is not None, (
             f"spec {spec.spec_id!r} missing unit_lexicon_version"
         )
 
@@ -380,7 +379,6 @@ def test_candidates_sse_trailing_facet_options_match_buffered_embed():
                 graph=graph,
                 resolver=make_resolver(graph),
                 llm=_CandidateUnitBindLLM([1]),
-                base_steps=[],
                 base_timing={},
                 unit_text=None,
                 sdmx=FakeSdmxClient(observations={}, availability={}),
@@ -435,7 +433,6 @@ def test_single_spec_sse_trailing_facet_options_unchanged():
                 graph=graph,
                 resolver=make_resolver(graph),
                 llm=_CandidateUnitBindLLM([1]),
-                base_steps=[],
                 base_timing={},
                 unit_text="US dollars",
                 sdmx=FakeSdmxClient(observations={}, availability={}),
@@ -489,7 +486,6 @@ def test_candidates_lone_survivor_collapse_launches_place_options_task():
                     graph=graph,
                     resolver=make_resolver(graph),
                     llm=_CandidateUnitBindLLM([1]),
-                    base_steps=[],
                     base_timing={},
                     unit_text="US dollars",
                     sdmx=FakeSdmxClient(observations={}, availability={}),
@@ -568,7 +564,6 @@ def test_candidates_lone_survivor_cancellation_does_not_leak_observations_task(m
                 graph=graph,
                 resolver=make_resolver(graph),
                 llm=_CandidateUnitBindLLM([1]),
-                base_steps=[],
                 base_timing={},
                 unit_text="US dollars",
                 sdmx=FakeSdmxClient(observations={}, availability={}),
@@ -656,7 +651,6 @@ def test_a_collapsed_survivor_labels_its_preview_from_its_member_facts(stream: b
                 graph=graph,
                 resolver=make_resolver(graph),
                 llm=_CandidateUnitBindLLM([1]),
-                base_steps=[],
                 base_timing={},
                 unit_text="US dollars",
                 sdmx=FakeSdmxClient(observations={}, availability={}),

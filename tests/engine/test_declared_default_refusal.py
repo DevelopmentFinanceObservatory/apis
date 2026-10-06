@@ -199,7 +199,6 @@ def _measure_elected_stream(monkeypatch, events: list, *, facet_policies: dict) 
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations=measure_election._OBS, availability={}),
             llm=measure_election._BindPurposeToExtraLLM(),
-            base_steps=[],
             base_timing={},
             coverage=FakeCoverageService(index).snapshot(),
             emit=_emit,
@@ -307,7 +306,6 @@ def test_a_refusal_in_the_candidates_fan_out_streams_no_sentence(monkeypatch) ->
                 resolver=make_resolver(graph),
                 sdmx=FakeSdmxClient(observations=fold._SDMX_OBS, availability={}),
                 llm=fold._ElectGrantEquivalentAlsoPlausibleAmountLLM(),
-                base_steps=[],
                 base_timing={},
                 emit=_emit,
                 coverage=FakeCoverageService(index).snapshot(),
@@ -471,7 +469,7 @@ _FERTILITY_IN_2027 = {
             }
         ],
     },
-    "response_options": {"include_sentence": True},
+    "response_options": {},
 }
 
 

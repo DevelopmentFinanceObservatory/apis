@@ -6,8 +6,6 @@ Directional legs echo each entity's role. A name bound on both axes has no resta
 
 from __future__ import annotations
 
-import pytest
-
 from search.engine.core import _quick_no_data
 from search.engine.envelope import now_ms
 from search.engine.extract import _EXTRACTION_SYSTEM_PROMPT, Extraction, ExtractionResult
@@ -65,7 +63,6 @@ class TestDirectionalLegEchoesItsAxis:
         assert part.restatement is not None, (
             "a leg bound on directional axes must still echo its inputs"
         )
-        assert part.restatement_reason is None
         echoed = {e.text: e.role_text for e in part.restatement.entities or []}
         assert echoed == {"Asian Development Bank": "from", "Kenya": "to"}
         for role_text in echoed.values():
@@ -82,7 +79,6 @@ class TestDirectionalLegEchoesItsAxis:
             ResolveRequest(input=ParsedInput(parts=[original.restatement]))
         ).parts[0]
         assert reparsed.restatement == original.restatement
-        assert reparsed.restatement_reason is None
         assert reparsed.status == original.status
 
     def test_an_unspecified_entity_still_echoes_bare(self):
@@ -102,7 +98,7 @@ class TestDirectionalLegEchoesItsAxis:
 class TestOneAxisRule:
     def test_a_name_on_both_axes_yields_no_echo(self):
         """One `role_text` cannot represent a self-flow's two axes."""
-        restatement, reason = _leg_restatement(
+        restatement = _leg_restatement(
             "aid",
             entities=["Kenya"],
             date_request=None,
@@ -116,10 +112,9 @@ class TestOneAxisRule:
             },
         )
         assert restatement is None
-        assert reason == "direction_unnameable"
 
     def test_a_name_on_one_axis_echoes_that_axis(self):
-        restatement, _reason = _leg_restatement(
+        restatement = _leg_restatement(
             "aid",
             entities=["Kenya"],
             date_request=None,
@@ -132,7 +127,7 @@ class TestOneAxisRule:
         )
 
     def test_two_names_on_different_axes_each_echo_their_own(self):
-        restatement, _reason = _leg_restatement(
+        restatement = _leg_restatement(
             "aid",
             entities=["France", "Kenya"],
             date_request=None,
@@ -165,26 +160,17 @@ class TestOneAxisRule:
 
 
 # ---------------------------------------------------------------------------
-# restatement_reason: one value per case, and always one-null-one-set
+# Each case that has no faithful echo carries no restatement
 # ---------------------------------------------------------------------------
 
 
-def _assert_one_null_one_set(part) -> None:
-    if part.restatement is None:
-        assert part.restatement_reason is not None
-    else:
-        assert part.restatement_reason is None
-
-
-class TestRestatementReasonPerCase:
+class TestRestatementIsNullPerCase:
     def test_no_phrase_inputs_on_a_placeholder_entry(self):
         entry = ResubmitPlaceholderEntry(
             variable_text="unemployment rate", status="no_data", reason="no_observations"
         )
         part = offline_resolve(ResolveRequest(input=DatasetResubmitInput(entries=[entry]))).parts[0]
         assert part.restatement is None
-        assert part.restatement_reason == "no_phrase_inputs"
-        _assert_one_null_one_set(part)
 
     def test_no_phrase_inputs_on_an_identity_entry(self):
         """Identity entries contain no phrase inputs to echo."""
@@ -194,8 +180,6 @@ class TestRestatementReasonPerCase:
         part = offline_resolve(ResolveRequest(input=DatasetResubmitInput(entries=[entry]))).parts[0]
         assert part.status == "definite"
         assert part.restatement is None
-        assert part.restatement_reason == "no_phrase_inputs"
-        _assert_one_null_one_set(part)
 
     def test_direction_unnameable_for_a_leg_resolved_without_a_door_axis(self):
         """An unbound entity has no direction to echo."""
@@ -209,8 +193,6 @@ class TestRestatementReasonPerCase:
         )
         part = offline_resolve(make_request(query), llm=llm).parts[0]
         assert part.restatement is None
-        assert part.restatement_reason == "direction_unnameable"
-        _assert_one_null_one_set(part)
 
     def test_inputs_exceed_caps_for_an_entity_over_the_parsed_doors_bound(self):
         """A 129-character entity exceeds the parsed door's 128-character cap."""
@@ -230,15 +212,11 @@ class TestRestatementReasonPerCase:
         )
         part = offline_resolve(make_request(query), llm=llm).parts[0]
         assert part.restatement is None
-        assert part.restatement_reason == "inputs_exceed_caps"
-        _assert_one_null_one_set(part)
 
     def test_no_phrase_inputs_on_an_empty_query(self):
         """The whitespace-query shortcut has no phrase to echo."""
         part = offline_resolve(make_request("   ")).parts[0]
         assert part.restatement is None
-        assert part.restatement_reason == "no_phrase_inputs"
-        _assert_one_null_one_set(part)
 
     def test_no_phrase_inputs_on_no_variables_extracted(self, monkeypatch):
         """An empty extraction has no variable phrase to echo."""
@@ -255,8 +233,6 @@ class TestRestatementReasonPerCase:
         monkeypatch.setattr("search.engine.entry.raw_text.extract", _empty_extraction)
         part = offline_resolve(make_request("asdf qwerty")).parts[0]
         assert part.restatement is None
-        assert part.restatement_reason == "no_phrase_inputs"
-        _assert_one_null_one_set(part)
 
     def test_no_phrase_inputs_on_the_quick_no_data_shortcut(self):
         """The unreachable quick no-data fallback has no phrase inputs to echo."""
@@ -268,20 +244,3 @@ class TestRestatementReasonPerCase:
         )
         part = response.parts[0]
         assert part.restatement is None
-        assert part.restatement_reason == "no_phrase_inputs"
-        _assert_one_null_one_set(part)
-
-
-class TestEveryPartReportsOneOfTheTwo:
-    @pytest.mark.parametrize(
-        "query",
-        [
-            "population and GDP in Brazil",
-            "population and fertility rate in Brazil",
-            _TWO_ENDED_QUERY,
-        ],
-    )
-    def test_every_part_of_a_resolved_response(self, query):
-        result = offline_resolve(make_request(query))
-        for part in result.parts:
-            _assert_one_null_one_set(part)

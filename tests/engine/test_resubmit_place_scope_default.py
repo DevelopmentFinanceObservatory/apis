@@ -27,11 +27,17 @@ from tests.code_index.aid_identity import (
     education_aid_identity,
 )
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
+from tests.datasets_api._member_bounds import mint_bounds
 from tests.engine._base_identity import make_base, make_identity
 from tests.engine._builders import unbound_slot
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import materialise_double_from_obs, member_walk_reader
+from tests.engine._harness import (
+    materialise_double_from_obs,
+    member_walk_reader,
+    walk_options,
+    with_member_arcs,
+)
 from tests.fixtures import FakeGraph
 
 pytestmark = pytest.mark.usefixtures("request_log")
@@ -64,12 +70,8 @@ def _entity_less_input() -> ResubmitIdentityPayload:
     """An unedited resubmit of the SAME identity a fresh unbound query would
     have minted: no where-slot posted at all (BaseIdentity.entities == {}),
     resolved_stat_var_dcids echoing the single confirmed member back."""
-    base_spec_id, base_identity = make_base(_SHAPE, entities=[])
     return ResubmitIdentityPayload(
         identity=make_identity(_SHAPE),
-        base_spec_id=base_spec_id,
-        base_identity=base_identity,
-        resolved_stat_var_dcids=[_SV],
     )
 
 
@@ -109,7 +111,7 @@ def test_no_where_slot_resubmit_is_definite_with_bulk_series():
         graph=graph,
         sdmx=sdmx,
         coverage=empty_coverage_snapshot(),
-        options=EngineOptions(include_observations=True),
+        options=walk_options(graph, EngineOptions(include_observations=True)),
     )
 
     assert region.status == "definite", region.no_data_reason
@@ -148,6 +150,7 @@ def test_no_where_slot_resubmit_no_country_has_data_reports_no_observations():
             observations={}, availability={}, scope_availability=graph.scope_availability
         ),
         coverage=empty_coverage_snapshot(),
+        options=walk_options(graph),
     )
 
     assert region.status == "no_data"
@@ -188,10 +191,13 @@ def test_no_where_slot_resubmit_earth_only_data_resolves_worldwide():
         graph=graph,
         sdmx=sdmx,
         coverage=empty_coverage_snapshot(),
-        options=EngineOptions(
-            include_observations=True,
-            materialise_graph=materialise_graph,
-            materialise_sdmx=materialise_sdmx,
+        options=walk_options(
+            graph,
+            EngineOptions(
+                include_observations=True,
+                materialise_graph=with_member_arcs(materialise_graph, graph),
+                materialise_sdmx=materialise_sdmx,
+            ),
         ),
     )
 
@@ -252,35 +258,31 @@ def test_a_resubmitted_total_and_its_part_are_scoped_over_the_total_their_mint_s
     graph = FakeGraph(
         nodes=_TOTAL_AND_PART_NODES, obs=_TOTAL_AND_PART_OBS, children=_EARTH_CHILDREN
     )
-    base_spec_id, base_identity = make_base(
-        _SHAPE, [unbound_slot("how", "gender", "gender")], entities=[]
-    )
+    base_identity = make_identity(_SHAPE, [unbound_slot("how", "gender", "gender")], entities=[])
 
     region = resolve_spec_resubmit(
         inp=ResubmitIdentityPayload(
             identity=base_identity,
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_SV, _SV_FEMALE],
         ),
         graph=graph,
         sdmx=FakeSdmxClient(
             observations={}, availability={}, scope_availability=graph.scope_availability
         ),
         coverage=empty_coverage_snapshot(),
+        options=walk_options(graph),
     )
 
     assert region.status == "definite", region.no_data_reason
-    assert [sv.ref for sv in region.specs[0].resolved.stat_vars.items] == [_SV]
+    assert [sv.ref.dcid for sv in region.specs[0].resolved.members] == [_SV]
     assert _scope_members(region) == [_COUNTRIES[0]]
     (defaulted,) = [w for w in region.warnings if w.code == PLACE_SCOPE_DEFAULTED]
     assert "every place with data" in defaulted.message
 
 
-def test_a_resubmitted_part_answers_as_the_total_its_mint_serves():
-    """The resubmit posts the female part alone, with `gender` unbound. The mint seeds its walk
-    with the part, finds the total beside it, and serves the total, so the answer lists the
-    total under the posted identity and is scoped over the total's own country."""
+def test_a_resubmit_leaving_the_part_open_answers_the_total_its_mint_serves():
+    """The resubmit leaves `gender` unbound. The mint's walk finds the female part and the
+    total beside it and serves the total, so the answer lists the total under the posted
+    identity and is scoped over the total's own country."""
     graph = FakeGraph(
         nodes=_TOTAL_AND_PART_NODES, obs=_TOTAL_AND_PART_OBS, children=_EARTH_CHILDREN
     )
@@ -292,9 +294,6 @@ def test_a_resubmitted_part_answers_as_the_total_its_mint_serves():
     region = resolve_spec_resubmit(
         inp=ResubmitIdentityPayload(
             identity=base_identity,
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_SV_FEMALE],
         ),
         graph=graph,
         sdmx=FakeSdmxClient(
@@ -311,11 +310,11 @@ def test_a_resubmitted_part_answers_as_the_total_its_mint_serves():
         base_identity.model_dump(mode="json", exclude_none=True),
         spec_id=base_spec_id,
         graph=member_graph,
-        enumerator=MemberEnumerator(graph=member_graph),
+        enumerator=MemberEnumerator(),
         code_index=get_index(),
-        seed=[_SV_FEMALE],
+        bounds=mint_bounds(),
     )
-    answered = [sv.ref for sv in spec.resolved.stat_vars.items]
+    answered = [sv.ref.dcid for sv in spec.resolved.members]
     assert answered == [shape.stat_var.removeprefix("dcid:") for shape in minted.shapes]
     assert answered == [_SV]
     assert MEMBERSHIP_UNVERIFIED not in [w.code for w in region.warnings]
@@ -341,8 +340,9 @@ def test_a_resubmit_the_index_decides_is_scoped_over_the_family_its_mint_serves(
         document,
         spec_id=EDUCATION_AID_SPEC_ID,
         graph=graph,
-        enumerator=MemberEnumerator(graph=graph),
+        enumerator=MemberEnumerator(),
         code_index=get_index(),
+        bounds=mint_bounds(),
     )
 
     served = identity_served_stat_vars(identity, posted)
@@ -410,7 +410,7 @@ def test_a_resubmitted_member_is_counted_and_grounded_at_its_own_scope():
     }
     graph = _ProbeLogGraph(nodes=_FEMALE_AND_OVER65_NODES, obs=obs, children=_EARTH_CHILDREN)
     materialise_graph, materialise_sdmx = materialise_double_from_obs(obs)
-    base_spec_id, base_identity = make_base(
+    base_identity = make_identity(
         _SHAPE,
         [unbound_slot("how", "gender", "gender"), unbound_slot("how", "age", "age")],
         entities=[],
@@ -419,25 +419,25 @@ def test_a_resubmitted_member_is_counted_and_grounded_at_its_own_scope():
     region = resolve_spec_resubmit(
         inp=ResubmitIdentityPayload(
             identity=base_identity,
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_SV_FEMALE, _SV_OVER65],
         ),
         graph=graph,
         sdmx=FakeSdmxClient(
             observations={}, availability={}, scope_availability=graph.scope_availability
         ),
         coverage=empty_coverage_snapshot(),
-        options=EngineOptions(
-            include_observations=True,
-            materialise_graph=materialise_graph,
-            materialise_sdmx=materialise_sdmx,
+        options=walk_options(
+            graph,
+            EngineOptions(
+                include_observations=True,
+                materialise_graph=with_member_arcs(materialise_graph, graph),
+                materialise_sdmx=materialise_sdmx,
+            ),
         ),
     )
 
     assert region.status == "definite", region.no_data_reason
     spec = region.specs[0]
-    assert [sv.ref for sv in spec.resolved.stat_vars.items] == [_SV_FEMALE]
+    assert [sv.ref.dcid for sv in spec.resolved.members] == [_SV_FEMALE]
     assert spec.resolved.coverage.observation_count == 1
     assert _scope_members(region) == [_COUNTRIES[0]]
     assert ([_SV_FEMALE, _SV_OVER65], _COUNTRIES[:2]) in graph.probes

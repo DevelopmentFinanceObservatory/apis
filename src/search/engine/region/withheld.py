@@ -7,12 +7,13 @@ ends `no_observations` because no member of its elected subject-only shape has a
 at the places it names (`NO_MEMBER_HAS_DATA_AT_PLACE`), and it covers that shape's elected
 StatVars at those places. Every other no-data reason leaves the answer as it is, since admitted data may exist
 there. Role-bearing shapes are skipped because their series are DFO's and always admitted. A
-failed read, or one that cannot finish by the request deadline, leaves the answer as it is.
+failed read, or one that cannot finish by the request deadline, leaves the answer as it is
+and notes the lost read (`degraded_reads.note_degraded_read`), so no cache stores it.
 
 The warning carries an `entity_unavailable` departure on the places, which names the withheld
 sources by the catalogue's name or graph label (`refs.provenance_labels`). The label read runs
 after the re-read, under the same deadline, and one that fails or cannot finish by then leaves
-the sources out of the departure and keeps the warning.
+the sources out of the departure, keeps the warning and notes the lost read.
 """
 
 from __future__ import annotations
@@ -26,6 +27,7 @@ from typing import Final, Protocol, runtime_checkable
 import dc_graph
 from search.engine.concurrency import current_scope
 from search.engine.deadline import _await_bounded
+from search.engine.degraded_reads import note_degraded_read
 from search.engine.departures import unavailable_entity_facts, warning_key
 from search.engine.errors import GraphInfraError
 from search.engine.region.codes import NO_MEMBER_HAS_DATA_AT_PLACE, WITHHELD_BY_REGISTRY
@@ -68,9 +70,11 @@ async def _source_names(
             "deadline for %r",
             withheld,
         )
+        note_degraded_read("withheld source labels")
         return ()
     except GraphInfraError:
         logger.warning("withheld_by_registry source labels failed for %r", withheld, exc_info=True)
+        note_degraded_read("withheld source labels")
         return ()
     return tuple(dict.fromkeys(labels[dcid] for dcid in withheld if dcid in labels))
 
@@ -127,6 +131,7 @@ async def with_withheld_warning(
             variables,
             places,
         )
+        note_degraded_read("withheld re-read")
         return result
     except GraphInfraError:
         logger.warning(
@@ -135,6 +140,7 @@ async def with_withheld_warning(
             places,
             exc_info=True,
         )
+        note_degraded_read("withheld re-read")
         return result
     if not withheld:
         return result

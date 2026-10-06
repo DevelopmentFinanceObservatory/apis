@@ -24,17 +24,17 @@ from tests.engine._base_identity import (
     GDP_SHAPE,
     PERSON_COUNT_SHAPE,
     make_base,
+    make_identity,
     subject_entity,
 )
 from tests.engine._builders import unbound_slot as _unbound_slot
 from tests.engine._builders import value_slot as _value_slot
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine.test_resubmit_standard_widen_and_seed import (
-    _ACTIVITY_SOURCE_BOUND,
+from tests.engine._harness import walk_options
+from tests.engine.test_resubmit_standard_widen import (
     _ACTIVITY_SOURCE_UNBOUND,
     _GDP_ENTITY_DCID,
-    _GDP_SV_DCID,
 )
 from tests.fixtures import FakeGraph
 
@@ -149,18 +149,16 @@ class TestEndToEndResubmit:
         """An unchanged Count_Person resubmit stays definite. Its base declares
         no extra axes, so no inapplicable slot is reported."""
         entities = [subject_entity("country/IND")]
-        base_spec_id, base_identity = make_base(PERSON_COUNT_SHAPE, entities=entities)
+        base_identity = make_identity(PERSON_COUNT_SHAPE, entities=entities)
         inp = ResubmitIdentityPayload(
             identity=base_identity,
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=["Count_Person"],
         )
         region = resolve_spec_resubmit(
             inp=inp,
             graph=FakeGraph(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(FakeGraph()),
         )
         assert region.status == "definite"
         spec = region.specs[0]
@@ -171,20 +169,15 @@ class TestEndToEndResubmit:
         """Widened activitySource remains unbound but is not inapplicable
         because the GDP member still asserts it."""
         entities = [subject_entity(_GDP_ENTITY_DCID)]
-        base_spec_id, base_identity = make_base(
-            GDP_SHAPE, slots=[_ACTIVITY_SOURCE_BOUND], entities=entities
-        )
         inp = ResubmitIdentityPayload(
             identity=make_base(GDP_SHAPE, slots=[_ACTIVITY_SOURCE_UNBOUND], entities=entities)[1],
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_GDP_SV_DCID],
         )
         region = resolve_spec_resubmit(
             inp=inp,
             graph=FakeGraph(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(FakeGraph()),
         )
         assert region.status == "definite"
         spec = region.specs[0]
@@ -207,24 +200,23 @@ class TestHashNeutrality:
     def test_unchanged_standard_resubmit_spec_id_is_stable(self):
         """Repeated inapplicable-slot recomputation leaves spec_id unchanged."""
         entities = [subject_entity("country/IND")]
-        base_spec_id, base_identity = make_base(PERSON_COUNT_SHAPE, entities=entities)
+        base_identity = make_identity(PERSON_COUNT_SHAPE, entities=entities)
         inp = ResubmitIdentityPayload(
             identity=base_identity,
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=["Count_Person"],
         )
         region_a = resolve_spec_resubmit(
             inp=inp,
             graph=FakeGraph(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(FakeGraph()),
         )
         region_b = resolve_spec_resubmit(
             inp=inp,
             graph=FakeGraph(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(FakeGraph()),
         )
         assert region_a.specs[0].spec_id == region_b.specs[0].spec_id
         assert region_a.specs[0].spec_id == "spec_f28a3b0c6d46c2ab8bb99edb1c14799f"
@@ -234,25 +226,20 @@ class TestHashNeutrality:
         comes back empty (a pure widen, not an inapplicable property -- see
         that test), and the spec_id matches
         TestWideningDropsBaseConstraint.test_unbound_over_bound_base_widens_not_carries_forward's
-        own spec (same input) in test_resubmit_standard_widen_and_seed.py --
+        own spec (same input) in test_resubmit_standard_widen.py --
         the inapplicable-slots recomputation cannot perturb identity for this
         widen scenario, since inapplicable_slots is excluded from the
         identity projection."""
         entities = [subject_entity(_GDP_ENTITY_DCID)]
-        base_spec_id, base_identity = make_base(
-            GDP_SHAPE, slots=[_ACTIVITY_SOURCE_BOUND], entities=entities
-        )
         inp = ResubmitIdentityPayload(
             identity=make_base(GDP_SHAPE, slots=[_ACTIVITY_SOURCE_UNBOUND], entities=entities)[1],
-            base_spec_id=base_spec_id,
-            base_identity=base_identity,
-            resolved_stat_var_dcids=[_GDP_SV_DCID],
         )
         region = resolve_spec_resubmit(
             inp=inp,
             graph=FakeGraph(),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             coverage=empty_coverage_snapshot(),
+            options=walk_options(FakeGraph()),
         )
         spec = region.specs[0]
         # activitySource ends up unbound (the widen); shape declares no other
@@ -276,5 +263,7 @@ class TestHashNeutrality:
                 role=EntityRoleSubject(),
             )
         ]
-        reference_id = compute_spec_id(GDP_SHAPE, reference_slots, entities=reference_entities)
+        reference_id = compute_spec_id(
+            GDP_SHAPE, reference_slots, entities=reference_entities, open_roles=()
+        )
         assert spec.spec_id == reference_id

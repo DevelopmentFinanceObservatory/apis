@@ -22,7 +22,6 @@ from search.models import (
     EntityOptions,
     EntityRoleDirectional,
     GraphRef,
-    PipelineStep,
     RoleAxis,
     RoleAxisFact,
     Shape,
@@ -76,6 +75,7 @@ def _role_bound_region(
     )
     facts = (RoleAxisFactInput(role="origin", member_dcids=origin_dcids),)
     spec = build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
         slots=[where_slot],
@@ -89,7 +89,6 @@ def _role_bound_region(
         ],
         entities=[entity],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
         role_axis_facts=facts,
         entity_options=_entity_options("origin", origin_dcids if options_listed else None),
     )
@@ -231,6 +230,7 @@ def _where_bound_spec_with_member_count(
         role=EntityRoleDirectional(role=_gr(_RECIPIENT_PROP), axis="destination"),
     )
     return build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
         slots=[where_slot],
@@ -241,7 +241,6 @@ def _where_bound_spec_with_member_count(
         ],
         entities=[entity],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
         stat_vars_member_count=member_count,
         stat_vars_member_count_exact=member_count_exact,
     )
@@ -316,6 +315,7 @@ def _roster_variant_spec(
         role=EntityRoleDirectional(role=_gr(_RECIPIENT_PROP), axis="destination"),
     )
     return build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
         slots=slots,
@@ -326,7 +326,6 @@ def _roster_variant_spec(
         ],
         entities=[entity],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
         stat_vars_member_count=member_count,
         stat_vars_member_count_exact=member_count_exact,
     )
@@ -405,6 +404,7 @@ def _what_bound_spec_with_member_count(
         binding=BindingValue(value=SlotValue(ref=_gr(value_dcid), value_kind="enum_value")),
     )
     return build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
         slots=[slot],
@@ -415,7 +415,6 @@ def _what_bound_spec_with_member_count(
         ],
         entities=[],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[],
         stat_vars_member_count=member_count,
         stat_vars_member_count_exact=member_count_exact,
     )

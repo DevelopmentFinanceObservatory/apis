@@ -167,7 +167,7 @@ def mint_deps(
         capability_version=capability_version,
         ceiling=ceiling,
         member_concurrency=member_concurrency,
-        enumerator=enumerator if enumerator is not None else MemberEnumerator(graph=graph),
+        enumerator=enumerator if enumerator is not None else MemberEnumerator(),
         enrichment=enrichment if enrichment is not None else EnrichmentLookup(graph),
         code_index=code_index if code_index is not None else get_index(),
         rate_cache=rate_cache if rate_cache is not None else RateTableCache(),

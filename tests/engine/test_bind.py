@@ -211,7 +211,6 @@ def test_bind_ask_triggers_no_data_in_resolve_variable():
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_AskLLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )
@@ -254,7 +253,6 @@ def test_bind_out_of_range_index_triggers_no_data():
             resolver=make_resolver(graph),
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=_OutOfRangeLLM(),
-            base_steps=[],
             base_timing={},
             coverage=empty_coverage_snapshot(),
         )

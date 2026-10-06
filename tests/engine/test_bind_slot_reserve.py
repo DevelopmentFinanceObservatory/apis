@@ -64,7 +64,6 @@ def _state(shapes_found: list[ShapeDraft]) -> ResolveState:
         source_text=None,
         materialise_graph=None,
         materialise_sdmx=None,
-        pipeline_steps=[],
         timing={},
         warnings=[],
         shapes_found=shapes_found,

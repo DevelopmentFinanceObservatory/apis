@@ -1,4 +1,4 @@
-"""The register door writes definitions and collections. Minting handles
+"""The register door writes definitions. Minting handles
 materialisation and artifact writes.
 
 It maps six exception types. Identity mismatches return 422. Collisions and
@@ -26,8 +26,6 @@ from dataset_store import ConnectionSettings, LiveDatasetStore, close_shared_poo
 from datasets_api.door_executor import DoorExecutor, build_door_executor
 from datasets_api.models import (
     CanonicalDefinition,
-    CollectionIdentity,
-    CollectionResponse,
     DefinitionResponse,
     RegisterRequest,
 )
@@ -40,7 +38,6 @@ from spec_registry import (
     IdentityCollision,
     IdentityQuarantined,
     LiveSpecRegistry,
-    MemberDefinition,
     SpecIdMismatch,
     SpecRegistry,
     SpecRegistryUnavailable,
@@ -65,8 +62,6 @@ def classify_register_exception(exc: BaseException) -> ProblemSpec | None:
             f"supplied spec_id {exc.supplied!r} does not match the "
             f"server-recomputed id {exc.computed!r}"
         )
-        if exc.position is not None:
-            detail += f" (member at position {exc.position})"
         return ProblemSpec(status=422, code="spec_id_mismatch", detail=detail, retryable=False)
 
     if isinstance(exc, IdentityCollision):
@@ -201,53 +196,30 @@ def build_register_door(
 
     router = APIRouter()
 
-    @router.post("/api/datasets/register", response_model=DefinitionResponse | CollectionResponse)
+    @router.post("/api/datasets/register", response_model=DefinitionResponse)
     async def register_endpoint(body: RegisterRequest) -> Response:
         active_registry = registry if registry is not None else _shared_registry
         assert active_registry is not None  # lifespan guarantees this before serving
         trace_id = get_trace_id()
+        definition = body.definition
         with door_call("register", logger=logger) as call:
-            if body.definition is not None:
-                definition = body.definition
-                result = await _run_registered(
-                    active_registry.register_definition,
-                    timings=call.timings,
-                    identity_definition=definition.identity,
+            result = await _run_registered(
+                active_registry.register_definition,
+                timings=call.timings,
+                identity_definition=definition.identity,
+                schema_version=definition.schema_version,
+                supplied_spec_id=definition.spec_id,
+                trace_id=trace_id,
+            )
+            body_json = DefinitionResponse(
+                definition=CanonicalDefinition(
+                    # The request carries the validated `Literal[1]`.
+                    # The registry result has no schema-version field.
                     schema_version=definition.schema_version,
-                    supplied_spec_id=definition.spec_id,
-                    trace_id=trace_id,
+                    spec_id=result.spec_id,
+                    identity=definition.identity,
                 )
-                body_json = DefinitionResponse(
-                    definition=CanonicalDefinition(
-                        # The request carries the validated `Literal[1]`.
-                        # The registry result has no schema-version field.
-                        schema_version=definition.schema_version,
-                        spec_id=result.spec_id,
-                        identity=definition.identity,
-                    )
-                ).model_dump(mode="json")
-            else:
-                assert body.members is not None  # RegisterRequest's own exactly-one-of guard
-                # Collection members register sequentially in one worker thread.
-                members = [
-                    MemberDefinition(
-                        identity_definition=member.identity,
-                        schema_version=member.schema_version,
-                        supplied_spec_id=member.spec_id,
-                    )
-                    for member in body.members
-                ]
-                result = await _run_registered(
-                    active_registry.register_collection,
-                    timings=call.timings,
-                    members=members,
-                    trace_id=trace_id,
-                )
-                body_json = CollectionResponse(
-                    collection=CollectionIdentity(
-                        collection_id=result.collection_id, members=result.member_spec_ids
-                    )
-                ).model_dump(mode="json")
+            ).model_dump(mode="json")
         return JSONResponse(body_json, headers={"Server-Timing": call.server_timing})
 
     return DoorContribution(
@@ -262,9 +234,7 @@ def build_register_door(
             IdentityError,
         ),
         exception_exemplars=(
-            SpecIdMismatch(
-                supplied="urn:spec:supplied", computed="urn:spec:computed", position=None
-            ),
+            SpecIdMismatch(supplied="urn:spec:supplied", computed="urn:spec:computed"),
             IdentityCollision(subject_id="urn:spec:collision"),
             IdentityQuarantined(subject_id="urn:spec:quarantined", id_kind="spec"),
             SpecRegistryUnavailable("registry write pool exhausted"),

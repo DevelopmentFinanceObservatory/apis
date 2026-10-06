@@ -15,7 +15,6 @@ from search.models import (
     Entity,
     EntityRoleDirectional,
     GraphRef,
-    PipelineStep,
     ProvenanceRef,
     Shape,
     Slot,
@@ -96,6 +95,7 @@ def _where_bound_spec(
         role=EntityRoleDirectional(role=_gr(_RECIPIENT_PROP), axis="destination"),
     )
     return build_spec(
+        open_roles=(),
         measure_elected_properties=frozenset(),
         shape=shape,
         slots=[where_slot],
@@ -107,7 +107,6 @@ def _where_bound_spec(
         ],
         entities=[entity],
         coverage=CoverageBare(has_data=True),
-        pipeline_trace=[PipelineStep(step="extract", ran=True)],
         resolved_sources=list(sources),
         measure_partition=measure_partition,
         measure_siblings=(_NET,) if measure_partition is _GROSS else (),

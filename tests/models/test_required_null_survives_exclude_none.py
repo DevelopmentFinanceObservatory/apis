@@ -14,7 +14,6 @@ from search.models import (
     ConversionCurrency,
     GraphRef,
     IdentityFacetValueAbsent,
-    ResolvedStatVar,
     RoleAxisFact,
     StatVar,
 )
@@ -32,9 +31,6 @@ _NULL_INSTANCES: dict[type[BaseModel], BaseModel] = {
         base_year_max=None,
     ),
     IdentityFacetValueAbsent: IdentityFacetValueAbsent(ref=None),
-    ResolvedStatVar: ResolvedStatVar(
-        ref="Count_Person", slot_values=[], constraint_properties=None
-    ),
     RoleAxisFact: RoleAxisFact(role="destination", member_count=None, members_available=False),
     StatVar: StatVar(
         ref=GraphRef(dcid="Count_Person", label="Population"),

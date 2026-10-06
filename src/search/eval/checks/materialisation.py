@@ -6,17 +6,17 @@ Reads, on each definite part's spec (``parts[].spec``):
   window.{start_year, end_year}}`` and ``resolved.coverage_stamp``;
 - ``resolved.facets.<axis>.{ref, request_basis}`` for the provenance, measurementMethod and
   unit axes;
-- ``resolved.stat_vars.items[].ref``, ``resolved.entities[].{ref, role}``,
-  ``resolved.observations.series[].entities[].ref`` and ``resolved.scope.{axis,
-  members[].ref}``;
-- ``definition.identity.requested_window.kind``;
+- ``resolved.entities[].{ref, role}``, ``resolved.observations.series[].entities[].ref``
+  and ``resolved.scope.{axis, members[].ref}``;
+- ``definition`` and ``definition.identity.requested_window.kind``;
 - ``spec_id`` with ``diagnostics.warnings[].{code, spec_id}`` and
   ``parts[].warnings[].{code, spec_id}``.
 
 A bare answer passes on ``has_data`` and a breadth answer on every dimension counting
 something. An exact count is checked, within 5 percent, against the oracle's own count of
 the facets the answer states it serves, inside the coverage window, and under a ``latest``
-request at each StatVar's latest period from the series reaching it. StatVars and places
+request at each StatVar's latest period from the series reaching it. The StatVars are those
+the responding app states for the spec (``base.served_stat_vars``). StatVars and places
 listed twice count once. A non-role answer is counted from ``ctx.graph`` at each StatVar and
 served place (``_served_places``). A role-bearing answer is counted from
 ``ctx.coverage.snapshot()``, one series per StatVar and bound role tuple, as Search reads it.
@@ -26,8 +26,8 @@ confirmed against another coverage stamp, or mixing ``observationAbout`` with a 
 converted answer whose conversion left rows out of its count; a non-role answer with a
 partial preview whose planned places are not on the wire; a non-role answer naming no place
 at all; and a non-role answer at whose places the graph holds no records, as at a region
-node. A failed graph or coverage read (``base.READ_ERRORS``), or a missing client, is an
-infrastructure result. Any other error propagates.
+node. A failed graph, coverage or members read (``base.READ_ERRORS``), or a missing client,
+is an infrastructure result. Any other error propagates.
 
 The check reads the graph once per definite part, so it registers ``modal_only``: the driver
 runs it on the modal sample alone.
@@ -62,6 +62,7 @@ from search.eval.checks.base import (
     read_path,
     register,
     run_part,
+    served_stat_vars,
 )
 from search.eval.checks.specs import SpecView
 from search.models import TimeWindow, in_window
@@ -352,16 +353,13 @@ def _exact(spec: SpecView, response: Mapping[str, Any], ctx: ScoreContext) -> Re
             "conversion_omitted", "the count leaves out the rows the conversion omitted"
         )
     resolved = f"{spec.at}.resolved"
-    stat_vars = list(
-        dict.fromkeys(
-            _refs(
-                spec.read("resolved.stat_vars.items", ctx),
-                "ref",
-                f"{resolved}.stat_vars.items[]",
-                ctx,
-            )
-        )
-    )
+    try:
+        served = served_stat_vars(spec, ctx)
+    except READ_ERRORS as exc:
+        return infra_error(f"members door: {type(exc).__name__}: {exc}")
+    if served is None:
+        return infra_error("an exact count reads the served StatVars; no members door")
+    stat_vars = list(dict.fromkeys(served))
     latest = spec.read("definition.identity.requested_window.kind", ctx) == "latest"
     window = _coverage_window(spec, ctx)
     expected_count = spec.read("resolved.coverage.observation_count", ctx)

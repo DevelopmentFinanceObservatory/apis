@@ -1,10 +1,12 @@
 """Re-resolve dataset parts through the shared region combiner.
 
-Identity entries call `resolve_spec_resubmit` in worker threads. Candidate entries
+Identity entries call `resolve_spec_resubmit` in worker threads, or take the region the
+response cache's part memo stored for the same payload under the same engine options and
+stamps (`PartMemoScope`). A hit binds its relaunch closures over this request's clients
+(`promote_relaunch.bind_relaunches`). Candidate entries
 promote each candidate under the same request semaphore. Placeholders build a
 `RegionResult` without graph or LLM calls. Parsed entries use one shared fan-out.
-Only that entry kind calls the LLM: one mention reading for the request when a
-parsed entry names a dataset, as on the parsed door, and one bind per entry.
+Only that entry kind calls the LLM, once per entry to bind it.
 
 The request semaphore caps identity/candidate promotes and parsed variable legs
 together. Entity pre-resolution is one `resolver.resolve()` call, outside that cap.
@@ -28,6 +30,17 @@ return placeholder no-data. On parsed-fan-out timeout, an already-completed prom
 `EngineInputError` takes precedence. Pending promotes are ignored so the deadline
 holds.
 
+Identity and candidate promotes elect their members as the Datasets mint does. A member
+walk whose first page truncates without proof reads the whole filtered set under a
+deadline `resubmit_full_read_timeout_s` (90 s) from request start, and the promote's later
+phases share it. The wait for promotes is bound by that deadline, since a promote's own
+reads end at `params.deadline` (45 s) unless its walk ran the full read. The trailing
+stream runs to the latest `RegionResult.reads_deadline` among the parts, so it keeps the
+request deadline unless a promote ran the full read.
+
+A part whose answer stands on less than a later request may read
+(`RegionResult.leg_degraded`) marks the `DoneEvent` `degraded_leg`, as the parsed door does.
+
 Four task-creation sites register trailing handles with the request scope, whose
 `core.resolve_events` cleanup cancels and awaits unclaimed tasks on exit. Parsed
 fan-out also cleans up produced tasks on infrastructure errors and before raising
@@ -46,12 +59,14 @@ from dfo_platform.build import build_commit
 from dfo_platform.trace import get_trace_id
 from entity_resolution import Admission, EntityResolver
 from materialise import GraphReader
+from materialise.member_conversion import request_conversion_reader
 from materialise.rate_tables import RateTableCache
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.codes import CODE_CATALOG
 from search.engine.concurrency import bounded_semaphore
+from search.engine.config import settings
 from search.engine.conjoin import assemble_region
 from search.engine.deadline import _await_bounded
 from search.engine.enrichment import _launch_trailing_tasks, _stream_slot_options
@@ -63,14 +78,16 @@ from search.engine.entry.dataset_entries import (
 )
 from search.engine.entry.multi import _stream_combined_regions
 from search.engine.entry.params import EntryParams
-from search.engine.envelope import _sum_usage, _terminal_events, now_ms
+from search.engine.envelope import _terminal_events, now_ms
 from search.engine.errors import EngineInputError
 from search.engine.events import DoneEvent, DoneTelemetry, Event, LateDepartures, ResponseEvent
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.region import RegionResult, resolve_spec_resubmit
 from search.engine.region.place_options import PlaceOptionsPool
+from search.engine.region.promote_relaunch import bind_relaunches
 from search.engine.region.result import with_runnable_operations
 from search.engine.region.state import EngineOptions
+from search.engine.response_cache_flow import PartMemoScope
 from search.models import (
     DatasetResubmitInput,
     QueryEcho,
@@ -81,6 +98,13 @@ from search.models import (
     Unsupported,
     Warning,
 )
+
+
+def full_read_deadline_for(deadline: float) -> float:
+    """The monotonic deadline of a resubmit whose member walk runs the full read, for a
+    request whose own deadline is `deadline`: `resubmit_full_read_timeout_s` from request
+    start where `deadline` is `request_timeout_s` from it."""
+    return deadline + settings().resubmit_full_read_timeout_s - settings().request_timeout_s
 
 
 def _rewrite_pointer(exc: EngineInputError, index: int) -> EngineInputError:
@@ -218,6 +242,7 @@ async def handle(
     rate_cache: RateTableCache | None = None,
     population_memo: OptionsPopulationMemo | None = None,
     place_options_pool: PlaceOptionsPool | None = None,
+    memo: PartMemoScope | None = None,
 ) -> AsyncIterator[Event]:
     # Validate placeholder codes and candidate counts before creating tasks.
     # These static errors precede resolution failures and point to their entry.
@@ -232,32 +257,66 @@ async def handle(
 
     # One request-scoped semaphore bounds promotes and parsed fan-out together.
     sem = bounded_semaphore()
+    full_read_deadline = full_read_deadline_for(params.deadline)
+
+    options = EngineOptions(
+        include_option_coverage=params.include_option_coverage,
+        stream_slot_options=params.stream_option_coverage,
+        include_observations=params.include_observations,
+        stream_observations=params.stream_observations,
+        materialise_graph=materialise_graph,
+        materialise_sdmx=materialise_sdmx,
+        rate_cache=rate_cache,
+        population_memo=population_memo,
+        place_options_pool=place_options_pool,
+        deadline=params.deadline,
+    )
 
     async def _resolve_one(index: int, entry: ResubmitIdentityEntry) -> RegionResult:
-        async with sem:
-            try:
-                region = await asyncio.to_thread(
-                    resolve_spec_resubmit,
-                    inp=spec_resubmit_input_for_identity(entry),
-                    graph=graph,
-                    sdmx=sdmx,
-                    coverage=params.coverage,
-                    options=EngineOptions(
-                        include_option_coverage=params.include_option_coverage,
-                        stream_slot_options=params.stream_option_coverage,
-                        include_observations=params.include_observations,
-                        stream_observations=params.stream_observations,
-                        materialise_graph=materialise_graph,
-                        materialise_sdmx=materialise_sdmx,
-                        rate_cache=rate_cache,
-                        population_memo=population_memo,
-                        place_options_pool=place_options_pool,
-                        deadline=params.deadline,
-                    ),
-                )
-            except EngineInputError as exc:
-                raise _rewrite_pointer(exc, index) from exc
+        payload = spec_resubmit_input_for_identity(entry)
+        key = memo.key(payload, options) if memo is not None and memo.active else None
+        stored = memo.lookup(key) if memo is not None and key is not None else None
+        if stored is not None:
+            region = _memo_hit(stored)
+        else:
+            async with sem:
+                try:
+                    region = await asyncio.to_thread(
+                        resolve_spec_resubmit,
+                        inp=payload,
+                        graph=graph,
+                        sdmx=sdmx,
+                        coverage=params.coverage,
+                        options=options,
+                        full_read_deadline=full_read_deadline,
+                    )
+                except EngineInputError as exc:
+                    raise _rewrite_pointer(exc, index) from exc
+            # Stored before any trailing task launches, without its closures.
+            if memo is not None and key is not None:
+                memo.store(key, region)
         return dataclasses.replace(region, variable_text=entry.variable_text, earliest_index=index)
+
+    def _memo_hit(stored: RegionResult) -> RegionResult:
+        """Return `stored` with this request's relaunch closures, built over its own conversion
+        memo as `resolve_spec_resubmit` builds them, and the lookup as its only timing step.
+        A hit runs no member walk, so its trailing reads run to this request's deadline."""
+        started = now_ms()
+        hit_options = (
+            dataclasses.replace(
+                options, materialise_graph=request_conversion_reader(materialise_graph)
+            )
+            if materialise_graph is not None
+            else options
+        )
+        region = bind_relaunches(
+            stored, graph=graph, sdmx=sdmx, coverage=params.coverage, options=hit_options
+        )
+        return dataclasses.replace(
+            region,
+            timing_by_step={"response_cache_part_memo": now_ms() - started},
+            reads_deadline=params.deadline,
+        )
 
     # Start identity and candidate promotes before parsed fan-out. Placeholders
     # build regions inline and do not create promote tasks.
@@ -278,6 +337,7 @@ async def handle(
                     population_memo=population_memo,
                     place_options_pool=place_options_pool,
                     deadline=params.deadline,
+                    full_read_deadline=full_read_deadline,
                     sem=sem,
                     coverage=params.coverage,
                 )
@@ -293,12 +353,11 @@ async def handle(
         return _select_promote_outcome(promote_tasks)
 
     parsed_regions_by_index: dict[int, RegionResult] = {}
-    mention_usage: dict | None = None
     try:
         try:
             # Parsed entries share one fan-out. Promote tasks keep running.
             if parsed_entries:
-                parsed_regions_by_index, mention_usage = await resolve_parsed_entries(
+                parsed_regions_by_index = await resolve_parsed_entries(
                     parsed_entries,
                     graph=graph,
                     resolver=resolver,
@@ -326,9 +385,12 @@ async def handle(
                 raise refusal from None
             raise
 
-        # Timeout fails the request instead of replacing a resolved part with no-data.
+        # Timeout fails the request instead of replacing a resolved part with no-data. A
+        # promote that ran no full read ends by its own reads' deadline, `params.deadline`.
         resolved = (
-            await _await_bounded(_gather_all(), deadline=params.deadline) if promote_tasks else []
+            await _await_bounded(_gather_all(), deadline=full_read_deadline)
+            if promote_tasks
+            else []
         )
     finally:
         for t in promote_tasks.values():
@@ -364,6 +426,11 @@ async def handle(
         for region in regions
     ]
 
+    trailing_deadline = max(
+        [params.deadline, *(r.reads_deadline for r in regions if r.reads_deadline is not None)]
+    )
+    degraded_leg = any(region.leg_degraded for region in regions)
+
     # Candidate regions carry the posted ordering override for the combiner.
     echo = QueryEcho(
         entry_path="dataset_resubmit",
@@ -374,14 +441,13 @@ async def handle(
 
     if len(regions) == 1:
         region = regions[0]
-        total_usage = _sum_usage(mention_usage, region.llm_usage)
+        total_usage = region.llm_usage
         response = assemble_region(
             region,
             query="",
             extra_warnings=[],
             start_ms=start_ms,
             engine_build=build_commit(),
-            include_sentence=params.include_sentence,
             max_candidates=params.max_candidates,
             include_observations=params.include_observations,
             include_skills=params.include_skills,
@@ -390,7 +456,9 @@ async def handle(
             echo=echo,
         )
         if not params.stream_option_coverage and not params.stream_observations:
-            for ev in _terminal_events(response, start_ms=start_ms, llm_usage=total_usage):
+            for ev in _terminal_events(
+                response, start_ms=start_ms, degraded_leg=degraded_leg, llm_usage=total_usage
+            ):
                 yield ev
             return
         yield ResponseEvent(response=response)
@@ -398,7 +466,7 @@ async def handle(
         late_departures: list[LateDepartures] = []
         async for ev in _stream_slot_options(
             [region],
-            deadline=params.deadline,
+            deadline=trailing_deadline,
             warnings_out=slot_options_warnings,
             late_departures_out=late_departures,
             response=response,
@@ -408,6 +476,7 @@ async def handle(
         yield DoneEvent(
             elapsed_ms=now_ms() - start_ms,
             timed_out=False,
+            degraded_leg=degraded_leg,
             trace_id=get_trace_id(),
             telemetry=DoneTelemetry(llm_usage=total_usage),
             warnings=slot_options_warnings,
@@ -418,14 +487,15 @@ async def handle(
     async with aclosing(
         _stream_combined_regions(
             regions,
-            initial_llm_usage=mention_usage,
+            initial_llm_usage=None,
             query="",
             extra_warnings=[],
             echo=echo,
             timed_out=False,
+            degraded_leg=degraded_leg,
             graph=graph,
             start_ms=start_ms,
-            params=params,
+            params=dataclasses.replace(params, deadline=trailing_deadline),
         )
     ) as events:
         async for event in events:

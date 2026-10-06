@@ -12,23 +12,19 @@ word unique to the code system, derived from its camelCase name; a word that
 also names the measure, such as "aid", counts only beside another word of that
 name. Multi-word spans require adjacent tokens separated only by whitespace.
 The matcher does not stem or otherwise rewrite query text.
-
-A span that names a declared dataset (`dataset_mention.dataset_mentions`) belongs to
-the mention, so no word inside it is recognised as a qualifier: "imputed multilateral
-ODA" names the imputed table, with no `dac2aAidType` code inside it.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from itertools import pairwise
-from typing import Literal
+from typing import Literal, cast
 
 from code_index.query import CodeIndex
 from code_index.types import CodeRow, MeasureIndex, MeasureValueRow
-from search.engine.dataset_mention import _CAMEL_WORD_RE, dataset_mentions
 
 MatchSource = Literal["code", "label", "synonym"]
 
@@ -151,6 +147,10 @@ class _RawSpan:
 
 
 _WORD_RE = re.compile(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)*")
+# Splits a `code_system` string into its camelCase words, each an uppercase letter with the
+# lowercase or digit characters after it, or a run of lowercase or digit characters.
+# "crsCooperationModality" yields ["crs", "Cooperation", "Modality"].
+_CAMEL_WORD_RE = re.compile(r"[A-Z][a-z0-9]*|[a-z0-9]+")
 
 # These terms are deliberate, bounded recognition for distinctions the
 # deployed taxonomy cannot express. They are not a residual-word heuristic:
@@ -342,29 +342,33 @@ class _SystemMarkers:
     """The words of one code system's name that make a bare token a code of it.
 
     `words` mark the system wherever they stand before the code. `measure_words` name the
-    measure as well ("aid" in `dac2aAidType`), so one marks the system only when another
-    of its `name_words` follows it directly: "aid type 106" names the system, and "aid to
-    106 countries" names aid.
+    measure as well, so they mark nothing alone. `tail` is the name's last two words, its
+    head noun and the word before it: written in that order, they mark the system whether
+    or not another system's name shares them. "aid type 106" marks `dac1AidType` and
+    `dac2aAidType`, and the code binds the one system holding it
+    (`_lookup_code_in_systems`). "aid to 106 countries" names aid, and "type of support"
+    is no system's tail, so neither marks a system.
     """
 
     words: frozenset[str]
     measure_words: frozenset[str]
-    name_words: frozenset[str]
+    tail: tuple[str, ...]
 
 
 def _all_system_markers(index: CodeIndex) -> dict[str, _SystemMarkers]:
     """Return each system's bare-code markers, read from its camelCase name.
 
     A word shared by several indexed systems, such as `crs` or `of`, cannot distinguish a
-    system and marks none. A word a declared default lists in `when_named` names the
-    measure a query asks for, so it marks its system only beside another word of the
-    system's name (`_SystemMarkers.measure_words`). New system names need no manual
-    marker list.
+    system and marks none alone. A word a declared default lists in `when_named` names the
+    measure a query asks for, so it marks nothing alone either
+    (`_SystemMarkers.measure_words`). The name's last two words, in its order, mark the
+    system (`_SystemMarkers.tail`). New system names need no manual marker list.
     """
-    raw = {
-        system: frozenset(word.casefold() for word in _CAMEL_WORD_RE.findall(system))
+    names = {
+        system: tuple(word.casefold() for word in _CAMEL_WORD_RE.findall(system))
         for system in index.declarations
     }
+    raw = {system: frozenset(words) for system, words in names.items()}
     word_counts: dict[str, int] = {}
     for words in raw.values():
         for word in words:
@@ -381,7 +385,7 @@ def _all_system_markers(index: CodeIndex) -> dict[str, _SystemMarkers]:
         markers[system] = _SystemMarkers(
             words=unique - measure_words,
             measure_words=unique & measure_words,
-            name_words=words,
+            tail=names[system][-2:],
         )
     return markers
 
@@ -395,18 +399,15 @@ def _preceding_marker_systems(
 
     Checks every earlier token, not only the immediate predecessor: "purpose" two words
     before "120" in "...purpose code 120" makes that bare number eligible, and the word
-    "code" between them carries no meaning. A measure word marks its system only when the
-    next token, itself before the code, is another word of the system's name.
+    "code" between them carries no meaning. Two adjacent tokens mark every system whose
+    name ends in them (`_SystemMarkers.tail`).
     """
     preceding = [tokens[i].casefold() for i in range(index_in_query)]
+    pairs = frozenset(pairwise(preceding))
     return frozenset(
         system
         for system, markers in system_markers.items()
-        if markers.words.intersection(preceding)
-        or any(
-            word in markers.measure_words and following in markers.name_words
-            for word, following in pairwise(preceding)
-        )
+        if markers.words.intersection(preceding) or markers.tail in pairs
     )
 
 
@@ -459,15 +460,37 @@ class _RawTie:
     tie: QualifierTie
 
 
+def _rows_per_shape(
+    rows: Sequence[MatchableRow], shape_systems: Sequence[AbstractSet[str]]
+) -> tuple[CodeRow, ...] | None:
+    """The rows of an all-code ambiguous span that `shape_systems`, the code systems each
+    candidate shape declares, read one per shape, or None when one shape reads two.
+
+    The span keeps the rows whose system some shape declares. When no shape declares two of
+    them, each shape reads at most one, so the span names one code on every shape and is no
+    ambiguity there: "ODA" names `CRSTypeOfFlow10` on a CRS shape and `DAC1AidType1010` on a
+    DAC1 shape. None also when no shape declares any of them, or no shape is given."""
+    declared = frozenset().union(*shape_systems)
+    kept = tuple(row for row in rows if isinstance(row, CodeRow) and row.code_system in declared)
+    if not kept or any(
+        sum(row.code_system in systems for row in kept) > 1 for systems in shape_systems
+    ):
+        return None
+    return kept
+
+
 def _recognise_raw(
-    query: str, index: CodeIndex, measure_index: MeasureIndex | None
+    query: str,
+    index: CodeIndex,
+    measure_index: MeasureIndex | None,
+    shape_systems: Sequence[AbstractSet[str]] = (),
 ) -> tuple[tuple[_RawSpan, ...], tuple[_RawTie, ...]]:
     """Return claimed spans and ambiguous all-code ties from one scan.
 
-    Every token inside a dataset mention starts claimed. First, try the widest adjacent
-    label or synonym span at each position.
+    First, try the widest adjacent label or synonym span at each position.
     Any match claims the tokens, even when ambiguous; all-code ambiguities
-    also become ties. Measure-row conflicts are left to
+    also become ties, except one `shape_systems` resolves per shape (`_rows_per_shape`),
+    which becomes one span per row it keeps. Measure-row conflicts are left to
     `_measure_query_matches`. Then resolve unclaimed single tokens as bare
     codes, restricted to systems named by earlier query words. Bare-code
     ambiguity leaves the token unclaimed. Results are sorted by start offset.
@@ -479,11 +502,7 @@ def _recognise_raw(
     offsets = tuple((m.start(), m.end()) for m in token_matches)
 
     n = len(tokens)
-    mentions = dataset_mentions(query, index)
-    claimed = [
-        any(mention.start < end and start < mention.end for mention in mentions)
-        for start, end in offsets
-    ]
+    claimed = [False] * n
     found: list[_RawSpan] = []
     ties: list[_RawTie] = []
     system_markers = _all_system_markers(index)
@@ -510,7 +529,26 @@ def _recognise_raw(
             for i in range(start, start + width):
                 claimed[i] = True
             candidate_norm, rows = candidate
+            per_shape = (
+                _rows_per_shape(rows, shape_systems) if len(rows) > 1 and shape_systems else None
+            )
+            if per_shape is not None:
+                found.extend(
+                    _RawSpan(
+                        start=char_start,
+                        end=char_end,
+                        matched_text=matched_text,
+                        rows=(row,),
+                        sources=(_match_source(row, candidate_norm),),
+                    )
+                    for row in per_shape
+                )
+                continue
             if len(rows) > 1 and all(isinstance(row, CodeRow) for row in rows):
+                # A tie keeps the rows some shape declares, as admission narrows it.
+                declared = frozenset().union(*shape_systems)
+                narrowed = tuple(row for row in rows if cast(CodeRow, row).code_system in declared)
+                tie_rows = narrowed if len(narrowed) > 1 else rows
                 ties.append(
                     _RawTie(
                         start=start,
@@ -524,7 +562,7 @@ def _recognise_raw(
                                     source=_match_source(row, candidate_norm),
                                     matched_text=matched_text,
                                 )
-                                for row in rows
+                                for row in tie_rows
                             ),
                         ),
                     )
@@ -582,7 +620,11 @@ def recognise_spans(
 
 
 def match_qualifiers(
-    query: str, index: CodeIndex, measure_index: MeasureIndex | None = None
+    query: str,
+    index: CodeIndex,
+    measure_index: MeasureIndex | None = None,
+    *,
+    shape_systems: Sequence[AbstractSet[str]] = (),
 ) -> tuple[QualifierMatch, ...]:
     """Every unambiguous code-row or measure-value recognition in `query`,
     in the order the query text names them -- sorted by each match's own
@@ -591,8 +633,13 @@ def match_qualifiers(
     candidates (a text or code string resolving to more than one row) are
     skipped, not guessed. See `recognise_spans` for the two-pass algorithm
     that produces the underlying spans.
+
+    `shape_systems` holds the code systems each candidate shape declares. A span that
+    ties code rows of systems no one shape declares two of yields each row a shape
+    declares as a match of its own (`_rows_per_shape`), which admission keeps on the shape
+    declaring it. Without shapes no tie resolves.
     """
-    raw, _ties = _recognise_raw(query, index, measure_index)
+    raw, _ties = _recognise_raw(query, index, measure_index, shape_systems)
     return tuple(
         QualifierMatch(
             code_system=_row_system(r.rows[0]),
@@ -677,7 +724,11 @@ def is_coded_only_phrase(
 
 
 def match_qualifier_ties(
-    query: str, index: CodeIndex, measure_index: MeasureIndex | None = None
+    query: str,
+    index: CodeIndex,
+    measure_index: MeasureIndex | None = None,
+    *,
+    shape_systems: Sequence[AbstractSet[str]] = (),
 ) -> tuple[QualifierTie, ...]:
     """Every ambiguous, all-`CodeRow` span in `query`'s own text -- the
     ambiguous counterpart to `match_qualifiers`' unambiguous one-row
@@ -692,9 +743,10 @@ def match_qualifier_ties(
     code systems) yields a tie of four. A span touching a `MeasureValueRow`
     -- a same-axis measure conflict -- is never a tie: `_measure_query_matches`
     (region/pipeline.py) owns that case instead. See `recognise_spans` for
-    the shared two-pass algorithm both projections read from.
+    the shared two-pass algorithm both projections read from. A tie `shape_systems`
+    resolves per shape is a set of matches (`match_qualifiers`), not a tie.
     """
-    _raw, ties = _recognise_raw(query, index, measure_index)
+    _raw, ties = _recognise_raw(query, index, measure_index, shape_systems)
     return tuple(t.tie for t in ties)
 
 

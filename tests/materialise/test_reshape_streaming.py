@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from typing import ClassVar
+
 import pytest
 
 from materialise.errors import MaterialisationUsageError
+from materialise.profile import PivotFeasibility
 from materialise.reshape import (
     ColumnClassification,
     PivotNotUniqueError,
+    PivotOverCellCapError,
+    PivotOverColumnCapError,
     RollupNotSummableError,
     Table,
+    analyse_pivot,
+    fold_pivot_chunks,
     groupby_sum,
     groupby_sum_chunks,
     pivot,
@@ -341,3 +349,97 @@ class TestPivotChunksDigest:
             )
         assert streamed_exc.value.duplicate_keys == whole_exc.value.duplicate_keys
         assert streamed_exc.value.truncated == whole_exc.value.truncated
+
+
+def _known(*, duplicate_keys: bool, width: int, cells: int) -> PivotFeasibility:
+    return PivotFeasibility(
+        index="recipient",
+        columns="time_period",
+        duplicate_keys=duplicate_keys,
+        homogeneous=True,
+        unique=not duplicate_keys,
+        width=width,
+        cells=cells,
+        varying=(("stat_var", 2),) if duplicate_keys else (),
+    )
+
+
+class TestPivotFoldKnownShape:
+    """A stored shape lets the fold refuse a cap before it stores any key."""
+
+    _ROWS = (
+        _groupby_row("dcid:SV_A", "country/KEN", "2015", 10.0),
+        _groupby_row("dcid:SV_B", "country/KEN", "2015", 20.0),
+    )
+
+    def _chunks_stopping_after_the_first(self) -> Iterator[Table]:
+        yield Table(columns=_GROUPBY_COLUMNS, rows=self._ROWS[:1])
+        raise AssertionError("the fold read past the first chunk")
+
+    @pytest.mark.parametrize(
+        ("width", "cells", "expected"),
+        [(101, 101, PivotOverColumnCapError), (3, 1001, PivotOverCellCapError)],
+        ids=["column_cap", "cell_cap"],
+    )
+    def test_a_known_shape_over_a_cap_refuses_before_reading_further(self, width, cells, expected):
+        outcome = fold_pivot_chunks(
+            self._chunks_stopping_after_the_first(),
+            index="recipient",
+            columns="time_period",
+            column_cap=100,
+            cell_cap=1000,
+            classification=_PIVOT_CLASSIFICATION,
+            known=_known(duplicate_keys=False, width=width, cells=cells),
+        )
+
+        assert isinstance(outcome.violation, expected)
+        assert (outcome.violation.count, outcome.table) == (max(width, cells), None)
+
+    def test_known_duplicate_keys_keep_the_scan_and_name_the_varying_columns(self):
+        # Duplicate keys refuse ahead of the caps, so the fold scans to find them.
+        outcome = fold_pivot_chunks(
+            iter([Table(columns=_GROUPBY_COLUMNS, rows=self._ROWS)]),
+            index="recipient",
+            columns="time_period",
+            column_cap=100,
+            cell_cap=1000,
+            classification=_PIVOT_CLASSIFICATION,
+            known=_known(duplicate_keys=True, width=10_000, cells=10_000),
+        )
+
+        assert isinstance(outcome.violation, PivotNotUniqueError)
+        assert outcome.violation.duplicate_keys == (("country/KEN", "2015"),)
+        assert outcome.violation.varying == (("stat_var", 2),)
+
+
+class TestPivotFoldVaryingWithoutKnown:
+    """Without stored facts the fold names the varying columns as `analyse_pivot` does."""
+
+    _ROWS: ClassVar[list[tuple[object, ...]]] = [
+        _groupby_row("dcid:SV_A", "country/KEN", "2015", 10.0, unit="USD"),
+        _groupby_row("dcid:SV_A", "country/KEN", "2015", 11.0, unit="EUR"),
+        _groupby_row("dcid:SV_B", "country/TZA", "2015", 12.0, unit="GBP"),
+        _groupby_row("dcid:SV_A", "country/TZA", "2016", 13.0, unit="USD"),
+        _groupby_row("dcid:SV_B", "country/TZA", "2016", 14.0, unit="USD"),
+    ]
+
+    @pytest.mark.parametrize("bounds", [[0, 5], [0, 1, 2, 5]], ids=["one_chunk", "split_chunks"])
+    def test_varying_matches_the_whole_table_analysis(self, bounds):
+        outcome = fold_pivot_chunks(
+            iter(_chunks(_GROUPBY_COLUMNS, self._ROWS, bounds)),
+            index="recipient",
+            columns="time_period",
+            column_cap=100,
+            cell_cap=1000,
+            classification=_PIVOT_CLASSIFICATION,
+        )
+        analysis = analyse_pivot(
+            Table(columns=_GROUPBY_COLUMNS, rows=tuple(self._ROWS)),
+            index="recipient",
+            columns="time_period",
+            classification=_PIVOT_CLASSIFICATION,
+        )
+
+        assert isinstance(outcome.violation, PivotNotUniqueError)
+        assert analysis.varying == (("stat_var", 2), ("unit", 3))
+        assert outcome.violation.varying == analysis.varying

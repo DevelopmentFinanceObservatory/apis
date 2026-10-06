@@ -813,6 +813,20 @@ def admit_facets(catalogue: Catalogue, facets: Sequence[Facet]) -> list[Facet]:
     return [facet for facet in facets if facet.provenance_id in admitted]
 
 
+LABEL_TYPE_CACHE_SIZE: Final[int] = 50_000
+"""The label entries, and the type entries, an origin client keeps, enough for the deployment's
+referenced dcids. Search and the Datasets API size their clients from these four constants."""
+
+ARCS_CACHE_SIZE: Final[int] = 4096
+"""`node_arcs` entries, keyed by dcid."""
+
+OBS_PROPERTIES_CACHE_SIZE: Final[int] = 5000
+"""`node_observation_properties_batch` entries, kept apart from the full-arc cache."""
+
+OBS_CACHE_SIZE: Final[int] = 512
+"""Observation-facet entries, keyed by (stat_var, entity, needs_dates)."""
+
+
 class GraphClientOptions(TypedDict, total=False):
     """`dc_graph.GraphClient` settings shared by both backends. An omitted
     key keeps `GraphClient`'s default."""
@@ -866,6 +880,10 @@ def build_graph_client(
 
 
 __all__ = [
+    "ARCS_CACHE_SIZE",
+    "LABEL_TYPE_CACHE_SIZE",
+    "OBS_CACHE_SIZE",
+    "OBS_PROPERTIES_CACHE_SIZE",
     "UN_BASE_URL",
     "UN_BASE_URL_ENV",
     "UN_OBSERVATION_GET_URL_BUDGET_BYTES",

@@ -1,14 +1,17 @@
-"""Resolve a resubmitted identity through the standard promote/refine path.
+"""Resolve a resubmitted identity through the standard promote path.
 
-Re-read StatVar arcs, then promote, narrow to posted values, or confirm sibling
-StatVars for values outside the seed. `_PROMOTE_PHASES` fixes the execution order.
+Elect the identity's members as the Datasets mint does, re-read their arcs, and
+promote them. `_PROMOTE_PHASES` fixes the execution order.
 """
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 from collections.abc import Callable
 from typing import TYPE_CHECKING
+
+from dfo_spec_kit.identity import IdentityError
 
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
@@ -26,8 +29,9 @@ from search.engine.region.promote_survivors import _phase_resolve_survivors
 from search.engine.region.promote_validate import _phase_validate
 from search.engine.region.related_read import settle_pending_related
 from search.engine.region.result import RegionResult, with_departure_facts
-from search.engine.retrieval.bound_values import RoleClassWalks
-from search.models import PipelineStep, ResubmitIdentityPayload
+from search.engine.retrieval.bound_values import ResubmitWalk, RoleClassWalks
+from search.engine.spec_id import identity_spec_id
+from search.models import ResubmitIdentityPayload
 from series_coverage.shared import CoverageSnapshot
 
 if TYPE_CHECKING:
@@ -37,12 +41,12 @@ if TYPE_CHECKING:
     from materialise.rate_tables import RateTableCache
     from search.engine.options.population_memo import OptionsPopulationMemo
     from search.engine.region.place_options import PlaceOptionsPool
+    from search.models import BaseIdentity
 
 
 def _resolve_standard_promote(
     inp: ResubmitIdentityPayload,
     graph: EngineGraphClient,
-    pipeline_steps: list[PipelineStep],
     *,
     sdmx: EngineSdmxClient,
     include_option_coverage: bool = False,
@@ -52,33 +56,33 @@ def _resolve_standard_promote(
     materialise_graph: GraphReader | None = None,
     materialise_sdmx: MaterialiseSdmxClient | None = None,
     deadline: float | None = None,
-    stat_vars_cap: int | None = settings().resolved_stat_vars_max,
+    full_read_deadline: float | None = None,
     rate_cache: RateTableCache | None = None,
     population_memo: OptionsPopulationMemo | None = None,
     place_options_pool: PlaceOptionsPool | None = None,
     coverage: CoverageSnapshot,
 ) -> RegionResult:
-    """Resolve a resubmit from graph-confirmed StatVar arcs.
+    """Resolve a resubmit from the identity alone.
 
-    The request needs `base_spec_id` and `base_identity`. Standard shapes also
-    need `resolved_stat_var_dcids` as their seed. An edit the seed cannot answer elects
-    the edited identity's members as the Datasets mint does. Named measure families
-    recover members from the code index. Missing base or seed data, malformed edits, and
-    multiple five-tuples raise `request_invalid`. Base identity failures retain
-    their specific codes. Incomplete edits raise `edit_incomplete`. Shape
+    The identity's members are elected as the Datasets mint elects them
+    (`promote_reread._elected_members`): the packaged index for a named measure family or
+    an identity it decides, else the mint's graph walk, with its first page under
+    `deadline` and its full read of a deep-root family under `full_read_deadline`, which
+    defaults to `deadline`. A walk that ran the full read moves every later phase to
+    `full_read_deadline`. An election that settles no member returns `no_data`. A family
+    too broad to settle returns the `scope_too_broad` part. A walk past its deadline or a
+    failed graph read raises. Multiple five-tuples raise `request_invalid`. Shape
     mismatches raise `shape_mismatch`. Donor refs on standard shapes raise
     `role_incompatible` (422). Absent observationAbout or donor refs raise
     `invalid_role_ref` (422).
 
-    Matching what/how constraints promote. Values already covered by the seed
-    narrow its confirmed StatVars. Other values elect the edited identity's family
-    (`promote_survivors._elected_members`). Missing seeds and an election that settles
-    no member return `no_data`.
+    The result's `reads_deadline` is the bound its later phases ran to. A read a phase
+    swallows is noted as lost (`degraded_reads.note_degraded_read`), and
+    `resolve_spec_resubmit` marks the region `degraded`.
     """
     state = _PromoteState(
         inp=inp,
         graph=graph,
-        pipeline_steps=pipeline_steps,
         sdmx=sdmx,
         deadline=deadline,
         include_option_coverage=include_option_coverage,
@@ -87,13 +91,23 @@ def _resolve_standard_promote(
         stream_observations=stream_observations,
         materialise_graph=materialise_graph,
         materialise_sdmx=materialise_sdmx,
-        stat_vars_cap=stat_vars_cap,
         rate_cache=rate_cache,
         population_memo=population_memo,
         place_options_pool=place_options_pool,
         coverage=coverage,
         role_class_walks=(
-            RoleClassWalks(materialise_graph) if materialise_graph is not None else None
+            RoleClassWalks(
+                materialise_graph,
+                resubmit=ResubmitWalk(
+                    subject_ceiling=settings().resubmit_subject_ceiling,
+                    full_read_deadline=(
+                        full_read_deadline if full_read_deadline is not None else deadline
+                    ),
+                    spec_id=_walk_spec_id(inp.identity),
+                ),
+            )
+            if materialise_graph is not None
+            else None
         ),
     )
 
@@ -106,7 +120,10 @@ def _resolve_standard_promote(
                 # entity, so its departures quote none (`RegionResult.entity_words`).
                 return with_departure_facts(
                     dataclasses.replace(
-                        result, timing_by_step=dict(state.timing), entity_words=None
+                        result,
+                        timing_by_step=dict(state.timing),
+                        entity_words=None,
+                        reads_deadline=state.deadline,
                     ),
                     state.departure_facts,
                 )
@@ -117,12 +134,23 @@ def _resolve_standard_promote(
         settle_pending_related(state.related_read)
 
 
+def _walk_spec_id(definition: BaseIdentity) -> str | None:
+    """The posted identity's spec id, which names its member walk in the walk's log line.
+    None when the identity does not hash. The resubmit refuses it later, and the log line
+    names no id."""
+    with contextlib.suppress(IdentityError):
+        return identity_spec_id(definition)
+    return None
+
+
 # Phases run in tuple order and stop at the first RegionResult. Validation,
-# edit, binding, and place phases raise `EngineInputError` on refusal. Reread
-# returns `variable_not_resolved`. Survivor resolution returns `no_matching_slice`.
-# Shape building can return `no_matching_slice` or `role_signature_incompatible`.
+# binding, and place phases raise `EngineInputError` on refusal. Reread returns
+# the election's refusal: `variable_not_resolved`, `no_matching_slice`,
+# `role_signature_incompatible`, or the `scope_too_broad` part. Shape building can
+# return `role_signature_incompatible`, `variable_not_resolved` or `scope_too_broad`.
 # Binding reads no graph data. The place phase returns `role_incompatible`.
-# Materialisation returns the draft's no-data reason or `variable_not_resolved`.
+# Materialisation returns the draft's no-data reason or `variable_not_resolved`, and
+# raises `open_role_unavailable` for an open role of the identity its answer does not serve.
 # Grounding returns
 # `no_observations` (`NO_MEMBER_HAS_DATA_AT_PLACE`) or `no_matching_slice`
 # (`NO_MEMBER_ASSERTS_BOUND_PROPERTIES`). It can refuse facet/unit bindings with

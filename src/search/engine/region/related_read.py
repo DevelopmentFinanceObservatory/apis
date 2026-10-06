@@ -21,8 +21,9 @@ at most its deadline.
 
 A read qualifies when the answer serves exactly one StatVar, has no measure family and names
 places with no roles. It ends at `SEARCH_RELATED_MEASURES_TIMEOUT_S` or the request
-deadline, whichever comes first. Past it, or on a failed read, the Spec states none and the
-reason is logged (`_log_unavailable`).
+deadline, whichever comes first. Past it, or on a failed read, the Spec states none, the
+reason is logged (`_log_unavailable`), and the answer that joins the read notes it lost
+(`degraded_reads.note_degraded_read`), so no cache stores the answer.
 """
 
 from __future__ import annotations
@@ -41,6 +42,7 @@ from code_index.shared import get_index, get_measure_index
 from dfo_platform.executor import submit_with_context
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.config import settings
+from search.engine.degraded_reads import note_degraded_read
 from search.engine.errors import GraphInfraError
 from search.engine.region.grounding import requested_window_from_date_request
 from search.engine.region.state import ResolveState
@@ -105,6 +107,10 @@ def start_elected_related_read(state: ResolveState, mat_result: Materialised) ->
     `state.measure_family`, and start their related-measures reads into `state.related_read`
     (`start_related_read`), replacing one the pass started before."""
     served_member_facts = mat_result.member_facts or {}
+    role_keys = entity_role_keys(
+        state.place.roles.resolved_entities,
+        open_axes=state.place.roles.open_axes,
+    )
     state.measure_family = observed_measure_family(
         state.shape_draft,
         get_index(),
@@ -112,7 +118,8 @@ def start_elected_related_read(state: ResolveState, mat_result: Materialised) ->
         shape_query(
             state.shape_draft,
             state.bindings,
-            entity_role_keys(state.shape_draft, state.place.roles.resolved_entities),
+            role_keys.bound,
+            open_role_keys=role_keys.open,
         ),
         # Every real resolve supplies member facts for each StatVar. A missing entry
         # violates the contract and raises.
@@ -206,8 +213,13 @@ def related_read_for(
 
 async def with_related(spec: Spec, read: RelatedRead | None) -> Spec:
     """`spec` stating `read`'s group and measures, unchanged when there is no read or it
-    failed."""
-    return stating_related(spec, await read.task if read is not None else None)
+    failed. A failed read is noted as a lost read (`note_degraded_read`)."""
+    if read is None:
+        return spec
+    related = await read.task
+    if related is None:
+        note_degraded_read("related measures")
+    return stating_related(spec, related)
 
 
 def submit_related_read(
@@ -244,14 +256,18 @@ def submit_related_read(
 def joined_related(pending: PendingRelated | None) -> Related | None:
     """`pending`'s result once it ends, or None when there is none, a read failed or its
     deadline passed first. The thread logs a failed read (`_logged_read`), and a deadline
-    that passes first is logged here."""
+    that passes first is logged here. Either is noted here as a lost read
+    (`note_degraded_read`), in the caller's record."""
     if pending is None:
         return None
     try:
-        return pending.future.result(timeout=max(0.0, pending.deadline - time.monotonic()))
+        related = pending.future.result(timeout=max(0.0, pending.deadline - time.monotonic()))
     except TimeoutError as exc:
         _log_unavailable(pending.stat_var, exc)
-        return None
+        related = None
+    if related is None:
+        note_degraded_read("related measures")
+    return related
 
 
 def settle_pending_related(pending: PendingRelated | None) -> None:

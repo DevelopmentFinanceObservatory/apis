@@ -3,7 +3,10 @@ name already states, IDS creditor types as the creditor role, how-value connecti
 the flow 30 short name, and entity names in the graph label's case.
 
 `heading_words_specs.json` holds each recorded spec trimmed to the fields the renderer
-reads; every one renders the same text as its untrimmed original.
+reads; every one renders the same text as its untrimmed original. A spec's `sentence_facts`
+holds what the renderer reads that the wire does not carry: its members' facts
+(`ResolvedSpec.sentence_facts`) and the code pairs its measure label names
+(`ResolvedSpec.measure_label_named_values`).
 """
 
 from __future__ import annotations
@@ -15,9 +18,9 @@ from pathlib import Path
 import pytest
 
 from dfo_platform.roles import role_wording
-from search.models import Spec
 from search.render.how import _role_class_text, _without_property_suffix
 from search.render.plan import render_sentence_plan, sentence_from_plan
+from tests.render._helpers import recorded_spec
 
 _SPECS = Path(__file__).with_name("heading_words_specs.json")
 
@@ -28,7 +31,7 @@ def _recorded() -> dict[str, dict]:
 
 
 def _segments(key: str) -> tuple[str, str]:
-    plan = render_sentence_plan(Spec.model_validate(_recorded()[key]))
+    plan = render_sentence_plan(recorded_spec(_recorded()[key]))
     heading = sentence_from_plan([t for t in plan if t.segment == "heading"])
     byline = sentence_from_plan([t for t in plan if t.segment == "byline"]).strip()
     return heading, byline

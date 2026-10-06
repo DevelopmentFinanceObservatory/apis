@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from datasets_api import door_executor
 from datasets_api.doors import register as register_door
 from datasets_api.doors.register import RegistryBackpressure, build_register_door
-from datasets_api.models import MAX_COLLECTION_MEMBERS, RegisterRequest
+from datasets_api.models import RegisterRequest
 from datasets_api.operation_store import NullOperationStore
 from spec_registry import LiveSpecRegistry
 from spec_registry.identity import _MAX_IDENTITY_DOCUMENT_BYTES, recompute_identity
@@ -24,12 +24,11 @@ from spec_registry.registry import IDENTITY_COLLISION_QUARANTINED_MARKER
 from ._app_factories import make_client
 from ._artifact_doubles import FakeArtifactStore
 from ._executor_doubles import BrokenSubmitExecutor, NeverStartingExecutor
-from ._identity_builders import pinned_identity, register_body
+from ._identity_builders import described_identity, pinned_identity, register_body
 from ._snapshot_doubles import FakeSnapshotReader
 from ._store_fault_doubles import (
     BlockingFakeDatasetStore,
     DriverExplodingFakeDatasetStore,
-    PoolBoundedFakeDatasetStore,
     PoolTimeoutFakeDatasetStore,
 )
 from .conftest import FakeDatasetStore, identity_of_encoded_size, wire_definition_for
@@ -78,27 +77,6 @@ def test_register_a_grouped_identity_stores_its_identity_core() -> None:
     assert resp.status_code == 200, resp.text
     assert resp.json()["definition"]["spec_id"] == spec_id
     assert store.state.spec_definition[(spec_id, 1)]["definition"]["identity"] == identity
-
-
-def test_register_collection_is_contract_shaped() -> None:
-    client = make_client(registry=LiveSpecRegistry(store=FakeDatasetStore()))
-    identities = [pinned_identity(stat_var=f"m{i}") for i in range(3)]
-    spec_ids = [recompute_identity(i).spec_id for i in identities]
-    members = [
-        wire_definition_for(spec_id=sid, identity=idn)
-        for sid, idn in zip(spec_ids, identities, strict=True)
-    ]
-
-    resp = client.post(
-        "/api/datasets/register",
-        json={"schema_version": 1, "members": members},
-    )
-
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["schema_version"] == 1
-    assert body["collection"]["collection_id"].startswith("col_")
-    assert body["collection"]["members"] == sorted(spec_ids)
 
 
 def test_register_definition_idempotent_repeat() -> None:
@@ -158,7 +136,17 @@ def test_identity_collision_refuses_500_and_quarantines(caplog) -> None:
     assert len(store.state.identity_quarantine) == 1
 
 
-def test_malformed_identity_document_refuses_request_invalid() -> None:
+@pytest.mark.parametrize(
+    "identity",
+    [
+        # unsupported_identity_version fails dfo_spec_kit's own
+        # schema validation before any spec_id_mismatch check runs.
+        {**pinned_identity(), "identity_version": "spec2"},
+        described_identity(entities={"creditor": ["country/CHN"]}, open_roles=["origin"]),
+    ],
+    ids=["unsupported-version", "role-bound-and-open-on-one-axis"],
+)
+def test_malformed_identity_document_refuses_request_invalid(identity: dict) -> None:
     client = make_client(registry=LiveSpecRegistry(store=FakeDatasetStore()))
 
     resp = client.post(
@@ -167,9 +155,7 @@ def test_malformed_identity_document_refuses_request_invalid() -> None:
             definition={
                 "schema_version": 1,
                 "spec_id": "spec_whatever00000000000000000000",
-                # unsupported_identity_version -- fails dfo_spec_kit's own
-                # schema validation before any spec_id_mismatch check runs.
-                "identity": {**pinned_identity(), "identity_version": "spec2"},
+                "identity": identity,
             }
         ),
     )
@@ -215,51 +201,29 @@ def test_identity_document_over_the_byte_cap_refuses_request_invalid() -> None:
     assert resp.json()["code"] == "request_invalid"
 
 
-def test_request_invalid_when_both_definition_and_members_supplied() -> None:
-    client = make_client(registry=LiveSpecRegistry(store=FakeDatasetStore()))
+@pytest.mark.parametrize("with_definition", [True, False], ids=["beside-definition", "alone"])
+def test_a_request_carrying_members_refuses_request_invalid(with_definition: bool) -> None:
+    """The register door takes one `definition`; a `members` list refuses at body validation."""
+    store = FakeDatasetStore()
+    client = make_client(registry=LiveSpecRegistry(store=store))
     identity = pinned_identity(stat_var="both")
     spec_id = recompute_identity(identity).spec_id
     definition = wire_definition_for(spec_id=spec_id, identity=identity)
+    body: dict[str, object] = {"schema_version": 1, "members": [definition]}
+    if with_definition:
+        body["definition"] = definition
 
-    resp = client.post(
-        "/api/datasets/register",
-        json={"schema_version": 1, "definition": definition, "members": [definition]},
-    )
+    resp = client.post("/api/datasets/register", json=body)
 
     assert resp.status_code == 400
     assert resp.json()["code"] == "request_invalid"
+    assert spec_id not in store.state.spec_registry
 
 
-def test_request_invalid_when_neither_definition_nor_members_supplied() -> None:
+def test_request_invalid_when_no_definition_is_supplied() -> None:
     client = make_client(registry=LiveSpecRegistry(store=FakeDatasetStore()))
 
     resp = client.post("/api/datasets/register", json={"schema_version": 1})
-
-    assert resp.status_code == 400
-    assert resp.json()["code"] == "request_invalid"
-
-
-def test_members_at_cap_is_accepted_by_the_model() -> None:
-    members = [
-        {"schema_version": 1, "spec_id": f"spec_{i}", "identity": {}}
-        for i in range(MAX_COLLECTION_MEMBERS)
-    ]
-    request = RegisterRequest(schema_version=1, members=members)
-    assert request.members is not None
-    assert len(request.members) == MAX_COLLECTION_MEMBERS
-
-
-def test_members_over_cap_refuses_request_invalid_via_the_door() -> None:
-    client = make_client(registry=LiveSpecRegistry(store=FakeDatasetStore()))
-    members = [
-        {"schema_version": 1, "spec_id": f"spec_{i}", "identity": {}}
-        for i in range(MAX_COLLECTION_MEMBERS + 1)
-    ]
-
-    resp = client.post(
-        "/api/datasets/register",
-        json={"schema_version": 1, "members": members},
-    )
 
     assert resp.status_code == 400
     assert resp.json()["code"] == "request_invalid"
@@ -294,63 +258,6 @@ def test_unsupported_schema_version_missing_field() -> None:
 
     assert resp.status_code == 422
     assert resp.json()["code"] == "unsupported_schema_version"
-
-
-def test_partial_collection_failure_leaves_earlier_members_registered() -> None:
-    store = FakeDatasetStore()
-    client = make_client(registry=LiveSpecRegistry(store=store))
-    good_identity = pinned_identity(stat_var="good")
-    good_spec_id = recompute_identity(good_identity).spec_id
-    bad_identity = pinned_identity(stat_var="bad")
-    bad_spec_id_actual = recompute_identity(bad_identity).spec_id
-
-    resp = client.post(
-        "/api/datasets/register",
-        json={
-            "schema_version": 1,
-            "members": [
-                wire_definition_for(spec_id=good_spec_id, identity=good_identity),
-                # Wrong supplied id for the second member -- the request
-                # refuses naming exactly this member (SpecIdMismatch carries
-                # both the supplied and server-recomputed ids).
-                wire_definition_for(
-                    spec_id="spec_deliberately_wrong0000000000", identity=bad_identity
-                ),
-            ],
-        },
-    )
-
-    assert resp.status_code == 422
-    body = resp.json()
-    assert body["code"] == "spec_id_mismatch"
-    assert "spec_deliberately_wrong0000000000" in body["detail"]
-    assert bad_spec_id_actual in body["detail"]
-    # The second (index 1) member is the one whose supplied id was wrong.
-    assert "position 1" in body["detail"]
-
-    # The first member stays registered, so a retry can converge on its row.
-    assert good_spec_id in store.state.spec_registry
-    assert bad_spec_id_actual not in store.state.spec_registry
-
-
-def test_multi_member_collection_registers_against_a_pool_of_size_two() -> None:
-    # Five members fit because registration holds only one transaction at a time.
-    store = PoolBoundedFakeDatasetStore(pool_size=2)
-    client = make_client(registry=LiveSpecRegistry(store=store))
-    identities = [pinned_identity(stat_var=f"pool{i}") for i in range(5)]
-    spec_ids = [recompute_identity(i).spec_id for i in identities]
-    members = [
-        wire_definition_for(spec_id=sid, identity=idn)
-        for sid, idn in zip(spec_ids, identities, strict=True)
-    ]
-
-    resp = client.post(
-        "/api/datasets/register",
-        json={"schema_version": 1, "members": members},
-    )
-
-    assert resp.status_code == 200
-    assert resp.json()["collection"]["members"] == sorted(spec_ids)
 
 
 def test_identity_quarantined_refuses_500_not_retryable() -> None:
