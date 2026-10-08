@@ -53,7 +53,7 @@ Every membership group's own members are resolved by `entity_resolution` itself,
 
 A text with no listed-name survivor takes the description-arc fallback ladder, which admits a node only when the text is one of that node's own listed names, so a description-arc match the text does not name is not a resolution either.
 
-`resolved_group.members` has no enforced bound of its own: a group resolves to its full membership, drawn from a closed offline set of 33 curated groups (resolvekit's bundled `geo.*` modules plus `dfo_graph`), the largest being the United Nations at 193. This is not configurable and no request parameter narrows it. `search.engine`'s own `SEARCH_MAX_CHILD_PLACES`/`SEARCH_MAX_STANDARD_PROBE_PLACES` bound (256) is a separate `search.engine` constant that does not apply to this door. "G20" resolves to its 19 country members; that is correct and intended, not a gap -- this door does not add the EU or the African Union to it.
+`resolved_group.members` has no enforced bound of its own: a group resolves to its full membership, drawn from a closed offline set of 33 curated groups (resolvekit's bundled `geo.*` modules plus `dfo_graph`), the largest being the United Nations at 193. This is not configurable and no request parameter narrows it. `search.engine`'s own `SEARCH_MAX_CHILD_PLACES` bound (256) on the places a Spec binds is a separate `search.engine` setting that does not apply to this door. "G20" resolves to its 19 country members. That is intended, and this door does not add the EU or the African Union to it.
 
 #### Request Constraints
 
@@ -92,7 +92,7 @@ All batch outcomes return HTTP 200 with an entry corresponding to each input str
 | `subregion`         | A UN geographic subregion (e.g. Sub-Saharan Africa); expands to member countries (`resolved_region`). |
 | `continental_union` | A continental political or economic union (e.g. the African Union).                                   |
 | `organisation`      | An Organization-typed graph node (e.g. a development bank).                                           |
-| `aggregate`         | A DAC recipient-unallocated-by-country bucket, not a real place.                                      |
+| `aggregate`         | A DAC stand-in for a party it does not name (e.g. Africa, unallocated by country).                    |
 | `place_other`       | A subnational place: a state, city, or administrative area.                                           |
 | `other`             | None of the above.                                                                                    |
 
@@ -229,7 +229,7 @@ For `entity` shapes, an auxiliary DCP query fetches labels for parent entities i
 
 A `stat_var`'s `source_indicator_codes` lists every value of its `sourceIndicatorCode` arc: the codes naming the source series the variable comes from, as the publisher codes it, and `[]` when the node carries none. IMF WEO GDP (`ValueAdded_EconomicProduction_IncludingProductTaxes_GrossOfFixedCapitalConsumption_Nominal`) lists `NGDP` and `NGDPD`. The codes identify no variable, so Search and Datasets never treat them as a constraint.
 
-`data_commons` names the Data Commons a fact comes from, read from the request's origin catalogue with no graph read. Its `id` is `dfo`, `base` or `un_system`, and its `label` is Development Finance Observatory, Data Commons by Google or UN System Data Commons. A `stat_var` lists every origin holding admitted data for the variable, DFO first, then base, then the UN, and `[]` when the catalogue admits none; `Count_Person` lists both `dfo` and `base`, and a variable no catalogue table lists counts as `base`, as search admits it. A `source` names the origin of an admitted provenance, and serves `null` for a provenance the catalogue does not admit, a `Dataset` or a `Source`. `entity` and `node` shapes carry no `data_commons`, since a place or a schema node is shared by every Data Commons. A dcid under `undata/` is read from the UN System Data Commons.
+`data_commons` names the Data Commons a fact comes from, read from the request's origin catalogue with no graph read. Its `id` is `dfo`, `base` or `un_system`, and its `label` is Development Finance Observatory, Data Commons by Google or UN System Data Commons. A `stat_var` lists every origin holding admitted data for the variable, DFO first, then base, then the UN, and `[]` when the catalogue admits none, as for a UN variable of a series the registry excludes or a base variable held only under a superseded provenance; `Count_Person` lists both `dfo` and `base`, and a variable no catalogue table lists counts as `base`, as search admits it. A `source` names the origin of an admitted provenance, and serves `null` for a provenance the catalogue does not admit, a `Dataset` or a `Source`. `entity` and `node` shapes carry no `data_commons`, since a place or a schema node is shared by every Data Commons. A dcid under `undata/` is read from the UN System Data Commons.
 
 #### Response Example (`stat_var`)
 
@@ -455,7 +455,7 @@ Live-verified against the dev graph (`provenance/OECDCreditorReportingSystem`, a
 
 The source index: every source this deployment admits data from, the Data Commons that serves it, the datasets and provenances admitted under it, and the ones it excludes. A caller can link each provenance at `GET /api/graph/documentation/{dcid}`. The route makes no graph read and has no refusal code of its own.
 
-The index joins two things. The origin registry (`origin_catalogue/data/registry.toml`, packaged with the service) lists the reviewed base Data Commons sources and UN System Data Commons agencies, with each base source's exclusions. The request's origin catalogue lists the provenances admitted under each source. Entries come in this order:
+The index joins two things. The origin registry (`origin_catalogue/data/registry.toml`, packaged with the service) lists the reviewed base Data Commons sources and UN System Data Commons agencies, with each base source's excluded provenances and each UN agency's excluded series. The request's origin catalogue lists the provenances admitted under each source. Entries come in this order:
 
 1. one entry per DFO source, in provenance-table order, grouping each DFO provenance under the `Source` its `source` arc names, with no exclusions;
 2. each base registry entry, in registry order;
@@ -463,7 +463,11 @@ The index joins two things. The origin registry (`origin_catalogue/data/registry
 
 Each entry lists `datasets`, each `{ ref, label, provenances: [{ ref, label }] }`, in first-seen order. A provenance groups under its first `isPartOf` parent typed `Dataset`; a provenance with no Dataset forms its own group, keyed and labelled by itself, so `datasets[].ref` is then the provenance dcid. A registry entry the loaded catalogue lists no provenance under serves `datasets: []`, as when the registry is newer than the catalogue build. `provenances[].label` is the provenance table's name.
 
-Each dataset also carries five card facts, the same values `GET /api/graph/documentation/{ref}` serves for it: `description` (`details.description`), `license_type` (`license.type`), `update_cadence` (`license.update_cadence`), `years_covered` (`scope_and_units.years_covered`) and `source_url` (`details.source_url`). The catalogue job computes them at build time from the graph (`origin_catalogue.card_facts`) and stores the licence's label and the raw `sourceReleaseFrequency` token, which this route maps to its label as the documentation route does. They follow that route's roll-up rules over the Dataset's admitted children, and an orphan provenance is its own sole child. Each is `null` where the documentation page serves `null`, and all five are `null` on UN System Data Commons entries. A card and its page agree for the graph the loaded build read. The build refreshes them at each identity change, at least weekly, so a card can lag a graph edit the page already shows. An exclusion is `{ ref, reason }`; its `reason` is `superseded_by_dfo`, for an upstream copy of a dataset DFO imports. An empty `exclusions` list states that the entry was reviewed for overlap with DFO.
+Each dataset also carries five card facts, the same values `GET /api/graph/documentation/{ref}` serves for it: `description` (`details.description`), `license_type` (`license.type`), `update_cadence` (`license.update_cadence`), `years_covered` (`scope_and_units.years_covered`) and `source_url` (`details.source_url`). The catalogue job computes them at build time from the graph (`origin_catalogue.card_facts`) and stores the licence's label and the raw `sourceReleaseFrequency` token, which this route maps to its label as the documentation route does. They follow that route's roll-up rules over the Dataset's admitted children, and an orphan provenance is its own sole child. Each is `null` where the documentation page serves `null`, and all five are `null` on UN System Data Commons entries. A card and its page agree for the graph the loaded build read. The build refreshes them at each identity change, at least weekly, so a card can lag a graph edit the page already shows. An empty `exclusions` list states that the entry was reviewed for overlap with DFO.
+
+A base source's `exclusions` lists the provenances it holds that the deployment does not admit, each `{ ref, reason }`. `reason` is `superseded_by_dfo` for an upstream copy of a dataset DFO imports, and `superseded_by_un_system` for a provenance whose data the UN System Data Commons serves (`dc/base/UN_SDG`). The index names no successor: each answer names its own provenance and Data Commons. DFO sources and UN agencies list no exclusions, including a series a UN agency's registry entry excludes.
+
+A provenance a base source excludes is never also listed under that source's `datasets`, even when the loaded build, older than the registry, still holds it.
 
 ```json
 {
@@ -520,19 +524,8 @@ Each dataset also carries five card facts, the same values `GET /api/graph/docum
     {
       "source": { "ref": "dc/s/UnitedNationsUn", "label": "United Nations (UN)" },
       "data_commons": { "id": "base", "label": "Data Commons by Google" },
-      "datasets": [
-        {
-          "ref": "dc/d/UnitedNationsUn_SdgIndicatorsDatabase",
-          "label": "SDG Indicators Database",
-          "provenances": [{ "ref": "dc/base/UN_SDG", "label": "SDG Indicators Database" }],
-          "description": "Data tracking global progress towards the United Nations Sustainable Development Goals (SDGs).",
-          "license_type": "PublicDomain",
-          "update_cadence": null,
-          "years_covered": null,
-          "source_url": "https://unstats.un.org/sdgs/dataportal"
-        }
-      ],
-      "exclusions": []
+      "datasets": [],
+      "exclusions": [{ "ref": "dc/base/UN_SDG", "reason": "superseded_by_un_system" }]
     },
     {
       "source": { "ref": "undata/p/SDG", "label": "SDG Global Database" },
@@ -555,7 +548,7 @@ Each dataset also carries five card facts, the same values `GET /api/graph/docum
 }
 ```
 
-The example is abridged. It shows four entries, cuts each `datasets` list to at most one, and shortens the CRS description, while a served list names every admitted dataset under its source. Adding or removing a source is a pull request to the registry file, and `GET /api/graph/capabilities` serves `source_catalogue_curated: true`.
+The example is abridged. It shows four entries, cuts each `datasets` list to at most one and shortens the CRS description, while a served list names every admitted dataset under its source. Adding or removing a source is a pull request to the registry file, and `GET /api/graph/capabilities` serves `source_catalogue_curated: true`.
 
 ---
 

@@ -1,37 +1,39 @@
-"""A UN series with no candidate at places it names, which the UN front door refuses, refuses
-`upstream_error` naming them, through the real origin client and materialisation. A request
-that binds no place covers every place the UN's availability lists, including those the front
-door refuses on every read, so it refuses `default_facet_undefined` naming the refused places,
-and `upstream_error` when the UN deployment fails. `test_un_doors` drives the same refusals
+"""A UN series whose facet probe is empty through the real origin client, materialisation and
+`prewrite_definition`. At places it names that the UN front door refuses, the mint refuses
+`upstream_error` naming them. A request that binds no place covers every place the UN's
+availability lists, including those the front door refuses on every read, so it is the empty
+result with the `un_system_unavailable` warning naming the refused places, and
+`upstream_error` when the UN deployment fails. `test_un_doors` drives the same outcomes
 through the doors."""
 
 from __future__ import annotations
 
+import httpx
 import pytest
 
 from datasets_api.codes_materialise import UnSystemUnavailable
 from datasets_api.doors.mint_errors import classify_mint_exception
-from datasets_api.origin import origin_reads
+from datasets_api.serve import DefinitionPrewrite
+from dc_sdmx import SdmxClient
 from materialise import (
-    EnrichmentLookup,
+    CollectionFacetProbe,
     MaterialisationRequest,
-    materialise_group,
     materialise_preview,
     probe_collection_facets,
 )
-from materialise.errors import DefaultFacetUndefinedError, FacetNotAvailableError
+from materialise.errors import DefaultFacetUndefinedError
 from materialise.place_scope import DefaultPlaceScope
-from materialise.revision import RevisionSnapshot
 from materialise.window import RequestedWindow
 from origin_catalogue.graph import OriginGraphClient
-from tests.materialise._scope_availability import ScopeAvailability
-from tests.materialise.conftest import FakeRevisionReader
+from tests.materialise._scope_availability import ScopeAvailability, ScopeTransport
 from tests.materialise.test_observation_rows import (
     _sdmx_never_called,
     deployments,  # noqa: F401  (fixture)
     graph,  # noqa: F401  (fixture)
 )
-from tests.materialise.un_deployment import UN_VARIABLE, UnDeployments
+from tests.materialise.un_deployment import OURS_API, UN_VARIABLE, UnDeployments
+
+from ._prewrite import prewrite
 
 _GRC = "country/GRC"
 # Our mixer holds no data for `Count_Person` here, so its default place scope is empty.
@@ -48,49 +50,62 @@ def _request(*places: str, stat_var: str = UN_VARIABLE) -> MaterialisationReques
     )
 
 
-def test_a_preview_at_a_refused_place_refuses_upstream_error_naming_it(
+def _mint(
+    client: OriginGraphClient,
+    *requests: MaterialisationRequest,
+    probe: CollectionFacetProbe | None = None,
+) -> DefinitionPrewrite:
+    """The prewrite of a mint of `requests`. Our SDMX service answers the default place scope's
+    availability read with no place and refuses a data read."""
+
+    def refuse(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"a UN variable reached the SDMX service: {request.url}")
+
+    sdmx = SdmxClient(
+        base_url=OURS_API, transport=ScopeTransport(httpx.MockTransport(refuse), _NO_DATA)
+    )
+    return prewrite(requests, graph=client, sdmx=sdmx, precomputed_probe=probe)
+
+
+def _warning_codes(minted: DefinitionPrewrite) -> list[str]:
+    return [warning.code for warning in minted.manifest.warnings]
+
+
+def test_a_mint_at_a_refused_place_refuses_upstream_error_naming_it(
     graph: OriginGraphClient,  # noqa: F811
     deployments: UnDeployments,  # noqa: F811
 ) -> None:
     deployments.refused = {_GRC}
 
-    with (
-        pytest.raises(UnSystemUnavailable) as refused,
-        origin_reads(graph, availability=_NO_DATA, deadline=None),
-    ):
-        materialise_preview(_request(_GRC), sdmx=_sdmx_never_called(), graph=graph, limit=10)
+    with pytest.raises(UnSystemUnavailable) as refused:
+        _mint(graph, _request(_GRC))
 
     assert refused.value.places == (_GRC,)
-    assert isinstance(refused.value.__cause__, DefaultFacetUndefinedError)
     spec = classify_mint_exception(refused.value)
     assert spec is not None
     assert (spec.status, spec.code, spec.retryable) == (502, "upstream_error", True)
     assert _GRC in (spec.detail or "")
 
 
-def test_a_request_binding_no_place_with_no_data_anywhere_stays_default_facet_undefined(
+def test_a_request_binding_no_place_with_no_data_anywhere_is_the_empty_result(
     graph: OriginGraphClient,  # noqa: F811
     deployments: UnDeployments,  # noqa: F811
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # The UN's availability lists Greece and Nigeria, and Nigeria holds no facet. Greece is
     # refused, as it is on every read, so it does not turn a request with no data into a
-    # retryable failure. The refusal names it, as the warning on a served request would.
+    # retryable failure. The warning names it, as it does on a request that served rows.
     deployments.available = [_GRC, "country/NGA"]
     deployments.refused = {_GRC}
 
-    with (
-        pytest.raises(DefaultFacetUndefinedError) as refused,
-        origin_reads(graph, availability=_NO_DATA, deadline=None),
-    ):
-        materialise_preview(_request(), sdmx=_sdmx_never_called(), graph=graph, limit=10)
+    minted = _mint(graph, _request())
 
-    spec = classify_mint_exception(refused.value)
-    assert spec is not None
-    assert (spec.status, spec.code, spec.retryable) == (422, "default_facet_undefined", False)
-    assert (spec.detail or "").endswith(
-        f"No UN data was read for {_GRC}, which the UN System Data Commons front door refuses"
-    )
+    assert minted.result.probe_empty
+    assert minted.manifest.coverage.rows == 0
+    assert minted.provenance_refs == []
+    assert minted.manifest.citation.sources == []
+    assert {"empty_result", "un_system_unavailable"} <= set(_warning_codes(minted))
+    (unavailable,) = (w for w in minted.manifest.warnings if w.code == "un_system_unavailable")
+    assert unavailable.message.endswith(f"No UN data was read for {_GRC}.")
 
 
 def test_a_request_binding_no_place_takes_its_un_countries_when_its_un_availability_fails(
@@ -117,104 +132,72 @@ def test_a_request_binding_no_place_takes_its_un_countries_when_its_un_availabil
     assert len(deployments.countries_requests) == 1
 
 
-def test_a_request_binding_no_place_refuses_upstream_error_when_its_un_read_failed(
-    graph: OriginGraphClient,  # noqa: F811
-    deployments: UnDeployments,  # noqa: F811
-) -> None:
-    # The UN's facet read fails while the probe also reads one of our variables. The probe runs
-    # before `origin_reads` opens, as the mint doors run it, and carries the failed read.
-    countries = [_GRC, "country/KEN"]
-    deployments.available = countries
-    deployments.status = 503
-    requests = [_request(), _request(stat_var="Count_Person")]
-    probe = probe_collection_facets(requests, settle=True, graph=graph, availability=_NO_DATA)
-    assert [failure.variables for failure in probe.un_unserved.failures] == [(UN_VARIABLE,)]
-    snapshot = RevisionSnapshot(graph_revision="graph-rev", source_revisions=())
-
-    with (
-        pytest.raises(UnSystemUnavailable) as refused,
-        origin_reads(graph, availability=_NO_DATA, deadline=None),
-    ):
-        materialise_group(
-            requests,
-            sdmx=_sdmx_never_called(),
-            graph=graph,
-            revision_reader=FakeRevisionReader([snapshot, snapshot]),
-            materialiser_build="build-1",
-            capability_version="cap-1",
-            enrichment=EnrichmentLookup(graph),
-            precomputed_probe=probe,
-        )
-
-    assert refused.value.places == tuple(countries)
-    spec = classify_mint_exception(refused.value)
-    assert spec is not None
-    assert (spec.status, spec.code, spec.retryable) == (502, "upstream_error", True)
-
-
-def _empty_mixed_group(client: OriginGraphClient) -> None:
-    """Materialise a group of the UN variable and one of ours, both binding no place, from a
-    probe made before `origin_reads` opens, as the mint doors make it."""
+def _mixed_group_probe(
+    client: OriginGraphClient,
+) -> tuple[list[MaterialisationRequest], CollectionFacetProbe]:
+    """A group of the UN variable and one of ours, both binding no place, with the probe a
+    mint door makes before the prewrite opens its UN record. Neither member holds a candidate."""
     requests = [_request(), _request(stat_var="Count_Person")]
     probe = probe_collection_facets(requests, settle=True, graph=client, availability=_NO_DATA)
     assert probe.candidates == ((), ())
-    snapshot = RevisionSnapshot(graph_revision="graph-rev", source_revisions=())
-
-    with origin_reads(client, availability=_NO_DATA, deadline=None):
-        materialise_group(
-            requests,
-            sdmx=_sdmx_never_called(),
-            graph=client,
-            revision_reader=FakeRevisionReader([snapshot, snapshot]),
-            materialiser_build="build-1",
-            capability_version="cap-1",
-            enrichment=EnrichmentLookup(client),
-            precomputed_probe=probe,
-        )
+    return requests, probe
 
 
 def test_an_empty_group_refuses_upstream_error_when_its_un_member_read_failed(
     graph: OriginGraphClient,  # noqa: F811
     deployments: UnDeployments,  # noqa: F811
 ) -> None:
+    # The UN's facet read fails while the probe also reads one of our variables. The probe
+    # carries the failed read into the record the prewrite opens.
     countries = [_GRC, "country/KEN"]
     deployments.available = countries
     deployments.status = 503
+    requests, probe = _mixed_group_probe(graph)
+    assert [failure.variables for failure in probe.un_unserved.failures] == [(UN_VARIABLE,)]
 
     with pytest.raises(UnSystemUnavailable) as refused:
-        _empty_mixed_group(graph)
+        _mint(graph, *requests, probe=probe)
 
     assert refused.value.variable == UN_VARIABLE
     assert refused.value.places == tuple(countries)
-    assert isinstance(refused.value.__cause__, FacetNotAvailableError)
     spec = classify_mint_exception(refused.value)
     assert spec is not None
     assert (spec.status, spec.code, spec.retryable) == (502, "upstream_error", True)
 
 
-def test_an_empty_group_with_no_failed_un_read_stays_facet_not_available(
+def test_an_empty_group_with_no_failed_un_read_is_the_empty_result(
     graph: OriginGraphClient,  # noqa: F811
     deployments: UnDeployments,  # noqa: F811
 ) -> None:
     # The UN's availability lists Greece and Nigeria, neither holds a facet, and every UN read
     # succeeded.
     deployments.available = [_GRC, "country/NGA"]
+    requests, probe = _mixed_group_probe(graph)
 
-    with pytest.raises(FacetNotAvailableError) as refused:
-        _empty_mixed_group(graph)
+    minted = _mint(graph, *requests, probe=probe)
 
-    spec = classify_mint_exception(refused.value)
-    assert spec is not None
-    assert (spec.status, spec.code, spec.retryable) == (422, "facet_not_available", False)
+    assert minted.result.probe_empty
+    assert minted.manifest.coverage.rows == 0
+    assert "empty_result" in _warning_codes(minted)
 
 
-def test_a_place_with_no_data_that_was_not_refused_stays_default_facet_undefined(
+def test_a_place_with_no_data_that_was_not_refused_is_the_empty_result(
     graph: OriginGraphClient,  # noqa: F811
 ) -> None:
-    with (
-        pytest.raises(DefaultFacetUndefinedError),
-        origin_reads(graph, availability=_NO_DATA, deadline=None),
-    ):
+    minted = _mint(graph, _request("country/NGA"))
+
+    assert minted.result.probe_empty
+    assert minted.manifest.coverage.rows == 0
+    assert "empty_result" in _warning_codes(minted)
+    assert "un_system_unavailable" not in _warning_codes(minted)
+
+
+def test_a_preview_of_a_place_with_no_data_refuses_default_facet_undefined(
+    graph: OriginGraphClient,  # noqa: F811
+) -> None:
+    # The empty result is the mint's. A preview selects facets over the empty probe and
+    # refuses, which its callers handle.
+    with pytest.raises(DefaultFacetUndefinedError):
         materialise_preview(
             _request("country/NGA"), sdmx=_sdmx_never_called(), graph=graph, limit=10
         )

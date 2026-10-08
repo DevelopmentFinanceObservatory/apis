@@ -345,7 +345,9 @@ The order is total, so the same candidates always give the same choice, and the 
 | `dfo_precedence`                      | The candidates disagreed on this axis and DFO's facet ranked first because DFO holds data at a requested place.                                 |
 | `absent_on_selected_facet`            | The top-ranked facet leaves this axis empty.                                                                                                    |
 
-`basis` is `deployment_fallback` for every choice this policy makes. A top-ranked facet must carry provenance for citation. The mint returns `default_facet_undefined` when the selected facet lacks provenance.
+`basis` is `deployment_fallback` for every choice this policy makes. A top-ranked facet must carry provenance for citation. The mint returns `default_facet_undefined` when the selected facet lacks provenance, or when an axis you bind leaves no facet for the axes you left open.
+
+When the places a definition binds hold no observations of its variable, the policy has nothing to pick from. The mint answers 200 with `coverage.rows` at 0, an `empty_result` warning, an empty `trace.facets` and an empty `citation.sources`.
 
 To override a choice, bind the axis in `input.scope.facets`.
 
@@ -371,6 +373,8 @@ Axis bindings require a concrete ref. A concrete ref fixes the choice and can se
 The manifest has a `content_version` starting `cv_`, `coverage.rows` above zero, and an artifact whose `rendering` matches the `format` and `bundle` you asked for. Minting the same spec again returns the same `content_version` while the source data is unchanged.
 
 ## Troubleshooting
+
+- A manifest with `coverage.rows` at 0 and an `empty_result` warning means the definition is valid and matched no observation. The warning's message says when the bound places hold no observations of the variable at all. Check the places in `definition.identity.entities`. A region or group dcid holds only the observations published for that node, and its member countries are separate places.
 
 - A `404 snapshot_not_found` response means the requested `content_version` is absent from the known `spec_id`'s snapshots. Check that you paired the right two ids.
 

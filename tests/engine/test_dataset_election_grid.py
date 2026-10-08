@@ -83,7 +83,7 @@ from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.interpret import Recall
 from search.engine.options.population import options_population
-from search.engine.qualifier_match import QualifierMatch, recognise_spans
+from search.engine.qualifier_match import QualifierMatch
 from search.engine.quantity import quantity_requirement
 from search.engine.region import option_coverage as option_coverage_module
 from search.engine.region import phase_election as phase_election_module
@@ -106,16 +106,15 @@ from search.engine.region.phase_rank_bind import (
 )
 from search.engine.region.place_context import empty_place_context
 from search.engine.region.place_roles import (
-    PlaceRoles,
+    PlaceAssignment,
     bind_place_roles,
     bound_after_election,
-    capped_place_dcids,
     lacks_query_axis,
 )
 from search.engine.region.related_read import start_elected_related_read
 from search.engine.region.result import RegionResult
 from search.engine.region.sentence_events import _build_shape_event
-from search.engine.region.state import ResolveState
+from search.engine.region.state import ResolveState, shape_vocabulary
 from search.engine.retrieval.bound_values import (
     PartNotServed,
     RoleKeys,
@@ -175,8 +174,10 @@ from series_coverage.schema import FacetMetadata, RoleNames
 from statvar_members import FiveTuple, MemberEnumerator, member_digest
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
 from tests.datasets_api._member_bounds import mint_bounds
+from tests.engine._builders import place_sets, settled_place_roles
 from tests.engine._fake_coverage import empty_coverage_snapshot, patch_coverage
 from tests.engine._harness import offline_resolve
+from tests.engine._index_slots import read_text
 from tests.fixtures import FakeGraph
 from tests.materialise.conftest import FakeGraphReader
 from tests.statvar_members.conftest import FakeMemberArcReader
@@ -368,6 +369,7 @@ def _index(
                 description="A test table.",
                 opt_in=provenance in opt_in,
                 absent_observation="zero",
+                account="provider",
                 rank=rank,
                 invariants=_invariants(rows, provenance),
             )
@@ -936,10 +938,15 @@ def test_a_named_part_refuses_a_code_its_table_does_not_carry(index, named, refu
     table holds no `channel` code, so the term refuses `qualifier_not_bound` before bind.
     The part naming `_DETAIL` can bind it."""
     (shape,) = _dataset_candidates([_derived_shape(_SHARED)], named, frozenset())
-    spans = recognise_spans("K1 aid", index, MeasureIndex(axes=(), values=(), partition_labels=()))
+    measure_index = MeasureIndex(axes=(), values=(), partition_labels=())
+    vocabulary = shape_vocabulary(shape)
+    reading = read_text("K1 aid", index, measure_index, vocabularies=[vocabulary])
+    spans = reading.everywhere.spans
     assert [row.code_system for span in spans for row in span.rows] == ["channel"]
 
-    undeclared = _undeclared_qualifiers(spans, [shape])
+    undeclared = _undeclared_qualifiers(
+        "K1 aid", spans, [shape], {vocabulary: reading.by_vocabulary[vocabulary].spans}
+    )
 
     assert [record.text for record in undeclared] == (["K1"] if refused else [])
 
@@ -1004,6 +1011,7 @@ def _slot_resolve(
     )
     state = _repair_state(shape, _PLACES[roles], model)
     state.capped_shapes = [shape]
+    state.query_qualifier_matches = {shape_vocabulary(shape): admitted}
     state.admitted_qualifiers = admitted
     drafted = SlotBindingDraft(
         axis="source", property_dcid="provenance", kind="value", value_dcids=[slot]
@@ -1266,12 +1274,12 @@ def test_an_alternate_under_a_slot_exclusion_mints_the_identity_a_fresh_question
         state.bind_result.bindings = _offered_source_drafts([drafted], pinned)
     assert asyncio.run(_phase_vet_election(state)) is None
     alternate = state.capped_shapes[1]
-    roles = bind_place_roles(state, alternate, places=capped_place_dcids(state)[0])
-    assert isinstance(roles, PlaceRoles)
+    roles = bind_place_roles(state, alternate)
+    assert isinstance(roles, PlaceAssignment)
 
     walked = walk_alternate(
         alternate,
-        roles,
+        roles.role_keys,
         "donors_a",
         graph=cast(EngineGraphClient, None),
         excluded=state.excluded_datasets,
@@ -1627,8 +1635,8 @@ def _repair_state(
         rcl=Recall(
             candidates=[],
             resolutions={},
-            resolved_entity_names={name: _DCIDS[name] for name in places},
         ),
+        place_sets=place_sets({name: _DCIDS[name] for name in places}),
         entity_roles={name: [DoorRole(axis=axis, span=name)] for name, axis in places.items()},
         bind_result=_UniversalBindOutput(
             chosen_shape_index=0,
@@ -1700,13 +1708,13 @@ def test_the_repair_keeps_the_models_pins_before_the_qualifier_dispositions(
     shape = _flow_shape(_SHARED, roles=roles)
     model = {"sector": "A", **(pins if model_binds_pins else {})}
     state = _repair_state(shape, _PLACES[places], model)
-    bound = bind_place_roles(state, shape, places=capped_place_dcids(state)[0])
+    bound = bind_place_roles(state, shape)
     if isinstance(role_keys, str):
         assert bound == role_keys
         role_keys = set()
     else:
-        assert isinstance(bound, PlaceRoles)
-        assert entity_role_keys(bound.resolved_entities, open_axes=()).bound == role_keys
+        assert isinstance(bound, PlaceAssignment)
+        assert bound.role_keys.bound == role_keys
 
     bindings = _repair(monkeypatch, state)
 
@@ -1772,11 +1780,10 @@ def test_the_answer_reads_the_measure_partition_of_the_dataset_the_role_keys_ele
     shape = _flow_shape(_MEASURED, roles=_DONOR_RECIPIENT)
     state = _repair_state(shape, _PLACES["donor"], {"sector": "A"})
     bindings = _repair(monkeypatch, state, _NETTING)
-    roles = bind_place_roles(state, shape, places=capped_place_dcids(state)[0])
-    assert isinstance(roles, PlaceRoles)
-    query = shape_query(
-        shape, bindings, entity_role_keys(roles.resolved_entities, open_axes=()).bound
-    )
+    assignment = bind_place_roles(state, shape)
+    assert isinstance(assignment, PlaceAssignment)
+    roles = settled_place_roles(shape, assignment)
+    query = shape_query(shape, bindings, assignment.role_keys.bound)
     assert query.role_keys == {"origin"}
     state.shape_draft = elected_role_class_shape(shape, query).value
     state.place = dataclasses.replace(empty_place_context(), roles=roles)
@@ -1830,8 +1837,8 @@ class _Labels:
     def node_labels_batch(self, dcids: list[str]) -> dict[str, str]:
         return {}
 
-    def node_type(self, dcid: str) -> None:
-        return None
+    def node_types_batch(self, dcids: list[str]) -> dict[str, str]:
+        return {}
 
 
 def _menus(outcome: Outcome) -> dict[str, set[str]]:
@@ -2720,16 +2727,14 @@ def test_the_wire_slots_and_the_identity_agree_when_the_role_class_election_rebi
     bindings = _repair(monkeypatch, state)
 
     bound = bind_place_roles(state, shape)
-    assert isinstance(bound, PlaceRoles)
-    role_query = shape_query(
-        shape, bindings, entity_role_keys(bound.resolved_entities, open_axes=()).bound
-    )
+    assert isinstance(bound, PlaceAssignment)
+    role_query = shape_query(shape, bindings, bound.role_keys.bound)
     elected = elected_role_class_shape(shape, role_query).value
     rebound = bound_after_election(state, shape, bound, elected)
-    assert isinstance(rebound, PlaceRoles)
+    assert isinstance(rebound, PlaceAssignment)
     assert is_role_bearing(elected) is decided
     assert (rebound is bound) is decided
-    assert rebound.resolved_entities == {}
+    assert rebound.sets == {}
 
     slots = [
         build_slot(

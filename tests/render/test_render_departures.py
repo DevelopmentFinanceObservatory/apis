@@ -7,7 +7,7 @@ import re
 
 import pytest
 
-from search.heading.departure_fact import DepartureFact
+from search.heading.departure_fact import DepartureFact, UnservedMembers
 from search.models import DEPARTURE_ORDER, Departure
 from search.render.departures import (
     departure_text,
@@ -419,6 +419,50 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
         "aid",
         "The data holds no values for 3 of the 27 European Union members.",
     ),
+    # A region's places are in it, as the heading reads them.
+    (
+        DepartureFact(
+            code="entity_unavailable",
+            binding_ref="where:",
+            asked="Africa",
+            entities=("Mayotte", "Saint Helena"),
+            group="Africa",
+            group_size=59,
+            group_type="Continent",
+        ),
+        None,
+        "The data holds no values for 2 of the 59 countries and territories in Africa.",
+    ),
+    # A role binding a region's members beside a place: the region's members are counted
+    # and only the place named is asked for.
+    (
+        DepartureFact(
+            code="entity_unavailable",
+            binding_ref="where:",
+            asked="Africa",
+            sets=(UnservedMembers("Africa", "Continent", 59, "Africa", ("Ghana", "Tanzania")),),
+        ),
+        None,
+        "You asked for Africa. The data holds no values for 2 of the 59 countries and "
+        "territories in Africa.",
+    ),
+    (
+        DepartureFact(
+            code="entity_unavailable",
+            binding_ref="where:",
+            asked="Norway, Africa, Baltic states",
+            entities=("Norway",),
+            sets=(
+                UnservedMembers("Africa", "Continent", 59, "Africa", ("Ghana",)),
+                UnservedMembers("Baltic states", None, 3, "Baltic states", ("Latvia",)),
+            ),
+            latest_years=(2024, 2024),
+        ),
+        None,
+        "You asked for Norway. The data holds no values for it in 2024. The data holds no "
+        "values in 2024 for 1 of the 59 countries and territories in Africa and 1 of the 3 "
+        "Baltic states.",
+    ),
     # ids-016: a label ending in a role noun keeps it.
     (
         DepartureFact(
@@ -475,6 +519,27 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
         DepartureFact(code="group_read_as_members", binding_ref="origin:", asked="EU institutions"),
         "aid",
         "You asked for EU institutions. This shows its members, each on its own.",
+    ),
+    # A region read as members is named as the places in it.
+    (
+        DepartureFact(
+            code="group_read_as_members",
+            binding_ref="where:",
+            asked="Africa",
+            group_type="Continent",
+        ),
+        "aid",
+        "You asked for Africa. This shows the countries and territories in it, each on its own.",
+    ),
+    (
+        DepartureFact(
+            code="group_read_as_members",
+            binding_ref="origin:",
+            asked="the EU",
+            group_type="ContinentalUnion",
+        ),
+        "aid",
+        "You asked for the EU. This shows its members, each on its own.",
     ),
     # A resubmit of crs-006 posts no words for the group.
     (

@@ -8,19 +8,19 @@ from search.engine.region.equivalent_series import shared_cluster
 
 _ELECTRICITY_ACCESS = (
     "worldBank/EG_ELC_ACCS_ZS",
-    "sdg/EG_ACS_ELEC",
+    "undata/sdg/EG_ACS_ELEC",
 )
 
 _UNDER5_MORTALITY = (
     "MortalityRate_Person_Upto4Years_AsFractionOf_Count_BirthEvent_LiveBirth",
-    "sdg/SH_DYN_MORT.AGE--Y0T4",
+    "undata/sdg/SH_DYN_MORT.AGE--Y0T4",
     "worldBank/SH_DYN_MORT",
 )
 
 _REMITTANCES_SHARE_OF_GDP = (
     "Amount_Remittance_InwardRemittance_AsFractionOf_"
     "Amount_EconomicActivity_GrossDomesticProduction_Nominal",
-    "sdg/BX_TRF_PWKR",
+    "undata/sdg/BX_TRF_PWKR",
 )
 
 _GDP_CURRENT_PRICES = (

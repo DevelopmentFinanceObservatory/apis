@@ -18,7 +18,7 @@ def test_load_release_is_not_run_at_import_time():
 
 def test_load_release_populates_every_pinned_field(catalogue_dir):
     release = load_release(catalogue_dir=catalogue_dir)
-    assert release.catalog_version == "2026.8.0"
+    assert release.catalog_version == "2026.10.0"
     assert release.schema_version == 1
     assert release.envelope_schema["$id"].endswith("envelope.schema.json")
     assert set(release.component_schemas) == set(_MEMBERS)

@@ -18,7 +18,9 @@ from search.engine.extract import DateRequest
 from search.engine.region import grounding as grounding_module
 from search.engine.region.codes import ENTITY_LABEL_UNRESOLVED, OPTION_COVERAGE_PROBE_FAILED
 from search.engine.region.grounding import _suggest_nearest_real
-from search.engine.region.place_context import PlaceContext, PlaceMode
+from search.engine.region.place_context import PlaceContext, PlaceMode, UnsettledPlace
+from search.engine.region.place_roles import PlaceAssignment, where_binding
+from search.engine.region.place_set import PlaceNode, PlaceSet
 from search.engine.retrieval import role_resolve as role_resolve_module
 from search.engine.retrieval.bound_values import RoleClassWalks
 from search.engine.retrieval.coverage import citable_source_ids
@@ -271,6 +273,84 @@ def test_no_suggestions_when_neither_relaxation_finds_data():
     )
     assert suggestions == []
     assert warnings == []
+
+
+_REGION = "TestRelaxRegion"
+_OTHER_MEMBER = "country/XYA"
+_REGION_SET = PlaceSet(
+    name="Test region",
+    kind="region",
+    node=PlaceNode(dcid=_REGION, graph_type="Continent"),
+    members=(_RECIPIENT, _OTHER_MEMBER),
+    member_type="Country",
+)
+
+
+def _region_suggestions(held_at: str):
+    """The suggestions for the two bindings asked at the test region, where relaxing
+    property A finds data at `held_at` alone. The original answer held no data at the
+    region's node or its members, so its context binds the members, and so does its
+    where slot."""
+    graph = FakeGraph(
+        nodes=_NODES,
+        obs={
+            f"{_SV_RELAX_A}|{held_at}": [
+                {"earliestDate": "2020", "latestDate": "2020", "obsCount": 3}
+            ]
+        },
+        detect={},
+        resolve={},
+    )
+    shape = dataclasses.replace(
+        _shape(),
+        slot_keys=(
+            *_shape().slot_keys,
+            SlotKeyDraft(axis="where", property_dcid=None, label="place"),
+        ),
+    )
+    where = where_binding(list(_REGION_SET.members))
+    assert where is not None
+    unsettled = UnsettledPlace(
+        shape,
+        PlaceAssignment(sets={"observationAbout": (_REGION_SET,)}),
+        admitted=frozenset({("observationAbout", "Continent"), ("observationAbout", "Country")}),
+    )
+    suggestions, _warnings, _reads, _presence = _suggest_nearest_real(
+        graph=graph,
+        sdmx=FakeSdmxClient(
+            observations={}, availability={}, scope_availability=graph.scope_availability
+        ),
+        shape_draft=shape,
+        bindings=[*_BINDINGS, where],
+        place=unsettled.context({"observationAbout": _REGION_SET.members}),
+        unsettled=unsettled,
+        presence=None,
+        date_request=None,
+        coverage=empty_coverage_snapshot(),
+    )
+    return suggestions
+
+
+@pytest.mark.parametrize("held_at", [_REGION, _OTHER_MEMBER])
+def test_a_relaxation_settles_its_sets_on_its_own_read(held_at):
+    """The relaxed series holds data at the region's node alone, or at one member alone.
+    Its suggestion binds the node in the first case and the members in the second,
+    whatever the original answer bound, and its where slot holds the places it binds."""
+    (suggestion,) = _region_suggestions(held_at)
+
+    places = [_REGION] if held_at == _REGION else sorted(_REGION_SET.members)
+    assert suggestion.definition.identity.entities == {"observationAbout": places}
+    (where,) = [slot.binding for slot in suggestion.resolved.slots if slot.key.axis == "where"]
+    values = [where.value] if where.kind == "value" else where.values
+    assert sorted(value.ref.dcid for value in values) == places
+
+
+def test_a_relaxation_over_the_place_bound_is_not_suggested(search_settings):
+    """The relaxed series holds data at a member and none at the node, so the relaxation
+    binds the region's two members. Under a bound of one place it is not suggested."""
+    search_settings(max_child_places=1)
+
+    assert _region_suggestions(_OTHER_MEMBER) == []
 
 
 # The same `roles` dict feeds each binding iteration, so a missing label can duplicate warnings.

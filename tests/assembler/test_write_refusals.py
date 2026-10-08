@@ -23,7 +23,7 @@ from assembler.pipeline import ORPHANED_PIN_RECONCILIATION_REQUIRED_MARKER, writ
 from assembler.ports import FrameRef
 from assembler.testing import build_resolved_frame, malaria_ethiopia_rows
 
-from ._pipeline_support import _malaria_intent, _stat_card_intent
+from ._pipeline_support import _malaria_intent, _stat_card_intent, _stored_resolved_frame
 
 
 def _release_excluding(release, member):
@@ -343,13 +343,25 @@ def test_comparable_units_required_is_still_reachable_from_the_write_path(
     assert excinfo.value.constraint_id == "comparable_units_required"
 
 
-@pytest.mark.parametrize("member", ["line_chart", "bar_chart"])
-def test_a_chart_over_series_with_a_set_and_a_null_unit_refuses_comparable_units(
-    member, frame_store, revision_store, release_registry
+_PER_PERSON = {"numerator": "USDollar", "denominator": {"stat_var": "dcid:Count_Person"}}
+_PER_WOMAN = {"numerator": "USDollar", "denominator": {"stat_var": "dcid:Count_Person_Female"}}
+
+
+@pytest.mark.parametrize(
+    ("member", "units"),
+    [
+        pytest.param("line_chart", ("USDollar", None), id="line_chart-set-and-null"),
+        pytest.param("bar_chart", ("USDollar", None), id="bar_chart-set-and-null"),
+        pytest.param("line_chart", (_PER_PERSON, _PER_WOMAN), id="line_chart-composed"),
+    ],
+)
+def test_a_chart_over_series_with_different_units_refuses_comparable_units(
+    member, units, frame_store, revision_store, release_registry
 ):
     """Issue #953: GDP in USDollar beside population with a null unit resolves as two series.
-    A chart over them refuses on its units, after resolution lets them through."""
-    rf = build_resolved_frame(
+    A chart over them refuses on its units, after resolution lets them through. Two composed
+    units that differ in one side refuse the same way."""
+    rf = _stored_resolved_frame(
         frame_ref=FrameRef(spec_id="spec_" + "6" * 32, content_version="cv_" + "7" * 32),
         role_keys=("recipient",),
         rows=[
@@ -362,7 +374,7 @@ def test_a_chart_over_series_with_a_set_and_a_null_unit_refuses_comparable_units
                 "measurementMethod": None,
                 "provenance": "src_a",
             }
-            for stat_var, unit in (("dcid:GDP", "USDollar"), ("dcid:Population", None))
+            for stat_var, unit in zip(("dcid:GDP", "dcid:Population"), units, strict=True)
         ],
     )
     frame_store.put(resolved_frame=rf)
@@ -384,6 +396,76 @@ def test_a_chart_over_series_with_a_set_and_a_null_unit_refuses_comparable_units
             release_registry=release_registry,
         )
     assert excinfo.value.constraint_id == "comparable_units_required"
+
+
+@pytest.mark.parametrize(
+    ("units", "labels", "table_unit"),
+    [
+        pytest.param(
+            ("U" * 200 + "a" * 100, "U" * 200 + "b" * 100),
+            {},
+            None,
+            id="labels-cut-to-the-same-200-characters",
+        ),
+        pytest.param(
+            ("USDollar", "CurrencyUSD"),
+            {"USDollar": "US Dollar", "CurrencyUSD": "US Dollar"},
+            None,
+            id="two-refs-the-graph-names-alike",
+        ),
+        pytest.param(
+            ("USDollar", "USDollar"), {"USDollar": "US Dollar"}, "US Dollar", id="one-unit-control"
+        ),
+    ],
+)
+def test_series_units_compare_by_their_frame_cells_not_their_labels(
+    units, labels, table_unit, frame_store, revision_store, release_registry
+):
+    """Two units that differ in the frame differ on a card, whatever their labels read: a
+    line_chart over them refuses and a table reports no shared unit."""
+    rf = _stored_resolved_frame(
+        frame_ref=FrameRef(spec_id="spec_" + "4" * 32, content_version="cv_" + "5" * 32),
+        role_keys=("recipient",),
+        rows=[
+            {
+                "stat_var": stat_var,
+                "recipient": "country/GTM",
+                "time_period": "2020",
+                "value": 1.0,
+                "unit": unit,
+                "measurementMethod": None,
+                "provenance": "src_a",
+            }
+            for stat_var, unit in zip(("dcid:A", "dcid:B"), units, strict=True)
+        ],
+        labels=labels,
+    )
+    frame_store.put(resolved_frame=rf)
+
+    def write(member):
+        return write_component(
+            intent={
+                "type": member,
+                "frame_ref": {
+                    "spec_id": rf.frame_ref.spec_id,
+                    "content_version": rf.frame_ref.content_version,
+                },
+                "select": {"stat_var": ["dcid:A", "dcid:B"]},
+            },
+            component_id=None,
+            composition_id=None,
+            frame_store=frame_store,
+            revision_store=revision_store,
+            release_registry=release_registry,
+        )
+
+    assert write("table").fact_summary["unit"] == table_unit
+    if table_unit is None:
+        with pytest.raises(ConstraintViolation) as excinfo:
+            write("line_chart")
+        assert excinfo.value.constraint_id == "comparable_units_required"
+    else:
+        assert write("line_chart").fact_summary["unit"] == table_unit
 
 
 # -- unknown id / frame refusals ------------------------------------------------

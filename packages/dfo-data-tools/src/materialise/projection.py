@@ -38,10 +38,11 @@ from dataclasses import dataclass
 from operator import itemgetter
 from typing import Literal
 
-from dfo_frame_grammar.grammar import UnitRequest
+from dfo_frame_grammar.grammar import ComposedUnit, UnitRequest
 
 from materialise.errors import MaterialisationUsageError
 from materialise.reshape import Table, TableLike
+from materialise.unit_cells import unit_cell_text
 
 type Row = tuple[object, ...]
 type Names = Mapping[str, str]
@@ -108,8 +109,16 @@ def split_unit(
     request included (`validate_unit_request`), and states its own prices and base year. A
     native unit is a currency when `currency_of` gives its currency. A unit with a base year
     is in constant prices of that year. Any other takes `native_price_basis`, the price basis
-    of the row's StatVar.
+    of the row's StatVar. A composed cell (`ComposedUnit`) is no one currency: `unit` holds
+    the JCS text of its `as_json`, as the tabular writers render it, and the rest are `None`.
     """
+    if isinstance(cell, ComposedUnit):
+        return UnitParts(
+            unit=unit_cell_text(cell),
+            currency=None,
+            price_basis=None,
+            base_year=None,
+        )
     if isinstance(cell, UnitRequest):
         return UnitParts(
             unit=f"{_CURRENCY_DCID_PREFIX}{cell.currency}",

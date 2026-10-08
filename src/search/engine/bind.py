@@ -8,6 +8,8 @@ inapplicable property and maps to wire ``unbound`` plus ``inapplicable_slots``.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
@@ -20,7 +22,7 @@ from search.models import Axis
 
 if TYPE_CHECKING:
     from search.engine.qualifier_match import QualifierMatch, QualifierTie
-    from search.engine.shape import ShapeDraft
+    from search.engine.shape import ShapeDraft, SlotKeyDraft
 
 DraftBindingKind = Literal["value", "set", "unbound", "absent"]
 """The LLM's own four-valued binding vocabulary -- an INPUT signal, distinct
@@ -379,12 +381,57 @@ def _source_slot_lines(shape: ShapeDraft) -> list[str]:
     ]
 
 
+def _listed_slots(shape: ShapeDraft, withheld_measure_axes: frozenset[str]) -> list[SlotKeyDraft]:
+    """The constraint slots the prompt lists for `shape`. Only an index-sourced shape has an
+    election to settle a withheld axis; a recall-sourced shape binds it here like any other
+    constraint slot. A slot an invariant fixes is withheld from every shape."""
+    withheld_axes = shape_invariants(shape).keys() | (
+        withheld_measure_axes if shape.slot_taxonomy_index_sourced else frozenset()
+    )
+    return [
+        s
+        for s in shape.slot_keys
+        if s.property_dcid is not None and s.property_dcid not in withheld_axes
+    ]
+
+
+@dataclass(frozen=True, slots=True)
+class _QualifierMenu:
+    """One shape's own fixed values and tie groups, as its prompt block lists them."""
+
+    fixed: tuple[QualifierMatch, ...]
+    groups: tuple[tuple[QualifierMatch, ...], ...]
+
+
+def _qualifier_menu(
+    shape: ShapeDraft,
+    matches: tuple[QualifierMatch, ...],
+    ties: tuple[QualifierTie, ...],
+    withheld_measure_axes: frozenset[str],
+) -> _QualifierMenu:
+    """`shape`'s own admitted `matches` and `ties` on the constraint slots it lists, less the
+    withheld measure axes. A tie group left with fewer than two rows has nothing to elect
+    between and is dropped."""
+    listed = {
+        s.property_dcid for s in _listed_slots(shape, withheld_measure_axes)
+    } - withheld_measure_axes
+    groups = (tuple(row for row in tie.rows if row.code_system in listed) for tie in ties)
+    return _QualifierMenu(
+        fixed=tuple(m for m in matches if m.code_system in listed),
+        groups=tuple(rows for rows in groups if len(rows) >= _MIN_TIE_ROWS_TO_RENDER),
+    )
+
+
+def _qualifier_row(match: QualifierMatch) -> str:
+    return f"property_dcid={match.code_system}, value_dcid={match.code_dcid} ({match.label})"
+
+
 def _build_universal_bind_prompt(
     variable: str,
     shapes: list[ShapeDraft],
     *,
-    admitted_qualifiers: tuple[QualifierMatch, ...] = (),
-    admitted_ties: tuple[QualifierTie, ...] = (),
+    admitted_qualifiers: Sequence[tuple[QualifierMatch, ...]] = (),
+    admitted_ties: Sequence[tuple[QualifierTie, ...]] = (),
     withheld_measure_axes: frozenset[str] = frozenset(),
     dropped_qualifier_phrases: tuple[str, ...] = (),
 ) -> str:
@@ -396,12 +443,17 @@ def _build_universal_bind_prompt(
     ``requested_all`` evidence
     and a verbatim phrase echo. The block appears only when phrases exist.
 
+    ``admitted_qualifiers`` and ``admitted_ties`` hold each shape's own admitted matches and
+    ties, in `shapes` order; an empty sequence admits none on any shape. Each shape lists its
+    own under its slots, as ``fixed_context`` and ``query_named_alternatives``, so a shape
+    is shown only its own vocabulary's reading of each word. A fixed value or tie row shows
+    only on a constraint slot the shape lists.
+
     ``withheld_measure_axes`` removes matching fixed-context rows, and matching slots of
     an index-sourced shape, whose measure election applies them after the call. A
-    recall-sourced shape keeps those slots: no election reads its members. Ties render as a
-    separate alternatives block, filtered by withheld axes and shown only with two or more
-    rows. The model elects a tie row. Binding happens downstream. Fixed-context matches are
-    supplied as preselected.
+    recall-sourced shape keeps those slots: no election reads its members. A tie group is
+    filtered the same way and shown only with two or more rows. The model elects a tie
+    row. Binding happens downstream. Fixed-context matches are supplied as preselected.
 
     A slot an invariant of the dataset the shape's part names fixes (`shape_invariants`) is
     withheld from every shape. It holds one value on every row of that dataset, so the
@@ -416,48 +468,33 @@ def _build_universal_bind_prompt(
     prompts unchanged. Index-sourced slots show labels
     on a separate line. Slots named by fixed context or a tie use no label line.
     """
-    rendered_qualifiers = tuple(
-        m for m in admitted_qualifiers if m.code_system not in withheld_measure_axes
-    )
+    menus = [
+        _qualifier_menu(
+            shape,
+            admitted_qualifiers[idx] if admitted_qualifiers else (),
+            admitted_ties[idx] if admitted_ties else (),
+            withheld_measure_axes,
+        )
+        for idx, shape in enumerate(shapes)
+    ]
     lines: list[str] = [
         f"Variable phrase: {variable}",
         "",
     ]
-    if rendered_qualifiers:
+    if any(menu.fixed for menu in menus):
         lines.append(
-            "FIXED CONTEXT (already determined by the query text -- for whichever shape "
-            "you choose, if it lists a constraint_slot for one of these property_dcids, "
-            "bind that slot kind=value to exactly this value_dcid, not your own reading):"
-        )
-        lines.extend(
-            f"  property_dcid={match.code_system}, value_dcid={match.code_dcid} ({match.label})"
-            for match in rendered_qualifiers
+            "FIXED CONTEXT (already determined by the query text -- if you choose a shape "
+            "that lists fixed_context, bind each constraint_slot it names kind=value to "
+            "exactly that value_dcid, not your own reading)."
         )
         lines.append("")
-    rendered_ties: list[tuple[QualifierMatch, ...]] = []
-    for tie in admitted_ties:
-        rows = tuple(r for r in tie.rows if r.code_system not in withheld_measure_axes)
-        # Fewer than two rows leaves nothing to elect between.
-        if len(rows) >= _MIN_TIE_ROWS_TO_RENDER:
-            rendered_ties.append(rows)
-    if rendered_ties:
+    if any(menu.groups for menu in menus):
         lines.append(
             "QUERY-NAMED ALTERNATIVES: the query text names exactly one row in each "
-            "group below; for the shape you choose, if it lists a constraint_slot for "
-            "a group's property_dcid, bind exactly one row of that group kind=value "
-            "and no other row of it:"
+            "group of a shape's query_named_alternatives; if you choose that shape, bind "
+            "exactly one row of each group kind=value and no other row of it."
         )
-        for rows in rendered_ties:
-            lines.extend(
-                f"  property_dcid={row.code_system}, value_dcid={row.code_dcid} ({row.label})"
-                for row in rows
-            )
-            lines.append("")
-    # Slots named by FIXED CONTEXT or QUERY-NAMED ALTERNATIVES get no labels
-    # line (see _taxonomy_labels_line).
-    tied_properties = {m.code_system for m in rendered_qualifiers} | {
-        row.code_system for rows in rendered_ties for row in rows
-    }
+        lines.append("")
     if dropped_qualifier_phrases:
         lines.append(
             "DROPPED QUALIFIERS (the query asked for these but no earlier stage could "
@@ -476,7 +513,7 @@ def _build_universal_bind_prompt(
     lines.append(f"CANDIDATE SHAPES ({len(shapes)} total):")
     lines.append("")
 
-    for idx, shape in enumerate(shapes):
+    for idx, (shape, menu) in enumerate(zip(shapes, menus, strict=True)):
         lines.append(f"Shape {idx}:")
         lines.append(f"  label: {shape.label}")
         family_label = STANDARD_SHAPE_LABEL
@@ -507,14 +544,12 @@ def _build_universal_bind_prompt(
         # Only an index-sourced shape has an election to settle a withheld axis; a
         # recall-sourced shape binds it here like any other constraint slot. A slot an
         # invariant fixes is withheld from every shape.
-        withheld_axes = shape_invariants(shape).keys() | (
-            withheld_measure_axes if shape.slot_taxonomy_index_sourced else frozenset()
-        )
-        constraint_slots = [
-            s
-            for s in shape.slot_keys
-            if s.property_dcid is not None and s.property_dcid not in withheld_axes
-        ]
+        constraint_slots = _listed_slots(shape, withheld_measure_axes)
+        # Slots named by the shape's fixed context or alternatives get no labels line (see
+        # _taxonomy_labels_line).
+        tied_properties = {m.code_system for m in menu.fixed} | {
+            row.code_system for rows in menu.groups for row in rows
+        }
         if constraint_slots:
             lines.append("  constraint_slots:")
             taxonomy = shape.slot_taxonomy or {}
@@ -543,6 +578,14 @@ def _build_universal_bind_prompt(
             lines.append("  constraint_slots:")
         if shape.source_options:
             lines.extend(_source_slot_lines(shape))
+        if menu.fixed:
+            lines.append("  fixed_context:")
+            lines.extend(f"    {_qualifier_row(match)}" for match in menu.fixed)
+        if menu.groups:
+            lines.append("  query_named_alternatives:")
+            for number, rows in enumerate(menu.groups, start=1):
+                lines.append(f"    group {number}:")
+                lines.extend(f"      {_qualifier_row(row)}" for row in rows)
 
         sample = list(shape.sv_arc_facts or {})[:_MAX_SAMPLE_DCIDS_SHOWN]
         if sample:
@@ -557,16 +600,16 @@ async def bind_universal(
     variable: str,
     shapes: list[ShapeDraft],
     *,
-    admitted_qualifiers: tuple[QualifierMatch, ...] = (),
-    admitted_ties: tuple[QualifierTie, ...] = (),
+    admitted_qualifiers: Sequence[tuple[QualifierMatch, ...]] = (),
+    admitted_ties: Sequence[tuple[QualifierTie, ...]] = (),
     withheld_measure_axes: frozenset[str] = frozenset(),
     dropped_qualifier_phrases: tuple[str, ...] = (),
     llm: SupportsLLM,
 ) -> tuple[_UniversalBindOutput, dict | None]:
     """Elect a shape and bind its slots from the ordered candidate shapes.
 
-    Each shape must have a populated taxonomy. Admitted qualifiers and ties are already
-    checked against these shapes. Withheld axes are omitted from the prompt. Dropped
+    Each shape must have a populated taxonomy. Admitted qualifiers and ties are each
+    shape's own, in `shapes` order, already checked against that shape. Withheld axes are omitted from the prompt. Dropped
     phrases ask for ``unbound`` with ``requested_all`` evidence and a verbatim echo.
     The stage wrapper applies bind-specific thinking settings without changing the injected LLM.
     The prompt holds only the variable phrase, dropped-qualifier phrases, and graph-sourced

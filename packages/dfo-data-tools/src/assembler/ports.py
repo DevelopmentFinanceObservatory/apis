@@ -22,11 +22,13 @@ __all__ = [
     "FrameRef",
     "FrameStore",
     "FrameUnavailable",
+    "LeftOutSeries",
     "PriorCreate",
     "ReleaseRegistry",
     "ResolvedFrame",
     "RevisionRecord",
     "RevisionStore",
+    "RollingAnchor",
     "StructuralView",
     "WriteContext",
     "WriteSubjectKind",
@@ -70,12 +72,42 @@ class StructuralView:
 
 
 @dataclass(frozen=True)
+class LeftOutSeries:
+    """A series with no row at a rolling anchor's period.
+
+    `root` is the index of the population the series belongs to, in the order of the
+    recipe's populations: one per root dataset. `coordinates` maps that dataset's columns
+    to the series' values, and `label` is its display name."""
+
+    root: int
+    coordinates: Mapping[str, str]
+    label: str
+
+
+@dataclass(frozen=True)
+class RollingAnchor:
+    """The period "latest" names on a derived frame, as its recipe records it.
+
+    `rule` names the anchor rule that chose `period`, `dfo_frame_grammar.rolling.ANCHOR_RULE`
+    when the recipe was written. `left_out` lists the series that rule left without a row at
+    `period`, in the recipe's order."""
+
+    period: str
+    rule: str
+    left_out: tuple[LeftOutSeries, ...] = ()
+
+
+@dataclass(frozen=True)
 class ResolvedFrame:
     """`manifest` is the stored Datasets version body the frame was minted
     under. `retrieved_on` is the UTC date the platform first stored this
     frame's canonical frame1 bytes, which is when the values it holds were
     read from their sources; a minted component's `provenance.sources[]`
-    states it as `retrieved`.
+    states it as `retrieved`. `anchor` is the rolling anchor a derived frame's
+    recipe records, and `None` for a dataset frame or a recipe without one. An
+    intent's relative periods count from `anchor.period` when it is set, and from
+    the newest period half of the component's own series hold otherwise
+    (`assembler.rolling`).
     """
 
     frame_ref: FrameRef
@@ -84,6 +116,7 @@ class ResolvedFrame:
     manifest: Mapping[str, object]
     labels: Mapping[str, str]
     retrieved_on: datetime.date
+    anchor: RollingAnchor | None = None
 
 
 class FrameUnavailable(Exception):

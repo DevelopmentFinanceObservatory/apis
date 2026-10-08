@@ -241,7 +241,7 @@ def test_a_tied_slots_labels_line_is_omitted_in_favor_of_its_named_alternatives(
         ),
     )
 
-    prompt = _build_universal_bind_prompt("test variable", [shape], admitted_ties=(tie,))
+    prompt = _build_universal_bind_prompt("test variable", [shape], admitted_ties=[(tie,)])
     lines = prompt.splitlines()
 
     assert "QUERY-NAMED ALTERNATIVES" in prompt

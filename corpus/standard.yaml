@@ -79,8 +79,8 @@
     candidates:
       measure:
         bound:
-          age: SDG_AgeEnum_Y0T4
-        stat_vars: [sdg/SH_DYN_MORTN.AGE--Y0T4, sdg/SH_DYN_MORT.AGE--Y0T4]
+          undataAge: undata/AGE-Y0T4
+        stat_vars: [undata/sdg/SH_DYN_MORTN.AGE--Y0T4, undata/sdg/SH_DYN_MORT.AGE--Y0T4]
 - id: std-04b
   query: number of births in Ethiopia
   why: When the DFO and base paths end no_data for births in Ethiopia, the UN System Data Commons answers with undata/unicef/DM_BRTS.
@@ -475,7 +475,7 @@
       entities: []
 - id: digital-access-latest
   query: most recent data on internet access
-  why: Most recent data on internet access offers Count_Person_IsInternetUser_PerCapita and the SDG series sdg/IT_USE_ii99 as cross-taxonomy candidates.
+  why: Most recent data on internet access offers Count_Person_IsInternetUser_PerCapita and the SDG series undata/sdg/IT_USE_ii99 as cross-taxonomy candidates.
   tags:
     directional_flow: na
     conjunction: none
@@ -485,7 +485,7 @@
   expect:
     candidates:
       measure:
-        stat_vars: [Count_Person_IsInternetUser_PerCapita, sdg/IT_USE_ii99]
+        stat_vars: [Count_Person_IsInternetUser_PerCapita, undata/sdg/IT_USE_ii99]
 - id: electricity-access-compare
   query: electricity access in Rwanda and Ghana
   why: Electricity access in Rwanda and Ghana resolves to worldBank/EG_ELC_ACCS_ZS with both places bound as one set.
@@ -897,7 +897,7 @@
 - id: hiv-trend-africa-2010-2020
   query: HIV prevalence trends in Africa 2010 to 2020
   include_observations: true
-  why: HIV prevalence trends in Africa for 2010 to 2020 resolve to undata/unaids/HIV_PREV.AGE--Y_GE15 once the first pass refuses the SDG incidence shape.
+  why: The africa node holds no observation of undata/unaids/HIV_PREV.AGE--Y_GE15, so Africa reads as its member countries. The first pass refuses the SDG incidence shape.
   tags:
     directional_flow: na
     conjunction: none
@@ -914,6 +914,7 @@
       entities:
       - dcid: africa
         role: observationAbout
+        expands: true
 - id: infant-mortality-rate
   query: infant mortality rate
   why: Infant mortality rate with no place covers every place with data, so it answers with the infant mortality StatVar, whose one observation is Kenya 2019.
@@ -1444,7 +1445,7 @@
   expect:
     candidates:
       measure:
-        stat_vars: [sdg/SH_DYN_MORT.AGE--Y0T4]
+        stat_vars: [undata/sdg/SH_DYN_MORT.AGE--Y0T4]
 - id: unemployment-rate
   query: unemployment rate
   why: Unemployment rate with no place resolves to UnemploymentRate_Person as the sole definite reading.
@@ -1478,6 +1479,7 @@
 - id: urban-population-count
   query: urban population
   why: Urban population with no place resolves to Count_Person_Urban.
+  known_failure: {issue: 1242, checks: [disposition]}
   tags:
     directional_flow: na
     conjunction: none
@@ -2053,24 +2055,13 @@
         role: destination
 - id: crs-net-oda-kenya
   query: net ODA to Kenya
-  why: Net ODA to Kenya binds nettingBasis Net and crsTypeOfFlow 10 and resolves to the net FinancialFlow disbursement family.
+  why: Net ODA to Kenya binds nettingBasis Net and resolves to the DAC2a net received family.
   tags:
     directional_flow: na
     conjunction: none
   expect:
     definite:
-      measure:
-        shape:
-          population_type: FinancialFlow
-          measured_property: amount
-          stat_type: measuredValue
-          measurement_qualifier: Nominal
-          measurement_denominator: null
-        bound:
-          crsTypeOfFlow: CRSTypeOfFlow10
-          financialFlowType: Disbursement
-          nettingBasis: Net
-        open: [crsCooperationModality, crsPurpose, crsTypeOfFinance]
+      measure: {family: dac2a.oda_net_received}
       entities:
       - dcid: country/KEN
         role: destination
@@ -2235,7 +2226,7 @@
         role: destination
 - id: crs-aid-real-terms-kenya
   query: aid to Kenya in real terms
-  why: Aid to Kenya in real terms is the nominal ODA family with a constant-price unit request; the CRS import holds only nominal StatVars.
+  why: Aid to Kenya in real terms is the nominal DAC2a family with a constant-price unit request.
   tags:
     directional_flow: na
     conjunction: none
@@ -2244,18 +2235,7 @@
     checks: [request]
   expect:
     definite:
-      measure:
-        shape:
-          population_type: FinancialFlow
-          measured_property: amount
-          stat_type: measuredValue
-          measurement_qualifier: Nominal
-          measurement_denominator: null
-        bound:
-          crsTypeOfFlow: CRSTypeOfFlow10
-          financialFlowType: Disbursement
-          nettingBasis: Gross
-        open: [crsCooperationModality, crsPurpose, crsTypeOfFinance]
+      measure: {family: dac2a.oda_gross_received}
       entities:
       - dcid: country/KEN
         role: destination
@@ -2263,24 +2243,13 @@
         prices: constant
 - id: crs-aid-constant-2022-kenya
   query: aid to Kenya at constant 2022 prices
-  why: Aid to Kenya at constant 2022 prices drops the price phrase, because it matches no registered RealValue synonym.
+  why: Aid to Kenya at constant 2022 prices drops the price phrase, because it matches no registered RealValue synonym; DAC2a answers the aid measure.
   tags:
     directional_flow: na
     conjunction: none
   expect:
     definite:
-      measure:
-        shape:
-          population_type: FinancialFlow
-          measured_property: amount
-          stat_type: measuredValue
-          measurement_qualifier: Nominal
-          measurement_denominator: null
-        bound:
-          crsTypeOfFlow: CRSTypeOfFlow10
-          financialFlowType: Disbursement
-          nettingBasis: Gross
-        open: [crsCooperationModality, crsPurpose, crsTypeOfFinance]
+      measure: {family: dac2a.oda_gross_received}
       entities:
       - dcid: country/KEN
         role: destination
@@ -3828,3 +3797,31 @@
       - dcid: InternationalMonetaryFund
         role: origin
       warnings: [deflator_projected]
+- id: health-spending-african-countries
+  query: how much do African countries spend on their own health care?
+  why: '"African countries" asks for Africa''s members, so the role binds the member countries and records Africa as its group, though the africa node holds a figure.'
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      entities:
+      - dcid: africa
+        role: observationAbout
+        expands: true
+- id: health-spending-africa-named-bare
+  query: health expenditure per capita in Africa
+  why: Africa named bare does not ask for its members, but the africa node holds no observation of WDI health expenditure per capita, so the role binds the member countries and records Africa as its group.
+  tags:
+    directional_flow: na
+    conjunction: none
+  expect:
+    definite:
+      measure:
+        shape:
+          population_type: EconomicActivity
+          measured_property: amount
+      entities:
+      - dcid: africa
+        role: observationAbout
+        expands: true

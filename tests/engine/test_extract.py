@@ -204,11 +204,19 @@ def test_extraction_retains_a_named_group_when_a_qualifier_is_dropped():
 
 def test_extracted_entity_defaults_to_unspecified_with_no_spans():
     """A bare {"text": ...} entity, with no direction fields at all, defaults
-    flow_role to "unspecified" with both span fields null."""
+    flow_role to "unspecified" with both span fields null, and asks for no members."""
     entity = ExtractedEntity.model_validate({"text": "Kenya"})
     assert entity.span is None
     assert entity.flow_role == "unspecified"
     assert entity.role_span is None
+    assert entity.members is False
+
+
+def test_the_extraction_schema_offers_members_on_an_entity():
+    """The schema the model fills holds `members` as an optional boolean on each entity."""
+    entity = Extraction.model_json_schema()["$defs"]["ExtractedEntity"]
+    assert entity["properties"]["members"]["type"] == "boolean"
+    assert "members" not in entity["required"]
 
 
 def test_extracted_entity_accepts_full_shape():

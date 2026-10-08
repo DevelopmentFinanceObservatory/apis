@@ -1072,9 +1072,7 @@ def test_role_shaped_currency_naming_undeclared_axis_raises_request_invalid():
         shape_draft,
         subject_place_roles(_ENTITY),
         stat_vars=(),
-        children={},
         presence=None,
-        max_probe_places=256,
     )
     state.mat_result = Materialised(
         sv_dcids=[_SV],

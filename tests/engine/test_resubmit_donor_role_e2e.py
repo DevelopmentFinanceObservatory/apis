@@ -6,6 +6,7 @@ Fictional flow IDs isolate role handling; the standard-shape case uses the recor
 from __future__ import annotations
 
 import asyncio
+import re
 
 import pytest
 
@@ -13,6 +14,7 @@ from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet
 from search.engine.config import settings
 from search.engine.errors import EngineInputError
+from search.engine.identity_edit import refuse_over_place_bound
 from search.engine.region import resolve_spec_resubmit
 from search.engine.region.codes import NO_MEMBER_HAS_DATA_AT_PLACE
 from search.engine.region.pipeline import resolve_variable
@@ -776,20 +778,51 @@ def test_origin_role_is_carried_by_the_nested_identity_entities_map():
     assert inp.identity.entities == {"origin": [_FRA]}
 
 
-def test_provider_cap_counts_unique_canonical_refs_before_graph_work():
-    """An oversized donor list is rejected before graph access."""
+@pytest.mark.parametrize(
+    ("counts", "pointer", "named"),
+    [
+        pytest.param({"origin": 300}, "/input/identity/entities/origin", {300, 256}, id="one-role"),
+        pytest.param(
+            {"observationAbout": 300},
+            "/input/identity/entities/observationAbout",
+            {300, 256},
+            id="subject-role",
+        ),
+        pytest.param(
+            {"destination": 200, "origin": 100},
+            "/input/identity/entities",
+            {300, 2, 256},
+            id="sum-of-two-roles",
+        ),
+        pytest.param(
+            {"destination": 200, "origin": 200},
+            "/input/identity/entities",
+            {400, 2, 256},
+            id="same-refs-on-two-roles",
+        ),
+    ],
+)
+def test_place_bound_counts_distinct_refs_per_role_before_graph_work(counts, pointer, named):
+    """An identity binding more places than a Spec holds is rejected before graph access,
+    at the role's path when one role exceeds alone, at the entity map when only the sum
+    does. The message names the count and the bound."""
 
     class _NoGraph:
         def __getattr__(self, name):
-            raise AssertionError(f"graph must not be read for provider cap: {name}")
+            raise AssertionError(f"graph must not be read for the place bound: {name}")
 
+    assert settings().max_child_places == 256
     inp = ResubmitIdentityPayload(
-        identity=make_base(
-            GDP_SHAPE,
-            entities=[
-                origin_entity(f"country/P{i}") for i in range(settings().max_standard_places + 1)
-            ],
-        )[1],
+        identity=BaseIdentity.model_validate(
+            {
+                "shape": GDP_SHAPE,
+                "slots": [],
+                "entities": {
+                    role: [f"country/P{i}" for i in range(count)] for role, count in counts.items()
+                },
+                "requested_window": {"kind": "all"},
+            }
+        ),
     )
     with pytest.raises(EngineInputError) as exc_info:
         resolve_spec_resubmit(
@@ -801,22 +834,25 @@ def test_provider_cap_counts_unique_canonical_refs_before_graph_work():
         )
     assert exc_info.value.code == "request_invalid"
     assert exc_info.value.status == 400
-    assert exc_info.value.pointer == "/input/identity/entities/origin"
+    assert exc_info.value.pointer == pointer
+    assert {int(number) for number in re.findall(r"\d+", str(exc_info.value))} == named
 
-    # Direct validation preserves duplicate refs from an incoming payload.
+
+def test_place_bound_counts_a_repeated_ref_once():
+    """Direct validation preserves duplicate refs from an incoming payload, and the bound
+    counts each once."""
     duplicate_heavy = ResubmitIdentityPayload(
         identity=BaseIdentity.model_validate(
             {
                 "shape": GDP_SHAPE,
                 "slots": [],
-                "entities": {"origin": ["country/FRA"] * (settings().max_standard_places + 10)},
+                "entities": {"origin": ["country/FRA"] * 300},
                 "requested_window": {"kind": "all"},
             }
         ),
     )
-    assert duplicate_heavy.identity.entities["origin"] == ["country/FRA"] * (
-        settings().max_standard_places + 10
-    )
+    assert duplicate_heavy.identity.entities["origin"] == ["country/FRA"] * 300
+    refuse_over_place_bound(duplicate_heavy.identity.entities)
 
 
 def test_origin_role_is_nested_in_the_public_request_schema():

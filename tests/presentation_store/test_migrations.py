@@ -6,8 +6,6 @@ import json
 import re
 from pathlib import Path
 
-import pytest
-
 from assembler.catalogue import load_release
 from dataset_store.migrate import apply_pending
 from tests.dataset_store.conftest import RecordingConnection
@@ -121,10 +119,13 @@ def test_bar_chart_axes_migration_is_a_data_rewrite_scoped_to_bar_chart_rows():
 
 
 def test_formatter_profile_migration_writes_the_2026_8_0_profile():
-    """0010's backfill and default both carry the installed 2026.8.0 release's profile."""
+    """0010's backfill and default both carry the profile the installed release still ships.
+
+    The migration's literal is the 2026.8.0 profile. Release 2026.10.0 left the profile
+    unchanged, so the installed release is a valid witness. A release that changes the
+    profile fails this test, and the check then needs a frozen copy of the 2026.8.0 profile.
+    """
     release = load_release()
-    if release.catalog_version != "2026.8.0":
-        pytest.skip(f"the installed catalogue is {release.catalog_version}, not 2026.8.0")
     sql_text = (MIGRATIONS_DIR / "0010_revision_formatter_profile.sql").read_text()
     literals = re.findall(r"'(\{.*\})'::jsonb", sql_text)
     assert len(literals) == 2

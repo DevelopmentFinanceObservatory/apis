@@ -140,7 +140,6 @@ def _phase_reread_arcs(state: _PromoteState) -> RegionResult | None:
             raise EngineInputError(
                 detail,
                 code="request_invalid",
-                detail=detail,
             )
 
         ft = state.ft = next(iter(unique_fts))
@@ -175,7 +174,6 @@ def _phase_reread_arcs(state: _PromoteState) -> RegionResult | None:
                 code="shape_mismatch",
                 status=422,
                 pointer="/input/identity/shape",
-                detail=detail,
             )
         # Respell variable_text from the re-read draft's own display slug,
         # superseding the fallback rendering _phase_validate set.

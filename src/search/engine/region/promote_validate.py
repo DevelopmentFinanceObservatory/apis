@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from search.engine.envelope import now_ms
-from search.engine.identity_edit import validate_edited_identity
+from search.engine.identity_edit import refuse_over_place_bound, validate_edited_identity
 from search.engine.region.place_roles import place_order
 from search.engine.region.promote_state import _PromoteState
 from search.engine.region.resubmit_request import _describe_shape, _reject_inexpressible_unit
@@ -18,11 +18,13 @@ def _phase_validate(state: _PromoteState) -> None:
 
     Read the identity in its canonical form (`canonicalise_identity`), so a pin posted
     bound and one posted unbound mint one spec_id. Refuse a provenance that does not
-    publish its five-tuple (`refuse_source_outside_family`), an `exact` binding and an
-    inexpressible unit request. Failures raise `EngineInputError` unchanged."""
+    publish its five-tuple (`refuse_source_outside_family`), an `exact` binding, an
+    inexpressible unit request and an identity over the bound on the places a Spec binds
+    (`refuse_over_place_bound`). Failures raise `EngineInputError` unchanged."""
     t0 = now_ms()
     try:
         validate_edited_identity(state.inp.identity)
+        refuse_over_place_bound(state.inp.identity.entities)
         # The shape phase assigns the verified slug to variable_text.
         state.variable_text = _describe_shape(state.inp.identity.shape)
         # Each invariant of a dataset an identity names reads bound, as a first answer

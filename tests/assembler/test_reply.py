@@ -7,6 +7,7 @@ import dataclasses
 import pytest
 
 from assembler.bind import bind_all
+from assembler.limits import LABEL_MAX
 from assembler.mint import default_window, mint_component, stamp_envelope
 from assembler.reply import (
     WriteReply,
@@ -21,6 +22,8 @@ from assembler.testing import (
     malaria_ethiopia_frame_ref,
     malaria_ethiopia_resolved_frame,
 )
+
+from ._pipeline_support import _stored_resolved_frame
 
 
 def _selectors():
@@ -153,7 +156,7 @@ def test_fact_summary_series_shape_and_no_cut_below_cap(release):
     assert summary["source_refs"] is None
 
 
-def _ethiopia_resolved_frame_with_unit(unit):
+def _ethiopia_resolved_frame_with_unit(unit, *, build=build_resolved_frame):
     rows = tuple(
         {
             "stat_var": "dcid:MalariaGrantDisbursements",
@@ -166,7 +169,7 @@ def _ethiopia_resolved_frame_with_unit(unit):
         }
         for period, value in {"2020": 100.0, "2021": 110.0, "2022": 120.0}.items()
     )
-    return build_resolved_frame(
+    return build(
         frame_ref=malaria_ethiopia_frame_ref(),
         role_keys=("recipient",),
         rows=rows,
@@ -260,10 +263,164 @@ def test_stat_card_and_its_fact_summary_carry_the_unit_label(release, labels, ex
     assert reply.fact_summary["unit"] == expected_unit
 
 
+_PAYLOAD_UNIT_OF = {
+    "line_chart": lambda component: component["series"][0]["unit"],
+    "bar_chart": lambda component: component["series"][0]["unit"],
+    "table": lambda component: component["rows"][0]["unit"],
+    "stat_card": lambda component: component["unit"],
+}
+
+
+@pytest.mark.parametrize("member", sorted(_PAYLOAD_UNIT_OF))
+def test_a_composed_unit_reaches_the_payload_and_the_fact_summary_in_the_catalogue_shape(
+    release, member
+):
+    """`mint_component` validates the payload against the member's component schema."""
+    resolved_frame = dataclasses.replace(
+        _ethiopia_resolved_frame_with_unit(
+            {"numerator": "USDollar", "denominator": {"stat_var": "dcid:Count_Person"}},
+            build=_stored_resolved_frame,
+        ),
+        labels={"dcid:Count_Person": "Total population"},
+    )
+    expected = {
+        "numerator": "USDollar",
+        "denominator": {"stat_var": "dcid:Count_Person", "label": "Total population"},
+    }
+    window = {"start": "2020", "end": "2022"}
+    series = resolve_selectors(resolved_frame=resolved_frame, selectors=_selectors(), window=window)
+    bound = bind_all(resolved_frame=resolved_frame, series=series, window=window)
+    intent = {
+        "type": member,
+        "frame_ref": {
+            "spec_id": resolved_frame.frame_ref.spec_id,
+            "content_version": resolved_frame.frame_ref.content_version,
+        },
+        "select": _select(),
+        "window": window,
+    }
+    minted = mint_component(
+        member=member,
+        merged_intent=intent,
+        resolved_frame=resolved_frame,
+        series=series,
+        bound_series=bound,
+        release=release,
+    )
+    reply = build_reply(
+        composition_id=None,
+        composition_revision=None,
+        changed=(),
+        stored_intent=intent,
+        resolved_payload=_envelope(minted, release=release),
+        series_coordinates=_series_coordinates(series),
+        formatter_profile=release.formatter_profile,
+    )
+
+    assert _PAYLOAD_UNIT_OF[member](minted.component) == expected
+    assert reply.fact_summary["unit"] == expected
+
+
+def test_a_table_words_each_composed_unit_in_its_unit_column(release):
+    """One StatVar under several composed units varies in `unit`, so the table shows it as a
+    column: each cell names both sides within 200 characters, where the coordinate is the
+    unit's JCS key text. Two units sharing a 200-character numerator keep their own
+    denominators."""
+    long_ref = "R" * 304
+    long_numerator = "N" * 250
+    units = {
+        "country/KEN": {
+            "numerator": long_numerator,
+            "denominator": {"stat_var": "dcid:Count_Person"},
+        },
+        "country/TZA": {
+            "numerator": long_numerator,
+            "denominator": {"stat_var": "dcid:Count_Person_Female"},
+        },
+        "country/ETH": {
+            "numerator": "USDollar",
+            "denominator": {"stat_var": "dcid:Count_Person"},
+        },
+        "country/UGA": {
+            "numerator": {"currency": "EUR", "prices": "constant", "base_year": 2020},
+            "denominator": long_ref,
+        },
+    }
+    resolved_frame = _stored_resolved_frame(
+        frame_ref=malaria_ethiopia_frame_ref(),
+        role_keys=("recipient",),
+        rows=[
+            {
+                "stat_var": "dcid:GDP",
+                "recipient": recipient,
+                "time_period": "2020",
+                "value": 1.0,
+                "unit": unit,
+                "measurementMethod": None,
+                "provenance": "src_oecd_dac",
+            }
+            for recipient, unit in units.items()
+        ],
+        labels={
+            "USDollar": "US Dollar",
+            "dcid:Count_Person": "Total population",
+            "dcid:Count_Person_Female": "Female population",
+        },
+    )
+    window = {"start": "2020", "end": "2020"}
+    selectors = [{"bindings": [{"dimension": "stat_var", "values": ["dcid:GDP"]}]}]
+    series = resolve_selectors(resolved_frame=resolved_frame, selectors=selectors, window=window)
+    bound = bind_all(resolved_frame=resolved_frame, series=series, window=window)
+    minted = mint_component(
+        member="table",
+        merged_intent={
+            "type": "table",
+            "frame_ref": {
+                "spec_id": resolved_frame.frame_ref.spec_id,
+                "content_version": resolved_frame.frame_ref.content_version,
+            },
+            "select": {"stat_var": "dcid:GDP"},
+            "window": window,
+        },
+        resolved_frame=resolved_frame,
+        series=series,
+        bound_series=bound,
+        release=release,
+    )
+
+    cells = {
+        row["dimensions"]["recipient"]: row["dimensions"]["unit"]
+        for row in minted.component["rows"]
+    }
+    assert cells == {
+        "country/ETH": "US Dollar per Total population",
+        "country/UGA": ("EUR/constant/2020 per " + long_ref)[:200],
+        "country/KEN": "N" * 179 + " per Total population",
+        "country/TZA": "N" * 178 + " per Female population",
+    }
+    assert all(len(cell) <= LABEL_MAX for cell in cells.values())
+
+
+_PER_PERSON = {"stat_var": "dcid:Count_Person", "label": "Total population"}
+_PER_WOMAN = {"stat_var": "dcid:Count_Person_Female", "label": "Female population"}
+
+
 @pytest.mark.parametrize(
     ("first_unit", "second_unit", "expected"),
     [
         pytest.param(None, None, None, id="no-unit-control"),
+        pytest.param(
+            {"numerator": "US Dollar", "denominator": _PER_PERSON},
+            {"denominator": dict(reversed(_PER_PERSON.items())), "numerator": "US Dollar"},
+            {"numerator": "US Dollar", "denominator": _PER_PERSON},
+            id="equal-composed-units-with-different-key-order",
+        ),
+        pytest.param(
+            {"numerator": "US Dollar", "denominator": _PER_PERSON},
+            {"numerator": "US Dollar", "denominator": _PER_WOMAN},
+            None,
+            id="composed-units-with-different-denominators",
+        ),
         pytest.param("Year", "Number", None, id="different-string-units"),
         pytest.param(
             {"currency": "USD", "magnitude": "millions"},

@@ -8,9 +8,14 @@ meta door mounts first. Static paths are disjoint from subject-id routes. Those 
 Routes include `GET /api/datasets/healthz`, `/api/datasets/schema`,
 `/api/datasets/capabilities`, `/api/datasets/operations/{operation_id}`,
 `GET /api/datasets/{spec_id}/{content_version}/observations`, `POST /api/datasets/register`,
-`POST /api/datasets`, and `POST /api/datasets/frames/publish`. Registration stores definitions
-for later materialisation. The mint route handles four input kinds. Publish records derived
-`ops_`/`ocv_` frames. Unknown operation ids return `operation_not_found`. Other errors use RFC 9457
+`POST /api/datasets`, `POST /api/datasets/frames/publish`, `POST /api/datasets/frames/refresh`,
+and the recipe door's
+`PUT` and `GET /api/datasets/frames/{spec_id}/{content_version}/recipe`,
+`GET /api/datasets/recipes/replays/{replay_key}`, and `GET /api/datasets/{spec_id}/versions`.
+Registration stores definitions for later materialisation. The mint route handles four input
+kinds. Publish records derived `ops_`/`ocv_` frames, and the recipe door keeps their recipes. It
+mounts before the snapshot door, whose `GET /api/datasets/{spec_id}/{content_version}` would
+otherwise read `versions` as a content version. Unknown operation ids return `operation_not_found`. Other errors use RFC 9457
 problem details.
 
 The Data access proxy authenticates and authorises requests and enforces `401`, `413`, `415`, and
@@ -40,6 +45,8 @@ from datasets_api.doors.observations import (
 )
 from datasets_api.doors.pin import PinReferenceWriter, build_pin_door, classify_pin_exception
 from datasets_api.doors.publish import build_publish_door, classify_publish_exception
+from datasets_api.doors.recipe import build_recipe_door, classify_recipe_exception
+from datasets_api.doors.refresh import build_refresh_door, classify_refresh_exception
 from datasets_api.doors.register import (
     RegistryBackpressure as RegistryBackpressure,  # Tests import this exception from this module.
 )
@@ -60,11 +67,12 @@ from datasets_api.operations.task_client import TaskClient
 # request's coverage estimate. Requests lacking a coverage row still need a bound. The floor
 # reuses the `publish_models.MAX_ROWS` backstop.
 from datasets_api.publish_models import MAX_ROWS as _MATERIALISE_RAW_FETCH_GUARD_ROWS
+from datasets_api.recipe_store import RecipeStore
 from datasets_api.routing import build_id_grammar_refusal_router
 from datasets_api.shutdown import ShutdownBudget
 from datasets_api.store_errors import classify_store_exception
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
-from datasets_api.versions import HeadStore, VersionRecordWriter
+from datasets_api.versions import HeadStore, VersionLister, VersionRecordWriter
 from dc_sdmx import SdmxClient
 from dfo_platform.app import Surface
 from dfo_platform.build import build_commit
@@ -89,6 +97,8 @@ classify_datasets_exception = combine_classifiers(
     classify_observations_exception,
     classify_pin_exception,
     classify_publish_exception,
+    classify_recipe_exception,
+    classify_refresh_exception,
     classify_store_exception,
     classify_operation_store_exception,
 )
@@ -115,6 +125,8 @@ def _build_datasets_doors(
     pin_allowed_principals: frozenset[str] | None,
     publish_allowed_principals: frozenset[str] | None,
     publish_pool_size: int | None,
+    recipe_store: RecipeStore | None,
+    version_lister: VersionLister | None,
     code_index: CodeIndex | None,
     rate_cache: RateTableCache | None,
     coverage: CoverageService | None,
@@ -123,6 +135,34 @@ def _build_datasets_doors(
     task_client: TaskClient | None,
     catalogue: CatalogueService,
 ) -> tuple[DoorContribution, ...]:
+    definition_door = build_definition_door(
+        settings=settings,
+        spec_reader=spec_reader,
+        graph=graph,
+        sdmx=sdmx,
+        revision_reader=revision_reader,
+        artifact_store=artifact_store,
+        materialiser_build=build_commit(),
+        capability_version=DATASETS_CAPABILITY_VERSION,
+        # See the mint door's own `ceiling` comment below.
+        ceiling=_MATERIALISE_RAW_FETCH_GUARD_ROWS,
+        member_concurrency=settings.mint_member_max_concurrency,
+        version_writer=version_writer,
+        head_store=head_writer,
+        snapshot_reader=snapshot_reader,
+        materialise_semaphore=materialise_semaphore,
+        pool_size=definition_pool_size
+        if definition_pool_size is not None
+        else settings.definition_max_concurrency,
+        budget=budget,
+        code_index=code_index,
+        rate_cache=rate_cache,
+        coverage=coverage,
+        operation_store=operation_store,
+        task_client=task_client,
+        version_lister=version_lister,
+        catalogue=catalogue,
+    )
     return (
         build_meta_door(
             settings=settings,
@@ -162,32 +202,16 @@ def _build_datasets_doors(
             task_client=task_client,
             catalogue=catalogue,
         ),
-        build_definition_door(
+        definition_door,
+        # Runs on the definition door's state, so both share one rebuild per dataset. Mounted
+        # after it, so the refresh executor drains before the definition door closes its clients.
+        build_refresh_door(retrieval=definition_door.state, settings=settings),
+        build_recipe_door(
             settings=settings,
-            spec_reader=spec_reader,
-            graph=graph,
-            sdmx=sdmx,
-            revision_reader=revision_reader,
-            artifact_store=artifact_store,
-            materialiser_build=build_commit(),
-            capability_version=DATASETS_CAPABILITY_VERSION,
-            # See the mint door's own `ceiling` comment just above.
-            ceiling=_MATERIALISE_RAW_FETCH_GUARD_ROWS,
-            member_concurrency=settings.mint_member_max_concurrency,
-            version_writer=version_writer,
-            head_store=head_writer,
-            snapshot_reader=snapshot_reader,
-            materialise_semaphore=materialise_semaphore,
-            pool_size=definition_pool_size
-            if definition_pool_size is not None
-            else settings.definition_max_concurrency,
+            recipe_store=recipe_store,
+            version_lister=version_lister,
+            allowed_principals=publish_allowed_principals,
             budget=budget,
-            code_index=code_index,
-            rate_cache=rate_cache,
-            coverage=coverage,
-            operation_store=operation_store,
-            task_client=task_client,
-            catalogue=catalogue,
         ),
         build_snapshot_door(
             settings=settings,
@@ -221,6 +245,7 @@ def _build_datasets_doors(
             artifact_store=artifact_store,
             snapshot_reader=snapshot_reader,
             version_writer=version_writer,
+            recipe_store=recipe_store,
             allowed_principals=publish_allowed_principals,
             pool_size=publish_pool_size,
             budget=budget,
@@ -248,6 +273,8 @@ def datasets_surface(
     pin_allowed_principals: frozenset[str] | None = None,
     publish_allowed_principals: frozenset[str] | None = None,
     publish_pool_size: int | None = None,
+    recipe_store: RecipeStore | None = None,
+    version_lister: VersionLister | None = None,
     code_index: CodeIndex | None = None,
     rate_cache: RateTableCache | None = None,
     coverage: CoverageService | None = None,
@@ -279,6 +306,14 @@ def datasets_surface(
     to `DATASETS_PIN_FIRST_PARTY_PRINCIPAL` and `DATASETS_FIRST_PARTY_PRINCIPAL`. Pinning has no
     delete route, so publish permission grants no pin permission. `publish_pool_size` sizes its
     executor. Its row ceiling is the fixed `PUBLISH_MAX_ROWS`.
+
+    `recipe_store` reaches the publish and recipe doors. `version_lister` reaches the recipe
+    door and the definition door. The recipe door admits the publish allowlist and requires
+    both injected or both omitted. The frame refresh door runs on the definition door's state
+    and admits `settings.live_refresh_principal` alone.
+    Inject a recipe store over the store `version_writer` writes to. Omitted, each door builds a
+    live one. With the publish door's three store dependencies injected and no `recipe_store`,
+    a publish carrying a recipe is refused.
 
     `code_index` reaches mint and definition. Each uses the process-wide index if omitted.
     `rate_cache` reaches both doors, but each creates a private cache if omitted. Pass one shared
@@ -327,6 +362,8 @@ def datasets_surface(
         pin_allowed_principals=pin_allowed_principals,
         publish_allowed_principals=publish_allowed_principals,
         publish_pool_size=publish_pool_size,
+        recipe_store=recipe_store,
+        version_lister=version_lister,
         code_index=code_index,
         rate_cache=rate_cache,
         coverage=coverage,

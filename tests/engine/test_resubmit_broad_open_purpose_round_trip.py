@@ -492,16 +492,16 @@ def test_covered_by_posted_binding_refuses_a_value_outside_the_posted_rollup():
     """
     index = get_index()
     finance_descendants = set(index.descendants(_FINANCE_ROLLUP))
-    outside_row = next(
-        row
+    outside_leaf = next(
+        leaf
         for row in index.statvars
         if row.population_type == "FinancialFlow"
         and row.measured_property == "amount"
         and row.stat_type == "measuredValue"
         and row.measurement_qualifier == "Nominal"
-        and row.constraint_properties.get("crsTypeOfFinance") not in finance_descendants
+        and (leaf := row.constraint_properties.get("crsTypeOfFinance")) is not None
+        and leaf not in finance_descendants
     )
-    outside_leaf = outside_row.constraint_properties["crsTypeOfFinance"]
 
     assert not _covered_by_posted_binding([_FINANCE_ROLLUP], [outside_leaf])
     inside_leaf = next(iter(finance_descendants - {_FINANCE_ROLLUP}))

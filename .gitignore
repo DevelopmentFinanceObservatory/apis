@@ -63,6 +63,7 @@ AGENTS.md
 # Pre-prune backup of the LLM fixture bank, written by scripts/harvest_llm_fixtures.py
 # so a bad prune is recoverable without git. Local recovery aid, not a committed artefact.
 tests/fixtures/llm_responses.json.preprune
+tests/fixtures/llm_responses.json.prestale
 
 # Root-level screenshots dropped by hand or by the Playwright MCP server during
 # local UI debugging, and the MCP server's own working directory.

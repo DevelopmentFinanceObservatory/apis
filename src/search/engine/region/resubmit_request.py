@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
 
+from dfo_platform.executor import submit_with_context
 from materialise import facet_axis_value
 from search.engine.axis import classify_axis
 from search.engine.clients.graph import EngineGraphClient, SubjectsCoverage
@@ -12,6 +14,7 @@ from search.engine.config import settings
 from search.engine.degraded_reads import note_degraded_read
 from search.engine.errors import EngineInputError, GraphInfraError
 from search.engine.extract import DateRequest
+from search.engine.place import expand_places
 from search.engine.region.facets import _facet_source_dcid, binding_admits_value
 from search.engine.region.grounding import (
     reject_reversed_window,
@@ -257,7 +260,6 @@ def _reject_inexpressible_unit(facets: dict[str, IdentityFacetBinding] | None) -
             code="facet_binding_unsupported",
             status=501,
             pointer="/input/identity/facets/unit",
-            detail=detail,
         )
 
 
@@ -316,21 +318,55 @@ def _requested_window_for_id(date_request: DateRequest | None) -> RequestedWindo
     return requested_window_from_date_request(date_request)
 
 
+def _graph_members(
+    dcids: list[str],
+    types: Mapping[str, str],
+    *,
+    graph: EngineGraphClient,
+    deadline: float | None,
+) -> dict[str, frozenset[str] | None]:
+    """The members the graph gives each node in `dcids`, `None` where its read is incomplete.
+
+    A continent or subregion has the members a first answer binds for it
+    (`place.expand_places`). Any other node has its `<-containedInPlace` subjects, read in
+    one batch."""
+    expansions = expand_places(
+        [(dcid, types[dcid]) for dcid in dcids if dcid in types], graph=graph
+    )
+    members: dict[str, frozenset[str] | None] = {
+        dcid: frozenset(expansion.children)
+        for dcid, expansion in expansions.items()
+        if expansion is not None
+    }
+    if rest := [dcid for dcid in dcids if dcid not in members]:
+        pages = graph.node_subjects_many(
+            rest,
+            property="containedInPlace",
+            max_results=settings().max_child_places,
+            deadline=deadline,
+        )
+        for dcid in rest:
+            page = pages.get(dcid)
+            complete = page is not None and page.coverage is SubjectsCoverage.complete
+            members[dcid] = frozenset(page.dcids) if page is not None and complete else None
+    return members
+
+
 def resubmit_named_groups(
     inp: ResubmitIdentityPayload, *, graph: EngineGraphClient, deadline: float | None
 ) -> tuple[NamedGroup, ...]:
     """The groups posted beside the identity that the graph confirms.
 
     A group is kept only when it posts a dcid and the graph's members of that node
-    (`<-containedInPlace`) are the identity's entities on the role, and it takes the graph's
-    label for the node, as a first answer does (`place_roles.request_named_groups`). The
-    posted label stands only where the graph gives none. A group posting no dcid drops, since
-    nothing ties its label to the role's entities, and so does a group on a role the identity
-    binds no entity on. All posted dcids are read in one members batch, and the
-    membership-confirmed ones in one labels batch. Each dropped group is logged at info with
-    the reason. A `GraphInfraError` on either read drops the groups it covers, logged at
-    warning and noted as a lost read (`degraded_reads.note_degraded_read`), and the role's
-    entities still bind.
+    (`_graph_members`) are the identity's entities on the role. It takes the graph's type
+    and label for the node, as a first answer does (`place_roles.request_named_groups`). The
+    posted type is ignored, and the posted label stands only where the graph gives none. A group
+    posting no dcid drops, since nothing ties its label to the role's entities, and so does
+    a group on a role the identity binds no entity on. The posted dcids' types and labels
+    are read side by side, one batch each, and their members after the types. Each dropped
+    group is logged at info with the reason. A `GraphInfraError` on any of the reads drops
+    the groups it covers, logged at warning and noted as a lost read
+    (`degraded_reads.note_degraded_read`), and the role's entities still bind.
     """
     kept: list[tuple[str, EntityGroup, frozenset[str]]] = []
     entities = inp.identity.entities
@@ -351,44 +387,40 @@ def resubmit_named_groups(
     if not kept:
         return ()
     dcids = sorted({dcid for dcid, _, _ in kept})
-    try:
-        pages = graph.node_subjects_many(
-            dcids,
-            property="containedInPlace",
-            max_results=settings().max_child_places,
-            deadline=deadline,
-        )
-    except GraphInfraError as exc:
-        logger.warning("resubmit dropped groups %s: members read failed: %s", dcids, exc)
-        note_degraded_read("named group members")
-        return ()
-    verified: list[tuple[str, EntityGroup, frozenset[str]]] = []
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="group-labels") as pool:
+        labels_read = submit_with_context(pool, graph.node_labels_batch, dcids)
+        try:
+            types = graph.node_types_batch(dcids)
+            graph_members = _graph_members(dcids, types, graph=graph, deadline=deadline)
+        except GraphInfraError as exc:
+            logger.warning("resubmit dropped groups %s: members read failed: %s", dcids, exc)
+            note_degraded_read("named group members")
+            return ()
+        try:
+            labels = labels_read.result()
+        except GraphInfraError as exc:
+            logger.warning("resubmit dropped groups %s: labels read failed: %s", dcids, exc)
+            note_degraded_read("named group labels")
+            return ()
+    named: list[NamedGroup] = []
     for dcid, group, members in kept:
-        page = pages.get(dcid)
-        if page is None:
-            continue
-        if page.coverage is SubjectsCoverage.complete and frozenset(page.dcids) == members:
-            verified.append((dcid, group, members))
+        held = graph_members[dcid]
+        if held == members:
+            named.append(
+                NamedGroup(
+                    label=labels.get(dcid, group.label),
+                    dcid=dcid,
+                    member_dcids=members,
+                    entity_type=types.get(dcid),
+                )
+            )
             continue
         logger.info(
-            "resubmit dropped group %s: %s (graph members %d, role entities %d)",
+            "resubmit dropped group %s: %s (role entities %d)",
             dcid,
-            "members differ"
-            if page.coverage is SubjectsCoverage.complete
-            else f"coverage {page.coverage}",
-            len(page.dcids),
+            "the members read is incomplete"
+            if held is None
+            else f"members differ (graph members {len(held)})",
             len(members),
         )
-    if not verified:
-        return ()
-    confirmed = sorted({dcid for dcid, _, _ in verified})
-    try:
-        labels = graph.node_labels_batch(confirmed)
-    except GraphInfraError as exc:
-        logger.warning("resubmit dropped groups %s: labels read failed: %s", confirmed, exc)
-        note_degraded_read("named group labels")
-        return ()
-    return tuple(
-        NamedGroup(label=labels.get(dcid, group.label), dcid=dcid, member_dcids=members)
-        for dcid, group, members in verified
-    )
+    return tuple(named)

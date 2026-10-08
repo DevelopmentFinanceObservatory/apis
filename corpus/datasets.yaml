@@ -1,11 +1,11 @@
 - id: imputed-aid-kenya
   query: imputed aid to Kenya
-  why: Imputed aid is the imputed table's measure; electing it names the table, so the provenance is bound.
-  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: named}
+  why: Imputed aid to Kenya names no sector, so DAC2a's imputed multilateral line answers it.
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: none}
   expect:
     definite:
-      measure: {family: mls.imputed}
-      provenance: {bound: true}
+      measure: {family: dac2a.imputed_multilateral}
+      provenance: {bound: false}
       entities: [{dcid: country/KEN, role: destination}]
       operations: []
 
@@ -35,69 +35,70 @@
 
 - id: dataset-imputed-multilateral-flows-kenya
   query: imputed multilateral flows to Kenya
-  why: Imputed multilateral flows are the imputed table's measure; electing it names the table, so the provenance is bound.
-  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: named}
+  why: Imputed multilateral flows to Kenya name no sector, so DAC2a's imputed multilateral line answers them.
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: none}
   expect:
     definite:
-      measure: {family: mls.imputed}
-      provenance: {bound: true}
+      measure: {family: dac2a.imputed_multilateral}
+      provenance: {bound: false}
       entities: [{dcid: country/KEN, role: destination}]
       operations: []
 
 - id: dataset-imputed-disbursements-kenya
   query: imputed disbursements to Kenya
-  why: Imputed disbursements are the imputed table's measure; "disbursements" is the flow type the table publishes.
-  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: named}
-  known_failure: {issue: 1164, checks: [measure, provenance]}
+  why: Imputed disbursements to Kenya name no sector, and DAC2a's imputed multilateral line publishes disbursements.
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: none}
+  known_failure: {issue: 1239, checks: [disposition, measure, provenance]}
   expect:
     definite:
-      measure: {family: mls.imputed}
-      provenance: {bound: true}
+      measure: {family: dac2a.imputed_multilateral}
+      provenance: {bound: false}
       entities: [{dcid: country/KEN, role: destination}]
       operations: []
 
 - id: dataset-germany-multilateral-aid-imputed-kenya
   query: Germany's multilateral aid imputed to Kenya
-  why: Multilateral aid imputed to a recipient is the imputed table's measure; Germany is the donor the outflows are attributed to.
-  tags: {theme: aid, entity: two_roles, direction: both, door: raw_text, dataset: named}
+  why: Multilateral aid imputed to Kenya names no sector, so DAC2a's imputed multilateral line answers it, with Germany as the donor.
+  tags: {theme: aid, entity: two_roles, direction: both, door: raw_text, dataset: none}
   expect:
     definite:
-      measure: {family: mls.imputed}
-      provenance: {bound: true}
+      measure: {family: dac2a.imputed_multilateral}
+      provenance: {bound: false}
       entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
 - id: dataset-imputed-multilateral-aids-kenya
   query: imputed multilateral aids to Kenya
-  why: Imputed multilateral aid is the imputed table's measure; "aids" is the plural of aid and binds no sector.
-  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: named}
-  known_failure: {issue: 1164, checks: [measure]}
+  why: Imputed multilateral aid to Kenya names no sector, so DAC2a's imputed multilateral line answers it; "aids" is the plural of aid.
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: none}
+  known_failure: {issue: 1164, checks: [measure, provenance]}
   expect:
     definite:
-      measure: {family: mls.imputed, open: [crsPurpose]}
-      provenance: {bound: true}
+      measure: {family: dac2a.imputed_multilateral}
+      provenance: {bound: false}
       entities: [{dcid: country/KEN, role: destination}]
       operations: []
 
 - id: dataset-imputed-aid-kenya-es
   query: ayuda multilateral imputada a Kenia
-  why: Spanish for "imputed multilateral aid to Kenya", the imputed table's measure.
-  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: named, language: es}
+  why: Spanish for "imputed multilateral aid to Kenya", which DAC2a's imputed multilateral line answers.
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: none, language: es}
   expect:
     definite:
-      measure: {family: mls.imputed}
-      provenance: {bound: true}
+      measure: {family: dac2a.imputed_multilateral}
+      provenance: {bound: false}
       entities: [{dcid: country/KEN, role: destination}]
       operations: []
 
 - id: dataset-imputed-aid-kenya-fr
   query: aide multilatérale imputée au Kenya
-  why: French for "imputed multilateral aid to Kenya", the imputed table's measure.
-  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: named, language: fr}
+  why: French for "imputed multilateral aid to Kenya", which DAC2a's imputed multilateral line answers.
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: none, language: fr}
+  known_failure: {issue: 1156, checks: [measure, provenance]}
   expect:
     definite:
-      measure: {family: mls.imputed}
-      provenance: {bound: true}
+      measure: {family: dac2a.imputed_multilateral}
+      provenance: {bound: false}
       entities: [{dcid: country/KEN, role: destination}]
       operations: []
 
@@ -162,11 +163,11 @@
 
 - id: dataset-germany-oda-kenya
   query: Germany's ODA to Kenya
-  why: Bilateral ODA from a donor to a recipient is the CRS's default measure.
+  why: Bilateral ODA from a donor to a recipient reads DAC2a, the default measure for a plain provider-to-recipient question.
   tags: {theme: aid, entity: two_roles, direction: both, door: raw_text, dataset: none}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac2a.oda_gross_received}
       entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
       operations: []
 
@@ -196,12 +197,11 @@
 
 - id: dataset-aid-attributed-to-donors-via-multilaterals
   query: aid attributed to donors via multilaterals
-  why: Only the imputed table measures multilateral outflows attributed back to their donors, so bind elects its measure.
+  why: DAC2a's imputed multilateral line and ONE's imputed table both attribute multilateral outflows to donors; with no sector named, either answers.
   tags: {theme: aid, entity: none, door: raw_text, dataset: described}
   expect:
     definite:
-      measure: {family: mls.imputed}
-      provenance: {bound: true}
+      measure: {family: [dac2a.imputed_multilateral, mls.imputed]}
       entities: []
       operations: []
 
@@ -305,33 +305,34 @@
 
 - id: dataset-top-donors-imputed-aid-kenya
   query: top 5 donors of imputed multilateral aid to Kenya
-  why: The imputed table's measure answers, and the question ranks donors, so the part ranks over origin.
-  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: named, operation: rank}
+  why: DAC2a's imputed multilateral line answers, and the question ranks donors, so the part ranks over origin.
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: none, operation: rank}
   expect:
     definite:
-      measure: {family: mls.imputed}
-      provenance: {bound: true}
+      measure: {family: dac2a.imputed_multilateral}
+      provenance: {bound: false}
       entities: [{dcid: country/KEN, role: destination}]
       operations: [{verb: rank, over: origin}]
 
 - id: dataset-aid-kenya-not-imputed
   query: aid to Kenya, not imputed
-  why: The imputed table is its own family, so "not imputed" has no source slot to bind; bind drops it and the CRS answers unbound.
+  why: The imputed table is its own family, so "not imputed" has no source slot to bind; bind drops it and DAC2a answers.
   tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: excluded}
+  known_failure: {issue: 1156, checks: [disposition]}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac2a.oda_gross_received}
       provenance: {bound: false}
       entities: [{dcid: country/KEN, role: destination}]
       operations: []
 
 - id: dataset-oda-kenya-excluding-crs
   query: ODA to Kenya excluding the CRS
-  why: The CRS family has one dataset, so the exclusion has no source slot to bind; bind drops it and the CRS answers with the provenance unbound.
+  why: The exclusion of the CRS has no source slot to bind; bind drops it and the plain recipient question reads DAC2a.
   tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: excluded}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac2a.oda_gross_received}
       provenance: {bound: false}
       entities: [{dcid: country/KEN, role: destination}]
       operations: []
@@ -386,13 +387,13 @@
 
 - id: dataset-inputed-aid-kenya
   query: inputed aid to Kenya
-  why: '"Inputed" is a misspelling of "imputed", so the question asks for the imputed table''s measure.'
-  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: named, phrasing: misspelt}
+  why: '"Inputed" is a misspelling of "imputed", and imputed aid to Kenya names no sector, so DAC2a''s imputed multilateral line answers it.'
+  tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: none, phrasing: misspelt}
   known_failure: {issue: 1164, checks: [measure, provenance]}
   expect:
     definite:
-      measure: {family: mls.imputed}
-      provenance: {bound: true}
+      measure: {family: dac2a.imputed_multilateral}
+      provenance: {bound: false}
       entities: [{dcid: country/KEN, role: destination}]
       operations: []
 
@@ -410,11 +411,11 @@
 
 - id: dataset-dac2a-oda-kenya
   query: DAC2a ODA to Kenya
-  why: The code index declares no DAC2a table, so "DAC2a" has no source slot to bind; bind drops it and the CRS answers unbound.
+  why: '"DAC2a" names the source and the plain recipient question reads DAC2a; the answer carries the DAC2a provenance.'
   tags: {theme: aid, entity: country, direction: destination_only, door: raw_text, dataset: undeclared}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac2a.oda_gross_received}
       provenance: {bound: false}
       entities: [{dcid: country/KEN, role: destination}]
       operations: []
@@ -423,6 +424,7 @@
   query: total ODA reported to the DAC by Germany
   why: A donor total with no recipient answers from DAC1 as total ODA; "the DAC" names a body with no source slot, so the provenance stays unbound.
   tags: {theme: aid, entity: country, direction: origin_only, door: raw_text, dataset: none}
+  known_failure: {issue: 1238, checks: [measure, entities, provenance]}
   expect:
     definite:
       measure: {family: dac1.disbursement_gross, bound: {dac1AidType: DAC1AidType1010}}

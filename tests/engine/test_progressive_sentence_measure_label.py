@@ -105,7 +105,9 @@ def test_bind_stage_sentence_carries_the_group_the_query_named(monkeypatch, name
     heading as that group; with no group named, none."""
     group = NamedGroup(label="the test group", dcid=None, member_dcids=frozenset({_KEN_DCID}))
     monkeypatch.setattr(
-        phase_place_materialise, "request_named_groups", lambda _state: (group,) if named else ()
+        phase_place_materialise,
+        "request_named_groups",
+        lambda _state, _roles: (group,) if named else (),
     )
     groups_rendered: list[object] = []
 

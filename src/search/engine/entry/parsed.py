@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform.build import build_commit
+from dfo_platform.named import cut
 from dfo_platform.trace import get_trace_id
 from entity_resolution import Admission, Entity, EntityResolver, Resolution
 from entity_resolution.types import entity_kind
@@ -150,9 +151,30 @@ def _open_axes_for_part(part: ParsedPart, *, pointer_prefix: str) -> frozenset[R
             detail,
             code="request_invalid",
             pointer=f"{pointer_prefix}/open_roles/{j}",
-            detail=detail,
         )
     return frozenset(axes)
+
+
+def _member_entities_for_part(part: ParsedPart, *, pointer_prefix: str) -> frozenset[str]:
+    """The entity texts the part asks for as their members (`ParsedEntity.members`).
+
+    One part names a set once, so a text posted with both values raises `request_invalid`
+    at the part's entities.
+    """
+    asked: dict[str, bool] = {}
+    for entity in part.entities or ():
+        members = bool(entity.members)
+        if asked.setdefault(entity.text, members) != members:
+            detail = (
+                f"part posts entity {entity.text!r} with members both true and false; one "
+                "text names one set within a single part, as its members or as a whole"
+            )
+            raise EngineInputError(
+                detail,
+                code="request_invalid",
+                pointer=f"{pointer_prefix}/entities",
+            )
+    return frozenset(text for text, members in asked.items() if members)
 
 
 def _entity_text_warning(part: ParsedPart) -> Warning | None:
@@ -208,6 +230,7 @@ class PartsInterpretation:
     date_requests: list[DateRequest | None]
     role_queries: list[str]
     entity_roles: list[dict[str, list[DoorRole]]]
+    member_entities: list[frozenset[str]]
     unit_texts: list[str | None]
     source_texts: list[str | None]
     provenances: list[str | None]
@@ -240,11 +263,16 @@ def interpret_parts(
     entries, so identical parts carry the same inputs and warnings on either door.
 
     Only absent time text gets `time_window_defaulted`; unrecognised text gets the
-    parser's own warning. An open role word `_open_axes_for_part` refuses points into its
-    part's entry of `pointer_prefixes`.
+    parser's own warning. An open role word `_open_axes_for_part` refuses, and an entity
+    text `_member_entities_for_part` refuses, point into its part's entry of
+    `pointer_prefixes`.
     """
     open_axes = [
         _open_axes_for_part(p, pointer_prefix=prefix)
+        for p, prefix in zip(parts, pointer_prefixes, strict=True)
+    ]
+    member_entities = [
+        _member_entities_for_part(p, pointer_prefix=prefix)
         for p, prefix in zip(parts, pointer_prefixes, strict=True)
     ]
     variable_texts = [p.variable_text.strip() for p in parts]
@@ -257,6 +285,7 @@ def interpret_parts(
         date_requests=[dates_to_request(dates) for dates, _ in dates_and_warnings],
         role_queries=[rq for rq, _ in role_queries_and_warnings],
         entity_roles=[_entity_roles_for_part(p) for p in parts],
+        member_entities=member_entities,
         unit_texts=[p.unit_text for p in parts],
         source_texts=[p.source_text for p in parts],
         provenances=[p.provenance for p in parts],
@@ -294,15 +323,15 @@ def _part_restatement(part: ParsedPart, *, variable_text: str) -> ParsedPart | N
 def _dedupe_parts_with_indices(parts: list[ParsedPart]) -> list[tuple[int, ParsedPart]]:
     """Deduplicate identical parts in first-seen order, keeping each posted index.
 
-    Equality includes variable text, entities with role text and dcid pins, time,
-    unit, source, dataset, operations, and open roles. Parts sharing only variable text remain distinct. Original
+    Equality includes variable text, entities with role text, dcid pins and the members
+    flag, time, unit, source, dataset, operations, and open roles. Parts sharing only variable text remain distinct. Original
     indices keep refusal pointers aligned with the client's posted `/input/parts/{i}`.
     """
     seen: dict[tuple, tuple[int, ParsedPart]] = {}
     for i, part in enumerate(parts):
         key = (
             part.variable_text.strip(),
-            tuple((e.text, e.role_text, e.dcid) for e in (part.entities or ())),
+            tuple((e.text, e.role_text, e.dcid, e.members) for e in (part.entities or ())),
             part.time_text,
             part.unit_text,
             part.source_text,
@@ -328,7 +357,9 @@ def confirm_part_datasets(parts: list[ParsedPart], *, pointer_prefixes: Sequence
                 "lists the declared datasets"
             )
             raise EngineInputError(
-                detail, code="request_invalid", pointer=f"{prefix}/provenance", detail=detail
+                detail,
+                code="request_invalid",
+                pointer=f"{prefix}/provenance",
             )
 
 
@@ -336,13 +367,17 @@ async def confirm_part_pins(
     parts: list[ParsedPart],
     *,
     graph: EngineGraphClient,
+    resolver: EntityResolver,
     pointer_prefixes: Sequence[str],
 ) -> list[dict[str, Resolution]]:
     """Confirm pinned dcids and build per-part pre-resolved maps.
 
     The same text may pin differently across parts. Conflicting pins within one
     part raise `request_invalid`, and an unconfirmed dcid raises
-    `invalid_role_ref` (422). Refusals point to the posted field.
+    `invalid_role_ref` (422). A pin that asks for the members of a group's own node
+    (`EntityResolver.group_node_dcids`) raises `request_invalid` at the entity: a group's
+    members come from resolving its name, which a pin skips. Refusals point to the posted
+    field.
 
     Type confirmation decides validity. Labels load concurrently. `Entity.name` uses
     the graph label or dcid fallback. Label warnings name the exception and pinned
@@ -359,17 +394,32 @@ async def confirm_part_pins(
             if existing is not None and existing != entity.dcid:
                 detail = (
                     f"part pins entity {entity.text!r} to two different dcids "
-                    f"({existing!r} and {entity.dcid!r}); one text can only name one "
+                    f"({cut(existing)!r} and {cut(entity.dcid)!r}); one text can only name one "
                     "place within a single part"
                 )
                 raise EngineInputError(
                     detail,
                     code="request_invalid",
                     pointer=f"{prefix}/entities",
-                    detail=detail,
                 )
             part_pins[entity.text] = entity.dcid
         pins_by_part.append(part_pins)
+
+    members_of_pins = [
+        (f"{prefix}/entities/{j}", entity.dcid)
+        for prefix, part in zip(pointer_prefixes, parts, strict=True)
+        for j, entity in enumerate(part.entities or ())
+        if entity.dcid is not None and entity.members
+    ]
+    if members_of_pins:
+        group_nodes = await resolver.group_node_dcids()
+        for pointer, dcid in members_of_pins:
+            if dcid in group_nodes:
+                detail = (
+                    f"members cannot be asked of the pinned dcid {dcid!r}, a group's own "
+                    "node; post the group's name without a dcid to get its members"
+                )
+                raise EngineInputError(detail, code="request_invalid", pointer=pointer)
 
     all_dcids = list(
         dict.fromkeys(dcid for part_pins in pins_by_part for dcid in part_pins.values())
@@ -484,7 +534,9 @@ async def handle(
     # pointers.
     pointer_prefixes = [f"/input/parts/{i}" for i in original_indices]
     confirm_part_datasets(parts, pointer_prefixes=pointer_prefixes)
-    pins = await confirm_part_pins(parts, graph=graph, pointer_prefixes=pointer_prefixes)
+    pins = await confirm_part_pins(
+        parts, graph=graph, resolver=resolver, pointer_prefixes=pointer_prefixes
+    )
 
     interpretation = interpret_parts(parts, pointer_prefixes=pointer_prefixes)
     variable_texts = interpretation.variable_texts
@@ -534,6 +586,7 @@ async def handle(
             stream_observations=params.stream_observations,
             per_variable_role_queries=interpretation.role_queries,
             per_variable_entity_roles=interpretation.entity_roles,
+            per_variable_member_entities=interpretation.member_entities,
             per_variable_unit_texts=interpretation.unit_texts,
             per_variable_source_texts=interpretation.source_texts,
             per_variable_provenances=interpretation.provenances,
@@ -618,6 +671,7 @@ async def handle(
         per_variable_date_requests=interpretation.date_requests,
         per_variable_role_queries=interpretation.role_queries,
         per_variable_entity_roles=interpretation.entity_roles,
+        per_variable_member_entities=interpretation.member_entities,
         per_variable_unit_texts=interpretation.unit_texts,
         per_variable_source_texts=interpretation.source_texts,
         per_variable_provenances=interpretation.provenances,

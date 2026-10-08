@@ -40,7 +40,9 @@ The source index is a literal route on the same router and makes no graph
 reads. It joins the packaged origin registry (`origin_catalogue.registry`) to
 the request's origin catalogue. One entry per DFO source comes first, then each
 registry entry, each with the provenances the catalogue admits under it,
-grouped by Dataset, and the exclusions the registry records. Each Dataset
+grouped by Dataset, and the provenances the registry excludes under a base
+source, each with its reason. A provenance the registry excludes is never also
+listed as admitted. Each Dataset
 group carries the card facts the catalogue job computed for it
 (`origin_catalogue.card_facts`), with the cadence token mapped to its label
 here as the documentation route maps it. Existing codes
@@ -357,14 +359,22 @@ def _datasets(rows: Iterable[ProvenanceRow], catalogue: Catalogue) -> list[Datas
 def build_source_catalogue(*, registry: Registry, catalogue: Catalogue) -> SourceCatalogue:
     """The source index: one entry per DFO source in provenance-table order, then each base
     registry entry, then each UN agency when the UN origin is on, each with the provenances
-    `catalogue` admits under it. A registry entry the catalogue lists nothing under serves an
-    empty `provenances`, as when the registry is newer than the loaded build."""
+    `catalogue` admits under it. A provenance the registry excludes is listed under no
+    source's datasets, whatever the loaded build holds. A registry entry the catalogue lists
+    nothing under serves an empty `provenances`, as when the registry is newer than the loaded
+    build."""
+    excluded = {
+        exclusion.provenance for base in registry.base for exclusion in base.exclusions or ()
+    }
     rows_by_source: dict[tuple[DataCommons, str], list[ProvenanceRow]] = {}
     for row in catalogue.provenance_rows():
-        rows_by_source.setdefault((row.data_commons, row.source.ref), []).append(row)
+        if row.id not in excluded:
+            rows_by_source.setdefault((row.data_commons, row.source.ref), []).append(row)
 
     def entry(
-        source: SourceRef, origin: DataCommons, exclusions: tuple[Exclusion, ...] = ()
+        source: SourceRef,
+        origin: DataCommons,
+        exclusions: tuple[Exclusion, ...] = (),
     ) -> SourceCatalogueEntry:
         return SourceCatalogueEntry(
             source=SourceNodeRef.of(source),

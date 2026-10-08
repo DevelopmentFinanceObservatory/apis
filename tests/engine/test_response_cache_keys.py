@@ -14,9 +14,10 @@ from search.engine.response_cache_keys import (
     layer1_key,
     layer2_key,
     normalise_query,
+    parsed_key,
     scope_document,
 )
-from search.models import Operation, ResolveOptions
+from search.models import Operation, ParsedEntity, ParsedInput, ParsedPart, ResolveOptions
 
 
 def _scope(
@@ -99,6 +100,7 @@ def _layer2_key(
     query_text_qualifier_matches: list[dict[str, object]] | None = None,
     query_text_qualifier_ties: list[dict[str, object]] | None = None,
     query_text_qualifier_readings: list[dict[str, object]] | None = None,
+    query_text_qualifier_occurrences: list[dict[str, object]] | None = None,
     unsupported_qualifier_phrases: list[str] | None = None,
     declared_default_trigger_words: list[dict[str, str]] | None = None,
     declared_default_slots_named: list[str] | None = None,
@@ -127,6 +129,9 @@ def _layer2_key(
         ),
         query_text_qualifier_readings=(
             query_text_qualifier_readings if query_text_qualifier_readings is not None else []
+        ),
+        query_text_qualifier_occurrences=(
+            query_text_qualifier_occurrences if query_text_qualifier_occurrences is not None else []
         ),
         unsupported_qualifier_phrases=(
             unsupported_qualifier_phrases if unsupported_qualifier_phrases is not None else []
@@ -170,6 +175,14 @@ def test_flow_role_alone_changes_layer2_key() -> None:
         dates=[],
     )
     assert origin_kenya != destination_kenya
+
+
+def test_an_entitys_members_flag_alone_changes_layer2_key() -> None:
+    """Africa read as its members and Africa read as one place keep separate entries."""
+    one_place = _layer2_key(entities=[_entity(text="Africa")])
+    its_members = _layer2_key(entities=[_entity(text="Africa", members=True)])
+    assert its_members != one_place
+    assert one_place == _layer2_key(entities=[_entity(text="Africa", members=False)])
 
 
 def test_variable_qualifiers_alone_changes_layer2_key_at_n_ge_2() -> None:
@@ -415,6 +428,50 @@ def test_query_text_qualifier_reading_alone_changes_layer2_key() -> None:
     assert with_reading != without_reading
 
 
+def _query_text_key(query_text: str) -> str:
+    """The layer-2 key of one extraction under `query_text`'s raw-text signals."""
+    signals = compute_layer2_signals(query=query_text, entity_roles={}, query_text=query_text)
+    return _layer2_key(
+        query_text_qualifier_matches=list(signals.query_text_qualifier_matches),
+        query_text_qualifier_ties=list(signals.query_text_qualifier_ties),
+        query_text_qualifier_readings=list(signals.query_text_qualifier_readings),
+        query_text_qualifier_occurrences=list(signals.query_text_qualifier_occurrences),
+        unsupported_qualifier_phrases=list(signals.unsupported_qualifier_phrases),
+        declared_default_trigger_words=list(signals.declared_default_trigger_words),
+        declared_default_slots_named=list(signals.declared_default_slots_named),
+    )
+
+
+@pytest.mark.parametrize(
+    ("first", "second", "same"),
+    [
+        # A DAC1 vocabulary reads "investment projects" (1310) and "debt buybacks" (1623) in
+        # the first text of each pair only; read in every system together, the pairs agree.
+        (
+            "agricultural investment projects in Kenya",
+            "agricultural investment plans in Kenya",
+            False,
+        ),
+        ("senior debt buybacks for Kenya", "senior debt markets for Kenya", False),
+        # A word no row names changes no reading, before the first label or after the last.
+        (
+            "agricultural investment projects in Kenya",
+            "agricultural investment projects for Kenya",
+            True,
+        ),
+        ("ODA to Kenya", "show me ODA to Kenya", True),
+        ("health ODA to Kenya", "total health ODA to Kenya", True),
+    ],
+)
+def test_query_text_some_vocabulary_reads_apart_changes_layer2_key(first, second, same) -> None:
+    signals = [
+        compute_layer2_signals(query=text, entity_roles={}, query_text=text)
+        for text in (first, second)
+    ]
+    assert signals[0].query_text_qualifier_matches == signals[1].query_text_qualifier_matches
+    assert (_query_text_key(first) == _query_text_key(second)) is same
+
+
 def test_unsupported_qualifier_phrase_alone_changes_layer2_key() -> None:
     """ "non-concessional" in the raw query is a closed unsupported-vocabulary
     term (qualifier_match._UNSUPPORTED_QUALIFIER_TERMS) that
@@ -483,6 +540,23 @@ def test_operations_change_layer2_key() -> None:
     reordered = _layer2_key(variables=["education aid"], operations=[(explain, rank)])
     assert len({without, with_rank, with_both, reordered}) == 4
     assert with_rank == _layer2_key(variables=["education aid"], operations=[(rank,)])
+
+
+def test_an_entitys_members_flag_changes_the_parsed_key() -> None:
+    """Two parsed requests alike but for one entity's `members` ask for different places."""
+
+    def key(*, members: bool) -> str:
+        entity = ParsedEntity(text="Africa", members=members)
+        part = ParsedPart(variable_text="population", entities=[entity])
+        return parsed_key(parsed=ParsedInput(parts=[part]), scope=_scope())
+
+    assert key(members=True) != key(members=False)
+    assert key(members=False) == parsed_key(
+        parsed=ParsedInput.model_validate(
+            {"parts": [{"variable_text": "population", "entities": [{"text": "Africa"}]}]}
+        ),
+        scope=_scope(),
+    )
 
 
 def test_include_observations_changes_key() -> None:

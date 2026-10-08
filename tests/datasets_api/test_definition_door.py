@@ -512,8 +512,9 @@ def test_declared_role_drift_refuses_definition_not_reproducible():
 def test_facet_drift_refuses_facet_not_available_without_body_pointers():
     """A facet-selection refusal from the shared materialise pipeline must
     not leak a `/facets/{axis}` pointer through a GET request that never
-    posted a body for that pointer to name. This is reproduced by removing
-    the graph's own facet observations after mint.
+    posted a body for that pointer to name. This is reproduced by moving
+    the series to another facet after mint, so the definition's bound
+    provenance has no candidate.
     """
     graph = _graph()
     transport = _MutableSdmxTransport()
@@ -522,11 +523,7 @@ def test_facet_drift_refuses_facet_not_available_without_body_pointers():
     spec_id = _mint_one_spec(client)
 
     transport.body = _CSV_HEADER
-    coverage.replace(
-        build_coverage_index(
-            [], role_names={_STAT_VAR: RoleNames(donor="provider", recipient="recipient")}
-        )
-    )
+    coverage.replace(_coverage_service(facet_id="facet2", provenance="WB_IDS").current())
 
     resp = client.get(f"/api/datasets/{spec_id}")
 

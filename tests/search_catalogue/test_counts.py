@@ -1,6 +1,6 @@
 """Pins the catalogue counts over the origin catalogue sample build and the
-coverage fixture: global figures, per-country figures, and the CRS filter
-on the aid block."""
+coverage fixture: global figures, per-country figures, and the declared
+datasets' filter on the aid block."""
 
 from __future__ import annotations
 
@@ -10,12 +10,22 @@ import pytest
 
 from origin_catalogue.catalogue import BaseVariable
 from search.catalogue.artifact import AidCounts, PlaceCounts, YearRange
-from search.catalogue.counts import CRS_PROVENANCE, catalogue_counts
+from search.catalogue.counts import catalogue_counts
 from series_coverage.index import CoverageIndex
-from series_coverage.schema import FacetMetadata, RoleNames
+from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from tests.origin_catalogue.support import EUROSTAT_GDP, GDP, SCAN_PLACES, WDI
 from tests.search_catalogue.support import coverage_fixture, origin_snapshot
-from tests.series_coverage.support import FACET_ACTUALS, V1, V5, coverage_table
+from tests.series_coverage.support import (
+    FACET_ACTUALS,
+    FACET_METADATA,
+    V1,
+    V2,
+    V3,
+    V5,
+    coverage_table,
+)
+
+AID_TABLE = "provenance/AidTable"
 
 
 @pytest.fixture
@@ -23,6 +33,7 @@ def counted(tmp_path):
     return catalogue_counts(
         catalogue=origin_snapshot(tmp_path / "origin"),
         coverage=coverage_fixture(tmp_path / "coverage").index,
+        datasets={metadata.provenance_id for metadata in FACET_METADATA.values()},
     )
 
 
@@ -88,36 +99,67 @@ def test_a_publisher_counts_only_where_its_own_provenance_holds_data(tmp_path):
     coverage = CoverageIndex(
         table,
         {V1: RoleNames(donor="financingProvider", recipient="financingRecipient")},
-        {FACET_ACTUALS: FacetMetadata(provenance_id=CRS_PROVENANCE)},
+        {FACET_ACTUALS: FacetMetadata(provenance_id=AID_TABLE)},
         horizon=horizon,
     )
-    places = catalogue_counts(catalogue=replace(snapshot, tables=tables), coverage=coverage).places
+    places = catalogue_counts(
+        catalogue=replace(snapshot, tables=tables), coverage=coverage, datasets={AID_TABLE}
+    ).places
     assert (places["country/KEN"].publishers, places["country/USA"].publishers) == (1, 1)
     assert (places["country/KEN"].variables, places["country/USA"].variables) == (1, 1)
 
 
-def test_the_aid_block_counts_only_variables_with_a_crs_facet(tmp_path):
-    debt_facet = "debt-facet"
+def test_the_aid_block_counts_the_rows_of_every_declared_dataset(tmp_path):
+    """A one-role table's rows count the role they hold and their years and
+    add no entity on the other, and an undeclared provenance's rows stay out
+    of the block, on a variable a declared table also publishes (#1161)."""
+    totals_table, totals_facet, debt_facet = "provenance/TotalsTable", "totals-facet", "debt-facet"
+    receipts_table, receipts_facet = "provenance/ReceiptsTable", "receipts-facet"
     rows = [
         (V1, FACET_ACTUALS, "country/FRA", "country/KEN", [2018, 2019]),
+        (V2, totals_facet, "country/FRA", ABSENT_ENTITY, [1961, 2019]),
+        (V2, totals_facet, "country/DEU", ABSENT_ENTITY, [1970, 2022]),
+        (V3, receipts_facet, ABSENT_ENTITY, "country/ETH", [1965, 1966]),
+        (V1, debt_facet, "country/JPN", "country/KEN", [2024]),
         (V5, debt_facet, "country/CHN", "country/ZMB", [2020, 2031]),
     ]
     table, horizon = coverage_table(rows)
     roles = RoleNames(donor="financingProvider", recipient="financingRecipient")
     coverage = CoverageIndex(
         table,
-        {V1: roles, V5: roles},
         {
-            FACET_ACTUALS: FacetMetadata(provenance_id=CRS_PROVENANCE),
-            debt_facet: FacetMetadata(
-                provenance_id="provenance/WorldBankInternationalDebtStatistics"
-            ),
+            V1: roles,
+            V2: RoleNames(donor="financingProvider", recipient=None),
+            V3: RoleNames(donor=None, recipient="financingRecipient"),
+            V5: roles,
+        },
+        {
+            FACET_ACTUALS: FacetMetadata(provenance_id=AID_TABLE),
+            totals_facet: FacetMetadata(provenance_id=totals_table),
+            receipts_facet: FacetMetadata(provenance_id=receipts_table),
+            debt_facet: FacetMetadata(provenance_id="provenance/DebtTable"),
         },
         horizon=horizon,
     )
-    counted = catalogue_counts(catalogue=origin_snapshot(tmp_path), coverage=coverage)
+    counted = catalogue_counts(
+        catalogue=origin_snapshot(tmp_path),
+        coverage=coverage,
+        datasets={AID_TABLE, totals_table, receipts_table},
+    )
     assert counted.counts.aid == AidCounts(
-        donors=1, recipients=1, years=YearRange(first=2018, last=2019)
+        donors=2, recipients=2, years=YearRange(first=1961, last=2022)
+    )
+    assert counted.places["country/KEN"].aid == AidCounts(
+        donors=1, recipients=0, years=YearRange(first=2018, last=2019)
+    )
+    assert counted.places["country/ETH"].aid == AidCounts(
+        donors=0, recipients=0, years=YearRange(first=1965, last=1966)
+    )
+    assert counted.places["country/FRA"].aid == AidCounts(
+        donors=0, recipients=1, years=YearRange(first=1961, last=2019)
+    )
+    assert counted.places["country/DEU"].aid == AidCounts(
+        donors=0, recipients=0, years=YearRange(first=1970, last=2022)
     )
     # Debt rows still name countries with data.
     assert {"country/CHN", "country/ZMB"} <= set(counted.places)
@@ -138,9 +180,11 @@ def test_indicators_leave_out_a_withheld_coverage_variable(tmp_path):
     coverage = CoverageIndex(
         table,
         {V1: roles, V5: roles},
-        {FACET_ACTUALS: FacetMetadata(provenance_id=CRS_PROVENANCE)},
+        {FACET_ACTUALS: FacetMetadata(provenance_id=AID_TABLE)},
         horizon=horizon,
     )
-    counted = catalogue_counts(catalogue=replace(snapshot, tables=tables), coverage=coverage)
+    counted = catalogue_counts(
+        catalogue=replace(snapshot, tables=tables), coverage=coverage, datasets={AID_TABLE}
+    )
     # Three base and DFO variables, and V1.
     assert counted.counts.indicators == 4

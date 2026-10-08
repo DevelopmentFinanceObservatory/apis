@@ -239,11 +239,22 @@ def test_the_packaged_index_declares_the_crs_type_of_flow_default():
     assert default.note is None
 
 
-def test_the_packaged_index_declares_total_oda_as_the_open_dac1_aid_type_default():
-    """A DAC1 question that names no aid type reads total ODA, and the answer says so."""
-    default = load_index(default_index_path()).declarations["dac1AidType"].default
+@pytest.mark.parametrize(
+    ("code_system", "code"),
+    [
+        ("dac1AidType", "DAC1AidType1010"),
+        ("dac2aAidType", "DAC2aAidType206"),
+        ("dac2bAidType", "DAC2bAidType296"),
+    ],
+)
+def test_the_packaged_index_declares_the_table_total_as_the_open_aid_type_default(
+    code_system: str, code: str
+):
+    """A DAC1 or DAC2a question that names no aid type reads total ODA, a DAC2b question net
+    official non-concessional flows, and the answer says so."""
+    default = load_index(default_index_path()).declarations[code_system].default
     assert default is not None
-    assert default.code == "DAC1AidType1010"
+    assert default.code == code
     assert default.when_open is True
     assert default.note
 

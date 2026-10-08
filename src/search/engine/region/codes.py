@@ -13,13 +13,7 @@ from search.engine.events import (
 )
 from search.models import NO_DATA_RESOLUTION_ORDER, Warning
 
-MULTI_RECIPIENT_TRUNCATED = "multi_recipient_truncated"
 RETRIEVAL_SCORE_WEAK = "retrieval_score_weak"
-CHILD_PLACES_CLAMPED = "child_places_clamped"
-# The post-expansion union exceeded SEARCH_MAX_STANDARD_PROBE_PLACES, after each
-# place-set's SEARCH_MAX_CHILD_PLACES cap. This warning accompanies any
-# per-place CHILD_PLACES_CLAMPED warnings.
-STANDARD_PROBE_PLACES_CLAMPED = "standard_probe_places_clamped"
 # The independent near-neighbour check found a distinct shape within
 # SEARCH_NEAR_MARGIN of the chosen score and with low query/label overlap.
 NEAR_NEIGHBOR_AMBIGUOUS = "near_neighbor_ambiguous"

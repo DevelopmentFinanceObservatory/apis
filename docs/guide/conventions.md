@@ -116,7 +116,7 @@ The body includes optional fields only when they have values.
 | `pointer`            | string  | optional            | JSON Pointer to the field at fault.                                                                                    |
 | `alternatives`       | array   | optional            | Values that would satisfy the request, each `{ref, label}`.                                                            |
 | `truncated`          | boolean | with `alternatives` | Whether the `alternatives` list is truncated.                                                                          |
-| `issues`             | array   | optional            | One entry per failure when a code reports several at once.                                                             |
+| `issues`             | array   | optional            | One entry per failure when a code reports several at once. An entry holds the `pointer`, `member`, `axis`, `alternatives` and `truncated` that apply to it. On `default_facet_undefined` and `facet_not_available`, an entry also holds the `code` and `detail` of the axis failure it stands for. |
 | `cause`              | object  | optional            | Why the refusal fired. On `recipe_not_declared`, `rate_coverage_gap` and `operation_failed`.                           |
 | `constraint_id`      | string  | optional            | Machine-readable id of the violated constraint.                                                                        |
 | `ceiling_kind`       | string  | optional            | For `over_ceiling`, and for `operation_failed` whose `cause.code` is `over_ceiling`, identifies the crossed ceiling, such as `rows`, `bytes`, `operation_rows`, `operation_requests`, `member_cardinality` or `candidate_window`. |
@@ -227,7 +227,7 @@ The last four arrive in a `200` response. The first three are a `no_data` part's
 | `member_not_resolvable`       | 422    | A StatVar resolves to zero or multiple registered shapes.                                         |
 | `definition_not_reproducible` | 422    | A registered definition fails to reproduce its id against the current graph.                      |
 | `entities_unbound`            | 422    | Registered with no raise site. A request with no entity scope covers every entity with data.      |
-| `default_facet_undefined`     | 422    | An unbound facet axis has zero default candidates.                                                |
+| `default_facet_undefined`     | 422    | No probed facet survives narrowing by the bound axes, or the top-ranked facet carries no provenance. Places with no observations at all answer 200 with an `empty_result` warning. |
 | `collection_probe_ceiling`    | 422    | The facet probe for a group of StatVars would exceed its cap.                                     |
 | `over_ceiling`                | 422    | The request exceeds a size ceiling. `ceiling_kind`, `count` and `cap` say which. A StatVar walk past 20,000 subjects is `candidate_window`; one past 60 seconds answers `timeout` (504, retryable). |
 | `excel_limit`                 | 422    | The table exceeds Excel's row, column or cell limits.                                             |

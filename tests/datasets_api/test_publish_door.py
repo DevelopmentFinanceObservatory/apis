@@ -10,6 +10,7 @@ import json
 from datetime import UTC, datetime
 from typing import Annotated
 
+import jsonschema
 import pytest
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
@@ -26,11 +27,14 @@ from datasets_api.doors.publish import (
 )
 from datasets_api.publish_models import (
     MAX_CELL_CHARS,
+    MAX_COMPOSED_STAT_VAR_SIDE_REFS,
+    MAX_COMPOSED_STAT_VARS,
     MAX_INPUT_CONTENT_VERSIONS,
     MAX_ROLE_KEYS,
     MAX_ROW_WIDTH,
     MAX_ROWS,
     MAX_UNIT_ENTRIES,
+    MAX_UNIT_STAT_VAR_CHARS,
     PublishFrameRequest,
 )
 from datasets_api.render import render_and_store_frame1
@@ -127,9 +131,10 @@ class _Deps:
         role_keys=_ROLE_KEYS,
         rows=None,
         input_content_versions=("cv_abc123",),
+        composed_stat_vars=(),
         ceiling: int | None = None,
     ):
-        kwargs: dict[str, object] = {}
+        kwargs: dict[str, object] = {"composed_stat_vars": composed_stat_vars}
         if ceiling is not None:
             kwargs["ceiling"] = ceiling
         return publish_frame(
@@ -188,6 +193,51 @@ def test_repeat_publish_with_identical_bytes_is_idempotent(deps: _Deps) -> None:
     locations = deps.snapshot_reader.read_artifact_locations(_SPEC_ID, _CONTENT_VERSION)
     frame1 = [loc for loc in locations if loc.media_type == FRAME1_MEDIA_TYPE]
     assert len(frame1) == 1
+
+
+_COMPOSED_STAT_VARS = [
+    {
+        "stat_var": "dcid:Exemplar",
+        "relation": "quotient",
+        "first": ["dcid:Amount_GDP"],
+        "second": ["dcid:Count_Person"],
+    }
+]
+
+
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [
+        (_COMPOSED_STAT_VARS, _COMPOSED_STAT_VARS),
+        (_COMPOSED_STAT_VARS, ()),
+        ((), _COMPOSED_STAT_VARS),
+        ((), ()),
+        (_COMPOSED_STAT_VARS, [{**_COMPOSED_STAT_VARS[0], "relation": "sum"}]),
+    ],
+    ids=[
+        "with-onto-with",
+        "without-onto-with",
+        "with-onto-without",
+        "without-onto-without",
+        "another-list-onto-with",
+    ],
+)
+def test_repeat_publish_keeps_the_body_first_written_whatever_entries_it_carries(
+    deps: _Deps, first, second
+) -> None:
+    """`composed_stat_vars` is no part of a pair's lineage, so a repeat publish succeeds with or
+    without it and the stored body is the first publish's."""
+    assert deps.publish(composed_stat_vars=first).created is True
+    stored = deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION).immutable_body
+
+    assert deps.publish(composed_stat_vars=second).created is False
+
+    assert deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION).immutable_body == stored
+    assert stored == {
+        "op_spec_hash": _SPEC_ID,
+        "input_content_versions": ["cv_abc123"],
+        **({"composed_stat_vars": _COMPOSED_STAT_VARS} if first else {}),
+    }
 
 
 def test_repeat_publish_with_different_bytes_refuses_rather_than_overwrites(deps: _Deps) -> None:
@@ -1117,3 +1167,343 @@ def test_http_unit_mapping_nested_a_second_level_is_request_invalid_and_writes_n
     assert body["pointer"] == "/rows/0/unit/currency"
     assert deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION) is None
     assert _no_artifact_store_puts(deps)
+
+
+_PER_PERSON = {"stat_var": "dcid:Count_Person"}
+_LONGEST_STAT_VAR = "dcid:" + "x" * (MAX_UNIT_STAT_VAR_CHARS - len("dcid:"))
+
+
+def _base_year(year: int) -> dict[str, object]:
+    return {"currency": "EUR", "prices": "constant", "base_year": year}
+
+
+@pytest.mark.parametrize(
+    "unit",
+    [
+        {"numerator": "USDollar", "denominator": _PER_PERSON},
+        {
+            "numerator": {"currency": "EUR", "prices": "constant", "base_year": 2020},
+            "denominator": _PER_PERSON,
+        },
+        {"numerator": "USDollar", "denominator": "Year"},
+        {"numerator": "USDollar", "denominator": {"stat_var": _LONGEST_STAT_VAR}},
+        {"numerator": _base_year(1900), "denominator": _base_year(2100)},
+    ],
+    ids=[
+        "ref_over_stat_var",
+        "converted_over_stat_var",
+        "ref_over_ref",
+        "longest_stat_var",
+        "base_years_at_the_catalogue_bounds",
+    ],
+)
+def test_http_composed_unit_publishes_and_frame1_holds_its_json(unit: dict[str, object]) -> None:
+    deps = _Deps()
+    client = _build_client(deps)
+    response = client.post(
+        "/api/datasets/frames/publish",
+        json=_publish_body(rows=[{**_rows()[0], "unit": unit}]),
+        headers=_AUTH_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    raw = deps.artifact_store.get(
+        artifact_digest=response.json()["published"]["artifact_digest"], tier=Tier.working
+    )
+    document = json.loads(raw)
+    assert [row[document["columns"].index("unit")] for row in document["rows"]] == [unit]
+
+
+# U+0958 is two code points in NFC, so each text is within its bound as sent and over it as
+# `Frame.build` stores it.
+_NFC_GROWING_REF = "dcid:" + "\u0958" * 195
+_NFC_GROWING_TEXT = "\u0958" * MAX_CELL_CHARS
+
+
+@pytest.mark.parametrize(
+    ("cells", "pointer"),
+    [
+        (
+            {"unit": {"numerator": "USDollar", "denominator": {"stat_var": {"ref": "dcid:X"}}}},
+            "/rows/0/unit/denominator/stat_var",
+        ),
+        (
+            {"unit": {"numerator": "USDollar", "denominator": {"stat_var": "Count_Person"}}},
+            "/rows/0/unit/denominator/stat_var",
+        ),
+        (
+            {"unit": {"numerator": {"stat_var": _LONGEST_STAT_VAR + "x"}, "denominator": "Year"}},
+            "/rows/0/unit/numerator/stat_var",
+        ),
+        (
+            {"unit": {"numerator": "USDollar", "denominator": {**_PER_PERSON, "label": "People"}}},
+            "/rows/0/unit/denominator/label",
+        ),
+        (
+            {"unit": {"numerator": "USDollar", "denominator": _PER_PERSON, "scale": "Year"}},
+            "/rows/0/unit",
+        ),
+        ({"unit": {"numerator": "USDollar", "denominator": None}}, "/rows/0/unit/denominator"),
+        ({"unit": {"numerator": "USDollar", "per": "Year"}}, None),
+        ({"recipient": {"numerator": "USDollar", "denominator": _PER_PERSON}}, "/rows"),
+        (
+            {"unit": {"numerator": "USDollar", "denominator": {"stat_var": _NFC_GROWING_REF}}},
+            "/rows",
+        ),
+        ({"unit": {"numerator": _NFC_GROWING_TEXT, "denominator": _PER_PERSON}}, "/rows"),
+        ({"unit": _NFC_GROWING_TEXT}, "/rows"),
+        ({"unit": _base_year(1899)}, "/rows"),
+        ({"unit": {"numerator": _base_year(2101), "denominator": _PER_PERSON}}, "/rows"),
+        ({"unit": _base_year(int("9" * 4_000))}, "/rows"),
+    ],
+    ids=[
+        "three_levels",
+        "stat_var_without_dcid",
+        "stat_var_over_200",
+        "stat_var_part_extra_member",
+        "third_member",
+        "null_side",
+        "unknown_member_refused_by_the_grammar",
+        "composed_under_a_role_key",
+        "stat_var_over_200_in_nfc",
+        "side_over_the_cell_bound_in_nfc",
+        "unit_ref_over_the_cell_bound_in_nfc",
+        "base_year_below_the_catalogue_range",
+        "side_base_year_above_the_catalogue_range",
+        "base_year_of_4000_digits",
+    ],
+)
+def test_http_malformed_composed_unit_is_request_invalid_and_writes_nothing(
+    cells: dict[str, object], pointer: str | None
+) -> None:
+    """The request model bounds a composed unit's size and depth and names the member at
+    fault. `Frame.build` refuses a member name the model admits, with no pointer."""
+    deps = _Deps()
+    client = _build_client(deps)
+    response = client.post(
+        "/api/datasets/frames/publish",
+        json=_publish_body(rows=[{**_rows()[0], **cells}]),
+        headers=_AUTH_HEADERS,
+    )
+    assert response.status_code == 400, response.text
+    body = response.json()
+    assert body["code"] == "request_invalid"
+    assert body.get("pointer") == pointer
+    assert len(response.text) < 2_000
+    assert deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION) is None
+    assert _no_artifact_store_puts(deps)
+
+
+_LONG_KEY = "k" * 50_000
+
+
+def _one_row(cells: dict[str, object]) -> dict[str, object]:
+    return {"rows": [{**_rows()[0], **cells}]}
+
+
+def _one_entry(**members: object) -> dict[str, object]:
+    return {"composed_stat_vars": [{**_COMPOSED_STAT_VARS[0], **members}]}
+
+
+@pytest.mark.parametrize(
+    ("overrides", "pointer"),
+    [
+        (
+            _one_row({"unit": {"numerator": "USDollar", "denominator": {_LONG_KEY: "USD"}}}),
+            "/rows",
+        ),
+        (
+            _one_row(
+                {"unit": {"numerator": {"stat_var": "dcid:a", _LONG_KEY: "y"}, "denominator": "b"}}
+            ),
+            "/rows",
+        ),
+        (_one_row({"unit": {"numerator": {_LONG_KEY: [1]}, "denominator": "b"}}), "/rows"),
+        (_one_row({"unit": {_LONG_KEY: [1]}}), "/rows"),
+        (_one_row({"unit": {"numerator": "a", "denominator": "b", _LONG_KEY: "y"}}), "/rows"),
+        (_one_row({_LONG_KEY: [1]}), "/rows"),
+        (_one_row({"recipient": {_LONG_KEY: [1]}}), "/rows"),
+        (
+            _one_row({"recipient": {"numerator": {_LONG_KEY: [1]}, "denominator": "b"}}),
+            "/rows",
+        ),
+        (_one_row({"recipient": {"numerator": "a", _LONG_KEY: [1]}}), "/rows"),
+        (
+            _one_row({"unit": {"numerator": {"stat_var": {_LONG_KEY: [1]}}, "denominator": "b"}}),
+            "/rows/0/unit/numerator/stat_var",
+        ),
+        (_one_entry(**{_LONG_KEY: [1]}), "/composed_stat_vars"),
+        (_one_entry(label="GDP per person"), "/composed_stat_vars"),
+        (_one_entry(first=[{_LONG_KEY: [1]}]), "/composed_stat_vars/0/first/0"),
+        (_one_entry(stat_var={_LONG_KEY: [1]}), "/composed_stat_vars/0/stat_var"),
+    ],
+    ids=[
+        "request_side_scalar_value",
+        "stat_var_side_extra_member",
+        "request_side_list_value",
+        "unit_list_value",
+        "composed_third_member",
+        "row_list_value",
+        "role_mapping_list_value",
+        "role_composed_side_list_value",
+        "role_composed_third_member",
+        "third_level_of_a_unit",
+        "composed_stat_var_entry_key",
+        "composed_stat_var_unknown_member",
+        "composed_stat_var_side_ref_mapping",
+        "composed_stat_var_ref_mapping",
+    ],
+)
+def test_http_overlong_key_is_refused_without_echoing_it(
+    overrides: dict[str, object], pointer: str
+) -> None:
+    """Key lengths are checked before a cell is parsed, so a cell that fails its type cannot
+    carry the key above it into the pointer. A key at the third level of a unit, or inside a
+    composed StatVar's ref, is below the member the model reports. An entry of
+    `composed_stat_vars` takes its four keys and no other."""
+    deps = _Deps()
+    client = _build_client(deps)
+    response = client.post(
+        "/api/datasets/frames/publish", json=_publish_body(**overrides), headers=_AUTH_HEADERS
+    )
+    assert response.status_code == 400, response.text[:500]
+    body = response.json()
+    assert body["code"] == "request_invalid"
+    assert body["pointer"] == pointer
+    assert len(response.text) < 2_000
+    assert _no_artifact_store_puts(deps)
+
+
+def test_publish_request_schema_admits_every_unit_form() -> None:
+    """The published schema lists a cell's forms under `anyOf`, since a converted unit also
+    fits the composed arm's bounds and `oneOf` would refuse it."""
+    schema = PublishFrameRequest.model_json_schema()
+    validator = jsonschema.Draft202012Validator(schema)
+    for unit in (
+        None,
+        "USDollar",
+        {"currency": "EUR", "prices": "constant", "base_year": 2020},
+        {"numerator": "USDollar", "denominator": _PER_PERSON},
+    ):
+        validator.validate(_publish_body(rows=[{**_rows()[0], "unit": unit}]))
+
+
+@pytest.mark.parametrize("relation", ["sum", "share"])
+def test_http_composed_stat_vars_are_stored_in_nfc_with_the_version(relation: str) -> None:
+    deps = _Deps()
+    client = _build_client(deps)
+    entries = [
+        {
+            "stat_var": "dcid:Exemplar",
+            "relation": relation,
+            "first": ["dcid:Cafe\u0301"],
+            "second": ["dcid:Count_Person", "dcid:spec_" + "a" * 32],
+        }
+    ]
+    response = client.post(
+        "/api/datasets/frames/publish",
+        json=_publish_body(composed_stat_vars=entries),
+        headers=_AUTH_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    stored = deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION).immutable_body
+    assert stored["composed_stat_vars"] == [{**entries[0], "first": ["dcid:Caf\u00e9"]}]
+
+
+def _entries(count: int, *, refs_per_side: int = 1) -> list[dict[str, object]]:
+    return [
+        {
+            "stat_var": f"dcid:ops_{position}",
+            "relation": "sum",
+            "first": [f"dcid:A{position}_{ref}" for ref in range(refs_per_side)],
+            "second": [f"dcid:B{position}_{ref}" for ref in range(refs_per_side)],
+        }
+        for position in range(count)
+    ]
+
+
+def _entry(**members: object) -> list[dict[str, object]]:
+    return [{**_COMPOSED_STAT_VARS[0], **members}]
+
+
+@pytest.mark.parametrize(
+    ("composed_stat_vars", "pointer"),
+    [
+        (_entries(MAX_COMPOSED_STAT_VARS + 1), "/composed_stat_vars"),
+        (_entries(11, refs_per_side=3), "/composed_stat_vars"),
+        (_entry(first=[]), "/composed_stat_vars/0/first"),
+        (_entry(second=["Count_Person"]), "/composed_stat_vars/0/second/0"),
+        (_entry(stat_var="dcid:" + "x" * 196), "/composed_stat_vars/0/stat_var"),
+        (_entry(first=["dcid:" + "\u0958" * 195]), "/composed_stat_vars"),
+        (_entry(relation="difference"), "/composed_stat_vars/0/relation"),
+        (_entry(second=None), "/composed_stat_vars/0/second"),
+        ([{"stat_var": "dcid:Exemplar", "relation": "sum"}], "/composed_stat_vars/0/first"),
+        (["dcid:Exemplar"], "/composed_stat_vars/0"),
+        (_COMPOSED_STAT_VARS * 2, "/composed_stat_vars"),
+        (_entry(first=["dcid:Exemplar"]), "/composed_stat_vars"),
+        (
+            [
+                {**_COMPOSED_STAT_VARS[0], "first": ["dcid:ops_later"]},
+                {**_COMPOSED_STAT_VARS[0], "stat_var": "dcid:ops_later"},
+            ],
+            "/composed_stat_vars",
+        ),
+        (_entry(first=["dcid:" + "9" * 100_000]), "/composed_stat_vars/0/first/0"),
+        (_entry(stat_var="dcid:a\u0000b"), "/composed_stat_vars"),
+        (_entry(second=["dcid:a\u0000b"]), "/composed_stat_vars"),
+    ],
+    ids=[
+        "seventeen_entries",
+        "sixty_six_side_refs",
+        "empty_side",
+        "ref_without_dcid",
+        "ref_over_200",
+        "ref_over_200_in_nfc",
+        "unknown_relation",
+        "null_side",
+        "missing_sides",
+        "entry_not_a_mapping",
+        "repeated_stat_var",
+        "side_names_its_own_entry",
+        "side_names_a_later_entry",
+        "ref_of_100000_characters",
+        "stat_var_holding_nul",
+        "side_ref_holding_nul",
+    ],
+)
+def test_http_malformed_composed_stat_vars_is_request_invalid_and_writes_nothing(
+    composed_stat_vars: list[object], pointer: str
+) -> None:
+    deps = _Deps()
+    client = _build_client(deps)
+    response = client.post(
+        "/api/datasets/frames/publish",
+        json=_publish_body(composed_stat_vars=composed_stat_vars),
+        headers=_AUTH_HEADERS,
+    )
+    assert response.status_code == 400, response.text[:500]
+    body = response.json()
+    assert body["code"] == "request_invalid"
+    assert body["pointer"] == pointer
+    assert len(response.text) < 2_000
+    assert deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION) is None
+    assert _no_artifact_store_puts(deps)
+
+
+def test_http_composed_stat_vars_at_the_caps_publish() -> None:
+    """Sixteen entries and 64 side refs, with a side naming an earlier entry and a ref no
+    entry describes."""
+    deps = _Deps()
+    client = _build_client(deps)
+    entries = _entries(MAX_COMPOSED_STAT_VARS, refs_per_side=2)
+    entries[1]["first"] = ["dcid:ops_0", "dcid:Count_Person"]
+    assert sum(len(one["first"]) + len(one["second"]) for one in entries) == (
+        MAX_COMPOSED_STAT_VAR_SIDE_REFS
+    )
+    response = client.post(
+        "/api/datasets/frames/publish",
+        json=_publish_body(composed_stat_vars=entries),
+        headers=_AUTH_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    stored = deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION).immutable_body
+    assert stored["composed_stat_vars"] == entries

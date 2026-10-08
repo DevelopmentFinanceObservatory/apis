@@ -1,18 +1,18 @@
-"""Resubmission preserves posted place sets, expands regions for probes, and reapplies both caps.
+"""Resubmission preserves posted place sets, reads each posted place at its own dcid, and
+holds the set to the bound on the places a Spec binds.
 
-An over-limit set is refused because canonicalized identities carry no naming order.
+A posted region is read at its node. A set over the bound is refused whole: no posted place
+is dropped to fit.
 """
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from search.engine.errors import EngineInputError
-from search.engine.region import (
-    MULTI_RECIPIENT_TRUNCATED,
-    STANDARD_PROBE_PLACES_CLAMPED,
-    resolve_spec_resubmit,
-)
+from search.engine.region import resolve_spec_resubmit
 from search.models import (
     BindingSet,
     BindingValue,
@@ -53,7 +53,7 @@ _NODES: dict = {
     "country/GTM": {"label": "Guatemala", "type": "Country"},
     "country/SLV": {"label": "El Salvador", "type": "Country"},
     "country/HND": {"label": "Honduras", "type": "Country"},
-    # Boreal is a Continent. The single-region case tests its expansion.
+    # Boreal is a Continent with two member countries.
     "boreal": {"label": "Boreal", "type": "Continent"},
     "country/B1": {"label": "B1", "type": "Country"},
     "country/B2": {"label": "B2", "type": "Country"},
@@ -164,14 +164,13 @@ def test_posted_set_whose_data_sits_at_its_second_place_answers():
     assert coverage.observation_count == 1
 
 
-# Posted regions expand for the observation probe.
+# A posted region is read at its own node.
 
 
-def test_plural_probe_reaches_materialise_for_region_member():
-    """The posted set keeps Guatemala and Boreal. The probe expands Boreal's members."""
-    # B1 alone has data, so definite status proves the probe expands Boreal.
-    obs = {
-        f"{_SV}|country/B1": [
+def _held_at(place: str) -> dict:
+    """One observation of the series, held at `place`."""
+    return {
+        f"{_SV}|{place}": [
             {
                 "earliestDate": "2020",
                 "latestDate": "2020",
@@ -180,39 +179,48 @@ def test_plural_probe_reaches_materialise_for_region_member():
             },
         ],
     }
-    where_slot = _where_set_slot([("country/GTM", "Guatemala"), ("boreal", "Boreal")])
-    region = _resubmit(where_slot, obs)
-    assert region.status == "definite", f"expected definite, got {region.status!r}"
-    spec = region.specs[0]
-    where = _where_slot(region)
-    assert isinstance(where.binding, BindingSet)
-    # #572 pins canonical identity order, with boreal before country/GTM.
-    assert [v.ref.dcid for v in where.binding.values] == ["boreal", "country/GTM"]
-    assert isinstance(spec.resolved.coverage, CoverageExact)
-    assert spec.resolved.coverage.has_data is True
 
 
-def test_single_region_resubmit_re_expands_to_member_countries():
-    """A single-region value re-expands to member countries for probing."""
-    obs = {
-        f"{_SV}|country/B1": [
-            {
-                "earliestDate": "2020",
-                "latestDate": "2020",
-                "obsCount": 1,
-                "provenanceId": _OBS_PROVENANCE,
-            },
-        ],
-    }
-    where_slot = _where_value_slot("boreal", "Boreal")
-    region = _resubmit(where_slot, obs)
+@pytest.mark.parametrize(
+    "where_slot",
+    [
+        _where_value_slot("boreal", "Boreal"),
+        _where_set_slot([("country/GTM", "Guatemala"), ("boreal", "Boreal")]),
+    ],
+    ids=["region-alone", "region-beside-a-country"],
+)
+def test_posted_region_whose_members_alone_hold_data_has_no_observations(where_slot):
+    """Boreal's node holds nothing and its member B1 holds the series. The resubmit reads
+    the posted dcids only, so it finds no observation."""
+    region = _resubmit(where_slot, _held_at("country/B1"))
+
+    assert (region.status, region.no_data_reason) == ("no_data", "no_observations")
+
+
+@pytest.mark.parametrize(
+    ("where_slot", "bound"),
+    [
+        (_where_value_slot("boreal", "Boreal"), ["boreal"]),
+        (
+            _where_set_slot([("country/GTM", "Guatemala"), ("boreal", "Boreal")]),
+            # Canonical identity order puts boreal before country/GTM.
+            ["boreal", "country/GTM"],
+        ),
+    ],
+    ids=["region-alone", "region-beside-a-country"],
+)
+def test_posted_region_is_read_at_its_node(where_slot, bound):
+    """Boreal's node holds the series: the resubmit answers with the node's observation
+    and keeps the posted places as its where binding."""
+    region = _resubmit(where_slot, _held_at("boreal"))
+
     assert region.status == "definite", f"expected definite, got {region.status!r}"
     spec = region.specs[0]
-    where = _where_slot(region)
-    assert isinstance(where.binding, BindingValue)
-    assert where.binding.value.ref.dcid == "boreal"
+    binding = _where_slot(region).binding
+    values = [binding.value] if isinstance(binding, BindingValue) else binding.values
+    assert [value.ref.dcid for value in values] == bound
     assert isinstance(spec.resolved.coverage, CoverageExact)
-    assert spec.resolved.coverage.has_data is True
+    assert spec.resolved.coverage.observation_count == 1
 
 
 # A posted where set takes precedence over a base entity.
@@ -264,12 +272,18 @@ def test_unresolvable_base_entity_alongside_valid_where_set_is_inert():
     assert {v.ref.dcid for v in where.binding.values} == {"country/GTM", "country/SLV"}
 
 
-# Reapply the named-place and probe caps on resubmit.
+# The bound on the places a Spec binds holds on resubmit.
 
 
-def test_named_place_cap_overflow_refuses(search_settings):
-    """An over-limit set returns request_invalid because canonical identities lack query order."""
-    search_settings(max_standard_places=2)
+def _numbers_named(exc: EngineInputError) -> set[int]:
+    """The numbers the refusal's message names."""
+    return {int(number) for number in re.findall(r"\d+", str(exc))}
+
+
+def test_posted_places_over_the_place_bound_refuse(search_settings):
+    """A role over the bound returns request_invalid at that role, naming the count and
+    the bound."""
+    search_settings(max_child_places=2)
     obs = {
         f"{_SV}|country/GTM": [
             {
@@ -291,36 +305,25 @@ def test_named_place_cap_overflow_refuses(search_settings):
         _resubmit(where_slot, obs)
     assert exc_info.value.code == "request_invalid"
     assert exc_info.value.status == 400
-    assert "3 places" in str(exc_info.value)
-    assert "2-place limit" in str(exc_info.value)
+    assert _numbers_named(exc_info.value) == {3, 2}
     assert exc_info.value.pointer == "/input/identity/entities/observationAbout"
 
 
-def test_probe_union_cap_overflow_fires_standard_probe_places_clamped(search_settings):
-    """The probe-place cap is reapplied to posted sets."""
-    search_settings(max_standard_probe_places=1)
-    obs = {
-        f"{_SV}|country/GTM": [
-            {
-                "earliestDate": "2020",
-                "latestDate": "2020",
-                "obsCount": 1,
-                "provenanceId": _OBS_PROVENANCE,
-            },
-        ],
-    }
-    where_slot = _where_set_slot([("country/GTM", "Guatemala"), ("country/SLV", "El Salvador")])
-    region = _resubmit(where_slot, obs)
-    clamped = [w for w in region.warnings if w.code == STANDARD_PROBE_PLACES_CLAMPED]
-    assert len(clamped) == 1
-    assert region.status == "definite"  # GTM (kept) still has data
+def test_posted_region_counts_as_one_place_against_the_bound(search_settings):
+    """A posted region binds one dcid, so a bound of 1 admits it whatever its members
+    number."""
+    search_settings(max_child_places=1)
+
+    region = _resubmit(_where_value_slot("boreal", "Boreal"), _held_at("boreal"))
+
+    assert region.status == "definite"
 
 
 # Single-value resubmits keep their scalar binding.
 
 
 def test_posted_single_value_where_unchanged():
-    """A single-place resubmit keeps its value binding without cap warnings."""
+    """A single-place resubmit keeps its value binding."""
     obs = {
         f"{_SV}|country/GTM": [
             {
@@ -337,5 +340,3 @@ def test_posted_single_value_where_unchanged():
     where = _where_slot(region)
     assert isinstance(where.binding, BindingValue)
     assert where.binding.value.ref.dcid == "country/GTM"
-    assert not any(w.code == MULTI_RECIPIENT_TRUNCATED for w in region.warnings)
-    assert not any(w.code == STANDARD_PROBE_PLACES_CLAMPED for w in region.warnings)

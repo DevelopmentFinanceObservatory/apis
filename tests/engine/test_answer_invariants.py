@@ -1337,6 +1337,9 @@ _UNIT_DECISION_CLIENT = "materialise_graph."
 _PAIR_READ = "materialise_sdmx.GET"
 _UNIT_PLAN_READ = "materialise_graph.node_arcs_many"
 _LABEL_READ = "graph.node_labels_batch"
+_TYPE_READ = "graph.node_type"
+_TYPE_LABEL_READ = "graph.node_label"
+_TYPE_BATCH_READ = "graph.node_types_batch"
 _BULK_READ = "sdmx.role_series"
 
 
@@ -1435,6 +1438,22 @@ def _rate_table_reads(now: dict[str, Any]) -> dict[str, int]:
         for request, count in now["requests"].items()
         if request.endswith(fixture_world.RATE_TABLE_READ)
     }
+
+
+def _batched_type_read(now: dict[str, Any], limit: dict[str, Any]) -> dict[str, int]:
+    """The batched reads a door makes in place of per-node reads `limit` holds. A resubmit
+    reads the types of its posted places in one request
+    (`promote_places._phase_where_places`), and grounding reads the types of a Spec's bound
+    entities in one request and the labels of those types in one more
+    (`grounding._ground_entities_and_sources`), where the recorded door read each node in
+    turn. A door is granted at most one batched read for each per-node read it no longer
+    makes, so it never makes more requests than `limit`. Empty for a door that makes as
+    many per-node reads as `limit`."""
+    granted = {
+        batch: limit["requests"].get(single, 0) - now["requests"].get(single, 0)
+        for single, batch in ((_TYPE_READ, _TYPE_BATCH_READ), (_TYPE_LABEL_READ, _LABEL_READ))
+    }
+    return {batch: count for batch, count in granted.items() if count > 0}
 
 
 def _preview_reads(cell: Cell, answer: Answer) -> list[dict[str, Any]]:
@@ -1547,6 +1566,9 @@ def i9_latency(run: Doors) -> list[str]:
     once its ground phase begins, beyond its unit decision's reads
     (`_window_answer_reads`).
 
+    A door may make a batched read in place of each per-node type or type-label read its
+    bound holds (`_batched_type_read`).
+
     A door held to c669cc874 may exceed it by one load of each rate table it reads
     (`_rate_table_reads`). Its bound-unit gate loads them to refuse a conversion the tables
     cannot serve before the answer is definite, a check c669cc874 left to the preview.
@@ -1571,7 +1593,9 @@ def i9_latency(run: Doors) -> list[str]:
         for path, source in ((_BASE_PATH, "at c669cc874"), (_BRANCH_PATH, "as recorded")):
             limit = _measurement(path, cell, door, index)
             if limit is not None and _same_answer(limit, now):
-                granted = _rate_table_reads(now) if path == _BASE_PATH else None
+                granted = _batched_type_read(now, limit)
+                if path == _BASE_PATH:
+                    granted |= _rate_table_reads(now)
                 found += [
                     f"{door} ({_status(answer)}) {line}"
                     for line in _beyond(now, limit, source, granted=granted)

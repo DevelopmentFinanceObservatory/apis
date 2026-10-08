@@ -39,7 +39,7 @@ from search.models import (
     IdentityFacetValueRequest,
     IdentityUnitRequest,
 )
-from tests.engine._builders import flow_place_roles
+from tests.engine._builders import flow_place_roles, place_sets
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine.test_role_twin_resolution import (
@@ -71,9 +71,7 @@ def _destination_place(shape: ShapeDraft) -> PlaceContext:
     return _served_context(
         shape,
         flow_place_roles(shape, destination=[_DESTINATION]),
-        children={},
         presence=None,
-        max_probe_places=256,
     )
 
 
@@ -127,8 +125,7 @@ def _resolve_state(shape: ShapeDraft, unit_request: IdentityUnitRequest) -> Reso
         variable="debt",
         # One undirected place, which binds to the twin shape's one required role.
         entities=["Kenya"],
-        rcl=cast(Any, SimpleNamespace(resolved_entity_names={"Kenya": _DESTINATION})),
-        standard_place_dcids=[_DESTINATION],
+        place_sets=place_sets({"Kenya": _DESTINATION}),
         date_request=None,
         detect_query="debt",
         role_query="debt",

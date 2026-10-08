@@ -65,6 +65,21 @@ A deployment that hasn't provisioned every one of these must leave
 `DFO_DATASETS_SURFACE` off, or the service fails to serve any request once
 either door's lifespan runs.
 
+`LIVE_REFRESH_PRINCIPAL` is optional and has no safe value to default to. It
+names the one caller of the frame refresh (`POST /api/datasets/frames/refresh`)
+and of the Presentation render routes, which read it whether or not the
+Datasets surface is mounted. `dfo-infra` generates it as the
+`<namespace>-live-refresh-principal` secret and mounts it on this service, the
+website, and dfo-ai. Unset or empty, the service starts and those routes refuse
+every caller with `refresh_not_permitted`.
+
+Derived-frame recipes live in `datasets.frame_recipe`, which migration
+`0023_frame_recipe.sql` creates. The publish door writes to it when a publish
+carries a recipe, the recipe routes read and write it, and the Presentation
+frame store reads it over the datasets pool, so the migration must be applied
+before the image that serves those routes takes traffic. The Deploy dev
+workflow does that in order (see "Running migrations").
+
 ## Connection budget
 
 `dfo-dev-platform-postgres` runs `max_connections=50`. About 5 are reserved

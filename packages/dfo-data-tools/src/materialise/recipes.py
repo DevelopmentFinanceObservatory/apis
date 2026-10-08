@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from dfo_platform.executor import submit_with_context
+from dfo_platform.named import cut
 from dfo_platform.problem import Cause
 from materialise.errors import MaterialisationError, UpstreamResponseError
 from materialise.graph import GraphReader, SubjectPage
@@ -385,7 +386,7 @@ def require_currency_unit(arcs: NodeArcs, *, currency: str) -> str:
     converts depends on its rate rows.
     """
     if _CURRENCY_UNIT_TYPE not in _values(arcs, "typeOf"):
-        raise NonCurrencyUnitError(f"{currency!r} is not a CurrencyUnit node", unit=currency)
+        raise NonCurrencyUnitError(f"{cut(currency)!r} is not a CurrencyUnit node", unit=currency)
     return currency
 
 

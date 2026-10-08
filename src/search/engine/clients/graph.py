@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import dataclasses
 from collections.abc import Iterable, Sequence
 from concurrent.futures import Future
 from dataclasses import dataclass
@@ -84,17 +85,68 @@ class Detection:
 
     candidates: tuple[DetectedSV, ...]
     un: Future[tuple[DetectedSV, ...] | None]
+    # Our resolve's hits inside the cut, under their own dcids, superseded ones included
+    # (`cut_hits`). The confirm cap counts these, as it counted them when the superseded
+    # provenance was admitted (`derive.derive_shapes`). `None` reads as `candidates`.
+    hits: tuple[DetectedSV, ...] | None = None
+
+
+def stand_in(dcid: str, *, catalogue: Catalogue) -> str | None:
+    """The dcid an admitted or superseded variable stands as in Search: its successor
+    (`Catalogue.successor`) when it is superseded, `None` for a superseded one with no
+    successor, as with the UN origin off, and the dcid itself otherwise."""
+    if catalogue.is_superseded(dcid):
+        return catalogue.successor(dcid)
+    return dcid
+
+
+def standing_dcid(dcid: str, *, catalogue: Catalogue) -> str | None:
+    """The dcid a recalled or Topic-expanded variable stands as in Search (`stand_in`), or
+    `None` for one `catalogue` neither admits nor supersedes."""
+    if catalogue.is_superseded(dcid) or catalogue.admit_candidate(dcid) is not None:
+        return stand_in(dcid, catalogue=catalogue)
+    return None
+
+
+def cut_hits(
+    pool: Iterable[DetectedSV], *, catalogue: Catalogue, detect_k: int
+) -> tuple[DetectedSV, ...]:
+    """`pool`'s hits that `catalogue` admits or supersedes, in descending score and cut at
+    `detect_k`, each under its own dcid.
+
+    A rejected hit leaves its slot to the next one; a superseded hit
+    (`Catalogue.is_superseded`) holds its slot whatever it stands as. So the cut is the cut
+    the resolve got while the superseded provenance was admitted, less the hits refused for
+    other reasons."""
+    kept = [
+        c
+        for c in pool
+        if catalogue.is_superseded(c.dcid) or catalogue.admit_candidate(c.dcid) is not None
+    ]
+    kept.sort(key=lambda c: c.score, reverse=True)
+    return tuple(kept[:detect_k])
+
+
+def stand_candidates(hits: Iterable[DetectedSV], *, catalogue: Catalogue) -> tuple[DetectedSV, ...]:
+    """`hits`, in descending score, as they stand (`stand_in`): a superseded hit as its
+    successor at the score the resolve gave it, one with no successor dropped, and several
+    standing as one dcid kept once at their best score."""
+    best: dict[str, DetectedSV] = {}
+    for hit in sorted(hits, key=lambda c: c.score, reverse=True):
+        dcid = stand_in(hit.dcid, catalogue=catalogue)
+        if dcid is not None and dcid not in best:
+            best[dcid] = hit if dcid == hit.dcid else dataclasses.replace(hit, dcid=dcid)
+    return tuple(best.values())
 
 
 def admit_candidates(
     pool: Iterable[DetectedSV], *, catalogue: Catalogue, detect_k: int
 ) -> tuple[DetectedSV, ...]:
-    """`pool`'s candidates that `catalogue` admits, in descending score and cut at `detect_k`.
-    Admission runs before the sort and the cut, so rejected candidates leave their slots to
-    admitted ones."""
-    kept = [c for c in pool if catalogue.admit_candidate(c.dcid) is not None]
-    kept.sort(key=lambda c: c.score, reverse=True)
-    return tuple(kept[:detect_k])
+    """`pool`'s candidates as they stand, cut at `detect_k` hits (`cut_hits`,
+    `stand_candidates`): supersession changes and removes candidates and brings in none the
+    cut would have left out."""
+    hits = cut_hits(pool, catalogue=catalogue, detect_k=detect_k)
+    return stand_candidates(hits, catalogue=catalogue)
 
 
 def admit_un_candidates(
@@ -118,9 +170,11 @@ def settled_un(un: tuple[DetectedSV, ...] | None) -> Future[tuple[DetectedSV, ..
 
 def admit_legs(legs: DetectLegs, *, catalogue: Catalogue, detect_k: int) -> Detection:
     """Both finished resolves, each admitted through `catalogue` and cut at `detect_k`."""
+    hits = cut_hits(legs.ours, catalogue=catalogue, detect_k=detect_k)
     return Detection(
-        candidates=admit_candidates(legs.ours, catalogue=catalogue, detect_k=detect_k),
+        candidates=stand_candidates(hits, catalogue=catalogue),
         un=settled_un(admit_un_candidates(legs.un, catalogue=catalogue, detect_k=detect_k)),
+        hits=hits,
     )
 
 

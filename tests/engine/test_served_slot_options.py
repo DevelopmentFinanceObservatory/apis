@@ -226,10 +226,22 @@ def _collapse(regions, coverage: CoverageIndex):
     )
 
 
+# The aid identity's slots and the values it binds, None for an unbound slot.
+_CRS_SLOTS: dict[str, str | None] = {
+    _MODALITY: None,
+    _PURPOSE: None,
+    _FINANCE: None,
+    _FLOW: _ODA,
+    "financialFlowType": "Disbursement",
+    "nettingBasis": "Gross",
+}
+
+
 def _crs_region(
     monkeypatch: pytest.MonkeyPatch,
     *,
     bound: dict[str, str],
+    slots: dict[str, str | None] = _CRS_SLOTS,
     origins: tuple[str, ...] = (_DEU,),
     rows: list = _ROWS,
     coverage: CoverageIndex | None = None,
@@ -243,7 +255,8 @@ def _crs_region(
     `window` and `facets`, against coverage `rows` and `facet_metadata`, or against
     `coverage` when given, which a request's answers share. `definition` posts that Spec's
     identity in place of the edit, as a client posts a measure alternative. A unit request
-    reads `catalogue`."""
+    reads `catalogue`. `slots` names the identity's slots and their values, which `bound`
+    overrides."""
     shape = identity_shape_for(
         pop_type_dcid="FinancialFlow",
         meas_prop_dcid="amount",
@@ -254,17 +267,13 @@ def _crs_region(
     entities = [*(origin_entity(o) for o in origins), destination_entity(_GTM)]
 
     def identity_for(slot_values: dict[str, str]):
-        values = {
-            _FLOW: _ODA,
-            "financialFlowType": "Disbursement",
-            "nettingBasis": "Gross",
-            **slot_values,
-        }
-        slots = [
-            _slot(prop, values.get(prop))
-            for prop in (_MODALITY, _PURPOSE, _FINANCE, _FLOW, "financialFlowType", "nettingBasis")
-        ]
-        return make_base(shape, slots, entities=entities, requested_window=window)
+        values = {**slots, **slot_values}
+        return make_base(
+            shape,
+            [_slot(prop, value) for prop, value in values.items()],
+            entities=entities,
+            requested_window=window,
+        )
 
     _edited_id, edited = identity_for(bound)
     if facets:
@@ -823,22 +832,93 @@ def test_a_menu_counted_at_zero_for_every_option_is_left_uncounted(monkeypatch, 
     assert "no served series for any option of 'crsCooperationModality'" in caplog.text
 
 
+_DAC2A_GROSS = "Amount_FinancialFlow_Gross_Disbursement_DAC2aAidType{}_Nominal"
+
+
+def test_a_bound_root_whose_other_roots_serve_nothing_is_counted_without_drift(monkeypatch, caplog):
+    """Gross DAC2a disbursements of aid type 216 from Germany to Guatemala. The aid-type
+    menu is the other roots, and members carry 206, 207 and 213, but only France reports
+    them, so only 216 has a series from Germany. The other roots are disjoint from 216, so the zero counts are counted as they
+    stand: no warning, and each option, serving nothing, is dropped with its menu."""
+    rows = [
+        (_DAC2A_GROSS.format("216"), "dac2a", _DEU, _GTM, [2021]),
+        *(
+            (_DAC2A_GROSS.format(code), "dac2a", _FRA, _GTM, [2021])
+            for code in ("206", "207", "213")
+        ),
+    ]
+    with caplog.at_level("WARNING", logger="search.engine.region.option_coverage"):
+        region = _crs_region(
+            monkeypatch,
+            bound={},
+            slots={
+                "dac2aAidType": "DAC2aAidType216",
+                "financialFlowType": "Disbursement",
+                "nettingBasis": "Gross",
+            },
+            rows=rows,
+        )
+
+    assert region.status == "definite", region.no_data_reason
+    (fact,) = (f for f in region.option_axis_facts if f.property == "dac2aAidType")
+    assert {"DAC2aAidType206", "DAC2aAidType207", "DAC2aAidType213"} <= set(fact.served)
+    assert not any(fact.served.values())
+    assert "no served series" not in caplog.text
+    menus = {so.key.property.dcid for so in region.specs[0].resolved.slot_options}
+    assert "dac2aAidType" not in menus
+
+
+# `dac2aAidType` declares a parent the total of its children, so binding DAC2aAidType206
+# expands to it alone.
+_DAC2A_206_CHILDREN = ("DAC2aAidType201", "DAC2aAidType210", "DAC2aAidType218", "DAC2aAidType219")
+
+
 @pytest.mark.parametrize(
-    ("picks", "drifted"),
+    ("picks", "current", "drifted"),
     [
-        pytest.param({_OOF: ["sv_oof"]}, True, id="members-carry-an-option"),
-        pytest.param({_OOF: []}, False, id="no-member-carries-any-option"),
+        pytest.param({_OOF: ["sv_oof"]}, None, True, id="members-carry-an-option"),
+        pytest.param({_OOF: []}, None, False, id="no-member-carries-any-option"),
+        pytest.param({_OOF: ["sv_oof"]}, [_OOF], True, id="bound-flat-value-in-its-menu"),
+        pytest.param(
+            {"CRSPurposeCode121": ["sv_121"], "CRSPurposeCode100": ["sv_100"]},
+            ["CRSPurposeCode120", "CRSPurposeCode121"],
+            True,
+            id="bound-node-beside-its-child-and-parent",
+        ),
+        pytest.param(
+            {"DAC2aAidType206": ["sv_206"], "DAC2aAidType216": ["sv_216"]},
+            ["DAC2aAidType106"],
+            False,
+            id="bound-root-beside-other-roots",
+        ),
+        pytest.param(
+            {
+                **{child: [f"sv_{child}"] for child in _DAC2A_206_CHILDREN},
+                "DAC2aAidType106": ["sv_106"],
+                "DAC2aAidType216": ["sv_216"],
+            },
+            ["DAC2aAidType206"],
+            True,
+            id="bound-total-parent-root-beside-its-children",
+        ),
+        pytest.param(
+            {"DAC2aAidType206": ["sv_206"], "DAC2aAidType218": ["sv_218"]},
+            ["DAC2aAidType201"],
+            True,
+            id="bound-total-parent-node-beside-its-parent",
+        ),
     ],
 )
-def test_only_a_menu_whose_options_members_carry_counts_as_drift(picks, drifted):
-    """A menu counted at zero throughout is drift when the answer's members carry an option.
-    When none carries any, as for a value another family's vocabulary lists, the menu serves
-    nothing and is dropped."""
+def test_only_a_menu_whose_options_members_carry_counts_as_drift(picks, current, drifted):
+    """A menu counted at zero throughout is drift when the answer's members carry an option
+    that overlaps what the answer serves. When none carries any, as for a value another
+    family's vocabulary lists, the menu serves nothing and is dropped. A bound root's menu
+    of the other roots is disjoint from the bound value, so zero is a valid count."""
     from search.engine.region.option_coverage import _drifted
 
-    fact = OptionServedFact(property=_FLOW, served={_OOF: {}})
+    fact = OptionServedFact(property=_FLOW, served={value: {} for value in picks})
 
-    assert _drifted(fact, picks, shape_id="aid") is drifted
+    assert _drifted(fact, picks, current=current, shape_id="aid") is drifted
 
 
 # ---------------------------------------------------------------------------

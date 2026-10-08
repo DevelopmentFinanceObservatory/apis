@@ -1,7 +1,9 @@
 """Regenerate graph-derived entity and region packs.
 
-`entities` exports `Organization` and `DACRecipientUnallocatedByCountry` nodes, sorted by dcid,
-then folds each `_MERGED_DCIDS` source record into its target.
+`entities` exports `Organization`, `DACRecipientUnallocatedByCountry` and `DACUnspecifiedParty`
+nodes, sorted by dcid, then folds each `_MERGED_DCIDS` source record into its target. A record's
+`dac_code` is the node's numerically lowest `dacCode`; its other codes join its aliases, since a
+resolvekit entity holds one code per system and every code must resolve.
 `regions` maps resolvekit subregions and continents to graph dcids via `/v2/resolve`.
 
 Both commands require `SEARCH_GRAPH_BASE` and read the live graph. Output JSON is stable.
@@ -40,9 +42,12 @@ _DEFAULT_REGIONS_OUT = (
     / "region_ids.json"
 )
 
-_ORGANISATION_TYPE = "Organization"
-_AGGREGATE_TYPE = "DACRecipientUnallocatedByCountry"
-_KIND_BY_TYPE = {_ORGANISATION_TYPE: "organisation", _AGGREGATE_TYPE: "aggregate"}
+# `aggregate` covers both DAC residual classes: stand-ins for parties the DAC does not name.
+_KIND_BY_TYPE = {
+    "Organization": "organisation",
+    "DACRecipientUnallocatedByCountry": "aggregate",
+    "DACUnspecifiedParty": "aggregate",
+}
 _ENTITY_PROPERTIES = ("name", "alternateName", "dacCode")
 
 # The graph holds two "Africa Finance Corporation" nodes. The debt StatVars name the base-schema node
@@ -75,20 +80,27 @@ def _single_name(values: list[str]) -> str:
     return values[0]
 
 
-def _first_or_none(values: list[str]) -> str | None:
-    for value in values:
-        if value:
-            return value
-    return None
+def _split_dac_codes(values: list[str]) -> tuple[str | None, list[str]]:
+    """Return the numerically lowest code and the rest in numeric order."""
+    codes = sorted({value for value in values if value}, key=_numeric_code)
+    if not codes:
+        return None, []
+    return codes[0], codes[1:]
+
+
+def _numeric_code(code: str) -> int:
+    if not code.isdigit():
+        raise SystemExit(f"dacCode {code!r} is not numeric -- cannot order a node's DAC codes")
+    return int(code)
 
 
 def export_entities(reader: GraphClient, *, max_results: int = 1000) -> list[dict]:
-    """Fetch both populations in dcid order.
+    """Fetch every `_KIND_BY_TYPE` population in dcid order.
 
-    Raise `SystemExit` if either population exceeds `max_results` and would be truncated.
+    Raise `SystemExit` if any population exceeds `max_results` and would be truncated.
     """
     dcids_by_type: dict[str, tuple[str, ...]] = {}
-    for graph_type in (_ORGANISATION_TYPE, _AGGREGATE_TYPE):
+    for graph_type in _KIND_BY_TYPE:
         page = reader.node_subjects(graph_type, property="typeOf", max_results=max_results)
         if page.truncated:
             raise SystemExit(
@@ -119,13 +131,15 @@ def export_entities(reader: GraphClient, *, max_results: int = 1000) -> list[dic
             raise SystemExit(
                 f"{dcid} was enumerated via <-typeOf but the graph holds no node for it"
             )
+        dac_code, other_codes = _split_dac_codes(list(arcs.get("dacCode", ())))
+        aliases = [a for a in arcs.get("alternateName", ()) if a]
         records.append(
             {
                 "dcid": dcid,
                 "name": _single_name(list(arcs.get("name", ()))),
                 "kind": kind_by_dcid[dcid],
-                "aliases": [a for a in arcs.get("alternateName", ()) if a],
-                "dac_code": _first_or_none(list(arcs.get("dacCode", ()))),
+                "aliases": list(dict.fromkeys([*aliases, *other_codes])),
+                "dac_code": dac_code,
             }
         )
     return merge_records(records, _MERGED_DCIDS)

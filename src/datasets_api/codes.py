@@ -9,6 +9,7 @@ from __future__ import annotations
 from datasets_api.codes_core import CORE_CODE_CATALOGUE
 from datasets_api.codes_materialise import MATERIALISE_DOOR_CODE_CATALOGUE
 from datasets_api.codes_publish import PUBLISH_DOOR_CODE_CATALOGUE
+from datasets_api.codes_refresh import REFRESH_DOOR_CODE_CATALOGUE
 from datasets_api.codes_snapshot import SNAPSHOT_DOOR_CODE_CATALOGUE
 from dfo_platform.codes import PLATFORM_CODE_CATALOGUE, merge_catalogues
 
@@ -17,6 +18,7 @@ DATASETS_CODE_CATALOGUE: dict[str, tuple[str, str]] = merge_catalogues(
     MATERIALISE_DOOR_CODE_CATALOGUE,
     SNAPSHOT_DOOR_CODE_CATALOGUE,
     PUBLISH_DOOR_CODE_CATALOGUE,
+    REFRESH_DOOR_CODE_CATALOGUE,
 )
 
 # Include platform codes handled by this surface's classifiers.
@@ -28,7 +30,8 @@ CODE_CATALOG: dict[str, tuple[str, str]] = merge_catalogues(
 # facet, role, capability, and upstream-version refusals. Four entries are contract-reserved.
 # `recipe_not_declared` and `rate_coverage_gap` are raised by `materialise.recipes` during
 # currency conversion and classified by the mint doors (`doors/conversion_errors.py`).
-# Registry-binding tests use this served-code set.
+# `refresh_not_permitted` is the frame refresh door's caller refusal, which the Presentation
+# render routes serve too. Registry-binding tests use this served-code set.
 SHARED_PLATFORM_CODES: frozenset[str] = frozenset(
     {
         "request_invalid",
@@ -47,6 +50,7 @@ SHARED_PLATFORM_CODES: frozenset[str] = frozenset(
         "rate_coverage_gap",
         "capability_unavailable",
         "upstream_version_changed",
+        "refresh_not_permitted",
     }
 )
 if not frozenset(PLATFORM_CODE_CATALOGUE) >= SHARED_PLATFORM_CODES:

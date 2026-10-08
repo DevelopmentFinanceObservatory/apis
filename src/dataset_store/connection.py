@@ -279,15 +279,23 @@ class BaseConnectionSettings(BaseSettings):
 class ConnectionSettings(BaseConnectionSettings):
     """`BaseConnectionSettings` under the `DATASET_STORE_` prefix.
 
-    `pool_size` defaults to 10, covering one `datasets_api` instance's
-    definition-retrieval pool (`DatasetsBuildSettings
-    .definition_max_concurrency`, default 4), its mint pool
-    (`DatasetsBuildSettings.mint_max_concurrency`, default 4), and the
-    register door's executor (`datasets_api.doors.register`'s
-    `_FALLBACK_POOL_SIZE`, 2). Every GET reads this store too. See
-    `datasets_api.serve`'s module docstring for the fuller borrow-demand
-    arithmetic, including the presentation surface's co-tenancy, which
-    this default does not cover.
+    `pool_size` defaults to 10. It is smaller than the threads that can
+    borrow: one `datasets_api` instance runs a definition-retrieval pool
+    (`DatasetsBuildSettings.definition_max_concurrency`, default 4), a mint
+    pool (`mint_max_concurrency`, 4), a frame refresh pool
+    (`refresh_max_concurrency`, 8), and the register door's executor
+    (`datasets_api.doors.register`'s `_FALLBACK_POOL_SIZE`, 2), 18 threads,
+    beside the snapshot, pin, publish, and operations pools and the
+    presentation surface's reads. The default holds because a borrow lasts
+    one read or one write transaction and a borrower that finds the pool
+    empty waits: `ConnectionPool.borrow` waits up to 30 seconds for a
+    connection, then raises `PoolTimeoutError`, which doors answer as a
+    retryable 503. A refresh waiting for a materialise slot or a shared
+    rebuild holds no connection, and at most `materialise_max_concurrency`
+    (2) rebuilds write at once, each holding up to two. Postgres allows
+    about 15 connections per tenant (`dataset_store.pool`), so a larger
+    default would crowd other pools and instances. See `datasets_api.serve`'s
+    module docstring for the write path's borrow arithmetic.
     """
 
     model_config = SettingsConfigDict(env_prefix="DATASET_STORE_", frozen=True)

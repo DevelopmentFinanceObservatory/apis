@@ -4,9 +4,12 @@ required fields, and the closed `scope` shape.
 
 from __future__ import annotations
 
+import pytest
+
 from datasets_api.mint_models import MintRequest as RuntimeMintRequest
 from datasets_api.schema import MintRequest as PublishedMintRequest
 from datasets_api.schema import build_schema_document
+from dfo_platform.named import MAX_VALUE_CHARS
 from spec_registry import LiveSpecRegistry
 
 from ._app_factories import make_client
@@ -128,3 +131,64 @@ class TestMintPreviewIsRetired:
 
         assert resp.status_code == 400, resp.text
         assert resp.json()["code"] == "request_invalid"
+
+
+_LONG = "a" * 4000
+
+
+def _scoped(**scope) -> dict:
+    return {"input": {**_STATVAR_INPUT, "scope": scope}}
+
+
+def _optioned(**options) -> dict:
+    return {"input": _STATVAR_INPUT, "options": options}
+
+
+def _sidecar(spec_id: str) -> dict:
+    return {"schema_version": 1, "spec_id": spec_id, "identity": {}}
+
+
+_DASHES = "-" * 4000
+_SPEC_ID = f"spec_{_LONG}"
+_CALLER_STRING_REFUSALS: dict[str, tuple[dict, str]] = {
+    # body, the string it posts
+    "invalid-entity-role": (_scoped(entities={_DASHES: ["country/KEN"]}), _DASHES),
+    "entity-role-without-values": (_scoped(entities={_LONG: []}), _LONG),
+    "entity-role-with-an-empty-value": (_scoped(entities={_LONG: [""]}), _LONG),
+    "entity-role-over-a-reserved-value": (_scoped(entities={_LONG: ["a+b"]}), _LONG),
+    "reserved-value": (_scoped(entities={"recipient": [f"{_LONG}+"]}), _LONG),
+    "unknown-facet-axis": (_scoped(facets={_LONG: {"ref": "x"}}), _LONG),
+    "duplicate-groupby-axis": (_optioned(groupby={"op": "sum", "by": [_LONG, _LONG]}), _LONG),
+    "groupby-level-outside-by": (
+        _optioned(groupby={"op": "sum", "by": ["recipient"], "levels": {_LONG: 1}}),
+        _LONG,
+    ),
+    "duplicate-column": (_optioned(columns=[_LONG, _LONG]), _LONG),
+    "sidecar-spec-id-differs": (
+        {
+            "input": {
+                "kind": "spec_id",
+                "spec_id": _SPEC_ID,
+                "definition": _sidecar(f"spec_x{_LONG}"),
+            }
+        },
+        _SPEC_ID,
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    ("body", "posted"), _CALLER_STRING_REFUSALS.values(), ids=_CALLER_STRING_REFUSALS.keys()
+)
+def test_a_refusal_names_a_posted_string_by_its_first_characters(body: dict, posted: str):
+    """A 4,000-character role, axis, ref or spec id comes back as its first 256 characters,
+    and a list of names comes back without a list repr."""
+    client = make_client(registry=LiveSpecRegistry(store=FakeDatasetStore()))
+
+    resp = client.post("/api/datasets", json={"schema_version": 1, **body})
+
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["code"] == "request_invalid"
+    assert posted[:MAX_VALUE_CHARS] in resp.json()["detail"]
+    assert posted[: MAX_VALUE_CHARS + 1] not in resp.text
+    assert "[" not in resp.json()["detail"]

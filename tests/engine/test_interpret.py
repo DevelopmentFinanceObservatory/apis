@@ -6,12 +6,22 @@ import asyncio
 
 import pytest
 
-from search.engine.interpret import recall
+from entity_resolution import Resolved
+from search.engine.interpret import Recall, recall
 from tests.fixtures import FakeGraph, make_resolver
 
 
 def run(coro):
     return asyncio.run(coro)
+
+
+def _resolved_dcids(result: Recall) -> dict[str, str]:
+    """The dcid of each name recall resolved to one entity."""
+    return {
+        name: resolution.entity.dcid
+        for name, resolution in result.resolutions.items()
+        if isinstance(resolution, Resolved)
+    }
 
 
 class TestRecall:
@@ -62,7 +72,7 @@ class TestRecall:
                 resolver=make_resolver(graph),
             )
         )
-        assert result.resolved_entity_names.get("Ethiopia") == "country/ETH"
+        assert _resolved_dcids(result) == {"Ethiopia": "country/ETH"}
 
     def test_entity_resolution_usa(self):
         graph = FakeGraph()
@@ -74,22 +84,22 @@ class TestRecall:
                 resolver=make_resolver(graph),
             )
         )
-        assert result.resolved_entity_names.get("USA") == "country/USA"
-        assert result.resolved_entity_names.get("Kenya") == "country/KEN"
+        assert _resolved_dcids(result) == {"USA": "country/USA", "Kenya": "country/KEN"}
 
     def test_unknown_entity_not_in_resolved(self):
         graph = FakeGraph()
         result = run(
             recall("ODA to Atlantis", ["Atlantis"], graph=graph, resolver=make_resolver(graph))
         )
-        assert "Atlantis" not in result.resolved_entity_names
+        assert set(result.resolutions) == {"Atlantis"}
+        assert _resolved_dcids(result) == {}
 
     def test_no_entities(self):
         graph = FakeGraph()
         result = run(
             recall("health ODA grants to Kenya", [], graph=graph, resolver=make_resolver(graph))
         )
-        assert result.resolved_entity_names == {}
+        assert result.resolutions == {}
 
     def test_graph_error_propagates(self):
         from search.engine.errors import GraphInfraError

@@ -2382,6 +2382,11 @@ _FRAME1_RENDERING: Mapping[str, object] = {"format": "frame1"}
 therefore reuse the same `version_artifact` row for byte-identical frame1 data."""
 
 
+def is_frame1_rendering(rendering: Mapping[str, object]) -> bool:
+    """Matches the frame1 rendering, which every version's canonical frame file carries."""
+    return dict(rendering) == _FRAME1_RENDERING
+
+
 STATISTICS_MEDIA_TYPE = "application/vnd.apache.parquet"
 """Both `series-statistics/1` and requested Parquet use `application/vnd.apache.parquet`. Rendering
 metadata identifies statistics with `{"statistics": "series"}`."""

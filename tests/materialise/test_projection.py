@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from dfo_frame_grammar.grammar import UnitRequest
+from dfo_frame_grammar.grammar import ComposedUnit, StatVarPart, UnitRequest
 
 from materialise.errors import MaterialisationUsageError
 from materialise.projection import (
@@ -247,6 +247,17 @@ def test_the_values_to_name_are_the_name_columns_distinct_non_empty_cells():
             None,
             UnitParts(unit="CurrencyKES", currency="KES", price_basis="current", base_year=None),
             id="converted-current",
+        ),
+        pytest.param(
+            ComposedUnit(numerator="USDollar", denominator=StatVarPart("dcid:Count_Person")),
+            "current",
+            UnitParts(
+                unit='{"denominator":{"stat_var":"dcid:Count_Person"},"numerator":"USDollar"}',
+                currency=None,
+                price_basis=None,
+                base_year=None,
+            ),
+            id="composed",
         ),
         pytest.param(None, "current", None, id="empty"),
     ],

@@ -37,13 +37,6 @@ ASSERTABLE_WARNINGS: frozenset[tuple[str, str]] = frozenset(
         ("observations_omitted", "raw_text"),
         ("observations_omitted", "parsed"),
         ("observations_omitted", "dataset_resubmit"),
-        # expand_place clamps the graph member count. Parsed and resubmit place
-        # dcids come from requests, while raw_text depends on extraction.
-        ("child_places_clamped", "parsed"),
-        ("child_places_clamped", "dataset_resubmit"),
-        # standard_probe_union applies the same request/graph-only place clamp.
-        ("standard_probe_places_clamped", "parsed"),
-        ("standard_probe_places_clamped", "dataset_resubmit"),
         # _ground_answer resolves labels from graph content. Parsed and resubmit
         # entity dcids come from the request. raw_text depends on extraction.
         ("entity_label_unresolved", "parsed"),

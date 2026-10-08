@@ -152,9 +152,9 @@ dfo-data-tools = { workspace = true }
 # or `uv lock` refuses with "conflicting URLs for package dfo-spec-kit"
 # (confirmed live). All four pins move together as a single rev. This rev's
 # registry schema has no `spec_resubmit` door: a code with a raise site in
-# this repo maps to `dataset_resubmit` instead, and `resolution_ambiguous`,
-# `entity_set_too_large`, and `place_type_not_covered` carry no door mapping
-# at all, since none has a raise site on any door here.
+# this repo maps to `dataset_resubmit` instead. `entity_set_too_large` is
+# mapped on `search.resolve` for the `raw_text` and `parsed` doors, which serve
+# it as a no-data reason.
 # `observations_omitted`'s registry row lists `dataset_resubmit` as one of its
 # doors, since assemble.py's candidates-part builder fires it identically on
 # every resolve door through the shared conjoin._build_part. This rev also
@@ -183,13 +183,24 @@ dfo-data-tools = { workspace = true }
 # `skills.list` only. The frame grammar's `time_period` also takes a closed
 # same-grain interval (`2018/2022`), parsed by `parse_time_period`, and the
 # envelope's provenance source takes an optional graph `ref`. The registry
-# retires `constraint_filter_fell_back`, which Search no longer raises.
+# retires `constraint_filter_fell_back`, `multi_recipient_truncated`,
+# `child_places_clamped` and `standard_probe_places_clamped`, which Search does
+# not raise.
 # It also registers `observations_unavailable` (404) on the `datasets.observations`
 # endpoint, which `datasets_api.doors.observations` serves, and maps the snapshot
 # refusals and `service_unavailable` onto it.
+# It releases the catalogue as `2026.10.0`: the intent schema takes a relative
+# period (`{"anchor": "latest", "offset": n}`) in a window bound or a change
+# basis, `dfo_frame_grammar.rolling` resolves it, and the registry adds
+# `datasets.refresh`, `datasets.recipe`, and `presentation.render` with the codes
+# `frame_not_refreshable`, `rendering_not_recorded`, `refresh_not_permitted`,
+# `render_target_mismatch`, and `recipe_not_found`.
+# The frame grammar's `unit` cell takes a composed unit,
+# `{"numerator": part, "denominator": part}`, for a quotient of two measures,
+# and the components catalogue's `unit` slot takes the matching `composed_unit`.
 # Follow-up: move all four to a real spec-kit tag once one is cut, so a
 # future force-push or GC on spec-kit's main can't silently break this lock.
-dfo-spec-kit = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "8ee8d133020bdc92c2b147369f17fe289edb11c1", subdirectory = "python/spec-kit" }
+dfo-spec-kit = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "a9b8df5234195d5eb023749cf9d745d9f5acd24b", subdirectory = "python/spec-kit" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

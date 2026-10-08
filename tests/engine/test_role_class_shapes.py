@@ -13,6 +13,7 @@ import asyncio
 import dataclasses
 import sys
 import time
+from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -31,7 +32,7 @@ from search.engine.entry.parsed import _open_axes_for_part
 from search.engine.errors import EngineInputError, FamilyNotResolvableError, RoleSignatureError
 from search.engine.fanout import _FanOutResult, _run_variables_streaming, _success_directional
 from search.engine.options.population_memo import _population_key
-from search.engine.qualifier_match import QualifierMatch
+from search.engine.qualifier_match import QualifierMatch, read_by_vocabulary
 from search.engine.region import (
     candidate_collapse,
     promote_materialise,
@@ -42,7 +43,7 @@ from search.engine.region.phase_rank_bind import _phase_prune_and_rank
 from search.engine.region.promote_materialise import _phase_materialise
 from search.engine.region.promote_state import _PromoteState
 from search.engine.region.result import with_runnable_operations
-from search.engine.region.state import EngineOptions
+from search.engine.region.state import EngineOptions, shape_vocabulary
 from search.engine.retrieval.bound_values import (
     MembershipResolution,
     RoleClassWalks,
@@ -53,9 +54,12 @@ from search.engine.retrieval.bound_values import (
     elected_role_class_shape,
     entity_role_keys,
     five_tuple_member_facts,
+    held_codes,
     index_carries_shape,
     measure_family_cache_key,
     measure_family_partitions,
+    query_phrases_read,
+    shape_five_tuple,
     shape_member_facts,
     shape_query,
 )
@@ -97,6 +101,7 @@ from tests.engine._fake_coverage import (
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve
 from tests.engine.test_bind_slot_reserve import _state as _prune_state
+from tests.engine.test_two_ended_menu import _index_row_node
 from tests.fixtures import FakeGraph, make_resolver
 
 _RECIPIENT = ["financingRecipient"]
@@ -1943,9 +1948,14 @@ def _named(code_system: str, code_dcid: str) -> QualifierMatch:
     )
 
 
+def _reads(*named: QualifierMatch) -> Callable[[ShapeDraft], frozenset[str]]:
+    """The phrases each shape's family reads among `named`."""
+    return lambda shape: query_phrases_read(held_codes(shape), named, ())
+
+
 def test_the_family_with_the_stronger_recall_score_reaches_the_election():
-    debt_first = elect_five_tuple_family(_rival_shapes(debt_score=0.9, crs_score=0.7), [])
-    crs_first = elect_five_tuple_family(_rival_shapes(debt_score=0.7, crs_score=0.9), [])
+    debt_first = elect_five_tuple_family(_rival_shapes(debt_score=0.9, crs_score=0.7), _reads())
+    crs_first = elect_five_tuple_family(_rival_shapes(debt_score=0.7, crs_score=0.9), _reads())
 
     assert [index_carries_shape(shape) for shape in debt_first] == [False]
     assert [index_carries_shape(shape) for shape in crs_first] == [True]
@@ -1956,21 +1966,143 @@ def test_the_family_holding_more_of_the_values_the_query_names_outranks_the_scor
     rows hold."""
     shapes = _rival_shapes(debt_score=0.9, crs_score=0.7)
 
-    kept = elect_five_tuple_family(shapes, [_named("nettingBasis", "Net")])
+    kept = elect_five_tuple_family(shapes, _reads(_named("nettingBasis", "Net")))
 
     assert [index_carries_shape(shape) for shape in kept] == [True]
 
 
 def test_families_of_equal_score_and_named_values_both_stay():
-    assert len(elect_five_tuple_family(_rival_shapes(debt_score=0.8, crs_score=0.8), [])) == 2
+    assert len(elect_five_tuple_family(_rival_shapes(debt_score=0.8, crs_score=0.8), _reads())) == 2
 
 
 def test_shapes_of_other_five_tuples_and_role_classes_are_not_rivals():
     shapes = [_debt_shape(), *_rival_shapes(debt_score=0.9, crs_score=0.7)]
 
-    kept = elect_five_tuple_family(shapes, [])
+    kept = elect_five_tuple_family(shapes, _reads())
 
     assert [shape.pop_type_dcid for shape in kept] == ["FinancialPosition", "FinancialFlow"]
+
+
+_DAC2A_IMPUTED = "AttributedAmount_FinancialFlow_Gross_Disbursement_DAC2aAidType106_Nominal"
+_SECTORS_PRIMARY = (
+    "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_"
+    "CRSPurposeCode11220_Nominal"
+)
+_SECTORS_TERTIARY = (
+    "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_"
+    "CRSPurposeCode11420_Nominal"
+)
+_DAC2A_ODA = "Amount_FinancialFlow_Gross_Disbursement_DAC2aAidType206_Nominal"
+_CRS_EMERGENCY_FOOD = (
+    "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_"
+    "CRSPurposeCode72040_Nominal"
+)
+_CRS_PRIMARY = (
+    "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_"
+    "CRSPurposeCode11220_Nominal"
+)
+
+
+def _index_shapes(*dcids: str) -> list[ShapeDraft]:
+    """The shapes of the packaged index rows `dcids`, recalled together."""
+    graph = FakeGraph(
+        nodes={dcid: _index_row_node(dcid) for dcid in dcids}, obs={}, detect={}, resolve={}
+    )
+    return derive_shapes(confirmed_svs=list(dcids), graph=graph)
+
+
+def _read_in_own_vocabulary(query: str) -> Callable[[ShapeDraft], frozenset[str]]:
+    """The phrases of `query` each shape's family reads, in the shape's own vocabulary."""
+
+    def phrases_read(shape: ShapeDraft) -> frozenset[str]:
+        vocabulary = shape_vocabulary(shape)
+        (reading,) = read_by_vocabulary(
+            [query], get_index(), get_measure_index(), vocabularies=[vocabulary]
+        )
+        own = reading.by_vocabulary[vocabulary]
+        return query_phrases_read(held_codes(shape), own.matches, own.ties)
+
+    return phrases_read
+
+
+@pytest.mark.parametrize(
+    ("query", "recalled", "kept"),
+    [
+        # Both tables are indexed families of the attributed-amount five-tuple, and only the
+        # sectors table holds a code for "basic education".
+        pytest.param(
+            "imputed multilateral ODA to basic education",
+            (_DAC2A_IMPUTED, _SECTORS_PRIMARY),
+            {_SECTORS_PRIMARY},
+            id="two-indexed-families",
+        ),
+        # CRS reads "ODA" in its flow type and DAC2a in its aid type, so the tables compare
+        # by the words their codes read, and CRS alone reads the sector.
+        pytest.param(
+            "ODA for basic education",
+            (_DAC2A_ODA, _CRS_PRIMARY),
+            {_CRS_PRIMARY},
+            id="words-read-across-code-systems",
+        ),
+        # "Tertiary education" names CRS purposes 114 and 11420 alike, a tie the sectors
+        # table reads through either code.
+        pytest.param(
+            "imputed multilateral ODA for tertiary education",
+            (_DAC2A_IMPUTED, _SECTORS_TERTIARY),
+            {_SECTORS_TERTIARY},
+            id="tie-as-read",
+        ),
+        # DAC2a's ODA code reads "ODA" as CRS's flow type does, so neither table leaves.
+        pytest.param("ODA to Kenya", (_DAC2A_ODA, _CRS_PRIMARY), None, id="synonym-parity"),
+        # Neither table reads a word of the query, so neither reads fewer than the other.
+        pytest.param("aid to Kenya", (_DAC2A_ODA, _CRS_PRIMARY), None, id="vacuous-words"),
+        # DAC2a's developmental food aid reads "food aid" through its concept group, and CRS
+        # reads the longer "emergency food aid" (purpose 72040), so DAC2a reads fewer.
+        pytest.param(
+            "emergency food aid to Sudan",
+            (_DAC2A_ODA, _CRS_EMERGENCY_FOOD),
+            {_CRS_EMERGENCY_FOOD},
+            id="longer-phrase-across-code-systems",
+        ),
+    ],
+)
+def test_the_family_reading_more_of_the_query_reaches_the_election(
+    query: str, recalled: tuple[str, ...], kept: set[str] | None
+):
+    """Rival families of one five-tuple and role class compare by the query phrases their
+    codes read, whether or not the index carries them. `kept` None keeps both."""
+    shapes = _index_shapes(*recalled)
+    assert len(shapes) == 2 and all(index_carries_shape(shape) for shape in shapes)
+
+    elected = elect_five_tuple_family(shapes, _read_in_own_vocabulary(query))
+
+    assert {sv for shape in elected for sv in shape.sv_arc_facts or ()} == (kept or set(recalled))
+
+
+def test_a_family_reading_fewer_leaves_before_recall_scores_compare():
+    """Three families of one five-tuple and role class: CRS reads {"oda", "basic
+    education"} at 0.3, the unindexed debt series {"debt"} at 0.5 and DAC2a {"oda"} at 0.8.
+    DAC2a reads fewer than CRS and leaves first. The debt series and CRS read
+    incomparably, so the recall score keeps the debt series. Scored against all three at
+    once, each would drop another and none would stay."""
+    dac2a, crs = _index_shapes(_DAC2A_ODA, _CRS_PRIMARY)
+    (debt,) = [
+        shape
+        for shape in _rival_shapes(debt_score=0.5, crs_score=0.3)
+        if not index_carries_shape(shape)
+    ]
+    crs = dataclasses.replace(crs, representative_score=0.3)
+    dac2a = dataclasses.replace(dac2a, representative_score=0.8)
+    reads = {
+        id(crs): frozenset({"oda", "basic education"}),
+        id(debt): frozenset({"debt"}),
+        id(dac2a): frozenset({"oda"}),
+    }
+    assert len({shape_five_tuple(shape) for shape in (crs, debt, dac2a)}) == 1
+
+    kept = elect_five_tuple_family([crs, debt, dac2a], lambda shape: reads[id(shape)])
+
+    assert kept == [debt]
 
 
 def test_an_unindexed_shape_has_no_measure_family_and_passes_the_collapse():

@@ -35,10 +35,10 @@ from dfo_frame_grammar.grammar import (
     TIME_PERIOD_COLUMN,
     UNIT_COLUMN,
     VALUE_COLUMN,
+    ComposedUnit,
     UnitRequest,
-    validate_unit_request,
+    unit_cell_from_json,
 )
-from dfo_spec_kit.identity import canonicalize
 from openpyxl import Workbook
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 from openpyxl.utils import get_column_letter
@@ -46,6 +46,7 @@ from openpyxl.utils import get_column_letter
 from materialise.cell_safety import spreadsheet_safe
 from materialise.codes import CodeCatalogue
 from materialise.errors import MaterialisationError, MaterialisationUsageError
+from materialise.unit_cells import unit_cell_text
 
 if TYPE_CHECKING:
     from typing import IO
@@ -405,12 +406,12 @@ must remain a boolean."""
 
 
 def _cell_text(value: object) -> str:
-    """The text a tabular writer puts in a cell that has no native type. A `UnitRequest` cell
-    becomes the JCS serialisation of `UnitRequest.as_json`, the same object frame1 and the
-    preview carry, for example `{"base_year":2024,"currency":"EUR","prices":"constant"}`. Any
-    other value uses `str`."""
-    if isinstance(value, UnitRequest):
-        return canonicalize(value.as_json()).decode("utf-8")
+    """The text a tabular writer puts in a cell that has no native type. A `UnitRequest` or
+    `ComposedUnit` cell becomes the JCS serialisation of its `as_json`, the same object frame1
+    and the preview carry, for example `{"base_year":2024,"currency":"EUR","prices":"constant"}`.
+    Any other value uses `str`."""
+    if isinstance(value, (UnitRequest, ComposedUnit)):
+        return unit_cell_text(value)
     return str(value)
 
 
@@ -709,8 +710,8 @@ def read_frame1_table(data: bytes) -> Table:
     the version matches `FRAME_VERSION`, and each row matches the column count.
 
     Non-null value cells become `float` because whole-number floats parse from JSON as `int`.
-    Unit dictionaries are validated and rebuilt as `UnitRequest` so reshaping keeps hashable,
-    typed cells."""
+    Unit dictionaries are validated and rebuilt as `UnitRequest` or `ComposedUnit` through
+    `unit_cell_from_json`, so reshaping keeps hashable, typed cells."""
     document = json.loads(data)
     if not isinstance(document, dict):
         raise ValueError(f"frame1 document must be a JSON object, got {type(document).__name__}")
@@ -736,13 +737,7 @@ def read_frame1_table(data: bytes) -> Table:
         if value_index is not None and row[value_index] is not None:
             row[value_index] = float(row[value_index])
         if unit_index is not None and isinstance(row[unit_index], dict):
-            unit_request = cast("dict[str, object]", row[unit_index])
-            validate_unit_request(unit_request)
-            row[unit_index] = UnitRequest(
-                currency=cast(str, unit_request["currency"]),
-                prices=cast(str, unit_request["prices"]),
-                base_year=cast("int | None", unit_request.get("base_year")),
-            )
+            row[unit_index] = unit_cell_from_json(row[unit_index])
         rows.append(tuple(row))
     return Frame1Table(columns=columns, rows=tuple(rows))
 

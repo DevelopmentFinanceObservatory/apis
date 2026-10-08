@@ -26,6 +26,7 @@ from dc_graph import CURRENCY_UNIT_OF_MEASURE_ISO_CODES
 from dc_graph import earliest_date as _earliest
 from dc_graph import latest_date as _latest
 from dc_sdmx import ContainedIn, EntityFilter
+from dfo_platform.named import cut
 from dfo_platform.problem import Alternative
 from materialise.errors import (
     CollectionProbeCeilingExceededError,
@@ -1453,7 +1454,7 @@ def select_bound_facet(
     if match is not None:
         return _selection(axis, ref, basis="bound", dispatch_facet_id=match.facet_id)
     alternatives, alternatives_truncated = _alternatives(dispatchable, axis, graph)
-    bound_to = repr(ref) if ref is not None else "no declared value"
+    bound_to = repr(cut(ref)) if ref is not None else "no declared value"
     raise FacetNotAvailableError(
         f"facet axis {axis!r} bound to {bound_to}, which has no observations",
         pointer=f"/facets/{axis}",

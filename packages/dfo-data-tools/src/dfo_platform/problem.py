@@ -61,9 +61,10 @@ class Cause(BaseModel):
 class ProblemIssue(BaseModel):
     """One failure among several a single refusal can report at once.
 
-    Each issue carries its own pointer, the member or axis it concerns, and
-    its own alternatives and truncation flag -- mirroring the same-named
-    top-level ProblemDetails fields, but scoped to one entry among many.
+    Each issue carries its own pointer, the member or axis it concerns, its
+    own alternatives and truncation flag, and the machine code and message of
+    the failure it stands for -- mirroring the same-named top-level
+    ProblemDetails fields, but scoped to one entry among many.
     Fields default to None and are omitted from the wire body when absent
     (the envelope's omit-when-absent rule).
     """
@@ -84,6 +85,14 @@ class ProblemIssue(BaseModel):
     truncated: bool | None = Field(
         default=None,
         description="present iff alternatives is present; whether the cap cut items",
+    )
+    code: str | None = Field(
+        default=None,
+        description="the stable machine-readable code of the failure this issue stands for",
+    )
+    detail: str | None = Field(
+        default=None,
+        description="human-readable explanation of the failure this issue stands for",
     )
 
 

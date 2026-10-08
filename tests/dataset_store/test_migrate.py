@@ -382,12 +382,14 @@ def test_apply_pending_applies_every_real_migration_in_order():
         "0020_trace_conversion_entries_after_deploy.sql",
         "0021_drop_collections.sql",
         "0022_drop_null_collection.sql",
+        "0023_frame_recipe.sql",
     ]
     statements = [sql for sql, _params in conn.executed]
     assert any("CREATE TABLE datasets.version_record" in sql for sql in statements)
     assert any("CREATE TABLE datasets.version_member" in sql for sql in statements)
     assert any("DROP TABLE IF EXISTS datasets.version_member" in sql for sql in statements)
     assert any("CREATE TABLE datasets.version_artifact" in sql for sql in statements)
+    assert any("CREATE TABLE datasets.frame_recipe" in sql for sql in statements)
     assert any("CREATE TABLE datasets.version_revocation" in sql for sql in statements)
     assert any("CREATE TABLE datasets.artifact_reference" in sql for sql in statements)
     assert any(

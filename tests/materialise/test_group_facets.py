@@ -678,9 +678,9 @@ def test_two_members_with_no_bound_entity_share_one_exhaustive_fetch():
     assert _entity_filters(request) == {"c[donor]": "country/DONOR"}
 
 
-def test_members_with_no_bound_entity_and_no_coverage_refuse_facet_not_available():
-    # A group binding no entity meets this refusal when coverage holds no series for it, as a
-    # bound group with no data does.
+def test_members_with_no_bound_entity_and_no_coverage_are_the_empty_result():
+    # Coverage holds no series for either member, so no probe returns a candidate and nothing
+    # is read.
     graph = FakeGraphReader()
     sdmx, requests = _sdmx_client_for({})
     coverage = _coverage_for()
@@ -691,28 +691,21 @@ def test_members_with_no_bound_entity_and_no_coverage_refuse_facet_not_available
         _request(stat_var=_STAT_VAR_B, facet_bindings={}), role_bindings={}
     )
 
-    with pytest.raises(FacetNotAvailableError) as excinfo:
-        materialise_group(
-            [request_a, request_b],
-            sdmx=sdmx,
-            graph=graph,
-            enrichment=EnrichmentLookup(graph),
-            revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
-            materialiser_build="build-123",
-            capability_version="cap-v1",
-            coverage=coverage,
-        )
+    result = materialise_group(
+        [request_a, request_b],
+        sdmx=sdmx,
+        graph=graph,
+        enrichment=EnrichmentLookup(graph),
+        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        materialiser_build="build-123",
+        capability_version="cap-v1",
+        coverage=coverage,
+    )
 
-    assert excinfo.value.code == "facet_not_available"
-    assert excinfo.value.pointer is None
-    assert excinfo.value.issues is not None
-    # One issue per facet axis, none naming a member or the entity scope. The group has no
-    # shared candidate.
-    assert [(issue.pointer, issue.member) for issue in excinfo.value.issues] == [
-        ("/facets/provenance", None),
-        ("/facets/measurementMethod", None),
-        ("/facets/unit", None),
-    ]
+    assert result.probe_empty
+    assert result.coverage.rows == 0
+    assert [warning["code"] for warning in result.warnings] == ["empty_result"]
+    assert result.trace.facets == ()
     assert graph.calls["variable_facets_batch"] == 0
     assert graph.calls["observation_facets_batch_many"] == 0
     assert graph.calls["child_places_batch"] == 0
@@ -1523,6 +1516,8 @@ def test_group_materialise_member_with_empty_probe_reports_zero_rows_despite_a_m
         coverage=coverage,
     )
 
+    # One member holds a candidate, so the group is not the empty-probe result.
+    assert not result.probe_empty
     assert result.coverage.rows == 1
     entries_by_ref = {entry["ref"]: entry for entry in result.trace.resolved_stat_vars}
     assert entries_by_ref[_STAT_VAR_A]["observation_count"] == 1

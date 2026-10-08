@@ -12,6 +12,8 @@ from datasets_api.config import DatasetsBuildSettings
 from datasets_api.mint_deps import MintDeps
 from datasets_api.operation_store import OperationStore
 from datasets_api.operations.task_client import FakeTaskClient, TaskClient
+from datasets_api.recipe_store import LiveRecipeStore
+from datasets_api.version_store import LiveVersionLister
 from datasets_api.versions import NullVersionRecordWriter
 from dfo_platform.app import create_app
 from materialise.rate_tables import RateTableCache
@@ -19,6 +21,19 @@ from materialise.revision import RevisionReader
 from origin_catalogue.service import CatalogueService
 from spec_registry import SpecRegistry
 from spec_registry.reader import SpecReader
+
+from ._version_record_store import FakeVersionRecordDatasetStore
+
+
+def offline_recipe_stores() -> dict[str, object]:
+    """Return `datasets_surface`'s `recipe_store` and `version_lister` keywords over one empty
+    SQLite-backed store, so the recipe door's lifespan opens no pool.
+    """
+    store = FakeVersionRecordDatasetStore()
+    return {
+        "recipe_store": LiveRecipeStore(store=store),
+        "version_lister": LiveVersionLister(store=store),
+    }
 
 
 def make_app(
@@ -40,6 +55,8 @@ def make_app(
     reference_writer=None,
     pin_allowed_principals: frozenset[str] | None = None,
     publish_allowed_principals: frozenset[str] | None = None,
+    recipe_store=None,
+    version_lister=None,
     code_index=None,
     rate_cache: RateTableCache | None = None,
     coverage=None,
@@ -55,6 +72,8 @@ def make_app(
     snapshot reader's store.
 
     `task_client` defaults to `FakeTaskClient`, avoiding live task-client construction.
+    `recipe_store` and `version_lister` default to `offline_recipe_stores()`. A recipe test
+    injects both over the store its version writer shares.
     `catalogue` replaces the process-wide catalogue service the request scope binds.
     """
     kwargs: dict[str, object] = {"registry": registry, "pool_size": pool_size}
@@ -90,6 +109,11 @@ def make_app(
         kwargs["pin_allowed_principals"] = pin_allowed_principals
     if publish_allowed_principals is not None:
         kwargs["publish_allowed_principals"] = publish_allowed_principals
+    if recipe_store is None and version_lister is None:
+        kwargs.update(offline_recipe_stores())
+    else:
+        kwargs["recipe_store"] = recipe_store
+        kwargs["version_lister"] = version_lister
     if code_index is not None:
         kwargs["code_index"] = code_index
     if rate_cache is not None:

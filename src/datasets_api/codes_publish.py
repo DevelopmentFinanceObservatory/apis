@@ -1,4 +1,4 @@
-"""Refusal codes owned by the publish door."""
+"""Refusal codes owned by the publish and recipe doors."""
 
 from __future__ import annotations
 
@@ -13,5 +13,9 @@ PUBLISH_DOOR_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
         "Publish Not Permitted",
         "The authenticated caller lacks the publish permission, or programmatic "
         "publishing is not live on this deployment.",
+    ),
+    "recipe_not_found": (
+        "Recipe Not Found",
+        "The named frame holds no recipe, or no frame is stored under the named replay key.",
     ),
 }

@@ -12,6 +12,13 @@ rows are traced by their `series_id`. A table revision stored before rows carrie
 `ComponentPredatesRowIdentities`, and one whose rows carry it on only some rows, or carry a
 non-string or empty one, raises `ComponentExportMismatch`.
 
+With a `target_frame`, the export is of the revision's intent rendered on that frame through
+`assembler.pipeline.render.render_on_frame`. The shown pairs come from that rendering and the
+rows from the same frame, so they match by construction. The bundle names the target frame, is
+dated by that frame's retrieval date, and carries no `dfo.reproducing_call`, because the route
+that serves it needs a credential a reader does not hold. Its `links.version` is the stored
+revision's own export.
+
 The file has a `series` column holding the card's own label for the row, then the frame's
 columns in frame order, with a `{column}_label` column after `stat_var`, each entity role, and
 `provenance`, read from `ResolvedFrame.labels`. A generated name that a frame column or an
@@ -28,7 +35,8 @@ the cited source names with no graph read, so a role's codes keep the kind `enti
 the reproducing call sit under the public site origin the caller passes.
 
 The revision's stored `created_at` is the bundle's prepared date and dates the file name, so
-one revision always serves one name. `FrameStore.load` reads the graph's labels for the frame's
+one revision always serves one name. An export on a target frame takes both from that frame's
+`retrieved_on`, at midnight UTC. `FrameStore.load` reads the graph's labels for the frame's
 codes, and the sources' documentation for a derived frame or a root frame whose stored citation
 left fields empty. Bytes match from one request to the next while those reads are unchanged. Names follow
 `materialise.bundle_naming`: `dfo_<card-slug>_<YYYY-MM-DD>_<format>_r<revision>.zip` for a
@@ -45,17 +53,18 @@ import io
 import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import UTC
+from datetime import UTC, datetime, time
 from typing import Literal, cast
 
 from dfo_frame_grammar import STAT_VAR_COLUMN, STATUS_COLUMN, TIME_PERIOD_COLUMN, VALUE_COLUMN
-from dfo_frame_grammar.grammar import UnitRequest
+from dfo_frame_grammar.grammar import unit_cell_from_json
 
 from assembler.bind import role_columns
-from assembler.errors import RevisionNotFound
 from assembler.frame_view import dimension_columns, hashable_cell
 from assembler.mint.provenance import _UNATTRIBUTED_SOURCE_NAME, _citation_sources_by_ref
-from assembler.ports import FrameRef, FrameStore, ResolvedFrame, RevisionStore
+from assembler.pipeline.render import render_on_frame
+from assembler.pipeline.stored_revision import read_stored_revision
+from assembler.ports import FrameRef, FrameStore, ReleaseRegistry, ResolvedFrame, RevisionStore
 from materialise.bundle import (
     ArtifactEntry,
     BundleContext,
@@ -175,22 +184,29 @@ def export_component_data(
     revision_store: RevisionStore,
     frame_store: FrameStore,
     site_url: str,
+    target_frame: FrameRef | None = None,
+    release_registry: ReleaseRegistry | None = None,
 ) -> ComponentExportFile:
     """Render the frame rows behind revision `revision` of `component_id`. A bundle links
     under `site_url`, the public website origin without a trailing slash.
 
-    Raises `DraftNotFound` for an unknown component, `RevisionNotFound` for a missing revision,
+    With `target_frame`, the rows are those of the revision's intent rendered on that frame,
+    under `release_registry`'s release, which is then required. The caller has already
+    accepted `target_frame` as a stand-in for the stored frame, as for
+    `assembler.pipeline.render.render_component`, and the refusals that function raises for a
+    stored intent that does not bind the frame, a note, or a newer release apply here too.
+    Nothing is pinned or appended. The file is dated by the frame's `retrieved_on`, and a
+    bundle carries no reproducing call.
+
+    Raises `DraftNotFound` for an unknown component, `RevisionNotFound` for a missing revision
+    (`EditConflict` when the component has no head),
     `ComponentHoldsNoData` for a revision with no rows to export, including its subclass
     `ComponentPredatesRowIdentities` for a table stored without row ids, `FrameUnavailable` from the
     frame load, and `ComponentExportMismatch` when the rows and the card disagree. A record
     the store returns without `created_at` is a store defect and raises `RuntimeError`."""
-    record = revision_store.read_revision(component_id=component_id, revision=revision)
-    if record is None:
-        raise RevisionNotFound(
-            component_id=component_id,
-            revision=revision,
-            detail=f"component {component_id} has no revision {revision}",
-        )
+    record = read_stored_revision(
+        component_id=component_id, revision=revision, revision_store=revision_store
+    )
     created_at = record.created_at
     if created_at is None:
         raise RuntimeError(
@@ -205,7 +221,21 @@ def export_component_data(
             revision=revision,
             detail=f"a {member} shows no data values, so it has no rows to download",
         )
-    if not record.series_coordinates:
+    resolved_frame: ResolvedFrame | None = None
+    if target_frame is not None:
+        if release_registry is None:
+            raise TypeError("export_component_data needs release_registry with target_frame")
+        rendering = render_on_frame(
+            record=record,
+            target_frame=target_frame,
+            frame_store=frame_store,
+            release_registry=release_registry,
+        )
+        component = rendering.minted.component
+        series_coordinates = rendering.series_coordinates
+        frame_ref = target_frame
+        resolved_frame = rendering.resolved_frame
+    elif not record.series_coordinates:
         raise ComponentHoldsNoData(
             component_id=component_id,
             revision=revision,
@@ -214,6 +244,9 @@ def export_component_data(
                 "coordinates, so its rows cannot be traced; revise the component to export it"
             ),
         )
+    else:
+        series_coordinates = record.series_coordinates
+        frame_ref = FrameRef(**cast("Mapping[str, str]", record.stored_intent["frame_ref"]))
 
     if member == "table":
         rows = cast("Sequence[Mapping[str, object]]", component["rows"])
@@ -233,11 +266,11 @@ def export_component_data(
     shown = _shown_points(
         component=component,
         member=member,
-        series_coordinates=record.series_coordinates,
+        series_coordinates=series_coordinates,
         mismatch=mismatch,
     )
-    frame_ref = FrameRef(**cast("Mapping[str, str]", record.stored_intent["frame_ref"]))
-    resolved_frame = frame_store.load(frame_ref=frame_ref)
+    if resolved_frame is None:
+        resolved_frame = frame_store.load(frame_ref=frame_ref)
     table, provenance_refs, generated = _export_table(
         resolved_frame=resolved_frame, shown=shown, mismatch=mismatch
     )
@@ -245,7 +278,13 @@ def export_component_data(
     title = _card_title(component, component_id=component_id)
     slug = card_slug(title)
     tag = revision_tag(revision)
-    prepared = created_at.astimezone(UTC).date()
+    # A rendering on a target frame holds that frame's data, so the frame dates the file.
+    prepared_at = (
+        created_at
+        if target_frame is None
+        else datetime.combine(resolved_frame.retrieved_on, time.min, tzinfo=UTC)
+    )
+    prepared = prepared_at.astimezone(UTC).date()
     if not bundle:
         sink = io.BytesIO()
         written = _WRITERS[format]((table,), rendering=Rendering(), sink=sink)
@@ -293,18 +332,23 @@ def export_component_data(
             description="One row per value the card shows.",
         )
         route = export_path(component_id=component_id, revision=revision)
+        # The render export route needs the live-refresh principal, so a bundle on a target
+        # frame names no call a reader could repeat.
+        reproducing_call = (
+            ReproducingCall(path=route, options={"format": format, "bundle": True})
+            if target_frame is None
+            else None
+        )
         files = assemble_component_bundle(
             export=export,
             member=member_provenance,
-            reproducing_call=ReproducingCall(
-                path=route, options={"format": format, "bundle": True}
-            ),
+            reproducing_call=reproducing_call,
             context=BundleContext(
                 heading=title,
                 summary=summary_line((scan,), codes=codes),
                 slug=slug,
                 version=tag,
-                prepared_at=created_at,
+                prepared_at=prepared_at,
                 site_url=site_url,
                 links=BundleLinks(version=f"{site_url}{route}"),
             ),
@@ -498,17 +542,13 @@ def _free_name(base: str, *, taken: set[str]) -> str:
 
 
 def _export_cell(*, column: str, cell: object) -> object:
-    """Give a cell the type the Datasets downloads give it: a float value, and a structured
-    unit as a `UnitRequest`, which the writers render as its canonical JSON."""
+    """Give a cell the type the Datasets downloads give it: a float value, and a converted or
+    composed unit as a `UnitRequest` or `ComposedUnit`, which the writers render as its
+    canonical JSON."""
     if column == VALUE_COLUMN and isinstance(cell, int) and not isinstance(cell, bool):
         return float(cell)
     if isinstance(cell, Mapping):
-        unit = cast("Mapping[str, object]", cell)
-        return UnitRequest(
-            currency=cast(str, unit["currency"]),
-            prices=cast(str, unit["prices"]),
-            base_year=cast("int | None", unit.get("base_year")),
-        )
+        return unit_cell_from_json(cell)
     return cell
 
 

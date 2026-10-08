@@ -28,7 +28,7 @@ from materialise.content_version import (
 from materialise.convert import ConversionRecord
 from materialise.enrichment import EnrichmentLookup
 from materialise.errors import MaterialisationUsageError
-from materialise.facets import FacetSelection
+from materialise.facets import FacetSelection, binds_no_place
 from materialise.frame_build import Frame
 
 # `_build_warnings` checks outcome classes at runtime. `generation` imports only the
@@ -288,6 +288,7 @@ def _finish_member(
         output_profile_seconds=output_profile_seconds,
         default_scope=outcome.default_scope.places,
         series_conversions=outcome.series_conversions,
+        probe_empty=outcome.probe_empty,
     )
 
 
@@ -466,14 +467,16 @@ def _finish_group(
         output_profile_seconds=output_profile_seconds,
         default_scope=outcome.default_scope.places,
         series_conversions=outcome.series_conversions,
+        probe_empty=outcome.probe_empty,
     )
 
 
 def _build_warnings(
     request: MaterialisationRequest, outcome: _MemberOutcome | _GroupOutcome | _PreviewOutcome
 ) -> tuple[MaterialisationWarning, ...]:
-    """Adds `empty_result` for zero rows, which suppresses `coverage_below_scope`. That warning
-    covers window clamps and unserved bound entities, naming up to five entities, and a request
+    """Adds `empty_result` for zero rows, which suppresses `coverage_below_scope`. Its message
+    says the request's places hold no observations when the facet probe returned no candidate
+    (`_empty_result_warning`). `coverage_below_scope` covers window clamps and unserved bound entities, naming up to five entities, and a request
     binding no place that was served the countries with data in place of every place. One
     `coverage_below_scope` states every cause that applies.
     `deflator_projected` applies when any conversion record has `projected_count > 0`, and
@@ -483,13 +486,16 @@ def _build_warnings(
     Warnings travel on the result. Member, group, and preview outcomes
     supply row counts and served-entity summaries without retaining survivor rows."""
     warnings: list[MaterialisationWarning] = []
+    probe_empty = False
     if isinstance(outcome, _MemberOutcome):
         row_count = outcome.coverage.rows
+        probe_empty = outcome.probe_empty
         converted_records = (
             (outcome.conversion_record,) if outcome.conversion_record is not None else ()
         )
     elif isinstance(outcome, _GroupOutcome):
         row_count = outcome.row_count
+        probe_empty = outcome.probe_empty
         converted_records = tuple(
             record for record in outcome.member_conversion_records.values() if record is not None
         )
@@ -501,7 +507,11 @@ def _build_warnings(
     served = outcome.served_entities_by_role
 
     if row_count == 0:
-        warnings.append(_warning("empty_result"))
+        warnings.append(
+            _empty_result_warning(request, group=isinstance(outcome, _GroupOutcome))
+            if probe_empty
+            else _warning("empty_result")
+        )
 
     omitted = frozenset(
         entity for record in converted_records for entity in record.omitted_entities
@@ -542,6 +552,22 @@ def _build_warnings(
 def _warning(code: str) -> MaterialisationWarning:
     _title, detail = MATERIALISE_CODE_CATALOGUE[code]
     return {"code": code, "severity": "warn", "message": detail}
+
+
+def _empty_result_warning(
+    request: MaterialisationRequest, *, group: bool
+) -> MaterialisationWarning:
+    """`empty_result` for a result whose facet probe returned no candidate. It adds to the catalogue
+    detail that the places the request covers hold no observations of its variable, or of a
+    group's variables."""
+    warning = _warning("empty_result")
+    variables = "the definition's variables" if group else "the variable"
+    where = (
+        f"No place holds observations of {variables}."
+        if binds_no_place(request.role_bindings, request.declared_roles)
+        else f"The bound places hold no observations of {variables}."
+    )
+    return {**warning, "message": f"{warning['message']} {where}"}
 
 
 # Maximum unserved dcids included in a warning.

@@ -9,6 +9,8 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
 
+from dfo_platform.roles import FlowAccount
+
 
 @dataclass(frozen=True, slots=True)
 class CodeRow:
@@ -188,13 +190,17 @@ against.
 class DatasetDeclaration:
     """One published table, keyed by the provenance its observations carry.
 
-    `label` is the name a sentence uses for the dataset. `description` says in
-    one plain sentence what the table measures; the bind menu's source slot shows
-    it beside the label (`search.engine.bind`). `opt_in` marks a table
-    a question answers from only when it names the table, or on a five-tuple no
-    other table publishes (the imputed multilateral sectors table). Any other
-    table (CRS) answers any question its five-tuples fit. Several datasets may
-    publish one five-tuple, and one StatVar row may belong to several.
+    `label` is the name a sentence uses for the dataset. Its words must describe
+    every row the table serves: a phrase the bind model leaves unplaced reads as
+    applied when each of its words occurs in the answering table's label
+    (`search.engine.region.phase_rank_bind._names_answering_dataset`), so a label
+    word true of only some rows would drop that qualifier with no refusal.
+    `description` says in one plain sentence what the table measures; the bind
+    menu's source slot shows it beside the label (`search.engine.bind`). `opt_in`
+    marks a table a question answers from only when it names the table, or on a
+    five-tuple no other table publishes (the imputed multilateral sectors table).
+    Any other table (CRS) answers any question its five-tuples fit. Several
+    datasets may publish one five-tuple, and one StatVar row may belong to several.
     `rank` orders them: of the datasets that can serve a family, the lowest
     rank serves it (`code_index.members.elect_dataset`). Ranks are unique
     across an index's declarations.
@@ -203,6 +209,10 @@ class DatasetDeclaration:
     for reads as zero. This per-dataset reporting fact differs from
     `CodeSystemDeclaration.absent_reading`, which governs an undeclared
     constraint property on a StatVar row.
+
+    `account` says whose account of a flow the table gives
+    (`dfo_platform.roles.FlowAccount`). It names the two parties of a
+    role-bearing series and says which one leads a heading.
 
     A StatVar row belongs to the dataset when `StatVarRow.provenances` names
     its `provenance`.
@@ -221,6 +231,7 @@ class DatasetDeclaration:
     description: str
     opt_in: bool
     absent_observation: AbsentObservation
+    account: FlowAccount
     rank: int
     invariants: Mapping[str, str] = field(default_factory=dict)
 
@@ -454,7 +465,8 @@ class MeasureIndex:
 class LevelOption:
     """A menu value, its relation to the bound node, and its directly coded StatVar count.
 
-    `relation` is `"child"` or `"parent"` for a bound hierarchical system. An unbound
+    `relation` is `"child"` or `"parent"` for a bound hierarchical system, and `"root"`
+    for each other root beside a bound root. An unbound
     hierarchical system lists each root as `"root"` and its children as `"child"`. A flat
     system lists every value as `"root"`. `parent` is the value's parent dcid in a
     hierarchical system, or `None` for a root and for every value of a flat system.

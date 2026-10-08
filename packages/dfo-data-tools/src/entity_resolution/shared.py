@@ -42,17 +42,24 @@ class _ResolverEnv(BaseSettings):
 
 
 class SharedResolver:
-    """Composed resolver with a dedicated single-worker executor and its pack cache directory.
+    """Composed resolver with a dedicated single-worker executor, its pack cache directory, and
+    the exact index of the `dfo_graph` pack's names.
 
     Resolvekit's query cache requires serial calls. Use `acquire_shared` and `release_shared`
     for its reference-counted lifecycle."""
 
     def __init__(
-        self, *, resolver: Resolver, executor: ThreadPoolExecutor, cache_dir: Path
+        self,
+        *,
+        resolver: Resolver,
+        executor: ThreadPoolExecutor,
+        cache_dir: Path,
+        alias_index: pack.AliasIndex,
     ) -> None:
         self.resolver = resolver
         self.executor = executor
         self.cache_dir = cache_dir
+        self.alias_index = alias_index
 
     def run(self, fn: Callable[..., T], *args: object) -> Future[T]:
         """Submit `fn(*args)` to the single worker and return its future."""
@@ -80,15 +87,19 @@ def _build(cache_dir: Path | None) -> SharedResolver:
     resolved = _resolve_cache_dir(cache_dir)
     os.environ[_OFFLINE_ENV] = "1"
     resolved.mkdir(parents=True, exist_ok=True)
+    records_path, curated_path = pack.records_path(), pack.curated_path()
     pack_dir = pack.build_pack(
-        records_path=pack.records_path(), curated_path=pack.curated_path(), out_dir=resolved
+        records_path=records_path, curated_path=curated_path, out_dir=resolved
     )
+    alias_index = pack.build_alias_index(records_path=records_path, curated_path=curated_path)
     register_module(pack.MODULE_ID, pack_dir)
     resolver = Resolver.lite(
         module_ids=list(MODULE_IDS), routing_mode=RoutingMode.EXPLICIT, cache_size=0
     )
     executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="resolvekit")
-    return SharedResolver(resolver=resolver, executor=executor, cache_dir=resolved)
+    return SharedResolver(
+        resolver=resolver, executor=executor, cache_dir=resolved, alias_index=alias_index
+    )
 
 
 _singleton: RefCountedSingleton[SharedResolver] = RefCountedSingleton(

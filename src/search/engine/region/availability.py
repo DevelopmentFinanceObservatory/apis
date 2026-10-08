@@ -13,8 +13,10 @@ from collections.abc import Mapping, Sequence
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.qualifier_match import QualifierMatch, QualifierReadings
 from search.engine.quantity import DenominatorKind, QuantityRequirement
-from search.engine.region.alternate_guard import inadmissible_reason, query_pins
+from search.engine.region.alternate_guard import QueryPins, inadmissible_reason, query_pins
+from search.engine.region.place_set import PlaceSet
 from search.engine.region.rate_head import _rate_head, _rate_head_compatible
+from search.engine.region.state import for_shape, shape_vocabulary
 from search.engine.shape import ShapeDraft, is_role_bearing
 
 logger = logging.getLogger(__name__)
@@ -162,7 +164,7 @@ def _prune_availability_siblings(
     quantity: QuantityRequirement,
     denominator_kinds: Mapping[str, DenominatorKind],
     variable: str = "",
-    qualifier_matches: Sequence[QualifierMatch] = (),
+    qualifier_matches: Mapping[frozenset[str], tuple[QualifierMatch, ...]] | None = None,
     qualifier_readings: Sequence[QualifierReadings] = (),
 ) -> tuple[list[ShapeDraft], list[tuple[ShapeDraft, ShapeDraft]]]:
     """Drop an empty shape when a valid sibling has observations.
@@ -183,20 +185,28 @@ def _prune_availability_siblings(
     Pairing uses structural fields alone. Before a drop, the survivor must be a reading
     of the dropped shape (`alternate_guard.inadmissible_reason`) under the query's
     wording, its quantity requirement (`quantity`, judged with the kinds of the leg's
-    StatVar denominators, `denominator_kinds`, as bind and materialise judge it), its
-    qualifier matches and its two-reading spans. No bind has run, so every
+    StatVar denominators, `denominator_kinds`, as bind and materialise judge it), the
+    dropped shape's own qualifier matches (`qualifier_matches`, keyed by vocabulary,
+    `state.for_shape`) and its two-reading spans. No bind has run, so every
     member of the dropped shape is its reading. Empty query text allows structure-only pairing. Return measure-head
     drops as ``(dropped, survivor)`` pairs for the caller's
     ``ELECTED_SHAPE_NO_DATA`` warning. Denominator-resolution drops are omitted.
     If every shape qualifies for removal, restore the original list.
     """
-    pins = query_pins(
-        variable,
-        quantity=quantity,
-        denominator_kinds=denominator_kinds,
-        qualifier_matches=qualifier_matches,
-        qualifier_readings=qualifier_readings,
-    )
+    pins_by_vocabulary: dict[frozenset[str], QueryPins] = {}
+
+    def pins(shape: ShapeDraft) -> QueryPins:
+        vocabulary = shape_vocabulary(shape)
+        if vocabulary not in pins_by_vocabulary:
+            pins_by_vocabulary[vocabulary] = query_pins(
+                variable,
+                quantity=quantity,
+                denominator_kinds=denominator_kinds,
+                qualifier_matches=for_shape(qualifier_matches or {}, shape),
+                qualifier_readings=qualifier_readings,
+            )
+        return pins_by_vocabulary[vocabulary]
+
     to_drop: set[_ShapeGroupKey] = set()
     measure_head_substitutions: list[tuple[ShapeDraft, ShapeDraft]] = []
     for shape in shapes:
@@ -209,7 +219,7 @@ def _prune_availability_siblings(
                 not is_role_bearing(other)
                 and _are_availability_siblings(shape, other)
                 and _covers_fewer_places(shape, other)
-                and inadmissible_reason(pins, shape, other) is None
+                and inadmissible_reason(pins(shape), shape, other) is None
                 for other in shapes
             ):
                 to_drop.add(_shape_group_key(shape))
@@ -224,7 +234,7 @@ def _prune_availability_siblings(
                     _are_availability_siblings(shape, other)
                     or (named_place and _shapes_are_measure_head_siblings(shape, other))
                 )
-                and inadmissible_reason(pins, shape, other) is None
+                and inadmissible_reason(pins(shape), shape, other) is None
             ),
             None,
         )
@@ -262,26 +272,24 @@ _PLACE_AVAILABILITY_PROBE_SAMPLE = 5
 
 def _sibling_probe_places(
     named_place_dcids: list[str] | None,
-    place_children_by_name: dict[str, list[str]],
-    resolved_entity_names: dict[str, str],
+    place_sets: Mapping[str, PlaceSet],
 ) -> list[str]:
-    """Build the probe scope from named places and place-set members.
+    """Build the probe scope from named places and each set that expands.
 
-    Sample each expansion up to the configured cap. Use the place-set dcid
-    when expansion is empty. The map uses surface names, so a childless entry
-    needs a matching resolved dcid or raises ``AssertionError``. Fall back to
-    the fixed sample only when no place resolves. Deduplication keeps first-seen
-    order.
+    A set that expands gives its own node, when it has one, and a sample of its members up
+    to the configured cap, so a shape with data only at the node and one with data only at
+    members are both seen. Raise ``AssertionError`` for a set with neither. Fall back to
+    the fixed sample only when no place resolves. Deduplication keeps first-seen order.
     """
     places = list(named_place_dcids or [])
-    for name, children in place_children_by_name.items():
-        if children:
-            places.extend(children[:_PLACE_AVAILABILITY_PROBE_SAMPLE])
+    for name, place_set in place_sets.items():
+        if place_set.members is None:
             continue
-        dcid = resolved_entity_names.get(name)
-        if dcid is None:
+        if place_set.node is None and not place_set.members:
             raise AssertionError(f"no resolved dcid for place-set name {name!r}")
-        places.append(dcid)
+        if place_set.node is not None:
+            places.append(place_set.node.dcid)
+        places.extend(place_set.members[:_PLACE_AVAILABILITY_PROBE_SAMPLE])
     if not places:
         places = list(_ENTITYLESS_AVAILABILITY_PROBE_PLACES)
     return list(dict.fromkeys(places))

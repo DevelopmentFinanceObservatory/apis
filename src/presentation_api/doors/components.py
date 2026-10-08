@@ -4,10 +4,11 @@ pipeline refusals to HTTP. The `cmp_` id grants read to any caller. Revising a c
 the write token its create returned, sent as `x-dfo-write-token`, and a create into an existing
 composition needs that composition's token in the same header. A create may carry its own `cmw_`
 token in the body's `write_token`; a retry with the same token and request returns the first
-create's reply. The door takes no caller or session.
+create's reply. These routes take no caller or session.
 
-The door also carries `presentation_api.doors.component_data`'s export route. All four routes
-share one executor and a non-blocking semaphore. Saturation returns retryable 503. Each permit
+The door also carries `presentation_api.doors.component_data`'s export route and the two render
+routes of `presentation_api.doors.render`, which admit the live-refresh principal alone. All six
+routes share one executor and a non-blocking semaphore. Saturation returns retryable 503. Each permit
 covers the pipeline call and response encoding. A revise's `composition_id` reaches
 the pipeline, which rejects composition membership on revise.
 """
@@ -45,7 +46,10 @@ from assembler.ports import FrameStore, ReleaseRegistry, RevisionStore
 from assembler.write_token import CreateRequestInvalid
 from dataset_store import LiveDatasetStore
 from dataset_store import close_shared_pool as close_dataset_pool
+from dataset_store.snapshot import SnapshotReader
 from datasets_api.door_executor import build_door_executor
+from datasets_api.live_refresh import LiveRefreshPrincipal
+from datasets_api.recipe_store import RecipeReader
 from datasets_api.shutdown import ShutdownBudget
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from dfo_platform import Alternative, ProblemSpec
@@ -63,6 +67,12 @@ from presentation_api.doors.component_data import (
     COMPONENT_DATA_EXCEPTION_TYPES,
     add_component_data_route,
     classify_component_data_exception,
+)
+from presentation_api.doors.render import (
+    RENDER_EXCEPTION_EXEMPLARS,
+    RENDER_EXCEPTION_TYPES,
+    build_render_router,
+    classify_render_exception,
 )
 from presentation_api.live import build_live_frame_store
 from presentation_api.models import ComponentReadResponse, CreateReplyResponse, WriteReplyResponse
@@ -279,6 +289,9 @@ class ComponentsDeps:
     release_registry: ReleaseRegistry
     # The public website card exports link to, read from the environment in the lifespan.
     site: PublicSiteSettings
+    # What the render routes accept a target frame from. `None` accepts no frame by that rule.
+    snapshot_reader: SnapshotReader | None = None
+    recipe_reader: RecipeReader | None = None
 
 
 def build_components_door(
@@ -286,11 +299,20 @@ def build_components_door(
     frame_store: FrameStore | None = None,
     revision_store: RevisionStore | None = None,
     release_registry: ReleaseRegistry | None = None,
+    snapshot_reader: SnapshotReader | None = None,
+    recipe_reader: RecipeReader | None = None,
+    live_refresh: LiveRefreshPrincipal | None = None,
     pool_size: int | None = None,
     budget: ShutdownBudget | None = None,
 ) -> DoorContribution:
     """Build missing stores in this door's lifespan. The surface passes its resolved release
     registry. The fallback applies when this door is built alone.
+
+    `snapshot_reader` and `recipe_reader` are what the render routes accept a target frame
+    from. The lifespan builds both with the live frame store when no `frame_store` is injected.
+    With an injected `frame_store` they stay as given, and a missing one accepts no frame by its
+    rule. `live_refresh` is the one caller the render routes admit, and `None` refuses every
+    caller.
     """
     _budget = budget if budget is not None else ShutdownBudget()
     effective_pool_size = (
@@ -304,6 +326,8 @@ def build_components_door(
         revision_store=cast(RevisionStore, revision_store),
         release_registry=cast(ReleaseRegistry, release_registry),
         site=cast(PublicSiteSettings, None),
+        snapshot_reader=snapshot_reader,
+        recipe_reader=recipe_reader,
     )
 
     @asynccontextmanager
@@ -332,10 +356,14 @@ def build_components_door(
                 )
             if frame_store is None:
                 settings = PresentationSettings.from_env()
-                live_frame_store, live_graph = build_live_frame_store(settings=settings)
+                live = build_live_frame_store(settings=settings)
                 opened_dataset_pool = True
-                owned_graph = live_graph
-                deps.frame_store = live_frame_store
+                owned_graph = live.graph
+                deps.frame_store = live.frame_store
+                if snapshot_reader is None:
+                    deps.snapshot_reader = live.snapshot_reader
+                if recipe_reader is None:
+                    deps.recipe_reader = live.recipe_reader
         except BaseException:
             _close_live_clients_built_here()
             raise
@@ -426,11 +454,22 @@ def build_components_door(
         return await _run(job)
 
     add_component_data_route(router, deps=deps, run=_run)
+    # Extending the route list keeps each render route's own class, which admits the caller.
+    router.routes.extend(
+        build_render_router(
+            deps=deps,
+            run=_run,
+            classify=classify_components_exception,
+            live_refresh=live_refresh,
+        ).routes
+    )
 
     return DoorContribution(
         router=router,
         classify=combine_classifiers(
-            classify_components_exception, classify_component_data_exception
+            classify_components_exception,
+            classify_component_data_exception,
+            classify_render_exception,
         ),
         exception_types=(
             PathParamInvalid,
@@ -450,6 +489,7 @@ def build_components_door(
             PresentationStoreUnavailable,
             DatasetsStoreUnavailable,
             *COMPONENT_DATA_EXCEPTION_TYPES,
+            *RENDER_EXCEPTION_TYPES,
             # The surface classifies validation errors, but this door declares the type raised by
             # `ComponentBody` so platform exception discovery includes it.
             RequestValidationError,
@@ -499,6 +539,7 @@ def build_components_door(
                 body={},
             ),
             *COMPONENT_DATA_EXCEPTION_EXEMPLARS,
+            *RENDER_EXCEPTION_EXEMPLARS,
         ),
         lifespan=lifespan,
     )

@@ -191,22 +191,23 @@ Configuration variables load from environment variables or `.env` at boot.
 
 ### Datasets API & Persistence
 
-| Variable                             | Default           | Purpose                                                                                          |
-| :----------------------------------- | :---------------- | :----------------------------------------------------------------------------------------------- |
-| `DATASETS_SYNC_CEILING_ROWS`         | `250000`          | Maximum row threshold for synchronous dataset materialisation.                                   |
-| `DATASETS_SDMX_TIMEOUT_SECONDS`      | `90`              | Independent httpx transport timeout for SDMX calls. The door deadline applies when lower.        |
-| `DATASETS_GRAPH_BASE_URL`            | _None_            | Graph endpoint for dataset materialisation readers.                                              |
-| `DATASETS_SDMX_BASE_URL`             | _None_            | SDMX endpoint for observation retrieval in datasets.                                             |
-| `DATASETS_GRAPH_TOKEN`               | `""`              | Optional `x-graph-token` header for dataset graph and SDMX calls.                                |
-| `DATASETS_ARTIFACT_BUCKET_WORKING`   | _None_            | GCS bucket for working-tier materialised files.                                                  |
-| `DATASETS_ARTIFACT_BUCKET_PINNED`    | _None_            | GCS bucket for pinned-tier materialised files.                                                   |
-| `DATASETS_PRINCIPAL_HEADER`          | `x-dfo-principal` | Request header containing caller identity for pin and publish operations.                        |
-| `DATASETS_FIRST_PARTY_PRINCIPAL`     | `""`              | Authorized principal permitted to publish datasets.                                              |
-| `DATASETS_PIN_FIRST_PARTY_PRINCIPAL` | `""`              | Authorized principal permitted to pin datasets, independent of `DATASETS_FIRST_PARTY_PRINCIPAL`. |
-| `DATASET_STORE_HOST`                 | `127.0.0.1`       | PostgreSQL host for `dataset_store`.                                                             |
-| `DATASET_STORE_PORT`                 | `5432`            | PostgreSQL port for `dataset_store`.                                                             |
-| `DATASET_STORE_DATABASE`             | `datasets`        | PostgreSQL database name for `dataset_store`.                                                    |
-| `DATASET_STORE_RUNTIME_DB_USER`      | _None_            | Runtime IAM/DB user for dataset persistence.                                                     |
+| Variable                             | Default           | Purpose                                                                                            |
+| :----------------------------------- | :---------------- | :------------------------------------------------------------------------------------------------- |
+| `DATASETS_SYNC_CEILING_ROWS`         | `250000`          | Maximum row threshold for synchronous dataset materialisation.                                     |
+| `DATASETS_SDMX_TIMEOUT_SECONDS`      | `90`              | Independent httpx transport timeout for SDMX calls. The door deadline applies when lower.          |
+| `DATASETS_GRAPH_BASE_URL`            | _None_            | Graph endpoint for dataset materialisation readers.                                                |
+| `DATASETS_SDMX_BASE_URL`             | _None_            | SDMX endpoint for observation retrieval in datasets.                                               |
+| `DATASETS_GRAPH_TOKEN`               | `""`              | Optional `x-graph-token` header for dataset graph and SDMX calls.                                  |
+| `DATASETS_ARTIFACT_BUCKET_WORKING`   | _None_            | GCS bucket for working-tier materialised files.                                                    |
+| `DATASETS_ARTIFACT_BUCKET_PINNED`    | _None_            | GCS bucket for pinned-tier materialised files.                                                     |
+| `DATASETS_PRINCIPAL_HEADER`          | `x-dfo-principal` | Request header containing caller identity for pin and publish operations.                          |
+| `DATASETS_FIRST_PARTY_PRINCIPAL`     | `""`              | Authorized principal permitted to publish datasets.                                                |
+| `DATASETS_PIN_FIRST_PARTY_PRINCIPAL` | `""`              | Authorized principal permitted to pin datasets, independent of `DATASETS_FIRST_PARTY_PRINCIPAL`.   |
+| `LIVE_REFRESH_PRINCIPAL`             | `""`              | Authorized principal permitted to refresh a dataset frame and render a component on another frame. |
+| `DATASET_STORE_HOST`                 | `127.0.0.1`       | PostgreSQL host for `dataset_store`.                                                               |
+| `DATASET_STORE_PORT`                 | `5432`            | PostgreSQL port for `dataset_store`.                                                               |
+| `DATASET_STORE_DATABASE`             | `datasets`        | PostgreSQL database name for `dataset_store`.                                                      |
+| `DATASET_STORE_RUNTIME_DB_USER`      | _None_            | Runtime IAM/DB user for dataset persistence.                                                       |
 
 ### Graph & Presentation APIs
 

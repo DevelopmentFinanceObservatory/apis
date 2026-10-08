@@ -19,7 +19,11 @@ from materialise.recipes import RecipeNotDeclaredError
 from search.engine.bind import _UniversalBindOutput
 from search.engine.config import settings
 from search.engine.core import resolve_async, resolve_events
-from search.engine.entry.parsed import confirm_part_pins
+from search.engine.entry.parsed import (
+    _dedupe_parts_with_indices,
+    confirm_part_pins,
+    interpret_parts,
+)
 from search.engine.errors import EngineInputError, GraphInfraError
 from search.engine.interpret import PinnedResolved
 from search.engine.region import RegionResult
@@ -1140,7 +1144,12 @@ class TestPinnedDcidC2:
             ),
         ):
             [pins] = asyncio.run(
-                confirm_part_pins([part], graph=graph, pointer_prefixes=["/input/parts/0"])
+                confirm_part_pins(
+                    [part],
+                    graph=graph,
+                    resolver=make_resolver(graph),
+                    pointer_prefixes=["/input/parts/0"],
+                )
             )
 
         named: dict[str, tuple[str, str]] = {}
@@ -1174,7 +1183,12 @@ class TestPinnedDcidC2:
             caplog.at_level(logging.WARNING, logger="search.engine.entry.parsed"),
         ):
             [pins] = asyncio.run(
-                confirm_part_pins([part], graph=graph, pointer_prefixes=["/input/parts/0"])
+                confirm_part_pins(
+                    [part],
+                    graph=graph,
+                    resolver=make_resolver(graph),
+                    pointer_prefixes=["/input/parts/0"],
+                )
             )
 
         assert pins["Kenya"].entity.name == "country/USA"
@@ -1200,7 +1214,14 @@ class TestPinnedDcidC2:
             ),
             pytest.raises(EngineInputError) as exc_info,
         ):
-            asyncio.run(confirm_part_pins([part], graph=graph, pointer_prefixes=["/input/parts/0"]))
+            asyncio.run(
+                confirm_part_pins(
+                    [part],
+                    graph=graph,
+                    resolver=make_resolver(graph),
+                    pointer_prefixes=["/input/parts/0"],
+                )
+            )
         assert exc_info.value.code == "invalid_role_ref"
         assert exc_info.value.status == 422
 
@@ -1275,6 +1296,34 @@ class TestPinnedDcidC2:
             _resolve_parsed([part])
         assert exc_info.value.code == "request_invalid"
         assert exc_info.value.pointer == "/input/parts/0/entities"
+
+    def test_one_part_posting_one_text_with_both_members_values_refuses_request_invalid(self):
+        """One text asked for as its members and as a whole in one part refuses
+        `request_invalid`."""
+        part = ParsedPart(
+            variable_text="aid from Africa to Africa",
+            entities=[
+                ParsedEntity(text="Africa", role_text="from", members=True),
+                ParsedEntity(text="Africa", role_text="to"),
+            ],
+        )
+        with pytest.raises(EngineInputError) as exc_info:
+            _resolve_parsed([part])
+        assert exc_info.value.code == "request_invalid"
+        assert exc_info.value.pointer == "/input/parts/0/entities"
+
+    def test_parts_differing_only_in_members_stay_distinct(self):
+        """Two parts alike but for one entity's `members` are two asks, and each leg is
+        handed its own part's member entities."""
+        parts = [
+            ParsedPart(variable_text="population", entities=[ParsedEntity(text="Africa")]),
+            ParsedPart(
+                variable_text="population", entities=[ParsedEntity(text="Africa", members=True)]
+            ),
+        ]
+        assert [part for _, part in _dedupe_parts_with_indices(parts)] == parts
+        interpretation = interpret_parts(parts, pointer_prefixes=["/p/0", "/p/1"])
+        assert interpretation.member_entities == [frozenset(), frozenset({"Africa"})]
 
     def test_unpinned_text_shared_across_parts_resolves_once(self):
         """Overlapping unpinned texts share one pre-resolution call before the legs run.

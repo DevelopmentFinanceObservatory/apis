@@ -26,11 +26,11 @@ _KEN_NODE = {"country/KEN": {"label": "Kenya", "type": "Country"}}
 # The registry's electricity-access cluster (region/equivalent_series.py):
 # exactly two members, used for the plain divert/no-divert scenarios below.
 _ELEC_WB = "worldBank/EG_ELC_ACCS_ZS"
-_ELEC_SDG = "sdg/EG_ACS_ELEC"
+_ELEC_SDG = "undata/sdg/EG_ACS_ELEC"
 
 # The registry's under-five mortality cluster: its only three-member cluster.
 _MORT_WB = "worldBank/SH_DYN_MORT"
-_MORT_SDG = "sdg/SH_DYN_MORT.AGE--Y0T4"
+_MORT_SDG = "undata/sdg/SH_DYN_MORT.AGE--Y0T4"
 _MORT_DFO = "MortalityRate_Person_Upto4Years_AsFractionOf_Count_BirthEvent_LiveBirth"
 
 # An unregistered StatVar serves as a competing alternate.

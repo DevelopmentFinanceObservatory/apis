@@ -15,7 +15,17 @@ door's wait ends. A load whose graph label read or family definition read failed
 cached, so the next load reads again. A quarantined family identity is a lasting state, so its
 missing label is cached.
 
-`load()` caches resolved frame bytes by `(spec_id, content_version)` up to 64 MiB. A load whose
+With a `recipe_reader`, `load()` reads a published `ops_` frame's recipe and attaches its
+`anchor` as `ResolvedFrame.anchor`: the period "latest" names on that frame, and the series its
+rule left out. A left-out series is absent from the derived frame, so its label is built here
+from its coordinates as a series label is, through the same graph and family reads as the
+frame's own refs, with the raw ref where they hold no name. A recipe that states a label keeps
+it. Stored coordinates that name no series are labelled by their raw content, so no stored
+recipe fails a load. A frame with no recipe, or a recipe with a null anchor, loads with no anchor.
+
+`load()` caches resolved frame bytes by `(spec_id, content_version)` up to 64 MiB. A pair keeps
+its first recipe, so the anchor is cached with the frame. A derived frame cached before it had a
+recipe is marked so, and each later load reads the recipe again until one exists. A load whose
 citation or documentation read failed is cached too, marked incomplete, and each later load
 re-runs only the citation read until one completes, so a failing read never refetches the frame
 bytes. `load()` re-checks revocation and working-tier servability on every call, cache hit or
@@ -38,11 +48,19 @@ from dataclasses import dataclass, replace
 from typing import cast
 
 from dfo_frame_grammar import STAT_VAR_COLUMN, UNIT_COLUMN
+from dfo_frame_grammar.grammar import STAT_VAR_REF_PREFIX
 
 from artifact_store import ArtifactStore, Tier
 from artifact_store.errors import ArtifactIntegrityError, ArtifactNotFoundError
+from assembler.bind import role_columns, series_label
 from assembler.frame_view import compute_structural_view, dimension_columns, facet_dimension_names
-from assembler.ports import FrameRef, FrameUnavailable, ResolvedFrame
+from assembler.ports import (
+    FrameRef,
+    FrameUnavailable,
+    LeftOutSeries,
+    ResolvedFrame,
+    RollingAnchor,
+)
 from code_index.labels import family_label
 from code_index.query import CodeIndex
 from code_index.shared import get_index, get_measure_index
@@ -60,10 +78,18 @@ from dataset_store.snapshot import (
 from datasets_api.codes_snapshot import ArtifactNotFound
 from datasets_api.manifest import build_citation, healed_citation
 from datasets_api.manifest_models import CitationModel
+from datasets_api.publish_models import COMPOSED_STAT_VARS_KEY
+from datasets_api.recipe_store import RecipeReader
 from materialise.formats import FRAME1_MEDIA_TYPE
 from materialise.graph import UNRESOLVED_NODE, GraphReader, GraphReadError
 from materialise.provenance_doc import read_source_citations
+from materialise.unit_cells import composed_unit_sides
 from origin_catalogue import current_catalogue
+from presentation_store.composed_stat_vars import (
+    ComposedStatVar,
+    composed_stat_var_labels,
+    read_composed_stat_vars,
+)
 from spec_registry.errors import (
     IdentityQuarantined,
     SpecRegistryStoreError,
@@ -100,7 +126,8 @@ default 30s)."""
 _UNIT_LABEL_CAP = 100
 """Distinct unit dcid refs `_resolve_labels` adds to the same batch, after the
 `_LABEL_RESOLUTION_CAP` dimension refs, so unit refs cannot crowd out stat_var, entity, or
-provenance labels. A unit ref beyond this cap keeps its raw ref."""
+provenance labels. A unit ref is a string `unit` cell or a string side of a composed unit. A
+unit ref beyond this cap keeps its raw ref."""
 
 _CITATION_READ_CAP = 300
 """Distinct provenance refs `_derived_citation` sends to `read_source_citations` in one
@@ -129,15 +156,14 @@ the reference table (e.g. `LivePresentationStore
 .list_orphaned_presentation_references`'s own caller) can invert it back to
 a `component_id` without duplicating the literal."""
 
-# Grammar refs include `dcid:`. GraphReader expects bare dcids.
-_STAT_VAR_REF_PREFIX = "dcid:"
-
 # Route `spec_` family refs to `_resolve_family_labels`.
 # Graph refs use other prefixes.
 _FAMILY_REF_PREFIX = "spec_"
 
 # The `provenance` column is labelled like stat_var and entity refs. measurementMethod keeps raw
-# refs. Unit dcid refs are labelled under their own cap; structured units need no label.
+# refs. Unit dcid refs are labelled under their own cap. Converted units need no label. A
+# composed unit is labelled side by side, a string side as a unit ref and a StatVar side as a
+# stat_var ref.
 _PROVENANCE_COLUMN = "provenance"
 
 # A published derived frame's spec id. Its version body carries no citation.
@@ -185,19 +211,94 @@ def _io_failure(*, action: str, digest: str, exc: Exception) -> FrameUnavailable
     )
 
 
+def _capped_refs(
+    *,
+    columns: Sequence[str],
+    rows: Sequence[Sequence[object]],
+    composed_stat_vars: Sequence[ComposedStatVar] = (),
+) -> dict[str, str]:
+    """The refs to label in `rows`, each mapped to the bare dcid a graph read takes: stat_var,
+    entity, and provenance refs up to `_LABEL_RESOLUTION_CAP`, then unit dcid refs up to
+    `_UNIT_LABEL_CAP`, each in row order. The side refs of `composed_stat_vars`, then a
+    composed unit's StatVar sides, count as stat_var refs ahead of the columns' own refs, and
+    a composed unit's string sides as unit refs. A ref an entry describes is left out."""
+    index_by_column = {column: position for position, column in enumerate(columns)}
+    facets = facet_dimension_names()
+    ref_columns = tuple(
+        column
+        for column in dimension_columns(columns=columns)
+        if column not in facets or column == _PROVENANCE_COLUMN
+    )
+
+    unit_parts: tuple[object, ...] = ()
+    if UNIT_COLUMN in index_by_column:
+        unit_index = index_by_column[UNIT_COLUMN]
+        unit_parts = tuple(
+            part
+            for row in rows
+            for part in composed_unit_sides(row[unit_index]) or (row[unit_index],)
+        )
+
+    # Keep frame refs as label keys. Graph calls use bare stat_var dcids. The sides of a
+    # composed StatVar and of a composed unit come first, since each labels the whole card
+    # and frames hold few of them.
+    composed = {entry.stat_var for entry in composed_stat_vars}
+    stat_var_refs = [ref for entry in composed_stat_vars for ref in (*entry.first, *entry.second)]
+    stat_var_refs += [
+        cast("Mapping[str, str]", part)["stat_var"]
+        for part in unit_parts
+        if isinstance(part, Mapping) and "stat_var" in part
+    ]
+    distinct: dict[str, str] = {
+        ref: ref.removeprefix(STAT_VAR_REF_PREFIX) for ref in stat_var_refs if ref not in composed
+    }
+    for column in ref_columns:
+        index = index_by_column[column]
+        strip = column == STAT_VAR_COLUMN
+        for row in rows:
+            ref = row[index]
+            if ref is None or ref in distinct or ref in composed:
+                continue
+            distinct[cast(str, ref)] = (
+                cast(str, ref).removeprefix(STAT_VAR_REF_PREFIX) if strip else cast(str, ref)
+            )
+
+    # Preserve row order when enforcing each cap. Later refs keep raw-ref fallbacks.
+    capped = dict(tuple(distinct.items())[:_LABEL_RESOLUTION_CAP])
+    unit_refs = dict.fromkeys(
+        part for part in unit_parts if isinstance(part, str) and part not in capped
+    )
+    capped.update((ref, ref) for ref in tuple(unit_refs)[:_UNIT_LABEL_CAP])
+    return capped
+
+
+def _left_out_label(coordinates: Mapping[str, str], *, labels: Mapping[str, str]) -> str:
+    """A left-out series' label, as `assembler.bind.series_label` builds a series label.
+    Coordinates that hold neither `stat_var` nor an entity role are labelled by their raw
+    content, so a stored recipe never fails its frame's load."""
+    columns = tuple(coordinates)
+    if STAT_VAR_COLUMN in coordinates or role_columns(columns=columns):
+        return series_label(coordinates=coordinates, columns=columns, labels=labels)
+    return ", ".join(f"{column}={value}" for column, value in coordinates.items())
+
+
 @dataclass(frozen=True, slots=True)
 class _CachedFrame:
-    """A cached load: the frame bytes' size, the resolved frame, and whether every citation
-    read behind its manifest completed."""
+    """A cached load: the frame bytes' size, the resolved frame, whether every citation read
+    behind its manifest completed, and whether its anchor is final. The anchor of a derived
+    frame is final once its recipe has been read, and that of any other frame always."""
 
     size_bytes: int
     resolved: ResolvedFrame
     citation_complete: bool
+    anchor_final: bool
 
 
 class LiveFrameStore:
     """`graph` supplies entity/provenance labels. `spec_reader` supplies family labels.
     `None` for either disables only those labels; every other dependency is required.
+    `recipe_reader` supplies a derived frame's rolling anchor, and `None` loads every frame
+    without one.
     `code_index` and `measure_index` default to the packaged indexes. `now` supplies the clock
     for expiry checks and reference timestamps. `read_budget_seconds` bounds the graph reads of
     one `load()` from its start, as the module docstring describes, for a caller that sets no
@@ -212,6 +313,7 @@ class LiveFrameStore:
         graph: GraphReader | None,
         reference_writer: ArtifactReferenceWriter,
         spec_reader: SpecReader | None = None,
+        recipe_reader: RecipeReader | None = None,
         code_index: CodeIndex | None = None,
         measure_index: MeasureIndex | None = None,
         now: Clock = utc_now,
@@ -223,6 +325,7 @@ class LiveFrameStore:
         self._graph = graph
         self._reference_writer = reference_writer
         self._spec_reader = spec_reader
+        self._recipe_reader = recipe_reader
         self._code_index = code_index if code_index is not None else get_index()
         self._measure_index = measure_index if measure_index is not None else get_measure_index()
         self._now = now
@@ -243,7 +346,7 @@ class LiveFrameStore:
         cache_key = (frame_ref.spec_id, frame_ref.content_version)
         stored, canonical = self._resolve_canonical_location(frame_ref)
         cached = self._cache_get(cache_key)
-        if cached is not None and cached.citation_complete:
+        if cached is not None and cached.citation_complete and cached.anchor_final:
             return cached.resolved
 
         if cached is None:
@@ -258,7 +361,13 @@ class LiveFrameStore:
                         f"{type(exc).__name__}"
                     ),
                 ) from None
-            labels, labels_resolved = self._resolve_labels(doc, deadline=deadline)
+            labels, labels_resolved = self._resolve_labels(
+                doc,
+                composed_stat_vars=read_composed_stat_vars(
+                    stored.immutable_body.get(COMPOSED_STAT_VARS_KEY), frame_ref=frame_ref
+                ),
+                deadline=deadline,
+            )
             frame = ResolvedFrame(
                 frame_ref=frame_ref,
                 frame=doc,
@@ -268,21 +377,82 @@ class LiveFrameStore:
                 retrieved_on=canonical.created_at.astimezone(datetime.UTC).date(),
             )
             size_bytes = len(data)
+            citation_complete = anchor_final = False
         else:
             frame, size_bytes, labels_resolved = cached.resolved, cached.size_bytes, True
+            citation_complete, anchor_final = cached.citation_complete, cached.anchor_final
 
-        manifest, citation_complete = self._cited_manifest(
-            frame, stored_manifest=stored.immutable_body, deadline=deadline
-        )
-        resolved = replace(frame, manifest=manifest)
+        if not anchor_final:
+            anchor, anchor_final, anchor_labelled = self._recipe_anchor(frame, deadline=deadline)
+            frame = replace(frame, anchor=anchor)
+            labels_resolved = labels_resolved and anchor_labelled
+        if not citation_complete:
+            manifest, citation_complete = self._cited_manifest(
+                frame, stored_manifest=stored.immutable_body, deadline=deadline
+            )
+            frame = replace(frame, manifest=manifest)
         if labels_resolved:
             self._cache_put(
                 cache_key,
-                resolved,
-                size_bytes=size_bytes,
-                citation_complete=citation_complete,
+                _CachedFrame(
+                    size_bytes=size_bytes,
+                    resolved=frame,
+                    citation_complete=citation_complete,
+                    anchor_final=anchor_final,
+                ),
             )
-        return resolved
+        return frame
+
+    def _recipe_anchor(
+        self, frame: ResolvedFrame, *, deadline: float
+    ) -> tuple[RollingAnchor | None, bool, bool]:
+        """The rolling anchor a derived frame's recipe records, whether that answer is final,
+        and whether every label read behind it succeeded.
+
+        A frame that is not derived, and any frame of a store with no recipe reader, has no
+        anchor, finally. A derived frame with no recipe has none yet, since a recipe can be
+        written after the frame is published. Each left-out series is labelled from its
+        coordinates (`_left_out_label`), over the frame's labels plus one `_label_refs` read of
+        the refs the frame does not label. A label the recipe states is kept."""
+        spec_id = frame.frame_ref.spec_id
+        if self._recipe_reader is None or not spec_id.startswith(_DERIVED_SPEC_PREFIX):
+            return None, True, True
+        recipe = self._recipe_reader.read_recipe(
+            spec_id=spec_id, content_version=frame.frame_ref.content_version
+        )
+        if recipe is None:
+            return None, False, True
+        body = cast("Mapping[str, object] | None", recipe.body.get("anchor"))
+        if body is None:
+            return None, True, True
+
+        left_out = cast("Sequence[Mapping[str, object]]", body["left_out"])
+        coordinates = [cast("Mapping[str, str]", one["coordinates"]) for one in left_out]
+        columns = tuple(dict.fromkeys(column for one in coordinates for column in one))
+        refs = {
+            ref: bare
+            for ref, bare in _capped_refs(
+                columns=columns,
+                rows=[[one.get(column) for column in columns] for one in coordinates],
+            ).items()
+            if ref not in frame.labels
+        }
+        read, labelled = self._label_refs(refs, deadline=deadline)
+        labels = {**frame.labels, **read}
+        anchor = RollingAnchor(
+            period=cast(str, body["period"]),
+            rule=cast(str, body["rule"]),
+            left_out=tuple(
+                LeftOutSeries(
+                    root=cast(int, one["root"]),
+                    coordinates=series,
+                    label=cast("str | None", one.get("label"))
+                    or _left_out_label(series, labels=labels),
+                )
+                for one, series in zip(left_out, coordinates, strict=True)
+            ),
+        )
+        return anchor, True, labelled
 
     def _cited_manifest(
         self, frame: ResolvedFrame, *, stored_manifest: Mapping[str, object], deadline: float
@@ -521,57 +691,56 @@ class LiveFrameStore:
         return citation.model_dump(mode="json"), cacheable
 
     def _resolve_labels(
-        self, doc: Mapping[str, object], *, deadline: float
+        self,
+        doc: Mapping[str, object],
+        *,
+        composed_stat_vars: Sequence[ComposedStatVar],
+        deadline: float,
+    ) -> tuple[dict[str, str], bool]:
+        """Resolve the frame's ref labels (`_resolve_ref_labels`), then word each composed
+        StatVar the frame's version body describes from its sides' labels
+        (`composed_stat_var_labels`), under the ref its `stat_var` cells hold. A side the read
+        left unlabelled reads as its bare dcid, and the returned flag is the read's own, so a
+        failed read is not cached."""
+        labels, resolved = self._resolve_ref_labels(
+            doc, composed_stat_vars=composed_stat_vars, deadline=deadline
+        )
+        labels.update(composed_stat_var_labels(entries=composed_stat_vars, labels=labels))
+        return labels, resolved
+
+    def _resolve_ref_labels(
+        self,
+        doc: Mapping[str, object],
+        *,
+        composed_stat_vars: Sequence[ComposedStatVar],
+        deadline: float,
     ) -> tuple[dict[str, str], bool]:
         """Resolve labels for stat_var, entity, and provenance refs, capped at 300 in row
         order, then unit dcid refs, capped at 100 in row order, and say whether the graph read
-        succeeded. `dcid:spec_...` family refs use stored definitions and `CodeIndex`. Other
-        refs use one graph batch that stops at the absolute monotonic `deadline`. Missing
-        readers, lookup/store failures, and over-cap refs remain unlabelled without failing
-        the load. A graph failure, the deadline included, preserves family labels. A graph
-        failure or a failed family definition read returns `False`, so `load` skips the cache.
+        succeeded. The side refs of `composed_stat_vars`, then a composed unit's StatVar sides,
+        count as stat_var refs ahead of the columns' own refs, and a composed unit's string
+        sides as unit refs. A ref an entry describes is left out of the read. `dcid:spec_...`
+        family refs use stored definitions and `CodeIndex`. Other refs use one graph batch that
+        stops at the absolute monotonic `deadline`. Missing readers, lookup/store failures, and
+        over-cap refs remain unlabelled without failing the load. A graph failure, the deadline
+        included, preserves family labels. A graph failure or a failed family definition read
+        returns `False`, so `load` skips the cache.
         """
         columns = tuple(cast("Sequence[str]", doc["columns"]))
         if STAT_VAR_COLUMN not in columns:
             return {}, True
         rows = tuple(cast("Sequence[Sequence[object]]", doc["rows"]))
-        index_by_column = {column: position for position, column in enumerate(columns)}
-        facets = facet_dimension_names()
-        ref_columns = tuple(
-            column
-            for column in dimension_columns(columns=columns)
-            if column not in facets or column == _PROVENANCE_COLUMN
-        )
+        refs = _capped_refs(columns=columns, rows=rows, composed_stat_vars=composed_stat_vars)
+        return self._label_refs(refs, deadline=deadline)
 
-        # Keep frame refs as label keys. Graph calls use bare stat_var dcids.
-        distinct: dict[str, str] = {}
-        for column in ref_columns:
-            index = index_by_column[column]
-            strip = column == STAT_VAR_COLUMN
-            for row in rows:
-                ref = row[index]
-                if ref is None or ref in distinct:
-                    continue
-                distinct[cast(str, ref)] = (
-                    cast(str, ref).removeprefix(_STAT_VAR_REF_PREFIX) if strip else cast(str, ref)
-                )
-
-        # Preserve row order when enforcing each cap. Later refs keep raw-ref fallbacks.
-        capped = dict(tuple(distinct.items())[:_LABEL_RESOLUTION_CAP])
-        if UNIT_COLUMN in index_by_column:
-            unit_index = index_by_column[UNIT_COLUMN]
-            unit_refs = dict.fromkeys(
-                unit
-                for row in rows
-                if isinstance(unit := row[unit_index], str) and unit not in capped
-            )
-            capped.update((ref, ref) for ref in tuple(unit_refs)[:_UNIT_LABEL_CAP])
-        if not capped:
-            return {}, True
-
+    def _label_refs(
+        self, refs: Mapping[str, str], *, deadline: float
+    ) -> tuple[dict[str, str], bool]:
+        """Label `refs`, a map from each ref to its bare dcid, and say whether every read
+        succeeded, as `_resolve_labels` describes."""
         family_refs: dict[str, str] = {}
         graph_bare_to_refs: dict[str, list[str]] = {}
-        for ref, bare in capped.items():
+        for ref, bare in refs.items():
             if bare.startswith(_FAMILY_REF_PREFIX):
                 family_refs[ref] = bare
             else:
@@ -639,14 +808,7 @@ class LiveFrameStore:
         with self._cache_lock:
             return self._cache.get(cache_key)
 
-    def _cache_put(
-        self,
-        cache_key: tuple[str, str],
-        resolved: ResolvedFrame,
-        *,
-        size_bytes: int,
-        citation_complete: bool,
-    ) -> None:
+    def _cache_put(self, cache_key: tuple[str, str], entry: _CachedFrame) -> None:
         """Byte-bounded insertion-order cache keyed by `(spec_id, content_version)`. Frame refs
         identify immutable bytes, so entries need no expiry. Eviction follows insertion order
         and can drop hot entries. Keep one oversized frame. Adjust byte counts on replacement.
@@ -655,8 +817,8 @@ class LiveFrameStore:
             prior = self._cache.get(cache_key)
             if prior is not None:
                 self._cache_bytes -= prior.size_bytes
-            self._cache[cache_key] = _CachedFrame(size_bytes, resolved, citation_complete)
-            self._cache_bytes += size_bytes
+            self._cache[cache_key] = entry
+            self._cache_bytes += entry.size_bytes
             while self._cache_bytes > self._cache_max_bytes and self._cache:
                 oldest_key = next(iter(self._cache))
                 if oldest_key == cache_key and len(self._cache) == 1:

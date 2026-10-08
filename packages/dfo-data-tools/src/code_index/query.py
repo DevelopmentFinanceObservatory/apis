@@ -571,10 +571,11 @@ class CodeIndex:
         """Returns the menu of values for one code-system slot.
 
         A flat system returns every value as a root. A valid hierarchical binding returns
-        its immediate children, then its parent. An unbound hierarchical slot returns each
-        root followed by that root's children. `hierarchical` selects the branch, so a flat
-        system's parent fields are ignored. Every hierarchical option with a parent names it
-        in `parent`.
+        its immediate children, then its parent. A bound root has no parent, so its
+        children are followed by every other root of the system, without those roots'
+        children. An unbound hierarchical slot returns each root followed by that root's
+        children. `hierarchical` selects the branch, so a flat system's parent fields are
+        ignored. Every hierarchical option with a parent names it in `parent`.
 
         Unknown or foreign `bound_dcid` values act as unbound. Set bindings pass `None`.
         Siblings sort by member count descending, then dcid ascending."""
@@ -598,10 +599,18 @@ class CodeIndex:
                 for d in _ordered(all_dcids)
             )
 
+        def _root(dcid: str) -> LevelOption:
+            return LevelOption(dcid=dcid, relation="root", member_count=counts.get(dcid, 0))
+
+        roots = _ordered(
+            r.dcid for r in self.codes if r.code_system == code_system and r.parent is None
+        )
         row = self._codes_by_dcid.get(bound_dcid) if bound_dcid is not None else None
         if row is not None and row.code_system == code_system:
             options = _children(row.dcid)
-            if row.parent is not None:
+            if row.parent is None:
+                options.extend(_root(root) for root in roots if root != row.dcid)
+            else:
                 parent_row = self._codes_by_dcid.get(row.parent)
                 options.append(
                     LevelOption(
@@ -613,11 +622,8 @@ class CodeIndex:
                 )
             return tuple(options)
 
-        roots = (r.dcid for r in self.codes if r.code_system == code_system and r.parent is None)
         options = []
-        for root in _ordered(roots):
-            options.append(
-                LevelOption(dcid=root, relation="root", member_count=counts.get(root, 0))
-            )
+        for root in roots:
+            options.append(_root(root))
             options.extend(_children(root))
         return tuple(options)

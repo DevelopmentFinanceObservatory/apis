@@ -9,7 +9,7 @@ from __future__ import annotations
 import pytest
 
 from assembler.errors import BindingInvalid
-from assembler.frame_view import compute_structural_view, dimension_columns
+from assembler.frame_view import compute_structural_view, dimension_columns, hashable_cell
 from assembler.testing import build_frame_doc
 
 
@@ -261,3 +261,78 @@ def test_converted_unit_dimension_ordering_is_total_and_stable():
     # Recomputing from the same document preserves the ordering across set iteration.
     view_again = compute_structural_view(frame=doc)
     assert view_again.dimensions == view.dimensions
+
+
+_USD_PER_PERSON = {"numerator": "USDollar", "denominator": {"stat_var": "dcid:Count_Person"}}
+_USD_PER_PERSON_TEXT = '{"denominator":{"stat_var":"dcid:Count_Person"},"numerator":"USDollar"}'
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        {"numerator": "USDollar", "denominator": "dcid:Count_Person"},
+        {"numerator": {"stat_var": "dcid:Count_Person"}, "denominator": "USDollar"},
+        {
+            "numerator": {"currency": "USD", "prices": "current"},
+            "denominator": {"stat_var": "dcid:Count_Person"},
+        },
+        "USDollar per Count_Person",
+        "USDollar",
+        None,
+    ],
+    ids=["ref_denominator", "sides_swapped", "converted_numerator", "text_ref", "ref", "null"],
+)
+def test_a_composed_unit_keys_apart_from_every_other_cell(other):
+    assert hashable_cell(_USD_PER_PERSON) == _USD_PER_PERSON_TEXT
+    assert hashable_cell(other) != _USD_PER_PERSON_TEXT
+
+
+@pytest.mark.parametrize(
+    ("structured", "ref"),
+    [
+        (_USD_PER_PERSON, _USD_PER_PERSON_TEXT),
+        ({"currency": "USD", "prices": "current"}, "USD/current"),
+    ],
+    ids=["composed", "converted"],
+)
+def test_a_unit_ref_spelling_a_structured_unit_s_key_refuses_binding_invalid(structured, ref):
+    """The two cells would share one grouping key, so the frame refuses in place of grouping
+    one cell's rows under the other's unit."""
+    doc = _unit_doc(
+        [
+            ["dcid:X", "country/KEN", "2020", structured, 1.0],
+            ["dcid:X", "country/KEN", "2020", ref, 99.0],
+        ]
+    )
+    with pytest.raises(BindingInvalid) as excinfo:
+        compute_structural_view(frame=doc)
+    assert excinfo.value.pointer == "/frame_ref"
+
+
+def test_unit_dimension_mixes_all_four_unit_forms():
+    converted_per_person = {
+        "numerator": {"currency": "EUR", "prices": "constant", "base_year": 2020},
+        "denominator": {"stat_var": "dcid:Count_Person"},
+    }
+    doc = _unit_doc(
+        [
+            ["dcid:X", "country/KEN", "2020", None, 1.0],
+            ["dcid:X", "country/KEN", "2020", "USDollar", 2.0],
+            ["dcid:X", "country/KEN", "2020", {"currency": "USD", "prices": "current"}, 3.0],
+            ["dcid:X", "country/KEN", "2020", _USD_PER_PERSON, 4.0],
+            ["dcid:X", "country/KEN", "2021", dict(reversed(_USD_PER_PERSON.items())), 5.0],
+            ["dcid:X", "country/KEN", "2020", converted_per_person, 6.0],
+        ]
+    )
+    view = compute_structural_view(frame=doc)
+    unit = next(d for d in view.dimensions if d.name == "unit")
+    assert unit.values == (
+        "USD/current",
+        "USDollar",
+        _USD_PER_PERSON_TEXT,
+        '{"denominator":{"stat_var":"dcid:Count_Person"},'
+        '"numerator":{"base_year":2020,"currency":"EUR","prices":"constant"}}',
+    )
+    assert unit.total_count == 4
+    assert unit.plural is True
+    assert view.series_count == 5

@@ -753,7 +753,7 @@ def _finish_candidate(
         defaulted_properties=(
             defaulted_properties if cand_bindings is state.bindings else frozenset()
         ),
-        named_groups=request_named_groups(state),
+        named_groups=request_named_groups(state, cand.place.roles),
         measure_served_rows=measure_served_counter(groundwork.served_filter),
     )
     cand_spec = apply_declaration_version(cand_spec, cand_bindings)

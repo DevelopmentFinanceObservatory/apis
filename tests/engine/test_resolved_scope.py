@@ -221,7 +221,8 @@ def test_scope_present_with_axis_and_count_invariant_and_member_content():
 
 
 def test_scope_absent_for_a_named_place_query():
-    """A named place bypasses default scope and its label/type batch reads."""
+    """A named place bypasses default scope and its batch reads. The one type batch read is
+    grounding's, for the entity the Spec binds."""
     obs = {f"{_SV}|country/A1": [{"earliestDate": "2020", "latestDate": "2020", "obsCount": 1}]}
     graph = _make_graph(obs=obs, resolve={"Testland One": "country/A1"})
     result = _run(graph=graph, entities=["Testland One"])
@@ -230,7 +231,7 @@ def test_scope_absent_for_a_named_place_query():
     spec = result.specs[0]
     assert spec.resolved.scope is None
     assert not any(w.code == PLACE_SCOPE_DEFAULTED for w in result.warnings)
-    assert graph.types_batch_calls == 0
+    assert graph.types_batch_calls == 1
 
 
 def test_earth_only_data_scope_is_the_single_earth_member():

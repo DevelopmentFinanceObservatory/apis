@@ -86,11 +86,16 @@ from dataclasses import dataclass
 from typing import cast
 
 from dfo_platform import Alternative
+from dfo_platform.named import cut, named_capped
 from materialise import GraphReader
 from materialise.roles import RoleAxis, roles_by_axis
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.errors import EngineInputError
-from search.engine.identity_edit import check_described_arm, validate_edited_identity
+from search.engine.identity_edit import (
+    check_described_arm,
+    refuse_over_place_bound,
+    validate_edited_identity,
+)
 from search.engine.options.population import OptionsPopulation, options_population
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.region.refs import confirm_dcids_present
@@ -164,7 +169,7 @@ def _check_entity_role_admission(
             dcids = identity.entities.get(axis, [])
             if dcids:
                 detail = (
-                    f"{axis} reference(s) {list(dcids)!r} are not a role this "
+                    f"{axis} reference(s) {named_capped(dcids)} are not a role this "
                     "identity's resolved StatVars declare; its members assert "
                     "no directional role"
                 )
@@ -173,7 +178,6 @@ def _check_entity_role_admission(
                     code="role_incompatible",
                     status=422,
                     pointer=f"/identity/entities/{axis}",
-                    detail=detail,
                 )
         return
     if identity.entities.get("observationAbout"):
@@ -183,22 +187,20 @@ def _check_entity_role_admission(
             code="role_incompatible",
             status=422,
             pointer="/identity/entities/observationAbout",
-            detail=detail,
         )
     for axis in ("origin", "destination"):
         dcids = identity.entities.get(axis, [])
         if dcids and axis not in role_names_by_axis:
             detail = (
-                f"{axis} reference(s) {list(dcids)!r} name a flow axis this "
+                f"{axis} reference(s) {named_capped(dcids)} name a flow axis this "
                 "identity's resolved StatVars declare no role for; declared "
-                f"axes are {sorted(role_names_by_axis)!r}"
+                f"axes are {', '.join(sorted(role_names_by_axis))}"
             )
             raise EngineInputError(
                 detail,
                 code="role_incompatible",
                 status=422,
                 pointer=f"/identity/entities/{axis}",
-                detail=detail,
             )
 
 
@@ -214,7 +216,7 @@ def _check_role_target(req: OptionsRequest, role_names_by_axis: dict[RoleAxis, s
     if req.for_.role in declared_axes:
         return
     raise EngineInputError(
-        f"{req.for_.role!r} is not a role this definition's resolved StatVars "
+        f"{cut(req.for_.role)!r} is not a role this definition's resolved StatVars "
         f"declare; the resolved shape declares {', '.join(declared_axes)}",
         code="option_target_invalid",
         status=422,
@@ -265,7 +267,9 @@ def resolve_options_target(
             (`check_described_arm`) or an identity that fails the
             authoritative identity core (`validate_edited_identity`) --
             duplicate slot properties chief among what this catches that
-            `BaseIdentity`'s own schema does not; `facet_not_available` (422) at
+            `BaseIdentity`'s own schema does not, or an identity binding more
+            places than a Spec holds (`refuse_over_place_bound`), at the role's path
+            or at `/identity/entities`; `facet_not_available` (422) at
             `/identity/facets/provenance` for an identity naming a dataset that does
             not publish its five-tuple (`refuse_source_outside_family`), before any
             read; every refusal
@@ -297,6 +301,7 @@ def resolve_options_target(
     # /input/identity -- the same door-own-field reasoning.
     check_described_arm(identity.shape, pointer="/identity/shape")
     validate_edited_identity(identity, pointer="/identity")
+    refuse_over_place_bound(identity.entities, pointer="/identity/entities")
     # A pin posted bound and one posted unbound denote one population.
     identity = canonicalise_identity(identity)
     # A named dataset that does not publish the five-tuple refuses here as it does at the

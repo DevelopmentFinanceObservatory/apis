@@ -46,12 +46,13 @@ _QUAL_DENOM_RE = re.compile(
 )
 _SCORE_RE = re.compile(r"  retrieval_score: (?P<score>.*)")
 _FIXED_CONTEXT_HEADER_LINE = (
-    "FIXED CONTEXT (already determined by the query text -- for whichever shape "
-    "you choose, if it lists a constraint_slot for one of these property_dcids, "
-    "bind that slot kind=value to exactly this value_dcid, not your own reading):"
+    "FIXED CONTEXT (already determined by the query text -- if you choose a shape "
+    "that lists fixed_context, bind each constraint_slot it names kind=value to "
+    "exactly that value_dcid, not your own reading)."
 )
+_SHAPE_FIXED_CONTEXT_LINE = "  fixed_context:"
 _FIXED_CONTEXT_ENTRY_RE = re.compile(
-    r"  property_dcid=(?P<prop>[^,]*), value_dcid=(?P<val>.*) \((?P<label>.*)\)"
+    r"    property_dcid=(?P<prop>[^,]*), value_dcid=(?P<val>.*) \((?P<label>.*)\)"
 )
 _DROPPED_QUALIFIERS_HEADER_LINE = (
     "DROPPED QUALIFIERS (the query asked for these but no earlier stage could "
@@ -154,6 +155,15 @@ def _parse_shape(lines: list[str], pos: int, idx: int) -> tuple[MenuEntry, int]:
         if not saw_slot:
             raise BindMenuError(f"line {pos}: 'constraint_slots:' header with no slot lines")
 
+    if pos < len(lines) and lines[pos] == _SHAPE_FIXED_CONTEXT_LINE:
+        pos += 1
+        saw_fixed_context_entry = False
+        while pos < len(lines) and _FIXED_CONTEXT_ENTRY_RE.fullmatch(lines[pos]):
+            pos += 1
+            saw_fixed_context_entry = True
+        if not saw_fixed_context_entry:
+            raise BindMenuError(f"line {pos}: 'fixed_context:' header with no property_dcid lines")
+
     sample_dcids: tuple[str, ...] = ()
     if pos < len(lines) and _SAMPLE_RE.fullmatch(lines[pos]):
         match, pos = _match(lines, pos, _SAMPLE_RE, "a 'sample_member_dcids:' line")
@@ -181,8 +191,9 @@ def parse_menu(prompt: str) -> tuple[str, tuple[MenuEntry, ...]]:
 
     Raises `BindMenuError` on a malformed line, count mismatch, or trailing content.
 
-    Optional `FIXED CONTEXT` and `DROPPED QUALIFIERS` blocks are parsed and skipped.
-    `QUERY-NAMED ALTERNATIVES` blocks raise `BindMenuError`.
+    Optional `FIXED CONTEXT` and `DROPPED QUALIFIERS` blocks, and each shape's
+    `fixed_context` lines, are parsed and skipped. `QUERY-NAMED ALTERNATIVES` raise
+    `BindMenuError`.
     """
     lines = prompt.split("\n")
     if not lines or lines[-1] != "":
@@ -195,14 +206,7 @@ def parse_menu(prompt: str) -> tuple[str, tuple[MenuEntry, ...]]:
     pos = _literal(lines, pos, "")
 
     if pos < len(lines) and lines[pos] == _FIXED_CONTEXT_HEADER_LINE:
-        pos += 1
-        saw_fixed_context_entry = False
-        while pos < len(lines) and _FIXED_CONTEXT_ENTRY_RE.fullmatch(lines[pos]):
-            pos += 1
-            saw_fixed_context_entry = True
-        if not saw_fixed_context_entry:
-            raise BindMenuError(f"line {pos}: 'FIXED CONTEXT' header with no property_dcid lines")
-        pos = _literal(lines, pos, "")
+        pos = _literal(lines, pos + 1, "")
 
     if pos < len(lines) and lines[pos] == _DROPPED_QUALIFIERS_HEADER_LINE:
         pos += 1

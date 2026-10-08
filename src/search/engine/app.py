@@ -41,6 +41,7 @@ from dfo_platform.app import Surface
 from dfo_platform.app import create_app as platform_create_app
 from dfo_platform.build import build_commit
 from dfo_platform.config import parse_cors_origins
+from dfo_platform.named import cut
 from dfo_platform.static_response import freeze_public_json
 from dfo_platform.trace import get_trace_id
 from dfo_platform.validation import error_field_loc, pointer_for_error, validation_problem
@@ -165,7 +166,7 @@ def classify_search_exception(exc: BaseException) -> ProblemSpec | None:
     if isinstance(exc, EngineInputError):
         # Code-less routing failures keep generic code and detail to prevent ID probing.
         code = exc.code if exc.code is not None else "request_invalid"
-        detail = None if exc.code is None else exc.detail
+        detail = None if exc.code is None else str(exc)
         return ProblemSpec(
             status=exc.status,
             code=code,
@@ -397,7 +398,8 @@ async def resolve_endpoint(body: ResolveRequest, request: Request, deps: SearchD
     # Share the unimplemented-door set with capabilities so liveness and refusals agree.
     if body.input.kind in SEARCH_UNIMPLEMENTED_DOORS:
         raise EngineInputError(
-            f"kind={body.input.kind!r} not supported in v1",
+            f"This deployment does not serve the {body.input.kind!r} input door; consult "
+            "GET /api/search/capabilities for per-door liveness.",
             code="door_not_implemented",
             status=501,
             pointer="/input/kind",
@@ -407,14 +409,11 @@ async def resolve_endpoint(body: ResolveRequest, request: Request, deps: SearchD
         q = body.input.query  # type: ignore[union-attr]
         if len(q) > settings().max_query_chars:
             raise EngineInputError(
-                f"Query exceeds {settings().max_query_chars} characters",
+                "The query exceeds this deployment's "
+                f"{settings().max_query_chars}-character limit.",
                 code="query_too_long",
                 status=422,
                 pointer="/input/query",
-                detail=(
-                    "The query exceeds this deployment's "
-                    f"{settings().max_query_chars}-character limit."
-                ),
             )
 
     # Refresh before every generation-keyed cache lookup.
@@ -596,9 +595,8 @@ async def catalogue_endpoint(
         scoped = place_catalogue_response(artifact, place)
         if scoped is None:
             raise EngineInputError(
-                f"place {place!r} is not in catalogue {artifact.catalogue_version!r}",
+                f"The catalogue holds no data for place {cut(place)!r}.",
                 code="request_invalid",
-                detail=f"The catalogue holds no data for place {place!r}.",
             )
         body = scoped
     return JSONResponse(

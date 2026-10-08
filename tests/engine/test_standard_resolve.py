@@ -484,8 +484,8 @@ class TestUnrealisableValuesUnbound:
         phrase = "for women"
         match_query_qualifiers = phase_rank_bind._match_query_qualifiers
 
-        def _matching_women(variable, dropped_qualifier_phrases=(), **kwargs):
-            matches, owned = match_query_qualifiers(variable, dropped_qualifier_phrases, **kwargs)
+        def _matching_women(sources, **kwargs):
+            read = match_query_qualifiers(sources, **kwargs)
             women = QualifierMatch(
                 code_system="gender",
                 code_dcid="Female",
@@ -493,7 +493,8 @@ class TestUnrealisableValuesUnbound:
                 source="synonym",
                 matched_text=phrase,
             )
-            return (*matches, women) if phrase in dropped_qualifier_phrases else matches, owned
+            matches = {vocabulary: (*own, women) for vocabulary, own in read.matches.items()}
+            return replace(read, matches=matches)
 
         monkeypatch.setattr(phase_rank_bind, "_match_query_qualifiers", _matching_women)
         result = _resolve_unemployment(_gender_binding("unbound"), monkeypatch, dropped=(phrase,))

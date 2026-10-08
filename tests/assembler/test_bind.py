@@ -15,6 +15,8 @@ from assembler.ports import FrameRef, ResolvedFrame
 from assembler.resolve import resolve_selectors
 from assembler.testing import FIXTURE_RETRIEVED_ON, build_resolved_frame
 
+from ._pipeline_support import _stored_resolved_frame
+
 _FRAME_REF = FrameRef(spec_id="spec_" + "a" * 32, content_version="cv_" + "b" * 32)
 
 
@@ -100,11 +102,36 @@ def test_status_the_frame_carries_passes_through():
     assert bound.points == ({"period": "2020", "status": "suppressed"},)
 
 
+def test_a_series_label_keeps_every_role_when_one_role_label_fills_the_limit():
+    """Two series share a 200-character donor label and differ in recipient."""
+    rf = build_resolved_frame(
+        frame_ref=_FRAME_REF,
+        role_keys=("donor", "recipient"),
+        rows=[
+            {**_row(recipient=recipient, period="2020"), "donor": "country/USA"}
+            for recipient in ("country/ETH", "country/UGA")
+        ],
+        labels={"country/USA": "D" * 200, "country/ETH": "Ethiopia", "country/UGA": "Uganda"},
+    )
+    window = {"start": "2020", "end": "2020"}
+    series = resolve_selectors(
+        resolved_frame=rf,
+        selectors=[{"bindings": [{"dimension": "donor", "values": ["country/USA"]}]}],
+        window=window,
+    )
+    bound = bind_all(resolved_frame=rf, series=series, window=window)
+    assert [one.label for one in bound] == [
+        "D" * 189 + " / Ethiopia",
+        "D" * 191 + " / Uganda",
+    ]
+
+
 @pytest.mark.parametrize(
     ("labels", "expected_unit"),
     [
         pytest.param({}, "unit/USD", id="unlabelled-ref-stays-raw"),
         pytest.param({"unit/USD": "US Dollar"}, "US Dollar", id="labelled-ref"),
+        pytest.param({"unit/USD": "U" * 201}, "U" * 200, id="long-label-is-cut"),
     ],
 )
 def test_unit_label_and_source_ref_come_from_coordinates(labels, expected_unit):
@@ -159,6 +186,54 @@ def test_converted_unit_passes_through_as_the_raw_structured_object():
     assert dict(series.coordinates)["unit"] == "USD/current"
     bound = bind_series(resolved_frame=rf, series=series, window={"start": "2020", "end": "2020"})
     assert bound.unit == {"currency": "USD", "prices": "current"}
+
+
+@pytest.mark.parametrize(
+    ("part", "labels", "expected"),
+    [
+        pytest.param("USDollar", {"USDollar": "US Dollar"}, "US Dollar", id="labelled-ref"),
+        pytest.param("USDollar", {}, "USDollar", id="unlabelled-ref-stays-raw"),
+        pytest.param("USDollar", {"USDollar": "U" * 201}, "U" * 200, id="long-ref-label-is-cut"),
+        pytest.param(
+            {"stat_var": "dcid:Count_Person"},
+            {"dcid:Count_Person": "P" * 201},
+            {"stat_var": "dcid:Count_Person", "label": "P" * 200},
+            id="long-stat-var-label-is-cut",
+        ),
+        pytest.param(
+            {"currency": "USD", "prices": "constant", "base_year": 2023},
+            {},
+            {"currency": "USD", "prices": "constant", "base_year": 2023},
+            id="converted-unit-passes-through",
+        ),
+        pytest.param(
+            {"stat_var": "dcid:Count_Person"},
+            {"dcid:Count_Person": "Total population"},
+            {"stat_var": "dcid:Count_Person", "label": "Total population"},
+            id="labelled-stat-var",
+        ),
+        pytest.param(
+            {"stat_var": "dcid:Count_Person"},
+            {},
+            {"stat_var": "dcid:Count_Person", "label": "Count_Person"},
+            id="unlabelled-stat-var-takes-its-bare-ref",
+        ),
+    ],
+)
+def test_composed_unit_binds_each_side_as_a_catalogue_unit_part(part, labels, expected):
+    rf = _stored_resolved_frame(
+        frame_ref=_FRAME_REF,
+        role_keys=("recipient",),
+        rows=[_row(period="2020", unit={"numerator": part, "denominator": part})],
+        labels=labels,
+    )
+    (series,) = resolve_selectors(
+        resolved_frame=rf,
+        selectors=[{"bindings": [{"dimension": "recipient", "values": ["country/ETH"]}]}],
+        window={"start": "2020", "end": "2020"},
+    )
+    bound = bind_series(resolved_frame=rf, series=series, window={"start": "2020", "end": "2020"})
+    assert bound.unit == {"numerator": expected, "denominator": expected}
 
 
 def test_label_prefers_the_labels_map():

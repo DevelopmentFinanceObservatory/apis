@@ -65,6 +65,8 @@ Handles creation, revision, and readback of visual components and layout composi
 | `PATCH` | `/api/presentation/components/{component_id}`            | Revises an existing component draft, validating incremental intent updates.  |
 | `GET`   | `/api/presentation/components/{component_id}[?revision]` | Reads back a stored component definition by ID and optional revision number. |
 | `GET`   | `/api/presentation/components/{component_id}/revisions/{revision}/data[?format&bundle]` | Downloads the frame rows behind every value one revision shows, as CSV, XLSX, or Parquet, in a zip bundle by default (`README.md`, the data file, `data/codes.csv`, `SOURCES.md`, `CITATION.cff`, `datapackage.json`). The download is named `dfo_<card-title-slug>_<YYYY-MM-DD>_<format>_r<revision>.zip`. |
+| `POST`  | `/api/presentation/components/{component_id}/revisions/{revision}/render` | Draws one stored revision on another frame for a live share. Live-refresh principal only. |
+| `GET`   | `/api/presentation/components/{component_id}/revisions/{revision}/render/data?spec_id&content_version[&format&bundle]` | Downloads the rows behind that drawing. Live-refresh principal only. |
 
 ---
 
@@ -143,7 +145,7 @@ A write token grants write. A create returns a `cmw_` token for the new componen
 
 A missing or wrong token, or a draft created before write tokens and so holding no digest, returns HTTP `403` with problem code `write_refused`, retry mode `do_not_retry`. The caller creates a new component instead, and may read the old one first to reuse its intent. The API checks no caller, session, or owner.
 
-The proxy layer authenticates the client. The `/components` and `/frames` routes read no session header. A request that sends `x-dfo-session` is served as if it had not.
+The `/components` and `/frames` routes check no caller and read no session header. A request that sends `x-dfo-session` is served as if it had not. The two render routes are the exception and are described under [Rendering a revision on another frame](#rendering-a-revision-on-another-frame).
 
 ### Idempotent create
 
@@ -230,7 +232,9 @@ Responses to `POST` (201 Created) and `PATCH` (200 OK) return a structured write
 
 A revise response omits the `affordance` key. A create response carries the same shape with `changed` empty (`[]`), `revision` `1`, and an `affordance` string naming the routes that revise or read the component back. The Quickstart above shows one. In `changed`, scalar value transitions record explicit `prior` and `new` keys, while replaced or cleared objects and arrays record only `field`.
 
-`fact_summary` always carries eight keys: `changed`, `series`, `series_cut`, `window`, `unit`, `change`, `source_refs`, and `defaults`. `series_cut` counts series dropped for exceeding the per-summary series cap of 12, plus any further series dropped once the summary crosses its token budget. `window` and `unit` are null for a member the grammar defines neither for. A component's string `unit` holds the unit's graph name, or its dcid when the graph has no name; structured units are unchanged. `change` carries a stat_card's derived comparison and is null for every other member. `source_refs` carries a source_card's provenance list and is null for every other member. `defaults` lists each choice the component made where its intent left one open, as `{pointer, detail}`, and is empty when it made none. A create's `fact_summary` equals the `fact_summary` a later `GET` of the same revision returns.
+`fact_summary` always carries eight keys: `changed`, `series`, `series_cut`, `window`, `unit`, `change`, `source_refs`, and `defaults`. `series_cut` counts series dropped for exceeding the per-summary series cap of 12, plus any further series dropped once the summary crosses its token budget. `window` and `unit` are null for a member the grammar defines neither for. A component's `unit` takes one of four forms, and `fact_summary.unit` carries the same value. A unit the frame gives as a dcid is a string holding the unit's graph name, or the dcid when the graph has no name, cut to 200 characters. A converted unit is the frame's `{currency, prices, base_year}` object as stored. A composed unit is `{numerator, denominator}`, where each side is a string unit, a converted unit, or `{stat_var, label}` for a side that counts a StatVar and declares no unit; `label` holds the StatVar's graph name, or its ref without `dcid:` when the graph has no name, cut to 200 characters. A series whose rows declare no unit has a null `unit`. `change` carries a stat_card's derived comparison and is null for every other member. `source_refs` carries a source_card's provenance list and is null for every other member. `defaults` lists each choice the component made where its intent left one open, as `{pointer, detail}`, and is empty when it made none. A create's `fact_summary` equals the `fact_summary` a later `GET` of the same revision returns.
+
+A label on a card is the graph name of the ref it stands for, or the ref when the graph has no name. A StatVar that an analysis sum, quotient or share wrote its rows under has no graph node. When the frame was published with a `composed_stat_vars` entry for that StatVar (`POST /api/datasets/frames/publish`), its label is worded from the entry's two sides: `<first> per <second>` for a quotient, `<first> plus <second>` for a sum, and `<first> as a share of <second>` for a share. A side reads as its StatVars' labels joined by " and ", and a StatVar with no label reads as its dcid without `dcid:`. With equal sides a quotient reads `Ratio of <side>`, a share reads `Share of <side>`, and a sum reads `<side>`. The label holds at most 200 characters and is shortened side by side, so both sides and the joining word stay in it. A side may name an earlier entry of the same list, whose label it then reads. Series labels, the value axis label, a stat_card's `label`, a table's `stat_var` cell, the fact summary, and an export's `series` and `stat_var_label` columns carry that label. A StatVar with no entry and no graph name keeps its ref.
 
 `composition_id` and `composition_revision` name the real composition and its current head revision on a create, a substantive revise, a no-op revise, and a `GET`, for a component that belongs to a composition. Both are null on every operation for a component that belongs to no composition.
 
@@ -370,6 +374,51 @@ List-valued parameters (such as `series_coordinates` and `blocks`) bound in SQL 
 
 ---
 
+## Rendering a revision on another frame
+
+A live share redraws a card on current data without changing the card. `POST /api/presentation/components/{component_id}/revisions/{revision}/render` takes the frame to draw on:
+
+```json
+{ "frame": { "spec_id": "spec_9f2e41a7c03b58d2a4c1f6b2e8d35790", "content_version": "cv_0b1c..." } }
+```
+
+It answers 200 with the body a read of that revision answers (`component_id`, `revision`, `catalog_version`, `composition_id`, `composition_revision`, `stored_intent`, `fact_summary`, `resolved_payload`) and `Cache-Control: no-store`. `resolved_payload` and `fact_summary` are built from the revision's stored intent on the named frame, under the deployment's catalogue release. `resolved_payload.provenance.inputs` names that frame and `resolved_payload.provenance.refreshed_from` is the revision number. `stored_intent` is the revision's own, so its `frame_ref` names the frame the revision was stored on. The route appends no revision, leaves the head where it is, and pins the named frame for the component so it outlives the working tier.
+
+`GET .../render/data?spec_id=&content_version=` serves the rows behind that drawing. `format` and `bundle` behave as on the stored revision's `/data` route. The file is dated by the frame's retrieval date, a bundle's `dfo.component.frame_ref` names the frame, and the bundle carries no `dfo.reproducing_call`, since a reader cannot call this route. The route pins nothing.
+
+Both routes admit one caller, the live-refresh principal: the value of `LIVE_REFRESH_PRINCIPAL` in the `DATASETS_PRINCIPAL_HEADER` header (default `x-dfo-principal`). The website and dfo-ai hold that value as a shared secret and put it in the header themselves. Nothing in this service or in front of it sets, replaces, or removes the header, so knowing the value is what admits a caller. Any other caller is refused `refresh_not_permitted` (403) before the path, query, or body is read. An unset or empty `LIVE_REFRESH_PRINCIPAL` refuses every caller.
+
+The frame must be able to stand in for the frame the revision is stored on:
+
+- the stored frame itself is always accepted;
+- a dataset frame (`spec_`) is accepted when it has the stored frame's `spec_id` and is a frame the frame refresh answers with for the stored frame (`datasets_api.doors.refresh.refresh_can_answer`). A plain card accepts any raw version of its dataset, whatever files are linked under it. A card on a groupby sum accepts a collapse recording that groupby, and a raw version linking a file of it, which is the sum when it leaves the frame unchanged. A stored frame whose raw version links a plain file and one or more groupby files accepts only a raw version linking a file of each of those groupbys. A stored frame whose raw version links files of two or more different groupbys and no plain file, or whose collapsed version links files of two or more different groupbys, accepts no other frame, since its records do not say which sum it is, and the frame refresh refuses it `rendering_not_recorded`;
+- a derived frame (`ops_`) is accepted when the recipe store holds a recipe for it and for the stored frame with the same `normal_form_hash`.
+
+Any other frame is refused `render_target_mismatch` (409, not retryable). That covers another dataset or rendering, a dataset frame for a card on a derived frame and the reverse, a version or recipe that is not on record, and a `note_narration`, which binds no frame.
+
+The render routes serve the assembler's refusals at the statuses the code registry gives `presentation.render`, which differ from the write routes' for five codes:
+
+| Error Code               | HTTP Status | When                                                                                         |
+| :----------------------- | :---------- | :------------------------------------------------------------------------------------------- |
+| `refresh_not_permitted`  | 403         | The caller is not the live-refresh principal.                                                |
+| `render_target_mismatch` | 409         | The frame may not stand in for the stored one.                                               |
+| `not_found`              | 404         | Unknown component or revision. On `/render/data`, also a `source_card`, which shows no data values. |
+| `request_invalid`        | 400         | A malformed id, body, `format`, or `bundle`.                                                 |
+| `schema_invalid`         | 400         | The stored intent fails this release's schema.                                               |
+| `binding_invalid`        | 422         | The stored intent does not bind the frame: a stored binding with no value left on the frame, or a single or facet value the frame lacks while it holds several. |
+| `constraint_violation`   | 422         | The drawing fails a catalogue constraint on the frame's data.                                |
+| `frame_unavailable`      | 409         | The frame does not load or pin. `retryable` follows the cause, as on the write routes.       |
+| `release_mismatch`       | 409         | The revision was minted under a newer catalogue release than this deployment's.              |
+| `resource_exhausted`     | 409         | The drawing passes a resource maximum.                                                       |
+
+On these routes `retryable` is true only for a refusal the same request may pass later, one whose code's retry mode is `retry_after_delay` or `refresh_then_retry` (`codes.replay_retryable`). The caller replays a stored intent and cannot change it, so `binding_invalid`, `constraint_violation`, `schema_invalid`, and `request_invalid` answer `retryable: false`.
+
+A render binds the stored `select` to the frame one dimension at a time. A dimension whose selected values the frame all holds binds as stored. A list that held every value the stored frame holds for a dimension other than a facet (`unit`, `measurementMethod`, `provenance`) binds every value the new frame holds, so a card on every recipient draws the recipients the frame holds now. Any other list keeps the values the frame holds and drops the rest. A single value, or a facet value, binds as stored; when the frame lacks it and holds exactly one value for that dimension, it binds that value. On a frame with a rolling anchor the rendering names the anchor's left-out series that the select admits, whatever the intent states, and then each value the stored frame or the select held that the frame lacks, once, in one `coverage_gap` warning first in `provenance.warnings`, for example `2 series have no 2025 value: Kenya, Chad`. On a frame without an anchor the period named is the window's end. `stored_intent` keeps the select as written. A create or revise with no relative period refuses a selected value the frame lacks.
+
+### Rolling periods on a derived frame
+
+A derived frame's recipe can record a rolling anchor: the period `latest` names on that frame and the series its rule left out. The frame store attaches it to the loaded frame, so a card with a relative period on a derived frame is created, revised, and rendered at the recipe's anchor, and the left-out series the card's select admits are named in `provenance.warnings` as one `coverage_gap` entry. A left-out series whose coordinates hold a value the select does not name is left unnamed. Each left-out series is named by the labels of its entity coordinates, read from the graph as a frame's own refs are, and by the raw ref where the graph holds no name. A dataset frame has no recipe, and the assembler derives its anchor from the card's selected series.
+
 ## Refusals and Error Classification
 
 Errors conform to RFC 9457 Problem Details.
@@ -387,6 +436,8 @@ The per-response `retryable` field is authoritative for every code. `retry_modes
 | `release_mismatch`           | 503         | `retry_after_delay`  | The component's head carries a newer catalogue release than this deployment writes, which happens after a rollback and clears once the newer release is deployed again, or a stored payload has a shape the release's schema does not recognise, such as a bar_chart row migration 0006 has not rewritten. |
 | `request_invalid`            | 400         | `correct_and_retry`  | Retryable is always `false`. A malformed body field, an unparseable path identifier, or a non-positive `revision` query parameter. Also a create `write_token` reused with a different request.                                                                                                                                                             |
 | `unsupported_schema_version` | 422         | `do_not_retry`       | A top-level `schema_version` field in the request body. A platform code outside the release document's `retry_modes`.                                                                                                                                                                                                                 |
+| `refresh_not_permitted`      | 403         | `do_not_retry`       | A render route called by anyone other than the live-refresh principal.                                                                                                                                                                                                                                                                |
+| `render_target_mismatch`     | 409         | `do_not_retry`       | A render route given a frame that may not stand in for the stored one.                                                                                                                                                                                                                                                                |
 | `not_found`                  | 404         | `do_not_retry`       | Unknown component or composition id (`DraftNotFound`), or a revision number never minted for a revision-scoped `GET`.                                                                                                                                                                                                                  |
 | `write_refused`              | 403         | `do_not_retry`       | A revise without the component's write token, or a create into an existing composition without that composition's token, in `x-dfo-write-token`. Also a draft created before write tokens. `detail` ends with a fix: create a new component.                                                                                        |
 | `service_unavailable`        | 503         | `retry_after_delay`  | Database failure or door thread pool backpressure exhaustion.                                                                                                                                                                                                                                                                         |
@@ -423,6 +474,8 @@ The surface mounts through the platform application factory when `DFO_PRESENTATI
 | `DATASETS_ARTIFACT_BUCKET_WORKING`        | _(Required)_    | GCS bucket name for unpinned/working frame artifacts.                           |
 | `DATASETS_ARTIFACT_BUCKET_PINNED`         | _(Required)_    | GCS bucket name for pinned presentation frame artifacts.                        |
 | `DFO_PUBLIC_SITE_URL`                     | _(Required)_    | Website origin the components door builds export bundle links on.               |
+| `LIVE_REFRESH_PRINCIPAL`                  | _(empty)_       | The one caller the render routes admit. Empty refuses every caller.             |
+| `DATASETS_PRINCIPAL_HEADER`               | `x-dfo-principal` | Header a calling service sends its principal value in.                        |
 
 ### Concurrency and Thread Pools
 

@@ -186,7 +186,6 @@ def _decide_unit_convertibility(state: _PromoteState, mat_result: Materialised) 
             code="request_invalid",
             status=422,
             pointer="/input/facets/unit",
-            detail=detail,
         ) from exc
     except BoundFacetCombinationsCeilingExceededError as exc:
         # Check the Set-bound provenance/method product against its limit before probing.
@@ -196,7 +195,6 @@ def _decide_unit_convertibility(state: _PromoteState, mat_result: Materialised) 
             code="facet_probe_ceiling",
             status=422,
             pointer="/input/facets/unit",
-            detail=detail,
         ) from exc
     except (RecipeNotDeclaredError, RateCoverageGapError) as exc:
         raise unit_refusal_input_error(exc) from exc
@@ -210,7 +208,6 @@ def _decide_unit_convertibility(state: _PromoteState, mat_result: Materialised) 
             code="facet_not_available",
             status=422,
             pointer="/input/facets/unit",
-            detail=detail,
         ) from exc
 
 
@@ -220,7 +217,10 @@ def unit_refusal_input_error(exc: UnitCoverageRefusal) -> EngineInputError:
     if isinstance(exc, NonCurrencyUnitError):
         detail = str(exc)
         return EngineInputError(
-            detail, code=exc.code, status=exc.status, pointer="/input/facets/unit", detail=detail
+            detail,
+            code=exc.code,
+            status=exc.status,
+            pointer="/input/facets/unit",
         )
     detail = exc.detail or str(exc)
     return EngineInputError(
@@ -229,7 +229,6 @@ def unit_refusal_input_error(exc: UnitCoverageRefusal) -> EngineInputError:
         status=exc.status,
         pointer="/input/facets/unit",
         cause=cause_from_recipe_error(exc),
-        detail=detail,
     )
 
 

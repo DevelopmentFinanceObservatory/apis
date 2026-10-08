@@ -13,7 +13,7 @@ from search.engine.clients.graph_client import LiveGraphClient
 from search.engine.core import resolve_async
 from search.engine.extract import ExtractedEntity, Extraction, ExtractionResult
 from search.engine.place import expand_place, expand_places
-from search.engine.region import CHILD_PLACES_CLAMPED, RegionResult, resolve_variable
+from search.engine.region import RegionResult, resolve_variable
 from search.engine.retrieval.retrieve import Materialised, materialise
 from search.engine.shape import ShapeDraft
 from search.models import (
@@ -250,8 +250,6 @@ class TestExpandPlace:
         expansion = expand_place("testonia", "Continent", graph=g)
         assert expansion is not None
         assert expansion.children == ["country/T1", "country/T2", "country/T3"]
-        assert expansion.clamped is False
-        assert expansion.total_members == 3
 
     def test_non_place_set_type_returns_none(self):
         g = FakeGraph()
@@ -263,19 +261,17 @@ class TestExpandPlace:
         expansion = expand_place("testonia", "Continent", graph=g)
         assert expansion is not None
         assert expansion.children == []
-        assert expansion.clamped is False
-        assert expansion.total_members == 0
 
-    def test_clamps_past_search_max_child_places(self, search_settings):
+    def test_returns_every_member_past_the_place_bound(self, search_settings):
+        """Expansion truncates nothing. The bound on the places a Spec binds refuses the
+        shape that reads them (`place_context`)."""
         search_settings(max_child_places=2)
         g = FakeGraph(
             children={"testonia": {"Country": ["country/T1", "country/T2", "country/T3"]}}
         )
         expansion = expand_place("testonia", "Continent", graph=g)
         assert expansion is not None
-        assert expansion.children == ["country/T1", "country/T2"]
-        assert expansion.clamped is True
-        assert expansion.total_members == 3
+        assert expansion.children == ["country/T1", "country/T2", "country/T3"]
 
 
 class _CountingChildPlacesGraph(FakeGraph):
@@ -325,7 +321,6 @@ class TestExpandPlacesBatch:
         assert results["country/KEN"] is None
         assert results["empty-continent"] is not None
         assert results["empty-continent"].children == []
-        assert results["empty-continent"].total_members == 0
         # Only the Continent group reaches child-place lookup.
         assert len(g.child_places_batch_calls) == 1
         assert g.child_places_batch_calls[0][0] == ["empty-continent"]
@@ -415,8 +410,9 @@ class TestPlaceExpansionEndToEnd:
         assert result.status == "definite"
         spec = result.specs[0]
         assert spec.resolved.members[0].ref.dcid == _GDP_SV
-        # The response names the region. Coverage counts member countries.
-        assert [e.ref for e in spec.resolved.entities] == ["testonia"]
+        # The region's node holds no observation, so the Spec binds its member countries,
+        # and coverage counts those that hold data.
+        assert [e.ref for e in spec.resolved.entities] == self._COUNTRIES
         assert isinstance(spec.resolved.coverage, CoverageExact)
         assert spec.resolved.coverage.dimensions is not None
         countries_dim = next(d for d in spec.resolved.coverage.dimensions if d.label == "countries")
@@ -616,7 +612,8 @@ class TestPlaceExpansionEndToEnd:
         assert result.no_data_reason == "entity_not_resolved"
 
     def test_ungeoregion_name_resolves_and_expands_end_to_end(self):
-        """A ``UNGeoRegion`` resolves and expands to its member countries."""
+        """A ``UNGeoRegion`` resolves and, holding no observation at its node, binds its
+        member countries."""
         obs = {
             f"{_GDP_SV}|country/T1": [
                 {
@@ -656,7 +653,7 @@ class TestPlaceExpansionEndToEnd:
         )
         assert result.status == "definite"
         spec = result.specs[0]
-        assert [e.ref for e in spec.resolved.entities] == ["SouthernAfrica"]
+        assert [e.ref for e in spec.resolved.entities] == self._COUNTRIES
 
     def test_partial_entity_resolution_names_only_unresolved_ordered_and_deduped(self):
         """Unresolved names appear once each in query order."""
@@ -893,9 +890,8 @@ class TestMultiPlaceSetBatching:
         assert called_child_type == "Country"
 
     def test_two_place_query_binds_a_set_in_query_order(self):
-        """The where set keeps query order.
-
-        Probes expand Testlandia. Kenya is probed directly."""
+        """The where set holds Kenya and the members of Testlandia, whose node holds no
+        observation, in place order."""
         graph = self._graph(
             resolve={"Kenya": "country/KEN"},
             nodes={
@@ -932,10 +928,14 @@ class TestMultiPlaceSetBatching:
             )
         )
         assert result.status == "definite", f"expected definite, got {result.status!r}"
-        assert {e.ref for e in result.specs[0].resolved.entities} == {"country/KEN", "testlandia"}
+        assert {e.ref for e in result.specs[0].resolved.entities} == {
+            "country/KEN",
+            "country/L1",
+            "country/L2",
+        }
         where_slot = next(s for s in result.specs[0].resolved.slots if s.key.axis == "where")
         assert isinstance(where_slot.binding, BindingSet)
-        assert _set_binding_dcids(where_slot.binding) == ["country/KEN", "testlandia"]
+        assert _set_binding_dcids(where_slot.binding) == ["country/KEN", "country/L1", "country/L2"]
 
     def test_two_place_query_finds_data_regardless_of_naming_order(self):
         """Kenya's data resolves when the data-less region appears first."""
@@ -978,10 +978,12 @@ class TestMultiPlaceSetBatching:
         where_slot = next(s for s in result.specs[0].resolved.slots if s.key.axis == "where")
         assert isinstance(where_slot.binding, BindingSet)
         # Places are stated in the one place order, by dcid, whatever order they were named.
-        assert _set_binding_dcids(where_slot.binding) == ["country/KEN", "testlandia"]
+        assert _set_binding_dcids(where_slot.binding) == ["country/KEN", "country/L1", "country/L2"]
 
-    def test_clamp_warning_fires_once_per_region_and_stays_batched(self, search_settings):
-        search_settings(max_child_places=1)
+    def test_regions_over_the_place_bound_answer_entity_set_too_large(self, search_settings):
+        """Two regions whose members exceed the bound are expanded in one batch and
+        refused whole, and no member list is truncated."""
+        search_settings(max_child_places=2)
         graph = self._graph()
         result: RegionResult = asyncio.run(
             resolve_variable(
@@ -1000,11 +1002,9 @@ class TestMultiPlaceSetBatching:
             )
         )
         assert len(graph.child_places_batch_calls) == 1
-        clamp_warnings = [w for w in result.warnings if w.code == CHILD_PLACES_CLAMPED]
-        assert len(clamp_warnings) == 2
-        # Clamp warnings follow the extracted place order.
-        assert "'Testonia'" in clamp_warnings[0].message
-        assert "'Testlandia'" in clamp_warnings[1].message
+        assert result.status == "no_data"
+        assert result.no_data_reason == "entity_set_too_large"
+        assert result.specs == ()
 
 
 class _CountingCachingGraph(FakeGraph):
