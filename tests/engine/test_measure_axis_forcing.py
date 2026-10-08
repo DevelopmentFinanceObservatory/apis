@@ -127,7 +127,7 @@ def _state(*, shape_draft: ShapeDraft, bindings: list[SlotBindingDraft]) -> Reso
         timing={},
         warnings=[],
         # Recall resolved no place, so the minted identity binds no role key.
-        rcl=Recall(candidates=[], resolutions={}, resolved_entity_names={}),
+        rcl=Recall(candidates=[], resolutions={}),
         bind_result=_UniversalBindOutput(
             chosen_shape_index=0, bindings=bindings, also_plausible=None, ask=None
         ),

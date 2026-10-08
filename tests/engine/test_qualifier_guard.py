@@ -7,6 +7,7 @@ synthetic shapes that prevent measure-family election from changing bindings.
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from typing import cast
 
 import pytest
@@ -20,7 +21,6 @@ from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.conjoin import _build_part
 from search.engine.interpret import Recall
-from search.engine.qualifier_match import recognise_spans
 from search.engine.region.phase_election import _phase_repair_bindings
 from search.engine.region.phase_rank_bind import _resolve_query_qualifiers
 from search.engine.region.state import ResolveState
@@ -28,6 +28,7 @@ from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.models import NoData, NoDataPart, ResolvedQualifier, Spec
 from tests.conftest import minimal_spec
 from tests.engine._fake_coverage import empty_coverage_snapshot
+from tests.engine._index_slots import own_variable_spans, read_text
 
 _POP_TYPE_DCID = "Widget"
 _MEAS_PROP_DCID = "count"
@@ -67,8 +68,6 @@ def _state(
     query_text: str | None = None,
 ) -> ResolveState:
     """Build the hand-crafted state consumed by qualifier repair."""
-    index = get_index()
-    measure_index = get_measure_index()
     return ResolveState(
         variable=variable,
         entities=["Kenya"],
@@ -97,7 +96,7 @@ def _state(
         timing={},
         warnings=[],
         # Recall resolved no place, so the minted identity binds no role key.
-        rcl=Recall(candidates=[], resolutions={}, resolved_entity_names={}),
+        rcl=Recall(candidates=[], resolutions={}),
         bind_result=_UniversalBindOutput(
             chosen_shape_index=0,
             bindings=bindings,
@@ -106,7 +105,10 @@ def _state(
             unplaced=unplaced,
         ),
         shape_draft=shape_draft,
-        variable_qualifier_spans=recognise_spans(variable, index, measure_index),
+        variable_spans_by_vocabulary=own_variable_spans(variable, shape_draft),
+        variable_spans_in_every_system=read_text(
+            variable, get_index(), get_measure_index()
+        ).everywhere.spans,
         coverage=empty_coverage_snapshot(),
     )
 
@@ -144,6 +146,54 @@ def test_unplaced_measure_noun_is_dropped_by_the_overlap_rule():
     assert not _has_miss(qualifiers)
 
 
+@pytest.mark.parametrize(
+    ("unplaced", "records", "dropped"),
+    [
+        (
+            ["multilateral"],
+            [("ODA", "bound", "crsTypeOfFlow"), ("multilateral", "no_vocabulary", None)],
+            [],
+        ),
+        ([], [("ODA", "bound", "crsTypeOfFlow")], ["multilateral"]),
+    ],
+    ids=["model-lists-the-word", "model-omits-the-word"],
+)
+def test_a_word_the_shapes_own_reading_leaves_unread_is_recorded_or_warned(
+    unplaced, records, dropped
+):
+    """In every code system together "multilateral ODA" is DAC1 aid type 2000. A shape with
+    the CRS flow slot reads "ODA" alone, so "ODA" records the bound flow type. The unread
+    "multilateral" records `no_vocabulary` when the bind model lists it as unplaced, and
+    otherwise departs once with the dropped-qualifier warning; never both."""
+    shape = _shape(_FLOW_SLOT)
+    state = _state(
+        variable="multilateral ODA to Kenya",
+        shape_draft=shape,
+        bindings=[_binding("crsTypeOfFlow", kind="value", value_dcids=["CRSTypeOfFlow10"])],
+        unplaced=unplaced,
+    )
+    qualifiers = _run(state)
+    assert [(q.text, q.disposition, q.slot) for q in qualifiers] == records
+    assert [
+        fact.asked for fact in state.departure_facts.values() if fact.code == "measure_not_applied"
+    ] == dropped
+    assert [w.code for w in state.warnings if w.code == "query_qualifier_dropped"] == [
+        "query_qualifier_dropped"
+    ] * len(dropped)
+
+
+def test_a_term_the_shape_reads_none_of_departs_nothing():
+    """ "gross national income" is a CRS type of finance in every system together, and the
+    series a GNI shape measures. A shape that reads none of its words names no code the
+    answer applies in part, so nothing departs."""
+    shape = _shape(SlotKeyDraft(axis="how", property_dcid="productType", label="product type"))
+    state = _state(
+        variable="gross national income of Ghana", shape_draft=shape, bindings=[], unplaced=[]
+    )
+    _run(state)
+    assert [fact.code for fact in state.departure_facts.values()] == []
+
+
 def test_unplaced_measure_noun_guard_fails_without_the_overlap_rule():
     """Without the overlap check, "ODA" becomes no_vocabulary and blocks the answer."""
     shape = _shape(_FLOW_SLOT)
@@ -157,7 +207,7 @@ def test_unplaced_measure_noun_guard_fails_without_the_overlap_rule():
     # ever sees them -- the overlap check has nothing left to compare
     # against, so "ODA" survives into the unplaced/no_vocabulary branch
     # exactly as it would with rule 4 never written.
-    state.variable_qualifier_spans = ()
+    state.variable_spans_by_vocabulary = {}
     qualifiers = _resolve_query_qualifiers(state)
     by_text = {q.text: q for q in qualifiers}
     assert by_text["ODA"].disposition == "no_vocabulary"
@@ -311,6 +361,75 @@ def test_unplaced_slot_noun(variable, slots, phrase, refused):
 
 
 # ---------------------------------------------------------------------------
+# An unplaced word of the answering dataset's label is placed
+# ---------------------------------------------------------------------------
+
+_IMPUTED = "provenance/ONEImputedMultilateralSectors"
+_CRS = "provenance/OECDCreditorReportingSystem"
+
+
+@pytest.mark.parametrize(
+    ("datasets", "named", "phrase", "refused"),
+    [
+        pytest.param((_IMPUTED,), None, "imputed", [], id="word-of-the-answering-label"),
+        pytest.param(
+            (_IMPUTED,), None, "Imputed multilateral", [], id="words-of-the-answering-label"
+        ),
+        pytest.param(
+            (_IMPUTED,), None, "grants", [("grants", "no_vocabulary")], id="word-outside-the-label"
+        ),
+        pytest.param(
+            (_IMPUTED,),
+            None,
+            "imputed multilateral grants",
+            [("imputed multilateral grants", "no_vocabulary")],
+            id="phrase-reaching-past-the-label",
+        ),
+        pytest.param(
+            (_CRS,), None, "imputed", [("imputed", "no_vocabulary")], id="label-of-another-dataset"
+        ),
+        pytest.param(
+            None, None, "imputed", [("imputed", "no_vocabulary")], id="no-candidacy-datasets"
+        ),
+        pytest.param(
+            (_IMPUTED, _CRS),
+            None,
+            "imputed",
+            [("imputed", "no_vocabulary")],
+            id="word-of-one-candidate-label",
+        ),
+        pytest.param(
+            (_IMPUTED, _CRS),
+            _IMPUTED,
+            "imputed",
+            [],
+            id="word-of-the-settled-label",
+        ),
+        pytest.param(
+            (_IMPUTED, _CRS),
+            _CRS,
+            "imputed",
+            [("imputed", "no_vocabulary")],
+            id="word-of-a-label-the-settled-table-lacks",
+        ),
+    ],
+)
+def test_unplaced_dataset_label_words(datasets, named, phrase, refused):
+    """dataset-imputed-education-and-health-aid-kenya: the bind model listed "imputed" as
+    unplaced on the shape answering from "ONE Imputed Multilateral Sectors", the table the
+    word chose, and the phrase refused a correct answer."""
+    shape = replace(_shape(_FLOW_SLOT), datasets=datasets, named_dataset=named)
+    state = _state(
+        variable="imputed multilateral grants of ODA to Kenya",
+        shape_draft=shape,
+        bindings=[_binding("crsTypeOfFlow", kind="value", value_dcids=["CRSTypeOfFlow10"])],
+        unplaced=[phrase],
+    )
+    qualifiers = _resolve_query_qualifiers(state)
+    assert [(q.text, q.disposition) for q in qualifiers if q.text != "ODA"] == refused
+
+
+# ---------------------------------------------------------------------------
 # A narrowing term without a code row blocks the answer
 # ---------------------------------------------------------------------------
 
@@ -415,13 +534,11 @@ def test_ambiguous_span_with_no_covering_binding_is_unbound():
     q = qualifiers[0]
     assert q.disposition == "unbound"
     assert q.slot is None
-    # The index does not carry this shape's five-tuple, so it names every code the text
-    # names, the DAC1 aid types among them.
+    # The record names the codes the shape's own vocabulary reads, its two slots' systems;
+    # the DAC1 aid types of the same text belong to a system it declares no slot for.
     assert {ref.dcid for ref in q.named} == {
         "CRSCooperationModalityA",
         "CRSPurposeCode510",
-        "DAC1AidType1100",
-        "DAC1AidType2210",
     }
     assert _has_miss(qualifiers)
 

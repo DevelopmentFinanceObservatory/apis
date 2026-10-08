@@ -348,23 +348,15 @@ class SearchSettings(BaseSettings):
     # StatVarPeerGroup, then leaf StatisticalVariable (3 container hops).
     topic_expand_max_depth: int = TOPIC_EXPAND_MAX_DEPTH
 
-    # Place-set expansion cap before the standard observation probe. At 256 it covers all
-    # countries under Earth and 33 resolvekit groups. The UN is largest, with 193 members.
-    # SDMX entity filters cost 4,399/7,800 URL bytes at 256 dcids, 3,328 at 193, and 1,067
-    # at 60. The hard wall is about 450 per role. Two maximum roles can exceed it.
-    # Larger sets increase SDMX chunking and request count. Clamping emits CHILD_PLACES_CLAMPED.
+    # The one bound on the places a Spec binds, counted as distinct dcids per role and
+    # summed over the Spec's roles. The probe list a region expands to falls under the same
+    # bound. Only the subject list is sliced to the SDMX URL budget and flow-role filters
+    # travel whole, so the sum across roles must fit one request. Entity filters cost 4,399
+    # of the 7,800 URL bytes at 256 dcids, and 256 on each of two roles would exceed the
+    # budget. At 256 the bound covers all countries under Earth and 33 resolvekit groups.
+    # The UN is the largest, with 193 members. A first answer over the bound is `no_data`
+    # with `entity_set_too_large`, and a resubmit over it is refused `request_invalid`.
     max_child_places: int = 256
-
-    # Cap on named recipient places before expansion. The standard door truncates in query
-    # order with MULTI_RECIPIENT_TRUNCATED. Resubmit refuses overflow because canonical
-    # identities carry no naming order for a safe truncation. Ten covers G7 comparisons.
-    # max_standard_probe_places separately caps the expanded entity set.
-    max_standard_places: int = 10
-
-    # Cap on the combined entity probe after each place set's max_child_places clamp.
-    # Overflow emits STANDARD_PROBE_PLACES_CLAMPED alongside any per-set warnings.
-    # The default 256 covers one full place set. Raise it with max_child_places.
-    max_standard_probe_places: int = 256
 
     # Sample size per shape family across unasserted axes. One asserting StatVar confirms an axis.
     # Truncated pages may omit unconfirmed axes from slot_options. Posted keys remain valid.
@@ -756,15 +748,6 @@ class SearchSettings(BaseSettings):
             )
         if self.max_child_places < 1:
             raise ValueError(f"SEARCH_MAX_CHILD_PLACES must be >= 1; got {self.max_child_places!r}")
-        if self.max_standard_places < 1:
-            raise ValueError(
-                f"SEARCH_MAX_STANDARD_PLACES must be >= 1; got {self.max_standard_places!r}"
-            )
-        if self.max_standard_probe_places < 1:
-            raise ValueError(
-                "SEARCH_MAX_STANDARD_PROBE_PLACES must be >= 1; got "
-                f"{self.max_standard_probe_places!r}"
-            )
         if self.resubmit_axis_sample < 1:
             raise ValueError(
                 f"SEARCH_RESUBMIT_AXIS_SAMPLE must be >= 1; got {self.resubmit_axis_sample!r}"

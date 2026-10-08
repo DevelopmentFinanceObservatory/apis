@@ -528,10 +528,12 @@ def option_axis_facts(
     every other binding kept, which only the code index resolves without a graph walk; a
     graph-walked family's bound slots get no fact. Under an answer that leaves flow axes
     open, a pick whose members do not declare every open axis counts no series
-    (`_serving_open_keys`). A menu counted at zero for every option
-    while members carry some of them, under an answer that serves data, means the coverage
-    index and the members disagree (a facet without metadata, a population that differs from the one
-    materialised), so it gets no fact and the coverage probe counts it (`_drifted`).
+    (`_serving_open_keys`). A menu counted at zero for every option while members carry
+    some of them, under an answer that serves data, means the coverage index and the
+    members disagree (a facet without metadata, a population that differs from the one
+    materialised) when the slot is unbound or an option overlaps its bound value, so it
+    gets no fact and the coverage probe counts it (`_drifted`). A bound root's menu of the
+    other roots alone overlaps nothing and may count zero throughout.
 
     A subject-place family's served test needs graph reads, so an unbound slot reads the
     series `plan` serves inside its years (`_plan_series`), unless none of their StatVars
@@ -618,7 +620,7 @@ def option_axis_facts(
                 value: _pick_series(served[group], svs) for value, (group, svs) in grouped.items()
             },
         )
-        if not _drifted(fact, picks, shape_id=shape.shape_id):
+        if not _drifted(fact, picks, current=bound.get(prop), shape_id=shape.shape_id):
             facts.append(fact)
     return tuple(facts)
 
@@ -655,15 +657,36 @@ def _serving_open_keys(
     return []
 
 
-def _drifted(fact: OptionServedFact, picks: Mapping[str, Sequence[str]], *, shape_id: str) -> bool:
+def _drifted(
+    fact: OptionServedFact,
+    picks: Mapping[str, Sequence[str]],
+    *,
+    current: Sequence[str] | None,
+    shape_id: str,
+) -> bool:
     """Whether `fact` counts no series for any option of its menu while members carry some
-    of them (`picks`), logged as a warning. A definite answer serves the menu's current
-    value or, for an unbound slot, the family its options partition, so an empty count is
-    the coverage index disagreeing with the members, which would hide the dimension from
-    the reader. A menu none of whose options any member carries serves nothing and is
-    dropped."""
+    of them (`picks`), logged as a warning. A definite answer serves its bound slot's
+    `current` values or, for an unbound slot, the family its options partition. `current`
+    holds the bound values as `CodeIndex.expansion` widens them
+    (`bound_values_from_bindings`): with their descendants in a system declared
+    `disjoint_from_children`, and alone in one whose parent is the total of its children
+    (`dac1AidType`, `dac2aAidType`). An empty count is the coverage index disagreeing with
+    the members, which would hide the dimension from the reader, when the slot is unbound
+    or an option overlaps the current values: it lies under one of them, as the current
+    value itself or a child does, or one lies under it, as under the parent. A bound root's
+    menu of the other roots alone may count
+    zero throughout, as may a menu none of whose options any member carries; each serves
+    nothing and is dropped."""
     if any(fact.served.values()) or not any(picks.values()):
         return False
+    if current is not None:
+        index = get_index()
+        bound = set(current)
+        below = {d for value in current for d in index.descendants(value)}
+        if not any(
+            option in below or bound.intersection(index.descendants(option)) for option in picks
+        ):
+            return False
     logger.warning(
         "option counting found no served series for any option of %r on shape_id=%r; "
         "leaving the menu to the coverage probe",

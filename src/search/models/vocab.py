@@ -159,7 +159,9 @@ entity_set_too_large and entity_role_not_admitted sit at the entity position,
 right after entity_not_resolved, in that order: the four run by how far the
 entity got, from no identity, to several candidate identities, to one
 confirmed identity whose expansion is unusable, to one confirmed identity
-whose role is wrong), variable, role (the two
+whose role is wrong. An elected shape whose places exceed the bound gets
+`entity_set_too_large` only once elected, after the variable reasons),
+variable, role (the two
 role-compatibility codes sit at the role position), unit (`rate_coverage_gap`,
 currency-conversion's own no_data reason, sits immediately after
 `unit_not_resolved`. `recipe_not_declared`, the other currency-conversion
@@ -176,6 +178,7 @@ _UNRESOLVED_NO_DATA_REASONS: frozenset[NoDataReason] = frozenset(
     {
         "entity_not_resolved",
         "entity_ambiguous",
+        "entity_set_too_large",
         "entity_role_not_admitted",
         "variable_not_resolved",
         "role_not_resolved",
@@ -186,8 +189,8 @@ _UNRESOLVED_NO_DATA_REASONS: frozenset[NoDataReason] = frozenset(
 (the request could not be read into the graph); every other reason maps to
 "absent" (the read request names a place holding nothing). An explicit set
 rather than a naming-convention check (e.g. a "_not_resolved" suffix), since
-not every reason in this category shares that suffix: entity_ambiguous and
-entity_role_not_admitted do not."""
+not every reason in this category shares that suffix: entity_ambiguous,
+entity_set_too_large and entity_role_not_admitted do not."""
 _FLAG_BEARING_NO_DATA_REASONS: frozenset[NoDataReason] = frozenset(
     {"no_observations", "no_matching_slice", "qualifier_not_bound"}
 )
@@ -225,7 +228,8 @@ the same three-value vocabulary either way."""
 SlotOptionRelation = Literal["child", "parent", "root"]
 """Where a level-scoped `SlotOption` sits in its slot's menu. On a bound slot,
 `"child"`/`"parent"` narrow or widen one step from the bound value in a
-hierarchical code system's taxonomy. On an unbound hierarchical slot, `"root"`
+hierarchical code system's taxonomy, and a bound root's menu adds every other root
+as `"root"`. On an unbound hierarchical slot, `"root"`
 is a classification root and `"child"` one of its children, named by
 `SlotOption.parent`. Every value of a flat code system
 (`code_index.CodeSystemDeclaration.hierarchical` is `False`) is `"root"`.

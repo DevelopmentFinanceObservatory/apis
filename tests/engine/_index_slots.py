@@ -10,11 +10,25 @@ publishes it.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping, Sequence
 
 from code_index import FamilyQuery
-from code_index.shared import get_index
+from code_index.query import CodeIndex
+from code_index.shared import get_index, get_measure_index
+from code_index.types import MeasureIndex
 from search.engine.bind import SlotBindingDraft
+from search.engine.qualifier_match import (
+    CodedQualifier,
+    QualifierSpan,
+    TextReading,
+    read_by_vocabulary,
+)
+from search.engine.region.phase_rank_bind import (
+    _match_query_qualifiers,
+    _QueryQualifiers,
+    _read_sources,
+)
+from search.engine.region.state import shape_vocabulary
 from search.engine.retrieval.bound_values import shape_query
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.models import IdentityBindingUnbound, IdentitySlot
@@ -54,17 +68,15 @@ def crs_flow_slot_keys() -> tuple[SlotKeyDraft, ...]:
     )
 
 
-def crs_shape_systems() -> tuple[frozenset[str], ...]:
-    """The constraint properties of a CRS shape, one set, as qualifier matching reads the
-    shapes in play: every property a family the CRS publishes carries."""
-    return (
-        frozenset(
-            prop
-            for families in get_index().families_by_five_tuple.values()
-            for family in families
-            if "provenance/OECDCreditorReportingSystem" in family.datasets
-            for prop in family.properties
-        ),
+def crs_vocabulary() -> frozenset[str]:
+    """The vocabulary of a CRS shape, as qualifier matching reads it: every property a
+    family the CRS publishes carries."""
+    return frozenset(
+        prop
+        for families in get_index().families_by_five_tuple.values()
+        for family in families
+        if "provenance/OECDCreditorReportingSystem" in family.datasets
+        for prop in family.properties
     )
 
 
@@ -92,3 +104,46 @@ def query_for(shape: ShapeDraft, bound_values: Mapping[str, list[str]]) -> Famil
         ],
         (),
     )
+
+
+def query_qualifiers(
+    variable: str,
+    dropped_qualifier_phrases: Sequence[str] = (),
+    *,
+    query_text: str | None = None,
+    qualifiers: Sequence[CodedQualifier] | None = None,
+    vocabularies: Iterable[frozenset[str]],
+) -> _QueryQualifiers:
+    """The query's matches, ties and owned phrases in each of `vocabularies`, as the prune
+    step reads them from one reading of each text source."""
+    vocabularies = tuple(vocabularies)
+    sources = _read_sources(
+        variable, dropped_qualifier_phrases, query_text=query_text, vocabularies=vocabularies
+    )
+    return _match_query_qualifiers(sources, qualifiers=qualifiers, vocabularies=vocabularies)
+
+
+def read_text(
+    text: str,
+    index: CodeIndex,
+    measure_index: MeasureIndex | None = None,
+    *,
+    vocabularies: Iterable[frozenset[str]] = (),
+) -> TextReading:
+    """`text` read in every code system and in each of `vocabularies`
+    (`read_by_vocabulary`)."""
+    (reading,) = read_by_vocabulary([text], index, measure_index, vocabularies=vocabularies)
+    return reading
+
+
+def own_variable_spans(
+    variable: str, *shapes: ShapeDraft
+) -> dict[frozenset[str], tuple[QualifierSpan, ...]]:
+    """`variable`'s spans in each of `shapes`' vocabularies, as the prune step stores them."""
+    reading = read_text(
+        variable,
+        get_index(),
+        get_measure_index(),
+        vocabularies=[shape_vocabulary(shape) for shape in shapes],
+    )
+    return {vocabulary: own.spans for vocabulary, own in reading.by_vocabulary.items()}

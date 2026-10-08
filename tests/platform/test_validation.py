@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Annotated, Any, Literal
 
+import pytest
 from fastapi import APIRouter, Body
 from fastapi.exceptions import RequestValidationError
 from fastapi.testclient import TestClient
@@ -12,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from datasets_api.mint_models import MintRequest
 from dfo_platform.app import Surface, create_app
+from dfo_platform.named import MAX_VALUE_CHARS
 from dfo_platform.validation import (
     pointer_for_error,
     reset_request_body_model,
@@ -350,6 +352,84 @@ def test_validation_problem_detail_carries_extra_field_message():
     spec = validation_problem(exc)
     assert spec.code == "request_invalid"
     assert spec.detail == "Extra inputs are not permitted"
+
+
+@pytest.mark.parametrize(
+    ("key_chars", "kept"),
+    [(MAX_VALUE_CHARS, True), (MAX_VALUE_CHARS + 1, False)],
+    ids=["at-the-bound", "past-the-bound"],
+)
+def test_pointer_ends_at_the_object_holding_an_oversized_key(key_chars: int, kept: bool):
+    """A key within the bound is a pointer segment as posted. A longer one, and every
+    segment under it, is left out, so the pointer names the object that holds the key."""
+    key = "k" * key_chars
+    body = {"input": {"entries": [{key: {"nested": 1}}]}}
+    error = {"loc": ("body", "input", "entries", 0, key, "nested"), "type": "int_type"}
+
+    pointer = pointer_for_error(RequestValidationError([error], body=body), error)
+
+    assert pointer == (f"/input/entries/0/{key}/nested" if kept else "/input/entries/0")
+
+
+def test_pointer_is_none_for_an_oversized_top_level_key():
+    key = "k" * (MAX_VALUE_CHARS + 1)
+    error = {"loc": ("body", key), "type": "extra_forbidden"}
+
+    assert pointer_for_error(RequestValidationError([error], body={key: 1}), error) is None
+
+
+@pytest.mark.parametrize(
+    ("tag_chars", "cut_mark"),
+    [(8, ""), (MAX_VALUE_CHARS, ""), (4000, "...")],
+    ids=["short", "at-the-bound", "long"],
+)
+def test_validation_problem_detail_cuts_a_posted_union_tag(tag_chars: int, cut_mark: str):
+    """An unknown discriminator tag is quoted whole up to the bound and cut past it."""
+    tag = "k" * tag_chars
+    body = {"input": {"kind": tag}}
+    errors = _errors_for(ResolveRequest, body)
+
+    spec = validation_problem(RequestValidationError(errors, body=body), model=ResolveRequest)
+
+    assert errors[0]["type"] == "union_tag_invalid"
+    assert spec.detail == errors[0]["msg"].replace(tag, tag[:MAX_VALUE_CHARS] + cut_mark)
+
+
+@pytest.mark.parametrize(
+    ("tag", "json_type"),
+    [
+        ({"a": ["b"]}, "object"),
+        (["a", "b"], "array"),
+        (3, "number"),
+        (1.5, "number"),
+        (True, "boolean"),
+        (None, "null"),
+    ],
+    ids=["object", "array", "int", "float", "bool", "null"],
+)
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(lambda tag: {"input": {"kind": tag}}, id="input-kind"),
+        pytest.param(
+            lambda tag: {"input": {"kind": "dataset_resubmit", "entries": [{"entry_kind": tag}]}},
+            id="entry-kind",
+        ),
+    ],
+)
+def test_validation_problem_detail_names_a_non_string_union_tag_by_its_json_type(
+    build, tag: object, json_type: str
+):
+    """A discriminator posted as a list, object, number, boolean or null is named by its
+    JSON type, and the detail carries no repr of it."""
+    body = build(tag)
+    errors = _errors_for(ResolveRequest, body)
+
+    spec = validation_problem(RequestValidationError(errors, body=body), model=ResolveRequest)
+
+    assert errors[0]["type"] == "union_tag_invalid"
+    assert json_type in spec.detail
+    assert not {"{", "}", "[", "]"} & set(spec.detail)
 
 
 def test_validation_problem_detail_carries_missing_field_message():

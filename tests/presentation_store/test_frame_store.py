@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import io
 import json
@@ -21,7 +22,9 @@ from artifact_store.errors import (
     ArtifactWriteError,
 )
 from artifact_store.store import ArtifactSink, StoredArtifact, Tier
-from assembler.ports import FrameRef, FrameUnavailable
+from assembler.fakes import FakeReleaseRegistry, FakeRevisionStore
+from assembler.pipeline import write_component
+from assembler.ports import FrameRef, FrameUnavailable, LeftOutSeries, RollingAnchor
 from assembler.testing import (
     build_frame_doc,
     malaria_ethiopia_frame_ref,
@@ -36,14 +39,17 @@ from dataset_store.snapshot import (
     StoredVersion,
 )
 from datasets_api.codes_snapshot import ArtifactNotFound
+from datasets_api.recipe_store import RecipeRecord
 from datasets_api.reference_store import ReferenceWrite
 from materialise import provenance_doc
 from materialise.graph import GraphReadError
 from materialise.provenance_doc import SourceDocumentNotFound
+from presentation_store.composed_stat_vars import COMPOSED_STAT_VAR_UNREADABLE_MARKER
 from presentation_store.frame_store import (
     FRAME1_MEDIA_TYPE,
     PRESENTATION_PIN_REFERENCE_KIND,
     LiveFrameStore,
+    _CachedFrame,
     frame_reads_bounded_by,
 )
 from spec_registry.errors import IdentityQuarantined, SpecRegistryUnavailable
@@ -779,6 +785,311 @@ def test_load_labels_unit_refs_under_their_own_cap_after_the_dimension_refs(monk
         "dcid:MalariaGrantDisbursements": "Malaria Grant Disbursements",
         "CurrencyUSD": "US Dollar",
     }
+
+
+@pytest.mark.parametrize(
+    ("caps", "graph_refs", "expected_labels"),
+    [
+        pytest.param(
+            {},
+            (
+                "Count_Person",
+                "MalariaGrantDisbursements",
+                "country/ETH",
+                "src_oecd_dac",
+                "USDollar",
+                "CurrencyEUR",
+            ),
+            {
+                "dcid:MalariaGrantDisbursements": "Malaria Grant Disbursements",
+                "dcid:Count_Person": "Total population",
+                "dcid:spec_" + "c" * 32: "Education",
+                "USDollar": "US Dollar",
+            },
+            id="every-side-labelled",
+        ),
+        pytest.param(
+            {"_LABEL_RESOLUTION_CAP": 3, "_UNIT_LABEL_CAP": 1},
+            ("Count_Person", "MalariaGrantDisbursements", "USDollar"),
+            {
+                "dcid:Count_Person": "Total population",
+                "dcid:spec_" + "c" * 32: "Education",
+                "dcid:MalariaGrantDisbursements": "Malaria Grant Disbursements",
+                "USDollar": "US Dollar",
+            },
+            id="stat-var-sides-precede-column-refs-under-the-cap",
+        ),
+        pytest.param(
+            {"_LABEL_RESOLUTION_CAP": 1, "_UNIT_LABEL_CAP": 1},
+            ("Count_Person", "USDollar"),
+            {"dcid:Count_Person": "Total population", "USDollar": "US Dollar"},
+            id="sides-past-each-cap-stay-raw",
+        ),
+    ],
+)
+def test_load_labels_each_side_of_a_composed_unit(monkeypatch, caps, graph_refs, expected_labels):
+    """A StatVar side joins the stat_var refs ahead of the columns' refs, so a family ref
+    takes its stored definition and column refs cannot crowd a side out. A string side joins
+    the unit refs. A side the graph does not name stays unlabelled."""
+    import presentation_store.frame_store as frame_store_module
+
+    for name, cap in caps.items():
+        monkeypatch.setattr(frame_store_module, name, cap)
+    family_spec_id = "spec_" + "c" * 32
+    frame_ref = malaria_ethiopia_frame_ref()
+    units = {
+        "2015": {"numerator": "USDollar", "denominator": {"stat_var": "dcid:Count_Person"}},
+        "2016": {
+            "numerator": "CurrencyEUR",
+            "denominator": {"stat_var": f"dcid:{family_spec_id}"},
+        },
+    }
+    doc = {
+        "frame_version": "frame1",
+        "columns": ["stat_var", "recipient", "time_period", "value", "unit", "provenance"],
+        "rows": [
+            ["dcid:MalariaGrantDisbursements", "country/ETH", period, 1.0, unit, "src_oecd_dac"]
+            for period, unit in units.items()
+        ],
+    }
+    artifacts = _FakeArtifactStore()
+    digest = artifacts.seed(tier=Tier.working, data=json.dumps(doc).encode("utf-8"))
+    snapshots = _FakeSnapshotReader(
+        versions={(frame_ref.spec_id, frame_ref.content_version): _version(frame_ref)},
+        locations={
+            (frame_ref.spec_id, frame_ref.content_version): [
+                _location(digest=digest, tier=Tier.working.value)
+            ]
+        },
+    )
+    graph = _FakeGraphReader(
+        labels={
+            "MalariaGrantDisbursements": "Malaria Grant Disbursements",
+            "Count_Person": "Total population",
+            "USDollar": "US Dollar",
+        }
+    )
+    spec_reader = _FakeSpecReader(
+        definitions={
+            family_spec_id: _stored_definition(
+                spec_id=family_spec_id,
+                slots=[
+                    {
+                        "property": "crsPurpose",
+                        "binding": {"state": "value", "ref": "CRSPurposeCode11220"},
+                    }
+                ],
+            )
+        }
+    )
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        graph=graph,
+        spec_reader=spec_reader,
+        code_index=_code_index([_EDUCATION_ROW]),
+    )
+
+    resolved = store.load(frame_ref=frame_ref)
+
+    assert graph.node_arcs_many_calls == [graph_refs]
+    assert resolved.labels == expected_labels
+
+
+_FAMILY_ON_A_SIDE = "spec_" + "c" * 32
+_SUM_ENTRY = {
+    "stat_var": "dcid:ops_sum",
+    "relation": "sum",
+    "first": [f"dcid:{_FAMILY_ON_A_SIDE}"],
+    "second": ["dcid:Count_Person"],
+}
+_QUOTIENT_ENTRY = {
+    "stat_var": "dcid:ops_quotient",
+    "relation": "quotient",
+    "first": ["dcid:ops_sum"],
+    "second": ["dcid:Count_Person"],
+}
+_SUM_LABEL = "Education plus Total population"
+_QUOTIENT_LABEL = f"{_SUM_LABEL} per Total population"
+
+
+def _composed_stat_var_store(
+    *, composed_stat_vars: object, raise_for: frozenset[str] = frozenset()
+) -> tuple[LiveFrameStore, FrameRef, _FakeGraphReader]:
+    """A store over one frame whose rows sit under `dcid:ops_quotient`, in a unit counted in
+    `dcid:ops_sum`, with `composed_stat_vars` in its version body."""
+    frame_ref = malaria_ethiopia_frame_ref()
+    unit = {"numerator": "USDollar", "denominator": {"stat_var": "dcid:ops_sum"}}
+    doc = {
+        "frame_version": "frame1",
+        "columns": ["stat_var", "recipient", "time_period", "value", "unit", "provenance"],
+        "rows": [["dcid:ops_quotient", "country/ETH", "2015", 1.0, unit, "src_oecd_dac"]],
+    }
+    artifacts = _FakeArtifactStore()
+    digest = artifacts.seed(tier=Tier.working, data=json.dumps(doc).encode("utf-8"))
+    version = dataclasses.replace(
+        _version(frame_ref), immutable_body={"composed_stat_vars": composed_stat_vars}
+    )
+    snapshots = _FakeSnapshotReader(
+        versions={(frame_ref.spec_id, frame_ref.content_version): version},
+        locations={
+            (frame_ref.spec_id, frame_ref.content_version): [
+                _location(digest=digest, tier=Tier.working.value)
+            ]
+        },
+    )
+    graph = _FakeGraphReader(
+        labels={"Count_Person": "Total population", "country/ETH": "Ethiopia"},
+        raise_for=raise_for,
+    )
+    spec_reader = _FakeSpecReader(
+        definitions={
+            _FAMILY_ON_A_SIDE: _stored_definition(
+                spec_id=_FAMILY_ON_A_SIDE,
+                slots=[
+                    {
+                        "property": "crsPurpose",
+                        "binding": {"state": "value", "ref": "CRSPurposeCode11220"},
+                    }
+                ],
+            )
+        }
+    )
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        graph=graph,
+        spec_reader=spec_reader,
+        code_index=_code_index([_EDUCATION_ROW]),
+    )
+    return store, frame_ref, graph
+
+
+@pytest.mark.parametrize(
+    ("cap", "graph_refs", "expected_labels"),
+    [
+        pytest.param(
+            None,
+            ("Count_Person", "country/ETH", "src_oecd_dac", "USDollar"),
+            {
+                "dcid:Count_Person": "Total population",
+                f"dcid:{_FAMILY_ON_A_SIDE}": "Education",
+                "country/ETH": "Ethiopia",
+                "dcid:ops_sum": _SUM_LABEL,
+                "dcid:ops_quotient": _QUOTIENT_LABEL,
+            },
+            id="every-side-labelled",
+        ),
+        pytest.param(
+            2,
+            ("Count_Person", "USDollar"),
+            {
+                "dcid:Count_Person": "Total population",
+                f"dcid:{_FAMILY_ON_A_SIDE}": "Education",
+                "dcid:ops_sum": _SUM_LABEL,
+                "dcid:ops_quotient": _QUOTIENT_LABEL,
+            },
+            id="side-refs-precede-column-refs-under-the-cap",
+        ),
+    ],
+)
+def test_load_words_a_composed_stat_var_from_its_stored_entry(
+    monkeypatch, cap, graph_refs, expected_labels
+):
+    """The version body's entries name the frame's own StatVar and the StatVar its unit counts.
+    Their side refs join the label read ahead of the column refs, a family ref on a side takes
+    its stored definition, and a ref an entry describes is left out of the read."""
+    import presentation_store.frame_store as frame_store_module
+
+    if cap is not None:
+        monkeypatch.setattr(frame_store_module, "_LABEL_RESOLUTION_CAP", cap)
+    store, frame_ref, graph = _composed_stat_var_store(
+        composed_stat_vars=[_SUM_ENTRY, _QUOTIENT_ENTRY]
+    )
+
+    resolved = store.load(frame_ref=frame_ref)
+
+    assert graph.node_arcs_many_calls == [graph_refs]
+    assert resolved.labels == expected_labels
+
+
+def test_load_words_a_composed_stat_var_from_bare_refs_when_the_graph_read_fails():
+    """A failed graph read leaves the graph side as its bare dcid and the load uncached, so
+    the next load reads again."""
+    store, frame_ref, graph = _composed_stat_var_store(
+        composed_stat_vars=[_SUM_ENTRY], raise_for=frozenset({"Count_Person"})
+    )
+
+    labels = store.load(frame_ref=frame_ref).labels
+    store.load(frame_ref=frame_ref)
+
+    assert labels["dcid:ops_sum"] == "Education plus Count_Person"
+    assert graph.calls == 2
+
+
+@pytest.mark.parametrize(
+    "unreadable",
+    [
+        {**_SUM_ENTRY, "stat_var": "dcid:ops_other", "relation": "difference"},
+        {key: value for key, value in _QUOTIENT_ENTRY.items() if key != "second"},
+        {key: value for key, value in _QUOTIENT_ENTRY.items() if key != "relation"},
+        {key: value for key, value in _QUOTIENT_ENTRY.items() if key != "stat_var"},
+        {**_QUOTIENT_ENTRY, "second": None},
+        {**_QUOTIENT_ENTRY, "first": []},
+        {**_QUOTIENT_ENTRY, "first": [1]},
+        {**_QUOTIENT_ENTRY, "stat_var": 7},
+        "dcid:ops_quotient",
+        None,
+    ],
+    ids=[
+        "unknown-relation",
+        "missing-side",
+        "missing-relation",
+        "missing-stat-var",
+        "null-side",
+        "empty-side",
+        "ref-not-a-string",
+        "stat-var-not-a-string",
+        "entry-not-a-mapping",
+        "null-entry",
+    ],
+)
+def test_load_skips_a_stored_entry_it_cannot_read_and_words_the_rest(unreadable, caplog):
+    """A label is best-effort: the frame loads, the readable entry is worded, the other
+    StatVar keeps its ref, and one warning names the frame and the entry's position."""
+    store, frame_ref, _ = _composed_stat_var_store(composed_stat_vars=[_SUM_ENTRY, unreadable])
+
+    with caplog.at_level(logging.WARNING, logger="presentation_store.composed_stat_vars"):
+        resolved = store.load(frame_ref=frame_ref)
+
+    assert resolved.labels["dcid:ops_sum"] == _SUM_LABEL
+    assert "dcid:ops_quotient" not in resolved.labels
+    assert "dcid:ops_other" not in resolved.labels
+    (record,) = caplog.records
+    assert record.args == (
+        COMPOSED_STAT_VAR_UNREADABLE_MARKER,
+        frame_ref.spec_id,
+        frame_ref.content_version,
+        1,
+    )
+
+
+@pytest.mark.parametrize(
+    "stored", [{"0": _SUM_ENTRY}, "dcid:ops_sum", 3], ids=["mapping", "text", "number"]
+)
+def test_load_reads_a_stored_value_that_is_no_list_as_no_entries(stored, caplog):
+    store, frame_ref, _ = _composed_stat_var_store(composed_stat_vars=stored)
+
+    with caplog.at_level(logging.WARNING, logger="presentation_store.composed_stat_vars"):
+        resolved = store.load(frame_ref=frame_ref)
+
+    assert resolved.labels == {"country/ETH": "Ethiopia"}
+    (record,) = caplog.records
+    assert record.args[:3] == (
+        COMPOSED_STAT_VAR_UNREADABLE_MARKER,
+        frame_ref.spec_id,
+        frame_ref.content_version,
+    )
 
 
 # -- load(): family-ref labels ----------------------------------------------
@@ -1679,9 +1990,227 @@ def test_cache_put_does_not_double_count_bytes_on_a_same_key_overwrite():
     # A forced same-key double-put -- e.g. two concurrent resolves of the
     # same frame racing this store's own cache -- must not leave
     # `_cache_bytes` counting the evicted-by-overwrite prior entry too.
-    store._cache_put(cache_key, resolved, size_bytes=1_000, citation_complete=True)
+    store._cache_put(
+        cache_key,
+        _CachedFrame(
+            size_bytes=1_000, resolved=resolved, citation_complete=True, anchor_final=True
+        ),
+    )
 
     assert store._cache_bytes == sum(entry.size_bytes for entry in store._cache.values())
+
+
+# -- load(): a derived frame's rolling anchor -------------------------------
+
+
+class _FakeRecipeReader:
+    """Holds recipes by frame pair and counts reads."""
+
+    def __init__(self) -> None:
+        self.recipes: dict[tuple[str, str], RecipeRecord] = {}
+        self.reads = 0
+
+    def put(self, frame_ref: FrameRef, *, anchor: dict[str, object] | None) -> None:
+        self.recipes[(frame_ref.spec_id, frame_ref.content_version)] = RecipeRecord(
+            spec_id=frame_ref.spec_id,
+            content_version=frame_ref.content_version,
+            normal_form_hash="rnf_" + "1" * 32,
+            replay_key="rpk_" + "2" * 32,
+            body={"schema_version": 1, "tree": {}, "roots": [], "anchor": anchor},
+        )
+
+    def read_recipe(self, *, spec_id: str, content_version: str) -> RecipeRecord | None:
+        self.reads += 1
+        return self.recipes.get((spec_id, content_version))
+
+
+_CHAD = {"stat_var": "dcid:MalariaGrantDisbursements", "recipient": "country/TCD"}
+_MALI = {"stat_var": "dcid:MalariaGrantDisbursements", "recipient": "country/MLI"}
+_ANCHOR = {
+    "period": "2024",
+    "rule": "half1",
+    "left_out": [{"root": 0, "coordinates": _CHAD}, {"root": 1, "coordinates": _MALI}],
+}
+
+
+def test_load_attaches_a_derived_frame_s_recipe_anchor_and_labels_its_left_out_series():
+    """Chad and Mali are in no row of the frame. The graph names Chad and holds no Mali."""
+    snapshots, artifacts, frame_ref, _ = _ops_happy_path_fixture()
+    recipes = _FakeRecipeReader()
+    recipes.put(frame_ref, anchor=_ANCHOR)
+    graph = _FakeGraphReader(labels={"country/ETH": "Ethiopia", "country/TCD": "Chad"})
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph, recipe_reader=recipes)
+
+    resolved = store.load(frame_ref=frame_ref)
+
+    assert resolved.anchor == RollingAnchor(
+        period="2024",
+        rule="half1",
+        left_out=(
+            LeftOutSeries(root=0, coordinates=_CHAD, label="Chad"),
+            LeftOutSeries(root=1, coordinates=_MALI, label="country/MLI"),
+        ),
+    )
+    assert "country/TCD" not in resolved.labels
+
+
+def test_load_keeps_a_label_the_recipe_states_for_a_left_out_series():
+    snapshots, artifacts, frame_ref, _ = _ops_happy_path_fixture()
+    recipes = _FakeRecipeReader()
+    stated = {"root": 0, "coordinates": _CHAD, "label": "Tchad"}
+    recipes.put(frame_ref, anchor={**_ANCHOR, "left_out": [stated]})
+    graph = _FakeGraphReader(labels={"country/TCD": "Chad"})
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph, recipe_reader=recipes)
+
+    resolved = store.load(frame_ref=frame_ref)
+
+    assert [one.label for one in resolved.anchor.left_out] == ["Tchad"]
+
+
+@pytest.mark.parametrize(
+    ("left_out", "label"),
+    [
+        pytest.param({"root": 0, "coordinates": _CHAD, "label": None}, "Chad", id="null-label"),
+        pytest.param(
+            {"root": 0, "coordinates": {"stat_var": "dcid:MalariaGrantDisbursements"}},
+            "dcid:MalariaGrantDisbursements",
+            id="stat-var-alone",
+        ),
+        pytest.param({"root": 0, "coordinates": {}}, "", id="empty-coordinates"),
+        pytest.param(
+            {"root": 0, "coordinates": {"unit": "USD", "provenance": "src_oecd"}},
+            "unit=USD, provenance=src_oecd",
+            id="coordinates-naming-no-series",
+        ),
+    ],
+)
+def test_load_labels_every_stored_left_out_series_whatever_its_coordinates_hold(
+    left_out: dict[str, object], label: str
+):
+    """The recipe store keeps a pair's first recipe, so a load labels what is stored. The
+    write routes refuse the last two shapes."""
+    snapshots, artifacts, frame_ref, _ = _ops_happy_path_fixture()
+    recipes = _FakeRecipeReader()
+    recipes.put(frame_ref, anchor={**_ANCHOR, "left_out": [left_out]})
+    graph = _FakeGraphReader(labels={"country/TCD": "Chad"})
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph, recipe_reader=recipes)
+
+    resolved = store.load(frame_ref=frame_ref)
+
+    assert [one.label for one in resolved.anchor.left_out] == [label]
+
+
+def test_load_caches_the_anchor_with_the_frame():
+    """A pair keeps its first recipe, so a cache hit reads neither the recipe nor the graph."""
+    snapshots, artifacts, frame_ref, _ = _ops_happy_path_fixture()
+    recipes = _FakeRecipeReader()
+    recipes.put(frame_ref, anchor=_ANCHOR)
+    graph = _FakeGraphReader(labels={"country/TCD": "Chad"})
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph, recipe_reader=recipes)
+    first = store.load(frame_ref=frame_ref)
+    recipe_reads, graph_reads = recipes.reads, graph.calls
+
+    second = store.load(frame_ref=frame_ref)
+
+    assert second.anchor == first.anchor
+    assert (recipes.reads, graph.calls) == (recipe_reads, graph_reads)
+
+
+def test_load_reads_the_left_out_labels_again_after_a_failed_graph_read():
+    """The frame's own refs are labelled by the first batch, and the anchor's by a second
+    batch that fails, so the load serves raw refs and is not cached."""
+    snapshots, artifacts, frame_ref, _ = _ops_happy_path_fixture()
+    recipes = _FakeRecipeReader()
+    recipes.put(frame_ref, anchor=_ANCHOR)
+    graph = _FakeGraphReader(labels={"country/TCD": "Chad"}, raise_for=frozenset({"country/TCD"}))
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph, recipe_reader=recipes)
+
+    failed = store.load(frame_ref=frame_ref)
+    graph.raise_for = frozenset()
+    retried = store.load(frame_ref=frame_ref)
+
+    assert [one.label for one in failed.anchor.left_out] == ["country/TCD", "country/MLI"]
+    assert [one.label for one in retried.anchor.left_out] == ["Chad", "country/MLI"]
+
+
+@pytest.mark.parametrize("anchor_recorded", [True, False], ids=["null-anchor", "no-recipe"])
+def test_a_derived_frame_without_an_anchor_loads_as_it_does_with_no_recipe_reader(
+    anchor_recorded,
+):
+    snapshots, artifacts, frame_ref, _ = _ops_happy_path_fixture()
+    recipes = _FakeRecipeReader()
+    if anchor_recorded:
+        recipes.put(frame_ref, anchor=None)
+    plain = _store(snapshots=snapshots, artifacts=artifacts, graph=_citing_graph())
+    store = _store(
+        snapshots=snapshots, artifacts=artifacts, graph=_citing_graph(), recipe_reader=recipes
+    )
+
+    assert store.load(frame_ref=frame_ref) == plain.load(frame_ref=frame_ref)
+
+
+def test_a_frame_cached_before_its_recipe_was_written_gains_the_anchor_without_a_refetch():
+    """A recipe can be written after its frame is published. The cached bytes are kept."""
+    snapshots, artifacts, frame_ref, digest = _ops_happy_path_fixture()
+    recipes = _FakeRecipeReader()
+    store = _store(snapshots=snapshots, artifacts=artifacts, recipe_reader=recipes)
+    before = store.load(frame_ref=frame_ref)
+    fetches = artifacts.calls.count(("get", Tier.working, digest))
+
+    recipes.put(frame_ref, anchor={**_ANCHOR, "left_out": []})
+    after = store.load(frame_ref=frame_ref)
+
+    assert (before.anchor, after.anchor) == (None, RollingAnchor(period="2024", rule="half1"))
+    assert artifacts.calls.count(("get", Tier.working, digest)) == fetches == 1
+
+
+def test_a_rolling_card_on_a_derived_frame_is_created_at_the_recipe_s_anchor():
+    """The frame's newest period is 2024 and its recipe anchors `latest` at 2023, so the create
+    reads the anchor through `load`: the card's period is 2023 and it names Chad as left out.
+    The select names only the StatVar, so it admits Chad's series."""
+    snapshots, artifacts, frame_ref, _ = _ops_happy_path_fixture()
+    recipes = _FakeRecipeReader()
+    recipes.put(
+        frame_ref,
+        anchor={"period": "2023", "rule": "half1", "left_out": [{"root": 0, "coordinates": _CHAD}]},
+    )
+    graph = _FakeGraphReader(labels={"country/ETH": "Ethiopia", "country/TCD": "Chad"})
+    store = _store(snapshots=snapshots, artifacts=artifacts, graph=graph, recipe_reader=recipes)
+
+    created = write_component(
+        intent={
+            "type": "stat_card",
+            "frame_ref": {
+                "spec_id": frame_ref.spec_id,
+                "content_version": frame_ref.content_version,
+            },
+            "select": {"stat_var": "dcid:MalariaGrantDisbursements"},
+            "window": {
+                "start": {"anchor": "latest", "offset": -1},
+                "end": {"anchor": "latest", "offset": 0},
+            },
+        },
+        frame_store=store,
+        revision_store=FakeRevisionStore(),
+        release_registry=FakeReleaseRegistry(),
+    )
+
+    payload = created.resolved_payload
+    assert payload["component"]["period"] == "2023"
+    assert payload["provenance"]["warnings"][0] == {
+        "kind": "coverage_gap",
+        "detail": "1 series has no 2023 value: Chad",
+    }
+
+
+def test_a_dataset_frame_never_reads_a_recipe():
+    snapshots, artifacts, frame_ref, _ = _happy_path_fixture()
+    recipes = _FakeRecipeReader()
+    store = _store(snapshots=snapshots, artifacts=artifacts, recipe_reader=recipes)
+
+    resolved = store.load(frame_ref=frame_ref)
+
+    assert (resolved.anchor, recipes.reads) == (None, 0)
 
 
 # -- pin() ------------------------------------------------------------------

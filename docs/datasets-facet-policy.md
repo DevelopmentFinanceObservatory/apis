@@ -129,8 +129,13 @@ so a window that leaves one candidate yields `sole_candidate`:
 - **If the top-ranked facet itself carries no value on an axis**, that axis
   binds to null, reason `absent_on_selected_facet`, and resolution
   completes normally -- except on the `provenance` axis, where a null
-  binding is refused with `default_facet_undefined` instead, since
-  datasets citation assembly requires a concrete provenance ref.
+  binding is refused with `default_facet_undefined` instead, since a
+  manifest that serves rows cites a concrete provenance ref.
+- **If the probe holds candidates and none survives narrowing by the
+  request's bound axes**, each unbound axis is refused with
+  `default_facet_undefined`. A probe that holds no candidate at all is the
+  empty result described under "A request that binds no entity" below and
+  selects nothing.
 
 DFO precedence exists because admission works per place. Where DFO holds
 data for a StatVar at a place, the origin catalogue withholds every base
@@ -202,18 +207,29 @@ The places are discovered at each mint and stay outside `spec_id`, which
 hashes only the entities the definition binds. `content_version` changes
 with them only through the rows they fetch.
 
-A request that binds no entity refuses only when nothing holds data: a
-single StatVar returns `default_facet_undefined` for an unbound axis or
-`facet_not_available` for a bound one, and a group returns
-`facet_not_available`. When the probe is empty because a UN System Data
-Commons facet read failed at one of the places, the request refuses
-`upstream_error` (retryable), and when every facet there is withheld by
-the origin catalogue it refuses `excluded_by_registry`, as a bound
-request does. The UN front door refuses a few countries on every read, so
-a place it refused leaves the refusal `default_facet_undefined`, and the
-refusal's detail names those places, as the `un_system_unavailable`
-warning on a served request does. A failed read of Earth's countries or
-of presence, in the probe or in the read that explains a refusal, refuses
+When the probe returns no candidate for any member, the places hold no
+observations of the definition's variables and the mint serves the empty
+result: a 200 manifest with `coverage.rows` at 0, an `empty_result`
+warning whose message says so, no facet selection and no cited source.
+This holds for a request that binds no entity and for one that names its
+places, for a single StatVar and for a group, and whatever facet axes the
+definition binds. No facet is selected and no conversion is planned.
+
+Two causes of an empty probe refuse instead, before a version is stored.
+When a UN System Data Commons facet read failed at one of the places, or
+the UN front door refused a place the definition names, the request
+refuses `upstream_error` (retryable). When every facet at the places of
+a subject-only member is withheld by the origin catalogue, it
+refuses `excluded_by_registry`. Every subject-only member is checked, in
+one read for the members that share a list of places, and a check that
+fails refuses `upstream_error` (retryable), or `timeout` when the
+request's deadline ends it, so an empty result is stored only when the
+check completed. The UN front door refuses a few countries
+on every read, so for a request that binds no entity a place it refused
+leaves the empty result as it is, and the `un_system_unavailable` warning
+names those places, as it does on a request that served rows. A failed read
+of Earth's countries or of presence, in the probe or in the read that
+explains an empty probe, refuses
 the request `upstream_error` (retryable) and stores no version. A listing
 of Earth that names no country is such a failure: Earth holds every
 country, and an empty listing taken as "no country" would serve the

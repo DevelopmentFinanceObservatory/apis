@@ -984,7 +984,7 @@ def _build_definite_spec(
         measure_siblings=measure_siblings,
         open_axis_facts=open_axis_facts,
         role_axis_facts=setup.role_axis_facts,
-        named_groups=request_named_groups(state),
+        named_groups=request_named_groups(state, state.place.roles),
         measure_served_rows=measure_served_counter(setup.served_filter),
     )
     spec = with_unit_conversion(

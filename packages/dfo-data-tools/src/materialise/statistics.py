@@ -4,7 +4,7 @@ Each row represents one series, keyed by every frame column except
 `time_period`, `value`, and `status`, in deterministic first-appearance order.
 Grouping and reductions use Arrow. Only the `entities` struct and canonical
 JSON `facet` are built per group from its first row. The module reads `Frame`
-structurally and projects converted-unit fields directly from Arrow.
+structurally and keys each `unit` cell by `dfo_frame_grammar.unit_codes`.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from typing import cast
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.parquet as pq
+from dfo_frame_grammar import unit_cell_to_json, unit_cells, unit_codes
 
 from materialise.frame_build import Frame
 
@@ -92,28 +93,6 @@ def _normalise_zero(value: float) -> float:
     return value + 0.0
 
 
-def _project_unit(
-    ref: str | None,
-    currency: str | None,
-    prices: str | None,
-    base_year: int | None,
-) -> str | dict[str, object] | None:
-    """Projects a tagged `unit` cell to its wire form.
-
-    Returns `None` when `ref` and `currency` are empty, the bound `ref`, or
-    `{currency, prices, base_year?}` for an unbound request. The optional
-    `base_year` follows `UnitRequest.as_json()` and is omitted when empty.
-    """
-    if ref is not None:
-        return ref
-    if currency is None:
-        return None
-    projected: dict[str, object] = {"currency": currency, "prices": prices}
-    if base_year is not None:
-        projected["base_year"] = base_year
-    return projected
-
-
 def _compute_change(
     *, first_value: float, latest_value: float
 ) -> tuple[float | None, float | None]:
@@ -156,10 +135,12 @@ def compute_series_statistics_table(frame: Frame) -> pa.Table:
     earliest period. A fourth aggregate finds each series' first row, and
     the joined result is ordered by that position.
 
-    Grouping keys, including decomposed `unit` fields, use `_sentinel_key`
-    because Arrow joins drop null keys. Output values come from each
-    series' first row in the original table. `entities` and canonical JSON
-    `facet` are built in Python once per group.
+    Grouping keys use `_sentinel_key` because Arrow joins drop null keys. The
+    `unit` key is the cell's `unit_codes` code, so a ref, a converted unit, a
+    composed unit and an empty cell each key apart. Output values come from
+    each series' first row in the original table. `entities` and canonical
+    JSON `facet` are built in Python once per group, the facet's `unit` through
+    `unit_cell_to_json`.
 
     An empty frame returns the empty schema table.
     """
@@ -175,23 +156,14 @@ def compute_series_statistics_table(frame: Frame) -> pa.Table:
     table = table.append_column("__orig_idx", pa.array(range(row_count), type=pa.int64()))
 
     unit_column = table.column(_UNIT_COLUMN)
-    unit_ref = pc.struct_field(unit_column, "ref")
-    unit_request = pc.struct_field(unit_column, "request")
-    unit_currency = pc.struct_field(unit_request, "currency")
-    unit_prices = pc.struct_field(unit_request, "prices")
-    unit_base_year = pc.struct_field(unit_request, "base_year")
-    table = table.append_column("__unit_ref", unit_ref)
-    table = table.append_column("__unit_currency", unit_currency)
-    table = table.append_column("__unit_prices", unit_prices)
-    table = table.append_column("__unit_base_year", unit_base_year)
+    codes = unit_codes(unit_column)
+    units = unit_cells(unit_column, codes)
+    table = table.append_column("__unit_code", codes.codes)
 
     key_sources = (
         (_STAT_VAR_COLUMN, table.column(_STAT_VAR_COLUMN)),
         *((role, table.column(role)) for role in role_columns),
-        ("__unit_ref", unit_ref),
-        ("__unit_currency", unit_currency),
-        ("__unit_prices", unit_prices),
-        ("__unit_base_year", unit_base_year),
+        ("__unit_code", codes.codes),
         (_MEASUREMENT_METHOD_COLUMN, table.column(_MEASUREMENT_METHOD_COLUMN)),
         (_PROVENANCE_COLUMN, table.column(_PROVENANCE_COLUMN)),
     )
@@ -289,16 +261,7 @@ def compute_series_statistics_table(frame: Frame) -> pa.Table:
         role: cast("list[str]", representative_rows.column(role).to_pylist())
         for role in role_columns
     }
-    rep_unit_ref = cast("list[str | None]", representative_rows.column("__unit_ref").to_pylist())
-    rep_unit_currency = cast(
-        "list[str | None]", representative_rows.column("__unit_currency").to_pylist()
-    )
-    rep_unit_prices = cast(
-        "list[str | None]", representative_rows.column("__unit_prices").to_pylist()
-    )
-    rep_unit_base_year = cast(
-        "list[int | None]", representative_rows.column("__unit_base_year").to_pylist()
-    )
+    rep_unit_code = cast("list[int]", representative_rows.column("__unit_code").to_pylist())
     rep_measurement_method = cast(
         "list[str | None]", representative_rows.column(_MEASUREMENT_METHOD_COLUMN).to_pylist()
     )
@@ -311,9 +274,7 @@ def compute_series_statistics_table(frame: Frame) -> pa.Table:
     for i in range(group_count):
         entities_column.append([{"role": role, "ref": rep_roles[role][i]} for role in role_columns])
         facet: dict[str, object] = {}
-        projected_unit = _project_unit(
-            rep_unit_ref[i], rep_unit_currency[i], rep_unit_prices[i], rep_unit_base_year[i]
-        )
+        projected_unit = unit_cell_to_json(units[rep_unit_code[i]])
         if projected_unit is not None:
             facet["unit"] = projected_unit
         if rep_measurement_method[i] is not None:

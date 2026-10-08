@@ -16,10 +16,15 @@ from unittest.mock import patch
 import pytest
 
 from code_index.query import CodeIndex
-from code_index.shared import get_index
+from code_index.shared import get_index, get_measure_index
 from code_index.types import CodeRow, CodeSystemDeclaration, IndexStamp
 from entity_resolution import Admission, EntityResolver
-from search.engine.bind import SlotBindingDraft, _build_universal_bind_prompt, _UniversalBindOutput
+from search.engine.bind import (
+    SlotBindingDraft,
+    _build_universal_bind_prompt,
+    _offered_source_drafts,
+    _UniversalBindOutput,
+)
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
@@ -39,21 +44,35 @@ from search.engine.region.phase_rank_bind import (
     _admit_qualifier_matches,
     _admit_qualifier_matches_against_elected_shape,
     _admit_qualifier_ties,
+    _dataset_candidates,
     _filter_admitted_matches,
     _force_qualifier_bindings,
     _log_admitted_qualifiers,
-    _match_query_qualifiers,
+    _undeclared_qualifiers,
 )
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.qualifier_readings import match_query_readings
-from search.engine.region.state import ResolveState
+from search.engine.region.state import ResolveState, shape_vocabulary
+from search.engine.retrieval.bound_values import held_codes
+from search.engine.retrieval.derive import derive_shapes
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.heading.departure_fact import DepartureFact
 from series_coverage.schema import RoleNames
 from tests.engine._fake_coverage import FakeCoverageService, empty_coverage_snapshot, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
-from tests.engine._index_slots import crs_shape_systems
+from tests.engine._index_slots import (
+    crs_flow_slot_keys,
+    crs_vocabulary,
+    own_variable_spans,
+    query_qualifiers,
+    read_text,
+)
+from tests.engine.test_two_ended_menu import _CRS_SV as _TWO_ENDED_CRS_SV
+from tests.engine.test_two_ended_menu import _DAC2A_ODA_SV as _TWO_ENDED_DAC2A_ODA_SV
+from tests.engine.test_two_ended_menu import _SUBJECT_SV as _TWO_ENDED_SUBJECT_SV
+from tests.engine.test_two_ended_menu import _index_row_node
+from tests.engine.test_two_ended_menu import _resolve as _resolve_two_ended
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 
 _REAL_INDEX = get_index()
@@ -67,21 +86,21 @@ def _admit(
 ) -> tuple[QualifierMatch, ...]:
     """Match the text against the candidate shapes, as the prune step does, then admit
     results against them."""
-    matches, _variable_matched_phrases = _match_query_qualifiers(
+    read = query_qualifiers(
         variable,
         dropped_qualifier_phrases or [],
         query_text=query_text,
-        shape_systems=_shape_systems(shapes),
+        vocabularies=[shape_vocabulary(shape) for shape in shapes],
     )
-    return _admit_qualifier_matches(shapes, matches)
+    return _admit_qualifier_matches(shapes, read.matches)
 
 
-def _shape_systems(shapes: list[ShapeDraft]) -> tuple[frozenset[str], ...]:
-    """The constraint properties each of `shapes` declares, as the prune step reads them."""
-    return tuple(
-        frozenset(slot.property_dcid for slot in shape.slot_keys if slot.property_dcid)
-        for shape in shapes
-    )
+_CRS = crs_vocabulary()
+
+
+def _crs_ties(query: str) -> tuple[QualifierTie, ...]:
+    """The ties of `query` read in a CRS shape's vocabulary."""
+    return read_text(query, _REAL_INDEX, vocabularies=[_CRS]).by_vocabulary[_CRS].ties
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +118,9 @@ def _shape(shape_id: str, slot_keys: tuple[SlotKeyDraft, ...]) -> ShapeDraft:
         meas_qual_dcid="Nominal",
         meas_denom_dcid=None,
         slot_keys=slot_keys,
+        # A recall sample, so its members are the rows of the CRS grant-equivalent family,
+        # whose codes tie admission reads (`held_codes`).
+        sv_arc_facts_complete=False,
     )
 
 
@@ -220,7 +242,7 @@ def test_collision_words_raw_match_a_real_crs_row():
     these, the admission test below would otherwise pass for the wrong
     reason (nothing to refuse)."""
     for query in _COLLISION_QUERIES:
-        assert match_qualifiers(query, _REAL_INDEX, shape_systems=crs_shape_systems()) != (), query
+        assert read_text(query, _REAL_INDEX, vocabularies=[_CRS]).by_vocabulary[_CRS].matches, query
 
 
 def test_collision_words_are_never_admitted_against_a_non_crs_shape():
@@ -230,6 +252,112 @@ def test_collision_words_are_never_admitted_against_a_non_crs_shape():
 
 def test_no_capped_shape_at_all_admits_nothing():
     assert _admit("ODA standard grants for health", []) == ()
+
+
+# ---------------------------------------------------------------------------
+# A part naming the CRS refuses only terms no CRS shape reads and holds.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("variable", "refused"),
+    [
+        ("OOF budget support to Kenya", []),
+        ("multilateral ODA to Kenya", ["multilateral ODA"]),
+        ("multilateral ODA loans to Kenya", ["multilateral ODA loans"]),
+        ("bilateral ODA grants to Kenya", ["bilateral ODA grants"]),
+        ("DAC1 aid type 1010", ["1010"]),
+    ],
+)
+def test_a_part_naming_the_crs_refuses_only_terms_its_own_reading_cannot_hold(variable, refused):
+    """Read in every code system, each term names a DAC1 aid type no CRS row holds. The CRS
+    shape holds "OOF budget support" all the same, since its own reading holds both "OOF"
+    (flow type 21) and the "budget support" tie, covering every word. "multilateral ODA",
+    "multilateral ODA loans" and "bilateral ODA grants" each leave a word the CRS reading
+    does not hold, so the part refuses `qualifier_not_bound` on them, as a DAC1 code with
+    no CRS reading of its words does."""
+    flow_row = next(row for row in _REAL_INDEX.statvars if row.population_type == "FinancialFlow")
+    shape = ShapeDraft(
+        shape_id="crs-amount",
+        label="crs-amount",
+        pop_type_dcid="FinancialFlow",
+        meas_prop_dcid="amount",
+        stat_type_dcid=flow_row.stat_type,
+        meas_qual_dcid="Nominal",
+        meas_denom_dcid=None,
+        slot_keys=crs_flow_slot_keys(),
+    )
+    candidates = _dataset_candidates([shape], "provenance/OECDCreditorReportingSystem", frozenset())
+
+    undeclared = _undeclared_qualifiers(
+        variable,
+        read_text(variable, _REAL_INDEX, get_measure_index()).everywhere.spans,
+        candidates,
+        own_variable_spans(variable, *candidates),
+    )
+
+    assert [record.text for record in undeclared] == refused
+
+
+@pytest.mark.parametrize("named_at", ["seam", "source-slot"])
+@pytest.mark.parametrize(
+    ("variable", "refused"),
+    [("multilateral ODA to Kenya", ["multilateral ODA"]), ("ODA to Kenya", [])],
+)
+def test_vetting_refuses_a_term_the_elected_crs_shape_reads_in_part(named_at, variable, refused):
+    """A part naming the CRS, at the seam or through the bind model's source slot, refuses
+    `qualifier_not_bound` on a term the elected shape's own reading leaves a word of, after
+    the model binds ODA (`CRSTypeOfFlow10`), a code the CRS holds. Otherwise "multilateral"
+    would only warn and the part answer all CRS ODA to Kenya."""
+    crs = "provenance/OECDCreditorReportingSystem"
+    flow_row = next(row for row in _REAL_INDEX.statvars if row.population_type == "FinancialFlow")
+    derived = ShapeDraft(
+        shape_id="crs-amount",
+        label="crs-amount",
+        pop_type_dcid="FinancialFlow",
+        meas_prop_dcid="amount",
+        stat_type_dcid=flow_row.stat_type,
+        meas_qual_dcid="Nominal",
+        meas_denom_dcid=None,
+        slot_keys=crs_flow_slot_keys(),
+    )
+    seam = named_at == "seam"
+    (shape,) = _dataset_candidates([derived], crs if seam else None, frozenset())
+    if not seam:
+        # No family of the packaged index has a second publisher, so the shape is given
+        # the source slot a second table would offer.
+        shape = dataclasses.replace(shape, source_options=(crs, "provenance/OECDDAC1"))
+    flow = SlotBindingDraft(
+        axis="what", property_dcid="crsTypeOfFlow", kind="value", value_dcids=["CRSTypeOfFlow10"]
+    )
+    source = SlotBindingDraft(
+        axis="source", property_dcid="provenance", kind="value", value_dcids=[crs]
+    )
+    state = _vet_state(
+        variable=variable,
+        capped_shapes=[shape],
+        chosen_shape_index=0,
+        bindings=[flow] if seam else _offered_source_drafts([flow, source], shape),
+        admitted_ties=(),
+    )
+    state.named_dataset = crs if seam else None
+    reading = read_text(
+        variable, _REAL_INDEX, get_measure_index(), vocabularies=[shape_vocabulary(shape)]
+    )
+    state.variable_spans_in_every_system = reading.everywhere.spans
+    state.variable_spans_by_vocabulary = {
+        vocabulary: own.spans for vocabulary, own in reading.by_vocabulary.items()
+    }
+
+    result = asyncio.run(_phase_vet_election(state))
+
+    if refused:
+        assert result is not None
+        assert result.no_data_reason == "qualifier_not_bound"
+        assert [record.text for record in result.unbound_qualifiers] == refused
+    else:
+        assert result is None
+        assert state.named_dataset == crs
 
 
 # ---------------------------------------------------------------------------
@@ -279,13 +407,15 @@ def test_admit_qualifier_ties_promotes_when_exactly_one_row_survives_narrowing()
     # crsPurpose narrows the tie to a single surviving row -- the
     # declared-property tie-break -- promoted straight into
     # admitted_qualifiers, with no tie left for the model to see.
-    ties = match_qualifier_ties("budget support", _REAL_INDEX, shape_systems=crs_shape_systems())
+    ties = _crs_ties("budget support")
     assert len(ties) == 1
     purpose_only_shape = _shape(
         "purpose_only_shape",
         (SlotKeyDraft(axis="how", property_dcid="crsPurpose", label="purpose"),),
     )
-    promoted, admitted_ties = _admit_qualifier_ties([purpose_only_shape], ties)
+    promoted, admitted_ties, _unheld = _admit_qualifier_ties(
+        [purpose_only_shape], {shape_vocabulary(purpose_only_shape): ties}, holds=held_codes
+    )
     assert admitted_ties == ()
     assert len(promoted) == 1
     assert promoted[0].code_system == "crsPurpose"
@@ -295,8 +425,10 @@ def test_admit_qualifier_ties_promotes_when_exactly_one_row_survives_narrowing()
 def test_admit_qualifier_ties_passes_through_when_two_or_more_rows_survive():
     # _CRS_SHAPE declares both crsCooperationModality and crsPurpose --
     # nothing to promote, the tie is still genuinely live.
-    ties = match_qualifier_ties("budget support", _REAL_INDEX, shape_systems=crs_shape_systems())
-    promoted, admitted_ties = _admit_qualifier_ties([_CRS_SHAPE], ties)
+    ties = _crs_ties("budget support")
+    promoted, admitted_ties, _unheld = _admit_qualifier_ties(
+        [_CRS_SHAPE], {shape_vocabulary(_CRS_SHAPE): ties}, holds=held_codes
+    )
     assert promoted == ()
     assert len(admitted_ties) == 1
     assert {row.code_system for row in admitted_ties[0].rows} == {
@@ -308,26 +440,111 @@ def test_admit_qualifier_ties_passes_through_when_two_or_more_rows_survive():
 
 def test_admit_qualifier_ties_drops_when_no_shape_declares_either_property():
     ties = match_qualifier_ties("budget support", _REAL_INDEX)
-    promoted, admitted_ties = _admit_qualifier_ties([_DEMOGRAPHIC_SHAPE], ties)
+    promoted, admitted_ties, _unheld = _admit_qualifier_ties(
+        [_DEMOGRAPHIC_SHAPE], {shape_vocabulary(_DEMOGRAPHIC_SHAPE): ties}, holds=held_codes
+    )
     assert promoted == ()
     assert admitted_ties == ()
 
 
 def test_admit_qualifier_ties_narrows_a_four_row_tie_per_declaring_shape():
-    ties = match_qualifier_ties(
-        "debt relief grants", _REAL_INDEX, shape_systems=crs_shape_systems()
-    )
+    ties = _crs_ties("debt relief grants")
     debt_relief = next(t for t in ties if t.matched_text == "debt relief")
     assert len(debt_relief.rows) == 4
     modality_only_shape = _shape(
         "modality_only_shape",
         (SlotKeyDraft(axis="how", property_dcid="crsCooperationModality", label="modality"),),
     )
-    promoted, _admitted_ties = _admit_qualifier_ties([modality_only_shape], ties)
+    promoted, _admitted_ties, _unheld = _admit_qualifier_ties(
+        [modality_only_shape], {shape_vocabulary(modality_only_shape): ties}, holds=held_codes
+    )
     debt_relief_promoted = [m for m in promoted if m.matched_text == "debt relief"]
     assert len(debt_relief_promoted) == 1
     assert debt_relief_promoted[0].code_system == "crsCooperationModality"
     assert debt_relief_promoted[0].code_dcid == "CRSCooperationModalityF01"
+
+
+def test_admit_qualifier_ties_keeps_only_the_codes_the_shapes_rows_hold():
+    """ "ODA" ties CRS's flow type and DAC2a's ODA code in the vocabulary of ONE's imputed
+    sectors table, which declares both systems. Its rows hold the flow type alone, so the
+    tie promotes to it and bind is never offered DAC2a's ODA code."""
+    sectors_sv = (
+        "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_"
+        "CRSPurposeCode11220_Nominal"
+    )
+    graph = FakeGraph(
+        nodes={sectors_sv: _index_row_node(sectors_sv)}, obs={}, detect={}, resolve={}
+    )
+    (sectors,) = derive_shapes(confirmed_svs=[sectors_sv], graph=graph)
+    vocabulary = shape_vocabulary(sectors)
+    ties = (
+        read_text("ODA to Kenya", _REAL_INDEX, vocabularies=[vocabulary])
+        .by_vocabulary[vocabulary]
+        .ties
+    )
+    assert [{row.code_dcid for row in tie.rows} for tie in ties] == [
+        {"CRSTypeOfFlow10", "DAC2aAidType206"}
+    ]
+
+    promoted, admitted_ties, _unheld = _admit_qualifier_ties(
+        [sectors], {vocabulary: ties}, holds=held_codes
+    )
+
+    assert admitted_ties == ()
+    assert [match.code_dcid for match in promoted] == ["CRSTypeOfFlow10"]
+
+
+@pytest.mark.parametrize(
+    ("query", "entities", "variable", "recalled"),
+    [
+        pytest.param(
+            "deaths attributed to air pollution",
+            [],
+            "deaths attributed to air pollution",
+            (_TWO_ENDED_SUBJECT_SV, 0.9),
+            id="health-question",
+        ),
+        pytest.param(
+            "aid attributed to Kenya",
+            ["Kenya"],
+            "aid attributed",
+            (_TWO_ENDED_DAC2A_ODA_SV, 0.9),
+            id="aid-question",
+        ),
+    ],
+)
+def test_attributed_as_a_plain_verb_names_no_measure(
+    monkeypatch, query, entities, variable, recalled
+):
+    """The attributed-amount measure reads on phrases that name it ("attributed to donors",
+    "attributed aid"). The verb alone names none, so the answer warns of no dropped
+    qualifier."""
+    result, _menu = _resolve_two_ended(
+        monkeypatch, query, entities, variable=variable, recalled=(recalled,)
+    )
+
+    assert not [
+        w
+        for w in result.warnings
+        if w.code == QUERY_QUALIFIER_DROPPED and "attributed" in w.message
+    ]
+
+
+def test_a_tie_the_shapes_rows_hold_no_code_of_warns_as_dropped(monkeypatch):
+    """ "Goods donations" ties two CRS cooperation modalities, and no row of the CRS flow
+    family holds either. Bind is never offered them, and the answer warns that the phrase
+    was not applied."""
+    result, menu = _resolve_two_ended(
+        monkeypatch,
+        "ODA goods donations from France to Kenya",
+        ["France", "Kenya"],
+        variable="ODA goods donations",
+        recalled=((_TWO_ENDED_CRS_SV, 0.9),),
+    )
+
+    assert menu == [(_TWO_ENDED_CRS_SV,)]
+    dropped = [w for w in result.warnings if w.code == QUERY_QUALIFIER_DROPPED]
+    assert len(dropped) == 1 and "goods donations" in dropped[0].message
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +590,7 @@ def _vet_state(
         timing={},
         warnings=[],
         capped_shapes=capped_shapes,
+        query_qualifier_ties={shape_vocabulary(shape): admitted_ties for shape in capped_shapes},
         admitted_ties=admitted_ties,
         variable_matched_qualifier_phrases=variable_matched_qualifier_phrases,
         query_qualifier_readings=query_qualifier_readings,
@@ -388,9 +606,7 @@ def _run_vet(state: ResolveState) -> None:
     assert result is None, "expected _phase_vet_election to fall through"
 
 
-_BUDGET_SUPPORT_TIE = match_qualifier_ties(
-    "budget support", _REAL_INDEX, shape_systems=crs_shape_systems()
-)[0]
+_BUDGET_SUPPORT_TIE = _crs_ties("budget support")[0]
 
 
 def test_vet_election_keeps_a_single_model_elected_tie_row():
@@ -583,6 +799,30 @@ def test_private_development_finance_forces_its_flow_value():
     assert by_property["crsTypeOfFlow"].value_dcids == ["CRSTypeOfFlow30"]
 
 
+@pytest.mark.parametrize(
+    "variable",
+    ["refugee costs in donor countries ODA", "ODA refugee costs in donor countries"],
+)
+def test_two_nested_matches_on_one_property_force_the_descendant(variable: str):
+    """ "ODA" and "refugee costs in donor countries" both name DAC1 aid types, and in-donor
+    refugee costs (1820) lies under ODA (1010). The narrower code binds in either word
+    order."""
+    dac1_sv = "Amount_FinancialFlow_Gross_Disbursement_DAC1AidType1010_Nominal"
+    graph = FakeGraph(nodes={dac1_sv: _index_row_node(dac1_sv)}, obs={}, detect={}, resolve={})
+    (dac1,) = derive_shapes(confirmed_svs=[dac1_sv], graph=graph)
+    matches = _admit(variable, [dac1])
+    assert {m.code_dcid for m in matches if m.code_system == "dac1AidType"} == {
+        "DAC1AidType1010",
+        "DAC1AidType1820",
+    }
+
+    forced = _force_qualifier_bindings([], matches, dac1)
+
+    assert [b.value_dcids for b in forced if b.property_dcid == "dac1AidType"] == [
+        ["DAC1AidType1820"]
+    ]
+
+
 def test_no_admitted_matches_leaves_bindings_untouched():
     existing = [
         SlotBindingDraft(axis="how", property_dcid="crsPurpose", kind="unbound", value_dcids=[])
@@ -680,10 +920,13 @@ def test_query_text_admits_a_purpose_code_the_paraphrase_dropped():
     # "agricultural funding" (the paraphrase) matches nothing by itself --
     # this module allows only an exact or plural match, and "agricultural"
     # is neither of "agriculture". query_text carries the user's own word.
-    matches, _owned = _match_query_qualifiers(
-        "agricultural funding", (), query_text="funding for agriculture in Ethiopia"
-    )
-    by_system = _by_system(matches)
+    matches = query_qualifiers(
+        "agricultural funding",
+        (),
+        query_text="funding for agriculture in Ethiopia",
+        vocabularies=[_CRS],
+    ).matches
+    by_system = _by_system(matches[_CRS])
     assert by_system["crsPurpose"].code_dcid == "CRSPurposeCode311"
 
 
@@ -728,9 +971,12 @@ def test_query_text_ownership_set_credits_a_query_text_only_match():
     # itself to -- must carry a query_text-only match too: nothing else ever
     # warns on query_text's own phrases the way entry/raw_text.py already
     # warns on dropped_qualifier_phrases.
-    _matches, owned = _match_query_qualifiers(
-        "agricultural funding", (), query_text="funding for agriculture in Ethiopia"
-    )
+    owned = query_qualifiers(
+        "agricultural funding",
+        (),
+        query_text="funding for agriculture in Ethiopia",
+        vocabularies=[_CRS],
+    ).phrases
     assert "agriculture" in owned
 
 
@@ -836,22 +1082,16 @@ def test_prompt_renders_admitted_ties_as_query_named_alternatives_without_matche
     # absence from the rendered block below cannot be explained by
     # coincidental overlap with a safe field the way "budget support"
     # (a tie whose matched_text equals both rows' own labels) could.
-    tie = next(
-        t
-        for t in match_qualifier_ties(
-            "debt relief grants", _REAL_INDEX, shape_systems=crs_shape_systems()
-        )
-        if t.matched_text == "grants"
-    )
+    tie = next(t for t in _crs_ties("debt relief grants") if t.matched_text == "grants")
     prompt = _build_universal_bind_prompt(
-        "debt relief grants to Kenya", [_PROMPT_SHAPE], admitted_ties=(tie,)
+        "debt relief grants to Kenya", [_CRS_SHAPE], admitted_ties=[(tie,)]
     )
     assert "QUERY-NAMED ALTERNATIVES" in prompt
     assert "property_dcid=crsTypeOfFinance, value_dcid=CRSTypeOfFinance100 (grant)" in prompt
     assert (
         "property_dcid=crsTypeOfFinance, value_dcid=CRSTypeOfFinance110 (standard grant)" in prompt
     )
-    alternatives_block = prompt.split("QUERY-NAMED ALTERNATIVES")[1].split("CANDIDATE")[0]
+    alternatives_block = prompt.split("  query_named_alternatives:")[1]
     assert "grants" not in alternatives_block
 
 
@@ -875,10 +1115,15 @@ def test_prompt_drops_a_tie_left_with_fewer_than_two_rows_after_withholding():
             ),
         ),
     )
+    # The shape lists both slots, so withholding the netting basis is what leaves one row.
+    shown = _build_universal_bind_prompt(
+        "net budget support to Kenya", [_CRS_SHAPE_WITH_MEASURE], admitted_ties=[(tie,)]
+    )
+    assert "QUERY-NAMED ALTERNATIVES" in shown
     prompt = _build_universal_bind_prompt(
         "net budget support to Kenya",
-        [_PROMPT_SHAPE],
-        admitted_ties=(tie,),
+        [_CRS_SHAPE_WITH_MEASURE],
+        admitted_ties=[(tie,)],
         withheld_measure_axes=frozenset({"nettingBasis"}),
     )
     assert "QUERY-NAMED ALTERNATIVES" not in prompt
@@ -887,7 +1132,7 @@ def test_prompt_drops_a_tie_left_with_fewer_than_two_rows_after_withholding():
 def test_prompt_renders_admitted_matches_as_fixed_context_without_matched_text():
     matches = _admit("ODA standard grants for health", [_CRS_SHAPE])
     prompt = _build_universal_bind_prompt(
-        "ODA standard grants for health", [_CRS_SHAPE], admitted_qualifiers=matches
+        "ODA standard grants for health", [_CRS_SHAPE], admitted_qualifiers=[matches]
     )
     assert "FIXED CONTEXT" in prompt
     assert (
@@ -903,8 +1148,34 @@ def test_prompt_renders_admitted_matches_as_fixed_context_without_matched_text()
     # overlap with a safe field the way a same-spelled label could.
     finance_match = next(m for m in matches if m.code_system == "crsTypeOfFinance")
     assert finance_match.matched_text == "standard grants"
-    fixed_context = prompt.split("FIXED CONTEXT")[1].split("CANDIDATE")[0]
+    fixed_context = prompt.split("  fixed_context:")[1]
     assert finance_match.matched_text not in fixed_context
+
+
+def test_prompt_shows_each_shape_only_its_own_reading_of_a_word():
+    """ "multilateral ODA" reads the CRS flow type on a CRS shape and the DAC1 aid type 2000
+    on a DAC1 shape. Each shape's block lists its own fixed value and not the other's."""
+    dac1_shape = _shape(
+        "dac1_shape", (SlotKeyDraft(axis="what", property_dcid="dac1AidType", label="aid type"),)
+    )
+    flow_shape = _shape(
+        "flow_shape",
+        (*_CRS_SLOT_KEYS, SlotKeyDraft(axis="what", property_dcid="dac1AidType", label="aid type")),
+    )
+    shapes = [flow_shape, dac1_shape]
+    matches = query_qualifiers(
+        "multilateral ODA",
+        vocabularies=[shape_vocabulary(_CRS_SHAPE), shape_vocabulary(dac1_shape)],
+    ).matches
+    own = [matches[shape_vocabulary(_CRS_SHAPE)], matches[shape_vocabulary(dac1_shape)]]
+
+    prompt = _build_universal_bind_prompt("multilateral ODA", shapes, admitted_qualifiers=own)
+
+    first, second = prompt.split("Shape 1:")
+    assert "value_dcid=CRSTypeOfFlow10" in first
+    assert "DAC1AidType2000" not in first
+    assert "value_dcid=DAC1AidType2000" in second
+    assert "CRSTypeOfFlow10" not in second
 
 
 def test_prompt_renders_an_admitted_measure_match_as_fixed_context_too():
@@ -918,11 +1189,11 @@ def test_prompt_renders_an_admitted_measure_match_as_fixed_context_too():
     assert obligation_match.matched_text == "commitments"
 
     prompt = _build_universal_bind_prompt(
-        query, [_CRS_SHAPE_WITH_MEASURE], admitted_qualifiers=matches
+        query, [_CRS_SHAPE_WITH_MEASURE], admitted_qualifiers=[matches]
     )
     assert "FIXED CONTEXT" in prompt
     assert "property_dcid=financialObligationType, value_dcid=Commitment (commitment)" in prompt
-    fixed_context = prompt.split("FIXED CONTEXT")[1].split("CANDIDATE")[0]
+    fixed_context = prompt.split("  fixed_context:")[1]
     assert obligation_match.matched_text not in fixed_context
 
     # financialObligationType is one of this deployment's kind="constraint"
@@ -934,7 +1205,7 @@ def test_prompt_renders_an_admitted_measure_match_as_fixed_context_too():
     withheld_prompt = _build_universal_bind_prompt(
         query,
         [dataclasses.replace(_CRS_SHAPE_WITH_MEASURE, slot_taxonomy_index_sourced=True)],
-        admitted_qualifiers=matches,
+        admitted_qualifiers=[matches],
         withheld_measure_axes=frozenset({"financialObligationType"}),
     )
     assert "FIXED CONTEXT" in withheld_prompt
@@ -1048,7 +1319,7 @@ def test_e2e_fixture_matches_the_real_packaged_index():
     assert row.constraint_properties["crsTypeOfFlow"] == "CRSTypeOfFlow10"
     assert row.constraint_properties["crsTypeOfFinance"] == "CRSTypeOfFinance110"
     matches = _by_system(
-        match_qualifiers(_E2E_QUERY, _REAL_INDEX, shape_systems=crs_shape_systems())
+        read_text(_E2E_QUERY, _REAL_INDEX, vocabularies=[_CRS]).by_vocabulary[_CRS].matches
     )
     assert matches["crsTypeOfFlow"].code_dcid == "CRSTypeOfFlow10"
     assert matches["crsTypeOfFinance"].code_dcid == "CRSTypeOfFinance110"

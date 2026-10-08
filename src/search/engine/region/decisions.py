@@ -1,18 +1,20 @@
-"""Pre-pipeline gates for set references and standard-family probe places.
+"""Pre-pipeline gates for set references and the places a Spec binds.
 
-``standard_probe_union`` uses resolved dcids and performs no graph I/O.
+``PlaceSetRefusedError`` is the refusal of a shape that cannot bind its place sets: its
+places exceed the one bound (``PlaceSetTooLargeError``), or a set has no reading every role
+it fills admits (``PlaceSetNotAdmittedError``).
 ``place_scope_defaulted_warning`` words the warning a defaulted scope carries.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
 
 from materialise.place_scope import DefaultPlaceScope
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.place import default_place_scope_message
-from search.engine.region.codes import PLACE_SCOPE_DEFAULTED, STANDARD_PROBE_PLACES_CLAMPED
+from search.engine.region.codes import PLACE_SCOPE_DEFAULTED
+from search.engine.region.place_set import PlaceSet
 from search.models import GraphRef, Warning
 
 logger = logging.getLogger(__name__)
@@ -56,38 +58,31 @@ def detect_set_ref(
     return GraphRef(dcid=parent, label=label)
 
 
-def standard_probe_union(
-    place_dcids: list[str],
-    place_children_by_dcid: Mapping[str, list[str]],
-    *,
-    max_probe_places: int,
-) -> tuple[list[str], list[Warning]]:
-    """Expand named places into a bounded, ordered probe union.
+class PlaceSetRefusedError(Exception):
+    """A shape cannot bind its place sets. An elected shape answers with no data, and an
+    alternate, a sibling or a relaxation is dropped."""
 
-    Each place contributes its expanded members, already capped per region at
-    ``SEARCH_MAX_CHILD_PLACES``, or its own dcid when expansion is empty.
-    Expansions stay contiguous, then deduplicate in first-seen order.
 
-    If the union exceeds ``max_probe_places``, trailing dcids are dropped and
-    a ``STANDARD_PROBE_PLACES_CLAMPED`` warning is added alongside any
-    per-region ``CHILD_PLACES_CLAMPED`` warnings. Return ``(dcids, warnings)``.
-    Warnings are empty when no union clamp occurs.
+class PlaceSetTooLargeError(PlaceSetRefusedError):
+    """A shape's places exceed the one bound on the places a Spec binds
+    (``SearchSettings.max_child_places``). ``count`` is the number of places counted against
+    ``bound``, the distinct dcids per role summed over the roles.
     """
-    union: list[str] = []
-    for dcid in place_dcids:
-        union.extend(place_children_by_dcid.get(dcid) or [dcid])
-    deduped = list(dict.fromkeys(union))
-    if len(deduped) <= max_probe_places:
-        return deduped, []
-    warning = Warning(
-        code=STANDARD_PROBE_PLACES_CLAMPED,
-        severity="warn",
-        message=(
-            f"{len(deduped)} probe places detected across {len(place_dcids)} named "
-            f"place(s); resolved the first {max_probe_places}."
-        ),
-    )
-    return deduped[:max_probe_places], [warning]
+
+    def __init__(self, *, count: int, bound: int) -> None:
+        super().__init__(f"{count} places exceed the bound of {bound}")
+        self.count = count
+        self.bound = bound
+
+
+class PlaceSetNotAdmittedError(PlaceSetRefusedError):
+    """Sets of a shape that no reading serves: the request asks for the members of each and
+    a role it fills does not admit their type, or no reading's type is admitted on every
+    role it fills. ``place_sets`` are those sets, in query order."""
+
+    def __init__(self, place_sets: tuple[PlaceSet, ...]) -> None:
+        super().__init__(f"no admitted reading for {', '.join(s.name for s in place_sets)}")
+        self.place_sets = place_sets
 
 
 def place_scope_defaulted_warning(scope: DefaultPlaceScope) -> Warning:

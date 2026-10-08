@@ -88,6 +88,12 @@ PLATFORM_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
         "Upstream Version Changed",
         "The upstream source refreshed mid-materialisation and the retry did not converge.",
     ),
+    # Served by the Datasets frame refresh and the Presentation render routes.
+    "refresh_not_permitted": (
+        "Refresh Not Permitted",
+        "The authenticated caller is not the live-refresh principal, or live refresh is "
+        "not configured on this deployment.",
+    ),
 }
 
 

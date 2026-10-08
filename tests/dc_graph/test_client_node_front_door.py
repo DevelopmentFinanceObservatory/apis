@@ -12,7 +12,7 @@ import json
 import httpx
 import pytest
 
-from dc_graph import GraphClient, GraphReadError
+from dc_graph import NODE_PATH, FrontDoorRefused, GraphClient, GraphReadError
 from graph_generation import FakeGeneration
 
 _BASE_URL = "https://graph.example.org/core/api"
@@ -134,3 +134,23 @@ def test_any_other_error_fails_the_read_without_halving(status: int, page: str, 
         _client(server).node_labels_batch(_DCIDS)
     assert excinfo.value.upstream_status == status
     assert server.posted == [_DCIDS]
+
+
+@pytest.mark.parametrize(
+    ("status", "page", "content_type", "refused"),
+    [
+        (403, _FRONT_DOOR_PAGE, "text/html; charset=UTF-8", True),
+        (403, '{"error": "forbidden"}', "application/json", False),
+        (403, _FRONT_DOOR_PAGE, "text/plain", False),
+        (401, _FRONT_DOOR_PAGE, "text/html", False),
+    ],
+)
+def test_post_marks_only_the_front_door_refusal_as_the_read_error_cause(
+    status: int, page: str, content_type: str, refused: bool
+):
+    server = _NodeServer(_REFUSED_TOGETHER, status=status, page=page, content_type=content_type)
+
+    with pytest.raises(GraphReadError) as excinfo:
+        _client(server).post(NODE_PATH, {"nodes": _DCIDS})
+    assert excinfo.value.upstream_status == status
+    assert isinstance(excinfo.value.__cause__, FrontDoorRefused) is refused

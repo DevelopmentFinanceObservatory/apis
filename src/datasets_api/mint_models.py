@@ -20,6 +20,7 @@ from pydantic import (
 )
 
 from datasets_api.models import CanonicalDefinition, _require_schema_version_int
+from dfo_platform.named import cut, named_capped
 
 FACET_AXES: tuple[str, ...] = ("provenance", "measurementMethod", "unit")
 NULL_REF_FACET_AXES: tuple[str, ...] = ("measurementMethod", "unit")
@@ -165,16 +166,16 @@ class Scope(BaseModel):
             return self
         for role, refs in self.entities.items():
             if not role or not all(ch.isalnum() or ch == "_" for ch in role):
-                raise ValueError(f"invalid entity role {role!r}")
+                raise ValueError(f"invalid entity role {cut(role)!r}")
             if not refs:
-                raise ValueError(f"entity role {role!r} has no values")
+                raise ValueError(f"entity role {cut(role)!r} has no values")
             for ref in refs:
                 if not ref:
-                    raise ValueError(f"entity role {role!r} has an empty value")
+                    raise ValueError(f"entity role {cut(role)!r} has an empty value")
                 for char in _SDMX_RESERVED_VALUE_CHARS:
                     if char in ref:
                         raise ValueError(
-                            f"entity role {role!r} has a value containing {char!r}: {ref!r}"
+                            f"entity role {cut(role)!r} has a value containing {char!r}: {cut(ref)!r}"
                         )
         return self
 
@@ -183,7 +184,7 @@ class Scope(BaseModel):
         if self.facets is not None:
             unknown = set(self.facets) - set(FACET_AXES)
             if unknown:
-                raise ValueError(f"unknown facet axis/axes: {sorted(unknown)!r}")
+                raise ValueError(f"unknown facet axis/axes: {named_capped(sorted(unknown))}")
         return self
 
     @model_validator(mode="after")
@@ -259,7 +260,7 @@ class GroupbyOptions(BaseModel):
         seen: set[str] = set()
         duplicates = {name for name in value if name in seen or seen.add(name)}
         if duplicates:
-            raise ValueError(f"duplicate groupby axis name(s): {sorted(duplicates)!r}")
+            raise ValueError(f"duplicate groupby axis name(s): {named_capped(sorted(duplicates))}")
         return value
 
     @field_validator("levels")
@@ -271,7 +272,9 @@ class GroupbyOptions(BaseModel):
         if value is not None and by is not None:
             outside = sorted(set(value) - set(by))
             if outside:
-                raise ValueError(f"groupby.levels names axis(es) {outside!r} absent from by")
+                raise ValueError(
+                    f"groupby.levels names axis(es) {named_capped(outside)} absent from by"
+                )
         return value
 
 
@@ -334,7 +337,7 @@ class MintOptions(BaseModel):
             seen: set[str] = set()
             duplicates = {name for name in value if name in seen or seen.add(name)}
             if duplicates:
-                raise ValueError(f"duplicate column name(s): {sorted(duplicates)!r}")
+                raise ValueError(f"duplicate column name(s): {named_capped(sorted(duplicates))}")
         return value
 
     # Declared last, so the validator sees every other field.
@@ -387,8 +390,8 @@ class SpecIdInput(BaseModel):
     def _sidecar_spec_id_matches_outer(self) -> SpecIdInput:
         if self.definition is not None and self.definition.spec_id != self.spec_id:
             raise ValueError(
-                f"definition.spec_id {self.definition.spec_id!r} does not match "
-                f"the outer spec_id {self.spec_id!r}"
+                f"definition.spec_id {cut(self.definition.spec_id)!r} does not match "
+                f"the outer spec_id {cut(self.spec_id)!r}"
             )
         return self
 

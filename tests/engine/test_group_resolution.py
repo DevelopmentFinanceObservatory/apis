@@ -1,4 +1,5 @@
-"""Groups resolve to their members through the place-set path, subject to `max_child_places`.
+"""Groups resolve to their members through the place-set path, under the bound on the places
+a Spec binds (`max_child_places`).
 
 Most tests inject resolutions; `TestG7RealResolverSettlement` uses the shared resolver and real G7 members.
 """
@@ -10,7 +11,7 @@ import asyncio
 import pytest
 from dfo_spec_kit.identity import spec_id_from_value
 
-from entity_resolution import Entity, Group, Resolved
+from entity_resolution import Ambiguous, Entity, Group, Resolved
 from search.engine.bind import _UniversalBindOutput
 from search.engine.clients.graph import Facet
 from search.engine.config import settings
@@ -100,7 +101,7 @@ def _run(
 
 
 class TestGroupExpansion:
-    """A Group expands like a continent and uses `max_child_places`, not the 10-place standard cap."""
+    """A Group expands like a continent, under the bound on the places a Spec binds."""
 
     _MEMBERS = (
         _country("country/T1", "Testland One"),
@@ -152,10 +153,8 @@ class TestGroupExpansion:
         )
         assert countries_dim.count == 2
 
-    def test_group_member_count_rides_the_child_place_cap_not_the_standard_cap(
-        self, search_settings
-    ):
-        """A Group uses the child-place cap, here 2, rather than the standard 10-place cap."""
+    def test_group_over_a_lowered_place_bound_answers_entity_set_too_large(self, search_settings):
+        """A Group's members count against the bound on the places a Spec binds, here 2."""
         search_settings(max_child_places=2)
         obs = {
             f"{_GDP_SV}|country/T1": [
@@ -172,15 +171,16 @@ class TestGroupExpansion:
             pre_resolved={"G7": Group(members=self._MEMBERS, entity=None)},
             graph=self._graph(obs),
         )
-        # Three members exceed the child cap of 2, so resolution refuses instead of truncating.
+        # Three members exceed the bound of 2, so resolution refuses instead of truncating.
         assert result.status == "no_data"
-        assert result.no_data_reason == "entity_not_resolved"
+        assert result.no_data_reason == "entity_set_too_large"
+        assert result.specs == ()
 
 
 class TestGroupTooLarge:
-    """Groups above `max_child_places` return entity_not_resolved, with no truncated answer."""
+    """Groups above `max_child_places` return entity_set_too_large, with no truncated answer."""
 
-    def test_oversized_group_refuses_entity_not_resolved(self):
+    def test_oversized_group_answers_entity_set_too_large(self):
         members = tuple(
             _country(f"country/T{i}", f"Testland {i}")
             for i in range(settings().max_child_places + 1)
@@ -199,8 +199,9 @@ class TestGroupTooLarge:
             graph=graph,
         )
         assert result.status == "no_data"
-        assert result.no_data_reason == "entity_not_resolved"
-        assert result.unresolved_entity_names == ("G77",)
+        assert result.no_data_reason == "entity_set_too_large"
+        # The group resolved. Only its membership is too large.
+        assert result.unresolved_entity_names == ()
 
 
 class TestGroupRoleBearingExpansion:
@@ -211,9 +212,9 @@ class TestGroupRoleBearingExpansion:
         _country("country/T2", "Testland Two"),
     )
 
-    def _graph(self, *, group_label: str | None = None) -> FakeGraph:
+    def _graph(self, *, group_label: str | None = None, children: dict | None = None) -> FakeGraph:
         """`group_label` is the graph's label for the group's own node, which the graph
-        holds only when it is set."""
+        holds only when it is set. `children` are a region's member places by type."""
         sv_arcs = {
             "populationType": {"nodes": [{"dcid": "EconomicActivity"}]},
             "measuredProperty": {"nodes": [{"dcid": "amount"}]},
@@ -236,7 +237,7 @@ class TestGroupRoleBearingExpansion:
             detect={"gdp": {"svs": [_GDP_SV], "cosine_scores": [0.95]}},
             resolve={},
             places={},
-            children={},
+            children=children or {},
         )
 
     def _facet(self) -> Facet:
@@ -286,8 +287,9 @@ class TestGroupRoleBearingExpansion:
         self, monkeypatch, group_node, graph_label, label
     ):
         """The where-slot binds Kenya; each origin member belongs in resolved entities, and the
-        origin role's group is served on `resolved.entity_groups`, with its node when the graph
-        holds one. The label is the graph's for that node, else the query's name for the group.
+        origin role's group is served on `resolved.entity_groups`, with its node and the node's
+        graph type when the graph holds one. The label is the graph's for that node, else the
+        query's name for the group.
         Its departure asks for it as the query named it."""
         _auto_coverage_index_1 = patch_coverage(
             monkeypatch,
@@ -319,7 +321,11 @@ class TestGroupRoleBearingExpansion:
         assert entities_by_ref["country/T1"] == "origin"
         assert entities_by_ref["country/T2"] == "origin"
         assert entities_by_ref["country/KEN"] == "destination"
-        group = EntityGroup(dcid=group_node.dcid if group_node is not None else None, label=label)
+        group = EntityGroup(
+            dcid=group_node.dcid if group_node is not None else None,
+            label=label,
+            entity_type=group_node.graph_type if group_node is not None else None,
+        )
         assert spec.resolved.entity_groups == {"origin": group}
         assert spec.spec_id == spec_id_from_value(
             spec.definition.identity.model_dump(exclude_none=True)
@@ -330,6 +336,45 @@ class TestGroupRoleBearingExpansion:
             if fact.code == "group_read_as_members"
         ]
         assert asked == ["Testland Union"]
+
+    def test_a_region_on_a_role_that_admits_only_its_members_binds_them(self, monkeypatch):
+        """The recipient role admits countries and refuses a continent. The series holds
+        rows to the continent's node and to one member, and the Spec binds the members."""
+        region = Entity(dcid="testonia", name="Testonia", kind="continent", graph_type="Continent")
+        coverage = patch_coverage(
+            monkeypatch,
+            [
+                (_GDP_SV, "f1", "country/KEN", region.dcid, [2020]),
+                (_GDP_SV, "f1", "country/KEN", "country/T1", [2020]),
+            ],
+            role_names={_GDP_SV: _FINANCING_ROLE_NAMES},
+        )
+        graph = self._graph(children={region.dcid: {"Country": ["country/T1", "country/T2"]}})
+        result = _run(
+            entities=["Kenya", "Testonia"],
+            pre_resolved={
+                "Kenya": Resolved(entity=_country("country/KEN", "Kenya")),
+                "Testonia": Resolved(entity=region),
+            },
+            entity_roles={
+                "Kenya": [DoorRole(axis="origin", span="from")],
+                "Testonia": [DoorRole(axis="destination", span="to")],
+            },
+            graph=graph,
+            sdmx=FakeSdmxClient(observations={}),
+            llm=_FixedBindLLM(),
+            coverage=FakeCoverageService(coverage).snapshot(),
+        )
+
+        assert result.status == "definite", result
+        spec = result.specs[0]
+        assert spec.definition.identity.entities == {
+            "origin": ["country/KEN"],
+            "destination": ["country/T1", "country/T2"],
+        }
+        assert spec.resolved.entity_groups == {
+            "destination": EntityGroup(dcid="testonia", label="Testonia", entity_type="Continent")
+        }
 
 
 def _gdp_graph(obs: dict) -> FakeGraph:
@@ -392,6 +437,40 @@ class TestTwoGroupsNamedInOneQuery:
         }
 
 
+class TestGroupNamedBesideAnAmbiguousEntity:
+    """The answer carries the dcid each resolved name pins, and a group pins none."""
+
+    _MEMBERS = (
+        _country("country/T1", "Testland One"),
+        _country("country/T2", "Testland Two"),
+    )
+    _NODE = Entity(
+        dcid="TestlandUnion", name="Testland Union", kind="aggregate", graph_type="Place"
+    )
+
+    @pytest.mark.parametrize("node", [None, _NODE], ids=["no-node", "with-node"])
+    def test_a_group_is_pinned_to_neither_a_member_nor_its_node(self, node):
+        """Pinning the group to a member's dcid, or to its node, would resubmit one place
+        for the several the query named."""
+        result = _run(
+            entities=["Testland Union", "Kenya", "Congo"],
+            pre_resolved={
+                "Testland Union": Group(members=self._MEMBERS, entity=node),
+                "Kenya": Resolved(entity=_country("country/KEN", "Kenya")),
+                "Congo": Ambiguous(
+                    candidates=(
+                        _country("country/COD", "Congo (DRC)"),
+                        _country("country/COG", "Congo (Republic)"),
+                    )
+                ),
+            },
+            graph=_gdp_graph({}),
+        )
+
+        assert result.no_data_reason == "entity_ambiguous"
+        assert result.resolved_entity_dcids == {"Kenya": "country/KEN"}
+
+
 class TestGroupWithEmptyMembers:
     """An injected empty group resolves as entity_not_resolved instead of raising IndexError."""
 
@@ -445,7 +524,8 @@ class TestDuplicateMemberDcidWithinAGroup:
 
 
 class TestGroupCapBoundary:
-    """A group at the 256-member cap settles; one member above it returns entity_not_resolved."""
+    """A group at the 256-member bound settles. One member above it returns
+    entity_set_too_large."""
 
     @staticmethod
     def _members(n: int) -> tuple[Entity, ...]:
@@ -459,8 +539,8 @@ class TestGroupCapBoundary:
             },
             graph=_gdp_graph({}),
         )
-        # No observations are supplied; this assertion only checks the cap refusal is absent.
-        assert not (result.status == "no_data" and result.no_data_reason == "entity_not_resolved")
+        # No observations are supplied, so this only checks that the bound refusal is absent.
+        assert result.no_data_reason not in {"entity_set_too_large", "entity_not_resolved"}
 
     def test_group_one_past_the_cap_refuses(self):
         result = _run(
@@ -471,8 +551,22 @@ class TestGroupCapBoundary:
             graph=_gdp_graph({}),
         )
         assert result.status == "no_data"
+        assert result.no_data_reason == "entity_set_too_large"
+        assert result.unresolved_entity_names == ()
+
+    def test_group_past_the_cap_beside_an_unresolved_name_is_not_listed_unresolved(self):
+        """The unresolved name decides the reason, and the group, which resolved, is not
+        among the unresolved names."""
+        result = _run(
+            entities=["G7", "Atlantis"],
+            pre_resolved={
+                "G7": Group(members=self._members(settings().max_child_places + 1), entity=None)
+            },
+            graph=_gdp_graph({}),
+        )
+        assert result.status == "no_data"
         assert result.no_data_reason == "entity_not_resolved"
-        assert result.unresolved_entity_names == ("G7",)
+        assert result.unresolved_entity_names == ("Atlantis",)
 
 
 class TestG7RealResolverSettlement:

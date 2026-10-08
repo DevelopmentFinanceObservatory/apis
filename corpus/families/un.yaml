@@ -105,6 +105,40 @@ un.sdg_disability_employment:
   origin: un_system
   dataset: undata/p/SDG
   shape: {population_type: undata/sdg/SERIES-SL_TLF_UEMDIS, measured_property: value, stat_type: measuredValue}
+un.sdg_dtp3:
+  origin: un_system
+  dataset: undata/p/SDG
+  shape: {population_type: undata/sdg/SERIES-SH_ACS_DTP3, measured_property: value, stat_type: measuredValue}
+  stat_vars: [undata/sdg/SH_ACS_DTP3]
+un.sdg_road_traffic_death_rate:
+  origin: un_system
+  dataset: undata/p/SDG
+  shape: {population_type: undata/sdg/SERIES-SH_STA_TRAF, measured_property: value, stat_type: measuredValue}
+un.sdg_road_traffic_deaths:
+  origin: un_system
+  dataset: undata/p/SDG
+  shape: {population_type: undata/sdg/SERIES-SH_STA_TRAFN, measured_property: value, stat_type: measuredValue}
+  stat_vars: [undata/sdg/SH_STA_TRAFN]
+un.sdg_air_mortality:
+  origin: un_system
+  dataset: undata/p/SDG
+  shape: {population_type: undata/sdg/SERIES-SH_STA_ASAIRP, measured_property: value, stat_type: measuredValue}
+  stat_vars: [undata/sdg/SH_STA_ASAIRP]
+un.sdg_air_mortality_ambient:
+  origin: un_system
+  dataset: undata/p/SDG
+  shape: {population_type: undata/sdg/SERIES-SH_AAP_ASMORT, measured_property: value, stat_type: measuredValue}
+  stat_vars: [undata/sdg/SH_AAP_ASMORT]
+un.sdg_air_mortality_household:
+  origin: un_system
+  dataset: undata/p/SDG
+  shape: {population_type: undata/sdg/SERIES-SH_HAP_ASMORT, measured_property: value, stat_type: measuredValue}
+  stat_vars: [undata/sdg/SH_HAP_ASMORT]
+un.sdg_refugees_by_origin:
+  origin: un_system
+  dataset: undata/p/SDG
+  shape: {population_type: undata/sdg/SERIES-SM_POP_REFG_OR, measured_property: value, stat_type: measuredValue}
+  stat_vars: [undata/sdg/SM_POP_REFG_OR]
 un.unicef_stunting:
   origin: un_system
   dataset: undata/p/UNICEF

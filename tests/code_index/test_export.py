@@ -30,11 +30,13 @@ from materialise.graph import (
     SubjectPage,
 )
 from scripts.export_code_index import (
+    _CONCEPT_GROUPS,
     _MEASURE_VALUE_TEXT,
     CODE_SYSTEMS,
     DATASETS,
     CodeSystemConfig,
     CoverageJoin,
+    _apply_concept_groups,
     _MeasureValueText,
     _minimal_system_sets,
     _validate_declared_defaults,
@@ -143,6 +145,7 @@ _TEST_DATASETS = (
         description="A test table.",
         opt_in=False,
         absent_observation="zero",
+        account="provider",
         rank=0,
     ),
 )
@@ -1498,6 +1501,45 @@ def test_export_index_wires_measure_axes_into_the_document(tmp_path):
     assert measure_index.nouns == _MEASURE_NOUNS_FOR_TEST
 
 
+def test_export_strips_the_measure_words_a_code_synonym_would_take():
+    """The matcher reads a code text whole before a measure word inside it, so "Gross alpha"
+    on a code would leave "gross" unread as the netting basis. The synonym keeps its other
+    words. Every SysFlatA series is a disbursement, so "disbursements" stays on it, and every
+    SysFlatB series a commitment, so "gross disbursement" has no words left there. `Net` is
+    no exported value here, and "alpha: gross" matches no query, so both stay."""
+    graph = _two_system_graph_with_measure_labels()
+    graph.forward_arcs["SysFlatA"]["alternateName"] = (
+        "Gross alpha",
+        "alpha disbursements",
+        "Gross alpha disbursements",
+        "net alpha",
+        "alpha: gross",
+        "engrossed alpha",
+    )
+    graph.forward_arcs["SysFlatB"]["name"] = ("gross beta (CRS Flat)",)
+    graph.forward_arcs["SysFlatB"]["alternateName"] = ("gross disbursement",)
+
+    blocks = export_graph_blocks(
+        graph,
+        code_systems=(_HIERARCHICAL, _FLAT),
+        measure_axes=_MEASURE_AXES_FOR_TEST,
+        measure_partition_labels=_MEASURE_PARTITION_LABELS_FOR_TEST,
+        measure_nouns=_MEASURE_NOUNS_FOR_TEST,
+        datasets=_TEST_DATASETS,
+    )
+    by_dcid = {row["dcid"]: row for row in blocks["codes"]}
+
+    assert by_dcid["SysFlatA"]["synonyms"] == [
+        "alpha",
+        "alpha disbursements",
+        "alpha: gross",
+        "engrossed alpha",
+        "net alpha",
+    ]
+    assert by_dcid["SysFlatB"]["label"] == "gross beta"
+    assert by_dcid["SysFlatB"]["synonyms"] == []
+
+
 def test_content_hash_moves_when_only_measure_axes_change():
     # Changing only `measure_axes` changes the content hash.
     graph = _two_system_graph_with_measure_labels()
@@ -1985,6 +2027,7 @@ _OPT_IN = DatasetDeclaration(
     description="A test table.",
     opt_in=True,
     absent_observation="unknown",
+    account="provider",
     rank=10,
 )
 
@@ -2049,6 +2092,7 @@ def test_export_index_writes_dataset_declarations_and_they_round_trip(tmp_path: 
             "description": "A test table.",
             "opt_in": True,
             "absent_observation": "unknown",
+            "account": "provider",
             "rank": 10,
             "invariants": {},
         }
@@ -2216,8 +2260,8 @@ def test_a_dataset_no_code_system_lists_refuses_enumeration():
 
 
 def test_the_packaged_configuration_lists_each_system_under_the_datasets_that_always_declare_it():
-    crs, imputed, dac1 = (dataset.provenance for dataset in DATASETS)
-    assert [dataset.opt_in for dataset in DATASETS] == [False, True, False]
+    crs, imputed, dac1, dac2a, dac2b = (dataset.provenance for dataset in DATASETS)
+    assert [dataset.opt_in for dataset in DATASETS] == [False, True, False, False, False]
 
     assert {
         config.code_system: set(config.declared_by_every_statvar_of) for config in CODE_SYSTEMS
@@ -2226,8 +2270,9 @@ def test_the_packaged_configuration_lists_each_system_under_the_datasets_that_al
         "crsTypeOfFinance": {crs},
         "crsCooperationModality": set(),
         "crsTypeOfFlow": {crs, imputed},
-        "dac2aAidType": {imputed},
+        "dac2aAidType": {imputed, dac2a},
         "dac1AidType": {dac1},
+        "dac2bAidType": {dac2b},
     }
 
 
@@ -2359,3 +2404,40 @@ def test_export_refuses_a_five_tuple_read_still_truncated_after_every_code_axis(
 
     with pytest.raises(SystemExit, match=r"exhausted every partition property.*'amount'"):
         _export_blocks(graph)
+
+
+@pytest.mark.parametrize("group", _CONCEPT_GROUPS, ids=lambda group: "+".join(d for _s, d in group))
+def test_every_code_of_a_concept_group_reads_the_same_texts(group):
+    """Codes of different tables that name one concept carry one set of texts in the
+    packaged index, so a query phrase reads on all of them or none."""
+    index = load_index(default_index_path())
+    rows = [index.code_by_dcid(dcid) for _system, dcid in group]
+    assert all(row is not None for row in rows)
+    texts = [
+        {text.strip().casefold() for text in (row.label, *row.synonyms)}
+        for row in rows
+        if row is not None
+    ]
+
+    assert all(member == texts[0] for member in texts)
+
+
+@pytest.mark.parametrize(
+    ("groups", "message"),
+    [
+        pytest.param([(("sysA", "A1"), ("sysA", "A2"))], "one code system", id="one-system"),
+        pytest.param(
+            [(("sysA", "A1"), ("sysB", "B1")), (("sysA", "A1"), ("sysC", "C1"))],
+            "more than one group",
+            id="code-in-two-groups",
+        ),
+    ],
+)
+def test_a_malformed_concept_group_refuses(groups, message):
+    rows = [
+        {"dcid": dcid, "code_system": system, "label": dcid.lower(), "synonyms": []}
+        for system, dcid in (("sysA", "A1"), ("sysA", "A2"), ("sysB", "B1"), ("sysC", "C1"))
+    ]
+
+    with pytest.raises(SystemExit, match=message):
+        _apply_concept_groups(rows, groups, {"sysA", "sysB", "sysC"})

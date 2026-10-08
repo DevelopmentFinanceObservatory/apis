@@ -392,11 +392,14 @@ def _get_again_section(
 ) -> str:
     lines = ["## Get this data again", "", "No API key is needed.", ""]
     if export is not None:
-        route = (
-            _query_url(site_path(context, reproducing_call.path), reproducing_call.options)
-            if reproducing_call is not None
-            else context.links.version
-        )
+        if reproducing_call is None:
+            # These rows were drawn on a newer frame than the card was saved on, and no public
+            # route serves them again.
+            lines.append(
+                f'- The rows behind this card as it was saved: `curl -OJ "{context.links.version}"`.'
+            )
+            return "\n".join(lines)
+        route = _query_url(site_path(context, reproducing_call.path), reproducing_call.options)
         lines.append(
             f'- The rows behind this card: `curl -OJ "{route}"` downloads this bundle again.'
         )

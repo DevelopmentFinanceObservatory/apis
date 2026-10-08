@@ -18,8 +18,9 @@ from dfo_frame_grammar import (
 )
 
 from assembler.errors import BindingInvalid
-from assembler.limits import PER_DIMENSION_LISTING_CAP
+from assembler.limits import LABEL_MAX, PER_DIMENSION_LISTING_CAP
 from assembler.ports import DimensionView, StructuralView
+from materialise.unit_cells import shared_unit_key, unit_key_text
 
 __all__ = [
     "compute_structural_view",
@@ -46,6 +47,22 @@ def compute_structural_view(*, frame: Mapping[str, object]) -> StructuralView:
     columns = tuple(cast("Sequence[str]", frame["columns"]))
     rows = tuple(cast("Sequence[Sequence[object]]", frame["rows"]))
     index_by_column = {column: position for position, column in enumerate(columns)}
+    if UNIT_COLUMN in index_by_column:
+        unit_index = index_by_column[UNIT_COLUMN]
+        shared = shared_unit_key(cells=tuple(row[unit_index] for row in rows))
+        if shared is not None:
+            # Grouping would put one cell's rows under the other's unit. Every reader takes its
+            # frame with this view, so the refusal covers each of them.
+            raise BindingInvalid(
+                pointer="/frame_ref",
+                dimension="",
+                legal_values=(),
+                truncated=False,
+                detail=(
+                    f"this frame holds the unit ref {shared[:LABEL_MAX]!r} beside a structured "
+                    "unit that reads as the same text; a frame's units must read apart"
+                ),
+            )
 
     dimensions = tuple(
         _dimension_view(name=name, index=index_by_column[name], rows=rows)
@@ -101,15 +118,13 @@ def _cell_text(value: object) -> str:
 def hashable_cell(value: object) -> object:
     """Makes frame cells hashable and gives structured units their display form.
 
-    `None` and strings pass through. Unit objects render as
-    `currency/prices[/base_year]`, keeping converted units distinct.
+    `None` and strings pass through. A converted or composed unit renders as
+    `materialise.unit_cells.unit_key_text` gives it. `compute_structural_view`
+    refuses a frame in which a string cell spells a structured cell's key.
     This form is for grouping and display only. Binding preserves the raw
     unit object in the resolved payload."""
     if isinstance(value, Mapping):
-        ref = cast("Mapping[str, object]", value)
-        text = f"{ref['currency']}/{ref['prices']}"
-        base_year = ref.get("base_year")
-        return f"{text}/{base_year}" if base_year is not None else text
+        return unit_key_text(cast("Mapping[str, object]", value))
     return value
 
 

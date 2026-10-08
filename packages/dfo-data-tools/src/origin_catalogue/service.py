@@ -31,8 +31,15 @@ logger = logging.getLogger(__name__)
 
 _ARTIFACT_URI_ENV_VAR = "ORIGIN_CATALOGUE_URI"
 DEFAULT_RECHECK_SECONDS = 300.0
-DEFAULT_MAX_RESIDENT_BYTES = 256 * 1024 * 1024
-"""The memory budget for one loaded build. Two can be resident during a swap."""
+DEFAULT_MAX_RESIDENT_BYTES = 384 * 1024 * 1024
+"""The memory budget for one loaded build, against the size its manifest records for its
+tables and its UN tables together. The dfo-dev apis service runs one process in a 4 GiB
+container. Loading a build adds about 2.3 times its recorded size to the resident set (the
+dev build records 115 MiB and adds 247 to 266 MiB), and two builds are resident during a
+swap. The composed app with the Search and graph surfaces starts at about 1,170 MiB without
+the catalogue. A build at the budget then needs 1,170 + 2 x 2.3 x 384 = about 2,940 MiB,
+which leaves about 1.1 GiB for the Datasets surface, whose start the 1,170 MiB leaves out,
+and a coverage index reload."""
 
 # Logs the first reload failure and each tenth consecutive failure.
 _FAILURE_LOG_EVERY_N = 10

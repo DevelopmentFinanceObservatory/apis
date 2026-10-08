@@ -18,6 +18,7 @@ from search.engine.config import SEARCH_MAX_PARTS
 from search.engine.unit.base_year import TABLE_PROVENANCES
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import PINNED_DATE, materialise_double_from_obs
+from tests.engine._refusal_detail import assert_names_plainly
 from tests.engine._search_app import search_app
 from tests.fixtures import FakeGraph, FakeLLM, _load_json, make_resolver
 
@@ -274,6 +275,7 @@ class TestPartProvenance:
                 description=f"What table {rank} measures.",
                 opt_in=rank == 1,
                 absent_observation="zero",
+                account="provider",
                 rank=rank,
             )
             for rank in (1, 0)
@@ -464,6 +466,18 @@ class TestConstantPricesCompleteFromTheConversionTables:
         body = resp.json()
         assert body["code"] == "capability_unavailable"
         assert "deflatorBaseYear" in body["detail"]
+
+    def test_a_table_declaring_many_base_years_names_them_plainly(self):
+        dac, imf = TABLE_PROVENANCES
+        years = [str(year) for year in range(2018, 2025)]
+        graph = _fertility_kenya_graph(
+            extra_nodes={dac: _table_provenance(years), imf: _table_provenance(["2024"])}
+        )
+        resp = _post_unit_text(graph, "constant prices")
+        assert resp.status_code == 501
+        body = resp.json()
+        assert body["code"] == "capability_unavailable"
+        assert_names_plainly(body["detail"], years)
 
     def test_an_absent_table_provenance_refuses_capability_unavailable(self):
         resp = _post_unit_text(_fertility_kenya_graph(), "constant prices")

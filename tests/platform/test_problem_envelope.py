@@ -122,6 +122,23 @@ def test_issues_round_trip_with_axis_set_and_member_absent():
     assert body["issues"] == [{"pointer": "/b", "axis": "where"}]
 
 
+def test_issue_code_and_detail_serialise_when_set_and_are_omitted_when_unset():
+    envelope = _envelope()
+    problem = envelope.details(
+        status=400,
+        code="known_code",
+        issues=[
+            ProblemIssue(pointer="/a", axis="unit", code="inner_code", detail="inner detail"),
+            ProblemIssue(pointer="/b", axis="where"),
+        ],
+        retryable=False,
+    )
+    assert problem.to_json()["issues"] == [
+        {"pointer": "/a", "axis": "unit", "code": "inner_code", "detail": "inner detail"},
+        {"pointer": "/b", "axis": "where"},
+    ]
+
+
 def test_response_status_content_type_and_cache_control():
     envelope = _envelope()
     response = envelope.response(status=422, code="known_code", retryable=False)
@@ -261,7 +278,7 @@ def test_to_canonical_data_is_json_serializable_with_every_field_populated():
         pointer="/a/b",
         alternatives=[Alternative(ref="ref", label="label")],
         truncated=True,
-        issues=[ProblemIssue(pointer="/c", member="m", axis="ax")],
+        issues=[ProblemIssue(pointer="/c", member="m", axis="ax", code="inner", detail="why")],
         constraint_id="donor_country_required",
         headers={"B-Header": "2", "A-Header": "1"},
     )
@@ -275,7 +292,15 @@ def test_to_canonical_data_is_json_serializable_with_every_field_populated():
     assert data["alternatives"] == [{"ref": "ref", "label": "label"}]
     assert data["truncated"] is True
     assert data["issues"] == [
-        {"pointer": "/c", "member": "m", "axis": "ax", "alternatives": None, "truncated": None}
+        {
+            "pointer": "/c",
+            "member": "m",
+            "axis": "ax",
+            "alternatives": None,
+            "truncated": None,
+            "code": "inner",
+            "detail": "why",
+        }
     ]
     assert data["constraint_id"] == "donor_country_required"
     # Sorted for a stable digest input, regardless of construction order.

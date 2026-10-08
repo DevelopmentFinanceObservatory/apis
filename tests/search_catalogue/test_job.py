@@ -201,6 +201,8 @@ def test_publishes_the_passing_lines_with_counts_and_places(setup, capsys):
     ]
     assert artifact.counts.publishers == 4
     assert artifact.counts.countries == len(artifact.places) == 6
+    # The fixture's facets belong to a dataset the packaged code index declares.
+    assert artifact.counts.aid.donors == 3
     assert artifact.inputs.build_commit == "c1"
     # Only the default places were sent: the fixture holds neither test place.
     assert sorted(engine.queries) == sorted(example.text for example in artifact.examples)

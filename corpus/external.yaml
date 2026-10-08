@@ -1,11 +1,11 @@
 - id: dq-ext-001
   query: DTP3 immunisation coverage in Chad
-  why: Base holds three DTP3 coverage series for Chad (WHO WUENIC, WHO survey, SDG 3.b.1), so base answers before any UN pass.
+  why: Base holds two DTP3 coverage series for Chad (WHO WUENIC, WHO survey) and the UN SDG copy holds SDG 3.b.1, so any of the three answers.
   tags: {theme: health, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
   known_failure: {issue: 1156, checks: [measure, provenance]}
   expect:
     entities: [{dcid: country/TCD, role: observationAbout}]
-    measure: {family: [base.who_immunisation, base.sdg_dtp3, base.who_dtp3_survey]}
+    measure: {family: [base.who_immunisation, un.sdg_dtp3, base.who_dtp3_survey]}
     definite: {}
     candidates: {}
 
@@ -19,13 +19,13 @@
 
 - id: dq-ext-003
   query: deaths from road injuries in Kenya in 2019
-  why: Base holds no GHE death counts; road traffic mortality from the World Bank (to 2019) and SDG 3.6.1 answer.
+  why: Base holds no GHE death counts; road traffic mortality from the World Bank (to 2019) and SDG 3.6.1 from the UN SDG copy answer.
   tags: {theme: health, entity: country, direction: subject, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: casual}
   known_failure: {issue: 1156, checks: [disposition]}
   expect:
     entities: [{dcid: country/KEN, role: observationAbout}]
     window: {kind: range, start: 2019, end: 2019}
-    measure: {family: [base.wb_road_traffic_mortality, base.sdg_road_traffic_death_rate, base.sdg_road_traffic_deaths]}
+    measure: {family: [base.wb_road_traffic_mortality, un.sdg_road_traffic_death_rate, un.sdg_road_traffic_deaths]}
     definite: {}
     candidates: {}
 
@@ -52,7 +52,7 @@
 
 - id: dq-ext-006
   query: deaths from air pollution in India
-  why: WHO, SDG and World Bank base series split air-pollution deaths into ambient, household and combined; any one, or candidates over them, fits.
+  why: WHO and World Bank base series and the UN SDG copy split air-pollution deaths into ambient, household and combined; any one, or candidates over them, fits.
   tags: {theme: climate_energy, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
   expect:
     entities: [{dcid: country/IND, role: observationAbout}]
@@ -60,9 +60,9 @@
       family:
         - base.who_air_deaths_household
         - base.who_air_deaths_ambient
-        - base.sdg_air_mortality
-        - base.sdg_air_mortality_ambient
-        - base.sdg_air_mortality_household
+        - un.sdg_air_mortality
+        - un.sdg_air_mortality_ambient
+        - un.sdg_air_mortality_household
         - base.wb_air_mortality
     definite: {}
     candidates: {}
@@ -215,11 +215,11 @@
 
 - id: dq-ext-022
   query: homicide rate in Honduras
-  why: WDI and the base SDG copy hold the homicide rate for Honduras, so base answers before UNODC or the UN SDG copy.
+  why: WDI and the UN SDG copy hold the homicide rate for Honduras, so either answers before UNODC.
   tags: {theme: governance, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, overlap: [sdg_base, unodc]}
   expect:
     entities: [{dcid: country/HND, role: observationAbout}]
-    measure: {family: [base.homicide_rate, base.sdg_homicide_rate]}
+    measure: {family: [base.homicide_rate, un.sdg_homicide]}
     definite: {}
     candidates: {}
 
@@ -242,11 +242,11 @@
 
 - id: dq-ext-025
   query: refugees from Sudan
-  why: The base SDG series counts refugees by country of origin, so 'from Sudan' reads Sudan as the subject of that series.
+  why: The UN SDG series counts refugees by country of origin, so 'from Sudan' reads Sudan as the subject of that series.
   tags: {theme: humanitarian, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, overlap: [unhcr]}
   expect:
     definite:
-      measure: {family: base.sdg_refugees_by_origin}
+      measure: {family: un.sdg_refugees_by_origin}
       entities: [{dcid: country/SDN, role: observationAbout}]
 
 - id: dq-ext-026
@@ -302,7 +302,7 @@
 
 - id: dq-ext-032
   query: refugees in Western Sahara
-  why: Base holds refugees by origin only, not by asylum country, and the UN front door refuses Western Sahara, so the answer is no_data.
+  why: The SDG refugee series counts refugees by origin only, not by asylum country, and the UN front door refuses Western Sahara, so the answer is no_data.
   tags: {theme: humanitarian, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [waf_blocked]}
   known_failure: {issue: 1156, checks: [disposition]}
   expect:

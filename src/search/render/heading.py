@@ -400,7 +400,7 @@ def heading_from_parts(
     unit_request: IdentityUnitRequest | None = None,
     entity_groups: Mapping[str, EntityGroup] | None = None,
     role_axis_facts: Sequence[RoleAxisFact] = (),
-    member_constraints: Sequence[Mapping[str, str]] = (),
+    member_dcids: Sequence[str] = (),
 ) -> HeadingPlan:
     """Build a heading in possessive order (actor, measure noun, counterpart, period),
     then its byline (latest-year label, unit, source).
@@ -451,13 +451,13 @@ def heading_from_parts(
     maps property dcids to code-index names in declaration order. ``measure_label_axes``
     are the partition axes the measure label states, and ``measure_label_named_values``
     the code pairs its authored text names. ``entities`` accepts engine
-    ``Entity`` or wire ``ResolvedEntity`` values. ``member_constraints`` are the elected
-    members' constraint values, which name the flow family before materialise has served
-    any StatVar, so a bind-time heading orders and words its roles as the final one does.
+    ``Entity`` or wire ``ResolvedEntity`` values. ``member_dcids`` are the elected
+    members' StatVar dcids, which name the flow family before materialise has served any
+    StatVar, so a bind-time heading orders and words its roles as the final one does.
     """
     norm_entities = _normalize_entities(entities)
     constraints = _shared_constraint_values(slots, open_axis_facts)
-    family = _flow_family(shape, facts, constraints, members=member_constraints)
+    family = _flow_family(shape, facts, constraints, member_dcids=member_dcids)
     wording = role_wording(family)
     groups = entity_groups or {}
 
@@ -857,23 +857,26 @@ def _flow_family(
     facts: SentenceFacts | None,
     constraints: Mapping[str, str],
     *,
-    members: Sequence[Mapping[str, str]] = (),
+    member_dcids: Sequence[str] = (),
 ) -> FlowFamily | None:
     """The flow family the members share (`flow_family`), or None.
 
-    ``members`` are the elected members' own constraint values, when known. Otherwise
-    each constraint property list the served members state (`SentenceFacts`) is one
-    member, valued from the values every member shares. With none, the shared values
-    stand for the one member.
+    The members are the elected ``member_dcids`` when known, else the served members
+    (`SentenceFacts.members`). For StatVars outside the index, each constraint property
+    list the served members state is one member, valued from the values every member
+    shares. With none, the shared values stand for the one member.
     """
-    members = list(members) or [
+    stat_vars = list(member_dcids) or [
+        member.dcid for member in (facts.members if facts is not None else ())
+    ]
+    members = [
         {prop_dcid: constraints.get(prop_dcid, "") for prop_dcid in properties}
         for properties in (facts.constraint_properties if facts is not None else ())
     ]
     if not members and constraints:
         members = [dict(constraints)]
     population_type = shape.population_type.dcid if shape.population_type else None
-    return flow_family(population_type=population_type, members=members)
+    return flow_family(population_type=population_type, stat_vars=stat_vars, members=members)
 
 
 def _byline_unit(

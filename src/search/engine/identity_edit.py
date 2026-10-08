@@ -1,14 +1,18 @@
 """Validate a resubmitted identity.
 
 A posted identity passes the identity core before any door reads it, and Search doors
-refuse the `exact` binding and the pinned-StatVar arm. The resubmit and options doors
-share these checks.
+refuse the `exact` binding, the pinned-StatVar arm and an identity binding more places
+than a Spec holds. The resubmit and options doors share these checks.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+
 from dfo_spec_kit import identity as _identity
 
+from dfo_platform.named import cut
+from search.engine.config import settings
 from search.engine.errors import EngineInputError
 from search.models import (
     BaseIdentity,
@@ -27,7 +31,7 @@ def check_no_exact_bindings(identity: BaseIdentity, *, pointer: str) -> None:
     for i, slot in enumerate(identity.slots):
         if isinstance(slot.binding, IdentityBindingExact):
             raise EngineInputError(
-                f"slot {slot.property!r} carries an 'exact' binding; no Search "
+                f"slot {cut(slot.property)!r} carries an 'exact' binding; no Search "
                 "door serves it -- only the datasets doors read it",
                 code="exact_binding_unsupported",
                 status=501,
@@ -56,10 +60,39 @@ def validate_edited_identity(identity: BaseIdentity, *, pointer: str = "/input/i
         _identity.validate_identity_core(identity.model_dump(exclude_none=True))
     except ValueError as exc:
         raise EngineInputError(
-            f"identity is not a well-formed identity document: {exc}",
+            f"identity is not a well-formed identity document: {cut(str(exc))}",
             code="request_invalid",
             pointer=pointer,
         ) from exc
+
+
+def refuse_over_place_bound(
+    entities: Mapping[str, Sequence[str]], *, pointer: str = "/input/identity/entities"
+) -> None:
+    """Refuse with `request_invalid` an identity that binds more places than a Spec holds
+    (`SearchSettings.max_child_places`). Places count as distinct dcids per role, summed
+    over the roles.
+
+    `pointer` is the door's own path to the identity's entity map. The refusal names the
+    first role that exceeds the bound alone, and the whole entity map when only the sum
+    does."""
+    bound = settings().max_child_places
+    counts = {role: len(set(dcids)) for role, dcids in entities.items()}
+    for role, count in counts.items():
+        if count > bound:
+            raise EngineInputError(
+                f"{count} places on {role} exceed the {bound}-place limit a dataset binds; "
+                "re-post with fewer places",
+                code="request_invalid",
+                pointer=f"{pointer}/{role}",
+            )
+    if (total := sum(counts.values())) > bound:
+        raise EngineInputError(
+            f"{total} places across {len(counts)} roles exceed the {bound}-place limit a "
+            "dataset binds; re-post with fewer places",
+            code="request_invalid",
+            pointer=pointer,
+        )
 
 
 def check_described_arm(shape: IdentityShape, *, pointer: str = "/input/shape") -> None:

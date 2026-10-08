@@ -611,12 +611,9 @@ def test_sse_terminal_error_carries_engine_input_error_code(monkeypatch):
     assert event_types == ["error"]
 
     payload = frames[0][1]
-    # code is set, so detail resolves to the platform registry's per-code
-    # default (codes.CODE_CATALOG) rather than the generic "Bad request" --
-    # that fallback is reserved for a code-less (routing-failure) raise.
-    assert (
-        payload["detail"] == "The posted shape does not match the shape this request resolves to."
-    )
+    # A coded refusal serves the message its raise site wrote. The generic "Bad request"
+    # is reserved for a code-less (routing-failure) raise.
+    assert payload["detail"] == "posted shape does not match its members"
     assert payload["code"] == "shape_mismatch"
 
 

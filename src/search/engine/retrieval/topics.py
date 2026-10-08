@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from origin_catalogue import current_catalogue
 from origin_catalogue.topic_walk import walk_topics
-from search.engine.clients.graph import EngineGraphClient
+from search.engine.clients.graph import EngineGraphClient, stand_in
 from search.engine.config import settings
 
 
@@ -27,19 +27,41 @@ def expand_topics(
     max_depth: int = settings().topic_expand_max_depth,
     max_members: int = settings().topic_expand_max_members,
 ) -> dict[str, str]:
-    """Expand roots into admitted leaf StatVars with `walk_topics`, which the
-    origin catalogue job also runs to build its topic table.
+    """The leaves `topic_leaves` reaches from `root_dcids`, as they stand (`stand_in`), each
+    with its root: a superseded leaf as its successor, one with no successor dropped, and the
+    first leaf standing as a dcid keeping it."""
+    catalogue = current_catalogue()
+    standing: dict[str, str] = {}
+    for leaf, root in topic_leaves(
+        root_dcids, graph=graph, max_depth=max_depth, max_members=max_members
+    ).items():
+        dcid = stand_in(leaf, catalogue=catalogue)
+        if dcid is not None:
+            standing.setdefault(dcid, root)
+    return standing
 
-    SDG indicator topics reach leaves through three container hops. Batched arc
-    reads keep graph round trips at ``max_depth`` regardless of root count. A
-    leaf passes the bound catalogue's candidate admission, as a recalled
-    candidate does, before it counts toward its root's ``max_members`` cap. An
-    oversized root is dropped without affecting others, and a root that keeps
-    no leaf contributes none. Shared containers are attributed to each root
+
+def topic_leaves(
+    root_dcids: list[str],
+    *,
+    graph: EngineGraphClient,
+    max_depth: int = settings().topic_expand_max_depth,
+    max_members: int = settings().topic_expand_max_members,
+) -> dict[str, str]:
+    """Expand roots into their leaf StatVars with `walk_topics`, which the origin catalogue
+    job also runs to build its topic table, each leaf under its own dcid.
+
+    SDG indicator topics reach leaves through three container hops. Batched arc reads keep
+    graph round trips at ``max_depth`` regardless of root count. A leaf the bound catalogue
+    neither admits nor supersedes is dropped before it counts toward its root's
+    ``max_members`` cap; a superseded leaf counts, whatever it stands as, as it counted while
+    its provenance was admitted. An oversized root is dropped without affecting others, and a
+    root that keeps no leaf contributes none. Shared containers are attributed to each root
     that reaches them.
 
-    Returns ``{leaf_dcid: root_dcid}``; the first root in ``root_dcids`` wins
-    when roots share a leaf.
+    Returns ``{leaf_dcid: root_dcid}`` in walk order, the first root in ``root_dcids``
+    winning when roots share a leaf. The keys are the leaves the confirm cap counts
+    (`derive.derive_shapes`), and `expand_topics` gives what they stand as.
     """
     catalogue = current_catalogue()
     leaf_to_root: dict[str, str] = {}
@@ -48,7 +70,9 @@ def expand_topics(
         graph=graph,
         max_depth=max_depth,
         max_members=max_members,
-        admit=lambda dcid: catalogue.admit_candidate(dcid) is not None,
+        admit=lambda dcid: (
+            catalogue.is_superseded(dcid) or catalogue.admit_candidate(dcid) is not None
+        ),
     ).items():
         # DCIDs encode added constraints as ``__`` segments; fewer segments
         # puts general members first when the bind-aware tie-break scores tie.

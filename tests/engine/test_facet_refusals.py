@@ -19,6 +19,7 @@ from search.models import (
     IdentityFacetValueRequest,
     IdentityUnitRequest,
 )
+from tests.engine._refusal_detail import assert_names_plainly
 from tests.engine._role_candidates import role_candidate
 from tests.fixtures import FakeGraph
 
@@ -108,7 +109,7 @@ def test_unmatched_provenance_value_binding_refuses_facet_not_available():
     assert result is not None
     assert result.code == "facet_not_available"
     assert result.pointer == "/input/facets/provenance"
-    assert "src/B" in result.detail
+    assert "src/B" in str(result)
 
 
 def test_provenance_set_binding_names_the_absent_member():
@@ -126,8 +127,8 @@ def test_provenance_set_binding_names_the_absent_member():
     assert result is not None
     assert result.code == "facet_not_available"
     assert result.pointer == "/input/facets/provenance"
-    assert "src/B" in result.detail
-    assert "src/A" not in result.detail.split("missing")[-1]
+    assert "src/B" in str(result)
+    assert "src/A" not in str(result).split("missing")[-1]
 
 
 def test_mixed_missing_members_across_provenance_and_unit_named_together():
@@ -155,10 +156,10 @@ def test_mixed_missing_members_across_provenance_and_unit_named_together():
     )
     assert result is not None
     assert result.code == "facet_not_available"
-    assert "provenance" in result.detail
-    assert "src/B" in result.detail
-    assert "unit" in result.detail
-    assert "EUR" in result.detail
+    assert "provenance" in str(result)
+    assert "src/B" in str(result)
+    assert "unit" in str(result)
+    assert "EUR" in str(result)
 
 
 def test_unmatched_value_binding_refuses_facet_not_available():
@@ -183,8 +184,26 @@ def test_unmatched_value_binding_refuses_facet_not_available():
     assert result.code == "facet_not_available"
     assert result.status == 422
     assert result.pointer == "/input/facets/measurementMethod"
-    assert result.detail is not None
-    assert "Commitment" in result.detail
+    assert "Commitment" in str(result)
+
+
+def test_a_set_binding_missing_many_members_names_five_and_counts_the_rest():
+    graph = _graph(
+        [{"earliestDate": "2015", "latestDate": "2020", "obsCount": 3, "provenanceId": "src/A"}]
+    )
+    missing = [f"src/Z{letter}" for letter in "abcdefg"]
+
+    result = facet_refusal(
+        graph,
+        [_SV],
+        [_ENTITY],
+        {"provenance": IdentityBindingSet(refs=["src/A", *missing])},
+        deadline=None,
+    )
+
+    assert result is not None
+    assert result.code == "facet_not_available"
+    assert_names_plainly(str(result), missing)
 
 
 def test_all_or_nothing_set_binding_names_every_missing_member():
@@ -211,10 +230,10 @@ def test_all_or_nothing_set_binding_names_every_missing_member():
     )
     assert result is not None
     assert result.code == "facet_not_available"
-    assert "Commitment" in result.detail
-    assert "GrantEquivalent" in result.detail
+    assert "Commitment" in str(result)
+    assert "GrantEquivalent" in str(result)
     # The one present member is never named as missing.
-    assert "GrossDisbursement" not in result.detail.split("missing")[-1]
+    assert "GrossDisbursement" not in str(result).split("missing")[-1]
 
 
 def test_all_or_nothing_excludes_the_members_own_axis_from_the_other_check():
@@ -250,8 +269,8 @@ def test_all_or_nothing_excludes_the_members_own_axis_from_the_other_check():
     )
     assert result is not None
     assert result.code == "facet_not_available"
-    assert "measurementMethod" in result.detail
-    assert "Commitment" in result.detail
+    assert "measurementMethod" in str(result)
+    assert "Commitment" in str(result)
 
 
 def test_member_with_only_out_of_window_observations_is_not_missing():
@@ -355,7 +374,7 @@ def test_unit_ref_form_mismatch_still_refuses_facet_not_available():
     assert result is not None
     assert result.code == "facet_not_available"
     assert result.pointer == "/input/facets/unit"
-    assert "CurrencyUSD" in result.detail
+    assert "CurrencyUSD" in str(result)
 
 
 def test_elected_units_admits_a_facet_the_literal_request_would_refuse():
@@ -432,8 +451,8 @@ def test_provenance_set_member_absent_still_refuses_with_elected_units_unit_admi
     assert result is not None
     assert result.code == "facet_not_available"
     assert result.pointer == "/input/facets/provenance"
-    assert "src/B" in result.detail
-    assert "src/A" not in result.detail.split("missing")[-1]
+    assert "src/B" in str(result)
+    assert "src/A" not in str(result).split("missing")[-1]
 
 
 def test_facet_satisfies_bindings_with_elected_units_counts_only_the_elected_unit():
@@ -519,7 +538,7 @@ class TestMultiStatVarPerSvSatisfaction:
         assert result is not None
         assert result.code == "facet_not_available"
         assert result.pointer == "/input/facets/measurementMethod"
-        assert "GrossDisbursement" in result.detail
+        assert "GrossDisbursement" in str(result)
 
     def test_binding_satisfied_by_every_stat_var_returns_none(self):
         """Both StatVars carry the bound method, so no refusal is returned."""
@@ -713,7 +732,7 @@ class TestRoleIndexProvenancePinElectedUnits:
         assert result is not None
         assert result.code == "facet_not_available"
         assert result.pointer == "/input/facets/provenance"
-        assert "unit" in (result.detail or "")
+        assert "unit" in str(result)
 
     def test_provenance_pin_refusal_with_elected_units_admits_the_elected_facet(self):
         graph = FakeGraph(currency_units={"CurrencyUSD": "USD", "CurrencyEUR": "EUR"})
@@ -741,7 +760,7 @@ class TestRoleIndexProvenancePinElectedUnits:
         assert result is not None
         assert result.code == "facet_not_available"
         assert result.pointer == "/input/facets/provenance"
-        assert "unit" in (result.detail or "")
+        assert "unit" in str(result)
 
 
 def _method_role_index(*methods: str | None) -> dict[str, list[RoleFacetCandidate]]:
@@ -780,7 +799,7 @@ def test_null_method_ref_refuses_when_every_facet_declares_a_method():
     assert result is not None
     assert result.code == "facet_not_available"
     assert result.pointer == "/input/facets/measurementMethod"
-    assert "a facet with no measurementMethod" in (result.detail or "")
+    assert "a facet with no measurementMethod" in str(result)
     assert [a.ref for a in result.alternatives or []] == ["Estimated"]
 
 

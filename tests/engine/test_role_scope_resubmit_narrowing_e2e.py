@@ -392,7 +392,7 @@ def test_dateless_source_slot_is_validated_against_the_role_index(
             )
         assert exc_info.value.code == "facet_not_available"
         assert exc_info.value.pointer == "/input/identity/facets/provenance"
-        assert "provenance:" in exc_info.value.detail
+        assert "provenance:" in str(exc_info.value)
     else:
         region = _resubmit_with_source_slot(
             fresh_spec=fresh.specs[0],
@@ -456,7 +456,7 @@ def test_source_slot_and_unit_must_share_one_role_tuple(
             _resubmit_with_source_slot(**kwargs)
         assert exc_info.value.code == "facet_not_available"
         assert exc_info.value.pointer == "/input/identity/facets/provenance"
-        assert "provenance:" in exc_info.value.detail
+        assert "provenance:" in str(exc_info.value)
     else:
         region = _resubmit_with_source_slot(**kwargs)
         assert region.status == "definite", region
@@ -518,7 +518,7 @@ def test_unavailable_role_scope_facet_refuses_from_role_index(monkeypatch, facet
     assert error.code == "facet_not_available"
     assert error.status == 422
     assert error.pointer == f"/input/identity/facets/{axis}"
-    assert missing in error.detail
+    assert missing in str(error)
 
 
 def test_role_scope_facet_set_requires_every_member_from_every_stat_var(monkeypatch):
@@ -562,7 +562,7 @@ def test_role_scope_facet_set_requires_every_member_from_every_stat_var(monkeypa
     error = exc_info.value
     assert error.code == "facet_not_available"
     assert error.pointer == "/input/identity/facets/unit"
-    assert "EUR" in error.detail
+    assert "EUR" in str(error)
 
 
 @pytest.mark.parametrize(

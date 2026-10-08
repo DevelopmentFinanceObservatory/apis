@@ -503,12 +503,12 @@ def test_cross_population_registry_twin_still_exempt():
     )
     twin = _shape(
         "Proportion of population with access to electricity",
-        "SDG_EG_ACS_ELEC",
+        "undata/sdg/SERIES-EG_ACS_ELEC",
         "value",
         "measuredValue",
         None,
         None,
-        members=("sdg/EG_ACS_ELEC",),
+        members=("undata/sdg/EG_ACS_ELEC",),
         roles=("unit",),
     )
     assert (

@@ -56,6 +56,7 @@ from contextlib import aclosing
 
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform.build import build_commit
+from dfo_platform.named import cut
 from dfo_platform.trace import get_trace_id
 from entity_resolution import Admission, EntityResolver
 from materialise import GraphReader
@@ -117,12 +118,11 @@ def _rewrite_pointer(exc: EngineInputError, index: int) -> EngineInputError:
         return exc
     new_pointer = f"/input/entries/{index}" + pointer.removeprefix("/input")
     return EngineInputError(
-        *exc.args,
+        str(exc),
         code=exc.code,
         status=exc.status,
         pointer=new_pointer,
         alternatives=exc.alternatives,
-        detail=exc.detail,
     )
 
 
@@ -170,12 +170,11 @@ def _unsupported_detail(code: str, *, index: int) -> str:
     """Return registry detail for a posted code. Refuse unknown codes as `request_invalid`."""
     entry = CODE_CATALOG.get(code)
     if entry is None:
-        message = f"{code!r} is not a code this deployment's registry recognises"
+        message = f"{cut(code)!r} is not a code this deployment's registry recognises"
         raise EngineInputError(
             message,
             code="request_invalid",
             pointer=f"/input/entries/{index}/code",
-            detail=message,
         )
     return entry[1]
 

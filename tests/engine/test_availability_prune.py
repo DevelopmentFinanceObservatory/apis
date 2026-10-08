@@ -30,6 +30,7 @@ from search.engine.region.availability import (
 from search.engine.region.codes import AVAILABILITY_PROBE_FAILED, ELECTED_SHAPE_NO_DATA
 from search.engine.retrieval.derive import derive_shapes as _real_derive_shapes
 from search.engine.shape import ShapeDraft, SlotKeyDraft
+from tests.engine._builders import place_sets
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.fixtures import FakeGraph, make_resolver
@@ -367,49 +368,63 @@ class TestDropShapesNeverEmpty:
 
 class TestSiblingProbePlaces:
     def test_named_place_alone_is_the_scope(self):
-        assert _sibling_probe_places(["country/KEN"], {}, {}) == ["country/KEN"]
+        assert _sibling_probe_places(["country/KEN"], {}) == ["country/KEN"]
 
     def test_region_children_are_sampled_and_unioned_with_named_places(self):
         result = _sibling_probe_places(
-            ["country/KEN"], {"Africa": ["country/A1", "country/A2"]}, {"Africa": "africa"}
+            ["country/KEN"],
+            place_sets(regions={"Africa": ("africa", ["country/A1", "country/A2"])}),
         )
-        assert result == ["country/KEN", "country/A1", "country/A2"]
+        assert result == ["country/KEN", "africa", "country/A1", "country/A2"]
+
+    def test_a_group_with_no_node_gives_its_member_sample_alone(self):
+        result = _sibling_probe_places(
+            None, place_sets(groups={"Union": ["country/A1", "country/A2"]})
+        )
+        assert result == ["country/A1", "country/A2"]
 
     def test_region_sample_is_bounded_per_region(self):
         many_children = [f"country/C{i}" for i in range(_PLACE_AVAILABILITY_PROBE_SAMPLE + 5)]
 
-        result = _sibling_probe_places(None, {"Africa": many_children}, {"Africa": "africa"})
+        result = _sibling_probe_places(
+            None, place_sets(regions={"Africa": ("africa", many_children)})
+        )
 
-        assert result == many_children[:_PLACE_AVAILABILITY_PROBE_SAMPLE]
+        assert result == ["africa", *many_children[:_PLACE_AVAILABILITY_PROBE_SAMPLE]]
 
     def test_multiple_regions_each_contribute_their_own_bounded_sample(self):
         result = _sibling_probe_places(
             None,
-            {"Africa": ["country/A1"], "Asia": ["country/S1", "country/S2"]},
-            {"Africa": "africa", "Asia": "asia"},
+            place_sets(
+                regions={
+                    "Africa": ("africa", ["country/A1"]),
+                    "Asia": ("asia", ["country/S1", "country/S2"]),
+                }
+            ),
         )
-        assert result == ["country/A1", "country/S1", "country/S2"]
+        assert result == ["africa", "country/A1", "asia", "country/S1", "country/S2"]
 
     def test_no_named_place_and_no_region_falls_back_to_the_fixed_sample(self):
-        assert _sibling_probe_places(None, {}, {}) == list(_ENTITYLESS_AVAILABILITY_PROBE_PLACES)
-        assert _sibling_probe_places([], {}, {}) == list(_ENTITYLESS_AVAILABILITY_PROBE_PLACES)
+        assert _sibling_probe_places(None, {}) == list(_ENTITYLESS_AVAILABILITY_PROBE_PLACES)
+        assert _sibling_probe_places([], {}) == list(_ENTITYLESS_AVAILABILITY_PROBE_PLACES)
 
     def test_duplicate_places_across_named_and_region_scope_are_deduped(self):
         result = _sibling_probe_places(
-            ["country/A1"], {"Africa": ["country/A1", "country/A2"]}, {"Africa": "africa"}
+            ["country/A1"],
+            place_sets(regions={"Africa": ("africa", ["country/A1", "country/A2"])}),
         )
-        assert result == ["country/A1", "country/A2"]
+        assert result == ["country/A1", "africa", "country/A2"]
 
     def test_childless_region_contributes_its_own_dcid(self):
         """A childless region probes its own dcid."""
-        result = _sibling_probe_places(None, {"Region": []}, {"Region": "region"})
+        result = _sibling_probe_places(None, place_sets(regions={"Region": ("region", [])}))
         assert result == ["region"]
         assert result != list(_ENTITYLESS_AVAILABILITY_PROBE_PLACES)
 
     def test_unresolvable_name_refuses_loudly(self):
-        """A region name without a resolved dcid raises instead of producing a bad probe."""
+        """A memberless set without a node raises instead of producing a bad probe."""
         with pytest.raises(AssertionError):
-            _sibling_probe_places(None, {"Region": []}, {})
+            _sibling_probe_places(None, place_sets(groups={"Region": []}))
 
 
 # ---------------------------------------------------------------------------
@@ -467,6 +482,33 @@ class TestResolveSiblingAvailability:
         by_id = {s.shape_id: s for s in result}
         assert by_id["unresolved"].place_available is True
         assert by_id["resolved"].place_available is False
+
+    def test_a_sets_probe_sees_data_held_only_at_its_node_or_only_at_its_members(self):
+        """One sibling holds data at the region's node alone and the other at a member
+        alone. The probe over the region's places finds both, each at its own place."""
+        at_node = _shape_with_svs(_shape("at_node", meas_denom_unresolved=True), ["sv/node"])
+        at_members = _shape_with_svs(
+            _shape("at_members", meas_denom_dcid="Count_Person"), ["sv/members"]
+        )
+        graph = FakeGraph(
+            obs={
+                "sv/node|africa": [{"obsCount": 5}],
+                "sv/members|country/A1": [{"obsCount": 5}],
+            },
+            nodes={},
+        )
+
+        result, probe_failed = _resolve_sibling_availability(
+            [at_node, at_members],
+            graph=graph,
+            named_place=True,
+            probe_places=_sibling_probe_places(
+                None, place_sets(regions={"Africa": ("africa", ["country/A1", "country/A2"])})
+            ),
+        )
+
+        assert probe_failed is False
+        assert [shape.available_places for shape in result] == [{"africa"}, {"country/A1"}]
 
     def test_distinct_unresolved_denominators_keep_their_own_probe_results(self):
         unresolved_with_dcid = _shape_with_svs(
@@ -910,7 +952,7 @@ _GROUP_MEMBERS = tuple(
     Entity(dcid=f"country/T{i}", name=f"Testland {i}", kind="country", graph_type="Country")
     for i in range(1, 8)
 )  # 7 members: T1-T5 are _PLACE_AVAILABILITY_PROBE_SAMPLE's own sample
-# (place_children_by_name's insertion order is Group.members' own order),
+# (a group's place set keeps Group.members' own order),
 # T6 and T7 sit past the cap.
 
 _OBS_GROUP_MEMBER_PAST_THE_SAMPLE = {
@@ -936,10 +978,9 @@ def _capture_derive_shapes_place_dcids(monkeypatch) -> list[list[str] | None]:
 
 
 def test_settled_group_contributes_nothing_to_the_availability_floor(monkeypatch):
-    """A settled Group's own placeholder (rcl.resolutions[name], its first
-    member -- an ordinary country-kind Resolved) must not reach
-    derive_shapes' own floor probe, exactly as an expanded region's own
-    members never do: recall_only_place_dcids is None, not a 7-place list."""
+    """A settled Group's members must not reach derive_shapes' own floor
+    probe, exactly as an expanded region's own members never do:
+    recall_only_place_dcids is None, not a 7-place list."""
     captured = _capture_derive_shapes_place_dcids(monkeypatch)
     _capture_bind_shapes(monkeypatch)
 
@@ -955,7 +996,7 @@ def test_settled_group_contributes_nothing_to_the_availability_floor(monkeypatch
 
 def test_group_members_reach_the_sibling_probe_only_through_the_sampled_route(monkeypatch):
     """A group's members reach the sibling-availability probe only via
-    place_children_by_name's own 5-place sample, not the full 7-member set:
+    its place set's own 5-place sample, not the full 7-member set:
     data at the 6th member (past the sample) is invisible to the probe and
     neither sibling is pruned; the same shape of data at the 3rd member
     (inside the sample) is seen and prunes the resolved-denominator sibling

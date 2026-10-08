@@ -32,6 +32,7 @@ from entity_resolution.resolver import (
     _GateOutcome,
     _normalize_key,
     _parse_group_survivors,
+    _resolve_batch_job,
     _ttu,
     _without_article_and_punctuation,
 )
@@ -187,14 +188,16 @@ def _members_of_on_shared_thread(resolver, group):
 
 
 def test_query_aliases_keys_are_normalized_and_values_resolve_in_the_pack(shared_resolver):
-    """Alias keys are normalized, and values are canonical pack names. Calls use the resolver thread."""
+    """Alias keys are normalized, and each row names a canonical pack name. Calls use the resolver thread."""
     raw_aliases = json.loads(pack.query_aliases_path().read_text(encoding="utf-8"))
     assert raw_aliases
     for key in raw_aliases:
         assert key == _normalize_key(key), key
 
     results = shared_resolver.run(
-        _resolve_each_on_shared_thread, shared_resolver.resolver, list(raw_aliases.values())
+        _resolve_each_on_shared_thread,
+        shared_resolver.resolver,
+        [row["name"] for row in raw_aliases.values()],
     ).result()
 
     for value, result in results.items():
@@ -213,6 +216,33 @@ def test_query_aliases_keys_are_normalized_and_values_resolve_in_the_pack(shared
         # The exporter folds the ontology node's "AFC" alias into the base-schema node.
         ("AFC", "Africa_Finance_Corporation", "Africa Finance Corporation"),
         ("Africa Finance Corporation", "Africa_Finance_Corporation", "Africa Finance Corporation"),
+        ("World Bank Group", "WorldBankGroup", "World Bank Group"),
+        # Resolvekit generates no candidate for these stored aliases; the pack's alias index does.
+        (
+            "OAPEC",
+            "OrganizationOfArabPetroleumExportingCountries",
+            "Organization of Arab Petroleum Exporting Countries",
+        ),
+        ("C&A Foundation", "LaudesFoundation", "Laudes Foundation"),
+        ("Omidyar Network Fund, Inc.", "OmidyarNetwork", "Omidyar Network"),
+        (
+            "Latin American Agribusiness Dev. Corp.",
+            "LatinAmericanAgribusinessDevelopmentCorporation",
+            "Latin American Agribusiness Development Corporation",
+        ),
+        (
+            "African Export\u2013Import Bank",
+            "AfricanExportImportBank",
+            "African Export-Import Bank",
+        ),
+        ("Charity Projects Ltd", "ComicRelief", "Comic Relief"),
+        ("Inter-American Investment Corporation", "IDBInvest", "IDB Invest"),
+        # Without the alias index this canonical name parsed as the UN's member group.
+        (
+            "Joint United Nations Programme on HIV/AIDS",
+            "JointUnitedNationsProgrammeOnHIVAIDS",
+            "Joint United Nations Programme on HIV/AIDS",
+        ),
     ],
 )
 def test_organisation_listed_alias_resolves(shared_resolver, text: str, dcid: str, name: str):
@@ -227,24 +257,36 @@ def test_organisation_listed_alias_resolves(shared_resolver, text: str, dcid: st
     assert result.entity.name == name
 
 
-def test_africa_regional_resolves_aggregate(shared_resolver):
-    """The stored alias retains its comma, while the exposed org normalizer strips punctuation."""
-    graph = FakeGraphLookup(
-        nodes={
-            "DACAfricaUnallocated": {
-                "typeOf": ("DACRecipientUnallocatedByCountry",),
-                "name": _UNUSED_GRAPH_NAME,
-            }
-        }
-    )
+@pytest.mark.parametrize(
+    ("text", "dcid", "graph_type", "name"),
+    [
+        # The stored alias keeps its comma; the org normalizer strips punctuation.
+        (
+            "Africa, regional",
+            "DACAfricaUnallocated",
+            "DACRecipientUnallocatedByCountry",
+            "Africa, unallocated by country (DAC)",
+        ),
+        (
+            "other multilaterals",
+            "DACOtherMultilaterals",
+            "DACUnspecifiedParty",
+            "other multilaterals (DAC)",
+        ),
+    ],
+)
+def test_dac_residual_resolves_aggregate(
+    shared_resolver, text: str, dcid: str, graph_type: str, name: str
+):
+    graph = FakeGraphLookup(nodes={dcid: {"typeOf": (graph_type,), "name": _UNUSED_GRAPH_NAME}})
     resolver = EntityResolver(graph=graph, shared=shared_resolver)
 
-    (result,) = _run(resolver.resolve(["Africa, regional"]))
+    (result,) = _run(resolver.resolve([text]))
 
-    assert isinstance(result, Resolved)
-    assert result.entity.dcid == "DACAfricaUnallocated"
+    assert isinstance(result, Resolved), (text, result)
+    assert result.entity.dcid == dcid
     assert result.entity.kind == "aggregate"
-    assert result.entity.name == "Africa, unallocated by country (DAC)"
+    assert result.entity.name == name
 
 
 def test_world_bank_ambiguous_between_ibrd_and_ida(shared_resolver):
@@ -331,15 +373,87 @@ def test_trailing_period_typo_recovers_via_the_article_and_punctuation_retry(sha
     assert result.dcid == "country/KEN"
 
 
-def test_gate_invariant_near_match_reported_but_never_wins(shared_resolver):
-    """Laos is reported as a near match for Lagos, not returned as the result."""
+@pytest.mark.parametrize(
+    ("text", "near_matches"),
+    [
+        ("Lagos", ("Laos",)),
+        # The alias index matches exactly, so a code no row stores stays unmatched.
+        ("0915", ("European Union (15 members, 1995\u20132004)",)),
+    ],
+)
+def test_gate_invariant_near_match_reported_but_never_wins(
+    shared_resolver, text: str, near_matches: tuple[str, ...]
+):
+    """A rejected candidate is reported as a near match, not returned as the result."""
     graph = FakeGraphLookup()
     resolver = EntityResolver(graph=graph, shared=shared_resolver)
 
-    (result,) = _run(resolver.resolve(["Lagos"]))
+    (result,) = _run(resolver.resolve([text]))
 
     assert isinstance(result, NotFound)
-    assert result.near_matches == ("Laos",)
+    assert result.near_matches == near_matches
+
+
+def test_every_stored_name_keeps_its_owner_past_the_gate(shared_resolver):
+    """Each name and alias in the committed records and curated map yields its own row as a survivor."""
+    records = json.loads(pack.records_path().read_text(encoding="utf-8"))
+    curated = json.loads(pack.curated_path().read_text(encoding="utf-8"))
+    pairs = [
+        (name, f"{pack.NAMESPACE_PREFIX}{record['dcid']}")
+        for record in records
+        for name in [
+            record["name"],
+            *(record.get("aliases") or []),
+            *curated.get(record["dcid"], []),
+        ]
+    ]
+    assert pairs
+
+    outcomes = shared_resolver.run(
+        _resolve_batch_job, shared_resolver, [name for name, _ in pairs]
+    ).result()
+
+    unreachable = [
+        name
+        for (name, owner), outcome in zip(pairs, outcomes, strict=True)
+        if owner not in {survivor.entity_id for survivor in outcome.survivors}
+    ]
+    assert unreachable == []
+
+
+def test_alias_shared_by_a_country_code_and_an_organisation_is_ambiguous(shared_resolver):
+    """`CAF` is the Central African Republic's ISO code and an alias of the CAF bank."""
+    bank = "DevelopmentBankOfLatinAmericaAndTheCaribbean"
+    graph = FakeGraphLookup(
+        nodes={
+            "country/CAF": {"typeOf": ("Country",), "name": _UNUSED_GRAPH_NAME},
+            bank: {"typeOf": ("Organization",), "name": _UNUSED_GRAPH_NAME},
+        }
+    )
+    resolver = EntityResolver(graph=graph, shared=shared_resolver)
+
+    (result,) = _run(resolver.resolve(["CAF"]))
+
+    assert isinstance(result, Ambiguous), result
+    assert [c.dcid for c in result.candidates] == ["country/CAF", bank]
+
+
+def test_european_union_falls_back_to_the_organisation_storing_the_alias(shared_resolver):
+    """Without a graph node for the union, the group takes the organisation that stores
+    `European Union` as an alias for its entity."""
+    member_ids = shared_resolver.run(
+        _members_of_on_shared_thread, shared_resolver.resolver, "European Union"
+    ).result()
+    nodes = {dcid: {"typeOf": ("Country",), "name": _UNUSED_GRAPH_NAME} for dcid in member_ids}
+    nodes["EuropeanUnionInstitutions"] = {"typeOf": ("Organization",), "name": _UNUSED_GRAPH_NAME}
+    resolver = EntityResolver(graph=FakeGraphLookup(nodes=nodes), shared=shared_resolver)
+
+    (result,) = _run(resolver.resolve(["European Union"]))
+
+    assert isinstance(result, Group), result
+    assert result.entity is not None
+    assert result.entity.dcid == "EuropeanUnionInstitutions"
+    assert [e.dcid for e in result.members] == sorted(member_ids)
 
 
 @pytest.mark.parametrize("text", ["OECD", "G7"])
@@ -372,23 +486,27 @@ def _parse_group_survivors_on_shared_thread(resolver, text: str):
 
 
 @pytest.mark.parametrize(
-    ("text", "group_name"),
+    ("text", "group_name", "names_members"),
     [
-        ("G7 countries", "G7"),
-        ("the G7 countries", "G7"),
-        ("G20 countries", "G20"),
-        ("OECD countries", "OECD"),
-        ("EU countries", "European Union"),
-        ("EU member states", "European Union"),
-        ("DAC members", "OECD Development Assistance Committee"),
+        ("G7 countries", "G7", False),
+        ("the G7 countries", "G7", False),
+        ("G20 countries", "G20", False),
+        ("OECD countries", "OECD", False),
+        ("European Union", "European Union", False),
+        ("EU countries", "European Union", True),
+        ("EU member states", "European Union", True),
+        ("European Union member states", "European Union", True),
+        ("the EU member states.", "European Union", True),
+        ("DAC members", "OECD Development Assistance Committee", True),
     ],
 )
 def test_group_phrase_recovers_the_bare_groups_membership(
-    shared_resolver, text: str, group_name: str
+    shared_resolver, text: str, group_name: str, names_members: bool
 ):
     """Long group phrases recover the bare group's membership.
 
-    Parsing handles G7, G20, and OECD. Aliases handle EU and DAC phrases.
+    Parsing handles G7, G20, and OECD. Aliases handle EU and DAC phrases, and a group
+    reached through an alias row that declares `members` says its text names them.
     """
     member_ids = shared_resolver.run(
         _members_of_on_shared_thread, shared_resolver.resolver, group_name
@@ -403,6 +521,46 @@ def test_group_phrase_recovers_the_bare_groups_membership(
 
     assert isinstance(result, Group), (text, result)
     assert [e.dcid for e in result.members] == sorted(member_ids)
+    assert result.names_members is names_members
+
+
+def test_an_alias_that_declares_no_members_resolves_as_the_whole(shared_resolver):
+    """ "Central Africa" resolves through an alias row with no `members`, so the result
+    does not say its text names members."""
+    graph = FakeGraphLookup(
+        nodes={"MiddleAfrica": {"typeOf": ("UNGeoRegion",), "name": _UNUSED_GRAPH_NAME}}
+    )
+    resolver = EntityResolver(graph=graph, shared=shared_resolver)
+
+    (result,) = _run(resolver.resolve(["Central Africa"]))
+
+    assert isinstance(result, Resolved), result
+    assert result.entity.dcid == "MiddleAfrica"
+    assert result.names_members is False
+
+
+def test_group_node_dcids_are_the_nodes_a_group_resolves_to(shared_resolver):
+    """The reverse lookup holds the dcid a group resolves to as its own node, and no
+    member, country or continent."""
+    member_ids = shared_resolver.run(
+        _members_of_on_shared_thread, shared_resolver.resolver, "European Union"
+    ).result()
+    nodes = {dcid: {"typeOf": ("Country",), "name": _UNUSED_GRAPH_NAME} for dcid in member_ids}
+    nodes["EuropeanUnion"] = {"typeOf": ("ContinentalUnion",), "name": _UNUSED_GRAPH_NAME}
+    graph = FakeGraphLookup(nodes=nodes)
+    resolver = EntityResolver(graph=graph, shared=shared_resolver)
+
+    async def resolve_and_look_up():
+        (union,) = await resolver.resolve(["European Union"])
+        return union, await resolver.group_node_dcids()
+
+    union, group_nodes = _run(resolve_and_look_up())
+
+    assert isinstance(union, Group) and union.entity is not None
+    assert union.entity.dcid in group_nodes
+    assert not group_nodes & {*(member.dcid for member in union.members), "africa"}
+    # The one graph read is the resolve's confirmation: the lookup reads the packs alone.
+    assert len(graph.node_arcs_many_calls) == 1
 
 
 @pytest.mark.parametrize(

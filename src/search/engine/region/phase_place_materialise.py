@@ -1,4 +1,4 @@
-"""Bind place roles, derive probe scopes, and materialise the elected shape.
+"""Assign place sets to roles, settle them, and materialise the elected shape.
 
 Handle no-data results after earlier phases fall through.
 """
@@ -39,9 +39,13 @@ from search.engine.region.candidates import (
 )
 from search.engine.region.codes import (
     MEMBERSHIP_UNVERIFIED,
-    MULTI_RECIPIENT_TRUNCATED,
     SEAM_OFF_INFO_CODE,
     _elect_no_data_reason,
+)
+from search.engine.region.decisions import (
+    PlaceSetNotAdmittedError,
+    PlaceSetRefusedError,
+    PlaceSetTooLargeError,
 )
 from search.engine.region.grounding import (
     _suggest_nearest_real,
@@ -61,6 +65,7 @@ from search.engine.region.near_neighbor import (
 from search.engine.region.observations.dispatch import _attach_observations
 from search.engine.region.observations.entities import _observation_entities, open_role_axis
 from search.engine.region.observations.fetch import _build_observations
+from search.engine.region.phase_intake import not_admitted_entity
 from search.engine.region.phase_rank_bind import _raw_count_is_pending_joint_slice
 from search.engine.region.phase_shared import (
     _admitted_qualifier_properties,
@@ -70,32 +75,39 @@ from search.engine.region.phase_shared import (
 )
 from search.engine.region.place_context import (
     PlaceContext,
+    UnsettledPlace,
     cannot_take_default_scope,
     default_scope_stat_vars,
     install_place_warnings,
-    place_context,
     settle_place,
+    settle_sets,
     settled_shape,
     stamp_offered_place_warnings,
     takes_default_scope,
+    with_where,
 )
 from search.engine.region.place_roles import (
-    PlaceRoles,
+    PlaceAssignment,
     bind_alternate_place_roles,
     bind_place_roles,
     bound_after_election,
-    capped_place_dcids,
+    first_spellings,
+    names_a_place,
     request_named_groups,
 )
 from search.engine.region.result import FacetAxisFilter, RegionResult
 from search.engine.region.sentence_events import _build_sentence_event
-from search.engine.region.state import AlternateUnevaluatedReason, ResolveState, served_stat_vars
+from search.engine.region.state import (
+    AlternateUnevaluatedReason,
+    ResolveState,
+    for_shape,
+    served_stat_vars,
+)
 from search.engine.region.unrealisable import unbind_unrealisable
 from search.engine.retrieval.bound_values import (
     RoleKeys,
     bound_values_from_bindings,
     elected_role_class_shape,
-    entity_role_keys,
     shape_query,
 )
 from search.engine.retrieval.facts import read_constraints
@@ -106,6 +118,7 @@ from search.engine.retrieval.retrieve import (
     NoDataDraft,
     UnsupportedDraft,
 )
+from search.engine.retrieval.standard import FacetBatch
 from search.engine.shape import (
     ShapeDraft,
     is_role_bearing,
@@ -160,8 +173,8 @@ _WALK_POOL: Final = ThreadPoolExecutor(
 )
 
 
-def _bind_standard_place_dcids(state: ResolveState) -> list[str]:
-    """Build the capped place list and its label/pin metadata from resolved entities."""
+def _note_named_places(state: ResolveState) -> None:
+    """Record which named places the caller pinned, and warn when the place seam is off."""
     # The type checker cannot narrow ``state.rcl`` from an earlier phase.
     rcl = cast(Recall, state.rcl)
 
@@ -177,54 +190,29 @@ def _bind_standard_place_dcids(state: ResolveState) -> list[str]:
             )
         )
 
-    standard_place_dcids, named_count = capped_place_dcids(state)
-    cap = settings().max_standard_places
-    if named_count > cap:
-        state.warnings.append(
-            Warning(
-                code=MULTI_RECIPIENT_TRUNCATED,
-                severity="warn",
-                message=(
-                    f"{named_count} places detected; first {cap} used "
-                    f"({named_count - cap} dropped)."
-                ),
-            )
-        )
-    state.standard_place_dcids = standard_place_dcids
-
-    # Use the first query spelling for resolved places. Group members use graph names for
-    # labels and expansion keys. Pins prove existence. Graph labels supply display text.
-    accepted_place_dcids = set(standard_place_dcids)
-    group_member_dcids_by_name = state.group_member_dcids_by_name
-    group_member_names_by_dcid = state.group_member_names_by_dcid
-    state.query_entity_text_by_dcid = {}
-    pinned_entity_dcids: set[str] = set()
-    for name in state.entities:
-        member_dcids = group_member_dcids_by_name.get(name)
-        if member_dcids is not None:
-            for dcid in member_dcids:
-                if dcid in accepted_place_dcids:
-                    state.query_entity_text_by_dcid.setdefault(
-                        dcid, group_member_names_by_dcid.get(dcid, dcid)
-                    )
-            continue
-        dcid = rcl.resolved_entity_names.get(name)
-        if dcid in accepted_place_dcids and dcid not in state.query_entity_text_by_dcid:
-            state.query_entity_text_by_dcid[dcid] = name
-            if isinstance(rcl.resolutions.get(name), PinnedResolved):
-                pinned_entity_dcids.add(dcid)
-    state.pinned_entity_dcids = frozenset(pinned_entity_dcids)
-
-    return standard_place_dcids
+    # Pins prove existence. Graph labels supply their display text. A place takes the
+    # text of its first spelling in the query (`place_roles.place_texts`), so it is pinned
+    # when that spelling is a pin.
+    state.pinned_entity_dcids = frozenset(
+        dcid
+        for dcid, name in first_spellings(state.entities, state.place_sets).items()
+        if isinstance(rcl.resolutions.get(name), PinnedResolved)
+    )
 
 
 async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
-    """Bind the elected shape's places and install it with its place context.
+    """Assign the elected shape's place sets to its roles and install it with the place
+    context it has before it is read.
 
-    Role refusals return their terminal result. Every alternate's places are bound here
+    Role refusals return their terminal result. Every alternate's places are assigned here
     too, once (`_bind_alternates`), the siblings zero-observation re-election would try are
     chosen (`_reelection_siblings`), and the admission guards and candidate budget are
     applied (`_plan_admission`), all before any read.
+
+    A place set that holds a node and members settles on the shape's own read
+    (`_run_materialise_task`), and until then the context holds its members
+    (`UnsettledPlace.unread`). When no read decides a set, the context is the settled one,
+    and places over the bound on the places a Spec binds answer `entity_set_too_large`.
 
     A subject-only shape the query names no place for takes the default scope of its own
     StatVars. The presence read that scope comes from is the request's one read on this
@@ -236,9 +224,7 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
     materialisation (`_start_alternates_presence_read`). An elected shape that cannot take
     a default scope refuses the request (`DefaultScopeIndexSourcedError`).
     """
-    standard_place_dcids = _bind_standard_place_dcids(state)
-    # Places are ordered by dcid, so the scalar anchor is the first place by dcid.
-    state.destination_dcid = standard_place_dcids[0] if standard_place_dcids else None
+    _note_named_places(state)
 
     bound = bind_place_roles(state, state.shape_draft)
     if bound == "role_incompatible":
@@ -250,7 +236,7 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
     # step reads the shape narrowed to it. The mint's walk settles the members off the
     # event loop, for any shape with a member graph to walk. Members it does not settle
     # still answer, under a warning.
-    role_keys = entity_role_keys(bound.resolved_entities, open_axes=bound.open_axes)
+    role_keys = bound.role_keys
     role_query = shape_query(
         state.shape_draft, state.bindings, role_keys.bound, open_role_keys=role_keys.open
     )
@@ -261,7 +247,7 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
     # the plan the recalled election gives. A walk that changes the elected shape makes the
     # plan again, and a walk the new plan needs and this one did not starts then.
     planned, plan = state.shape_draft, _plan_alternates(state)
-    if not standard_place_dcids:
+    if not names_a_place(state):
         _start_countries_listing(state, plan)
     if state.role_class_walks is not None:
         try:
@@ -292,12 +278,18 @@ async def _phase_place_bindings(state: ResolveState) -> RegionResult | None:
         return await _role_not_resolved_no_data(state)
     if state.shape_draft is not planned:
         plan = _plan_alternates(state)
-    (place,) = await _place_contexts(
+    (unsettled,) = await _place_contexts(
         state,
         [(state.shape_draft, state.bindings, bound)],
         group=[*plan.alt_indices, *state.reelection_siblings, *plan.cascade_indices],
     )
-    _install_shape(state, state.shape_draft, state.bindings, place)
+    try:
+        place = unsettled.unread()
+    except PlaceSetTooLargeError as exc:
+        return _too_many_places(state, exc)
+    except PlaceSetNotAdmittedError as exc:
+        return _not_admitted_places(state, exc)
+    _install_shape(state, state.shape_draft, state.bindings, place, unsettled)
     if place.default_scope is None:
         state.alternates_presence = _start_alternates_presence_read(state, plan)
     return None
@@ -331,26 +323,57 @@ def _plan_alternates(state: ResolveState) -> _AdmissionPlan:
     return plan
 
 
+def _too_many_places(state: ResolveState, exc: PlaceSetTooLargeError) -> RegionResult:
+    """The answer of an elected shape that binds more places than a Spec holds. No other
+    shape is elected in its place."""
+    logger.info(
+        "shape %r binds %d places, over the bound of %d",
+        state.shape_draft.shape_id,
+        exc.count,
+        exc.bound,
+    )
+    return state.no_data("entity_set_too_large", llm_usage=state.var_usage)
+
+
+def _not_admitted_places(state: ResolveState, exc: PlaceSetNotAdmittedError) -> RegionResult:
+    """The answer of an elected shape a set of which has no reading its roles admit
+    (`place_roles.set_choices`): `entity_role_not_admitted` naming those sets. No other
+    shape is elected in its place."""
+    logger.info(
+        "shape %r admits no reading of %s",
+        state.shape_draft.shape_id,
+        [place_set.name for place_set in exc.place_sets],
+    )
+    return state.no_data(
+        "entity_role_not_admitted",
+        role_not_admitted_entities=tuple(not_admitted_entity(s) for s in exc.place_sets),
+        llm_usage=state.var_usage,
+    )
+
+
 def _install_shape(
     state: ResolveState,
     shape: ShapeDraft,
     bindings: list[SlotBindingDraft],
     place: PlaceContext,
+    unsettled: UnsettledPlace | None = None,
 ) -> None:
     """Make `shape` the shape in play, with its property bindings and its place context.
 
-    Election and the adoption of a zero-observation sibling both call this, so the shape, its
-    where binding, its roles and probe places, and the place warnings always describe one
-    shape. A model-emitted where binding without a property gives way to the shape's bound
-    places. The place warnings of the shape in play sit together where it was installed:
-    every place warning is removed and `place.warnings` appended, directions in place order,
-    then the scope warning. No spec has been offered yet, so none of them is stamped.
+    Election, the settling of the elected shape's place sets and the adoption of a
+    zero-observation sibling all call this, so the shape, its where binding, its roles and
+    probe places, and the place warnings always describe one shape. `unsettled` holds the
+    shape's places before its sets settle, for the reads that settle them again; a shape
+    installed with a settled context alone has none. A model-emitted where binding without
+    a property gives way to the shape's bound places (`with_where`). The place warnings of
+    the shape in play sit together where it was installed: every place warning is removed
+    and `place.warnings` appended, directions in place order, then the scope warning. No
+    spec has been offered yet, so none of them is stamped.
     """
     state.shape_draft = shape
-    state.bindings = [b for b in bindings if not (b.axis == "where" and b.property_dcid is None)]
-    if place.where is not None:
-        state.bindings.append(place.where)
+    state.bindings = with_where(bindings, place)
     state.place = place
+    state.unsettled_place = unsettled
     install_place_warnings(state.warnings, place, departure_facts=state.departure_facts)
 
 
@@ -388,19 +411,6 @@ def _start_countries_listing(state: ResolveState, plan: _AdmissionPlan) -> None:
     state.countries_listing = listing
 
 
-def _place_children_by_dcid(state: ResolveState) -> dict[str, list[str]]:
-    """The expanded members of each named place that expands, keyed by its dcid."""
-    children: dict[str, list[str]] = {}
-    for dcid in state.standard_place_dcids:
-        name = state.query_entity_text_by_dcid.get(dcid)
-        if name is None:
-            raise AssertionError(f"no resolved surface name for named place {dcid!r}")
-        members = state.place_children_by_name.get(name)
-        if members is not None:
-            children[dcid] = members
-    return children
-
-
 def _group_stat_vars(
     state: ResolveState, group: Sequence[int], shapes: Sequence[ShapeDraft] = ()
 ) -> list[str]:
@@ -430,37 +440,51 @@ def _lacks_presence(
     )
 
 
-def _shape_place_contexts(
+async def _unsettled_places(
     state: ResolveState,
-    shapes: Sequence[tuple[ShapeDraft, list[SlotBindingDraft], PlaceRoles]],
+    shapes: Sequence[tuple[ShapeDraft, list[SlotBindingDraft], PlaceAssignment]],
     presence: DefaultPresence | None,
-) -> list[PlaceContext]:
-    """The place context of each of `shapes`, each with its bindings, in order
-    (`place_context`), over `presence`. A shape that takes a default scope takes the scopes
-    of the StatVars a Datasets mint serves for it (`served_stat_vars`)."""
-    children = _place_children_by_dcid(state)
-    return [
-        place_context(
+) -> list[UnsettledPlace]:
+    """The places of each of `shapes` before its place sets settle, each with its bindings
+    and its assignment, in order, over `presence`. A shape that takes a default scope takes
+    the scopes of the StatVars a Datasets mint serves for it (`served_stat_vars`).
+
+    Settling uses a set's reading only on roles that admit its type, so role admission is
+    asked here, once per pass for each role and the type of each set's node and members
+    (`UnsettledPlace.admission_questions`, `state.node_admissions`), and every question it
+    has not answered is asked at once.
+    """
+    places = [
+        UnsettledPlace(
             shape,
             roles,
-            stat_vars=served_stat_vars(shape, bindings, roles)
+            stat_vars=tuple(served_stat_vars(shape, bindings, roles.role_keys))
             if takes_default_scope(shape, roles)
             else (),
-            children=children,
             presence=presence,
-            max_probe_places=settings().max_standard_probe_places,
         )
         for shape, bindings, roles in shapes
     ]
+    unasked = sorted(
+        {question for place in places for question in place.admission_questions}
+        - state.node_admissions.keys()
+    )
+    answers = await asyncio.gather(
+        *[state.admission.admits(role, graph_type) for role, graph_type in unasked]
+    )
+    state.node_admissions.update(zip(unasked, answers, strict=True))
+    admitted = frozenset(asked for asked, admits in state.node_admissions.items() if admits)
+    return [dataclasses.replace(place, admitted=admitted) for place in places]
 
 
 async def _place_contexts(
     state: ResolveState,
-    shapes: Sequence[tuple[ShapeDraft, list[SlotBindingDraft], PlaceRoles]],
+    shapes: Sequence[tuple[ShapeDraft, list[SlotBindingDraft], PlaceAssignment]],
     *,
     group: Sequence[int],
-) -> list[PlaceContext]:
-    """The place context of each of `shapes`, in order (`_shape_place_contexts`).
+) -> list[UnsettledPlace]:
+    """The places of each of `shapes` before its place sets settle, in order
+    (`_unsettled_places`), over the request's presence read.
 
     Election and re-election call this; candidate admission reads its alternates' presence
     on their own pool (`_read_alternates_presence`). `group` holds the capped-shape indices
@@ -486,20 +510,20 @@ async def _place_contexts(
             known=state.default_presence,
             deadline=state.deadline,
         )
-    return _shape_place_contexts(state, shapes, state.default_presence)
+    return await _unsettled_places(state, shapes, state.default_presence)
 
 
 def _lacks_default_scope(state: ResolveState, shape: ShapeDraft) -> bool:
     """Whether `shape` would take a default scope it cannot take: the query names no place
     and the shape is subject-only and index-sourced (`cannot_take_default_scope`)."""
-    return not state.standard_place_dcids and cannot_take_default_scope(shape)
+    return not names_a_place(state) and cannot_take_default_scope(shape)
 
 
 def _bind_alternates(
     state: ResolveState, alternates: Iterable[tuple[int, ShapeDraft]]
-) -> tuple[dict[int, PlaceRoles], dict[int, str]]:
-    """Bind each alternate's places (`bind_alternate_place_roles`), returning bound roles and
-    refusal reasons by index.
+) -> tuple[dict[int, PlaceAssignment], dict[int, str]]:
+    """Assign each alternate's places (`bind_alternate_place_roles`), returning assignments
+    and refusal reasons by index.
 
     An alternate that binds its places and cannot take the default scope the query gives it
     (`_lacks_default_scope`) refuses here too and is logged. The answer does not rest on it,
@@ -536,7 +560,7 @@ def _guard_judge(state: ResolveState, *, elected_has_data: bool) -> AlternateJud
         state.variable,
         bindings=state.bindings,
         engine_authored=state.measure_elected_properties | state.defaulted_properties,
-        qualifier_matches=state.query_qualifier_matches,
+        qualifier_matches=for_shape(state.query_qualifier_matches, state.shape_draft),
         qualifier_readings=state.query_qualifier_readings,
         unread_price_basis=state.unread_price_basis,
         elected_has_data=elected_has_data,
@@ -561,10 +585,7 @@ def _place_role_keys(state: ResolveState) -> Callable[[ShapeDraft], RoleKeys]:
     ]
     if state.elected_place_roles is not None:
         bound.append((state.shape_draft, state.elected_place_roles))
-    keys = {
-        shape.shape_id: entity_role_keys(roles.resolved_entities, open_axes=roles.open_axes)
-        for shape, roles in bound
-    }
+    keys = {shape.shape_id: roles.role_keys for shape, roles in bound}
     return lambda shape: keys.get(shape.shape_id, RoleKeys())
 
 
@@ -651,10 +672,10 @@ def _plan_admission(state: ResolveState) -> _AdmissionPlan:
 @dataclass(frozen=True)
 class _WalkedAlternate:
     """An alternate as the role-class election returned it (`elect_alternate`), with the
-    query's places bound to that shape (`place_roles.bound_after_election`)."""
+    query's places assigned to that shape (`place_roles.bound_after_election`)."""
 
     alternate: _Alternate
-    roles: PlaceRoles
+    roles: PlaceAssignment
 
     @property
     def shape(self) -> ShapeDraft:
@@ -666,23 +687,20 @@ _WalkKey = tuple[int, tuple[str, ...], tuple[object, ...], str]
 
 def _walk_key(state: ResolveState, index: int, shape: ShapeDraft, rep_sv: str) -> _WalkKey:
     """The memo key of a walk: everything `walk_alternate` reads from the request. That is
-    the alternate, by capped-shape index, its members and the places bound to it, and the
-    representative its bindings come from. The dataset it names is its shape's
-    (`ShapeDraft.named_dataset`), or the one the part's exclusions leave serving under those
-    bindings, whatever bindings the shape in play holds; the exclusions are the leg's, fixed
-    once vetting runs."""
-    roles = state.alternate_place_roles[index]
-    places = (
-        tuple(roles.where_dcids),
-        tuple((role, tuple(dcids)) for role, dcids in sorted(roles.resolved_entities.items())),
-    )
+    the alternate, by capped-shape index, its members and the role keys its places are
+    assigned under, and the representative its bindings come from. The dataset it names is
+    its shape's (`ShapeDraft.named_dataset`), or the one the part's exclusions leave serving
+    under those bindings, whatever bindings the shape in play holds. The exclusions are the
+    leg's, fixed once vetting runs."""
+    role_keys = state.alternate_place_roles[index].role_keys
+    places = (tuple(sorted(role_keys.bound)), tuple(sorted(role_keys.open)))
     return (index, tuple(shape.sv_arc_facts or {}), places, rep_sv)
 
 
 def _walk_args(state: ResolveState, index: int, shape: ShapeDraft, rep_sv: str) -> dict:
     return {
         "shape": shape,
-        "roles": state.alternate_place_roles[index],
+        "role_keys": state.alternate_place_roles[index].role_keys,
         "rep_sv": rep_sv,
         "graph": state.graph,
         "deadline": state.deadline,
@@ -767,7 +785,7 @@ async def _walked_alternates(
         if alternate is None:
             continue
         roles = bound_after_election(state, shape, state.alternate_place_roles[i], alternate.shape)
-        if isinstance(roles, PlaceRoles) and not _lacks_default_scope(state, alternate.shape):
+        if isinstance(roles, PlaceAssignment) and not _lacks_default_scope(state, alternate.shape):
             walked[i] = _WalkedAlternate(alternate, roles)
     return walked
 
@@ -870,7 +888,7 @@ async def _await_alternates_presence(
 
 async def _read_alternates_presence(
     state: ResolveState,
-    shapes: Mapping[int, tuple[ShapeDraft, PlaceRoles]],
+    shapes: Mapping[int, tuple[ShapeDraft, PlaceAssignment]],
     *,
     group: Sequence[int],
 ) -> dict[int, AlternateUnevaluatedReason]:
@@ -1034,75 +1052,114 @@ async def _phase_facet_requests(state: ResolveState) -> RegionResult | None:
     return None
 
 
+type _MaterialiseOutcome = Materialised | NoDataDraft | MaterialisedCandidates | UnsupportedDraft
+
+
+def _read_settles_a_set(state: ResolveState) -> bool:
+    """Whether the elected shape's own read decides the reading of one of its place sets
+    (`UnsettledPlace.decided`)."""
+    return state.unsettled_place is not None and not state.unsettled_place.decided
+
+
 def _materialise_task(
     state: ResolveState,
-) -> asyncio.Task[Materialised | NoDataDraft | MaterialisedCandidates | UnsupportedDraft]:
-    """Start materialising the elected shape over `state.bindings` off-thread."""
+) -> asyncio.Task[tuple[PlaceContext, _MaterialiseOutcome]]:
+    """Start materialising the elected shape over `state.bindings` off-thread, and return
+    the place context it is read in with its result.
+
+    A shape whose read decides a place set settles its sets on this read
+    (`place_context.settle_sets`): it is materialised at a set's node and, where the node
+    holds no data in the years asked for, at the set's members, from one facet read. Any
+    other shape is materialised in the context it was installed with.
+    """
+    shape, bindings, presence = state.shape_draft, list(state.bindings), state.default_presence
+    unsettled = state.unsettled_place
+    target = unsettled if unsettled is not None and not unsettled.decided else state.place
+
+    def read(place: PlaceContext, facet_batch: FacetBatch | None) -> _MaterialiseOutcome:
+        return run_materialise(
+            shape,
+            with_where(bindings, place),
+            place.roles.resolved_entities,
+            graph=state.graph,
+            sdmx=state.sdmx,
+            date_request=state.date_request,
+            deadline=state.deadline,
+            place_dcids=place.probe_places,
+            default_presence=place.presence_for(presence),
+            open_axes=place.roles.open_axes,
+            coverage=state.coverage,
+            facet_batch=facet_batch,
+        )
+
+    def settle() -> tuple[PlaceContext, _MaterialiseOutcome]:
+        return settle_sets(target, read)
+
     # Match the observation fetch's ``needs_dates=True`` cache key when a preview is enabled,
     # including dateless queries. The context scope applies only to this task.
     with force_full_facets(state.include_observations or state.stream_observations):
-        return asyncio.create_task(
-            asyncio.to_thread(
-                run_materialise,
-                state.shape_draft,
-                state.bindings,
-                state.place.roles.resolved_entities,
-                graph=state.graph,
-                sdmx=state.sdmx,
-                date_request=state.date_request,
-                deadline=state.deadline,
-                place_dcids=state.place.probe_places,
-                default_presence=state.place.presence_for(state.default_presence),
-                open_axes=state.place.roles.open_axes,
-                coverage=state.coverage,
-            )
-        )
+        return asyncio.create_task(asyncio.to_thread(settle))
 
 
-async def _run_materialise_task(
-    state: ResolveState,
-) -> Materialised | NoDataDraft | MaterialisedCandidates | UnsupportedDraft:
-    """Run materialisation off-thread and time it. A measure-elected sentence is built and
-    emitted while it runs. Over a graph that can declare a default facet the pipeline holds
-    it until the part's answer stands, so it never precedes a declared-default refusal from
-    this or a later step (`pipeline.resolve_variable`). Bound values that together match no
-    member lose a minimal set and the shape is resolved again
-    (`unrealisable.unbind_unrealisable`) until its bindings can be read."""
+async def _emit_bind_sentence(state: ResolveState) -> None:
+    """Build and emit the bind-stage sentence of a measure-elected shape. It names the
+    elected measure family and leaves time and source blank; a definite answer's final
+    sentence fills them."""
+    if state.emit is None or state.measure_elected_partition is None:
+        return
+    sentence_event = await _build_sentence_event(
+        state.shape_draft,
+        state.bindings,
+        state.place.roles.roles,
+        variable_index=state.variable_index,
+        date_request=state.date_request,
+        open_axes=state.place.roles.open_axes,
+        graph=state.graph,
+        query_entity_text_by_dcid=state.entity_label_text_by_dcid,
+        measure_partition=state.measure_elected_partition,
+        named_groups=request_named_groups(state, state.place.roles),
+        explicit_facets=(
+            # A bound outcome guarantees a unit request. The type checker cannot infer it.
+            {
+                "unit": IdentityFacetValueRequest(
+                    request=cast(IdentityUnitRequest, state.unit_request)
+                )
+            }
+            if state.bound_unit_outcome is not None
+            else None
+        ),
+    )
+    await state.emit(sentence_event)
+
+
+async def _run_materialise_task(state: ResolveState) -> _MaterialiseOutcome:
+    """Run materialisation off-thread and time it, and install the place context the
+    elected shape's place sets settle to (`_materialise_task`). A measure-elected sentence
+    is built and emitted while it runs, or once it has run when the read decides which
+    places the sentence names. Over a graph that can declare a default facet the pipeline
+    holds it until the part's answer stands, so it never precedes a declared-default refusal
+    from this or a later step (`pipeline.resolve_variable`). Bound values that together match
+    no member lose a minimal set and the shape is resolved again
+    (`unrealisable.unbind_unrealisable`) until its bindings can be read.
+
+    Raises `PlaceSetTooLargeError` when the places the sets settle to exceed the bound on
+    the places a Spec binds."""
     t0 = now_ms()
+    settles = _read_settles_a_set(state)
     materialise_task = _materialise_task(state)
     try:
-        # The bind-stage sentence names the elected measure family and leaves time and source
-        # blank; a definite answer's final sentence fills them.
-        if state.emit is not None and state.measure_elected_partition is not None:
+        if not settles:
             # Build and emit while the materialise call runs.
-            sentence_event = await _build_sentence_event(
-                state.shape_draft,
-                state.bindings,
-                state.place.roles.roles,
-                variable_index=state.variable_index,
-                date_request=state.date_request,
-                open_axes=state.place.roles.open_axes,
-                graph=state.graph,
-                query_entity_text_by_dcid=state.entity_label_text_by_dcid,
-                measure_partition=state.measure_elected_partition,
-                named_groups=request_named_groups(state),
-                explicit_facets=(
-                    # A bound outcome guarantees a unit request. The type checker cannot infer it.
-                    {
-                        "unit": IdentityFacetValueRequest(
-                            request=cast(IdentityUnitRequest, state.unit_request)
-                        )
-                    }
-                    if state.bound_unit_outcome is not None
-                    else None
-                ),
-            )
-            await state.emit(sentence_event)
-        mat_result = await materialise_task
+            await _emit_bind_sentence(state)
+        place, mat_result = await materialise_task
         while isinstance(mat_result, BoundValuesUnrealisable):
             unbind_unrealisable(state, mat_result)
             materialise_task = _materialise_task(state)
-            mat_result = await materialise_task
+            place, mat_result = await materialise_task
+        if place != state.place:
+            _install_shape(state, state.shape_draft, state.bindings, place, state.unsettled_place)
+        if settles:
+            await _emit_bind_sentence(state)
         state.mat_result = mat_result
     finally:
         # Cancel and await unfinished materialisation so cancellation cannot detach it.
@@ -1218,12 +1275,12 @@ async def _reelect_zero_observation_sibling(
     Each sibling's members are settled first by the mint's walk (`_walked_alternates`), so a
     sibling that answers lists the members its own resubmit serves, and
     ``_materialise_alt_shapes`` then prewarms facets and resolves the siblings. Each sibling
-    is probed in the place context of the shape the election returned (`_place_contexts`):
-    its bound places, or the default scopes of its own StatVars when it is subject-only and
-    the query names no place. The elected shape's presence read covers those scopes
-    (`_phase_place_bindings`) unless the walk replaced the sibling's members, so no read is
-    made here otherwise. Siblings with separate probe places are read concurrently, so
-    their facet reads take one serial step between them.
+    settles its own place sets on its own read, for the shape the election returned
+    (`_place_contexts`, `place_context.settle_sets`), or takes the default scopes of its own
+    StatVars when it is subject-only and the query names no place. The elected shape's
+    presence read covers those scopes (`_phase_place_bindings`) unless the walk replaced the
+    sibling's members, so no read is made here otherwise. Siblings with separate probe
+    places are read concurrently, so their facet reads take one serial step between them.
 
     One data-bearing subject sibling is installed in place of the elected shape with its
     bindings and place context (`_install_shape`), replaces the elected result, and adds a
@@ -1238,22 +1295,27 @@ async def _reelect_zero_observation_sibling(
     # A sibling's members are settled before its places, presence and context, which belong
     # to the shape it is answered through.
     _walked = await _walked_alternates(state, _sibling_shapes, elected_has_data=False)
-    contexts = await _place_contexts(
+    places = await _place_contexts(
         state,
         [(walked.shape, walked.alternate.bindings, walked.roles) for walked in _walked.values()],
         group=[],
     )
     # Siblings sharing probe places share one materialise call, so its facet prewarm covers
     # them in one read, and the calls of separate probe places run side by side.
-    by_scope: dict[tuple[str, ...] | None, list[tuple[_Alternate, PlaceContext]]] = {}
-    for walked, context in zip(_walked.values(), contexts, strict=True):
-        by_scope.setdefault(context.probe_dcids, []).append((walked.alternate, context))
+    by_scope: dict[tuple[str, ...] | None, list[tuple[_Alternate, UnsettledPlace]]] = {}
+    for walked, place in zip(_walked.values(), places, strict=True):
+        try:
+            scope = place.unread().probe_dcids
+        except PlaceSetRefusedError:
+            # A sibling that cannot bind its places is not probed or offered.
+            continue
+        by_scope.setdefault(scope, []).append((walked.alternate, place))
     _scope_results: list[tuple[list[_Candidate], UnsupportedDraft | None]] = await asyncio.gather(
         *[
             asyncio.to_thread(
                 _materialise_alt_shapes,
                 [alternate for alternate, _ in members],
-                places=[context for _, context in members],
+                places=[place for _, place in members],
                 presence=state.default_presence,
                 named_place_dcids=state.standard_place_dcids,
                 graph=state.graph,
@@ -1303,9 +1365,14 @@ async def _reelect_zero_observation_sibling(
 
 
 async def _phase_materialise(state: ResolveState) -> RegionResult | None:
-    """Materialise the elected shape, re-elect a zero-observation sibling, and apply
-    per-capita denominator precedence."""
-    mat_result = await _run_materialise_task(state)
+    """Materialise the elected shape, settling its place sets on that read, re-elect a
+    zero-observation sibling, and apply per-capita denominator precedence."""
+    try:
+        mat_result = await _run_materialise_task(state)
+    except PlaceSetTooLargeError as exc:
+        return _too_many_places(state, exc)
+    except PlaceSetNotAdmittedError as exc:
+        return _not_admitted_places(state, exc)
 
     if (
         state.reelection_siblings
@@ -1430,8 +1497,9 @@ async def _nearest_real_for(state: ResolveState) -> tuple[NearestRealSpec, ...] 
         text_recognized_properties=_admitted_qualifier_properties(state.admitted_qualifiers),
         measure_elected_properties=state.measure_elected_properties,
         defaulted_properties=state.defaulted_properties,
-        named_groups=request_named_groups(state),
+        named_groups=request_named_groups(state, state.place.roles),
         coverage=state.coverage,
+        unsettled=state.unsettled_place,
     )
     if near_presence is not None:
         known = state.default_presence

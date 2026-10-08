@@ -1,6 +1,6 @@
 """Standard queries bind places as a set and probe the expanded country union.
 
-Separate caps govern named and probe places.
+One bound governs the places a Spec binds and the places it is probed at.
 Region members enter probes. Bindings retain named regions.
 """
 
@@ -10,13 +10,7 @@ import asyncio
 from typing import ClassVar
 
 from search.engine.bind import _UniversalBindOutput
-from search.engine.region import (
-    CHILD_PLACES_CLAMPED,
-    MULTI_RECIPIENT_TRUNCATED,
-    STANDARD_PROBE_PLACES_CLAMPED,
-    RegionResult,
-    resolve_variable,
-)
+from search.engine.region import RegionResult, resolve_variable
 from search.models import BindingSet, BindingValue, CoverageExact
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -62,12 +56,11 @@ _PLACES: dict = {
     "Boreal": {"dcid": "boreal", "type_of": "Continent"},
     "Austral": {"dcid": "austral", "type_of": "Continent"},
 }
-# Three members each so a SEARCH_MAX_CHILD_PLACES=2 monkeypatch clamps BOTH
-# regions (see test_probe_union_cap_overflow_composes_with_per_region_clamp).
-_CHILDREN: dict = {
-    "boreal": {"Country": ["country/B1", "country/B2", "country/B3"]},
-    "austral": {"Country": ["country/A1", "country/A2", "country/A3"]},
-}
+# Three members each, so the two regions' probe union holds six places
+# (see test_probe_union_over_the_place_bound_answers_entity_set_too_large).
+_BOREAL = ["country/B1", "country/B2", "country/B3"]
+_AUSTRAL = ["country/A1", "country/A2", "country/A3"]
+_CHILDREN: dict = {"boreal": {"Country": _BOREAL}, "austral": {"Country": _AUSTRAL}}
 
 # The graph names a provenance on every facet it serves; `select_facet` refuses one without.
 _SOURCE = "dc/base/PlaceFixture"
@@ -92,12 +85,13 @@ def _run(
     role_query: str,
     obs: dict,
     resolve: dict | None = None,
+    nodes: dict | None = None,
     emit=None,
     variable_index: int = 0,
 ) -> RegionResult:
     """Run resolve_variable with an inline FakeGraph over the fixtures above."""
     graph = FakeGraph(
-        nodes=_NODES,
+        nodes=nodes if nodes is not None else _NODES,
         detect=_DETECT,
         resolve=resolve if resolve is not None else _RESOLVE,
         obs=obs,
@@ -161,7 +155,8 @@ def test_two_named_countries_bind_as_set_with_distinct_country_count():
 
 
 def test_probe_union_covers_region_mix():
-    """The binding keeps Boreal. The probe covers Guatemala and Boreal's member countries."""
+    """Boreal's node holds no observation, so the binding holds Guatemala and Boreal's member
+    countries, and the probe covers them."""
     obs = {
         f"{_SV}|country/GTM": [
             {"earliestDate": "2020", "latestDate": "2020", "obsCount": 1, "provenanceId": _SOURCE},
@@ -176,7 +171,7 @@ def test_probe_union_covers_region_mix():
     spec = result.specs[0]
     where = _where_slot(result)
     assert isinstance(where.binding, BindingSet)
-    assert [v.ref.dcid for v in where.binding.values] == ["boreal", "country/GTM"]
+    assert [v.ref.dcid for v in where.binding.values] == [*_BOREAL, "country/GTM"]
     assert isinstance(spec.resolved.coverage, CoverageExact)
     assert spec.resolved.coverage.dimensions is not None
     countries_dim = next(d for d in spec.resolved.coverage.dimensions if d.label == "countries")
@@ -184,7 +179,8 @@ def test_probe_union_covers_region_mix():
 
 
 def test_probe_union_covers_two_regions():
-    """The probe union covers member countries from both named regions."""
+    """Neither region's node holds an observation, so the binding and the probe cover the
+    member countries of both named regions."""
     obs = {
         f"{_SV}|country/B1": [
             {"earliestDate": "2020", "latestDate": "2020", "obsCount": 1, "provenanceId": _SOURCE},
@@ -202,68 +198,91 @@ def test_probe_union_covers_two_regions():
     spec = result.specs[0]
     where = _where_slot(result)
     assert isinstance(where.binding, BindingSet)
-    assert [v.ref.dcid for v in where.binding.values] == ["austral", "boreal"]
+    assert [v.ref.dcid for v in where.binding.values] == [*_AUSTRAL, *_BOREAL]
     assert isinstance(spec.resolved.coverage, CoverageExact)
     assert spec.resolved.coverage.dimensions is not None
     countries_dim = next(d for d in spec.resolved.coverage.dimensions if d.label == "countries")
     assert countries_dim.count == 2  # one positive member from EACH region
 
 
-# Place and probe caps.
+# The one bound on the places a Spec binds.
 
 
-def test_named_place_cap_overflow_truncates_and_warns(search_settings):
-    """Naming more places than SEARCH_MAX_STANDARD_PLACES drops the trailing ones in query
-    order and fires MULTI_RECIPIENT_TRUNCATED naming the counts."""
-    search_settings(max_standard_places=2)
+def test_eleven_named_countries_all_bind_and_no_warning_is_served():
+    """Every named place binds. Eleven countries give an eleven-place where set, the same
+    eleven entities, and no warning about its places. The one warning served is the
+    fixture's own, since no member walk runs here."""
+    dcids = [f"country/N{i:02d}" for i in range(11)]
+    names = [f"Northland {i:02d}" for i in range(11)]
     obs = {
-        f"{_SV}|country/GTM": [
+        f"{_SV}|{dcids[10]}": [
             {"earliestDate": "2020", "latestDate": "2020", "obsCount": 1, "provenanceId": _SOURCE},
         ],
     }
     result = _run(
-        ["Guatemala", "El Salvador", "Honduras"],
-        role_query="population Guatemala El Salvador Honduras",
+        names,
+        role_query=f"population {' '.join(names)}",
         obs=obs,
-    )
-    truncated = [w for w in result.warnings if w.code == MULTI_RECIPIENT_TRUNCATED]
-    assert len(truncated) == 1
-    assert "3 places detected" in truncated[0].message
-    assert "first 2 used" in truncated[0].message
-    assert result.status == "definite"
-    where = _where_slot(result)
-    assert isinstance(where.binding, BindingSet)
-    assert [v.ref.dcid for v in where.binding.values] == ["country/GTM", "country/SLV"]
-
-
-def test_named_place_cap_overflow_entities_match_capped_where_set(search_settings):
-    """Resolved entities must match the capped where binding."""
-    search_settings(max_standard_places=2)
-    obs = {
-        f"{_SV}|country/GTM": [
-            {"earliestDate": "2020", "latestDate": "2020", "obsCount": 1, "provenanceId": _SOURCE},
-        ],
-    }
-    result = _run(
-        ["Guatemala", "El Salvador", "Honduras"],
-        role_query="population Guatemala El Salvador Honduras",
-        obs=obs,
+        resolve=dict(zip(names, dcids, strict=True)),
+        nodes={
+            _SV: _NODES[_SV],
+            **{
+                dcid: {"label": name, "type": "Country"}
+                for name, dcid in zip(names, dcids, strict=True)
+            },
+        },
     )
     assert result.status == "definite"
-    truncated = [w for w in result.warnings if w.code == MULTI_RECIPIENT_TRUNCATED]
-    assert len(truncated) == 1
+    assert [w.code for w in result.warnings] == ["membership_unverified"]
     where = _where_slot(result)
     assert isinstance(where.binding, BindingSet)
-    where_dcids = {v.ref.dcid for v in where.binding.values}
-    entity_dcids = {e.ref for e in result.specs[0].resolved.entities}
-    assert where_dcids == {"country/GTM", "country/SLV"}
-    assert entity_dcids == where_dcids  # HND falls beyond the 2-place cap.
+    assert [v.ref.dcid for v in where.binding.values] == dcids
+    assert [e.ref for e in result.specs[0].resolved.entities] == dcids
 
 
-def test_probe_union_cap_overflow_composes_with_per_region_clamp(search_settings):
-    """The union cap adds to each region's child-place clamp warning."""
+def test_named_places_over_the_place_bound_answer_entity_set_too_large(search_settings):
+    """More named places than a Spec binds refuse whole, and no place is dropped to fit."""
     search_settings(max_child_places=2)
-    search_settings(max_standard_probe_places=3)
+    obs = {
+        f"{_SV}|country/GTM": [
+            {"earliestDate": "2020", "latestDate": "2020", "obsCount": 1, "provenanceId": _SOURCE},
+        ],
+    }
+    result = _run(
+        ["Guatemala", "El Salvador", "Honduras"],
+        role_query="population Guatemala El Salvador Honduras",
+        obs=obs,
+    )
+    assert result.status == "no_data"
+    assert result.no_data_reason == "entity_set_too_large"
+    assert result.specs == ()
+
+
+def test_named_places_at_the_place_bound_bind(search_settings):
+    """Places at the bound all bind."""
+    search_settings(max_child_places=3)
+    obs = {
+        f"{_SV}|country/GTM": [
+            {"earliestDate": "2020", "latestDate": "2020", "obsCount": 1, "provenanceId": _SOURCE},
+        ],
+    }
+    result = _run(
+        ["Guatemala", "El Salvador", "Honduras"],
+        role_query="population Guatemala El Salvador Honduras",
+        obs=obs,
+    )
+    assert result.status == "definite"
+    assert {e.ref for e in result.specs[0].resolved.entities} == {
+        "country/GTM",
+        "country/SLV",
+        "country/HND",
+    }
+
+
+def test_probe_union_over_the_place_bound_answers_entity_set_too_large(search_settings):
+    """Two regions bind two places, under the bound of 3, and are probed at six members,
+    over it. The answer refuses whole and no member is dropped to fit."""
+    search_settings(max_child_places=3)
     obs = {
         f"{_SV}|country/B1": [
             {"earliestDate": "2020", "latestDate": "2020", "obsCount": 1, "provenanceId": _SOURCE},
@@ -274,13 +293,9 @@ def test_probe_union_cap_overflow_composes_with_per_region_clamp(search_settings
         role_query="population Boreal Austral",
         obs=obs,
     )
-    child_clamped = [w for w in result.warnings if w.code == CHILD_PLACES_CLAMPED]
-    probe_clamped = [w for w in result.warnings if w.code == STANDARD_PROBE_PLACES_CLAMPED]
-    assert len(child_clamped) == 2  # Boreal (3->2) and Austral (3->2)
-    assert len(probe_clamped) == 1  # post-clamp union of 4 capped to 3
-    assert "4 probe places detected across 2 named place(s)" in probe_clamped[0].message
-    assert "first 3" in probe_clamped[0].message
-    assert result.status == "definite"  # country/B1 survives the union clamp
+    assert result.status == "no_data"
+    assert result.no_data_reason == "entity_set_too_large"
+    assert result.specs == ()
 
 
 # Scalar bindings for one resolved place.
@@ -306,7 +321,6 @@ def test_two_surface_names_one_dcid_stays_scalar():
     where = _where_slot(result)
     assert isinstance(where.binding, BindingValue)
     assert where.binding.value.ref.dcid == "country/GTM"
-    assert not any(w.code == MULTI_RECIPIENT_TRUNCATED for w in result.warnings)
 
 
 def test_single_named_place_stays_scalar_value_binding():
@@ -321,7 +335,6 @@ def test_single_named_place_stays_scalar_value_binding():
     where = _where_slot(result)
     assert isinstance(where.binding, BindingValue)
     assert where.binding.value.ref.dcid == "country/GTM"
-    assert not any(w.code == MULTI_RECIPIENT_TRUNCATED for w in result.warnings)
 
 
 # Sentence events preserve the multi-place binding.

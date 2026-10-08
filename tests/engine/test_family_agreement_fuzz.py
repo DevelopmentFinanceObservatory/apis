@@ -193,13 +193,18 @@ def _slot_binding(rng: random.Random, prop: str, value: str, rows: list[StatVarR
     return {"state": "value", "ref": value}
 
 
-def _provenance_facet(rng: random.Random, datasets: list[str]) -> dict | None:
+def _provenance_facet(
+    rng: random.Random, datasets: list[str], publishing: tuple[str, ...]
+) -> dict | None:
     """No facet, or one that binds a dataset as a value or as a set of one ref, two datasets
-    as a set, or a provenance the index does not hold."""
+    as a set, or a provenance the index does not hold. Half the named datasets are drawn
+    from `publishing`, the datasets publishing the row whose values the identity binds, so
+    an opt-in dataset, which serves only when named, is named on its own rows however many
+    datasets the index declares or share its five-tuple."""
     form = rng.random()
     if form < 0.35:
         return None
-    dataset = rng.choice(datasets)
+    dataset = rng.choice(publishing if publishing and rng.random() < 0.5 else datasets)
     if form < 0.6:
         return {"state": "value", "ref": dataset}
     if form < 0.75:
@@ -287,7 +292,7 @@ def _draw(rng: random.Random) -> list[_Drawn]:
             "entities": {"destination": ["country/KEN"]},
             "requested_window": {"kind": "all"},
         }
-        facet = _provenance_facet(rng, datasets)
+        facet = _provenance_facet(rng, datasets, base.provenances)
         if facet is not None:
             identity["facets"] = {"provenance": facet}
         drawn.append(_Drawn(identity=identity, all_keys=all_keys, rows=tuple(rows)))

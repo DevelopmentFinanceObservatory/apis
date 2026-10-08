@@ -172,7 +172,8 @@ def _resolve_scope_target(req: OptionsRequest, target: ResolvedOptionsTarget) ->
         if len(anchor_types) > 1:
             raise EngineInputError(
                 "peers scope requires every bound observationAbout anchor to "
-                f"share one entity type; got {sorted(anchor_types, key=str)!r}",
+                "share one entity type; the bound anchors have types "
+                f"{', '.join(sorted(t or 'unknown' for t in anchor_types))}",
                 code="mixed_peers_anchor_types",
                 pointer="/identity/entities/observationAbout",
             )
@@ -310,7 +311,6 @@ def _decide_elected_units(
             code=exc.code,
             status=exc.status,
             pointer="/identity/facets/unit",
-            detail=detail,
         ) from exc
     except (RoleAxisNotDeclaredError, RoleAxisConflictError) as exc:
         # Both mean "this axis cannot give me one role" -- the axis is
@@ -322,7 +322,6 @@ def _decide_elected_units(
             code="request_invalid",
             status=422,
             pointer="/identity/facets/unit",
-            detail=detail,
         ) from exc
     except BoundFacetCombinationsCeilingExceededError as exc:
         # The Set-bound provenance/measurementMethod product would exceed
@@ -334,7 +333,6 @@ def _decide_elected_units(
             code="facet_probe_ceiling",
             status=422,
             pointer="/identity/facets/unit",
-            detail=detail,
         ) from exc
     except (RecipeNotDeclaredError, RateCoverageGapError) as exc:
         detail = exc.detail or str(exc)
@@ -344,7 +342,6 @@ def _decide_elected_units(
             status=exc.status,
             pointer="/identity/facets/unit",
             cause=cause_from_recipe_error(exc),
-            detail=detail,
         ) from exc
     except (FacetNotAvailableError, DefaultFacetUndefinedError) as exc:
         detail = exc.detail or str(exc)
@@ -353,7 +350,6 @@ def _decide_elected_units(
             code="facet_not_available",
             status=422,
             pointer="/identity/facets/unit",
-            detail=detail,
         ) from exc
     return elected_unit_refs(elected)
 

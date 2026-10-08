@@ -162,7 +162,7 @@ def test_a_pin_only_one_statvar_carries_is_refused():
 
     assert exc_info.value.code == "facet_not_available"
     assert exc_info.value.pointer == "/input/identity/facets/measurementMethod"
-    assert "Estimated" in (exc_info.value.detail or "")
+    assert "Estimated" in str(exc_info.value)
 
 
 @pytest.mark.parametrize(
@@ -196,8 +196,8 @@ def test_a_null_method_pin_constrains_the_provenance_pin_beside_it():
     refusal = exc_info.value
     assert refusal.code == "facet_not_available"
     assert refusal.pointer == "/input/identity/facets/provenance"
-    assert "provenance" in (refusal.detail or "")
-    assert "measurementMethod" in (refusal.detail or "")
+    assert "provenance" in str(refusal)
+    assert "measurementMethod" in str(refusal)
     assert [a.ref for a in refusal.alternatives or []] == [_IDS, _OTHER]
 
 

@@ -22,6 +22,7 @@ from collections.abc import Mapping
 from typing import NamedTuple, get_args
 
 from dfo_platform import Alternative
+from dfo_platform.named import named_capped
 from search.engine.clients.graph import EngineGraphClient, Facet
 from search.engine.clients.sdmx import RoleFacetIndex
 from search.engine.config import settings
@@ -487,7 +488,6 @@ def _facet_refusal_from_candidates(
             code="facet_binding_unsupported",
             status=501,
             pointer="/input/facets/unit",
-            detail=detail,
         )
 
     all_facets = [f for sv_facets in facets_by_sv.values() for f in sv_facets]
@@ -510,7 +510,7 @@ def _facet_refusal_from_candidates(
             )
             detail_parts.append(f"{axis}: no facet honours the requested {basis}")
         else:
-            detail_parts.append(f"{axis}: missing {', '.join(failing.missing[axis])}")
+            detail_parts.append(f"{axis}: missing {named_capped(failing.missing[axis])}")
     detail = "no observations are available under the requested facet binding(s) -- " + "; ".join(
         detail_parts
     )
@@ -520,7 +520,6 @@ def _facet_refusal_from_candidates(
         status=422,
         pointer=f"/input/facets/{pointed_axis}",
         alternatives=_alternatives(pointed_axis, all_facets, graph) or None,
-        detail=detail,
     )
 
 

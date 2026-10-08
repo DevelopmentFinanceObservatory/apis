@@ -6,10 +6,25 @@ a line chart over it refuses `binding_invalid` at `/type` before its window is
 read, and a bar chart whose select resolves to one series refuses the same way
 after resolution. Both read the selected series and name the kinds that show a
 span: a table, a stat card, and an entity-mode bar chart with a select that
-resolves several series, which a frame with nothing to compare leaves out."""
+resolves several series, which a frame with nothing to compare leaves out.
+
+An intent's relative periods are resolved on the frame by `assembler.rolling` before the
+window is completed, and the component is built from the resolved periods. The candidate's
+`stored_intent` keeps the relative form. A bar chart that compares entities up to a relative
+`window.end` draws the series holding a value at that period and leaves the others out. The
+series a rolling component leaves out are named in one `coverage_gap` warning, first in
+`provenance.warnings`.
+
+A render of a stored revision binds its select on the target frame by
+`assembler.rolling.StoredSelect`'s rules, whatever its intent states. On a frame with an
+anchor the warning names the anchor's left-out series the select admits, then the select
+values the frame holds no row for. Without an anchor or a relative period it names those
+values at the window's end. Any component names only the anchor's left-out series its
+select admits (`assembler.rolling.admitted_left_out`)."""
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import json
 from collections.abc import Callable, Mapping, Sequence
@@ -17,6 +32,7 @@ from dataclasses import dataclass
 from typing import cast
 
 import jsonschema
+from dfo_frame_grammar import UNIT_COLUMN
 
 from assembler.bind import BoundSeries, bind_all, count_periods, frame_periods
 from assembler.catalogue import CatalogueRelease
@@ -37,8 +53,18 @@ from assembler.limits import (
 )
 from assembler.merge import merge_intent
 from assembler.mint import MintedComponent, complete_window, default_window, mint_component
+from assembler.mint.provenance import _with_left_out_warning
 from assembler.ports import FrameRef, FrameStore, ResolvedFrame, RevisionRecord
 from assembler.resolve import ResolvedSeries, resolve_selectors
+from assembler.rolling import (
+    ROLLING_ANCHOR_UNHELD,
+    ResolvedRolling,
+    RollingPeriodInvalid,
+    StoredSelect,
+    _without_absent_values,
+    admitted_left_out,
+    resolve_rolling,
+)
 from assembler.select import (
     check_select_nonempty,
     check_single_arrayed_dimension,
@@ -67,6 +93,15 @@ class _Candidate:
     minted: MintedComponent
 
 
+@dataclass(frozen=True)
+class _LeftOut:
+    """The series a rolling component leaves out, by display label, and the period they
+    hold no value at."""
+
+    period: str
+    names: tuple[str, ...]
+
+
 def _build_candidate(
     *,
     patch: Mapping[str, object],
@@ -76,7 +111,11 @@ def _build_candidate(
     frame_store: FrameStore,
     clock: Callable[[], datetime.datetime],
     resolved_frame: ResolvedFrame | None = None,
+    load_stored_frame: Callable[[], ResolvedFrame | None] | None = None,
 ) -> _Candidate:
+    """`load_stored_frame` is set for a render of `current` on `resolved_frame`: it returns
+    the frame `current` was written on, or `None` when that frame cannot be loaded, and the
+    select binds by `StoredSelect`'s rules."""
     if is_create:
         member = _resolve_type(intent=patch, release=release)
         _validate_intent(
@@ -153,7 +192,35 @@ def _build_candidate(
                 resolved_frame=resolved_frame, selectors=selectors, window=None
             ),
         )
-    window = cast("Mapping[str, object] | None", merged.get("window"))
+    # The component is drawn from `drawn`, the merged intent with its relative periods
+    # resolved on this frame. `merged` is stored as written.
+    stored_select = (
+        StoredSelect(load_frame=load_stored_frame) if load_stored_frame is not None else None
+    )
+    rolling = resolve_rolling(
+        intent=merged,
+        resolved_frame=resolved_frame,
+        selectors=selectors,
+        stored_select=stored_select,
+    )
+    drawn: Mapping[str, object] = merged
+    # The series a render names when its intent states no relative period.
+    rendered_names: tuple[str, ...] = ()
+    if rolling is not None:
+        drawn, selectors = rolling.intent, list(rolling.selectors)
+    elif stored_select is not None:
+        selectors, absent = _without_absent_values(
+            resolved_frame=resolved_frame,
+            selectors=selectors,
+            select=select,
+            stored_select=stored_select,
+        )
+        anchor = resolved_frame.anchor
+        left_out_names = (
+            admitted_left_out(anchor=anchor, select=select) if anchor is not None else ()
+        )
+        rendered_names = tuple(dict.fromkeys((*left_out_names, *absent)))
+    window = cast("Mapping[str, object] | None", drawn.get("window"))
     if window is not None:
         window = complete_window(window=window, resolved_frame=resolved_frame)
     series = resolve_selectors(resolved_frame=resolved_frame, selectors=selectors, window=window)
@@ -226,15 +293,73 @@ def _build_candidate(
             )
     bound = bind_all(resolved_frame=resolved_frame, series=series, window=effective_window)
 
+    left_out: _LeftOut | None = None
+    if rolling is not None:
+        series, bound, left_out = _leave_out(
+            rolling=rolling,
+            series=series,
+            bound_series=bound,
+            entity_period=(
+                str(effective_window["end"])
+                if member == "bar_chart"
+                and rolling.window_end_relative
+                and (has_arrayed_dimension(select=select) or len(series) > 1)
+                else None
+            ),
+        )
+    elif rendered_names:
+        anchor = resolved_frame.anchor
+        left_out = _LeftOut(
+            period=anchor.period if anchor is not None else str(effective_window["end"]),
+            names=rendered_names,
+        )
+
     return _finish_candidate(
         member=member,
-        merged_intent=merged,
+        merged_intent=drawn,
+        stored_intent=merged,
         resolved_frame=resolved_frame,
         series=series,
         bound_series=bound,
         release=release,
         clock=clock,
+        left_out=left_out,
     )
+
+
+def _leave_out(
+    *,
+    rolling: ResolvedRolling,
+    series: tuple[ResolvedSeries, ...],
+    bound_series: tuple[BoundSeries, ...],
+    entity_period: str | None,
+) -> tuple[tuple[ResolvedSeries, ...], tuple[BoundSeries, ...], _LeftOut | None]:
+    """The series a rolling component draws, and the ones it leaves out.
+
+    `entity_period` is the period an entity-mode bar chart with a relative `window.end`
+    draws its bars at, and `None` for any other component. Such a chart keeps the series
+    with a value at that period, so the latest period they share is that period, and the
+    rest are named. Any other component keeps every series and names those with no row at
+    the anchor. Select values the frame holds no row for are named in both cases."""
+    period = entity_period or rolling.anchor
+    names = list(rolling.left_out) if period == rolling.anchor else []
+    if entity_period is not None:
+        holds = [
+            any(point["period"] == entity_period and "value" in point for point in one.points)
+            for one in bound_series
+        ]
+        names.extend(one.label for one, held in zip(bound_series, holds, strict=True) if not held)
+        series = tuple(one for one, held in zip(series, holds, strict=True) if held)
+        bound_series = tuple(one for one, held in zip(bound_series, holds, strict=True) if held)
+        if not bound_series:
+            raise RollingPeriodInvalid(
+                code=ROLLING_ANCHOR_UNHELD,
+                pointer="/window",
+                detail=f"no selected series holds a value at {entity_period}, the window's end",
+            )
+    names.extend(rolling.absent)
+    unique = tuple(dict.fromkeys(names))
+    return series, bound_series, _LeftOut(period=period, names=unique) if unique else None
 
 
 def _refuse_span_frame(
@@ -356,10 +481,16 @@ def _finish_candidate(
     bound_series: Sequence[BoundSeries],
     release: CatalogueRelease,
     clock: Callable[[], datetime.datetime],
+    stored_intent: Mapping[str, object] | None = None,
+    left_out: _LeftOut | None = None,
 ) -> _Candidate:
     """Mints, checks constraints, and enforces `MAX_ENVELOPE_BYTES` before returning a
     candidate. The size check runs before a create pins its frame and repeats
-    if the transaction rebuilds the candidate."""
+    if the transaction rebuilds the candidate.
+
+    The component is minted from `merged_intent`. The candidate stores `stored_intent`,
+    which differs from it only where `merged_intent` holds a resolved relative period, and
+    defaults to it. `left_out` adds the left-out series warning to the provenance."""
     minted = mint_component(
         member=member,
         merged_intent=merged_intent,
@@ -369,16 +500,24 @@ def _finish_candidate(
         release=release,
         clock=clock,
     )
+    if left_out is not None:
+        minted = dataclasses.replace(
+            minted,
+            provenance=_with_left_out_warning(
+                provenance=minted.provenance, period=left_out.period, names=left_out.names
+            ),
+        )
     _run_constraints(
         component=minted.component,
         member=member,
         release=release,
         observed_periods=minted.observed_periods,
+        series=series,
     )
     _check_envelope_size(minted=minted)
 
     return _Candidate(
-        stored_intent=merged_intent,
+        stored_intent=merged_intent if stored_intent is None else stored_intent,
         member=member,
         resolved_frame=resolved_frame,
         series=tuple(series),
@@ -497,9 +636,14 @@ def _run_constraints(
     member: str,
     release: CatalogueRelease,
     observed_periods: frozenset[str],
+    series: Sequence[ResolvedSeries],
 ) -> None:
     encoding_class = release.encoding_classes.get(member, "none")
-    context = {"component": component, "observed_periods": tuple(sorted(observed_periods))}
+    context = {
+        "component": component,
+        "observed_periods": tuple(sorted(observed_periods)),
+        "unit_keys": {one.id: dict(one.coordinates).get(UNIT_COLUMN) for one in series},
+    }
     for spec in release.constraints:
         if encoding_class not in spec.encoding_classes and member not in spec.component_types:
             continue

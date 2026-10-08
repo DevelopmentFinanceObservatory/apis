@@ -102,12 +102,12 @@ jobs:
   # One shard of the suite per matrix entry, each on its own runner. Splitting
   # across machines instead of adding cores to one keeps every shard inside a
   # fresh 4 vCPU / 16 GB box, so one shard's four xdist workers never compete
-  # with another shard's for memory. Three shards rather than four because
-  # billing rounds every job up to a whole minute: a measured four-shard run
-  # cost 13 of them against 10 for three, buying roughly 25s of wall clock once
-  # both are balanced. `fail-fast: false` because a failing shard should not
-  # cancel the other two: one run reporting every failure costs less than two
-  # runs each reporting one.
+  # with another shard's for memory. Five shards because three ran 14, 13 and
+  # 10 minutes on a dev push, and timing-sensitive tests fail on a shard that
+  # long; billing rounds each job up to a whole minute, which costs at most a
+  # few minutes per run at this length. `fail-fast: false` because a failing
+  # shard should not cancel the others: one run reporting every failure costs
+  # less than two runs each reporting one.
   test-shard:
     # Mints a dfo-reader token, which prod keeps only in main-limited
     # environments, so this runs in ONEcampaign only. The identical tree
@@ -120,7 +120,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [1, 2, 3]
+        group: [1, 2, 3, 4, 5]
     steps:
       - uses: actions/checkout@v7
 
@@ -195,9 +195,9 @@ jobs:
         # A test id missing from the restored durations is weighed at their
         # mean, so tests added since the last dev push shift the balance only
         # slightly. `--clean-durations` rewrites the file with the timings of
-        # this shard's tests alone, so the `test` job's union of the three files
+        # this shard's tests alone, so the `test` job's union of the five files
         # holds every current test and none that was deleted.
-        run: uv run pytest -q -n auto --splits 3 --group ${{ matrix.group }} --store-durations --clean-durations
+        run: uv run pytest -q -n auto --splits 5 --group ${{ matrix.group }} --store-durations --clean-durations
 
       - name: Upload this shard's durations
         if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
@@ -235,7 +235,7 @@ jobs:
           echo "all test shards passed"
 
       # A push to dev saves the shards' timings for the next runs to split by.
-      # The count of 3 matches the matrix above.
+      # The count of 5 matches the matrix above.
       - name: Download the shards' durations
         if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
         uses: actions/download-artifact@v8
@@ -248,7 +248,7 @@ jobs:
           python3 - <<'PY'
           import json, pathlib, sys
           files = sorted(pathlib.Path().glob("test-durations-*/.test_durations"))
-          if len(files) != 3:
+          if len(files) != 5:
               sys.exit(f"expected one durations file per shard, found {len(files)}")
           merged = {}
           for path in files:

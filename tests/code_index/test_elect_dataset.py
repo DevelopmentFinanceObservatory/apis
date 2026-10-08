@@ -112,6 +112,7 @@ def _dataset(
         description="A test table.",
         opt_in=opt_in,
         absent_observation=absent_observation,
+        account="provider",
         rank=rank,
         invariants=invariants or {},
     )
@@ -1349,16 +1350,21 @@ _EDU_AID_FIVE_TUPLE = FiveTuple(
 _IMPUTED_FIVE_TUPLE = dataclasses.replace(_EDU_AID_FIVE_TUPLE, measured_property="attributedAmount")
 
 
-def _education_aid_slots(index: CodeIndex, *, aid_type: SlotBinding) -> dict[str, SlotBinding]:
-    return {
+def _education_aid_slots(
+    index: CodeIndex, *, aid_type: SlotBinding | None
+) -> dict[str, SlotBinding]:
+    """CRS education-aid slots, with a `dac2aAidType` slot unless `aid_type` is None."""
+    slots: dict[str, SlotBinding] = {
         _MODALITY: ("unbound",),
         "crsPurpose": ("set", index.descendants("CRSPurposeCode110")),
         "crsTypeOfFinance": ("unbound",),
         "crsTypeOfFlow": ("value", "CRSTypeOfFlow10"),
-        AID_TYPE: aid_type,
         "financialFlowType": ("value", "Disbursement"),
         "nettingBasis": ("value", "Gross"),
     }
+    if aid_type is not None:
+        slots[AID_TYPE] = aid_type
+    return slots
 
 
 def _minimal(
@@ -1412,19 +1418,32 @@ def test_an_open_recipient_reads_the_packaged_rows_its_dataset_declares_it_on(
     assert family == reference
 
 
-def test_the_education_family_on_amount_is_the_crs_rows():
+@pytest.mark.parametrize(
+    ("aid_type", "count", "provenances"),
+    [
+        (None, CRS_MEMBER_COUNT, {(CRS_PROVENANCE,)}),
+        (("unbound",), 0, set()),
+    ],
+    ids=["crs-keys", "crs-keys-and-dac2a-aid-type"],
+)
+def test_the_education_family_on_amount_is_the_crs_rows(
+    aid_type: SlotBinding | None, count: int, provenances: set[tuple[str, ...]]
+):
+    """CRS keys elect the CRS family on `amount`. DAC2a declares `dac2aAidType` there too,
+    so CRS keys beside it straddle two families and elect none, as CRS keys beside an
+    unbound `dac1AidType` do."""
     index = load_index(default_index_path())
 
-    rows = _minimal(index, _education_aid_slots(index, aid_type=("unbound",)))
+    rows = _minimal(index, _education_aid_slots(index, aid_type=aid_type))
 
-    assert len(rows) == CRS_MEMBER_COUNT
-    assert {row.provenances for row in rows} == {(CRS_PROVENANCE,)}
+    assert len(rows) == count
+    assert {row.provenances for row in rows} == provenances
 
 
 def test_the_education_members_without_a_modality_stay():
     index = load_index(default_index_path())
 
-    rows = _minimal(index, _education_aid_slots(index, aid_type=("unbound",)))
+    rows = _minimal(index, _education_aid_slots(index, aid_type=None))
 
     without_modality = [row for row in rows if _MODALITY not in row.constraint_properties]
     assert len(without_modality) == CRS_MEMBERS_WITHOUT_MODALITY
@@ -1441,6 +1460,43 @@ def test_the_education_family_on_attributed_amount_is_the_imputed_rows(aid_type:
 
     assert len(rows) == IMPUTED_MEMBER_COUNT
     assert {row.provenances for row in rows} == {(IMPUTED_PROVENANCE,)}
+
+
+_DAC2A_PROVENANCE = "provenance/OECDDAC2A"
+_DAC2A_KEYS: dict[str, SlotBinding] = {
+    AID_TYPE: ("unbound",),
+    "financialFlowType": ("value", "Disbursement"),
+    "nettingBasis": ("value", "Gross"),
+}
+
+
+@pytest.mark.parametrize(
+    ("sector", "provenance", "count"),
+    [(False, _DAC2A_PROVENANCE, 1), (True, IMPUTED_PROVENANCE, IMPUTED_MEMBER_COUNT)],
+    ids=["dac2a-keys", "imputed-keys-education"],
+)
+def test_the_keys_on_attributed_amount_decide_the_imputed_or_dac2a_table(
+    sector: bool, provenance: str, count: int
+):
+    """DAC2a's aid type 106 row shares the imputed table's `attributedAmount` five-tuple
+    under fewer keys. An unnamed question on DAC2a's keys elects that row. Adding the
+    imputed table's sector and flow keys, with the purpose bound to education, elects the
+    imputed rows."""
+    index = load_index(default_index_path())
+    slots = dict(_DAC2A_KEYS)
+    if sector:
+        slots["crsPurpose"] = ("set", index.descendants("CRSPurposeCode110"))
+        slots["crsTypeOfFlow"] = ("unbound",)
+
+    family = index_family(index, FamilyQuery(_IMPUTED_FIVE_TUPLE, slots, None))
+
+    assert family is not None
+    assert (family.provenance, len(family.rows)) == (provenance, count)
+    assert {row.provenances for row in family.rows} == {(provenance,)}
+    if not sector:
+        assert {row.constraint_properties[AID_TYPE] for row in family.rows} == {
+            IMPUTED_MULTILATERAL
+        }
 
 
 def test_the_crs_source_on_attributed_amount_refuses():

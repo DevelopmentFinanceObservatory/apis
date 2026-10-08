@@ -11,7 +11,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import cast
 
-from assembler.errors import EditConflict, RevisionNotFound
+from assembler.errors import EditConflict
+from assembler.pipeline.stored_revision import read_stored_revision
 from assembler.ports import RevisionStore
 from assembler.reply import build_fact_summary
 
@@ -35,19 +36,9 @@ def get_component(
     revision raises `RevisionNotFound` if a head exists, otherwise
     `EditConflict`. An unscoped read with no head also raises `EditConflict`."""
     if revision is not None:
-        record = revision_store.read_revision(component_id=component_id, revision=revision)
-        if record is None:
-            head = revision_store.read_current(component_id=component_id)
-            if head is None:
-                raise EditConflict
-            raise RevisionNotFound(
-                component_id=component_id,
-                revision=revision,
-                detail=(
-                    f"component {component_id} has no revision {revision}; "
-                    f"the current head is revision {head.revision}"
-                ),
-            )
+        record = read_stored_revision(
+            component_id=component_id, revision=revision, revision_store=revision_store
+        )
     else:
         record = revision_store.read_current(component_id=component_id)
         if record is None:

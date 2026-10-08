@@ -20,7 +20,7 @@ from dataclasses import dataclass
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from entity_resolution import EntityResolver, Group, Resolution, Resolved
+from entity_resolution import EntityResolver, Resolution, Resolved
 from search.engine.clients.graph import DetectedSV, EngineGraphClient, settled_un
 from search.engine.config import settings
 from search.engine.retrieval.topics import is_topic_candidate
@@ -77,29 +77,23 @@ class Recall(BaseModel):
     resolutions carries every entity name's own entity_resolution.Resolution
     (Resolved, Group, Ambiguous, NotHeld, or NotFound) -- a hit or a miss,
     always present for every name in the entities recall() was called with,
-    plus any pre_resolved name still carried over. resolved_entity_names
-    narrows that same map to the Resolved AND Group names, surface name ->
-    dcid, for every existing call site that only ever wanted a successfully
-    resolved dcid. A Group's own dcid here is provisional -- its own entity
-    reading when one exists, else its first member (entity_resolution's own
-    "at least one of entity/members is always populated" contract for
-    Group) -- and exists only to keep a Group name out of entity_not_resolved
-    before region/phase_intake.py's _phase_resolve_places, the one place that
-    decides a Group's entity vs. member reading for the role in hand, ever
-    runs; that phase always revisits this entry, either confirming it,
-    replacing it with the Group's own entity, or (a too-large Group)
-    removing it again.
+    plus any pre_resolved name still carried over.
+    region/phase_intake.py's _phase_resolve_places reads this
+    result into the request's place sets (`ResolveState.place_sets`), which
+    every later phase reads for the places a name binds.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     candidates: list[DetectedSV]  # descending by score (detect_svs's contract)
     resolutions: dict[str, Resolution]  # surface name → Resolution (hit or miss)
-    resolved_entity_names: dict[str, str]  # surface name → dcid, Resolved and Group names
     # The UN System Data Commons' admitted candidates, None when its resolve failed. The
     # resolve may still be running: only the gap-fill pass waits for it (`settle_un`,
     # region/pipeline.py), and `un_candidates` and `un_unavailable` read it once settled.
     un_leg: Future[tuple[DetectedSV, ...] | None] = Field(default_factory=lambda: settled_un(()))
+    # Our resolve's hits under their own dcids, above the recall floor (`Detection.hits`):
+    # the first pass's confirm cap counts these. `None` reads as `candidates`.
+    hits: list[DetectedSV] | None = None
 
     async def settle_un(self) -> None:
         """Wait for the UN System Data Commons resolve to finish."""
@@ -175,31 +169,6 @@ async def recall(
     candidates = _above_recall_floor(detection.candidates)
     resolutions: dict[str, Resolution] = dict(cache_hits)
     resolutions.update(zip(misses, miss_resolutions, strict=True))
-    resolved_entity_names: dict[str, str] = {}
-    for name, resolution in resolutions.items():
-        if isinstance(resolution, Resolved):
-            resolved_entity_names[name] = resolution.entity.dcid
-        elif isinstance(resolution, Group):
-            # Provisional only -- see this class's own docstring. Prefers
-            # the entity reading when one exists, since members can
-            # legitimately be empty exactly when entity is not None
-            # (entity_resolution.Group's own "at least one of entity/
-            # members is always populated" contract); members is
-            # otherwise guaranteed non-empty by entity_resolution's own
-            # _assemble_group (its NotHeld contract for an empty member
-            # set with no entity reading), but that guarantee is
-            # _assemble_group's own, not Resolution's -- a hand-built
-            # pre_resolved Group can still carry both entity=None and
-            # empty members. Guarded the same way region/phase_intake.py's
-            # _phase_resolve_places guards the identical case one phase
-            # later: an empty member set with no entity reading leaves
-            # `name` out of resolved_entity_names, the ordinary
-            # still-unresolved path, rather than raising.
-            if resolution.entity is not None:
-                resolved_entity_names[name] = resolution.entity.dcid
-            elif resolution.members:
-                resolved_entity_names[name] = resolution.members[0].dcid
-
     for c in candidates:
         logger.debug(
             "recall candidate dcid=%s score=%.4f sentence=%r",
@@ -211,6 +180,6 @@ async def recall(
     return Recall(
         candidates=candidates,
         resolutions=resolutions,
-        resolved_entity_names=resolved_entity_names,
         un_leg=detection.un,
+        hits=None if detection.hits is None else _above_recall_floor(detection.hits),
     )

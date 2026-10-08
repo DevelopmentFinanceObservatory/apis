@@ -60,7 +60,7 @@ from search.engine.region import (
     promote_ground,
     resolve_spec_resubmit,
 )
-from search.engine.region.codes import PLACE_SCOPE_DEFAULTED, STANDARD_PROBE_PLACES_CLAMPED
+from search.engine.region.codes import PLACE_SCOPE_DEFAULTED
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.result import RegionResult
 from search.engine.region.state import EngineOptions
@@ -77,7 +77,7 @@ from tests.materialise.conftest import FakeGraphReader
 _KEN, _GHA, _TZA, _EARTH = scenarios._KEN, scenarios._GHA, scenarios._TZA, scenarios._EARTH
 # Earth's countries (`scenarios._CHILDREN`).
 _COUNTRIES = tuple(scenarios._CHILDREN[_EARTH]["Country"])
-_SCOPE_CODES = (PLACE_SCOPE_DEFAULTED, STANDARD_PROBE_PLACES_CLAMPED)
+_SCOPE_CODES = (PLACE_SCOPE_DEFAULTED,)
 
 # One shape of deaths: of females, of males, and in total.
 _FEMALE = "Count_DeathEventScenario_Female"

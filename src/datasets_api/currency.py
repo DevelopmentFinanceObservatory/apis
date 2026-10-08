@@ -1,7 +1,9 @@
 """Derive the materialisation currency signals used by mint and definition retrieval.
 
-`derive_signals` reads the facet probe used for the fetch. For a multi-member combined group, it
-matches each member against the shared group selection and combines every dispatched facet.
+`derive_signals` reads the facet probe used for the fetch. A probe with no candidate on any
+member gives the zero signal, as materialisation gives the empty result. For a multi-member
+combined group, it matches each member against the shared group selection and combines every
+dispatched facet.
 Choosing only one facet could miss a later update or trigger a rebuild for an unchanged facet.
 A single-member spec uses its request's own selected facets. Mint and later GETs
 therefore compare signals derived by the same rule. A request whose window leaves its end unstated
@@ -34,6 +36,12 @@ from materialise.window import RequestedWindow, election_window
 # fingerprint, so later currency checks can compare normally.
 _UNVERIFIABLE_RECIPE_FINGERPRINT: tuple[str, str] = ("__unverifiable__", "__unverifiable__")
 
+# The signal of a spec that dispatches no facet, because its probe is empty or no candidate
+# matches its selection.
+_NO_DISPATCH_SIGNAL = MemberSignal(
+    dispatch_facet_id=None, obs_count=0, earliest_date=None, latest_date=None
+)
+
 
 def _refresh_dates(
     provenance_id: str | None, provenance_refresh: Mapping[str, ProvenanceRefresh]
@@ -56,19 +64,20 @@ def _member_signal(
 ) -> MemberSignal:
     """Build the signal from the facets selected for this member's fetch.
 
-    No dispatched facet yields zero counts and no facet id. Multiple matches sum `obs_count`
+    A probe with no candidate, or no dispatched facet, yields zero counts and no facet id
+    (`_NO_DISPATCH_SIGNAL`). Multiple matches sum `obs_count`
     and widen the date range. The lowest `facet_id` represents
     the signal. Its observation period and provenance refresh dates supply the identity fields.
     """
     candidates = probe.candidates
+    if not candidates:
+        return _NO_DISPATCH_SIGNAL
     selections = _select_member_facets(
         request, candidates, graph=graph, breadth=probe.breadth_in(request.window)
     )
     dispatch_ids = joint_dispatch_facet_ids(candidates, selections)
     if not dispatch_ids:
-        return MemberSignal(
-            dispatch_facet_id=None, obs_count=0, earliest_date=None, latest_date=None
-        )
+        return _NO_DISPATCH_SIGNAL
     matched = [candidate for candidate in candidates if candidate.facet_id in dispatch_ids]
     obs_count = 0
     earliest_date: str | None = None
@@ -106,8 +115,11 @@ def _group_signal(
     `FacetNotAvailableError`, or `NonCurrencyUnitError`. The caller then re-materialises. Otherwise
     sum counts across all dispatched member/facet pairs, widen the date range, and use the lowest
     `facet_id` as representative. Its observation period and provenance dates supply identity
-    fields. With no dispatched facets, return a zero signal without a facet id.
+    fields. With no candidate on any member, or no dispatched facets, return a zero signal
+    without a facet id (`_NO_DISPATCH_SIGNAL`).
     """
+    if not any(probe.candidates):
+        return _NO_DISPATCH_SIGNAL
     try:
         selections = select_group_facets(
             requests,
@@ -122,9 +134,7 @@ def _group_signal(
         dispatch_ids = joint_dispatch_facet_ids(candidates, selections)
         matched.extend(candidate for candidate in candidates if candidate.facet_id in dispatch_ids)
     if not matched:
-        return MemberSignal(
-            dispatch_facet_id=None, obs_count=0, earliest_date=None, latest_date=None
-        )
+        return _NO_DISPATCH_SIGNAL
     obs_count = 0
     earliest_date: str | None = None
     latest_date: str | None = None

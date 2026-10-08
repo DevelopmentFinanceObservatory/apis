@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from assembler.fakes import FakeFrameStore
 from assembler.ports import FrameRef
 from dfo_platform import HealthResponse, ProblemDetails
 from presentation_api.models import (
@@ -17,6 +18,7 @@ from presentation_api.models import (
     ReleaseDocumentResponse,
     WriteReplyResponse,
 )
+from tests.assembler._pipeline_support import _stored_resolved_frame
 
 _FRAME_REF = {
     "spec_id": "spec_9f2e41a7c03b58d2a4c1f6b2e8d35790",
@@ -160,6 +162,74 @@ def test_component_read_matches_component_read_response(client: TestClient, memb
     )
     assert resp.status_code == 200
     ComponentReadResponse.model_validate(resp.json())
+
+
+_UNIT_FRAME_REF = FrameRef(spec_id="spec_" + "a" * 32, content_version="cv_" + "b" * 32)
+
+
+@pytest.mark.parametrize(
+    ("frame_unit", "expected"),
+    [
+        pytest.param(None, None, id="null"),
+        pytest.param("USDollar", "US Dollar", id="unit-ref"),
+        pytest.param(
+            {"currency": "USD", "prices": "constant", "base_year": 2020},
+            {"currency": "USD", "prices": "constant", "base_year": 2020},
+            id="converted",
+        ),
+        pytest.param(
+            {"numerator": "USDollar", "denominator": {"stat_var": "dcid:Count_Person"}},
+            {
+                "numerator": "US Dollar",
+                "denominator": {"stat_var": "dcid:Count_Person", "label": "Total population"},
+            },
+            id="composed",
+        ),
+    ],
+)
+def test_fact_summary_unit_on_the_wire_matches_its_model(
+    client: TestClient, frame_store: FakeFrameStore, frame_unit, expected
+):
+    """The doors return built bodies, so nothing but this test holds `FactSummaryModel.unit`
+    to the unit a stat_card's write and read send."""
+    frame_store.put(
+        resolved_frame=_stored_resolved_frame(
+            frame_ref=_UNIT_FRAME_REF,
+            role_keys=("recipient",),
+            rows=[
+                {
+                    "stat_var": "dcid:MalariaGrantDisbursements",
+                    "recipient": "country/ETH",
+                    "time_period": "2024",
+                    "value": 3.34,
+                    "unit": frame_unit,
+                    "measurementMethod": None,
+                    "provenance": "src_oecd_dac",
+                }
+            ],
+            labels={"USDollar": "US Dollar", "dcid:Count_Person": "Total population"},
+        )
+    )
+    intent = {
+        **_STAT_CARD_INTENT,
+        "frame_ref": {
+            "spec_id": _UNIT_FRAME_REF.spec_id,
+            "content_version": _UNIT_FRAME_REF.content_version,
+        },
+    }
+
+    created = _create(client, intent=intent)
+    assert created.status_code == 201
+    read = client.get(f"/api/presentation/components/{created.json()['component_id']}")
+    assert read.status_code == 200
+
+    for body, model in (
+        (created.json(), CreateReplyResponse),
+        (read.json(), ComponentReadResponse),
+    ):
+        assert body["fact_summary"]["unit"] == expected
+        assert body["resolved_payload"]["component"]["unit"] == expected
+        model.model_validate(body)
 
 
 @pytest.mark.parametrize(

@@ -19,7 +19,6 @@ from materialise.place_scope import (
     PlaceScopeReadError,
     is_worldwide,
 )
-from search.engine.config import settings
 from search.engine.errors import GraphReadFailure
 
 if TYPE_CHECKING:
@@ -35,14 +34,12 @@ _CHILD_PLACE_TYPES: dict[str, str] = {
 
 @dataclass
 class PlaceExpansion:
-    """Member dcids clamped to `settings().max_child_places`. `total_members` preserves the
-    unclamped count for warnings. A covered set with no members returns an empty expansion. An
-    unsupported type returns `None`.
+    """Every member dcid of a place set, in graph order, and the graph type they share. A
+    covered set with no members returns an empty expansion. An unsupported type returns `None`.
     """
 
     children: list[str]
-    clamped: bool
-    total_members: int
+    child_type: str
 
 
 def expand_places(
@@ -64,12 +61,8 @@ def expand_places(
     for child_type, dcids in by_child_type.items():
         children_by_dcid = graph.child_places_batch(dcids, child_type)
         for dcid in dcids:
-            children = children_by_dcid.get(dcid, [])
-            total = len(children)
             results[dcid] = PlaceExpansion(
-                children=children[: settings().max_child_places],
-                clamped=total > settings().max_child_places,
-                total_members=total,
+                children=children_by_dcid.get(dcid, []), child_type=child_type
             )
     return results
 
@@ -80,9 +73,8 @@ def expand_place(
     *,
     graph: EngineGraphClient,
 ) -> PlaceExpansion | None:
-    """Expand one place-set through one `child_places_batch` call. Clamp members to
-    `max_child_places` and report the full count. Unsupported types return `None`. Empty supported
-    sets return an empty expansion.
+    """Expand one place-set through one `child_places_batch` call. Unsupported types return
+    `None`. Empty supported sets return an empty expansion.
     """
     return expand_places([(dcid, type_of)], graph=graph).get(dcid)
 

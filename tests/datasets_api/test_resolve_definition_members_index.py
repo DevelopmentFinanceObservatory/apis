@@ -756,6 +756,7 @@ def _dataset(provenance: str) -> DatasetDeclaration:
         description="A test table.",
         opt_in=False,
         absent_observation="zero",
+        account="provider",
         rank=0,
     )
 

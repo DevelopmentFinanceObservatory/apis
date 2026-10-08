@@ -139,9 +139,11 @@ def is_front_door_refusal(*, status: int, content_type: str | None, body: str) -
     )
 
 
-class _FrontDoorRefused(Exception):
-    """A request met the front door's refusal (`is_front_door_refusal`). Observation GETs catch
-    it; node reads find it as the read error's cause (`_post_node`). It stays inside the client."""
+class FrontDoorRefused(Exception):
+    """A request met the front door's refusal (`is_front_door_refusal`). `post` attaches it as the
+    `__cause__` of the `GraphReadError` it raises, so an adapter reading through `post` recognises
+    the refusal with `isinstance(exc.__cause__, FrontDoorRefused)`. Observation GETs catch it
+    inside the client."""
 
 
 @contextlib.contextmanager
@@ -438,7 +440,7 @@ class GraphClient:
         try:
             return self.post(NODE_PATH, payload, deadline=deadline)
         except GraphReadError as exc:
-            if isinstance(exc.__cause__, _FrontDoorRefused):
+            if isinstance(exc.__cause__, FrontDoorRefused):
                 return None
             raise
 
@@ -481,8 +483,8 @@ class GraphClient:
         front_door_refusals: bool = False,
     ) -> dict:
         """Send one request with `post`'s retry and deadline rules. With `front_door_refusals`,
-        the front door's refusal raises `_FrontDoorRefused`; without it, the read error it raises
-        has a `_FrontDoorRefused` cause (`_post_node`)."""
+        the front door's refusal raises `FrontDoorRefused`; without it, the read error it raises
+        has a `FrontDoorRefused` cause (`_post_node`)."""
         attempt = 0
         while True:
             attempt += 1
@@ -528,13 +530,13 @@ class GraphClient:
                     body=response.text,
                 )
                 if refused and front_door_refusals:
-                    raise _FrontDoorRefused(path)
+                    raise FrontDoorRefused(path)
                 error = self._read_error_cls(
                     f"graph returned HTTP {response.status_code} for {path!r}",
                     upstream_status=response.status_code,
                 )
                 if refused:
-                    raise error from _FrontDoorRefused(path)
+                    raise error from FrontDoorRefused(path)
                 raise error
             try:
                 return response.json()
@@ -584,7 +586,7 @@ class GraphClient:
                         content_type=resp.headers.get("content-type"),
                         body=bytes(snippet).decode("utf-8", errors="replace"),
                     ):
-                        raise _FrontDoorRefused(path)
+                        raise FrontDoorRefused(path)
                     raise self._read_error_cls(
                         f"graph returned HTTP {resp.status_code} for {path!r}: "
                         f"{bytes(snippet[:_ERROR_BODY_SNIPPET_BYTES])!r}",
@@ -1790,7 +1792,7 @@ class GraphClient:
                         front_door_refusals=True,
                     )
                     read += size
-            except _FrontDoorRefused:
+            except FrontDoorRefused:
                 if len(entity_group) == 1:
                     self._record_blocked_observation_entity(stamp, entity_group[0])
                     return

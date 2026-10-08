@@ -54,9 +54,10 @@ from search.engine.clients.graph import (
     SubjectsCoverage,
     SubjectsPage,
     _force_full_facets,
-    admit_candidates,
     admit_un_candidates,
+    cut_hits,
     settled_un,
+    stand_candidates,
 )
 from search.engine.config import USER_AGENT, SearchSettings
 from search.engine.config import settings as search_settings
@@ -468,11 +469,9 @@ class LiveGraphClient:
         # cancels its source) leaves it for `settle` to finish.
         un: Future[tuple[DetectedSV, ...] | None] = Future()
         un.set_running_or_notify_cancel()
+        hits = cut_hits(self._resolve_ours(query), catalogue=catalogue, detect_k=self._detect_k)
         detection = Detection(
-            candidates=admit_candidates(
-                self._resolve_ours(query), catalogue=catalogue, detect_k=self._detect_k
-            ),
-            un=un,
+            candidates=stand_candidates(hits, catalogue=catalogue), un=un, hits=hits
         )
 
         def settle(done: Future[tuple[DetectedSV, ...] | None]) -> None:

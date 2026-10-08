@@ -92,11 +92,13 @@ class AmbiguousEntity:
 
 @dataclass(frozen=True)
 class RoleNotAdmittedEntity:
-    """Resolved entity that no surviving shape can assign to a declared role."""
+    """Resolved entity that no surviving shape can assign to a declared role. A place set
+    is named by its node, and one with no node by its first member."""
 
     text: str
     dcid: str
-    graph_type: str
+    # `None` for a set with no node whose members share no stated type.
+    graph_type: str | None
 
 
 @dataclass(frozen=True)
@@ -235,8 +237,8 @@ class RegionResult:
     # stores the region without closures and binds them again for the request it serves.
     # None off the resubmit's definite path.
     promote_relaunch: PromoteRelaunch | None = None
-    # Role-to-entity lists probed by resubmit resolution. Place-set values are
-    # expanded to members. Populated on definite resubmit results.
+    # Role-to-entity lists probed by resubmit resolution: the identity's own dcids on
+    # each role. Populated on definite resubmit results.
     observation_entities: dict[str, list[str]] | None = None
     # Resubmit filters for source, method, and unit facets, applied before
     # facet selection. `None` means no bound axis or a non-resubmit result.

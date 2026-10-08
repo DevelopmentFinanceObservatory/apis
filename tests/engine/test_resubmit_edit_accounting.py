@@ -193,7 +193,7 @@ class TestInexpressibleUnitHoistedBeforeGraphAccess:
 
         assert hoisted.code == late.code
         assert hoisted.status == late.status
-        assert hoisted.detail == late.detail
+        assert str(hoisted) == str(late)
         assert late.pointer == "/input/facets/unit"
         assert hoisted.pointer == "/input/identity/facets/unit"
 

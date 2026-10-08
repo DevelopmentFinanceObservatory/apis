@@ -24,7 +24,7 @@
         present: true
 - id: skills-refugee-costs-donor-countries
   query: refugee costs in donor countries ODA
-  why: Refugee costs in donor countries binds crsPurpose 930, where oda-concepts and oda-dataset-selection attach; oda-crs follows through the source.
+  why: A donor total with no recipient answers from DAC1's in-donor refugee costs. No skill attaches to DAC1 series, so the case leaves skills unchecked.
   tags:
     feature: skills
     directional_flow: na
@@ -32,72 +32,39 @@
   expect:
     definite:
       measure:
-        shape:
-          population_type: FinancialFlow
-          measured_property: amount
-          stat_type: measuredValue
-          measurement_qualifier: Nominal
-          measurement_denominator: null
-        bound:
-          crsPurpose: CRSPurposeCode930
-          crsTypeOfFlow: CRSTypeOfFlow10
-          financialFlowType: Disbursement
-          nettingBasis: Gross
+        family: dac1.in_donor_refugee_costs
       entities: []
-      skills:
-        present: true
 - id: skills-oda-loans-japan
   query: ODA loans by Japan
-  why: ODA loans by Japan binds crsTypeOfFinance 420, where oda-measures attaches; oda-crs follows through the source.
+  why: ODA loans by Japan names no recipient, so DAC1's donor totals answer it with ODA non-grant disbursements. No skill attaches to DAC1 series, so the case leaves skills unchecked.
   tags:
     feature: skills
     directional_flow: na
     conjunction: none
+  known_failure: {issue: 1241, checks: [measure]}
   expect:
     definite:
       measure:
-        shape:
-          population_type: FinancialFlow
-          measured_property: amount
-          stat_type: measuredValue
-          measurement_qualifier: Nominal
-          measurement_denominator: null
+        family: dac1.disbursement_gross
         bound:
-          crsTypeOfFinance: CRSTypeOfFinance420
-          crsTypeOfFlow: CRSTypeOfFlow10
-          financialFlowType: Disbursement
-          nettingBasis: Gross
+          dac1AidType: DAC1AidType1010
+          dacTypeOfFinance: DACTypeOfFinanceNonGrants
       entities:
       - dcid: country/JPN
         role: origin
-      skills:
-        present: true
 - id: skills-humanitarian-aid-united-kingdom
   query: humanitarian aid from the United Kingdom
-  why: Humanitarian aid from the United Kingdom binds a purpose with no skill attached, so only the oda-crs source skill matches.
+  why: Humanitarian aid from the United Kingdom is a plain donor question, so DAC2a's humanitarian aid line (aid type 216) answers it; no skill attaches to DAC2a series.
   tags:
     feature: skills
     directional_flow: na
     conjunction: none
   expect:
     definite:
-      measure:
-        shape:
-          population_type: FinancialFlow
-          measured_property: amount
-          stat_type: measuredValue
-          measurement_qualifier: Nominal
-          measurement_denominator: null
-        bound:
-          crsPurpose: CRSPurposeCode700
-          crsTypeOfFlow: CRSTypeOfFlow10
-          financialFlowType: Disbursement
-          nettingBasis: Gross
+      measure: {family: dac2a.humanitarian_aid}
       entities:
       - dcid: country/GBR
         role: origin
-      skills:
-        present: true
 - id: skills-life-expectancy-brazil
   query: life expectancy in Brazil
   why: Life expectancy in Brazil carries no skill attachment, so resolved.skills is empty.

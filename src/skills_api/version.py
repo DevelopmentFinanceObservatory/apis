@@ -61,6 +61,8 @@ def _render_body_exemplars(catalogue: CodeCatalogue) -> dict[str, dict[str, obje
                         axis="exemplar-axis",
                         alternatives=[Alternative(ref="issue-ref", label="issue-label")],
                         truncated=False,
+                        code=code,
+                        detail="exemplar issue detail",
                     )
                 ],
                 retryable=True,

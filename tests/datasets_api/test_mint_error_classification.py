@@ -42,11 +42,14 @@ from dc_sdmx import (
 )
 from materialise.errors import (
     DatasetDisagreementError,
+    DefaultFacetUndefinedError,
+    FacetNotAvailableError,
     MembersNotHeldError,
     UpstreamResponseError,
 )
 from materialise.formats import ExcelLimitError, ParquetSizeBoundError
 from materialise.graph import Facet, GraphDeadlineExceededError, GraphReadError
+from materialise.group_facets import _as_issue
 from materialise.reshape import (
     ColumnNotDroppableError,
     PivotNotHomogeneousError,
@@ -831,6 +834,41 @@ def test_pivot_not_unique_names_each_duplicate_key_then_each_varying_column():
         ("/options/pivot", "('country/KEN', '2015')", None),
         ("/options/pivot", None, "provider"),
         ("/options/pivot", None, "sector"),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("aggregate_type", "code"),
+    [
+        (DefaultFacetUndefinedError, "default_facet_undefined"),
+        (FacetNotAvailableError, "facet_not_available"),
+    ],
+)
+def test_a_refusal_on_three_axes_serves_each_issue_with_its_own_code_and_detail(
+    aggregate_type, code
+):
+    errors = {
+        "unit": DefaultFacetUndefinedError("unit has no default", pointer="/facets/unit"),
+        "provenance": FacetNotAvailableError(
+            "provenance bound to nothing", pointer="/facets/provenance"
+        ),
+        "measurementMethod": FacetNotAvailableError(
+            "method has no observations", pointer="/facets/measurementMethod"
+        ),
+    }
+    aggregate = aggregate_type(
+        "one or more facet axes could not be resolved",
+        issues=tuple(_as_issue(axis, error) for axis, error in errors.items()),
+    )
+
+    spec = classify_mint_exception(aggregate)
+
+    assert spec is not None
+    assert spec.code == code
+    assert spec.detail == str(aggregate)
+    wire = [issue.model_dump(mode="json", exclude_none=True) for issue in spec.issues or ()]
+    assert [(issue["axis"], issue["code"], issue["detail"]) for issue in wire] == [
+        (axis, error.code, str(error)) for axis, error in errors.items()
     ]
 
 

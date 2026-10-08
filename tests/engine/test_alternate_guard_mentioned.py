@@ -382,8 +382,8 @@ def test_pipeline_sole_option_gdp_refuses_the_gni_nomination():
 
 def test_a_registry_twin_in_another_vocabulary_survives_a_mentioned_value():
     """The registry pairs vocabularies, and the constraint axes compare value dcids. The
-    under-five mortality twins bind age as `YearsUpto4` and `SDG_AgeEnum_Y0T4`, so a twin
-    passes the guard whole."""
+    under-five mortality twins bind age as `age: YearsUpto4` and
+    `undataAge: undata/AGE-Y0T4`, so a twin passes the guard whole."""
     elected = _shape(
         "Under-five mortality rate",
         "Nominal",
@@ -396,7 +396,7 @@ def test_a_registry_twin_in_another_vocabulary_survives_a_mentioned_value():
     twin = _shape(
         "Under-five mortality rate (SDG)",
         "Nominal",
-        {"sdg/SH_DYN_MORT.AGE--Y0T4": {"age": "SDG_AgeEnum_Y0T4"}},
+        {"undata/sdg/SH_DYN_MORT.AGE--Y0T4": {"undataAge": "undata/AGE-Y0T4"}},
     )
 
     pins = query_pins(

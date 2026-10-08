@@ -16,7 +16,6 @@ from typing import Literal, NamedTuple
 
 import pytest
 
-from code_index.query import row_five_tuple
 from code_index.shared import get_index, get_measure_index
 from search.engine.bind import DraftBindingEvidence, SlotBindingDraft, _UniversalBindOutput
 from search.engine.extract import DateRequest
@@ -39,6 +38,7 @@ from search.engine.region.candidates import alternate_representative
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.equivalent_series import CLUSTER_BY_MEMBER, EquivalentCluster
 from search.engine.region.phase_rank_bind import _has_strong_rate_intent
+from search.engine.region.state import shape_vocabulary
 from search.engine.retrieval.bound_values import (
     DefaultReading,
     collapse_measure_families,
@@ -469,11 +469,11 @@ ROWS = [
             "access to electricity",
             _ELECTRICITY,
             _shape(
-                "SDG_EG_ACS_ELEC",
+                "undata/sdg/SERIES-EG_ACS_ELEC",
                 "value",
                 None,
                 None,
-                members=("sdg/EG_ACS_ELEC",),
+                members=("undata/sdg/EG_ACS_ELEC",),
                 roles=("unit",),
             ),
             None,
@@ -910,7 +910,10 @@ ROWS = [
                 },
             ),
             _gdp(
-                "Nominal", members={"sdg/SH_DYN_MORT.AGE--Y0T4": _arcs({"age": "SDG_AgeEnum_Y0T4"})}
+                "Nominal",
+                members={
+                    "undata/sdg/SH_DYN_MORT.AGE--Y0T4": _arcs({"undataAge": "undata/AGE-Y0T4"})
+                },
             ),
             None,
             (_binding("age", ["YearsUpto4"]),),
@@ -1673,7 +1676,7 @@ def test_973_availability_substitute_under_a_qualifier_pin(named):
         named_place=True,
         variable="nominal GDP rate",
         quantity=quantity_requirement(["nominal GDP rate"]),
-        qualifier_matches=[_qualifier("Nominal")] if named else [],
+        qualifier_matches={shape_vocabulary(nominal): (_qualifier("Nominal"),) if named else ()},
         denominator_kinds={},
     )
 
@@ -2114,12 +2117,16 @@ def test_ppp_naming_a_crs_purpose_pins_no_price_basis():
 
 def _imputed_pins() -> tuple[ShapeDraft, Mapping[str, str], Mapping[str, str]]:
     """The imputed multilateral shape the index carries, the slots its dataset pins,
-    and the constraints of one of its education rows."""
+    and the constraints of one of its education rows. DAC2a's aid type 106 shares the
+    five-tuple, so the shape declares the imputed family's properties as slots: those
+    keys select its family, as they do for the shape Search builds from it."""
     index = get_index()
     ((dataset, five_tuple),) = (
         key for key, pins in index.dataset_pins.items() if pins and index.datasets[key[0]].opt_in
     )
-    rows = [row for row in index.statvars if row_five_tuple(row) == five_tuple]
+    (family,) = (
+        family for family in index.families_by_five_tuple[five_tuple] if dataset in family.datasets
+    )
     elected = dataclasses.replace(
         _shape(
             five_tuple.population_type or "",
@@ -2128,7 +2135,11 @@ def _imputed_pins() -> tuple[ShapeDraft, Mapping[str, str], Mapping[str, str]]:
             five_tuple.measurement_denominator,
             stat=five_tuple.stat_type or "",
             label="imputed multilateral",
-            roles=rows[0].observation_properties,
+            roles=family.rows[0].observation_properties,
+        ),
+        slot_keys=tuple(
+            SlotKeyDraft(axis="what", property_dcid=prop, label=prop)
+            for prop in sorted(family.properties)
         ),
         sv_arc_facts_complete=False,
     )

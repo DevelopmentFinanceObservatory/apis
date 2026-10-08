@@ -10,7 +10,11 @@ from materialise.provenance_doc import read_provenance_doc
 from origin_catalogue import BASE, DFO, UN_SYSTEM, CardFacts, DatasetRef, load_registry
 from origin_catalogue.job import build_provenance_table
 from origin_catalogue.registry import parse_registry
-from tests.origin_catalogue.fake_catalogue import provenance_row, restrictive_catalogue
+from tests.origin_catalogue.fake_catalogue import (
+    provenance_row,
+    restrictive_catalogue,
+    un_mirror,
+)
 
 from .conftest import FakeGraphNodeReader, make_client
 
@@ -393,3 +397,77 @@ class TestCardFacts:
             "1960",
             None,
         )
+
+
+_SUPERSESSION_REGISTRY = parse_registry(
+    b"""
+[[base]]
+source = "dc/s/UnitedNations"
+label = "United Nations"
+exclusions = [
+  { provenance = "dc/base/UN_SDG", reason = "superseded_by_un_system", successor = "undata/p/SDG", variable_prefix = "sdg/", code_delimiter = ".", pair_delimiter = "__", value_delimiter = "--" },
+  { provenance = "dc/base/UN_Other", reason = "superseded_by_dfo" },
+]
+
+[[un_system]]
+provenance = "undata/p/SDG"
+segment = "sdg"
+label = "SDG Global Database"
+exclusions = [
+  { series = "undata/sdg/SERIES-DC_ODA_TOTL", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDDAC1" },
+  { series = "undata/sdg/SERIES-DC_ODA_TOTG", reason = "superseded_by_dfo", dfo_provenance = "provenance/Unlisted" },
+]
+"""
+)
+
+
+def _supersession_sources(catalogue) -> dict[str, dict]:
+    """The wire entries of `_SUPERSESSION_REGISTRY` against `catalogue`, by source ref."""
+    body = build_source_catalogue(registry=_SUPERSESSION_REGISTRY, catalogue=catalogue)
+    return {entry["source"]["ref"]: entry for entry in body.model_dump(mode="json")["sources"]}
+
+
+class TestSupersession:
+    def test_a_base_source_lists_its_exclusions_as_ref_and_reason_alone(self):
+        sources = _supersession_sources(restrictive_catalogue())
+
+        assert sources["dc/s/UnitedNations"]["exclusions"] == [
+            {"ref": "dc/base/UN_SDG", "reason": "superseded_by_un_system"},
+            {"ref": "dc/base/UN_Other", "reason": "superseded_by_dfo"},
+        ]
+
+    def test_a_un_agency_lists_no_excluded_series(self):
+        # The registry excludes two of the agency's series, and the build names both.
+        catalogue = restrictive_catalogue(
+            un_mirror=un_mirror(
+                {},
+                excluded={
+                    "undata/sdg/TOTL": "undata/sdg/SERIES-DC_ODA_TOTL",
+                    "undata/sdg/TOTG": "undata/sdg/SERIES-DC_ODA_TOTG",
+                },
+            )
+        )
+
+        assert _supersession_sources(catalogue)["undata/p/SDG"]["exclusions"] == []
+
+    def test_an_excluded_provenance_is_not_listed_as_admitted(self):
+        # A build older than the registry still holds the provenance the registry excludes.
+        catalogue = restrictive_catalogue(
+            provenances=[
+                provenance_row("dc/base/UN_SDG", BASE, source="dc/s/UnitedNations"),
+                provenance_row("dc/base/UN_Kept", BASE, source="dc/s/UnitedNations"),
+            ]
+        )
+
+        sources = _supersession_sources(catalogue)
+
+        assert [d["ref"] for d in sources["dc/s/UnitedNations"]["datasets"]] == ["dc/base/UN_Kept"]
+
+    def test_the_packaged_registry_lists_the_sdg_supersession_in_devs_shape(self):
+        body = build_source_catalogue(
+            registry=load_registry(), catalogue=restrictive_catalogue()
+        ).model_dump(mode="json")
+
+        exclusions = [exclusion for source in body["sources"] for exclusion in source["exclusions"]]
+        assert {"ref": "dc/base/UN_SDG", "reason": "superseded_by_un_system"} in exclusions
+        assert all(set(exclusion) == {"ref", "reason"} for exclusion in exclusions)

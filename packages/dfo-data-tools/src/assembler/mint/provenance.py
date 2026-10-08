@@ -11,16 +11,14 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import cast
 
 from assembler.bind import BoundSeries
-from assembler.mint.builders import (
-    # Shares the builders' label cap for source names.
-    _LABEL_MAX,
-)
+from assembler.limits import LABEL_MAX
 from assembler.ports import ResolvedFrame
 
 _LICENCE_MAX = 200
 _REF_MAX = 200  # the envelope's `sources[].ref` maximum
 _CITATION_MAX = 500
 _WARNING_DETAIL_MAX = 500
+_WARNINGS_MAX = 50  # the envelope's `warnings` maximum
 _SOURCE_ID_RE = re.compile(r"^src_[a-z0-9_]{1,60}$")
 _UNATTRIBUTED_SOURCE_ID = "src_unattributed"
 _UNATTRIBUTED_SOURCE_NAME = "Unattributed source"
@@ -118,7 +116,7 @@ def _build_sources_for_refs(
         cited = citation_by_ref.get(raw_ref, {}) if raw_ref is not None else {}
         source: dict[str, object] = {
             "id": source_id,
-            "name": str(cited.get("label") or raw_ref or _UNATTRIBUTED_SOURCE_NAME)[:_LABEL_MAX],
+            "name": str(cited.get("label") or raw_ref or _UNATTRIBUTED_SOURCE_NAME)[:LABEL_MAX],
             "url": str(cited.get("url") or ""),
             "licence": str(cited.get("license") or _LICENCE_NOT_STATED)[:_LICENCE_MAX],
             "retrieved": retrieved,
@@ -129,8 +127,8 @@ def _build_sources_for_refs(
             named = cast("Mapping[str, str] | None", cited.get(member))
             if named is not None:
                 source[member] = {
-                    "id": named[key][:_LABEL_MAX],
-                    "name": named["label"][:_LABEL_MAX],
+                    "id": named[key][:LABEL_MAX],
+                    "name": named["label"][:LABEL_MAX],
                 }
         sources.append(source)
     return tuple(sources), id_by_raw_ref
@@ -185,6 +183,35 @@ def _translate_warnings(warnings: Sequence[Mapping[str, object]]) -> list[dict[s
     return translated
 
 
+def _left_out_warning(*, period: str, names: Sequence[str]) -> dict[str, object]:
+    """The `coverage_gap` warning naming the series a rolling component leaves out at
+    `period`: the count, the period, then the names in order, joined by `", "`.
+
+    When every name would take the detail past `_WARNING_DETAIL_MAX`, the names that do not
+    fit are replaced by `" and N more"`."""
+    count = len(names)
+    lead = f"{count} series {'has' if count == 1 else 'have'} no {period} value: "
+    labels = [name[:LABEL_MAX] for name in names]
+    for shown in range(count, 0, -1):
+        hidden = count - shown
+        detail = lead + ", ".join(labels[:shown]) + (f" and {hidden} more" if hidden else "")
+        if len(detail) <= _WARNING_DETAIL_MAX:
+            break
+    return {"kind": "coverage_gap", "detail": detail[:_WARNING_DETAIL_MAX]}
+
+
+def _with_left_out_warning(
+    *, provenance: Mapping[str, object], period: str, names: Sequence[str]
+) -> dict[str, object]:
+    """`provenance` with the left-out series warning first in `warnings`, ahead of the
+    frame manifest's own in their order, and the list held to `_WARNINGS_MAX` entries."""
+    warnings = cast("Sequence[Mapping[str, object]]", provenance["warnings"])
+    return {
+        **provenance,
+        "warnings": [_left_out_warning(period=period, names=names), *warnings][:_WARNINGS_MAX],
+    }
+
+
 def _data_through(manifest: Mapping[str, object]) -> str | None:
     """The last year of the applied window, or `None` when the manifest records no window."""
     coverage = cast(Mapping[str, object], manifest.get("coverage") or {})
@@ -221,6 +248,14 @@ def _build_provenance(
         "citation": _build_citation(sources=sources),
         "refreshed_from": None,
     }
+
+
+def _refreshed_provenance(
+    *, provenance: Mapping[str, object], refreshed_from: int
+) -> dict[str, object]:
+    """`provenance` with `refreshed_from` naming the stored revision whose intent was rendered
+    on the frame in `inputs`. Create and revise leave `refreshed_from` at `None`."""
+    return {**provenance, "refreshed_from": refreshed_from}
 
 
 def _build_frameless_provenance(*, clock: Callable[[], datetime.datetime]) -> dict[str, object]:

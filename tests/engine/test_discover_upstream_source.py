@@ -7,7 +7,12 @@ import dataclasses
 from origin_catalogue import BASE, DFO, UN_SYSTEM, ProvenanceRow, SourceRef
 from search.engine.retrieval.derive import upstream_source
 from search.engine.shape import UpstreamSource
-from tests.origin_catalogue.fake_catalogue import provenance_row, restrictive_catalogue
+from tests.origin_catalogue.fake_catalogue import (
+    provenance_row,
+    restrictive_catalogue,
+    un_mirror,
+    un_variable,
+)
 
 _WHO_BASE = "dc/base/WHO_GHO"
 _WHO_BASE_ALT = "dc/base/WHO_Mortality"
@@ -38,6 +43,9 @@ def _catalogue():
             "Unicef_A": ([_UNICEF_BASE], []),
             "Shared": ([_WHO_BASE, _UNICEF_BASE], []),
         },
+        un_mirror=un_mirror(
+            {"undata/who/U5MR": un_variable("undata/who/SERIES-U5MR", name="Under-five deaths")}
+        ),
     )
 
 

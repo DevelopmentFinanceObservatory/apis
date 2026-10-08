@@ -194,6 +194,26 @@ class TestLegRestatement:
             source_text="World Bank",
         )
 
+    def test_an_entity_asked_for_its_members_states_the_flag(self):
+        """The leg's member entities reach its echo, on each mention of the entity."""
+        restatement = _leg_restatement(
+            "aid",
+            entities=["Africa", "France"],
+            date_request=None,
+            unit_text=None,
+            source_text=None,
+            entity_roles={
+                "Africa": [DoorRole(axis="destination", span="Africa")],
+                "France": [DoorRole(axis="origin", span="France")],
+            },
+            member_entities=frozenset({"Africa"}),
+        )
+        assert restatement is not None
+        assert [(e.text, e.role_text, e.members) for e in restatement.entities or []] == [
+            ("Africa", "to", True),
+            ("France", "from", None),
+        ]
+
     def test_no_entities_is_none_not_an_empty_list(self):
         restatement = _leg_restatement(
             "GDP", entities=[], date_request=None, unit_text=None, source_text=None
@@ -678,6 +698,14 @@ class TestParsedDoorRestatementRoundTrip:
         first, second = result.parts
         assert first.restatement == parts[0]
         assert second.restatement == parts[1]
+
+    def test_a_part_asking_for_members_echoes_the_flag(self):
+        """The echo of a part that asks for an entity's members asks for them too."""
+        part = ParsedPart(
+            variable_text="population", entities=[ParsedEntity(text="Brazil", members=True)]
+        )
+        result = offline_resolve(ResolveRequest(input=ParsedInput(parts=[part])))
+        assert result.parts[0].restatement == part
 
     def test_no_data_part_echoes_its_unit_text_too(self):
         """A part that never reaches a spec (rate_coverage_gap, here) still

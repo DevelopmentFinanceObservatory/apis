@@ -74,9 +74,15 @@ def _graph_factory(rate_cache: RateTableCache) -> Surface:
 
 
 def _presentation_factory(rate_cache: RateTableCache) -> Surface:
+    from datasets_api.config import DatasetsBuildSettings
+    from datasets_api.live_refresh import LiveRefreshPrincipal
     from presentation_api.app import presentation_surface
 
-    return presentation_surface()
+    # The render routes admit the principal the Datasets frame refresh admits, read from the
+    # same settings, whether or not the Datasets surface is mounted.
+    return presentation_surface(
+        live_refresh=LiveRefreshPrincipal.resolve(settings=DatasetsBuildSettings.from_env())
+    )
 
 
 def _skills_factory(rate_cache: RateTableCache) -> Surface:

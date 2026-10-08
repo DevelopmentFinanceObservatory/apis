@@ -9,6 +9,7 @@ import pytest
 
 from assembler.bind import BoundSeries, bind_all
 from assembler.errors import BindingInvalid
+from assembler.limits import LABEL_MAX
 from assembler.mint import default_window, mint_component, stamp_envelope
 from assembler.mint.provenance import _WARNING_KIND_BY_CODE
 from assembler.resolve import ResolvedSeries, resolve_selectors
@@ -560,14 +561,15 @@ def test_bar_chart_listing_values_keeps_the_list_order(release):
     assert [one["label"] for one in minted.component["series"]] == list(_PROVIDERS.values())
 
 
-def _kenya_aid_resolved_frame(*, recipients=("country/KEN",)):
+def _kenya_aid_resolved_frame(*, recipients=("country/KEN",), donor=None):
     """Health and education aid to each of `recipients` in 2021 and 2022, one series per
-    stat_var and recipient."""
+    stat_var and recipient. A `donor` adds a leading `donor` role every row shares."""
     return build_resolved_frame(
         frame_ref=malaria_ethiopia_frame_ref(),
-        role_keys=("recipient",),
+        role_keys=("recipient",) if donor is None else ("donor", "recipient"),
         rows=[
             {
+                **({} if donor is None else {"donor": donor}),
                 "stat_var": stat_var,
                 "recipient": recipient,
                 "time_period": period,
@@ -629,8 +631,22 @@ def test_bar_chart_listing_values_refuses_when_two_bars_would_share_a_value(rele
     assert [one.ref for one in spec.alternatives] == ["country/KEN", "country/UGA"]
 
 
-def test_lines_that_differ_only_on_stat_var_lead_with_its_label(release):
+@pytest.mark.parametrize(
+    ("stat_var_labels", "expected"),
+    [
+        pytest.param({}, ["Health aid / Kenya", "Education aid / Kenya"], id="short-labels"),
+        pytest.param(
+            {"dcid:HealthAid": "H" * 200, "dcid:EducationAid": "E" * 200},
+            ["H" * 192 + " / Kenya", "E" * 192 + " / Kenya"],
+            id="a-200-character-stat-var-label-keeps-the-series-label",
+        ),
+    ],
+)
+def test_lines_that_differ_only_on_stat_var_lead_with_its_label(release, stat_var_labels, expected):
     resolved_frame = _kenya_aid_resolved_frame()
+    resolved_frame = dataclasses.replace(
+        resolved_frame, labels={**resolved_frame.labels, **stat_var_labels}
+    )
     select = {"stat_var": ["dcid:HealthAid", "dcid:EducationAid"], "recipient": "country/KEN"}
     series, bound = _resolve_and_bind(
         resolved_frame=resolved_frame, selectors=normalize_select(select=select)
@@ -652,11 +668,54 @@ def test_lines_that_differ_only_on_stat_var_lead_with_its_label(release):
         clock=_fixed_clock(),
     )
     component = minted.component
-    assert [one["label"] for one in component["series"]] == [
-        "Health aid / Kenya",
-        "Education aid / Kenya",
-    ]
+    assert [one["label"] for one in component["series"]] == expected
     assert component["y_axis"]["label"] == "Value"
+
+
+def test_line_labels_over_a_stat_var_and_two_roles_keep_every_part(release):
+    """Two StatVars, one donor and two recipients, with three 99-character labels, draw four
+    lines that read apart."""
+    resolved_frame = _kenya_aid_resolved_frame(
+        recipients=("country/KEN", "country/UGA"), donor="country/USA"
+    )
+    resolved_frame = dataclasses.replace(
+        resolved_frame,
+        labels={
+            **resolved_frame.labels,
+            "dcid:HealthAid": "H" * 99,
+            "dcid:EducationAid": "E" * 99,
+            "country/USA": "D" * 99,
+        },
+    )
+    select = {"stat_var": ["dcid:HealthAid", "dcid:EducationAid"], "donor": "country/USA"}
+    series, bound = _resolve_and_bind(
+        resolved_frame=resolved_frame, selectors=normalize_select(select=select)
+    )
+    minted = mint_component(
+        member="line_chart",
+        merged_intent={
+            "type": "line_chart",
+            "frame_ref": {
+                "spec_id": resolved_frame.frame_ref.spec_id,
+                "content_version": resolved_frame.frame_ref.content_version,
+            },
+            "select": select,
+        },
+        resolved_frame=resolved_frame,
+        series=series,
+        bound_series=bound,
+        release=release,
+        clock=_fixed_clock(),
+    )
+    labels = [one["label"] for one in minted.component["series"]]
+    assert len(set(labels)) == 4
+    assert all(len(label) <= LABEL_MAX for label in labels)
+    assert sorted(label.rsplit(" / ", 1)[1] for label in labels) == [
+        "Kenya",
+        "Kenya",
+        "Uganda",
+        "Uganda",
+    ]
 
 
 def test_bar_chart_over_several_periods_refuses_naming_both_next_calls(release):

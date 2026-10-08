@@ -27,6 +27,33 @@
     "surface": "datasets"
   },
   {
+    "has_description": true,
+    "method": "POST",
+    "name": "refresh_frame",
+    "operation_id": "refresh_frame_api_datasets_frames_refresh_post",
+    "path": "/api/datasets/frames/refresh",
+    "summary": "Refresh Frame",
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "get_recipe",
+    "operation_id": "get_recipe_api_datasets_frames__spec_id___content_version__recipe_get",
+    "path": "/api/datasets/frames/{spec_id}/{content_version}/recipe",
+    "summary": "Get Recipe",
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "PUT",
+    "name": "put_recipe",
+    "operation_id": "put_recipe_api_datasets_frames__spec_id___content_version__recipe_put",
+    "path": "/api/datasets/frames/{spec_id}/{content_version}/recipe",
+    "summary": "Put Recipe",
+    "surface": "datasets"
+  },
+  {
     "has_description": false,
     "method": "GET",
     "name": "healthz",
@@ -42,6 +69,15 @@
     "operation_id": "get_operation_api_datasets_operations__operation_id__get",
     "path": "/api/datasets/operations/{operation_id}",
     "summary": "Get Operation",
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "get_replay",
+    "operation_id": "get_replay_api_datasets_recipes_replays__replay_key__get",
+    "path": "/api/datasets/recipes/replays/{replay_key}",
+    "summary": "Get Replay",
     "surface": "datasets"
   },
   {
@@ -222,6 +258,15 @@
     "operation_id": null,
     "path": "/api/datasets/{id}/options",
     "summary": null,
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
+    "method": "GET",
+    "name": "get_versions",
+    "operation_id": "get_versions_api_datasets__id__versions_get",
+    "path": "/api/datasets/{id}/versions",
+    "summary": "Get Versions",
     "surface": "datasets"
   },
   {
@@ -546,6 +591,24 @@
     "operation_id": "read_component_data_api_presentation_components__component_id__revisions__revision__data_get",
     "path": "/api/presentation/components/{component_id}/revisions/{revision}/data",
     "summary": "Read Component Data",
+    "surface": "presentation"
+  },
+  {
+    "has_description": true,
+    "method": "POST",
+    "name": "render_component_revision",
+    "operation_id": "render_component_revision_api_presentation_components__component_id__revisions__revision__render_post",
+    "path": "/api/presentation/components/{component_id}/revisions/{revision}/render",
+    "summary": "Render Component Revision",
+    "surface": "presentation"
+  },
+  {
+    "has_description": true,
+    "method": "GET",
+    "name": "read_rendered_component_data",
+    "operation_id": "read_rendered_component_data_api_presentation_components__component_id__revisions__revision__render_data_get",
+    "path": "/api/presentation/components/{component_id}/revisions/{revision}/render/data",
+    "summary": "Read Rendered Component Data",
     "surface": "presentation"
   },
   {

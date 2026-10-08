@@ -92,7 +92,9 @@ class EntityGroup(StrictModel):
     ("EU member states"). The members themselves are the role's dcids in
     `BaseIdentity.entities`. This records only that they were asked for as one
     group, so the heading can say "the 27 EU member states" after any edit that
-    keeps the role's members. A Spec serves its groups on
+    keeps the role's members. `entity_type` is the type of the group's node: a
+    Continent or a UNGeoRegion reads as the places in it ("the 59 countries and
+    territories in Africa"). A Spec serves its groups on
     `ResolvedSpec.entity_groups`, and a resubmit posts them beside the identity
     (`ResubmitIdentityEntry.entity_groups`, `ResubmitCandidate.entity_groups`)."""
 
@@ -104,4 +106,11 @@ class EntityGroup(StrictModel):
         min_length=1,
         max_length=_ENTITY_GROUP_LABEL_MAX_LENGTH,
         description="the group's name as the request gave it, plain text",
+    )
+    entity_type: IdentityString | None = Field(
+        default=None,
+        description=(
+            "the graph type of the group's own node, e.g. Continent, UNGeoRegion, "
+            "ContinentalUnion; null when the graph holds no node for the group"
+        ),
     )

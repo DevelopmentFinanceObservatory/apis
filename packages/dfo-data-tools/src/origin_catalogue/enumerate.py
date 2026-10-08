@@ -30,7 +30,7 @@ The topic table maps every Topic on our mixer to every leaf of its walk.
 The walk is `topic_walk.walk_topics`, the one search runs at query time, with
 its depth limit and no member cap. A topic with no leaves is left out. The
 loaded catalogue applies admission and the member cap
-(`CatalogueTables.admitted_topics`), as search does, so the table reads no
+(`CatalogueTables.admit_topic`), as search does, so the table reads no
 DFO data.
 
 Cloud Run answers a response over 32 MiB with an empty HTTP 500 after the

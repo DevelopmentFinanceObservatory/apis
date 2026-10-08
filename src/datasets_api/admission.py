@@ -1,7 +1,8 @@
 """Admission checks run before materialisation or network calls.
 
 `bounded_materialise_slot` limits concurrent work and caps waiting at both
-the configured wait and client deadline. `sync_estimate` models dispatch
+the configured wait and client deadline. `RebuildFlights` lets concurrent callers share
+one rebuild of a subject. `sync_estimate` models dispatch
 from one coverage snapshot: it groups by request-batch key and window years,
 then applies the same lane and StatVar chunk rules as materialisation.
 
@@ -75,6 +76,66 @@ def bounded_materialise_slot(
         yield
     finally:
         materialise_semaphore.release()
+
+
+class RebuildFlights:
+    """Lets the callers that need one rebuild of a subject share it, within this process.
+
+    A rebuild that advances a subject's head serves every caller that needs it, so the
+    definition and frame refresh doors take a turn here before re-materialising. Two
+    instances can still rebuild one subject together: version inserts are
+    `ON CONFLICT DO NOTHING` and `HeadWriter.advance_head` is a compare-and-swap, so the
+    second writes nothing new.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._running: dict[str, threading.Event] = {}
+
+    def _claim(self, subject_id: str, finished: threading.Event) -> threading.Event | None:
+        """Register `finished` as the running rebuild of `subject_id` and return `None`, or
+        return the event of the rebuild already running."""
+        with self._lock:
+            running = self._running.get(subject_id)
+            if running is None:
+                self._running[subject_id] = finished
+            return running
+
+    @contextmanager
+    def turn(
+        self, subject_id: str, *, deadline: float | None, wait_seconds: float
+    ) -> Iterator[None]:
+        """Enter once no rebuild of `subject_id` the caller could share is running.
+
+        A caller arriving while a rebuild runs waits for it to end, whether it advanced the
+        head, raised, or was abandoned by its request. The caller then checks the head and
+        rebuilds only if it is still the one it read. After a rebuild that failed, each waiter
+        runs its own, as it would have alone. The first of them is the rebuild later arrivals
+        wait on, so no caller waits on more than one.
+
+        The wait lasts until `deadline`, the caller's own absolute monotonic deadline, since it
+        stands in for work the caller would otherwise do itself. `wait_seconds` bounds it only
+        for a caller with no deadline. A rebuild still running at the bound raises retryable
+        `MintBackpressure` (503). The wait records as the `rebuild_wait` phase.
+        """
+        finished = threading.Event()
+        running = self._claim(subject_id, finished)
+        if running is not None:
+            remaining = (
+                float(wait_seconds) if deadline is None else max(0.0, deadline - time.monotonic())
+            )
+            with phase("rebuild_wait"):
+                ended = running.wait(timeout=remaining)
+            if not ended:
+                raise MintBackpressure()
+            running = self._claim(subject_id, finished)
+        try:
+            yield
+        finally:
+            if running is None:
+                with self._lock:
+                    del self._running[subject_id]
+                finished.set()
 
 
 def _bare_dcid(stat_var: str) -> str:
@@ -243,6 +304,7 @@ def refuse_async_over_ceiling(
 
 __all__ = [
     "UNCOVERED_MEMBER_CAP",
+    "RebuildFlights",
     "bounded_materialise_slot",
     "refuse_async_over_ceiling",
     "refuse_excel_over_estimate",

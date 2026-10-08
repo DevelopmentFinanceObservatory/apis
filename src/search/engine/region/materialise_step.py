@@ -28,6 +28,7 @@ from search.engine.retrieval.retrieve import (
     UnsupportedDraft,
     materialise,
 )
+from search.engine.retrieval.standard import FacetBatch
 from search.engine.shape import ShapeDraft
 from search.heading.departure_fact import DepartureFact
 from search.models import RoleAxis, Spec, Warning
@@ -59,10 +60,12 @@ def run_materialise(
     default_presence: DefaultPresence | None = None,
     open_axes: frozenset[RoleAxis],
     coverage: CoverageSnapshot,
+    facet_batch: FacetBatch | None = None,
 ) -> Materialised | NoDataDraft | MaterialisedCandidates | UnsupportedDraft:
     """Materialise the chosen shape with scope discovery enabled. `default_presence` derives
-    a default place scope in place of `place_dcids` (`standard_resolve`), and `open_axes`
-    are the flow axes its places leave open (`place_roles.PlaceRoles.open_axes`)."""
+    a default place scope in place of `place_dcids` (`standard_resolve`), `open_axes`
+    are the flow axes its places leave open (`place_roles.PlaceRoles.open_axes`), and
+    `facet_batch` shares the facet reads of a shape whose place sets are settling."""
     return materialise(
         shape_draft,
         bindings,
@@ -76,6 +79,7 @@ def run_materialise(
         discover_scope=True,
         open_axes=open_axes,
         coverage=coverage,
+        facet_batch=facet_batch,
     )
 
 

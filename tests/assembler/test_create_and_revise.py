@@ -593,9 +593,10 @@ def test_revise_under_a_new_catalogue_release_mints_a_new_revision_under_it(
         release_registry=release_registry,
     )
 
+    next_year = int(release_x.catalog_version.split(".")[0]) + 1
     release_y = dataclasses.replace(
         release_x,
-        catalog_version="2026.9.0",
+        catalog_version=f"{next_year}.1.0",
         schema_version=release_x.schema_version + 1,
         formatter_profile={**release_x.formatter_profile, "significant_digits": 6},
     )

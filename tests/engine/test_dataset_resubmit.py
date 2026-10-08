@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -56,7 +57,9 @@ from tests.engine._axis_doubles import (
 from tests.engine._base_identity import (
     GDP_SHAPE,
     PERSON_COUNT_SHAPE,
+    destination_entity,
     make_identity,
+    origin_entity,
     subject_entity,
     where_slots_for,
 )
@@ -65,6 +68,7 @@ from tests.engine._builders import value_slot as _value_slot
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_resolve, walk_options, with_member_arcs
+from tests.engine._refusal_detail import assert_names_plainly
 from tests.engine._search_app import search_app
 from tests.fixtures import FakeGraph, FakeLLM, _load_json, make_resolver
 
@@ -735,12 +739,30 @@ def test_parsed_entry_resolves_through_the_shared_per_part_pipeline():
             None,
             id="one_text_two_dcids_refuses_request_invalid",
         ),
+        pytest.param(
+            [
+                ResubmitParsedEntry(
+                    part=ParsedPart(
+                        variable_text="aid from Congo to Congo",
+                        entities=[
+                            ParsedEntity(text="Congo", role_text="from", members=True),
+                            ParsedEntity(text="Congo", role_text="to"),
+                        ],
+                    )
+                )
+            ],
+            None,
+            ("request_invalid", None, "/input/entries/0/part/entities"),
+            None,
+            id="one_text_both_members_values_refuses_request_invalid",
+        ),
     ],
 )
 def test_parsed_entry_dcid_pins(entries, graph, expect_error, check_result):
     """Two entries pin "Congo" to COD and COG independently. Only COD has observations.
     A text-keyed pins map would let the first pin win for both entries.
-    Unconfirmable or conflicting pins refuse the request.
+    Unconfirmable or conflicting pins, and one text posted with both `members` values,
+    refuse the request.
     Errors use `/input/entries/{i}/part/...`, even after other entry kinds.
     """
     request = ResolveRequest(input=DatasetResubmitInput(entries=entries))
@@ -814,7 +836,7 @@ def test_malformed_entry_fails_whole_request_with_repointed_pointer_and_missing_
     this door re-points it onto /input/entries/1/... and fails the WHOLE
     request 4xx -- a malformed entry is a client bug, not a per-part outcome,
     so no partial `parts` list is ever returned alongside it. The wire
-    detail names every missing dcid for the one rejected role."""
+    detail names the missing dcids of the one rejected role."""
     missing_dcids = ["country/ZZZ_NOT_A_PLACE", "country/ZZZ_ALSO_NOT_A_PLACE"]
     entities = [subject_entity(dcid) for dcid in missing_dcids]
     invalid_entry = ResubmitIdentityEntry(
@@ -828,9 +850,51 @@ def test_malformed_entry_fails_whole_request_with_repointed_pointer_and_missing_
     body = resp.json()
     assert body["code"] == "invalid_role_ref"
     assert body["pointer"] == "/input/entries/1/identity/entities/observationAbout"
-    assert body["detail"] == (
-        f"posted entity reference(s) not found in the graph: {sorted(missing_dcids)!r}"
+    assert_names_plainly(body["detail"], sorted(missing_dcids))
+    assert "parts" not in body
+
+
+@pytest.mark.parametrize(
+    ("counts", "pointer", "named"),
+    [
+        pytest.param(
+            {"observationAbout": 300},
+            "/input/entries/0/identity/entities/observationAbout",
+            {300, 256},
+            id="one-role-of-300",
+        ),
+        pytest.param(
+            {"destination": 200, "origin": 100},
+            "/input/entries/0/identity/entities",
+            {300, 2, 256},
+            id="200-and-100-across-two-roles",
+        ),
+    ],
+)
+def test_an_identity_over_the_place_bound_refuses_request_invalid_on_the_wire(
+    counts, pointer, named
+):
+    """An identity binding more than 256 places answers 400 `request_invalid` at the role's
+    path when one role exceeds alone, and at the entity map when only the sum of two roles does.
+    The detail names the count and the bound."""
+    build = {
+        "observationAbout": subject_entity,
+        "destination": destination_entity,
+        "origin": origin_entity,
+    }
+    entities = [
+        build[role](f"country/{role}{i}") for role, count in counts.items() for i in range(count)
+    ]
+    entry = ResubmitIdentityEntry(
+        variable_text="GDP",
+        identity=make_identity(GDP_SHAPE, [_ACTIVITY_SOURCE_SLOT], entities=entities),
     )
+    resp = _client().post("/api/search/resolve", json=_wire_request([entry]))
+    assert resp.status_code == 400
+    body = resp.json()
+    assert body["code"] == "request_invalid"
+    assert body["pointer"] == pointer
+    assert {int(number) for number in re.findall(r"\d+", body["detail"])} == named
     assert "parts" not in body
 
 

@@ -14,9 +14,12 @@ Ethiopia changed") and a date window are what search shows, and are not operatio
 verbs:
 - rank: an order or a top or bottom N. "top 5 donors" runs over origin, "which countries
   received the most" over destination, "which sectors got the most aid" over category,
-  "countries ranked by GDP" over place.
+  "countries ranked by GDP" over place. "which African countries received the most" runs
+  over destination beside the entity "Africa" with `members` true, flow_role
+  "destination" and role_span "received".
 - aggregate: a sum across a group of entities the query names or implies. "total aid to
-  the Sahel countries" runs over destination.
+  the Sahel countries" runs over destination, and "Sahel" has `members` true, flow_role
+  "destination" and role_span "to".
 These axes describe operations only. An entity's flow_role still comes from the query's
 own wording alone, and its role_span copies that wording. A place the query only locates
 ("literacy rate in Mali", "population of Chad") has flow_role "unspecified" and no

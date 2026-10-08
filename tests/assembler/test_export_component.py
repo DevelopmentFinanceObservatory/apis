@@ -10,7 +10,7 @@ import io
 import json
 import zipfile
 from collections.abc import Mapping
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import frictionless
@@ -19,9 +19,11 @@ import openpyxl
 import pyarrow.parquet as pq
 import pytest
 import yaml
+from dfo_frame_grammar import Frame, canonical_frame_bytes
 
 from assembler.errors import RevisionNotFound
 from assembler.fakes import FakeRevisionStore
+from assembler.frame_view import compute_structural_view
 from assembler.pipeline import write_component
 from assembler.pipeline.export_component import (
     ComponentExportMismatch,
@@ -30,7 +32,7 @@ from assembler.pipeline.export_component import (
     export_component_data,
 )
 from assembler.ports import FrameRef, ResolvedFrame
-from assembler.testing import build_resolved_frame
+from assembler.testing import FIXTURE_RETRIEVED_ON, build_resolved_frame
 from materialise.bundle_naming import card_slug
 from tests.presentation_store.test_frame_store import (
     _FakeGraphReader,
@@ -856,3 +858,176 @@ def test_a_role_a_spreadsheet_escapes_keeps_its_label_column_title(
         "'-donor": "Entity",
         "'-donor_label_2": "Entity name",
     }
+
+
+_TARGET_FRAME_REF = FrameRef(spec_id=_FRAME_REF.spec_id, content_version="cv_" + "b" * 32)
+_MOVED_BY = 1000.0
+
+
+def _moved_frame() -> ResolvedFrame:
+    """`_frame` under `_TARGET_FRAME_REF`, every value `_MOVED_BY` higher."""
+    base = _frame(_TARGET_FRAME_REF)
+    value = base.frame["columns"].index("value")
+    rows = [[*row[:value], row[value] + _MOVED_BY, *row[value + 1 :]] for row in base.frame["rows"]]
+    return dataclasses.replace(base, frame={**base.frame, "rows": rows})
+
+
+@pytest.mark.parametrize("member", ["line_chart", "bar_chart", "table", "stat_card"])
+def test_export_on_a_target_frame_holds_that_frame_s_rows_for_the_rendered_card(
+    member, frame_store, revision_store, release_registry
+):
+    created = _create(
+        member=member,
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+    frame_store.put(resolved_frame=_moved_frame())
+    stored = _csv_rows(
+        _export(created, frame_store=frame_store, revision_store=revision_store).data
+    )
+
+    exported = export_component_data(
+        component_id=created.component_id,
+        revision=created.revision,
+        format="csv",
+        bundle=False,
+        revision_store=revision_store,
+        frame_store=frame_store,
+        site_url=_SITE_URL,
+        target_frame=_TARGET_FRAME_REF,
+        release_registry=release_registry,
+    )
+    rows = _csv_rows(exported.data)
+
+    assert [(row["series"], row["time_period"]) for row in rows] == _shown(
+        created.resolved_payload["component"]
+    )
+    assert [float(row["value"]) for row in rows] == [
+        float(row["value"]) + _MOVED_BY for row in stored
+    ]
+    assert len(revision_store._revisions[created.component_id]) == 1
+    assert (_TARGET_FRAME_REF, created.component_id) not in frame_store.pins
+
+
+def test_a_bundle_on_a_target_frame_is_dated_by_that_frame_and_names_no_reproducing_call(
+    tmp_path, frame_store, revision_store, release_registry
+):
+    """The revision was created on 2026-10-05 and the target frame retrieved on 2026-10-06."""
+    created = _create(
+        member="table",
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+    frame_store.put(
+        resolved_frame=dataclasses.replace(_moved_frame(), retrieved_on=date(2026, 10, 6))
+    )
+
+    exported = export_component_data(
+        component_id=created.component_id,
+        revision=created.revision,
+        format="csv",
+        bundle=True,
+        revision_store=revision_store,
+        frame_store=frame_store,
+        site_url=_SITE_URL,
+        target_frame=_TARGET_FRAME_REF,
+        release_registry=release_registry,
+    )
+    files = _unzip(exported.data)
+    descriptor = _validated(tmp_path, files)
+
+    saved = f"{_SITE_URL}/api/presentation/components/{created.component_id}/revisions/1/data"
+    assert exported.file_name == "dfo_stat-var-recipient-provenance_2026-10-06_csv_r1.zip"
+    assert descriptor["dfo"]["prepared_at"] == "2026-10-06T00:00:00Z"
+    assert descriptor["dfo"]["component"]["frame_ref"] == _frame_ref_body(_TARGET_FRAME_REF)
+    assert "reproducing_call" not in descriptor["dfo"]
+    assert descriptor["dfo"]["links"]["version"] == saved
+    assert "/render/data" not in files["README.md"].decode("utf-8")
+
+
+_USD_PER_PERSON = {"numerator": "USDollar", "denominator": {"stat_var": "dcid:Count_Person"}}
+
+
+_USD_PER_PERSON_TEXT = '{"denominator":{"stat_var":"dcid:Count_Person"},"numerator":"USDollar"}'
+
+
+def _put_composed_unit_frame(frame_store, *, labels: Mapping[str, str]) -> None:
+    frame = Frame.build(
+        role_keys=("recipient",),
+        rows=[
+            {
+                **_row(recipient="country/KEN", period=str(year), value=float(year)),
+                "unit": _USD_PER_PERSON,
+            }
+            for year in (2019, 2022)
+        ],
+    )
+    # The stored frame1 document holds a composed unit as a JSON object.
+    document = json.loads(canonical_frame_bytes(frame))
+    frame_store.put(
+        resolved_frame=ResolvedFrame(
+            frame_ref=_OPS_FRAME_REF,
+            frame=document,
+            structural_view=compute_structural_view(frame=document),
+            manifest={"schema_version": 1},
+            labels=labels,
+            retrieved_on=FIXTURE_RETRIEVED_ON,
+        )
+    )
+
+
+def test_a_table_export_words_a_composed_unit_in_series_and_keeps_its_json_in_unit(
+    frame_store, revision_store, release_registry
+):
+    _put_composed_unit_frame(
+        frame_store, labels={"USDollar": "US Dollar", "dcid:Count_Person": "Total population"}
+    )
+    created = write_component(
+        intent={
+            "type": "table",
+            "frame_ref": _frame_ref_body(_OPS_FRAME_REF),
+            "select": {"recipient": "country/KEN", "unit": _USD_PER_PERSON_TEXT},
+        },
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+
+    rows = _csv_rows(_export(created, frame_store=frame_store, revision_store=revision_store).data)
+
+    assert [row["series"] for row in rows] == ["country/KEN / US Dollar per Total population"] * 2
+    assert [row["unit"] for row in rows] == [_USD_PER_PERSON_TEXT] * 2
+
+
+@pytest.mark.parametrize("format", ["csv", "xlsx", "parquet"])
+def test_a_composed_unit_exports_as_its_canonical_json(
+    format, frame_store, revision_store, release_registry
+):
+    _put_composed_unit_frame(frame_store, labels={})
+    created = write_component(
+        intent={
+            "type": "stat_card",
+            "frame_ref": _frame_ref_body(_OPS_FRAME_REF),
+            "select": {"stat_var": _STAT_VAR, "recipient": "country/KEN"},
+            "change": {"basis": ["2019", "2022"], "derivation": "percent_change"},
+        },
+        frame_store=frame_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+
+    data = _export(
+        created, frame_store=frame_store, revision_store=revision_store, format=format
+    ).data
+    if format == "csv":
+        units = [row["unit"] for row in _csv_rows(data)]
+    elif format == "xlsx":
+        sheet = openpyxl.load_workbook(io.BytesIO(data)).active
+        column = [cell.value for cell in sheet[1]].index("unit")
+        units = [row[column] for row in sheet.iter_rows(min_row=2, values_only=True)]
+    else:
+        units = pq.read_table(io.BytesIO(data)).column("unit").to_pylist()
+
+    assert units == [_USD_PER_PERSON_TEXT] * 2

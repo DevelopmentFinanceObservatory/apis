@@ -6,14 +6,15 @@ import ast
 import json
 import time
 import types
+from dataclasses import replace
 from importlib import resources
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from artifact_publication.jobs import LEASE_FILE, acquire_lease
-from dc_graph import UNRESOLVED_NODE, GraphReadError, SubjectPage
+from dc_graph import UNRESOLVED_NODE, GraphClient, GraphReadError, SubjectPage
 from origin_catalogue import (
     BASE,
     DFO,
@@ -23,14 +24,27 @@ from origin_catalogue import (
     CardFacts,
     DatasetRef,
     ScanLevel,
+    artifact,
+    un_mirror,
 )
 from origin_catalogue import job as catalogue_job
-from origin_catalogue.artifact import load_catalogue
+from origin_catalogue.artifact import load_catalogue, read_un_mirror
 from origin_catalogue.enumerate import EnumerationError
 from origin_catalogue.graph import UN_BASE_URL
 from origin_catalogue.registry import parse_registry
-from origin_catalogue.schema import FORMAT_ROOT, CataloguePointer
-from tests.origin_catalogue.fake_catalogue import spread_provenance_places
+from origin_catalogue.schema import FORMAT_ROOT, CataloguePointer, UnAgencyCounts
+from origin_catalogue.successors import Successors
+from origin_catalogue.un_mirror import UnMirror
+from tests.origin_catalogue.fake_catalogue import provenance_row, spread_provenance_places
+from tests.origin_catalogue.un_fake import (
+    MORT,
+    MORT_BY_SEX,
+    MORT_FEMALE,
+    MORT_MALE,
+    ODA,
+    ODA_SERIES,
+    FakeUn,
+)
 from tests.series_coverage.test_job import FakeBigQuery
 
 _CONNECTION = "proj.region.conn"
@@ -99,7 +113,8 @@ class FakeGraph:
     in `refused` finds it blocked, as the UN front door's refusal does; one
     naming a place in `refused_once` finds it blocked the first time only.
     A read whose method is in `failing` raises `GraphReadError`. `calls`
-    records every read."""
+    records every read but the `/v2/node` POSTs, which `un` answers and
+    records."""
 
     def __init__(
         self,
@@ -107,10 +122,12 @@ class FakeGraph:
         subjects: dict[str, tuple[str, ...]] | None = None,
         arcs: dict[str, dict[str, tuple[str, ...]]] | None = None,
         refused: frozenset[str] = frozenset(),
+        un: FakeUn | None = None,
     ) -> None:
         self.subjects = subjects or {}
         self.arcs = arcs or {}
         self.refused = refused
+        self.un = un or FakeUn()
         self.refused_once: frozenset[str] = frozenset()
         self.failing: frozenset[str] = frozenset()
         self.named: set[str] = set()
@@ -126,6 +143,10 @@ class FakeGraph:
 
     def __exit__(self, *exc_info: object) -> None:
         return None
+
+    def post(self, path, payload, *, deadline=None):
+        self._fail("post")
+        return self.un.post(path, payload, deadline=deadline)
 
     def node_subjects(self, dcid, *, property, filters=None, max_results, deadline=None):
         assert property == "source"
@@ -312,11 +333,14 @@ def run(
     registry: str = REGISTRY,
     clock: Clock | None = None,
 ) -> None:
+    un_graph = un_graph or un_deployment()
     catalogue_job.run(
         settings(tmp_path),
         bq=bq or FakeBigQuery(bq_responses()),
-        graph=graph or mixer(),  # type: ignore[arg-type]
-        un_graph=un_graph or un_deployment(),
+        # FakeGraph answers the node reads the provenance stage makes, and FakeBuilder reads none.
+        graph=cast("GraphClient", graph or mixer()),
+        un_graph=un_graph,
+        un_group_counts=un_graph.un,
         build_base_tables=builder or FakeBuilder(),
         registry_raw=registry.encode("utf-8"),
         clock=clock or Clock(),
@@ -324,6 +348,7 @@ def run(
 
 
 _HEARTBEAT = "origin_catalogue_job_heartbeat"
+_UN_ENUMERATED = "origin_catalogue_un_mirror_enumerated"
 
 
 def logged(capsys) -> list[dict[str, Any]]:
@@ -331,8 +356,9 @@ def logged(capsys) -> list[dict[str, Any]]:
 
 
 def events(capsys) -> list[dict[str, Any]]:
-    """The run's events without its heartbeat, which the monitoring tests pin."""
-    return [event for event in logged(capsys) if event["event"] != _HEARTBEAT]
+    """The run's events without its heartbeat, which the monitoring tests pin,
+    and without the UN enumeration's stats."""
+    return [event for event in logged(capsys) if event["event"] not in {_HEARTBEAT, _UN_ENUMERATED}]
 
 
 def root(tmp_path: Path) -> Path:
@@ -396,6 +422,7 @@ def test_run_publishes_a_build_the_loader_accepts(tmp_path, capsys):
         "format_version",
         "job_code",
         "enumeration_code",
+        "un_mirror_code",
         "registry",
         "dfo_fingerprint",
         "iso_week",
@@ -447,11 +474,13 @@ def test_a_registry_edit_changes_the_identity(tmp_path, capsys):
     assert len(builds(tmp_path)) == 2
 
 
-def _code(*, job: str, enumeration: str):
-    """A `source_digest` answering `enumeration` for the enumeration modules
-    and `job` for the job's."""
+def _code(*, job: str, enumeration: str, un_mirror: str = "un-1"):
+    """A `source_digest` answering `enumeration` for the enumeration modules,
+    `un_mirror` for the UN table modules and `job` for the job's."""
 
     def digest(modules: tuple[str, ...]) -> str:
+        if modules == catalogue_job.UN_MIRROR_MODULES:
+            return un_mirror
         return enumeration if modules == catalogue_job.ENUMERATION_MODULES else job
 
     return digest
@@ -504,6 +533,7 @@ def test_the_job_modules_cover_every_package_module_the_job_imports():
     imported = set().union(*(_package_imports(m) for m in catalogue_job.JOB_MODULES))
     assert imported - serving <= set(catalogue_job.JOB_MODULES)
     assert set(catalogue_job.ENUMERATION_MODULES) <= set(catalogue_job.JOB_MODULES)
+    assert set(catalogue_job.UN_MIRROR_MODULES) <= set(catalogue_job.JOB_MODULES)
     assert not {"context.py", "service.py", "graph.py"} & set(catalogue_job.JOB_MODULES)
     # The card-fact derivation shapes every build, so a change to it rebuilds.
     assert "card_facts.py" in catalogue_job.JOB_MODULES
@@ -639,7 +669,8 @@ def test_a_carried_row_whose_segment_the_registry_changed_is_refused(tmp_path, c
         registry=REGISTRY.replace('segment = "who"', 'segment = "who2"'),
     )
 
-    assert refused == [("un_carried_segment_mismatch", WHO)]
+    # The carried tables also hold the old segment, which the registry no longer lists.
+    assert refused == [("un_carried_segment_mismatch", WHO), ("un_carried_agency_mismatch", "who")]
 
 
 def test_a_published_carry_forward_retries_the_un_on_an_unchanged_identity(tmp_path, capsys):
@@ -683,7 +714,9 @@ def test_a_carried_carry_forward_names_the_build_that_read_the_un(tmp_path, caps
 
     published = events(capsys)[-1]
     assert published["un_carried_from"] == first
-    assert load_catalogue(f"file://{tmp_path}").manifest.un_carried_forward.from_build == first
+    carried = load_catalogue(f"file://{tmp_path}").manifest.un_carried_forward
+    assert carried is not None
+    assert carried.from_build == first
 
 
 def test_carried_un_rows_follow_the_current_registry(tmp_path, capsys):
@@ -715,6 +748,398 @@ def test_a_un_read_failure_with_nothing_published_fails_the_build(tmp_path, caps
 
     assert events(capsys) == []
     _assert_unpublished(tmp_path)
+
+
+# --- UN tables ---------------------------------------------------------------
+
+_WEEK = 7 * 86_400.0
+
+
+def _excluding(series: str, *, dfo_provenance: str = CRS) -> str:
+    """`REGISTRY` with WHO excluding `series` as superseded by `dfo_provenance`."""
+    return REGISTRY + (
+        f'exclusions = [{{ series = "{series}", reason = "superseded_by_dfo", '
+        f'dfo_provenance = "{dfo_provenance}" }}]\n'
+    )
+
+
+def _un_tables(tmp_path: Path) -> UnMirror:
+    uri = f"file://{tmp_path}"
+    return read_un_mirror(uri, load_catalogue(uri).manifest)
+
+
+def test_the_build_publishes_the_un_tables_and_their_counts(tmp_path, capsys):
+    run(tmp_path, registry=_excluding(ODA_SERIES))
+
+    enumerated, published = (e for e in logged(capsys) if e["event"] != _HEARTBEAT)
+    assert enumerated["event"] == _UN_ENUMERATED
+    [who] = enumerated["agencies"]
+    assert (who["segment"], who["variables"], who["counted"]) == ("who", 4, 4)
+    assert published["un_mirror"] == "enumerated"
+    tables = _un_tables(tmp_path)
+    assert set(tables.variables) == {MORT, MORT_FEMALE, MORT_MALE}
+    assert tables.excluded_variables == {ODA: ODA_SERIES}
+    assert tables.exclusions == {ODA_SERIES: CRS}
+    recorded = load_catalogue(f"file://{tmp_path}").manifest.un_mirror
+    assert recorded.agencies == {
+        "who": UnAgencyCounts(series=2, variables=4, excluded_series=1, excluded_variables=1)
+    }
+    assert recorded.row_counts == published["un_row_counts"]
+    assert recorded.row_counts["un_variables"] == 3
+    assert recorded.row_counts["un_excluded_variables"] == 1
+    assert recorded.resident_bytes == published["un_resident_bytes"] > 0
+
+
+def test_an_ingestion_copies_the_un_tables_without_enumerating_them(tmp_path, capsys, monkeypatch):
+    un_graph = un_deployment()
+    run(tmp_path, un_graph=un_graph)
+    first = _un_tables(tmp_path)
+    requests = len(un_graph.un.requests)
+    capsys.readouterr()
+    reads: list[str] = []
+    read = artifact._read_un_mirror
+    monkeypatch.setattr(
+        artifact,
+        "_read_un_mirror",
+        lambda prefix, manifest: reads.append(prefix) or read(prefix, manifest),
+    )
+
+    run(tmp_path, bq=FakeBigQuery(bq_responses(row_count=4)), un_graph=un_graph)
+
+    # The published build's UN tables are read once, by the copy, and not by the carry check.
+    assert len(reads) == 1
+    monkeypatch.undo()
+
+    [published] = logged(capsys)[:-1]
+    assert published["un_mirror"] == "copied"
+    assert len(un_graph.un.requests) == requests
+    assert _un_tables(tmp_path) == first
+    assert load_catalogue(f"file://{tmp_path}").manifest.un_carried_forward is None
+
+
+def test_a_new_iso_week_enumerates_the_un_tables_again(tmp_path, capsys):
+    un_graph, clock = un_deployment(), Clock()
+    run(tmp_path, un_graph=un_graph, clock=clock)
+    requests = len(un_graph.un.requests)
+    capsys.readouterr()
+
+    clock.offset = _WEEK
+    run(tmp_path, un_graph=un_graph, clock=clock)
+
+    assert events(capsys)[0]["un_mirror"] == "enumerated"
+    assert len(un_graph.un.requests) == 2 * requests
+
+
+def test_a_un_table_code_change_enumerates_the_un_tables_again(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(catalogue_job, "source_digest", _code(job="job-1", enumeration="enum-1"))
+    run(tmp_path)
+    capsys.readouterr()
+
+    monkeypatch.setattr(
+        catalogue_job, "source_digest", _code(job="job-2", enumeration="enum-1", un_mirror="un-2")
+    )
+    run(tmp_path)
+
+    [published] = events(capsys)
+    assert (published["base_tables"], published["un_mirror"]) == ("carried", "enumerated")
+
+
+def test_refuses_an_excluded_series_the_un_does_not_hold(tmp_path, capsys):
+    refused = _refused(tmp_path, capsys, registry=_excluding("undata/who/SERIES-GONE"))
+
+    assert refused == [("un_excluded_series_missing", "undata/who/SERIES-GONE")]
+    _assert_unpublished(tmp_path)
+
+
+def test_refuses_an_excluded_series_whose_dfo_provenance_dfo_does_not_hold(tmp_path, capsys):
+    refused = _refused(
+        tmp_path, capsys, registry=_excluding(ODA_SERIES, dfo_provenance="provenance/NotHeld")
+    )
+
+    assert refused == [("un_exclusion_provenance_not_held", ODA_SERIES)]
+    _assert_unpublished(tmp_path)
+
+
+@pytest.fixture(autouse=True)
+def _no_wait_before_a_repeated_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(un_mirror, "_REPEATED_PAGE_WAITS_SECONDS", (0.0, 0.0, 0.0))
+
+
+def _stalling(un_graph: FakeGraph) -> None:
+    un_graph.un.page_size = 1
+    un_graph.un.repeating = {MORT_BY_SEX}
+
+
+def _truncating(un_graph: FakeGraph) -> None:
+    un_graph.un.truncating = {MORT_BY_SEX: 1}
+
+
+def _refusing(un_graph: FakeGraph) -> None:
+    un_graph.un.refused = [{MORT_BY_SEX}]
+
+
+_INCOMPLETE = pytest.mark.parametrize(
+    ("hazard", "kind"),
+    [
+        (_stalling, "un_enumeration_stalled"),
+        (_truncating, "un_variable_count_mismatch"),
+        (_refusing, "un_read_refused"),
+    ],
+)
+
+
+@_INCOMPLETE
+def test_an_incomplete_enumeration_carries_the_un_tables_forward_and_publishes(
+    tmp_path, capsys, hazard, kind
+):
+    run(tmp_path)
+    first_build = load_catalogue(f"file://{tmp_path}").build_id
+    first = _un_tables(tmp_path)
+    capsys.readouterr()
+    incomplete, clock = un_deployment(), Clock()
+    hazard(incomplete)
+    clock.offset = _WEEK
+
+    run(tmp_path, un_graph=incomplete, clock=clock)
+
+    by_event = {event["event"]: event for event in events(capsys)}
+    assert "origin_catalogue_job_refused" not in by_event
+    carried = by_event["origin_catalogue_job_un_carried_forward"]
+    assert carried["severity"] == "WARNING"
+    assert kind in carried["reason"]
+    published = by_event["origin_catalogue_job_published"]
+    assert (published["un_mirror"], published["un_carried_from"]) == ("carried", first_build)
+    snapshot = load_catalogue(f"file://{tmp_path}")
+    assert snapshot.build_id == published["build_id"] != first_build
+    assert _un_tables(tmp_path) == first
+    note = snapshot.manifest.un_carried_forward
+    assert note is not None
+    assert (note.from_build, note.reason) == (first_build, carried["reason"])
+
+    # The next run reads the UN again.
+    run(tmp_path, clock=clock)
+    by_event = {event["event"]: event for event in events(capsys)}
+    assert by_event["origin_catalogue_job_published"]["un_mirror"] == "enumerated"
+
+
+@_INCOMPLETE
+def test_an_incomplete_enumeration_with_nothing_published_fails_the_build(
+    tmp_path, capsys, hazard, kind
+):
+    un_graph = un_deployment()
+    hazard(un_graph)
+
+    with pytest.raises(catalogue_job.CatalogueBuildError, match=f"{kind}.*no published build"):
+        run(tmp_path, un_graph=un_graph)
+
+    assert "origin_catalogue_job_refused" not in {event["event"] for event in events(capsys)}
+    _assert_unpublished(tmp_path)
+
+
+_SUPERSEDED = {
+    "ids/MORT.SEX--F": MORT_FEMALE,
+    "ids/MORT": MORT,
+    "ids/ODA_1": ODA,
+    "ids/MORT.SEX--FEMALE": None,
+    "ids/GONE": None,
+}
+"""Withheld variables of a provenance WHO supersedes, with the successor of
+each: the UN variable of equal code and pairs, and none for a value WHO
+spells otherwise or a code WHO does not hold."""
+
+
+def _superseding(registry: str = REGISTRY) -> dict[str, Any]:
+    """`run` arguments for a build whose registry has WHO supersede the
+    World Bank's IDS copy, and whose withheld set holds `_SUPERSEDED`."""
+    by_un = registry.replace(
+        'reason = "superseded_by_dfo" }]\n\n[[base]]',
+        f'reason = "superseded_by_un_system", successor = "{WHO}", '
+        'variable_prefix = "ids/", code_delimiter = ".", '
+        'pair_delimiter = "__", value_delimiter = "--" }]\n\n[[base]]',
+    )
+    assert by_un != registry
+    withheld = frozenset({WITHHELD_VARIABLE, *_SUPERSEDED})
+    return {"registry": by_un, "builder": FakeBuilder(base_tables(withheld_variables=withheld))}
+
+
+def test_the_build_publishes_the_successor_of_each_superseded_variable(tmp_path, capsys):
+    run(tmp_path, **_superseding())
+
+    [published] = events(capsys)
+    snapshot = load_catalogue(f"file://{tmp_path}")
+    assert snapshot.tables.superseded == _SUPERSEDED
+    assert snapshot.successor("ids/MORT") == MORT
+    assert snapshot.successor("ids/GONE") is None
+    assert snapshot.is_superseded("ids/GONE")
+    assert not snapshot.is_superseded(WITHHELD_VARIABLE)
+    counts = published["row_counts"]
+    assert (counts["superseded_variables"], counts["successor_variables"]) == (5, 3)
+    assert published["successors"] == {
+        "twins": 3,
+        "reordered": 0,
+        "series_excluded": 0,
+        "unmatched": 2,
+        "held_by_dfo": 0,
+    }
+
+
+def test_a_variable_of_an_excluded_series_has_no_successor(tmp_path, capsys):
+    run(tmp_path, **_superseding(_excluding(ODA_SERIES)))
+
+    [published] = events(capsys)
+    superseded = load_catalogue(f"file://{tmp_path}").tables.superseded
+    assert superseded == {v: None if s == ODA else s for v, s in _SUPERSEDED.items()}
+    assert published["successors"]["series_excluded"] == 1
+
+
+def test_carried_un_tables_give_the_same_successors(tmp_path, capsys):
+    run(tmp_path, **_superseding())
+    capsys.readouterr()
+    down, clock = un_deployment(), Clock()
+    down.failing = frozenset({"post"})
+    clock.offset = _WEEK
+
+    run(tmp_path, un_graph=down, clock=clock, **_superseding())
+
+    by_event = {event["event"]: event for event in events(capsys)}
+    assert by_event["origin_catalogue_job_published"]["un_mirror"] == "carried"
+    assert load_catalogue(f"file://{tmp_path}").tables.superseded == _SUPERSEDED
+
+
+def test_a_successor_the_un_tables_do_not_admit_refuses_the_build(tmp_path, capsys, monkeypatch):
+    derived = catalogue_job.derive_successors
+    monkeypatch.setattr(
+        catalogue_job,
+        "derive_successors",
+        lambda *args, **kwargs: replace(
+            derived(*args, **kwargs), rows={"ids/GONE": "undata/who/GONE"}
+        ),
+    )
+
+    refused = _refused(tmp_path, capsys, **_superseding())
+
+    assert refused == [("un_successor_not_held", "ids/GONE")]
+    _assert_unpublished(tmp_path)
+
+
+def test_an_ambiguous_successor_refuses_un_successor_ambiguous():
+    successors = Successors(
+        rows={"ids/X.A--1__B--2": None},
+        ambiguous={"ids/X.A--1__B--2": ("undata/who/X.A--1__B--2", "undata/who/X.B--2__A--1")},
+    )
+
+    refused = catalogue_job.successor_refusals(
+        successors,
+        UnMirror(
+            variables={},
+            excluded_variables={},
+            topics={},
+            exclusions={},
+            excluded_series_names={},
+            agencies={},
+        ),
+    )
+
+    assert [(r.kind, r.subject) for r in refused] == [
+        ("un_successor_ambiguous", "ids/X.A--1__B--2")
+    ]
+
+
+def test_refuses_a_base_provenance_superseded_by_an_agency_the_build_has_no_row_for():
+    registry = parse_registry(
+        REGISTRY.replace(
+            'reason = "superseded_by_dfo"',
+            f'reason = "superseded_by_un_system", successor = "{WHO}", '
+            'variable_prefix = "ids/", code_delimiter = ".", '
+            'pair_delimiter = "__", value_delimiter = "--"',
+        ).encode()
+    )
+    row = provenance_row(WHO, UN_SYSTEM, segment="who")
+
+    def refusals(un_rows: dict) -> list[tuple[str, str]]:
+        found = catalogue_job.un_registry_refusals(
+            registry, dfo_provenances=frozenset({CRS}), un_rows=un_rows
+        )
+        return [(refusal.kind, refusal.subject) for refusal in found]
+
+    assert refusals({WHO: row}) == []
+    assert refusals({}) == [("un_successor_not_served", WB_IDS)]
+
+
+def test_a_failed_enumeration_carries_the_un_tables_forward_whole(tmp_path, capsys):
+    run(tmp_path)
+    first_build = load_catalogue(f"file://{tmp_path}").build_id
+    first = _un_tables(tmp_path)
+    capsys.readouterr()
+    down, clock = un_deployment(), Clock()
+    down.failing = frozenset({"post"})
+    clock.offset = _WEEK
+
+    run(tmp_path, un_graph=down, clock=clock)
+
+    by_event = {event["event"]: event for event in events(capsys)}
+    assert "origin_catalogue_job_un_carried_forward" in by_event
+    published = by_event["origin_catalogue_job_published"]
+    assert (published["un_mirror"], published["un_carried_from"]) == ("carried", first_build)
+    assert _un_tables(tmp_path) == first
+    assert load_catalogue(f"file://{tmp_path}").manifest.un_carried_forward is not None
+
+    # Carried tables are never copied: the next run enumerates the UN again.
+    run(tmp_path, clock=clock)
+    by_event = {event["event"]: event for event in events(capsys)}
+    assert by_event["origin_catalogue_job_published"]["un_mirror"] == "enumerated"
+    assert load_catalogue(f"file://{tmp_path}").manifest.un_carried_forward is None
+
+
+@pytest.mark.parametrize(
+    ("registry", "subject"),
+    [
+        (_excluding(ODA_SERIES), ODA_SERIES),
+        (_excluding("undata/who/SERIES-GONE"), "undata/who/SERIES-GONE"),
+    ],
+)
+def test_carried_un_tables_that_disagree_with_the_registry_are_refused(
+    tmp_path, capsys, registry, subject
+):
+    run(tmp_path)
+    first = load_catalogue(f"file://{tmp_path}").build_id
+    capsys.readouterr()
+    down = un_deployment()
+    down.failing = frozenset({"post"})
+
+    refused = _refused(tmp_path, capsys, un_graph=down, registry=registry)
+
+    assert refused == [("un_carried_exclusions_mismatch", subject)]
+    assert load_catalogue(f"file://{tmp_path}").build_id == first
+
+
+def test_carried_un_tables_holding_an_agency_the_registry_dropped_are_refused(tmp_path, capsys):
+    run(tmp_path)
+    first = load_catalogue(f"file://{tmp_path}").build_id
+    capsys.readouterr()
+    down = un_deployment()
+    down.failing = frozenset({"post"})
+    without_who = "un_system = []\n" + REGISTRY[: REGISTRY.index("[[un_system]]")]
+
+    refused = _refused(tmp_path, capsys, un_graph=down, registry=without_who)
+
+    assert refused == [("un_carried_agency_mismatch", "who")]
+    assert load_catalogue(f"file://{tmp_path}").build_id == first
+
+
+def test_carried_un_tables_of_an_agency_renamed_under_its_segment_are_refused(tmp_path, capsys):
+    run(tmp_path)
+    first = load_catalogue(f"file://{tmp_path}").build_id
+    capsys.readouterr()
+    down = un_deployment()
+    down.failing = frozenset({"node_arcs_many"})
+    renamed = REGISTRY.replace(f'provenance = "{WHO}"', 'provenance = "undata/p/WHO_RENAMED"')
+    assert renamed != REGISTRY
+
+    refused = _refused(tmp_path, capsys, un_graph=down, registry=renamed)
+
+    assert refused == [("un_carried_agency_mismatch", "who")]
+    assert load_catalogue(f"file://{tmp_path}").build_id == first
 
 
 # --- Carry-forward -------------------------------------------------------
@@ -1203,6 +1628,29 @@ def test_a_truncated_source_listing_fails_the_build(monkeypatch):
         )
 
 
+def test_a_provenance_superseded_by_the_un_leaves_the_table_as_one_superseded_by_dfo_does():
+    by_un = REGISTRY.replace(
+        'reason = "superseded_by_dfo"',
+        f'reason = "superseded_by_un_system", successor = "{WHO}", '
+        'variable_prefix = "ids/", code_delimiter = ".", '
+        'pair_delimiter = "__", value_delimiter = "--"',
+    )
+    assert by_un != REGISTRY
+
+    by_dfo_stage, by_un_stage = (
+        catalogue_job.build_provenance_table(
+            registry=parse_registry(registry.encode()),
+            dfo_provenances=frozenset({CRS, IDS}),
+            graph=mixer(),
+        )
+        for registry in (REGISTRY, by_un)
+    )
+
+    assert WB_IDS not in by_un_stage.rows
+    assert WDI in by_un_stage.rows
+    assert by_un_stage == by_dfo_stage
+
+
 def test_card_facts_label_each_licence_from_one_read_of_its_node():
     graph = mixer()
     graph.arcs[IDS] = {**graph.arcs[IDS], "licenseType": ("SomeLicenseTheGraphDoesNotHold",)}
@@ -1279,8 +1727,18 @@ def test_settings_read_their_aliases(monkeypatch):
     assert loaded.cycle_seconds == 900.0
     assert loaded.un_base_url == UN_BASE_URL
 
+    assert loaded.un_site_url == UN_BASE_URL.removesuffix("/core/api")
+
     monkeypatch.setenv("UN_GRAPH_BASE_URL", "https://un/core/api")
     assert catalogue_job.JobSettings().un_base_url == "https://un/core/api"
+    assert catalogue_job.JobSettings().un_site_url == "https://un"
+
+    # An API root the site root cannot be read from needs the site named.
+    monkeypatch.setenv("UN_GRAPH_BASE_URL", "https://un/api")
+    with pytest.raises(ValueError, match="UN_SITE_BASE_URL"):
+        catalogue_job.JobSettings()
+    monkeypatch.setenv("UN_SITE_BASE_URL", "https://un-site")
+    assert catalogue_job.JobSettings().un_site_url == "https://un-site"
 
 
 def _main(
@@ -1307,6 +1765,13 @@ def _main(
         return graphs[base_url]
 
     monkeypatch.setattr(catalogue_job, "GraphClient", _client)
+    monkeypatch.setattr(
+        catalogue_job,
+        "UnSiteClient",
+        lambda *, site_url, **_: (
+            options.setdefault("site", {"site_url": site_url}) and graphs["https://un/core/api"].un
+        ),
+    )
     monkeypatch.setattr(catalogue_job, "LiveBigQuery", lambda **_: FakeBigQuery(bq_responses()))
     monkeypatch.setattr(
         catalogue_job,
@@ -1326,6 +1791,8 @@ def test_main_publishes_under_the_local_dir(tmp_path, monkeypatch, capsys):
     # The probe reads the UN by the same GET path, under the same budget, as the origin client.
     assert options["https://un/core/api"]["observation_get_url_budget_bytes"] == 7_000
     assert "observation_get_url_budget_bytes" not in options["https://mixer/core/api"]
+    # The group counts are read from the UN site the API root sits under.
+    assert options["site"] == {"site_url": "https://un"}
     assert load_catalogue((tmp_path / "out").as_uri()).tables.provenances.keys() >= {WDI, WHO}
     assert not (tmp_path / "out" / FORMAT_ROOT / LEASE_FILE).exists()
 

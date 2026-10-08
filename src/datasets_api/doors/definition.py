@@ -80,6 +80,7 @@ from datasets_api.adapter import (
     verify_sidecar_definition,
 )
 from datasets_api.admission import (
+    RebuildFlights,
     bounded_materialise_slot,
     refuse_excel_over_estimate,
     refuse_inline_over_ceiling,
@@ -172,6 +173,7 @@ from datasets_api.serve import (
     log_bundle_not_linked,
     persisted_response,
     prewrite_definition,
+    provenance_refs_of,
     raw_fetch_guard,
     refs_from_resolved_stat_vars,
     serve_definition,
@@ -181,12 +183,14 @@ from datasets_api.shape import StatVarShape
 from datasets_api.shutdown import ShutdownBudget
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.timings import PhaseTimings, door_call, phase, run_with_timings
-from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
+from datasets_api.version_store import LiveHeadStore, LiveVersionLister, LiveVersionRecordWriter
 from datasets_api.versions import (
     ArtifactRecord,
     HeadStore,
     MemberSignal,
     NullVersionRecordWriter,
+    SubjectHead,
+    VersionLister,
     VersionRecordWriter,
 )
 from datasets_api.versions import NullHeadWriter as NullHeadStore
@@ -409,6 +413,17 @@ class DefinitionDeps:
     # Supplies sync/async budgets, semaphore wait time, and pivot cell cap. Door construction
     # injects it. The default serves direct `DefinitionDeps` callers.
     settings: DatasetsBuildSettings = field(default_factory=DatasetsBuildSettings.from_env)
+    # One head-advancing rebuild per subject at a time in this process (`_resolve_currency`).
+    # Per-request copies of these deps share it.
+    rebuilds: RebuildFlights = field(default_factory=RebuildFlights)
+    # Lists a subject's stored versions for the frame refresh, which looks up the collapsed
+    # version already recorded under a head. `None` lists nothing.
+    version_lister: VersionLister | None = None
+
+
+# Loads the stored manifest that answers a call from the head at the given content version.
+# `None` means the head cannot answer it, and the caller re-materialises.
+HeadLoader = Callable[[str, CoverageSnapshot], Manifest | None]
 
 
 def _serve_deps(deps: DefinitionDeps) -> ServeDeps:
@@ -734,7 +749,7 @@ def _render_stored_rendering(
         table = read_frame1_table(data)
         entity_columns = frame1_entity_columns(table)
         facets = cast("list[dict[str, object]]", manifest.trace.get("facets", []))
-        provenance_ref = cast(str, next(f["ref"] for f in facets if f["axis"] == "provenance"))
+        provenance_refs = provenance_refs_of(facets)
         resolved_stat_vars = manifest.trace.get("resolved_stat_vars")
         if resolved_stat_vars is None:
             raise StoredTraceMissingResolvedStatVars(
@@ -776,7 +791,7 @@ def _render_stored_rendering(
             frame_chunks=(table,),
             options=options,
             spec=spec_dict,
-            provenance_refs=[provenance_ref],
+            provenance_refs=provenance_refs,
             citations=citations,
             reproducing_call=(
                 ReproducingCall(
@@ -817,7 +832,7 @@ def _render_stored_rendering(
             log_bundle_not_linked(
                 subject_id=subject_id,
                 content_version=rendered_content_version,
-                refs=[provenance_ref],
+                refs=provenance_refs,
                 documentation_complete=documentation_complete,
                 labels_complete=rendered.labels_complete,
             )
@@ -865,11 +880,10 @@ def _render_stored_rendering(
         )
 
 
-def _serve_head(
+def _head_rendering(
     *,
     subject_id: str,
     content_version: str,
-    confirmed_at: datetime,
     deps: DefinitionDeps,
     write_confirmation: bool,
     key: str | None,
@@ -877,11 +891,11 @@ def _serve_head(
     trace_id: str | None,
     coverage_snapshot: CoverageSnapshot,
 ) -> Manifest | None:
-    """Load and stamp the stored version, narrowed to the requested rendering when supplied.
+    """Load the stored version, narrowed to the requested rendering when supplied.
 
     Return `None` when neither stored nor on-demand rendering can serve the request. The caller
     then re-materialises. `coverage_snapshot` is the currency check's shared snapshot, which
-    stamps the response and feeds an on-demand bundle's documentation read.
+    feeds an on-demand bundle's documentation read.
     """
     manifest = _load_stored(
         subject_id=subject_id,
@@ -907,12 +921,7 @@ def _serve_head(
         if rendered is None:
             return None
         manifest = rendered
-    return _stamp_trace(
-        manifest,
-        served_from="head",
-        confirmed_at=confirmed_at,
-        coverage_stamp=coverage_snapshot.stamp,
-    )
+    return manifest
 
 
 def _resolve_currency(
@@ -927,6 +936,7 @@ def _resolve_currency(
     write_confirmation: bool,
     options: MintOptions | None,
     trace_id: str | None,
+    load_head: HeadLoader | None = None,
 ) -> Manifest:
     """Serve a current head or re-materialise after checking its currency.
 
@@ -950,8 +960,55 @@ def _resolve_currency(
     re-read yielding a new content version leaves the head as it is, and every `/options` call
     re-reads it until a GET or mint records that version. Its `confirmed_at` is the computation
     time. GET responses use the head store's timestamp.
+
+    `load_head` replaces how a head answers the call: it returns the stored manifest to serve
+    for the head's content version, or `None` to re-materialise. Omitted, the head serves the
+    rendering `options` name (`_head_rendering`).
+
+    Callers needing a re-materialisation that advances the head share one run per subject in
+    this process (`deps.rebuilds`). Every other caller waits for that run until its own request
+    deadline, then reads the head again and is served from it. When the run ended without
+    advancing the head, each waiter re-materialises itself and answers with its own result or
+    refusal. Rebuilds that advance no head (`/options`, a probe that derives no signal) each
+    run on their own.
     Return a manifest stamped by `_stamp_trace`.
     """
+    while True:
+        manifest = _check_currency(
+            subject_id=subject_id,
+            resolve_probe_requests=resolve_probe_requests,
+            deps=deps,
+            materialise_fresh=materialise_fresh,
+            write_confirmation=write_confirmation,
+            options=options,
+            trace_id=trace_id,
+            load_head=load_head,
+        )
+        if manifest is not None:
+            return manifest
+
+
+def _rebuild_mark(head: SubjectHead | None) -> tuple[str, datetime] | None:
+    """What a rebuild writes to a head and a confirmation leaves alone."""
+    return None if head is None else (head.content_version, head.materialised_at)
+
+
+def _check_currency(
+    *,
+    subject_id: str,
+    resolve_probe_requests: Callable[[], Sequence[MaterialisationRequest]],
+    deps: DefinitionDeps,
+    materialise_fresh: Callable[
+        [Sequence[MemberSignal] | None, CollectionFacetProbe, str | None, CoverageSnapshot],
+        Manifest,
+    ],
+    write_confirmation: bool,
+    options: MintOptions | None,
+    trace_id: str | None,
+    load_head: HeadLoader | None,
+) -> Manifest | None:
+    """One pass of `_resolve_currency`. `None` means another caller rebuilt the subject while
+    this one waited or probed, so the head is read again."""
     coverage_snapshot = deps.coverage.snapshot()
     head = deps.head_store.read_head(subject_id)
     now = deps.now()
@@ -961,22 +1018,35 @@ def _resolve_currency(
         else None
     )
 
+    def _serve_head(served_head: SubjectHead) -> Manifest | None:
+        if load_head is not None:
+            manifest = load_head(served_head.content_version, coverage_snapshot)
+        else:
+            manifest = _head_rendering(
+                subject_id=subject_id,
+                content_version=served_head.content_version,
+                deps=deps,
+                write_confirmation=write_confirmation,
+                key=key,
+                options=options,
+                trace_id=trace_id,
+                coverage_snapshot=coverage_snapshot,
+            )
+        if manifest is None:
+            return None
+        return _stamp_trace(
+            manifest,
+            served_from="head",
+            confirmed_at=served_head.confirmed_at,
+            coverage_stamp=coverage_snapshot.stamp,
+        )
+
     if (
         head is not None
         and now - head.confirmed_at < deps.head_recheck_interval
         and not clock_moved(head.signal)
     ):
-        served = _serve_head(
-            subject_id=subject_id,
-            content_version=head.content_version,
-            confirmed_at=head.confirmed_at,
-            deps=deps,
-            write_confirmation=write_confirmation,
-            key=key,
-            options=options,
-            trace_id=trace_id,
-            coverage_snapshot=coverage_snapshot,
-        )
+        served = _serve_head(head)
         if served is not None:
             return served
 
@@ -1023,27 +1093,33 @@ def _resolve_currency(
         else:
             winner = head
         if winner is not None:
-            served = _serve_head(
-                subject_id=subject_id,
-                content_version=winner.content_version,
-                confirmed_at=winner.confirmed_at,
-                deps=deps,
-                write_confirmation=write_confirmation,
-                key=key,
-                options=options,
-                trace_id=trace_id,
-                coverage_snapshot=coverage_snapshot,
-            )
+            served = _serve_head(winner)
             if served is not None:
                 return served
         # A missing winner or unrenderable head falls through to fresh materialisation.
 
-    manifest = materialise_fresh(
-        signals if write_confirmation else None,
-        probe,
-        head.content_version if head is not None else None,
-        coverage_snapshot,
-    )
+    def _materialise() -> Manifest:
+        return materialise_fresh(
+            signals if write_confirmation else None,
+            probe,
+            head.content_version if head is not None else None,
+            coverage_snapshot,
+        )
+
+    if write_confirmation and signals is not None:
+        # This rebuild advances the head, so it serves every caller waiting on it.
+        with deps.rebuilds.turn(
+            subject_id,
+            deadline=deps.deadline,
+            wait_seconds=deps.settings.materialise_wait_seconds,
+        ):
+            # A rebuild that ended while this caller probed or waited advanced the head. One
+            # that failed left it, and this caller then rebuilds as it would have alone.
+            if _rebuild_mark(deps.head_store.read_head(subject_id)) != _rebuild_mark(head):
+                return None
+            manifest = _materialise()
+    else:
+        manifest = _materialise()
     if write_confirmation and signals is not None:
         # Re-read the head only when materialisation received a signal and wrote it.
         refreshed = deps.head_store.read_head(subject_id)
@@ -1072,9 +1148,15 @@ def _resolve_currency(
 
 
 def _serve_spec(
-    *, spec_id: str, options: MintOptions, deps: DefinitionDeps, trace_id: str | None
+    *,
+    spec_id: str,
+    options: MintOptions,
+    deps: DefinitionDeps,
+    trace_id: str | None,
+    load_head: HeadLoader | None = None,
 ) -> Manifest:
-    """Memoise registry lookup and rehydration so the currency check resolves at most once."""
+    """Memoise registry lookup and rehydration so the currency check resolves at most once.
+    `load_head` is `_resolve_currency`'s."""
 
     @functools.cache
     def _resolve() -> tuple[StoredDefinition, Sequence[MaterialisationRequest]]:
@@ -1139,6 +1221,7 @@ def _serve_spec(
         write_confirmation=True,
         options=options,
         trace_id=trace_id,
+        load_head=load_head,
     )
 
 
@@ -1316,11 +1399,14 @@ class _DefinitionInjected:
     head_store: bool
     operation_store: bool
     snapshot_reader: bool
+    version_lister: bool
 
 
 @dataclass(frozen=True)
-class _DefinitionDoorState:
-    """State shared by the lifespan, retrieval runner, and routes."""
+class DefinitionDoorState:
+    """State shared by the lifespan, retrieval runner, and routes. The frame refresh door
+    (`datasets_api.doors.refresh`) runs on its `deps`, `settings`, and `budget` with an executor
+    of its own, so both doors share one set of live clients and one `RebuildFlights`."""
 
     deps: DefinitionDeps
     settings: DatasetsBuildSettings
@@ -1328,6 +1414,13 @@ class _DefinitionDoorState:
     door_executor: DoorExecutor
     injected: _DefinitionInjected
     catalogue: CatalogueService | None
+
+
+@dataclass(frozen=True, kw_only=True)
+class DefinitionDoor(DoorContribution):
+    """The retrieval door's contribution and the state its routes run on."""
+
+    state: DefinitionDoorState
 
 
 @dataclass
@@ -1361,6 +1454,7 @@ def _build_definition_deps(
     coverage: CoverageService,
     operation_store: OperationStore | None,
     task_client: TaskClient | None,
+    version_lister: VersionLister | None,
     settings: DatasetsBuildSettings,
 ) -> DefinitionDeps:
     """Build non-client dependencies at door construction. The lifespan creates live clients.
@@ -1395,11 +1489,12 @@ def _build_definition_deps(
         operation_store=operation_store if operation_store is not None else NullOperationStore(),
         task_client=task_client if task_client is not None else NullTaskClient(),
         settings=settings,
+        version_lister=version_lister,
     )
 
 
 def _definition_close_live_clients_built_here(
-    state: _DefinitionDoorState, *, pool_opened_here: bool
+    state: DefinitionDoorState, *, pool_opened_here: bool
 ) -> None:
     deps = state.deps
     if not state.injected.graph and deps.graph is not None:
@@ -1413,7 +1508,7 @@ def _definition_close_live_clients_built_here(
 
 
 def _definition_open_spec_reader_and_snapshot(
-    state: _DefinitionDoorState, borrow: _DefinitionStoreBorrow
+    state: DefinitionDoorState, borrow: _DefinitionStoreBorrow
 ) -> None:
     """Build the live spec reader and share its store with the snapshot reader when both are
     uninjected.
@@ -1430,7 +1525,7 @@ def _definition_open_spec_reader_and_snapshot(
 
 
 def _definition_open_graph_sdmx_and_artifact_store(
-    state: _DefinitionDoorState, borrow: _DefinitionStoreBorrow, *, generation: GenerationProvider
+    state: DefinitionDoorState, borrow: _DefinitionStoreBorrow, *, generation: GenerationProvider
 ) -> None:
     """Build missing clients. A live graph client keys its caches on `generation`."""
     if state.injected.graph and state.injected.sdmx and state.injected.artifact_store:
@@ -1472,7 +1567,7 @@ def _definition_open_graph_sdmx_and_artifact_store(
     )
 
 
-def _definition_open_task_client(state: _DefinitionDoorState) -> None:
+def _definition_open_task_client(state: DefinitionDoorState) -> None:
     if state.injected.task_client:
         return
     task_settings = TaskClientSettings.from_env()
@@ -1484,7 +1579,7 @@ def _definition_open_task_client(state: _DefinitionDoorState) -> None:
 
 
 def _definition_wire_shared_store_dependents(
-    state: _DefinitionDoorState, store: LiveDatasetStore | None
+    state: DefinitionDoorState, store: LiveDatasetStore | None
 ) -> None:
     if store is None:
         return
@@ -1494,12 +1589,12 @@ def _definition_wire_shared_store_dependents(
         state.deps.head_store = LiveHeadStore(store=store)
     if not state.injected.operation_store:
         state.deps.operation_store = LiveOperationStore(store=store, settings=state.settings)
+    if not state.injected.version_lister:
+        state.deps.version_lister = LiveVersionLister(store=store)
 
 
 @asynccontextmanager
-async def _definition_lifespan(
-    _app: FastAPI, *, state: _DefinitionDoorState
-) -> AsyncIterator[None]:
+async def _definition_lifespan(_app: FastAPI, *, state: DefinitionDoorState) -> AsyncIterator[None]:
     """Create uninjected dependencies, then drain admitted calls before closing live clients.
 
     Shutdown waits for semaphore permits within the shared budget.
@@ -1530,7 +1625,7 @@ async def _definition_lifespan(
 
 
 async def _run_retrieval[T](
-    state: _DefinitionDoorState,
+    state: DefinitionDoorState,
     fn: Callable[..., T],
     /,
     *,
@@ -1548,7 +1643,7 @@ async def _run_retrieval[T](
 
 
 async def _get_definition_impl(
-    id: str, request: Request, *, state: _DefinitionDoorState
+    id: str, request: Request, *, state: DefinitionDoorState
 ) -> JSONResponse:
     """Build request-scoped graph and deadline state, then serve the spec."""
     options = parse_query_options(request.query_params.multi_items())
@@ -1601,7 +1696,7 @@ def _refuse_query_keys(request: Request, *, route: str) -> None:
 
 
 async def _definition_options_impl(
-    id: str, request: Request, *, state: _DefinitionDoorState, body: DefinitionOptionsRequest | None
+    id: str, request: Request, *, state: DefinitionDoorState, body: DefinitionOptionsRequest | None
 ) -> JSONResponse:
     _refuse_query_keys(request, route="options")
     trace_id = get_trace_id()
@@ -1629,7 +1724,7 @@ async def _definition_members_impl(
     id: str,
     request: Request,
     *,
-    state: _DefinitionDoorState,
+    state: DefinitionDoorState,
     body: DefinitionMembersRequest | None,
 ) -> JSONResponse:
     _refuse_query_keys(request, route="members")
@@ -1678,8 +1773,9 @@ def build_definition_door(
     coverage: CoverageService | None = None,
     operation_store: OperationStore | None = None,
     task_client: TaskClient | None = None,
+    version_lister: VersionLister | None = None,
     catalogue: CatalogueService | None = None,
-) -> DoorContribution:
+) -> DefinitionDoor:
     """Build the retrieval door. The lifespan creates uninjected live dependencies.
 
     `settings` supplies concurrency, timeout, head-age, and graph-token defaults. Explicit
@@ -1687,7 +1783,8 @@ def build_definition_door(
     `materialise_semaphore` can be shared with mint to cap rebuilds across both doors. `now` is an
     injectable currency-check clock. Omitted `budget` and `rate_cache` use door-local defaults.
     A live graph client keys its caches on the shared graph generation, acquired against
-    `catalogue`, which defaults to the process-wide service.
+    `catalogue`, which defaults to the process-wide service. `version_lister` serves the frame
+    refresh door, which runs on the returned `state`.
     """
     _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
     _budget = budget if budget is not None else ShutdownBudget()
@@ -1726,9 +1823,10 @@ def build_definition_door(
         coverage=coverage,
         operation_store=operation_store,
         task_client=task_client,
+        version_lister=version_lister,
         settings=_settings,
     )
-    state = _DefinitionDoorState(
+    state = DefinitionDoorState(
         deps=deps,
         settings=_settings,
         budget=_budget,
@@ -1743,6 +1841,7 @@ def build_definition_door(
             head_store=head_store is not None,
             operation_store=operation_store is not None,
             snapshot_reader=snapshot_reader is not None,
+            version_lister=version_lister is not None,
         ),
         catalogue=catalogue,
     )
@@ -1790,7 +1889,8 @@ def build_definition_door(
         """
         return await _definition_members_impl(id, request, state=state, body=body)
 
-    return DoorContribution(
+    return DefinitionDoor(
+        state=state,
         router=router,
         classify=classify_definition_exception,
         exception_types=(

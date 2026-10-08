@@ -20,6 +20,7 @@ than `value` or `set` names nothing.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 import weakref
@@ -33,6 +34,7 @@ from collections.abc import (
     MutableMapping,
     Sequence,
 )
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import TYPE_CHECKING, Literal, NamedTuple, cast
@@ -75,6 +77,7 @@ from code_index.types import (
     summable_axes,
 )
 from dc_graph import GraphDeadlineExceededError, GraphReadError
+from dfo_platform.named import cut, named_capped
 from materialise.roles import DegenerateObservationProperties, axis_for_role, declared_role_for
 from search.engine.degraded_reads import note_degraded_read
 from search.engine.errors import (
@@ -131,7 +134,7 @@ if TYPE_CHECKING:
     from materialise.graph import GraphReader
     from search.engine.bind import SlotBindingDraft
     from search.engine.clients.graph import EngineGraphClient
-    from search.engine.qualifier_match import QualifierMatch
+    from search.engine.qualifier_match import QualifierMatch, QualifierTie
     from search.models import Slot, Spec, TimeWindow
     from statvar_members import MemberEnumerator, MemberGroup
 
@@ -1840,11 +1843,14 @@ def refuse_source_outside_family(identity: BaseIdentity, *, pointer: str) -> Non
         index_family(get_index(), identity_query(identity))
     except SourceNotInFamily as exc:
         detail = (
-            f"the identity binds provenance {exc.source!r}, which does not publish this "
-            f"five-tuple; it is published by {list(exc.candidates)!r}"
+            f"the identity binds provenance {cut(exc.source)!r}, which does not publish this "
+            f"five-tuple; it is published by {named_capped(exc.candidates)}"
         )
         raise EngineInputError(
-            detail, code="facet_not_available", status=422, pointer=pointer, detail=detail
+            detail,
+            code="facet_not_available",
+            status=422,
+            pointer=pointer,
         ) from exc
 
 
@@ -3008,66 +3014,171 @@ def index_carries_shape(shape: ShapeDraft, index: CodeIndex | None = None) -> bo
     return not shape.sv_arc_facts or shape_family(shape, index) is not None
 
 
-def elect_five_tuple_family(
-    shapes: Sequence[ShapeDraft], named: Sequence[QualifierMatch]
-) -> list[ShapeDraft]:
-    """Keep one family where the index's family and an unindexed family share a
-    five-tuple and role class, and return the shapes that remain, in order.
+def held_codes(shape: ShapeDraft) -> Callable[[QualifierMatch], bool]:
+    """Whether `shape`'s family holds a match's value, read once and kept per code.
 
-    CRS flows and debt series share a five-tuple, and each is its own shape
-    (`derive_shapes`). They are rival readings of one structural question, so one of them
-    reaches the election:
-
-    1. The family whose members hold more of the values the query names. `named` holds
-       the code rows the query's words name. A shape holds a named value when some member
-       asserts that property at the code or one of its descendants: every index row of
-       the five-tuple for a shape the index carries, the recalled members for the other.
-       "Net disbursements" names a netting basis only the CRS rows hold. A family that
-       holds a proper subset of the other's named values is dropped.
-    2. Otherwise the family with the stronger recall score. An unscored family loses to a
-       scored one.
-
-    Families that neither rule separates both stay.
+    A code's family holds it when some member asserts the code's property at the code or
+    one of its descendants. The members are the rows of its family that its part may answer
+    from for a shape the index carries, its recalled members for any other
+    (`five_tuple_member_facts`), read on the first call. A measure value on a five-tuple
+    axis ("grant equivalent" names `measuredProperty` `grantEquivalent`) is held when the
+    shape's five-tuple carries it, and one on a constraint axis ("net" names
+    `nettingBasis` `Net`) as a code is.
     """
     index = get_index()
-    wanted = {
-        (match.code_system, match.code_dcid): frozenset(index.descendants(match.code_dcid))
-        | {match.code_dcid}
-        for match in named
-    }
+    constraints: list[dict[str, str]] | None = None
+    held: dict[tuple[str, str], bool] = {}
 
-    def held(shape: ShapeDraft) -> frozenset[tuple[str, str]]:
-        if not wanted:
-            return frozenset()
-        member_facts, _index_sourced = five_tuple_member_facts(shape)
-        constraints = [member.read_constraints() for member in member_facts.values()]
-        return frozenset(
-            key
-            for key, values in wanted.items()
-            if any(member.get(key[0]) in values for member in constraints)
+    def holds(match: QualifierMatch) -> bool:
+        nonlocal constraints
+        key = (match.code_system, match.code_dcid)
+        if key in held:
+            return held[key]
+        field_name = _MEASURE_AXIS_DRAFT_FIELDS.get(match.code_system)
+        if field_name is not None:
+            held[key] = getattr(shape, field_name) == match.code_dcid
+            return held[key]
+        if constraints is None:
+            member_facts, _index_sourced = five_tuple_member_facts(shape)
+            constraints = [member.read_constraints() for member in member_facts.values()]
+        values = frozenset(index.descendants(match.code_dcid)) | {match.code_dcid}
+        held[key] = any(member.get(match.code_system) in values for member in constraints)
+        return held[key]
+
+    return holds
+
+
+def query_phrases_read(
+    holds: Callable[[QualifierMatch], bool],
+    matches: Iterable[QualifierMatch],
+    ties: Iterable[QualifierTie],
+) -> frozenset[str]:
+    """The query phrases a shape's family holds a value for (`holds`, the shape's
+    `held_codes`), each as its normalised text (`QualifierMatch.phrase`).
+
+    `matches` and `ties` are the query as the shape's own vocabulary reads it
+    (`qualifier_match.read_by_vocabulary`), measure values included. A tie's phrase is
+    read when the shape holds any of its codes: "tertiary education" ties two CRS purposes,
+    and a table holding one of them reads the words. A phrase reads the same in every
+    vocabulary that reads it, so two tables of different code systems compare by the words
+    their codes cover. "ODA for basic education" reads {"oda", "basic education"} on CRS
+    and {"oda"} on DAC2a. A measure word reads only on the five-tuple it names. "Grant
+    equivalent ODA" reads {"grant equivalent", "oda"} on CRS grant equivalents and {"oda"}
+    on DAC1 disbursements.
+    """
+    readings: list[tuple[str, tuple[QualifierMatch, ...]]] = [
+        (match.phrase, (match,)) for match in matches
+    ]
+    readings += [(tie.phrase, tie.rows) for tie in ties]
+    return frozenset(phrase for phrase, rows in readings if any(holds(row) for row in rows))
+
+
+def phrases_within(phrases: AbstractSet[str], reader: AbstractSet[str]) -> bool:
+    """Whether every phrase of `phrases` lies, as whole words, within some phrase of
+    `reader`. Two vocabularies can claim spans of different lengths over one text. DAC1
+    reads "multilateral ODA" as one code where CRS reads "ODA", so {"oda"} lies within
+    {"multilateral oda"}."""
+    return all(
+        any(re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", read) for read in reader)
+        for phrase in phrases
+    )
+
+
+def reads_fewer(mine: AbstractSet[str], theirs: AbstractSet[str]) -> bool:
+    """Whether `mine` lies within `theirs` (`phrases_within`) and `theirs` does not lie
+    within `mine`, so the query words `theirs` reads strictly cover those `mine` reads."""
+    return phrases_within(mine, theirs) and not phrases_within(theirs, mine)
+
+
+def elect_five_tuple_family(
+    shapes: Sequence[ShapeDraft],
+    phrases_read: Callable[[ShapeDraft], AbstractSet[str]],
+    *,
+    series_at_places: Callable[[ShapeDraft], bool | None] | None = None,
+) -> list[ShapeDraft]:
+    """Keep the family of a five-tuple and role class that reads the most of the query, and
+    return the shapes that remain, in order.
+
+    CRS flows and debt series share a five-tuple, and so do DAC2a, DAC2b, ONE's imputed
+    sectors and CRS. Each family is its own shape (`derive_shapes`), and they are rival
+    readings of one structural question:
+
+    1. A family reading fewer of the query's phrases than another (`reads_fewer`) leaves.
+       `phrases_read` gives the phrases each family's own codes read
+       (`query_phrases_read`). "Imputed multilateral ODA to basic education" reads the
+       sector only on the sectors table, so DAC2a's imputed multilateral total leaves, and
+       "net disbursements" reads a netting basis only the CRS rows hold, so the debt
+       series leaves. The rule holds for every pair, indexed or not.
+    2. Between families reading the same phrases, one holding no series at the places the
+       part names leaves when another holds one. `series_at_places` says whether a family
+       holds a series there on the roles the places bind, or `None` when it cannot tell:
+       the part names no place, or the coverage index holds none of the family's members.
+       "Other official flows from Germany to Brazil" reads alike on the CRS and DAC2b, and
+       DAC2b, whose bilateral donors report only against aggregate recipients, leaves for
+       the CRS. Without `series_at_places` no family leaves on this rule.
+    3. Between a family the index carries and one it does not, neither reading fewer, the
+       family with the stronger recall score stays. An unscored family loses to a scored
+       one.
+
+    Each rule runs among the families the rules before it keep. Reading fewer is a strict
+    partial order, rule 2 drops a family only beside one that holds a series and stays, and
+    recall score is a total order, so each leaves a family standing, and families no rule
+    separates all stay, for bind to choose among.
+    """
+    index = get_index()
+
+    def rivals(shape: ShapeDraft, other: ShapeDraft) -> bool:
+        return (
+            other is not shape
+            and shape_five_tuple(shape) == shape_five_tuple(other)
+            and is_role_bearing(shape) == is_role_bearing(other)
         )
 
     def score(shape: ShapeDraft) -> float:
         return -1.0 if shape.representative_score is None else shape.representative_score
 
-    held_by_shape: dict[int, frozenset[tuple[str, str]]] = {}
-    dropped: set[int] = set()
-    for i, shape in enumerate(shapes):
-        for j, other in enumerate(shapes):
-            if (
-                i == j
-                or shape_five_tuple(shape) != shape_five_tuple(other)
-                or is_role_bearing(shape) != is_role_bearing(other)
-                or index_carries_shape(shape, index) == index_carries_shape(other, index)
-            ):
-                continue
-            for k, candidate in ((i, shape), (j, other)):
-                if k not in held_by_shape:
-                    held_by_shape[k] = held(candidate)
-            mine, theirs = held_by_shape[i], held_by_shape[j]
-            if mine < theirs or (not theirs < mine and score(shape) < score(other)):
-                dropped.add(i)
-    return [shape for i, shape in enumerate(shapes) if i not in dropped]
+    read_most = [
+        shape
+        for shape in shapes
+        if not any(
+            rivals(shape, other) and reads_fewer(phrases_read(shape), phrases_read(other))
+            for other in shapes
+        )
+    ]
+    served: dict[int, bool | None] = {}
+
+    def holds_series(shape: ShapeDraft) -> bool | None:
+        if series_at_places is None:
+            return None
+        if id(shape) not in served:
+            served[id(shape)] = series_at_places(shape)
+        return served[id(shape)]
+
+    def unserved(shape: ShapeDraft) -> bool:
+        alike = [
+            other
+            for other in read_most
+            if rivals(shape, other)
+            and phrases_within(phrases_read(shape), phrases_read(other))
+            and phrases_within(phrases_read(other), phrases_read(shape))
+        ]
+        return (
+            bool(alike)
+            and holds_series(shape) is False
+            and any(holds_series(other) is True for other in alike)
+        )
+
+    with_series = [shape for shape in read_most if not unserved(shape)]
+    return [
+        shape
+        for shape in with_series
+        if not any(
+            rivals(shape, other)
+            and index_carries_shape(shape, index) != index_carries_shape(other, index)
+            and score(shape) < score(other)
+            for other in with_series
+        )
+    ]
 
 
 def declared_role_signature(member_facts: Mapping[str, MemberFacts]) -> tuple[str, ...]:

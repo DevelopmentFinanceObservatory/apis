@@ -8,8 +8,18 @@ from typing import Any
 from search.engine.bind import SlotBindingDraft
 from search.engine.region.candidates import _Candidate, _materialise_alt_shapes, elect_alternate
 from search.engine.region.place_context import PlaceContext
-from search.engine.region.place_roles import PlaceRoles
-from search.engine.retrieval.bound_values import MeasurePartition, RoleClassWalks
+from search.engine.region.place_roles import (
+    PlaceAssignment,
+    PlaceRoles,
+    settle_place_sets,
+    settled_roles,
+)
+from search.engine.region.place_set import PlaceNode, PlaceSet
+from search.engine.retrieval.bound_values import (
+    MeasurePartition,
+    RoleClassWalks,
+    entity_role_keys,
+)
 from search.engine.retrieval.retrieve import UnsupportedDraft
 from search.engine.shape import ShapeDraft, entities_by_role
 from search.engine.spec_build import build_spec
@@ -175,6 +185,49 @@ def conjoin_spec(
     )
 
 
+def place_sets(
+    places: Mapping[str, str] | None = None,
+    *,
+    groups: Mapping[str, Sequence[str]] | None = None,
+    regions: Mapping[str, tuple[str, Sequence[str]]] | None = None,
+) -> dict[str, PlaceSet]:
+    """The place sets of a request: each of `groups` by its member dcids, each of `regions`
+    by its node's dcid and member dcids, then each of `places` by its dcid. Place
+    resolution puts groups first too, then places and regions together in recall's order.
+    Every member is a `Country`."""
+    sets = {
+        name: PlaceSet(
+            name=name, kind="group", node=None, members=tuple(members), member_type="Country"
+        )
+        for name, members in (groups or {}).items()
+    }
+    for name, (dcid, members) in (regions or {}).items():
+        sets[name] = PlaceSet(
+            name=name,
+            kind="region",
+            node=PlaceNode(dcid=dcid, graph_type="Continent"),
+            members=tuple(members),
+            member_type="Country",
+        )
+    for name, dcid in (places or {}).items():
+        sets[name] = PlaceSet(
+            name=name, kind="place", node=PlaceNode(dcid=dcid, graph_type="Country")
+        )
+    return sets
+
+
+def settled_place_roles(shape: ShapeDraft, assignment: PlaceAssignment) -> PlaceRoles:
+    """`shape`'s binding of `assignment` when no set binds its node: a place is bound
+    itself and every set that expands at its members."""
+    places = settle_place_sets(
+        assignment,
+        admits=lambda _key, _graph_type: True,
+        has_data=lambda _places: False,
+        bound=None,
+    )
+    return settled_roles(shape, assignment, places)
+
+
 def subject_place_roles(*dcids: str) -> PlaceRoles:
     """A subject-only shape's binding of `dcids`, as `bind_place_roles` builds it."""
     return PlaceRoles(
@@ -259,7 +312,7 @@ def materialise_alternates(
         if (
             alternate := elect_alternate(
                 shape,
-                place.roles,
+                entity_role_keys(place.roles.resolved_entities, open_axes=place.roles.open_axes),
                 elected_bindings=elected_bindings,
                 elected_has_data=elected_has_data,
                 graph=graph,

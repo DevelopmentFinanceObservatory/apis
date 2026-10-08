@@ -36,7 +36,7 @@ from origin_catalogue import (
     current_catalogue,
 )
 from origin_catalogue.origins import UN_ID_PREFIX
-from search.engine.clients.graph import EngineGraphClient, force_full_facets
+from search.engine.clients.graph import EngineGraphClient, force_full_facets, stand_in
 from search.engine.config import settings
 from search.engine.degraded_reads import note_degraded_read
 from search.engine.errors import GraphCapExceededError, RoleSignatureError
@@ -59,7 +59,7 @@ from search.engine.retrieval.facts import (
     standard_shape_id_for,
 )
 from search.engine.retrieval.member_facts import ArcsMemberFacts
-from search.engine.retrieval.topics import expand_topics, is_topic_candidate
+from search.engine.retrieval.topics import is_topic_candidate, topic_leaves
 from search.engine.shape import (
     STANDARD_SHAPE_LABEL,
     ShapeDraft,
@@ -176,7 +176,7 @@ def _split_and_expand_topics(
     Excluding Topics from that read also frees confirm-cap slots.
 
     Expand roots within `topic_expand_margin` of the best pool score, up to
-    `topic_expand_max_roots`; `expand_topics` limits each root's size. The pool
+    `topic_expand_max_roots`; `topic_leaves` limits each root's size. The pool
     score includes Topics because the answer-bearing Topic can rank below other
     Topics and the best non-Topic candidate.
     """
@@ -202,7 +202,7 @@ def _split_and_expand_topics(
             reverse=True,
         )[: settings().topic_expand_max_roots]
         if qualifying_roots:
-            leaf_to_root = expand_topics(qualifying_roots, graph=graph)
+            leaf_to_root = topic_leaves(qualifying_roots, graph=graph)
             expanded_svs = list(leaf_to_root)
             # Expanded members have no measured recall score. Keep them out of
             # `sv_scores`; `expansion_rank` orders them without affecting confidence.
@@ -382,6 +382,35 @@ def _family_spread(candidate_pool: list[str]) -> list[str]:
             taken[key] += 1
         leading.append(sv)
     return leading + surplus
+
+
+def _stand_selection(
+    candidate_pool: list[str],
+    selected: set[str],
+    *,
+    sv_scores: dict[str, float],
+    recall_svs: set[str],
+    expansion_rank: dict[str, float],
+    expansion_root_score: dict[str, float],
+) -> tuple[list[str], set[str]]:
+    """The ranked pool and the selection as the variables they stand as (`stand_in`), in the
+    pool's order. The score, expansion rank and root score maps and `recall_svs` gain each
+    successor under the best value of the variables standing as it, in place."""
+    catalogue = current_catalogue()
+    standing = {sv: stand_in(sv, catalogue=catalogue) for sv in candidate_pool}
+    if all(standing[sv] == sv for sv in candidate_pool):
+        return candidate_pool, selected
+    for sv in candidate_pool:
+        dcid = standing[sv]
+        if dcid is None or dcid == sv:
+            continue
+        for values in (sv_scores, expansion_rank, expansion_root_score):
+            if sv in values and values[sv] > values.get(dcid, float("-inf")):
+                values[dcid] = values[sv]
+        if sv in recall_svs:
+            recall_svs.add(dcid)
+    pool = list(dict.fromkeys(d for sv in candidate_pool if (d := standing[sv]) is not None))
+    return pool, {d for sv in selected if (d := standing[sv]) is not None}
 
 
 def _confirm_with_backfill(
@@ -923,6 +952,15 @@ def derive_shapes(
     member before any of its others (`_family_spread`). Index-backed groups add
     properties beyond the sample.
 
+    `confirmed_svs` and the Topic leaves (`topic_leaves`) enter under their own dcids,
+    superseded ones included, so ranking and the confirm cap count each base variable once,
+    as they did while its provenance was admitted. Only then does each selected variable
+    stand as what Search reads (`clients.graph.stand_in`): a superseded one as its successor,
+    read once however many selected variables stand as it, and one with no successor has
+    none of its arcs or observations read. Its slot is spent either way, so supersession brings no candidate past the
+    cap that would have stopped short of it. A successor takes the best score, expansion
+    rank and recall standing of the variables standing as it.
+
     `sv_scores` supplies measured recall scores; expansion-only groups retain
     no score and carry a separate ordering rank. `sv_types` identifies Topic
     roots. `place_dcids` scopes taxonomy values, while slot keys use every group
@@ -964,6 +1002,14 @@ def derive_shapes(
 
     selected = _select_capped_candidates(
         candidate_pool, sv_scores=sv_scores, recall_svs=recall_svs, graph=graph
+    )
+    candidate_pool, selected = _stand_selection(
+        candidate_pool,
+        selected,
+        sv_scores=sv_scores,
+        recall_svs=recall_svs,
+        expansion_rank=expansion_rank,
+        expansion_root_score=topic_expansion.expansion_root_score,
     )
 
     # Full arcs supply five-tuples, constraints, and member facts; the roles-only read is insufficient.

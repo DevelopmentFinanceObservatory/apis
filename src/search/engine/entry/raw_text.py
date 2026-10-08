@@ -361,13 +361,15 @@ class _ExtractionPrep:
     `qualifier_facts` holds the departure of each `qualifier_warnings` entry whose phrase
     asks for something (`_dropped_phrase_fact`), under its warning's key. `entity_words`
     maps each entity name to the query's own words for it (`ExtractedEntity.span`), first
-    mention first.
+    mention first. `member_entities` are the entity names the query asks for as their
+    members (`ResolveState.member_entities`).
     """
 
     date_request: DateRequest | None
     unique: list[str]
     entities: list[str]
     entity_roles: dict[str, list[DoorRole]]
+    member_entities: frozenset[str]
     per_variable_qualifiers: list[tuple[CodedQualifier, ...]]
     per_variable_operations: list[tuple[Operation, ...]]
     per_variable_date_requests: list[DateRequest | None]
@@ -497,6 +499,8 @@ def _prepare_extraction(
         unique=unique,
         entities=entities,
         entity_roles=entity_roles,
+        # One text holds one reading: a mention that asks for the members decides it.
+        member_entities=frozenset(e.text.strip() for e in extraction.entities if e.members),
         per_variable_qualifiers=per_variable_qualifiers,
         per_variable_operations=per_variable_operations,
         per_variable_date_requests=per_variable_date_requests,
@@ -536,6 +540,7 @@ async def _handle_single_variable(
         prep.unique,
         entities=prep.entities,
         entity_roles=prep.entity_roles,
+        member_entities=prep.member_entities,
         date_request=prep.date_request,
         query=query,
         pac=params.pac,
@@ -647,6 +652,7 @@ async def _handle_multi_variable(
         prep.unique,
         entities=prep.entities,
         entity_roles=prep.entity_roles,
+        member_entities=prep.member_entities,
         date_request=prep.date_request,
         query=query,
         pac=params.pac,

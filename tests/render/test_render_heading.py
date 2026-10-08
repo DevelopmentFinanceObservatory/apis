@@ -54,10 +54,18 @@ def _how(prop: str, dcid: str, label: str) -> Slot:
     )
 
 
-def _members(*constraint_properties: str) -> list[StatVar]:
+# A CRS row of the code index: an aid table declares the provider's account, which
+# decides the flow family of an index row.
+_CRS_GROSS_ODA = (
+    "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_"
+    "CRSCooperationModalityA01_CRSPurposeCode11330_Nominal"
+)
+
+
+def _members(*constraint_properties: str, dcid: str = "sv1") -> list[StatVar]:
     return [
         StatVar(
-            ref=_ref("sv1", "SV1"),
+            ref=_ref(dcid, "SV1"),
             shape_id="test-shape",
             slot_values=[],
             constraint_properties=sorted(constraint_properties),
@@ -90,7 +98,9 @@ def _aid(*, entities, **kwargs) -> Spec:
             _how("nettingBasis", "Gross", "gross"),
         ],
         entities=entities,
-        stat_vars=_members("crsTypeOfFlow", "financialFlowType", "nettingBasis"),
+        stat_vars=_members(
+            "crsTypeOfFlow", "financialFlowType", "nettingBasis", dcid=_CRS_GROSS_ODA
+        ),
         measure_label="gross disbursements",
         measure_label_axes=["financialFlowType", "nettingBasis"],
         **kwargs,
@@ -161,6 +171,57 @@ def _heading_cases() -> list[object]:
     ]
 
 
+@pytest.mark.parametrize(
+    ("dcid", "constraint_properties", "expected"),
+    [
+        pytest.param(
+            _CRS_GROSS_ODA,
+            ("crsTypeOfFlow", "financialFlowType", "nettingBasis"),
+            "aid",
+            id="crs",
+        ),
+        pytest.param(
+            "Amount_FinancialFlow_Net_Disbursement_DAC1AidType8863_Nominal",
+            ("dac1AidType", "financialFlowType", "nettingBasis"),
+            "aid",
+            id="dac1-net-disbursement",
+        ),
+        pytest.param(
+            "Amount_FinancialFlow_Net_Disbursement_DAC2aAidType206_Nominal",
+            ("dac2aAidType", "financialFlowType", "nettingBasis"),
+            "aid",
+            id="dac2a-net-disbursement",
+        ),
+        pytest.param(
+            "Amount_FinancialFlow_Net_Disbursement_DACTypeOfFinanceNonGrants_DAC2bAidType297_Nominal",
+            ("dac2bAidType", "dacTypeOfFinance", "financialFlowType", "nettingBasis"),
+            "aid",
+            id="dac2b-interest-received",
+        ),
+        pytest.param(
+            "Amount_FinancialFlow_Disbursement_LongTermMaturity_WithIMFCredit_Nominal",
+            ("financialFlowType", "includesIMFCredit", "maturityBand"),
+            "debt_lending",
+            id="ids-disbursement",
+        ),
+    ],
+)
+def test_a_disbursement_reads_in_the_family_its_index_row_declares(
+    dcid: str, constraint_properties: tuple[str, ...], expected: str
+):
+    """A served member the code index holds reads in its datasets' account, so DAC1, DAC2a
+    and DAC2b disbursements read as aid as the CRS does. An IDS disbursement, outside the
+    index, keeps the debt family its constraint values give."""
+    spec = _spec(
+        population_type=_ref("FinancialFlow", "Financial flow"),
+        measured_property=_ref("amount", "amount"),
+        slots=[_how("financialFlowType", "Disbursement", "disbursement")],
+        entities=[_entity_from("country/DEU", "Germany"), _entity_to("country/KEN", "Kenya")],
+        stat_vars=_members(*constraint_properties, dcid=dcid),
+    )
+    assert heading_for(spec).heading.family == expected
+
+
 @pytest.mark.parametrize(("spec", "expected"), _heading_cases())
 def test_heading_reads_in_possessive_order_with_family_wording(spec: Spec, expected: str):
     """The possessor role leads, the noun names the defaults that change the number, and
@@ -221,6 +282,12 @@ _DONORS = [
             "Gross ODA disbursements to Ethiopia from the 4 DAC donors.",
             id="group-named-by-its-members",
         ),
+        pytest.param(
+            _DONORS,
+            {"origin": EntityGroup(label="European Union", entity_type="ContinentalUnion")},
+            "Gross ODA disbursements to Ethiopia from the 4 European Union members.",
+            id="group-with-a-union-node",
+        ),
     ],
 )
 def test_a_role_names_at_most_three_entities(donors, groups, expected: str):
@@ -232,6 +299,23 @@ def test_a_role_names_at_most_three_entities(donors, groups, expected: str):
     assert sentence_from_plan(plan) == expected
     origin = next(t for t in plan if t.role == "origin")
     assert origin.entity_refs == [e.ref.dcid for e in donors]
+
+
+@pytest.mark.parametrize("entity_type", ["Continent", "UNGeoRegion"])
+def test_a_region_group_reads_as_the_places_in_it(entity_type: str):
+    """A group whose node is a Continent or a UNGeoRegion reads by its size and name as
+    the places in it, since a place in a region is no member of it."""
+    region = EntityGroup(dcid="africa", label="Africa", entity_type=entity_type)
+    spec = _aid(entities=[_entity_to("country/ETH", "Ethiopia"), *_DONORS])
+    spec = _with(spec, entity_groups={"origin": region})
+
+    plan = render_sentence_plan(spec)
+
+    origin = next(t for t in plan if t.role == "origin")
+    assert "4" in origin.text.split()
+    assert origin.text.endswith("in Africa")
+    assert "members" not in sentence_from_plan(plan)
+    assert origin.entity_refs == [e.ref.dcid for e in _DONORS]
 
 
 @pytest.mark.parametrize(

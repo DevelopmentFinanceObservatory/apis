@@ -222,7 +222,7 @@ async def _build_sentence_event(
     sentence.
 
     `measure_partition` supplies the bind-time label through the same helper
-    used by the final Spec, and its members' constraint values the flow family,
+    used by the final Spec, and its members' StatVar dcids the flow family,
     so the heading words and orders its roles as the final one does. Materialised members
     may elect another partition.
     Identity uses the requested date window, grounded entities, and the same
@@ -305,7 +305,7 @@ async def _build_sentence_event(
                 else None
             ),
             entity_groups=entity_groups,
-            member_constraints=_partition_member_constraints(measure_partition),
+            member_dcids=measure_partition.members if measure_partition is not None else (),
         )
     )
     return SentenceEvent(
@@ -314,15 +314,6 @@ async def _build_sentence_event(
         sentence_plan=plan,
         slots=slots,
     )
-
-
-def _partition_member_constraints(partition: MeasurePartition | None) -> list[Mapping[str, str]]:
-    """The constraint values of each member of the partition bind elected, from the code
-    index rows the partition was grouped from. It is [] with no partition."""
-    if partition is None:
-        return []
-    members = frozenset(partition.members)
-    return [row.constraint_properties for row in get_index().statvars if row.dcid in members]
 
 
 def _build_definite_sentence_event(spec: Spec, *, variable_index: int) -> SentenceEvent:
