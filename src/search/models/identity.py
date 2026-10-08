@@ -15,6 +15,8 @@ from pydantic import (
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import CoreSchema, PydanticCustomError
 
+from dfo_platform.named import named_capped
+
 from .base import StrictModel
 from .vocab import _FACET_AXIS_SCHEMA_VERSION, SCHEMA_VERSION, RoleAxis
 
@@ -29,6 +31,8 @@ from .vocab import _FACET_AXIS_SCHEMA_VERSION, SCHEMA_VERSION, RoleAxis
 # validator distinguishes published axes from those requiring a newer schema version.
 _IDENTITY_FACET_AXES = frozenset(_FACET_AXIS_SCHEMA_VERSION)
 _IDENTITY_ENTITY_ROLE_KEYS = frozenset({"observationAbout", "origin", "destination"})
+
+_MAX_KEY_CHARS = 32
 
 _IDENTITY_MAX_SAFE_INTEGER = 2**53 - 1
 """JCS/I-JSON numbers represent integers exactly through ``2**53 - 1`` (IEEE-754 double)."""
@@ -463,10 +467,12 @@ def _validate_facet_axis_names(data: Any) -> Any:
             "facet_axis_higher_schema_version",
             "facet axis name(s) {axes} require a higher schema_version than "
             "this deployment publishes",
-            {"axes": sorted(higher_version)},
+            {"axes": ", ".join(sorted(higher_version))},
         )
     if unknown:
-        raise ValueError(f"unrecognised facet axis name(s): {sorted(unknown)!r}")
+        raise ValueError(
+            f"unrecognised facet axis name(s): {named_capped(sorted(unknown), max_chars=_MAX_KEY_CHARS)}"
+        )
     return data
 
 
@@ -544,7 +550,9 @@ class BaseIdentity(StrictModel):
     def _entity_roles_and_request_form(self) -> BaseIdentity:
         unknown_roles = set(self.entities) - _IDENTITY_ENTITY_ROLE_KEYS
         if unknown_roles:
-            raise ValueError(f"unrecognised entity role key(s): {sorted(unknown_roles)!r}")
+            raise ValueError(
+                f"unrecognised entity role key(s): {named_capped(sorted(unknown_roles), max_chars=_MAX_KEY_CHARS)}"
+            )
         for axis, binding in (self.facets or {}).items():
             if isinstance(binding, IdentityFacetValueRequest) and axis != "unit":
                 raise ValueError(f"the request form is only valid on the unit axis (got {axis!r})")
@@ -568,7 +576,7 @@ class BaseIdentity(StrictModel):
             return self
         bound = sorted(set(self.open_roles) & set(self.entities))
         if bound:
-            raise ValueError(f"open_roles names role(s) entities also binds: {bound!r}")
+            raise ValueError(f"open_roles names role(s) entities also binds: {', '.join(bound)}")
         if isinstance(self.shape, IdentityShapePin):
             raise ValueError("a pinned shape (kind='stat_var') cannot carry open_roles")
         self.open_roles = sorted(set(self.open_roles))

@@ -11,14 +11,22 @@ authoritative. `request_invalid` has a retryable headline mode but always return
 
 `schema_invalid`, `binding_invalid`, `constraint_violation`, `request_invalid`, and
 `resource_exhausted` return 400. `write_refused` returns 403, `edit_conflict` returns 409, and
-`not_found` returns 404.
+`not_found` returns 404. The render routes refuse a caller other than the live-refresh
+principal with `refresh_not_permitted` (403) and a target frame that may not stand in for the
+stored one with `render_target_mismatch` (409). They serve `binding_invalid` and
+`constraint_violation` at 422 and `frame_unavailable`, `release_mismatch`, and
+`resource_exhausted` at 409 (`presentation_api.doors.render`). Their caller replays a stored
+intent and cannot correct it, so there `retryable` is true only when the same request may
+succeed later: `replay_retryable` keeps an occurrence's value for a `retry_after_delay` or
+`refresh_then_retry` code and answers false for every other mode.
 Frame unavailability returns 404 or transient 503. Release mismatch and service unavailability
 return 503. Timeout returns 504, and internal errors return 500.
 
 Missing-field `schema_invalid`, `binding_invalid`, and `constraint_violation` use
 `correct_and_retry`. Illegal fields use `do_not_retry`. Conflicts and some frame refusals need a
 refresh. Transient frame, release, service, and timeout failures retry after a delay. `not_found`,
-`write_refused`, `resource_exhausted`, and `internal_error` use `do_not_retry`. `CODE_RETRY_MODE` mirrors the
+`write_refused`, `resource_exhausted`, `refresh_not_permitted`, `render_target_mismatch`, and
+`internal_error` use `do_not_retry`. `CODE_RETRY_MODE` mirrors the
 release manifest.
 
 Problem details expose fixed extension fields and no generic extra-data slot. Legal-value lists
@@ -35,6 +43,7 @@ __all__ = [
     "CODE_RETRY_MODE",
     "PRESENTATION_CODE_CATALOGUE",
     "PRESENTATION_SERVED_PLATFORM_CODES",
+    "replay_retryable",
     "retryable_for",
 ]
 
@@ -73,6 +82,11 @@ PRESENTATION_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
         "writes, or its stored payload carries a shape the release's schema does not "
         "recognise, a row a migration has not yet rewritten.",
     ),
+    "render_target_mismatch": (
+        "Render Target Mismatch",
+        "The target frame may not stand in for the frame this revision is stored on: it is "
+        "another dataset or rendering, or a derived frame of another recipe.",
+    ),
 }
 
 # This catalogue adds presentation codes to the shared platform catalogue.
@@ -92,6 +106,8 @@ CODE_RETRY_MODE: dict[str, str] = {
     "resource_exhausted": "do_not_retry",
     "frame_unavailable": "refresh_then_retry",
     "release_mismatch": "retry_after_delay",
+    "refresh_not_permitted": "do_not_retry",
+    "render_target_mismatch": "do_not_retry",
     "service_unavailable": "retry_after_delay",
     "timeout": "retry_after_delay",
     "internal_error": "do_not_retry",
@@ -106,6 +122,8 @@ PRESENTATION_SERVED_PLATFORM_CODES: frozenset[str] = frozenset(
         "timeout",
         "internal_error",
         "unsupported_schema_version",
+        # Shared with the Datasets frame refresh.
+        "refresh_not_permitted",
     }
 )
 
@@ -134,6 +152,17 @@ def retryable_for(code: str) -> bool:
     `schema_invalid`, `frame_unavailable`, and `request_invalid` per occurrence.
     """
     return CODE_RETRY_MODE[code] != "do_not_retry"
+
+
+# The modes under which a request repeated unchanged may succeed.
+_UNCHANGED_RETRY_MODES = frozenset({"retry_after_delay", "refresh_then_retry"})
+
+
+def replay_retryable(code: str, *, retryable: bool) -> bool:
+    """Return `retryable` as a caller that cannot change its request reads it: the
+    occurrence's own value when `code`'s mode is in `_UNCHANGED_RETRY_MODES`, else false.
+    """
+    return retryable and CODE_RETRY_MODE.get(code) in _UNCHANGED_RETRY_MODES
 
 
 def _catalogue_covers(catalogue: CodeCatalogue) -> None:

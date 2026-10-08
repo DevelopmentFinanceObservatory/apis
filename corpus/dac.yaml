@@ -182,7 +182,6 @@
 
 - id: dq-dac-018
   query: net ODA received by Ethiopia in 1965
-  activation: pending_data:dac2a
   why: Resolves to dac2a.oda_net_received for country/ETH as destination in 1965.
   tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: technical}
   expect:
@@ -193,7 +192,6 @@
 
 - id: dq-dac-019
   query: net ODA received by Kenya from all donors in 2022
-  activation: pending_data:dac2a
   why: DAC2a counts imputed multilateral flows to the recipient and CRS counts the multilaterals' own spending, so the totals differ; DAC2a answers a recipient total with no sector.
   tags:
     theme: aid
@@ -226,7 +224,7 @@
 - id: dq-dac-021
   query: net ODA received by low income countries in 2020
   activation: pending_data:dac2a
-  why: DAC2a publishes income-group recipient codes as data entities, so the group node answers.
+  why: DAC2a publishes income-group recipient codes as data entities, so the group node answers; the entity pack lacks DAC2a's group recipients, so the query reads as members.
   tags: {theme: aid, entity: region_group, direction: destination_only, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: technical, probe: [income_group]}
   expect:
     definite:
@@ -237,7 +235,7 @@
 - id: dq-dac-022
   query: net ODA received by Sub-Saharan Africa
   activation: pending_data:dac2a
-  why: DAC2a publishes 'South of Sahara, total' as a recipient node, which answers in place of the member countries.
+  why: DAC2a publishes 'South of Sahara, total' as a recipient node, which answers in place of the members; the entity pack lacks that node.
   tags: {theme: aid, entity: region_group, direction: destination_only, unit: default, time: none, operation: aggregate, breakdown: none, door: raw_text, phrasing: technical}
   expect:
     definite:
@@ -246,7 +244,6 @@
 
 - id: dq-dac-023
   query: imputed multilateral ODA received by Kenya in 2022
-  activation: pending_data:dac2a
   why: DAC2a aid type 106 and MLS share a constraint value and differ in method; both families fit, and candidates show both.
   tags:
     theme: aid
@@ -268,7 +265,6 @@
 
 - id: dq-dac-024
   query: technical cooperation received by Malawi
-  activation: pending_data:dac2a
   why: CRS cooperation modality D01/D02 also answers; candidates naming both families fit.
   tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: modality, door: raw_text, phrasing: technical, overlap: [crs]}
   expect:
@@ -278,7 +274,6 @@
 
 - id: dq-dac-025
   query: food aid received by Haiti in 1995
-  activation: pending_data:dac2a
   why: Resolves to dac2a.food_aid for country/HTI as destination in 1995.
   tags: {theme: humanitarian, entity: country, direction: destination_only, unit: default, time: year, operation: none, breakdown: sector, door: raw_text, phrasing: casual, overlap: [crs]}
   expect:
@@ -286,3 +281,53 @@
       measure: {family: dac2a.food_aid}
       entities: [{dcid: country/HTI, role: destination}]
       window: {kind: range, start: 1995, end: 1995}
+
+- id: dq-dac-026
+  query: DAC2b other official flows to Kenya in 2020
+  why: Naming DAC2b elects its other official flow line, at gross disbursements, for country/KEN as destination in 2020.
+  tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: year, operation: none, breakdown: flow_type, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: dac2b.oof_gross}
+      entities: [{dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2020, end: 2020}
+
+- id: dq-dac-027
+  query: DAC2b OOF to Kenya in 2020
+  why: OOF reads DAC2b aid type 972 through the concept it shares with CRS flow type 21 and DAC1 aid type 200, so 972 answers in place of the net non-concessional default.
+  tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: year, operation: none, breakdown: flow_type, door: raw_text, phrasing: technical, overlap: [crs]}
+  expect:
+    definite:
+      measure: {family: dac2b.oof_gross}
+      entities: [{dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2020, end: 2020}
+
+- id: dq-dac-028
+  query: DAC2b net official non-concessional flows to India in 2015
+  why: Only DAC2b holds the official non-concessional total (aid type 296), published at net disbursements, for country/IND as destination in 2015.
+  tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: year, operation: none, breakdown: flow_type, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: dac2b.non_concessional_net}
+      entities: [{dcid: country/IND, role: destination}]
+      window: {kind: range, start: 2015, end: 2015}
+
+- id: dq-dac-029
+  query: DAC2b export credits to Indonesia in 2010
+  why: Naming DAC2b elects its officially supported export credit line, at gross disbursements, over CRS flow type 22, for country/IDN as destination in 2010.
+  tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: year, operation: none, breakdown: flow_type, door: raw_text, phrasing: technical, overlap: [crs]}
+  expect:
+    definite:
+      measure: {family: dac2b.export_credits_gross}
+      entities: [{dcid: country/IDN, role: destination}]
+      window: {kind: range, start: 2010, end: 2010}
+
+- id: dq-dac-030
+  query: DAC2b interest received on lending to Kenya in 2015
+  why: DAC2b aid type 297 records the interest providers receive on other official flows and export credits, published at net disbursements, for country/KEN as destination in 2015.
+  tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: year, operation: none, breakdown: flow_type, door: raw_text, phrasing: technical}
+  expect:
+    definite:
+      measure: {family: dac2b.interest_received}
+      entities: [{dcid: country/KEN, role: destination}]
+      window: {kind: range, start: 2015, end: 2015}

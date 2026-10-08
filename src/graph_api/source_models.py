@@ -212,11 +212,15 @@ class ProvenanceEntry(BaseModel):
 
 
 class Exclusion(BaseModel):
-    """A provenance the source holds that this deployment does not admit."""
+    """A provenance a base source holds that this deployment does not admit, because
+    another Data Commons supersedes it."""
 
     ref: str
-    reason: Literal["superseded_by_dfo"] = Field(
-        description="superseded_by_dfo: an upstream copy of a dataset DFO imports"
+    reason: Literal["superseded_by_dfo", "superseded_by_un_system"] = Field(
+        description=(
+            "superseded_by_dfo: an upstream copy of a dataset DFO imports. "
+            "superseded_by_un_system: a UN System Data Commons agency's series replace it"
+        )
     )
 
 
@@ -257,8 +261,8 @@ class DatasetEntry(BaseModel):
 
 class SourceCatalogueEntry(BaseModel):
     """One source on one Data Commons, with the datasets this deployment
-    admits under it and the provenances it excludes. DFO provenances group under
-    the source their `source` arc names, and their entries exclude nothing."""
+    admits under it and the provenances it excludes. DFO provenances and UN
+    agencies exclude nothing here."""
 
     source: SourceNodeRef
     data_commons: DataCommonsRef

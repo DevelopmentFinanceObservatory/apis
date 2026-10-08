@@ -1,6 +1,7 @@
 """Version-record and subject-head interfaces used by the Datasets API.
 
-`VersionRecordWriter` stores immutable manifest data. `HeadWriter` and
+`VersionRecordWriter` stores immutable manifest data. `VersionLister` lists a
+subject's stored versions. `HeadWriter` and
 `HeadReader` manage the current content version. The default null writers
 record or advance nothing. `datasets_surface` injects live implementations.
 """
@@ -81,6 +82,26 @@ class NullVersionRecordWriter:
 
 
 NULL_VERSION_RECORD_WRITER = NullVersionRecordWriter()
+
+
+@dataclass(frozen=True)
+class ListedVersion:
+    """One stored version of a subject. `base_content_version` names the raw version a full
+    collapse was rendered from, and is `None` on every other version. `renderings` holds the
+    rendering of each file linked under the version, in the order
+    `SnapshotReader.read_artifact_locations` returns them. A collapse's groupby is read from
+    them (`datasets_api.recorded_rendering`).
+    """
+
+    content_version: str
+    base_content_version: str | None
+    renderings: tuple[Mapping[str, object], ...] = ()
+
+
+class VersionLister(Protocol):
+    def list_versions(self, subject_id: str) -> list[ListedVersion]:
+        """Return the subject's stored versions, newest first. Empty when it holds none."""
+        ...
 
 
 @dataclass(frozen=True)

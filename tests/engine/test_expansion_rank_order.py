@@ -18,6 +18,7 @@ from search.engine.region.phase_rank_bind import _phase_prune_and_rank
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.derive import _EXPANSION_RANK_EPSILON, derive_shapes
 from search.engine.shape import ShapeDraft
+from tests.engine._builders import place_sets
 from tests.engine._discover_fixtures import _std_sv_arcs
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.fixtures import FakeGraph
@@ -197,7 +198,7 @@ def _state(
 ) -> ResolveState:
     """A minimal ResolveState carrying only what _phase_prune_and_rank reads,
     following test_bind_slot_reserve.py's `_state` convention. entities
-    non-empty and place_children_by_name empty together skip the
+    non-empty and no place set that expands together skip the
     sibling-availability probe, leaving the graph field unused."""
     return ResolveState(
         variable=variable,
@@ -330,9 +331,8 @@ class TestScoreFloorReadsTopicRootScore:
             expansion_root_score=0.62,
         )
         state = _state([_shape("syphilis", score=0.6319), expansion])
-        state.rcl = Recall(
-            candidates=[], resolutions={}, resolved_entity_names={"Kenya": "country/KEN"}
-        )
+        state.rcl = Recall(candidates=[], resolutions={})
+        state.place_sets = place_sets({"Kenya": "country/KEN"})
         result = asyncio.run(_phase_prune_and_rank(state))
         assert result is not None
         assert result.status == "no_data"
@@ -395,9 +395,8 @@ class TestMeasureClassConflictLeavesTheMenu:
 
     def test_a_menu_the_check_empties_resolves_no_variable(self):
         state = _state(self._shapes()[1:], variable="HIV prevalence")
-        state.rcl = Recall(
-            candidates=[], resolutions={}, resolved_entity_names={"Kenya": "country/KEN"}
-        )
+        state.rcl = Recall(candidates=[], resolutions={})
+        state.place_sets = place_sets({"Kenya": "country/KEN"})
         result = asyncio.run(_phase_prune_and_rank(state))
         assert result is not None
         assert result.status == "no_data"

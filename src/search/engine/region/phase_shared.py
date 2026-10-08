@@ -331,7 +331,7 @@ async def _role_incompatible_flagged_match(state: ResolveState) -> Spec:
         # pairs, as on the definite path below.
         measure_elected_properties=state.measure_elected_properties,
         defaulted_properties=state.defaulted_properties,
-        named_groups=request_named_groups(state),
+        named_groups=request_named_groups(state, state.place.roles),
         walked=state.walked,
     )
     return apply_declaration_version(spec, state.bindings)

@@ -2,7 +2,11 @@
 
 Authored axis scale and range pass through. Defaults are linear and
 unbounded. Stat-card change periods must be observed. The default derivation
-is `difference`.
+is `difference`. A stat card with a change shows its headline at the change's
+end period, and one without at its latest observed period.
+
+The builders read period labels. `assembler.rolling` resolves an intent's
+relative periods before the builders see it.
 
 `note_narration` is frameless and carries text. `source_card` resolves a
 frame and lists every distinct provenance ref."""
@@ -12,17 +16,18 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import cast
 
-from dfo_frame_grammar import STAT_VAR_COLUMN
+from dfo_frame_grammar import STAT_VAR_COLUMN, UNIT_COLUMN
 
-from assembler.bind import BoundSeries, role_columns
+from assembler.bind import BoundSeries, role_columns, series_label_parts
 from assembler.errors import BindingInvalid, ConstraintViolation
 from assembler.frame_view import dimension_columns, facet_dimension_names
+from assembler.limits import LABEL_MAX, joined_label
 from assembler.ports import ResolvedFrame
 from assembler.resolve import ResolvedSeries
 from assembler.select import has_arrayed_dimension
+from materialise.unit_cells import composed_unit_words
 
 _TITLE_MAX = 200
-_LABEL_MAX = 200
 _TEXT_MAX = 2000
 # The label a table row carries for a dimension its series leaves null.
 _ABSENT_COORDINATE_LABEL = "Not specified"
@@ -72,14 +77,20 @@ def _build_line_chart(
     ]
     if len(stat_var_labels) > 1:
         # `BoundSeries.label` names entity roles alone, so lines that differ only on stat_var
-        # would share a label. Each line leads with its own stat-var label.
+        # would share a label. Each line leads with its own stat-var label, fitted with the
+        # role labels in one pass so each role stays in the label.
         for payload, resolved, bound in zip(payload_series, series, bound_series, strict=True):
+            coordinates = dict(resolved.coordinates)
             stat_var_label = _coordinate_label(
-                labels=resolved_frame.labels,
-                value=dict(resolved.coordinates).get(STAT_VAR_COLUMN),
+                labels=resolved_frame.labels, value=coordinates.get(STAT_VAR_COLUMN)
             )
             if bound.label != stat_var_label:
-                payload["label"] = f"{stat_var_label} / {bound.label}"[:_LABEL_MAX]
+                role_labels = series_label_parts(
+                    coordinates=coordinates,
+                    columns=cast("Sequence[str]", resolved_frame.frame["columns"]),
+                    labels=resolved_frame.labels,
+                )
+                payload["label"] = joined_label(stat_var_label, *role_labels, joiner=" / ")
     observed_periods = frozenset(
         cast(str, point["period"])
         for one in bound_series
@@ -93,7 +104,7 @@ def _build_line_chart(
         "series": payload_series,
         "x_axis": {"window": {"start": str(window["start"]), "end": str(window["end"])}},
         "y_axis": {
-            "label": y_label[:_LABEL_MAX],
+            "label": y_label[:LABEL_MAX],
             "scale": scale,
             "range": range_,
         },
@@ -167,7 +178,7 @@ def _build_bar_chart(
         "series": payload_series,
         "category_axis": category_axis,
         "value_axis": {
-            "label": y_label[:_LABEL_MAX],
+            "label": y_label[:LABEL_MAX],
             "scale": scale,
             "range": range_,
         },
@@ -464,7 +475,19 @@ def _coordinate_label(*, labels: Mapping[str, str], value: str | None) -> str:
     """A table row's label for one coordinate value."""
     if value is None:
         return _ABSENT_COORDINATE_LABEL
-    return labels.get(value, value)[:_LABEL_MAX]
+    return labels.get(value, value)[:LABEL_MAX]
+
+
+def _unit_dimension_label(
+    *, labels: Mapping[str, str], value: str | None, bound_unit: object
+) -> str:
+    """A table row's label for its `unit` coordinate. A composed unit, whose coordinate is its
+    JCS key text, reads `<numerator> per <denominator>` from the bound unit's labelled sides,
+    as `joined_label` fits them."""
+    words = composed_unit_words(bound_unit)
+    if words is None:
+        return _coordinate_label(labels=labels, value=value)
+    return joined_label(*words, joiner=" per ")
 
 
 def _build_table(
@@ -483,7 +506,7 @@ def _build_table(
     title_text = cast(str | None, merged_intent.get("title")) or ", ".join(selected_names)
 
     columns = [
-        {"key": name, "label": resolved_frame.labels.get(name, name)[:_LABEL_MAX]}
+        {"key": name, "label": resolved_frame.labels.get(name, name)[:LABEL_MAX]}
         for name in dimension_names
     ] + [{"key": "period", "label": "Period"}, {"key": "value", "label": "Value"}]
 
@@ -502,6 +525,12 @@ def _build_table(
             name: _coordinate_label(labels=resolved_frame.labels, value=coordinates.get(name))
             for name in dimension_names
         }
+        if UNIT_COLUMN in dimensions:
+            dimensions[UNIT_COLUMN] = _unit_dimension_label(
+                labels=resolved_frame.labels,
+                value=coordinates.get(UNIT_COLUMN),
+                bound_unit=bound.unit,
+            )
         for name in extra_role_names:
             value = coordinates.get(name)
             if value is not None:
@@ -541,7 +570,14 @@ def _build_stat_card(
     bound_series: Sequence[BoundSeries],
 ) -> tuple[dict[str, object], frozenset[str]]:
     primary = bound_series[0]
-    headline = _headline_point(points=primary.points)
+    observed_values = _series_observed_values(points=primary.points)
+    change = _stat_card_change(merged_intent=merged_intent, observed_values=observed_values)
+    # A card with a change shows the value its change ends at, so the two agree.
+    headline = (
+        _headline_point(points=primary.points)
+        if change is None
+        else _point_at(points=primary.points, period=cast("list[str]", change["basis"])[1])
+    )
     stat_var_labels = _stat_var_labels(resolved_frame=resolved_frame, series=series)
     y_label = _axis_label(stat_var_labels=stat_var_labels)
     title_text = cast(str | None, merged_intent.get("title")) or _default_title(
@@ -551,12 +587,10 @@ def _build_stat_card(
         "type": "stat_card",
         "title": {"text": title_text[:_TITLE_MAX], "authorship": "model"},
         "value": cast(float, headline["value"]),
-        "label": primary.label[:_LABEL_MAX],
+        "label": primary.label[:LABEL_MAX],
         "period": cast(str, headline["period"]),
         "unit": primary.unit,
     }
-    observed_values = _series_observed_values(points=primary.points)
-    change = _stat_card_change(merged_intent=merged_intent, observed_values=observed_values)
     if change is not None:
         component["change"] = change
     # The same windowed set `_stat_card_change` validated `change.basis`
@@ -639,7 +673,7 @@ def _series_payload(
 ) -> dict[str, object]:
     return {
         "id": bound.id,
-        "label": bound.label[:_LABEL_MAX],
+        "label": bound.label[:LABEL_MAX],
         "unit": bound.unit,
         "source_ref": source_id_by_raw_ref[bound.source_ref],
         "points": list(bound.points),

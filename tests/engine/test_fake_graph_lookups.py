@@ -162,8 +162,6 @@ def test_expand_place_ungeoregion_from_shared_fixture() -> None:
         "country/SWZ",
         "country/ZAF",
     ]
-    assert expansion.total_members == 5
-    assert expansion.clamped is False
 
 
 def test_expand_place_mapped_type_empty_membership_from_shared_fixture() -> None:
@@ -173,7 +171,6 @@ def test_expand_place_mapped_type_empty_membership_from_shared_fixture() -> None
     expansion = expand_place(dcid, "UNGeoRegion", graph=g)
     assert expansion is not None
     assert expansion.children == []
-    assert expansion.total_members == 0
 
 
 @pytest.mark.parametrize(

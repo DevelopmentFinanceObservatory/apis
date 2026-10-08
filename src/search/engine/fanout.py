@@ -199,6 +199,7 @@ def _leg_parsed_form(
     source_text: str | None,
     provenance: str | None = None,
     entity_roles: Mapping[str, list[DoorRole]] | None = None,
+    member_entities: Collection[str] = (),
     operations: Sequence[Operation] = (),
     open_axes: Collection[RoleAxis] = (),
 ) -> ParsedPart | None:
@@ -206,7 +207,8 @@ def _leg_parsed_form(
 
     Each entity appears once per distinct axis the door gave it, with that axis as
     `role_text`, as the parsed door reads a name repeated on opposite axes. An entity
-    without an axis appears bare. `provenance` is the dataset the leg answers from, so a
+    without an axis appears bare. An entity of `member_entities` states `members`.
+    `provenance` is the dataset the leg answers from, so a
     reposted part answers from it. The leg's own open roles appear as their axes in
     `open_roles`, and the axes its operations open ride on the operations. Return
     `None` when `ParsedPart` bounds reject any input.
@@ -219,6 +221,7 @@ def _leg_parsed_form(
                 ParsedEntity(
                     text=e,
                     role_text=role_text_for_axis(axis) if axis is not None else None,
+                    members=e in member_entities,
                 )
                 for e in entities
                 for axis in (dict.fromkeys(role.axis for role in roles.get(e) or ()) or [None])
@@ -245,6 +248,7 @@ def _leg_restatement(
     provenance: str | None = None,
     directional: bool = False,
     entity_roles: Mapping[str, list[DoorRole]] | None = None,
+    member_entities: Collection[str] = (),
     operations: Sequence[Operation] = (),
     open_axes: Collection[RoleAxis] = (),
 ) -> ParsedPart | None:
@@ -273,6 +277,7 @@ def _leg_restatement(
         source_text=source_text,
         provenance=provenance,
         entity_roles=roles,
+        member_entities=member_entities,
         operations=operations,
         open_axes=open_axes,
     )
@@ -289,6 +294,7 @@ def _placeholder_no_data(
     provenance: str | None = None,
     role_query: str | None = None,
     entity_roles: Mapping[str, list[DoorRole]] | None = None,
+    member_entities: Collection[str] = (),
     operations: tuple[Operation, ...] = (),
     open_axes: Collection[RoleAxis] = (),
 ) -> RegionResult:
@@ -307,6 +313,7 @@ def _placeholder_no_data(
         provenance=provenance,
         directional=bool(role_query),
         entity_roles=entity_roles,
+        member_entities=member_entities,
         operations=operations,
         open_axes=open_axes,
     )
@@ -399,6 +406,7 @@ async def _stream_one_variable(
     stream_observations: bool = False,
     role_query: str | None = None,
     entity_roles: dict[str, list[DoorRole]] | None = None,
+    member_entities: frozenset[str] = frozenset(),
     unit_text: str | None = None,
     unit_text_best_effort: bool = False,
     source_text: str | None = None,
@@ -422,8 +430,9 @@ async def _stream_one_variable(
     refusal (`DeclaredDefaultUnsupportedError`) and the conversion-table failures in
     `RATE_TABLE_REFUSALS` always fail the response. The qualifier sidecar is appended to the
     recall/restatement text while `v` stays bare for structured resolution. `provenance`
-    names the dataset the leg answers from. `entity_roles` also supplies the axes written
-    into the leg's restatement, which names the dataset its identity binds or its
+    names the dataset the leg answers from. `member_entities` are the entities asked for as
+    their members (`ResolveState.member_entities`), which the restatement states.
+    `entity_roles` also supplies the axes written into the leg's restatement, which names the dataset its identity binds or its
     no-data run settled on (`answered_provenance`). `operations` ride on the final
     region and its restatement, their phrases join `dropped_qualifier_phrases` for this leg's
     bind alone, and the region opens the slots they run over. `open_axes` are the leg's own
@@ -448,6 +457,7 @@ async def _stream_one_variable(
             detect_query=variable_text,
             role_query=role_query if role_query is not None else query,
             entity_roles=entity_roles,
+            member_entities=member_entities,
             unit_text=unit_text,
             unit_text_best_effort=unit_text_best_effort,
             source_text=source_text,
@@ -510,6 +520,7 @@ async def _stream_one_variable(
             provenance=provenance,
             role_query=role_query if role_query is not None else query,
             entity_roles=entity_roles,
+            member_entities=member_entities,
             operations=operations,
             open_axes=open_axes,
         )
@@ -533,6 +544,7 @@ async def _stream_one_variable(
                 entity_roles=entity_roles,
             ),
             entity_roles=entity_roles,
+            member_entities=member_entities,
             operations=operations,
             open_axes=open_axes,
         )
@@ -548,6 +560,7 @@ async def _stream_one_variable(
                 source_text=source_text,
                 provenance=answered,
                 entity_roles=entity_roles,
+                member_entities=member_entities,
                 operations=operations,
                 open_axes=open_axes,
             ),
@@ -574,10 +587,12 @@ class _LegOverrides:
     query: str
     pre_resolved: dict[str, Resolution] | None
     entity_roles: dict[str, list[DoorRole]] | None
+    member_entities: frozenset[str]
     per_variable_entities: list[list[str]] | None
     per_variable_date_requests: list[DateRequest | None] | None
     per_variable_role_queries: list[str] | None
     per_variable_entity_roles: list[dict[str, list[DoorRole]]] | None
+    per_variable_member_entities: list[frozenset[str]] | None
     per_variable_unit_texts: list[str | None] | None
     unit_text_best_effort: bool
     per_variable_source_texts: list[str | None] | None
@@ -684,6 +699,12 @@ def _leg_entity_roles(overrides: _LegOverrides, i: int) -> dict[str, list[DoorRo
     return overrides.entity_roles
 
 
+def _leg_member_entities(overrides: _LegOverrides, i: int) -> frozenset[str]:
+    if overrides.per_variable_member_entities is not None:
+        return overrides.per_variable_member_entities[i]
+    return overrides.member_entities
+
+
 def _launch_variable_tasks(
     unique: list[str],
     overrides: _LegOverrides,
@@ -755,6 +776,7 @@ def _launch_variable_tasks(
                     else None
                 ),
                 entity_roles=_leg_entity_roles(overrides, i),
+                member_entities=_leg_member_entities(overrides, i),
                 unit_text=_leg_unit_text(overrides, i),
                 unit_text_best_effort=overrides.unit_text_best_effort,
                 source_text=_leg_source_text(overrides, i),
@@ -835,10 +857,12 @@ async def _run_variables_streaming(
     include_observations: bool = False,
     stream_observations: bool = False,
     entity_roles: dict[str, list[DoorRole]] | None = None,
+    member_entities: frozenset[str] = frozenset(),
     per_variable_entities: list[list[str]] | None = None,
     per_variable_date_requests: list[DateRequest | None] | None = None,
     per_variable_role_queries: list[str] | None = None,
     per_variable_entity_roles: list[dict[str, list[DoorRole]]] | None = None,
+    per_variable_member_entities: list[frozenset[str]] | None = None,
     per_variable_unit_texts: list[str | None] | None = None,
     unit_text_best_effort: bool = False,
     per_variable_source_texts: list[str | None] | None = None,
@@ -873,8 +897,9 @@ async def _run_variables_streaming(
     region and restatement and join its bind's dropped phrases; `None` gives every
     leg none. `per_variable_provenances` gives each leg the dataset it is asked from;
     `None` asks every leg from none. `per_variable_open_axes` gives each leg its own open
-    roles, and `None` gives every leg none. `query_text` is supplied only for a
-    single-variable request.
+    roles, and `None` gives every leg none. `member_entities` are the entities every leg
+    is asked the members of, and `per_variable_member_entities` gives each leg its own.
+    `query_text` is supplied only for a single-variable request.
     `unit_text_best_effort` marks every leg's unit text as the raw-text door's typed phrase.
     """
     overrides = _LegOverrides(
@@ -884,10 +909,12 @@ async def _run_variables_streaming(
         query=query,
         pre_resolved=pre_resolved,
         entity_roles=entity_roles,
+        member_entities=member_entities,
         per_variable_entities=per_variable_entities,
         per_variable_date_requests=per_variable_date_requests,
         per_variable_role_queries=per_variable_role_queries,
         per_variable_entity_roles=per_variable_entity_roles,
+        per_variable_member_entities=per_variable_member_entities,
         per_variable_unit_texts=per_variable_unit_texts,
         unit_text_best_effort=unit_text_best_effort,
         per_variable_source_texts=per_variable_source_texts,
@@ -997,6 +1024,7 @@ async def _run_variables_streaming(
                 provenance=_leg_provenance(overrides, i),
                 role_query=_leg_role_query(overrides, i),
                 entity_roles=_leg_entity_roles(overrides, i),
+                member_entities=_leg_member_entities(overrides, i),
                 operations=_leg_operations(overrides, i),
                 open_axes=_leg_open_axes(overrides, i),
             )

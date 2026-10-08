@@ -1,13 +1,15 @@
 """Test dataset declaration parsing, the checks that tie declarations to StatVar rows, and
 absent-observation readings.
 
-The packaged index declares OECD DAC1, CRS and the opt-in imputed multilateral sectors table.
-DAC1 shares the CRS flow and commitment five-tuples, and the imputed table sits alone on its own.
+The packaged index declares CRS, OECD DAC1, OECD DAC2a, OECD DAC2b and the opt-in imputed
+multilateral sectors table, each the provider's account of a flow. DAC1 shares the CRS flow and
+commitment five-tuples, DAC2a shares the CRS and DAC1 flow five-tuple and the imputed table's,
+and DAC2b shares the CRS, DAC1 and DAC2a flow five-tuple.
 CRS and the imputed table read an absent observation as zero, which the rows in
 `fixtures/absent_observation_evidence.json` support: each is one (financingProvider,
 financingRecipient, year) cell read from the dev graph's observation table, where the source
-reports an explicit zero for one member of a five-tuple and no row for most others. DAC1 and an
-undeclared source read as unknown."""
+reports an explicit zero for one member of a five-tuple and no row for most others. DAC1,
+DAC2a, DAC2b and an undeclared source read as unknown."""
 
 from __future__ import annotations
 
@@ -31,6 +33,8 @@ from .conftest import FIXTURE_PATH
 _CRS_PROVENANCE = "provenance/OECDCreditorReportingSystem"
 _IMPUTED_PROVENANCE = "provenance/ONEImputedMultilateralSectors"
 _DAC1_PROVENANCE = "provenance/OECDDAC1"
+_DAC2A_PROVENANCE = "provenance/OECDDAC2A"
+_DAC2B_PROVENANCE = "provenance/OECDDAC2B"
 _EVIDENCE_PATH = FIXTURE_PATH.parent / "absent_observation_evidence.json"
 _EMPTY_STAMP = IndexStamp(
     graph_endpoint="https://fake.example",
@@ -56,6 +60,7 @@ def _with_imputed_dataset() -> dict:
             "description": "A test table.",
             "opt_in": True,
             "absent_observation": "zero",
+            "account": "provider",
             "rank": 10,
             "invariants": {"crsTypeOfFlow": "CRSTypeOfFlow10"},
         }
@@ -74,6 +79,7 @@ def test_loader_parses_a_dataset_declaration(code_index: CodeIndex):
             description="A test table.",
             opt_in=False,
             absent_observation="zero",
+            account="provider",
             rank=0,
         )
     }
@@ -93,11 +99,15 @@ def test_parse_index_reads_a_document_as_load_index_reads_its_file(code_index: C
     assert parsed.stamp == code_index.stamp
 
 
-def test_loader_rejects_an_absent_observation_outside_the_vocabulary():
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("absent_observation", "not_reported"), ("account", "lender"), ("account", None)],
+)
+def test_loader_rejects_a_value_outside_a_fields_vocabulary(field: str, value: object):
     payload = _fixture()
-    payload["datasets"][0]["absent_observation"] = "not_reported"
+    payload["datasets"][0][field] = value
 
-    with pytest.raises(IndexFormatError, match="not_reported"):
+    with pytest.raises(IndexFormatError, match=f"{field}={value!r}"):
         parse_index(payload)
 
 
@@ -136,7 +146,16 @@ def test_loader_rejects_two_datasets_of_one_rank():
 
 @pytest.mark.parametrize(
     "field",
-    ["provenance", "label", "description", "opt_in", "absent_observation", "rank", "invariants"],
+    [
+        "provenance",
+        "label",
+        "description",
+        "opt_in",
+        "absent_observation",
+        "account",
+        "rank",
+        "invariants",
+    ],
 )
 def test_loader_rejects_a_dataset_missing_a_field(field: str):
     payload = _fixture()
@@ -295,18 +314,24 @@ def test_a_codeindex_built_with_no_datasets_at_all_reads_unknown():
     assert index.stamp.coverage_build is None
 
 
-def test_the_packaged_index_declares_dac1_crs_and_the_opt_in_imputed_sectors_dataset():
+def test_the_packaged_index_declares_crs_and_the_dac_tables_and_the_opt_in_imputed_dataset():
     index = load_index(default_index_path())
 
     assert {
-        provenance: (dataset.opt_in, dataset.absent_observation, dataset.rank)
+        provenance: (dataset.opt_in, dataset.absent_observation, dataset.account, dataset.rank)
         for provenance, dataset in index.datasets.items()
     } == {
-        _CRS_PROVENANCE: (False, "zero", 0),
-        _IMPUTED_PROVENANCE: (True, "zero", 10),
-        _DAC1_PROVENANCE: (False, "unknown", 20),
+        _CRS_PROVENANCE: (False, "zero", "provider", 0),
+        _IMPUTED_PROVENANCE: (True, "zero", "provider", 10),
+        _DAC1_PROVENANCE: (False, "unknown", "provider", 20),
+        _DAC2A_PROVENANCE: (False, "unknown", "provider", 30),
+        _DAC2B_PROVENANCE: (False, "unknown", "provider", 40),
     }
     assert index.datasets[_DAC1_PROVENANCE].invariants == {}
+    assert index.datasets[_DAC2A_PROVENANCE].invariants == {}
+    assert index.datasets[_DAC2A_PROVENANCE].label == "OECD DAC2a"
+    assert index.datasets[_DAC2B_PROVENANCE].invariants == {}
+    assert index.datasets[_DAC2B_PROVENANCE].label == "OECD DAC2b"
     assert index.datasets[_CRS_PROVENANCE].invariants == {}
     assert index.datasets[_DAC1_PROVENANCE].label == "OECD DAC1"
     assert index.datasets[_IMPUTED_PROVENANCE].invariants == {
@@ -319,9 +344,10 @@ def test_the_packaged_index_declares_dac1_crs_and_the_opt_in_imputed_sectors_dat
 
 def test_every_packaged_row_belongs_to_the_family_its_own_keys_select():
     """Each row's constraint properties select the family that holds it
-    (`CodeIndex.family_of`), and that family's datasets are the row's own. The CRS and DAC1
-    share five-tuples under different codes, so each such five-tuple holds two families of
-    one dataset each."""
+    (`CodeIndex.family_of`), and that family's datasets are the row's own. CRS, DAC1, DAC2a
+    and DAC2b share five-tuples under different codes, and DAC2a's one `attributedAmount` row
+    declares fewer properties than the imputed rows, so each such five-tuple holds one family
+    per dataset."""
     index = load_index(default_index_path())
 
     assert index.stamp.coverage_build
@@ -339,12 +365,23 @@ def test_every_packaged_row_belongs_to_the_family_its_own_keys_select():
         for families in index.families_by_five_tuple.values()
         if len(families) > 1
     }
-    assert shared == {((_CRS_PROVENANCE,), (_DAC1_PROVENANCE,))}
+    assert shared == {
+        ((_CRS_PROVENANCE,), (_DAC1_PROVENANCE,)),
+        (
+            (_CRS_PROVENANCE,),
+            (_DAC1_PROVENANCE,),
+            (_DAC2A_PROVENANCE,),
+            (_DAC2B_PROVENANCE,),
+        ),
+        ((_DAC1_PROVENANCE,), (_DAC2A_PROVENANCE,)),
+        ((_IMPUTED_PROVENANCE,), (_DAC2A_PROVENANCE,)),
+    }
 
 
 def test_the_packaged_index_pins_the_constant_slots_of_single_aid_type_five_tuples_only():
-    """The imputed table holds one aid type, and DAC1 publishes grant equivalents as a share
-    of GNI for total ODA alone."""
+    """The imputed table holds one aid type, DAC1 publishes grant equivalents as a share of
+    GNI for total ODA alone, and DAC2a publishes its ratios for total ODA alone and one
+    attributed amount."""
     index = load_index(default_index_path())
 
     assert {
@@ -357,6 +394,8 @@ def test_the_packaged_index_pins_the_constant_slots_of_single_aid_type_five_tupl
             "dac2aAidType": "DAC2aAidType106",
         },
         (_DAC1_PROVENANCE, "grantEquivalent"): {"dac1AidType": "DAC1AidType1010"},
+        (_DAC2A_PROVENANCE, "amount"): {"dac2aAidType": "DAC2aAidType206"},
+        (_DAC2A_PROVENANCE, "attributedAmount"): {"dac2aAidType": "DAC2aAidType106"},
     }
 
 

@@ -918,6 +918,7 @@ def _index(name: str, populations: Sequence[Population]) -> CodeIndex:
                 description=population.dataset,
                 opt_in=False,
                 absent_observation="zero",
+                account="provider",
                 rank=rank,
                 invariants={},
             )

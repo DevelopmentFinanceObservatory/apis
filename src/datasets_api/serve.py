@@ -15,7 +15,8 @@ presentation unavailable until a later mint.
 
 A definition write holds up to two `dataset_store` borrows, one per artifact transaction. At four
 concurrent calls each, mint and definition retrieval can need 16 borrows. Presentation frames and
-components can add eight. The pool defaults to 10 connections and a 30-second borrow timeout.
+components can add eight, and the frame refresh's eight threads one read each. The pool
+defaults to 10 connections and a 30-second borrow timeout.
 The semaphore bounds rematerialisation. The pool bounds borrows. Presentation has a
 separate pool, while its frame and component reads share `dataset_store`. Frame1 and the requested
 rendering overlap. The `store` timing includes both, and frame1 encoding runs inside it. A
@@ -64,7 +65,8 @@ from datasets_api.manifest_models import (
 )
 from datasets_api.mint_models import MintOptions
 from datasets_api.origin import (
-    origin_reads,
+    refuse_unserved_empty_probe,
+    refuse_unserved_selection,
     un_unavailable_warnings,
     withheld_warnings,
 )
@@ -103,6 +105,7 @@ from materialise import (
 from materialise.bundle import ReproducingCall
 from materialise.content_version import MintPreimage, recipe_dependency_fingerprint
 from materialise.convert import ConversionRecord
+from materialise.errors import DefaultFacetUndefinedError
 from materialise.graph import GraphReader
 from materialise.provenance_doc import (
     SourceCitation,
@@ -111,7 +114,7 @@ from materialise.provenance_doc import (
 from materialise.rate_tables import RateTableCache
 from materialise.revision import RevisionReader
 from materialise.statistics import SeriesStatisticsSink, compute_series_statistics_table
-from origin_catalogue import current_catalogue
+from origin_catalogue import current_catalogue, recording_un_blocked_places
 from series_coverage.index import CoverageIndex, Estimate
 from spec_registry.reader import StoredDefinition
 
@@ -149,11 +152,11 @@ def raw_fetch_guard(estimate: Estimate, *, floor: int) -> int:
     return max(floor, math.ceil(estimate.rows * _RAW_FETCH_GUARD_MARGIN))
 
 
-def _provenance_ref(result: MaterialisationResult) -> str:
-    """The `provenance` axis's own dispatched ref off an already-finished
-    materialisation's trace, read back without a second probe.
-    """
-    return cast(str, next(f["ref"] for f in result.trace.facets if f["axis"] == "provenance"))
+def provenance_refs_of(facets: Iterable[Mapping[str, object]]) -> list[str]:
+    """The provenance refs live or stored `trace.facets` entries select: the one a
+    materialisation dispatched, and none for one whose facet probe was empty
+    (`MaterialisationResult.probe_empty`), which selects no facet."""
+    return [cast(str, facet["ref"]) for facet in facets if facet["axis"] == "provenance"]
 
 
 def refs_from_resolved_stat_vars(entries: Iterable[Mapping[str, object]]) -> tuple[str, ...]:
@@ -495,7 +498,8 @@ class DefinitionPrewrite:
     # `datasets_api.origin`'s `withheld_by_registry` and `un_system_unavailable` warnings for this
     # call, found once here and joined to every manifest the write half builds.
     origin_warnings: tuple[WarningModel, ...]
-    provenance_ref: str
+    # The provenance refs of this call's trace (`provenance_refs_of`).
+    provenance_refs: list[str]
     spec_dict: dict[str, object]
     # All requests share a role signature, so rendering uses the first request's roles.
     entity_columns: tuple[str, ...]
@@ -579,53 +583,78 @@ def prewrite_definition(
     raises `MaterialisationUsageError` before fetching. Subject-only requests may omit it.
     `progress` forwards worker progress. Profile CPU is recorded separately from materialisation.
 
+    A result whose facet probe was empty (`MaterialisationResult.probe_empty`) refuses here,
+    before anything is written, when the UN could not serve its places, the registry
+    withholds their data, or the read that would tell failed
+    (`origin.refuse_unserved_empty_probe`). Otherwise it is the empty result, with zero rows,
+    `empty_result`, and a citation with no source. A member's `default_facet_undefined`
+    refusal becomes the UN or registry refusal by the same two checks
+    (`origin.refuse_unserved_selection`).
+
     The citation read takes each source's documentation only when `documented` and the
     version is not on record in `snapshot_reader`. A re-mint renders from the stored citation
     (`bundle_citations`), and the options route passes `documented=False`.
     """
-    with (
-        origin_reads(graph, availability=sdmx, deadline=deadline) as un_blocked,
-        bounded_materialise_slot(
-            materialise_semaphore, wait_seconds=materialise_wait_seconds, deadline=deadline
-        ),
-        phase("materialise"),
-    ):
-        result = materialise_group(
-            requests,
-            sdmx=sdmx,
-            graph=graph,
-            revision_reader=revision_reader,
-            ceiling=ceiling,
-            materialiser_build=materialiser_build,
-            capability_version=capability_version,
-            enrichment=enrichment,
-            member_concurrency=member_concurrency,
-            rate_cache=rate_cache,
-            coverage=coverage_index,
-            precomputed_probe=precomputed_probe,
-            deadline=deadline,
-            progress=progress,
-        )
+    with recording_un_blocked_places() as un_blocked:
+        try:
+            with (
+                bounded_materialise_slot(
+                    materialise_semaphore, wait_seconds=materialise_wait_seconds, deadline=deadline
+                ),
+                phase("materialise"),
+            ):
+                result = materialise_group(
+                    requests,
+                    sdmx=sdmx,
+                    graph=graph,
+                    revision_reader=revision_reader,
+                    ceiling=ceiling,
+                    materialiser_build=materialiser_build,
+                    capability_version=capability_version,
+                    enrichment=enrichment,
+                    member_concurrency=member_concurrency,
+                    rate_cache=rate_cache,
+                    coverage=coverage_index,
+                    precomputed_probe=precomputed_probe,
+                    deadline=deadline,
+                    progress=progress,
+                )
+        except DefaultFacetUndefinedError as exc:
+            if exc.request is not None:
+                refuse_unserved_selection(
+                    un_blocked, exc.request, graph, availability=sdmx, deadline=deadline
+                )
+            raise
+        if result.probe_empty:
+            refuse_unserved_empty_probe(
+                un_blocked, requests, graph, availability=sdmx, deadline=deadline
+            )
     record_elapsed("profile", result.output_profile_seconds)
-    provenance_ref = _provenance_ref(result)
+    provenance_refs = provenance_refs_of(result.trace.facets)
     persisted_body = _persisted_body(
         snapshot_reader, subject_id=stored.spec_id, content_version=result.content_version
     )
     with phase("citation"):
         source_citations = _prewrite_citations(
             graph,
-            [provenance_ref],
+            provenance_refs,
             documented=documented and persisted_body is None,
             deadline=deadline,
             settings=settings,
             coverage_index=coverage_index,
         )
-    origin_warnings = withheld_warnings(
-        graph,
-        [(request, result.coverage) for request in requests],
-        default_scope=result.default_scope,
-        deadline=deadline,
-    ) + un_unavailable_warnings(un_blocked)
+    # `refuse_unserved_empty_probe` already made the withheld re-read an empty probe gets.
+    withheld = (
+        ()
+        if result.probe_empty
+        else withheld_warnings(
+            graph,
+            [(request, result.coverage) for request in requests],
+            default_scope=result.default_scope,
+            deadline=deadline,
+        )
+    )
+    origin_warnings = withheld + un_unavailable_warnings(un_blocked)
     spec_dict: dict[str, object] = {
         "schema_version": stored.schema_version,
         "spec_id": stored.spec_id,
@@ -635,7 +664,7 @@ def prewrite_definition(
         stored=stored,
         materialisation=result,
         artifacts=[],
-        provenance_refs=[provenance_ref],
+        provenance_refs=provenance_refs,
         source_citations=source_citations,
         prepared_at=_prepared_now(),
         capability_version=capability_version,
@@ -651,7 +680,7 @@ def prewrite_definition(
         manifest=manifest,
         source_citations=source_citations,
         origin_warnings=origin_warnings,
-        provenance_ref=provenance_ref,
+        provenance_refs=provenance_refs,
         spec_dict=spec_dict,
         entity_columns=requests[0].declared_roles,
         coverage_stamp=coverage_stamp,
@@ -741,7 +770,7 @@ def _write_definition_artifacts(
     stored = prewrite.stored
     result = prewrite.result
     source_citations = prewrite.source_citations
-    provenance_ref = prewrite.provenance_ref
+    provenance_refs = prewrite.provenance_refs
     spec_dict = prewrite.spec_dict
     entity_columns = prewrite.entity_columns
     persisted_body = prewrite.persisted_body
@@ -794,7 +823,7 @@ def _write_definition_artifacts(
                 data=result.series_statistics.data,
                 subject_id=stored.spec_id,
                 content_version=result.content_version,
-                source_names=cited_source_names([provenance_ref], render_citation.sources_by_ref()),
+                source_names=cited_source_names(provenance_refs, render_citation.sources_by_ref()),
                 prepared_at=render_prepared_at,
                 artifact_store=deps.artifact_store,
             )
@@ -828,7 +857,7 @@ def _write_definition_artifacts(
                 frame_chunks=result.frame_chunks(),
                 options=options,
                 spec=spec_dict,
-                provenance_refs=[provenance_ref],
+                provenance_refs=provenance_refs,
                 citations=citations,
                 reproducing_call=(
                     ReproducingCall(
@@ -918,7 +947,7 @@ def _write_definition_artifacts(
                 if collapse is not None and collapse.content_version is not None
                 else result.content_version
             ),
-            refs=[provenance_ref],
+            refs=provenance_refs,
             documentation_complete=documentation_complete,
             labels_complete=rendered.labels_complete,
         )
@@ -961,7 +990,7 @@ def _write_definition_artifacts(
             data=collapsed_result.series_statistics.data,
             subject_id=stored.spec_id,
             content_version=collapsed_result.content_version,
-            source_names=cited_source_names([provenance_ref], render_citation.sources_by_ref()),
+            source_names=cited_source_names(provenance_refs, render_citation.sources_by_ref()),
             prepared_at=render_prepared_at,
             artifact_store=deps.artifact_store,
         )
@@ -972,7 +1001,7 @@ def _write_definition_artifacts(
             stored=stored,
             materialisation=collapsed_result,
             artifacts=[artifact, collapsed_statistics_artifact],
-            provenance_refs=[provenance_ref],
+            provenance_refs=provenance_refs,
             source_citations=source_citations,
             prepared_at=render_prepared_at,
             capability_version=deps.capability_version,
@@ -1001,7 +1030,7 @@ def _write_definition_artifacts(
             stored=stored,
             materialisation=result,
             artifacts=[artifact, statistics_artifact],
-            provenance_refs=[provenance_ref],
+            provenance_refs=provenance_refs,
             source_citations=source_citations,
             prepared_at=render_prepared_at,
             capability_version=deps.capability_version,

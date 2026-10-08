@@ -59,6 +59,7 @@ from datasets_api.shape import StatVarShape, resolve_shape
 from datasets_api.timings import phase
 from datasets_api.versions import HeadReader, MemberSignal
 from dc_sdmx import EntityFilter, SdmxClient
+from dfo_platform.named import cut
 from materialise import CollectionFacetProbe, MaterialisationRequest, probe_collection_facets
 from materialise.errors import (
     FacetNotAvailableError,
@@ -560,7 +561,7 @@ def _resolve_index_members(
         elected = index_family(code_index, query)
     except SourceNotInFamily as exc:
         raise FacetNotAvailableError(
-            f"spec {spec_id!r} binds provenance {exc.source!r}, which does not publish "
+            f"spec {cut(spec_id)!r} binds provenance {cut(exc.source)!r}, which does not publish "
             f"this five-tuple; it is published by {list(exc.candidates)!r}",
             pointer=_PROVENANCE_POINTER,
         ) from exc

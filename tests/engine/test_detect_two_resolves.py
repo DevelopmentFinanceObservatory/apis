@@ -27,6 +27,8 @@ from tests.origin_catalogue.fake_catalogue import (
     FakeCatalogue,
     provenance_row,
     restrictive_catalogue,
+    un_mirror,
+    un_variable,
 )
 
 _OURS_HOST = "ours.example.org"
@@ -37,13 +39,13 @@ _WHO = "undata/p/WHO"
 _CRS_VARIABLE = "Amount_FinancialFlow_Gross_Disbursement_Nominal_ODA"
 _BASE_MORTALITY = "Count_Death_Upto5Years_AsFractionOf_Count_BirthEvent_LiveBirth"
 _UN_MORTALITY = "undata/who/MORT_U5_RATE"
-_UN_UNREGISTERED = "undata/ilo/EMP_TEMP"
+_UN_NOT_HELD = "undata/ilo/EMP_TEMP"
 _WITHHELD = "Count_Death_Upto5Years_WithheldSource"
 
 
 def _catalogue(*, un_system_enabled: bool = True):
-    """Admits the CRS variable (DFO), the base mortality variable (WDI) and the WHO segment.
-    `_WITHHELD` is withheld and the ILO segment is not registered."""
+    """Admits the CRS variable (DFO), the base mortality variable (WDI) and the WHO variable
+    its UN tables hold. `_WITHHELD` is withheld and the UN tables hold no ILO variable."""
     return restrictive_catalogue(
         provenances=[
             provenance_row("provenance/OECDCreditorReportingSystem", DFO),
@@ -53,6 +55,9 @@ def _catalogue(*, un_system_enabled: bool = True):
         dfo_variables=[_CRS_VARIABLE],
         base_variables={_BASE_MORTALITY: ([_WDI], [])},
         withheld_variables=[_WITHHELD],
+        un_mirror=un_mirror(
+            {_UN_MORTALITY: un_variable("undata/who/SERIES-MORT_U5_RATE", name="Mortality")}
+        ),
         un_system_enabled=un_system_enabled,
     )
 
@@ -104,7 +109,7 @@ def test_a_refused_candidate_on_our_leg_leaves_its_slot_to_an_admitted_one() -> 
 def test_the_un_leg_keeps_admitted_un_candidates_before_its_own_cut() -> None:
     legs = DetectLegs(
         ours=(_sv(_BASE_MORTALITY, 0.7),),
-        un=(_sv(_UN_UNREGISTERED, 0.95), _sv(_CRS_VARIABLE, 0.9), _sv(_UN_MORTALITY, 0.8)),
+        un=(_sv(_UN_NOT_HELD, 0.95), _sv(_CRS_VARIABLE, 0.9), _sv(_UN_MORTALITY, 0.8)),
     )
 
     detection = admit_legs(legs, catalogue=_catalogue(), detect_k=1)
@@ -174,7 +179,7 @@ def test_each_leg_is_admitted_apart(monkeypatch, bind_catalogue) -> None:
     bind_catalogue(_catalogue())
     resolves = _Resolves(
         ours=_body((_BASE_MORTALITY, 0.7)),
-        un=_body((_UN_MORTALITY, 0.8), (_UN_UNREGISTERED, 0.9)),
+        un=_body((_UN_MORTALITY, 0.8), (_UN_NOT_HELD, 0.9)),
     )
     client = _live(monkeypatch, resolves)
 

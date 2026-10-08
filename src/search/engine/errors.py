@@ -21,31 +21,30 @@ from materialise.rate_tables import RateTableInvalidError
 class EngineInputError(Exception):
     """Deterministic input refusal, HTTP 400 by default, separate from infrastructure errors.
 
-    `code` selects the registry entry. An omitted code falls back to
-    `request_invalid`. Unknown-shape routing refusals omit it to prevent shape probing.
-    `status` sets the HTTP status. Optional `pointer`, `alternatives`, and `cause` map
-    to problem-detail extensions. `detail` overrides the registry sentence, then the
-    generic fallback. Code-less refusals suppress their message and explicit detail.
+    `message` is the text the caller reads, and a coded refusal serves it as the problem
+    `detail`. `code` selects the registry entry. An omitted code falls back to
+    `request_invalid` with the generic detail, which keeps the message off the wire.
+    Unknown-shape routing refusals omit it to prevent shape probing. `status` sets the
+    HTTP status. Optional `pointer`, `alternatives`, and `cause` map to problem-detail
+    extensions.
     """
 
     def __init__(
         self,
-        *args: object,
+        message: str,
+        *,
         code: str | None = None,
         status: int = 400,
         pointer: str | None = None,
         alternatives: list[Alternative] | None = None,
         cause: Cause | None = None,
-        detail: str | None = None,
-        **kwargs: object,
     ) -> None:
-        super().__init__(*args, **kwargs)
+        super().__init__(message)
         self.code = code
         self.status = status
         self.pointer = pointer
         self.alternatives = alternatives
         self.cause = cause
-        self.detail = detail
 
 
 class EngineInfraError(Exception):
@@ -162,8 +161,8 @@ class DeclaredDefaultUnsupportedError(EngineInputError):
     than degrade it to no data.
     """
 
-    def __init__(self, detail: str) -> None:
-        super().__init__(detail, code="facet_binding_unsupported", status=501, detail=detail)
+    def __init__(self, message: str) -> None:
+        super().__init__(message, code="facet_binding_unsupported", status=501)
 
 
 class DefaultScopeIndexSourcedError(Exception):

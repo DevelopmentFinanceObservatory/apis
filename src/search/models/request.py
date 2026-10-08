@@ -174,6 +174,24 @@ class ParsedEntity(StrictModel):
             "what a rendered sentence and any further restatement echo back."
         ),
     )
+    members: bool | None = Field(
+        default=None,
+        description=(
+            "true asks for the members of the set `text` names, each as its own series: "
+            "the countries of a continent or UN subregion, or the members of a group. It "
+            "has no effect on a single place. Text whose wording names members, such as "
+            "'EU member states', reads as true without the flag. With a pinned `dcid` it "
+            "is honoured for a Continent or UNGeoRegion node, and refuses request_invalid "
+            "for a group's own node, whose members a pin cannot supply. One part names a "
+            "set once: the same `text` posted with both values refuses request_invalid"
+        ),
+    )
+
+    @field_validator("members")
+    @classmethod
+    def _false_is_unset(cls, members: bool | None) -> bool | None:
+        """An entity asks for members or does not: a posted false is the field left out."""
+        return members or None
 
 
 class ParsedPart(StrictModel):

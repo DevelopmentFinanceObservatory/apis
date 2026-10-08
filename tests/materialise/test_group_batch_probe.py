@@ -24,7 +24,7 @@ from materialise import (
     materialise_group,
 )
 from materialise import facets as facets_module
-from materialise.errors import CollectionProbeCeilingExceededError, FacetNotAvailableError
+from materialise.errors import CollectionProbeCeilingExceededError
 from materialise.facets import (
     CollectionFacetProbe,
     CoverageAdmission,
@@ -422,23 +422,22 @@ def test_unbound_members_with_data_only_at_earth_fetch_earth():
     assert result.coverage.rows == 2
 
 
-def test_unbound_members_with_no_data_at_any_default_place_refuse_facet_not_available():
-    # A group binding no entity meets this refusal when no default place holds data, as a
-    # bound group with no data does.
+@pytest.mark.parametrize("bound", [False, True], ids=["default_scope", "bound_place"])
+def test_a_group_whose_every_probe_returns_no_candidate_is_the_empty_result(bound: bool):
+    # No default place and no bound place holds data for either member.
     graph = _RecordingGraph(child_places=_EARTH_COUNTRIES)
     sdmx, sdmx_requests = _about_sdmx({}, availability=graph.scope_availability())
+    members = [_about_request(_BARE_A, _COUNTRY_X), _about_request(_BARE_B, _COUNTRY_X)]
 
-    with pytest.raises(FacetNotAvailableError) as excinfo:
-        _group(
-            [
-                _unbound(_about_request(_BARE_A, _COUNTRY_X)),
-                _unbound(_about_request(_BARE_B, _COUNTRY_X)),
-            ],
-            sdmx=sdmx,
-            graph=graph,
-        )
+    result = _group(
+        members if bound else [_unbound(member) for member in members], sdmx=sdmx, graph=graph
+    )
 
-    assert excinfo.value.code == "facet_not_available"
+    assert result.probe_empty
+    assert result.coverage.rows == 0
+    assert [warning["code"] for warning in result.warnings] == ["empty_result"]
+    assert result.trace.facets == ()
+    assert [entry["observation_count"] for entry in result.trace.resolved_stat_vars] == [0, 0]
     assert sdmx_requests == []
 
 

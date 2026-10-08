@@ -549,6 +549,7 @@ def _publisher(
         description="A test table.",
         opt_in=opt_in,
         absent_observation="zero",
+        account="provider",
         rank=rank,
         invariants=invariants,
     )

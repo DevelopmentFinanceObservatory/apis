@@ -14,13 +14,28 @@ Admission works on provenance ids:
 - a UN agency provenance is admitted when the table lists it and the UN
   origin is enabled.
 
+A UN candidate is admitted when the UN tables hold it: a variable of a
+registered agency whose series the registry does not exclude, or a topic
+reaching one. `UnTables` holds those tables with the lookups request code
+reads them through, so a UN variable's facts cost no read of the UN
+deployment.
+
+A base variable held only under a provenance the registry excludes as
+`superseded_by_un_system` is superseded: it is withheld, and where the UN
+tables hold a variable standing for it, `Catalogue.successor` names that
+variable. With the UN origin on, a leaf with a successor counts toward a
+base Topic's admission as an admitted leaf does, so search can expand the
+Topic and replace its leaves.
+
 Where a DFO facet is present for a variable and place, every other facet
 there is withheld, so DFO's data wins over an upstream copy.
 
-A search candidate is refused only when the catalogue knows its data at the
-scan places sits under provenances it does not admit (`withheld_variables`).
-A base variable the catalogue does not list passes, since every facet read
-still admits facet by facet, and `data_commons` names base for it.
+A search candidate in `withheld_variables` is refused unless DFO holds it:
+its data at the scan places is known to sit under provenances the catalogue
+does not admit. A base variable
+the base variable table lists, or one that neither the withheld set nor a
+topic names, passes, since every facet read still admits facet by facet, and
+`data_commons` names base for it.
 """
 
 from __future__ import annotations
@@ -32,9 +47,9 @@ from typing import Final, Protocol
 from urllib.parse import urlsplit
 
 from origin_catalogue.origins import BASE, DFO, UN_ID_PREFIX, UN_SYSTEM, DataCommons
-from origin_catalogue.registry import UN_CROSS_AGENCY_TOPIC_FAMILIES
 from origin_catalogue.schema import CatalogueManifest, ScanLevel
 from origin_catalogue.topic_walk import TOPIC_EXPAND_MAX_MEMBERS
+from origin_catalogue.un_mirror import EMPTY_UN_MIRROR, UnArc, UnMirror, UnVariable
 
 STALE_AFTER: Final[timedelta] = timedelta(days=14)
 """Answers carry a staleness warning once the loaded build is older than this."""
@@ -114,6 +129,25 @@ class SeriesAdmission:
     withheld: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class TopicLeaves:
+    """How a topic's leaves stand: `base` as admitted base variables,
+    `dfo_only` as variables DFO alone holds, and `superseded` as superseded
+    variables, `with_successor` of them with a UN variable standing for
+    them. A superseded leaf was a base leaf before its provenance was
+    superseded, so `admitted_before_supersession` reads the topic as the
+    bound read it then."""
+
+    base: int
+    dfo_only: int
+    superseded: int
+    with_successor: int
+
+    @property
+    def admitted_before_supersession(self) -> bool:
+        return 0 < self.base + self.dfo_only + self.superseded <= TOPIC_EXPAND_MAX_MEMBERS
+
+
 class CatalogueTableError(ValueError):
     """The tables break an invariant the admission rules rely on."""
 
@@ -143,30 +177,40 @@ class CatalogueTables:
     a bitset over `scan_places`: bit `i` is set when one of its variables
     has a facet under it at scan place `i`. `withheld_variables` holds each variable our mixer has a facet for at a
     scan place under a provenance that is neither an admitted base
-    provenance nor DFO's, and none under an admitted base provenance.
-    `topics` maps each Topic on our mixer to
+    provenance nor DFO's, and none under an admitted base provenance. `topics` maps each Topic on our mixer to
     every leaf variable search's topic walk reaches from it
     (`topic_walk.walk_topics`, uncapped). `scan_places` orders the places the
     variable bitsets index. `scan_levels` records, per source ref, the
     levels the job scanned beyond every country, Earth and the regional
     aggregates. `dataset_facts` maps the `entry_ref` of every DFO and base
-    row to its entry's `CardFacts`; UN entries carry none.
+    row to its entry's `CardFacts`; UN entries carry none. `superseded` maps
+    every withheld variable of a base provenance a UN agency supersedes to
+    the UN variable that stands for it, or to `None` where none does
+    (`origin_catalogue.successors`).
 
-    `admitted_topics` is derived: each topic with at least one and at most
-    `TOPIC_EXPAND_MAX_MEMBERS` admitted leaves, the cap search applies after
-    the same admission, mapped to base when an admitted leaf is not a DFO-only
-    variable and to DFO otherwise. A leaf is admitted when `dfo_variables`
-    holds it or `withheld_variables` does not. The topic table depends on no
-    DFO data, so a build after an ingestion carries it forward and admission
-    follows the new DFO variable set.
+    `topic_leaves` counts each topic's leaves by how they stand, and
+    `admit_topic` answers admission from it. A leaf is admitted when
+    `dfo_variables` holds it or `withheld_variables` does not. A topic
+    admitted on an admitted leaf that is not DFO's alone maps to base, and
+    one admitted on DFO-only leaves to DFO. The cap is
+    `TOPIC_EXPAND_MAX_MEMBERS`, the cap search applies after the same
+    admission. The topic table depends on no DFO data, so a build after an
+    ingestion carries it forward and admission follows the new DFO variable
+    set. The member bound counts every
+    superseded leaf as the base leaf it was, so supersession admits no topic
+    the bound refused before it. A topic within the bound is admitted when a
+    leaf stands: an admitted leaf, or, with `successors` set, a leaf with a
+    successor. A topic admitted on such leaves alone maps to the UN System.
 
     Construction refuses a base variable naming a provenance that is not a
     base row, a bitset reaching past `scan_places`, a base variable with a
     place none of its provenances' places holds, a provenance place no base
     variable naming it holds, a variable both in
     `base_variables` and `withheld_variables`, a UN row with no segment
-    or a non-UN row with one, a UN topic or a topic with no leaves, and
-    `dataset_facts` keys other than the DFO and base rows' entry refs.
+    or a non-UN row with one, a UN topic or a topic with no leaves,
+    `dataset_facts` keys other than the DFO and base rows' entry refs, and
+    a superseded variable that is not withheld or that DFO holds, and a
+    successor that is not a UN id.
     """
 
     provenances: Mapping[str, ProvenanceRow]
@@ -181,7 +225,8 @@ class CatalogueTables:
     un_blocked_places: frozenset[str] = frozenset()
     """Places the UN front door refused to have named in an observation GET
     when the job probed it: UN reads leave them out and answer them empty."""
-    admitted_topics: Mapping[str, DataCommons] = field(init=False)
+    superseded: Mapping[str, str | None] = field(default_factory=dict)
+    topic_leaves: Mapping[str, TopicLeaves] = field(init=False)
     dfo_provenances: frozenset[str] = field(init=False)
     un_segments: frozenset[str] = field(init=False)
     mixer_domains: tuple[str, ...] = field(init=False)
@@ -249,7 +294,17 @@ class CatalogueTables:
                     f"topic {topic!r} has leaves {list(leaves)!r}; the topic table holds "
                     "our mixer's topics, each with at least one leaf"
                 )
-        object.__setattr__(self, "admitted_topics", self._admit_topics())
+        for variable, successor in self.superseded.items():
+            if (
+                variable not in self.withheld_variables
+                or variable in self.dfo_variables
+                or not (successor is None or successor.startswith(UN_ID_PREFIX))
+            ):
+                raise CatalogueTableError(
+                    f"{variable!r} is superseded with successor {successor!r}; a superseded "
+                    "variable is withheld and not DFO's, and its successor is a UN variable"
+                )
+        object.__setattr__(self, "topic_leaves", self._count_topic_leaves())
         object.__setattr__(
             self,
             "dfo_provenances",
@@ -270,10 +325,10 @@ class CatalogueTables:
         )
         object.__setattr__(self, "scan_place_set", frozenset(self.scan_places))
 
-    def _admit_topics(self) -> dict[str, DataCommons]:
-        admitted: dict[str, DataCommons] = {}
+    def _count_topic_leaves(self) -> dict[str, TopicLeaves]:
+        counts: dict[str, TopicLeaves] = {}
         for topic, leaves in self.topics.items():
-            base = dfo_only = 0
+            base = dfo_only = superseded = with_successor = 0
             for leaf in leaves:
                 if leaf in self.base_variables or not (
                     leaf in self.dfo_variables or leaf in self.withheld_variables
@@ -281,9 +336,66 @@ class CatalogueTables:
                     base += 1
                 elif leaf in self.dfo_variables:
                     dfo_only += 1
-            if 0 < base + dfo_only <= TOPIC_EXPAND_MAX_MEMBERS:
-                admitted[topic] = BASE if base else DFO
-        return admitted
+                elif leaf in self.superseded:
+                    superseded += 1
+                    with_successor += self.superseded[leaf] is not None
+            counts[topic] = TopicLeaves(
+                base=base, dfo_only=dfo_only, superseded=superseded, with_successor=with_successor
+            )
+        return counts
+
+    def admit_topic(self, topic: str, *, successors: bool) -> DataCommons | None:
+        """The origin that admits `topic`, or `None`: a topic the bound
+        admitted before supersession (`TopicLeaves.admitted_before_supersession`)
+        that has at least one standing leaf. A leaf with a successor stands
+        only when `successors` is set."""
+        leaves = self.topic_leaves.get(topic)
+        if leaves is None or not leaves.admitted_before_supersession:
+            return None
+        if leaves.base + leaves.dfo_only + (leaves.with_successor if successors else 0) == 0:
+            return None
+        return BASE if leaves.base else DFO if leaves.dfo_only else UN_SYSTEM
+
+
+@dataclass(frozen=True, slots=True)
+class UnTables:
+    """One build's UN tables and the lookups derived from them.
+
+    `series_members` maps each admitted series to its member variables,
+    sorted. `nodes` maps each node a variable's arc names (a constraint
+    property, a constraint value, a series) to the first arc row naming it,
+    which carries the node's name and types.
+    """
+
+    mirror: UnMirror = EMPTY_UN_MIRROR
+    series_members: Mapping[str, tuple[str, ...]] = field(init=False)
+    nodes: Mapping[str, UnArc] = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "series_members", self.mirror.series_members())
+        nodes: dict[str, UnArc] = {}
+        # Variables share arc rows, so each row is read once.
+        seen: set[int] = set()
+        for variable in self.mirror.variables.values():
+            for arc in variable.arcs:
+                if id(arc) in seen:
+                    continue
+                seen.add(id(arc))
+                if arc.dcid is not None:
+                    nodes.setdefault(arc.dcid, arc)
+        object.__setattr__(self, "nodes", nodes)
+
+    def is_candidate(self, dcid: str) -> bool:
+        """Whether `dcid` is an admitted variable or a topic reaching one."""
+        return dcid in self.mirror.variables or dcid in self.mirror.topics
+
+    def superseded_by(self, variable: str) -> str | None:
+        series = self.mirror.excluded_variables.get(variable)
+        return None if series is None else self.mirror.exclusions[series]
+
+
+EMPTY_UN_TABLES: Final = UnTables()
+"""The UN tables of a build whose registry lists no UN agency."""
 
 
 class Catalogue(Protocol):
@@ -341,8 +453,9 @@ class Catalogue(Protocol):
 
     def admit_candidate(self, dcid: str) -> DataCommons | None:
         """The origin that admits a search candidate, or `None` when none does.
-        A base candidate is refused only when the catalogue knows its data at
-        the scan places to sit under provenances it does not admit."""
+        A base candidate in `withheld_variables` and outside `dfo_variables`
+        is refused: its data at the scan places sits under provenances the
+        catalogue does not admit."""
         ...
 
     def data_commons(self, variable: str) -> tuple[DataCommons, ...]:
@@ -361,14 +474,69 @@ class Catalogue(Protocol):
         catalogue does not list."""
         ...
 
+    def un_variable(self, dcid: str) -> UnVariable | None:
+        """The series and arcs of a UN variable the UN tables hold, or `None`
+        for any other dcid, an excluded variable included, and for every
+        dcid with the UN origin off."""
+        ...
+
+    def un_series_members(self, series: str) -> tuple[str, ...]:
+        """Every admitted member variable of a UN series, sorted. Empty for a
+        series the UN tables do not hold and with the UN origin off."""
+        ...
+
+    def un_topic_leaves(self, topic: str) -> tuple[str, ...] | None:
+        """The admitted variables the topic walk reaches from a UN topic, in
+        walk order and uncapped, or `None` for a dcid the UN topic table does
+        not hold and with the UN origin off."""
+        ...
+
+    def un_node(self, dcid: str) -> UnArc | None:
+        """An arc row naming `dcid`, which carries the name and types of a
+        node some UN variable's arc points at: a constraint property, a
+        constraint value or a series. `None` for any other dcid and with the
+        UN origin off."""
+        ...
+
+    def superseded_by(self, variable: str) -> str | None:
+        """The DFO provenance holding the data a UN variable is derived
+        from, when the registry excludes the variable's series, else
+        `None`. Such a variable is admitted nowhere."""
+        ...
+
+    def successor(self, dcid: str) -> str | None:
+        """The UN variable that stands for a withheld variable of a base
+        provenance a UN agency supersedes: an admitted variable of the UN
+        tables. `None` for a variable with no successor, for any other
+        dcid, and with the UN origin off."""
+        ...
+
+    def is_superseded(self, dcid: str) -> bool:
+        """Whether `dcid` is a variable held only under a base provenance a
+        UN agency supersedes, with a successor or without one, or a base
+        Topic that the member bound admitted before supersession and that
+        has no standing leaf since: a Topic refused for its size is not
+        superseded. A superseded variable is withheld with the UN origin on
+        or off."""
+        ...
+
+    def un_excluded_series_name(self, series: str) -> str | None:
+        """The name of a UN series the registry excludes, which the UN tables
+        hold though they keep no node for it. `None` for any other dcid, for
+        a series the registry excludes and the build predates, and with the
+        UN origin off."""
+        ...
+
 
 @dataclass(frozen=True, slots=True)
 class CatalogueSnapshot:
-    """One loaded catalogue version. `un_system_enabled` gates UN admission;
-    with it off, no UN provenance or candidate is admitted."""
+    """One loaded catalogue version. `un` holds the build's UN tables.
+    `un_system_enabled` gates UN admission; with it off, no UN provenance or
+    candidate is admitted and the UN tables answer nothing."""
 
     manifest: CatalogueManifest
     tables: CatalogueTables
+    un: UnTables = EMPTY_UN_TABLES
     un_system_enabled: bool = True
 
     @property
@@ -427,7 +595,7 @@ class CatalogueSnapshot:
             return DFO
         if self._is_admitted_base(dcid):
             return BASE
-        return self.tables.admitted_topics.get(dcid)
+        return self.tables.admit_topic(dcid, successors=self.un_system_enabled)
 
     def data_commons(self, variable: str) -> tuple[DataCommons, ...]:
         if variable.startswith(UN_ID_PREFIX):
@@ -454,8 +622,43 @@ class CatalogueSnapshot:
             return tuple(self.tables.provenances[pid] for pid in entry.provenances)
         if not variable.startswith(UN_ID_PREFIX) or not self._is_admitted_un_candidate(variable):
             return ()
-        segment = variable[len(UN_ID_PREFIX) :].split("/")[0]
+        segment = _un_segment(variable)
         return tuple(row for row in self.tables.provenances.values() if row.segment == segment)
+
+    def un_variable(self, dcid: str) -> UnVariable | None:
+        return self.un.mirror.variables.get(dcid) if self.un_system_enabled else None
+
+    def un_series_members(self, series: str) -> tuple[str, ...]:
+        return self.un.series_members.get(series, ()) if self.un_system_enabled else ()
+
+    def un_topic_leaves(self, topic: str) -> tuple[str, ...] | None:
+        return self.un.mirror.topics.get(topic) if self.un_system_enabled else None
+
+    def un_node(self, dcid: str) -> UnArc | None:
+        return self.un.nodes.get(dcid) if self.un_system_enabled else None
+
+    def superseded_by(self, variable: str) -> str | None:
+        return self.un.superseded_by(variable)
+
+    def successor(self, dcid: str) -> str | None:
+        return self.tables.superseded.get(dcid) if self.un_system_enabled else None
+
+    def is_superseded(self, dcid: str) -> bool:
+        tables = self.tables
+        if dcid in tables.superseded:
+            return True
+        leaves = tables.topic_leaves.get(dcid)
+        return (
+            leaves is not None
+            and leaves.superseded > 0
+            and leaves.admitted_before_supersession
+            and tables.admit_topic(dcid, successors=self.un_system_enabled) is None
+        )
+
+    def un_excluded_series_name(self, series: str) -> str | None:
+        if not self.un_system_enabled:
+            return None
+        return self.un.mirror.excluded_series_names.get(series)
 
     def _is_admitted_base(self, dcid: str) -> bool:
         """A variable the base table lists, or one no table places: not DFO's,
@@ -468,19 +671,19 @@ class CatalogueSnapshot:
         )
 
     def _is_admitted_un_candidate(self, dcid: str) -> bool:
-        """`undata/<segment>/<id>` or `undata/topic/<segment>/<id>` with a
-        registered segment, or a topic in a cross-agency family."""
-        if not self.un_system_enabled:
-            return False
-        parts = dcid[len(UN_ID_PREFIX) :].split("/")
-        if parts[0] == "topic":
-            if len(parts) < 3 or not parts[2]:
-                return False
-            return parts[1] in self.tables.un_segments or parts[1] in UN_CROSS_AGENCY_TOPIC_FAMILIES
-        return len(parts) >= 2 and bool(parts[1]) and parts[0] in self.tables.un_segments
+        """A variable or topic the UN tables hold. They hold no variable of
+        an excluded series and no dcid outside the registered agencies."""
+        return self.un_system_enabled and self.un.is_candidate(dcid)
+
+
+def _un_segment(variable: str) -> str:
+    """The id segment of a UN variable, `undata/<segment>/...`, which its
+    agency's provenance row carries."""
+    return variable[len(UN_ID_PREFIX) :].split("/")[0]
 
 
 __all__ = [
+    "EMPTY_UN_TABLES",
     "STALE_AFTER",
     "BaseTables",
     "BaseVariable",
@@ -493,5 +696,6 @@ __all__ = [
     "ProvenanceRow",
     "SeriesAdmission",
     "SourceRef",
+    "UnTables",
     "entry_ref",
 ]

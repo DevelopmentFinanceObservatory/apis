@@ -25,7 +25,7 @@ from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.errors import RoleEntityUnplaced
 from search.engine.retrieval.read_plan import preview_years
 from search.engine.retrieval.role_resolve import graph_confirm_resolve
-from search.engine.retrieval.standard import standard_resolve
+from search.engine.retrieval.standard import FacetBatch, standard_resolve
 from search.engine.shape import ShapeDraft, is_role_bearing, role_names_by_axis
 from search.models import Coverage, Headline
 
@@ -268,6 +268,7 @@ def materialise(
     discover_scope: bool = False,
     open_axes: frozenset[RoleAxis] = frozenset(),
     coverage: CoverageSnapshot,
+    facet_batch: FacetBatch | None = None,
 ) -> Materialised | NoDataDraft | MaterialisedCandidates | UnsupportedDraft:
     """Resolve a shape through the standard or role-bearing path.
 
@@ -284,9 +285,10 @@ def materialise(
     Returns a materialised result, surviving candidates, an unsupported-scope
     refusal, or a named no-data outcome. ``coverage`` is the request's snapshot
     and is read only by the role path. ``sdmx`` and ``discover_scope`` are also
-    role-path inputs; ``place_dcids`` and ``default_presence`` are used only by the
-    standard path, where ``default_presence`` derives a default place scope in place of
-    ``place_dcids`` (`standard_resolve`).
+    role-path inputs. ``place_dcids``, ``default_presence`` and ``facet_batch`` are used
+    only by the standard path, where ``default_presence`` derives a default place scope in
+    place of ``place_dcids`` and ``facet_batch`` shares the facet reads of a Spec whose
+    place sets are settling (`standard_resolve`).
     """
     if is_role_bearing(shape):
         names = role_names_by_axis(shape)
@@ -325,4 +327,5 @@ def materialise(
         date_request=date_request,
         place_dcids=place_dcids,
         default_presence=default_presence,
+        facet_batch=facet_batch,
     )

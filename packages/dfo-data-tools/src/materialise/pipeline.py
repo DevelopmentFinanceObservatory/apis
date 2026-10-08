@@ -119,6 +119,9 @@ class MaterialisationResult:
     role tuple (`materialise.series_conversion`), and is empty for an unconverted result.
     `default_scope` is the places the default place scope resolved when a request binds no
     entity (`materialise.place_scope`), and empty otherwise.
+    `probe_empty` is true when no member's facet probe returned a candidate, so the places the
+    requests cover hold no observation of their variables. The result then holds zero rows, an
+    `empty_result` warning and no facet selection.
     """
 
     frame_chunks: Callable[[], Iterator[Frame]]
@@ -135,6 +138,7 @@ class MaterialisationResult:
     output_profile_seconds: float = 0.0
     default_scope: tuple[str, ...] = ()
     series_conversions: Mapping[SeriesKey, SeriesConversion] = field(default_factory=dict)
+    probe_empty: bool = False
 
 
 @dataclass(frozen=True)
@@ -237,6 +241,10 @@ def materialise_group(
     Before any network call, raises `MaterialisationUsageError` for an empty request, duplicate
     StatVars, different declared-role sets or conflicting unit bindings. Other facet-axis
     mismatches are graph-state refusals when a member lacks the requested facet.
+
+    When no member's facet probe returns a candidate, the result is empty and says so
+    (`MaterialisationResult.probe_empty`): no facet is selected and no conversion is planned.
+    A group with a candidate on some member selects among those members' facets as usual.
 
     One request uses the member path. Multiple requests select a shared facet, group members with
     the same entity scope and `latest` status, and fetch each chunk with one SDMX call. At most

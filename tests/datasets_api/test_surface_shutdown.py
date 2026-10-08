@@ -34,6 +34,7 @@ from graph_generation.fake import FakeGeneration
 from spec_registry import LiveSpecRegistry
 from spec_registry.identity import recompute_identity
 
+from ._app_factories import offline_recipe_stores
 from ._artifact_doubles import FakeArtifactStore, RecordingArtifactStore
 from ._identity_builders import pinned_identity, register_body
 from ._snapshot_doubles import (
@@ -233,6 +234,8 @@ def test_composed_surface_shutdown_fits_the_shared_budget_not_one_per_door(
                 operation_store=NullOperationStore(),
                 # Inject a task client because the live Cloud Tasks client requires credentials.
                 task_client=FakeTaskClient(),
+                # Inject the recipe stores to keep the recipe door off the live shared pool.
+                **offline_recipe_stores(),
             )
         ]
     )

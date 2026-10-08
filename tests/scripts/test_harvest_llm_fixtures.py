@@ -18,7 +18,7 @@ from search.engine.bind import _UniversalBindOutput
 from search.engine.extract import Extraction
 from tests._harvest_outcome_plugin import OUTCOME_PATH_ENV, SCHEMA_VERSION
 from tests.fixtures import MissingFixtureError, _append_harvest_line
-from tests.fixtures.keys import fixture_key
+from tests.fixtures.keys import fixture_key, schema_fingerprint
 
 
 def _miss(schema: type[BaseModel], system: str, prompt: str) -> m.Miss:
@@ -1141,10 +1141,61 @@ def test_prune_with_safeguards_writes_the_sidecar_even_when_it_refuses(tmp_path)
     assert json.loads(sidecar.read_text()) == bank
 
 
+def test_current_fingerprints_name_each_recorded_schema_at_its_live_fingerprint():
+    current = m._current_fingerprints()
+
+    assert {fp.split("@")[0] for fp in current} == set(m._RECORDED_SCHEMA_NAMES)
+    assert f"Extraction@{schema_fingerprint(Extraction)}" in current
+
+
+def test_drop_stale_fingerprints_drops_and_counts_keys_under_an_unknown_fingerprint(
+    tmp_path, capsys
+):
+    bank_path = tmp_path / "llm_responses.json"
+    bank = {
+        **_fake_bank(2, schema="Extraction@000000000000"),
+        **_fake_bank(1, schema="_UniversalBindOutput@111111111111"),
+    }
+
+    kept = m._drop_stale_fingerprints(bank, bank_path=bank_path)
+
+    assert kept == {}
+    assert json.loads(bank_path.read_text()) == {}
+    assert json.loads(bank_path.with_name("llm_responses.json.prestale").read_text()) == bank
+    out = capsys.readouterr().out
+    assert "2 Extraction@000000000000" in out
+    assert "1 _UniversalBindOutput@111111111111" in out
+
+
+def test_drop_stale_fingerprints_keeps_current_keys_and_metadata(tmp_path):
+    bank_path = tmp_path / "llm_responses.json"
+    current = sorted(m._current_fingerprints())[0]
+    keep = {"_comment": "metadata", **_fake_bank(2, schema=current)}
+    bank = {**keep, **_fake_bank(3, schema="Extraction@000000000000")}
+
+    kept = m._drop_stale_fingerprints(bank, bank_path=bank_path)
+
+    assert kept == keep
+    assert json.loads(bank_path.read_text()) == keep
+
+
+def test_drop_stale_fingerprints_leaves_a_bank_with_nothing_stale_unwritten(tmp_path):
+    bank_path = tmp_path / "llm_responses.json"
+    current = sorted(m._current_fingerprints())[0]
+    bank = {"_comment": "metadata", **_fake_bank(2, schema=current)}
+
+    kept = m._drop_stale_fingerprints(bank, bank_path=bank_path)
+
+    assert kept is bank
+    assert not bank_path.exists()
+    assert not bank_path.with_name("llm_responses.json.prestale").exists()
+
+
 def test_main_skips_pruning_when_pytest_args_narrows_collection(tmp_path, monkeypatch, capsys):
     """Filtered pytest arguments make `final_pass_keys` incomplete, so `main()` skips pruning."""
     bank_path = tmp_path / "llm_responses.json"
-    bank = _fake_bank(2)
+    current = sorted(m._current_fingerprints())[0]
+    bank = _fake_bank(2, schema=current)
     bank_path.write_text(json.dumps(bank))
     monkeypatch.setattr(m, "_BANK_PATH", bank_path)
 
@@ -1161,7 +1212,7 @@ def test_main_skips_pruning_when_pytest_args_narrows_collection(tmp_path, monkey
         bank=bank,
         added_per_pass=[0],
         passes_run=1,
-        final_pass_keys=frozenset({"Extraction:000"}),
+        final_pass_keys=frozenset({f"{current}:000"}),
         newly_recorded=frozenset(),
     )
 

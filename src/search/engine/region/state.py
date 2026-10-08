@@ -39,8 +39,9 @@ from search.engine.quantity import DenominatorKind, QuantityRequirement, quantit
 from search.engine.region.convertibility import UnitCoverage
 from search.engine.region.materialise_step import Departed, family_total_absent_departures
 from search.engine.region.observations.entities import open_role_axis
-from search.engine.region.place_context import PlaceContext, empty_place_context
-from search.engine.region.place_roles import PlaceRoles
+from search.engine.region.place_context import PlaceContext, UnsettledPlace, empty_place_context
+from search.engine.region.place_roles import PlaceAssignment, place_order, place_texts
+from search.engine.region.place_set import PlaceSet
 from search.engine.region.result import (
     AmbiguousEntity,
     FacetAxisFilter,
@@ -50,8 +51,9 @@ from search.engine.region.result import (
 from search.engine.retrieval.bound_values import (
     MeasurePartition,
     RoleClassWalks,
+    RoleKeys,
     WalkedMembers,
-    entity_role_keys,
+    held_codes,
     identity_query,
     index_decides_membership,
     query_bound_values,
@@ -209,11 +211,11 @@ def _elected_stat_vars(
 
 
 def served_stat_vars(
-    shape: ShapeDraft, bindings: Sequence[SlotBindingDraft], roles: PlaceRoles
+    shape: ShapeDraft, bindings: Sequence[SlotBindingDraft], role_keys: RoleKeys
 ) -> list[str]:
     """The StatVars a Datasets mint serves for the Spec `shape` grounds under `bindings` with
-    its places bound as `roles`, in member order (`_served_members` over `shape_query`)."""
-    role_keys = entity_role_keys(roles.resolved_entities, open_axes=roles.open_axes)
+    its places bound under `role_keys`, in member order (`_served_members` over
+    `shape_query`)."""
     return _served_members(
         shape, shape_query(shape, bindings, role_keys.bound, open_role_keys=role_keys.open)
     )
@@ -258,6 +260,35 @@ def _served_members(shape: ShapeDraft, query: FamilyQuery) -> list[str]:
 AlternateUnevaluatedReason = Literal["no_capacity", "upstream_error", "timed_out"]
 
 
+def shape_vocabulary(shape: ShapeDraft) -> frozenset[str]:
+    """The constraint properties `shape` can carry into binding, its slots' properties, which
+    are also the code systems it reads qualifier text in."""
+    return frozenset(slot.property_dcid for slot in shape.slot_keys if slot.property_dcid)
+
+
+def for_shape[T](
+    by_vocabulary: Mapping[frozenset[str], tuple[T, ...]], shape: ShapeDraft
+) -> tuple[T, ...]:
+    """`shape`'s own entry of a map keyed by vocabulary (`shape_vocabulary`), empty when the
+    query was not read in its vocabulary."""
+    return by_vocabulary.get(shape_vocabulary(shape), ())
+
+
+def merge_lists[T](lists: Iterable[Iterable[T]]) -> tuple[T, ...]:
+    """The union of `lists` in first-seen order, each item as often as the one list that
+    repeats it most. Two vocabularies' lists of one query share their common matches, and a
+    match the variable and the query text both name appears twice in each, so the union
+    reads as one list would."""
+    merged: list[T] = []
+    for items in lists:
+        seen: dict[T, int] = {}
+        for item in items:
+            seen[item] = seen.get(item, 0) + 1
+            if seen[item] > merged.count(item):
+                merged.append(item)
+    return tuple(merged)
+
+
 @dataclass(slots=True, kw_only=True)
 class ResolveState:
     """Per-variable state for the stages extracted out of resolve_variable.
@@ -278,6 +309,9 @@ class ResolveState:
     # Door-supplied roles per entity name, in mention order. A self-flow can
     # list both axes; an absent name has no role and uses the default handling.
     entity_roles: dict[str, list[DoorRole]] = field(default_factory=dict)
+    # The entity names the door asks for as their members, each member its own series.
+    # Place resolution gives each one's set the members reading (`PlaceSet.reading`).
+    member_entities: frozenset[str] = frozenset()
     # Extracted dropped phrases shared across every variable leg, followed on the
     # raw-text door by this leg's own operation phrases; each binder checks them
     # against its shape, then warnings combine admission across regions.
@@ -327,6 +361,10 @@ class ResolveState:
     # The recall pool shapes derive from: our candidates, or the UN System Data Commons'
     # on the gap-fill pass that runs when ours end no_data (`region.pipeline`).
     pool: Literal["ours", "un_system"] = "ours"
+    # The shape the gap-fill pass leaves out of its menu, by id with its members: the one
+    # the first pass elected and found without observations. A shape of that id holding
+    # only those members has nothing the first pass did not read (`phase_intake._found_empty`).
+    excluded_shapes: Mapping[str, frozenset[str]] = field(default_factory=dict)
 
     # --- (b) evolving pipeline state ------------------------------------------
     timing: dict[str, int]
@@ -363,19 +401,10 @@ class ResolveState:
     rcl: Recall | None = None
     # Pre-expansion Country dcids from recall; derive_shapes uses this original set.
     recall_only_place_dcids: list[str] | None = None
-    # Place-set name to expanded member dcids for observation probes; names
-    # also identify sets without their own dcid.
-    place_children_by_name: dict[str, list[str]] = field(default_factory=dict)
-    # Settled Group names to member dcids for where-slot binding; members use
-    # `SEARCH_MAX_CHILD_PLACES`, not the standard-place cap.
-    group_member_dcids_by_name: dict[str, list[str]] = field(default_factory=dict)
-    # Settled Group names to the group's own graph node, when the resolver returned one.
-    group_dcid_by_name: dict[str, str] = field(default_factory=dict)
-    # Graph labels of those nodes, read in one batch at intake. A node the graph gives no
-    # label is absent, and its group keeps the query's name for it.
-    group_label_by_dcid: dict[str, str] = field(default_factory=dict)
-    # Group-member dcids to resolver names; the query names the group, not each member.
-    group_member_names_by_dcid: dict[str, str] = field(default_factory=dict)
+    # Each place the request names that resolved, by the request's text for it, with groups
+    # first, then places and regions, each in recall's order. Set by `_phase_resolve_places`. A name
+    # with no entry did not resolve.
+    place_sets: dict[str, PlaceSet] = field(default_factory=dict)
     # Start tick for the shape timing span, including derivation and ranking.
     shape_t0: int = 0
     # All confirmed shapes, before eligibility and ranking filters.
@@ -403,14 +432,25 @@ class ResolveState:
     ranked_shapes: list[ShapeDraft] = field(default_factory=list)
     # Bind prompt's top-K shapes; `chosen_shape_index` indexes this ranked list.
     capped_shapes: list[ShapeDraft] = field(default_factory=list)
-    # Recognised qualifiers from the variable, query text, and dropped phrases.
-    # Computed once before measure collapse and reused for narrowing and admission.
-    query_qualifier_matches: tuple[QualifierMatch, ...] = ()
-    # All recognised spans in `variable`, including ambiguities, used to build
-    # `ResolvedQualifier.named`. Raw `query_text` is excluded: span recognition
-    # accepts ambiguous terms that admission rejects, which would trigger a false
-    # `qualifier_not_bound` refusal. Query-text matches still reach admission.
-    variable_qualifier_spans: tuple[QualifierSpan, ...] = ()
+    # Recognised qualifiers from the variable, query text, dropped phrases and the typed
+    # sidecar, one list per vocabulary (`shape_vocabulary`) among the eligible shapes, each
+    # read in that vocabulary's code systems alone. Computed once before measure collapse
+    # and reused for narrowing and admission; `for_shape` reads one shape's list and
+    # `all_qualifier_matches` their union.
+    query_qualifier_matches: dict[frozenset[str], tuple[QualifierMatch, ...]] = field(
+        default_factory=dict
+    )
+    # Every recognised span in `variable`, including ambiguities, as each candidate
+    # shape's vocabulary reads it; the elected shape's builds `ResolvedQualifier.named`
+    # (`for_shape`). Raw `query_text` is excluded: span recognition accepts ambiguous terms
+    # that admission rejects, which would trigger a false `qualifier_not_bound` refusal.
+    # Query-text matches still reach admission.
+    variable_spans_by_vocabulary: dict[frozenset[str], tuple[QualifierSpan, ...]] = field(
+        default_factory=dict
+    )
+    # Every recognised span in `variable` read in every code system together: the code
+    # terms the named-dataset check refuses and the elected shape's unread words warn on.
+    variable_spans_in_every_system: tuple[QualifierSpan, ...] = ()
     # Normalised phrases matched in `variable` or `query_text`, plus tie phrases.
     # Excludes dropped-only phrases, whose warning ownership belongs to raw-text entry.
     variable_matched_qualifier_phrases: frozenset[str] = frozenset()
@@ -426,21 +466,31 @@ class ResolveState:
     # excluding one runs no UN second pass (`pipeline._fill_gap`).
     named_dataset: str | None = None
     excluded_datasets: frozenset[str] = frozenset()
-    # Ambiguous qualifier matches across variable, single-variable query text, and
-    # dropped phrases. Bind narrows them to one value or alternatives.
-    query_qualifier_ties: tuple[QualifierTie, ...] = ()
+    # Ambiguous qualifier matches across variable, single-variable query text, dropped
+    # phrases and the sidecar, one list per vocabulary as `query_qualifier_matches`. Bind
+    # narrows them to one value or alternatives.
+    query_qualifier_ties: dict[frozenset[str], tuple[QualifierTie, ...]] = field(
+        default_factory=dict
+    )
     # Spans naming one code row and one measure value, from the same sources as the ties.
     # Each reading is admitted only against a shape that carries it alone.
     query_qualifier_readings: tuple[QualifierReadings, ...] = ()
+    # Each shape's held-value reading (`bound_values.held_codes`), built once per shape for
+    # the family election, the axes rule and tie admission (`held_codes_of`). The shape
+    # stays beside its reading, so its id names that shape for the whole resolve.
+    shape_held_codes: dict[int, tuple[ShapeDraft, Callable[[QualifierMatch], bool]]] = field(
+        default_factory=dict, repr=False
+    )
     # Whether a dropped qualifier phrase uses a price-basis word no match read
     # (`alternate_guard.leaves_price_basis_unread`). The default-reading collapse and the
     # guard's default operation both stand down on such a leg.
     unread_price_basis: bool = False
     # What the default-reading collapse did before bind, which every Spec's trace states.
     default_reading: TraceDefaultReading | None = None
-    # Ties with multiple rows after declared-property narrowing; bind sees them as
-    # alternatives, and qualifier guards treat them as attempted matches. A single
-    # surviving row becomes an admitted qualifier instead.
+    # Ties with multiple rows after declared-property narrowing, admitted against the capped
+    # shapes and then narrowed to the elected shape's own; bind shows each shape its own as
+    # alternatives, and qualifier guards treat them as attempted matches. A single surviving
+    # row becomes an admitted qualifier instead.
     admitted_ties: tuple[QualifierTie, ...] = ()
     # Normalised phrases from ties the bind model elected; used to suppress a
     # dropped-qualifier warning once this region resolves the phrase.
@@ -501,31 +551,32 @@ class ResolveState:
     # (`unrealisable.unbind_unrealisable`). Each has its `measure_not_applied` departure,
     # so no qualifier refusal or second departure names it.
     unapplied_qualifier_phrases: frozenset[str] = frozenset()
-    # Named places, capped at SEARCH_MAX_STANDARD_PLACES in query order, then distinct and
-    # sorted by dcid (`place_roles.place_order`).
-    standard_place_dcids: list[str] = field(default_factory=list)
-    # The first of `standard_place_dcids` by dcid, for paths that require one place.
-    destination_dcid: str | None = None
-    # Accepted query labels for resolved dcids that survive the place cap; grounding uses
-    # them for display, while identity remains keyed by dcid.
-    query_entity_text_by_dcid: dict[str, str] = field(default_factory=dict)
     # Caller-pinned dcids are type-checked only; their text cannot replace graph labels.
     pinned_entity_dcids: frozenset[str] = frozenset()
     # The place context of the shape in `shape_draft`: its roles, the places it is probed
-    # and read over, and its place warnings. `_install_shape` sets it with the shape; once
-    # the elected result stands it is the context the answer is read over
-    # (`PlaceContext.settled`).
+    # and read over, and its place warnings. `_install_shape` sets it with the shape. Until
+    # the elected shape is read it holds each place set that read decides at its members
+    # (`UnsettledPlace.unread`); once the elected result stands it is the context the
+    # answer is read over (`PlaceContext.settled`).
     place: PlaceContext = field(default_factory=empty_place_context)
+    # The elected shape's places before its place sets settle. Materialisation settles
+    # them on the shape's own read (`place_context.settle_sets`).
+    unsettled_place: UnsettledPlace | None = None
+    # Whether a role admits a graph type, by role name and type, as role admission
+    # answered for the nodes and members of the query's place sets
+    # (`phase_intake._prune_shapes_by_admission`,
+    # `phase_place_materialise._unsettled_places`).
+    node_admissions: dict[tuple[str, str], bool] = field(default_factory=dict)
     # Where the StatVars of the last default-scope read have data; the default scope of the
     # shape in play, when it has one, is taken from it. `None` until a shape needs one.
     default_presence: DefaultPresence | None = None
-    # The elected shape's binding of the query's places as admitted, before the role-class
-    # election narrows it. An alternate binds a place named with no direction on the axis
-    # this binding gives it (`place_roles._undirected_place_axis`).
-    elected_place_roles: PlaceRoles | None = None
-    # Each alternate's binding of the query's places, by capped-shape index, and why each
-    # alternate that takes none is left out. `_phase_place_bindings` binds them once.
-    alternate_place_roles: dict[int, PlaceRoles] = field(default_factory=dict)
+    # The elected shape's assignment of the query's place sets as admitted, before the
+    # role-class election narrows it. An alternate puts a place named with no direction on
+    # the axis this assignment gives it (`place_roles._undirected_place_axis`).
+    elected_place_roles: PlaceAssignment | None = None
+    # Each alternate's assignment of the query's place sets, by capped-shape index, and why
+    # each alternate that takes none is left out. `_phase_place_bindings` assigns them once.
+    alternate_place_roles: dict[int, PlaceAssignment] = field(default_factory=dict)
     unbindable_alternates: dict[int, str] = field(default_factory=dict)
     # The capped-shape indices of the siblings zero-observation re-election tries when the
     # elected shape has no observations at its places (`_reelection_siblings`).
@@ -620,6 +671,25 @@ class ResolveState:
         return self.near_neighbor_fired_index is not None and bool(self.unevaluated_alternates)
 
     @property
+    def standard_place_dcids(self) -> list[str]:
+        """Every place the shape in play binds, on any role, distinct and sorted by dcid
+        (`place_roles.place_order`)."""
+        return place_order(dcid for dcid, _role in self.place.roles.roles)
+
+    @property
+    def destination_dcid(self) -> str | None:
+        """The first place the shape in play binds, by dcid, for paths that require one
+        place. `None` when it binds none."""
+        return next(iter(self.standard_place_dcids), None)
+
+    @property
+    def query_entity_text_by_dcid(self) -> dict[str, str]:
+        """The request's text for each place its sets hold (`place_roles.place_texts`),
+        so the elected Spec and an alternate label a place alike. Grounding uses it for
+        display, while identity remains keyed by dcid."""
+        return place_texts(self.entities, self.place_sets)
+
+    @property
     def entity_label_text_by_dcid(self) -> dict[str, str]:
         """Return display aliases for resolved, non-pinned entities."""
         return {
@@ -627,6 +697,17 @@ class ResolveState:
             for dcid, text in self.query_entity_text_by_dcid.items()
             if dcid not in self.pinned_entity_dcids
         }
+
+    def held_codes_of(self, shape: ShapeDraft) -> Callable[[QualifierMatch], bool]:
+        """`shape`'s held-value reading (`bound_values.held_codes`), built on first use."""
+        entry = self.shape_held_codes.get(id(shape))
+        if entry is None or entry[0] is not shape:
+            entry = self.shape_held_codes[id(shape)] = (shape, held_codes(shape))
+        return entry[1]
+
+    def all_qualifier_matches(self) -> tuple[QualifierMatch, ...]:
+        """Every vocabulary's qualifier matches, in vocabulary order (`merge_lists`)."""
+        return merge_lists(self.query_qualifier_matches.values())
 
     def depart(self, warning: Warning, fact: DepartureFact) -> None:
         """Append `warning` and record `fact`, the departure it discloses, under its key."""

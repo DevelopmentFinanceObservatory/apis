@@ -6,10 +6,10 @@ entity matched but this graph does not hold it. Infrastructure failures raise re
 
 `entity_type` is the open `typeOf` value. `kind` is one of `country`,
 `continent`, `subregion`, `continental_union`, `organisation`, `aggregate`,
-`place_other`, or `other`. `aggregate` is a DAC recipient bucket, not a place, and
-`place_other` is a subnational place. Only continents and subregions expand to member
-countries. Clients use `entity_type` to open a node and `kind` to choose a
-role without another graph read.
+`place_other`, or `other`. `aggregate` is a DAC stand-in for parties it does not name, not a
+place, and `place_other` is a subnational place. Only continents and subregions expand to member
+countries. Clients use `entity_type` to open a node and to choose a role,
+by matching it against the role's `rangeIncludes`.
 """
 
 from __future__ import annotations

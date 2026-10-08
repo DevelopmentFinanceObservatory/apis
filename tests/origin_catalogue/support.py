@@ -10,7 +10,8 @@ from artifact_publication.uri import join_uri, read_uri_bytes_and_generation
 from origin_catalogue import BASE, DFO, UN_SYSTEM, CatalogueTables, ScanLevel
 from origin_catalogue.artifact import EncodedBuild, encode_build, publish_build
 from origin_catalogue.catalogue import BaseVariable, CardFacts, DatasetRef
-from origin_catalogue.schema import FORMAT_ROOT
+from origin_catalogue.schema import FORMAT_ROOT, UnAgencyCounts
+from origin_catalogue.un_mirror import UnArc, UnMirror, UnVariable
 from tests.origin_catalogue.fake_catalogue import provenance_row
 
 CRS = "provenance/OECDCreditorReportingSystem"
@@ -94,6 +95,62 @@ def sample_tables() -> CatalogueTables:
     )
 
 
+UN_SERIES = "undata/who/SERIES-MORT_U5_RATE"
+UN_VARIABLE = "undata/who/MORT_U5_RATE"
+UN_VARIABLE_FEMALE = "undata/who/MORT_U5_RATE.SEX--F"
+UN_EXCLUDED_SERIES = "undata/who/SERIES-ODA_1_3"
+UN_EXCLUDED_VARIABLE = "undata/who/ODA_1_3"
+UN_TOPIC = "undata/topic/who/MORT_U5_RATE"
+
+
+def sample_un_mirror() -> UnMirror:
+    """WHO's under-five mortality series with a by-sex variable, one excluded
+    aid series and one topic. The two variables share their series, type and
+    measure arcs."""
+    series = UnArc(
+        property="populationType",
+        dcid=UN_SERIES,
+        name="Under-five mortality rate",
+        types=("undata/who/SERIES",),
+    )
+    measure = UnArc(property="measuredProperty", dcid="value", name="value", types=("Property",))
+    return UnMirror(
+        variables={
+            UN_VARIABLE: UnVariable(
+                series=UN_SERIES,
+                arcs=(measure, UnArc(property="name", value="Under-five mortality rate"), series),
+            ),
+            UN_VARIABLE_FEMALE: UnVariable(
+                series=UN_SERIES,
+                arcs=(
+                    UnArc(
+                        property="constraintProperties",
+                        dcid="undataSex",
+                        name="Sex",
+                        types=("Property",),
+                    ),
+                    measure,
+                    UnArc(property="name", value="Under-five mortality rate [Sex=Female]"),
+                    series,
+                    UnArc(
+                        property="undataSex",
+                        dcid="undata/SEX-F",
+                        name="Female",
+                        types=("undata/SEX",),
+                    ),
+                ),
+            ),
+        },
+        excluded_variables={UN_EXCLUDED_VARIABLE: UN_EXCLUDED_SERIES},
+        topics={UN_TOPIC: (UN_VARIABLE, UN_VARIABLE_FEMALE)},
+        exclusions={UN_EXCLUDED_SERIES: CRS},
+        excluded_series_names={UN_EXCLUDED_SERIES: "Net ODA to health"},
+        agencies={
+            "who": UnAgencyCounts(series=2, variables=3, excluded_series=1, excluded_variables=1)
+        },
+    )
+
+
 def encode_sample(*, build_id: str = "build-a", **overrides: object) -> EncodedBuild:
     fields: dict = {
         "build_id": build_id,
@@ -103,7 +160,8 @@ def encode_sample(*, build_id: str = "build-a", **overrides: object) -> EncodedB
         "registry_hash": "r1",
     }
     fields.update(overrides)
-    return encode_build(sample_tables(), **fields)
+    tables = replace(sample_tables(), superseded=fields.pop("superseded", {}))
+    return encode_build(tables, **fields)
 
 
 def publish_sample(

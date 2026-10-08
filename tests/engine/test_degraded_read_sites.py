@@ -49,6 +49,7 @@ def _relaxation_ctx(**changes: object) -> SimpleNamespace:
                 probe_places=["country/KEN"],
                 presence_for=lambda presence: presence,
             ),
+            "unsettled": None,
             "presence": SimpleNamespace(scopes={}),
             "date_request": None,
             "deadline": None,

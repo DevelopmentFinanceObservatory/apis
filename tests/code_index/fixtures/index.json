@@ -63,6 +63,7 @@
       "description": "A test table.",
       "opt_in": false,
       "absent_observation": "zero",
+      "account": "provider",
       "rank": 0,
       "invariants": {}
     }

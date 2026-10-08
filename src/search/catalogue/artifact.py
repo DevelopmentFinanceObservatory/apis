@@ -65,11 +65,11 @@ class YearRange(_Model):
 
 
 class AidCounts(_Model):
-    """Counts over the coverage index's CRS rows."""
+    """Counts over the coverage index's rows of the declared datasets."""
 
-    donors: int = Field(description="distinct donors, countries and multilaterals alike")
+    donors: int = Field(description="distinct donors: countries, multilaterals and donor groups")
     recipients: int = Field(description="distinct recipients, regions included")
-    years: YearRange | None = Field(description="the years with CRS data; null when none")
+    years: YearRange | None = Field(description="the years with aid data; null when none")
 
 
 class Counts(_Model):

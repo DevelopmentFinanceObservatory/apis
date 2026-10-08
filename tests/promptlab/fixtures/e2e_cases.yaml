@@ -1,8 +1,7 @@
-# Trimmed copies of sdg-01, sdg-03 and sdg-04 from corpus/sdg.yaml, for the offline e2e-cell tests.
-- id: sdg-01
-  query: maternal mortality ratio female SDG
-  why: Maternal mortality ratio for women under the SDG framing resolves to sdg/SH_STA_MORT.SEX--F; the
-    raw-count shape has too little data to compete.
+# Trimmed copies of maternal-mortality, sdg-03 and sdg-04 from corpus/sdg.yaml, for the offline e2e-cell tests.
+- id: maternal-mortality
+  query: maternal mortality ratio
+  why: Maternal mortality ratio with no place resolves to sdg/SH_STA_MORT.SEX--F; the word ratio pins the SDG rate over the raw count.
   tags:
     directional_flow: na
     conjunction: none
@@ -15,8 +14,9 @@
           stat_type: measuredValue
           measurement_qualifier: null
           measurement_denominator: null
-        stat_vars:
-        - sdg/SH_STA_MORT.SEX--F
+        bound:
+          sdg_sex: SDG_SexEnum_F
+        stat_vars: [sdg/SH_STA_MORT.SEX--F]
       entities: []
 - id: sdg-03
   query: tuberculosis incidence rate SDG 3.3.2 Ethiopia

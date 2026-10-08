@@ -7,6 +7,9 @@ from search.engine.clients.graph import SubjectsCoverage, SubjectsPage
 from search.engine.clients.graph_client import LiveGraphClient
 from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import GraphInfraError
+from search.engine.region import resubmit_request
+from search.engine.region.resubmit_request import resubmit_named_groups
+from tests.engine._virtual_clock import VirtualRequests
 from tests.fixtures import FakeGraph
 
 
@@ -112,7 +115,8 @@ def test_fake_graph_node_subjects_many_raise_on_call() -> None:
 
 def _subjects_post(posts: list[dict]):
     """A `/v2/node` stand-in that records each payload.
-    `complete/LEAD` has one subject, `capped/LEAD` two, and every node is named by its dcid."""
+    `complete/LEAD` has one subject, `capped/LEAD` two, and every node is named by its dcid
+    and typed `Thing`."""
     subjects = {"complete/LEAD": ["a"], "capped/LEAD": ["b", "c"]}
 
     def fake_post(self, path, payload, *, deadline=None):
@@ -121,6 +125,13 @@ def _subjects_post(posts: list[dict]):
             return {
                 "data": {
                     dcid: {"arcs": {"name": {"nodes": [{"value": dcid}]}}}
+                    for dcid in payload["nodes"]
+                }
+            }
+        if payload["property"] == "->typeOf":
+            return {
+                "data": {
+                    dcid: {"arcs": {"typeOf": {"nodes": [{"dcid": "Thing"}]}}}
                     for dcid in payload["nodes"]
                 }
             }
@@ -161,7 +172,6 @@ def test_node_subjects_many_reads_a_complete_page_once_until_clear(monkeypatch) 
 def test_a_warm_resubmit_reads_no_group_members(monkeypatch) -> None:
     """A resubmit posting a group checks its members against the graph. A second one,
     posting the same group, makes no graph request."""
-    from search.engine.region.resubmit_request import resubmit_named_groups
     from search.engine.spec_id import build_spec_identity
     from search.models import EntityGroup, ResubmitIdentityPayload
     from tests.engine._base_identity import PERSON_COUNT_SHAPE, subject_entity
@@ -182,8 +192,8 @@ def test_a_warm_resubmit_reads_no_group_members(monkeypatch) -> None:
     cold_posts = len(posts)
     warm = resubmit_named_groups(payload, graph=client, deadline=None)
 
-    assert [(g.dcid, g.label, g.member_dcids) for g in cold] == [
-        ("complete/LEAD", "complete/LEAD", frozenset({"a"}))
+    assert [(g.dcid, g.label, g.entity_type, g.member_dcids) for g in cold] == [
+        ("complete/LEAD", "complete/LEAD", "Thing", frozenset({"a"}))
     ]
     assert warm == cold
     assert cold_posts > 0
@@ -191,19 +201,37 @@ def test_a_warm_resubmit_reads_no_group_members(monkeypatch) -> None:
 
 
 class _GroupGraph:
-    """A members and labels stand-in that records each read. `fail` names the read that
-    raises `GraphInfraError`."""
+    """A types, members and labels stand-in that records each labels read. The node has
+    the graph type `node_type`, the `<-containedInPlace` subjects `members` and the
+    `Country` children `expansion`. `fail` names the read that raises `GraphInfraError`."""
 
-    def __init__(self, members: tuple[str, ...], *, fail: str | None = None) -> None:
-        self.members, self.fail = members, fail
+    def __init__(
+        self,
+        members: tuple[str, ...],
+        *,
+        fail: str | None = None,
+        node_type: str = "Thing",
+        expansion: tuple[str, ...] = (),
+        coverage: SubjectsCoverage = SubjectsCoverage.complete,
+    ) -> None:
+        self.members, self.fail, self.coverage = members, fail, coverage
+        self.node_type, self.expansion = node_type, expansion
         self.label_reads: list[list[str]] = []
+
+    def node_types_batch(self, dcids):
+        if self.fail == "types":
+            raise GraphInfraError("types read failed")
+        return dict.fromkeys(dcids, self.node_type)
 
     def node_subjects_many(self, dcids, *, property, max_results, deadline=None):
         if self.fail == "members":
             raise GraphInfraError("members read failed")
-        return {
-            d: SubjectsPage(dcids=self.members, coverage=SubjectsCoverage.complete) for d in dcids
-        }
+        return {d: SubjectsPage(dcids=self.members, coverage=self.coverage) for d in dcids}
+
+    def child_places_batch(self, parent_dcids, child_type, *, deadline=None):
+        if self.fail == "members":
+            raise GraphInfraError("members read failed")
+        return {d: list(self.expansion) for d in parent_dcids}
 
     def node_labels_batch(self, dcids):
         self.label_reads.append(list(dcids))
@@ -212,23 +240,14 @@ class _GroupGraph:
         return dict.fromkeys(dcids, "graph label")
 
 
-@pytest.mark.parametrize(
-    ("members", "fail", "groups", "label_reads", "degraded"),
-    [
-        (("a",), None, [("complete/LEAD", "graph label")], [["complete/LEAD"]], False),
-        (("a",), "labels", [], [["complete/LEAD"]], True),
-        (("a",), "members", [], [], True),
-        (("a", "b"), None, [], [], False),
-    ],
-    ids=["confirmed", "labels-fail", "members-fail", "members-differ"],
-)
-def test_resubmit_groups_read_labels_only_for_confirmed_members(
-    members, fail, groups, label_reads, degraded
-) -> None:
-    """Labels are read only for groups whose graph members match the role's entities. A
-    failed members or labels read drops the group, says the answer is degraded, and the
-    resubmit still answers."""
-    from search.engine.region.resubmit_request import resubmit_named_groups
+_REGION = {"node_type": "Continent"}
+# The members read of a node of each graph type.
+_MEMBERS_READ = {"Thing": "node_subjects_many", "Continent": "child_places_batch"}
+
+
+def _group_payload():
+    """A resubmit of one entity `a` posting a group on its role, with a label and a type
+    the graph does not hold."""
     from search.engine.spec_id import build_spec_identity
     from search.models import EntityGroup, ResubmitIdentityPayload
     from tests.engine._base_identity import PERSON_COUNT_SHAPE, subject_entity
@@ -239,25 +258,80 @@ def test_resubmit_groups_read_labels_only_for_confirmed_members(
         entities=[subject_entity("a")],
         open_roles=(),
     )
-    payload = ResubmitIdentityPayload(
-        identity=identity,
-        entity_groups={"observationAbout": EntityGroup(dcid="complete/LEAD", label="posted label")},
-    )
-    graph = _GroupGraph(members, fail=fail)
+    posted = EntityGroup(dcid="complete/LEAD", label="posted label", entity_type="PostedType")
+    return ResubmitIdentityPayload(identity=identity, entity_groups={"observationAbout": posted})
 
+
+@pytest.mark.parametrize(
+    ("graph", "groups", "degraded"),
+    [
+        (_GroupGraph(("a",)), [("complete/LEAD", "graph label", "Thing")], 0),
+        (_GroupGraph(("a",), fail="labels"), [], 1),
+        (_GroupGraph(("a",), fail="members"), [], 1),
+        (_GroupGraph(("a",), fail="types"), [], 1),
+        (_GroupGraph(("a", "b")), [], 0),
+        (_GroupGraph(("a",), coverage=SubjectsCoverage.capped), [], 0),
+        (
+            _GroupGraph(("a", "b"), expansion=("a",), **_REGION),
+            [("complete/LEAD", "graph label", "Continent")],
+            0,
+        ),
+        (_GroupGraph(("a",), expansion=("a", "b"), **_REGION), [], 0),
+        (_GroupGraph(("a",), expansion=("a",), fail="members", **_REGION), [], 1),
+    ],
+    ids=[
+        "confirmed",
+        "labels-fail",
+        "members-fail",
+        "types-fail",
+        "members-differ",
+        "members-page-capped",
+        "region-confirmed-by-its-expansion",
+        "region-expansion-differs",
+        "region-expansion-fails",
+    ],
+)
+def test_resubmit_groups_keep_only_groups_the_graph_confirms(graph, groups, degraded) -> None:
+    """A group is kept only when its graph members match the role's entities, and a kept
+    group states the graph's label and type, whatever the posted ones say. A members page cut
+    off at its cap holds only part of the node's members, so its group is dropped. A continent's members
+    are its expansion, whatever its `<-containedInPlace` subjects are. A failed types,
+    members or labels read drops the group, says the answer is degraded, and the resubmit
+    still answers."""
     with recording_degraded_reads() as lost:
-        result = resubmit_named_groups(payload, graph=graph, deadline=None)
+        result = resubmit_named_groups(_group_payload(), graph=graph, deadline=None)
 
-    assert [(g.dcid, g.label) for g in result] == groups
-    assert graph.label_reads == label_reads
+    assert [(g.dcid, g.label, g.entity_type) for g in result] == groups
     # A failed read is lost to the answer, so no cache stores it.
-    assert lost.degraded is degraded
+    assert lost.degraded is bool(degraded)
+
+
+@pytest.mark.parametrize(
+    "graph",
+    [_GroupGraph(("a",)), _GroupGraph(("a", "b"), expansion=("a",), **_REGION)],
+    ids=["group", "region"],
+)
+def test_resubmit_groups_read_in_two_serial_steps(monkeypatch, graph) -> None:
+    """The posted nodes' labels are read beside their types, so a resubmit posting a group
+    reads its types and labels in one step and its members in the next."""
+    requests = VirtualRequests()
+    requests.install(monkeypatch, doubles=(_GroupGraph,), pools=(resubmit_request,))
+
+    async def door():
+        return resubmit_named_groups(_group_payload(), graph=graph, deadline=None)
+
+    (group,) = requests.run(door())
+
+    assert group.label == "graph label"
+    assert sorted(name for name, *_ in requests.spans) == sorted(
+        ["node_types_batch", "node_labels_batch", _MEMBERS_READ[graph.node_type]]
+    )
+    assert requests.serial_depth() == 2
 
 
 def test_resubmit_groups_drop_a_group_naming_no_graph_node() -> None:
     """A posted group with no dcid has nothing that ties its label to the role's entities,
     so a resubmit drops it without a read."""
-    from search.engine.region.resubmit_request import resubmit_named_groups
     from search.engine.spec_id import build_spec_identity
     from search.models import EntityGroup, ResubmitIdentityPayload
     from tests.engine._base_identity import PERSON_COUNT_SHAPE, subject_entity

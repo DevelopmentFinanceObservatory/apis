@@ -27,6 +27,11 @@ from search.models import (
     RoleAxis,
 )
 from statvar_members import DEFAULT_MEMBER_CAP, MemberReadDeadline
+from statvar_members.enumerate import (
+    DegenerateObservationProperties,
+    MultiValuedConstraint,
+    NotAStatisticalVariable,
+)
 from statvar_members.types import UNRESOLVED_NODE
 from tests.datasets_api._graph_doubles import FirstPageWithholdingGraphReader
 from tests.statvar_members.conftest import (
@@ -600,6 +605,59 @@ def test_survivors_whose_role_sets_do_not_nest_refuse_role_signature_incompatibl
     assert exc_info.value.code == "role_signature_incompatible"
     assert exc_info.value.status == 422
     assert exc_info.value.pointer == "/identity"
+
+
+def test_role_signature_refusal_names_five_members_and_counts_the_rest(monkeypatch):
+    """A family of twelve members that disagree on roles names five of them and counts
+    the other seven, so the refusal stays short whatever the family's size."""
+    members = {
+        f"dfo/ids/M{i:02d}": (
+            _IDS_CONSTRAINTS,
+            ("financingRecipient",) if i % 2 else ("financingProvider",),
+        )
+        for i in range(12)
+    }
+    _use_index(monkeypatch, _ids_index(members))
+
+    with pytest.raises(EngineInputError) as exc_info:
+        options_population(_ids_identity({}), graph=FakeMemberArcReader(arcs={}))
+
+    assert exc_info.value.code == "role_signature_incompatible"
+    message = str(exc_info.value)
+    assert sum(dcid in message for dcid in members) == 5
+    assert "7 more" in message
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        MultiValuedConstraint(stat_var=_IDS_TOTAL, property="lendingEntity", values=("a", "b")),
+        NotAStatisticalVariable(stat_var=_IDS_TOTAL, type_of=("Thing",)),
+        NotAStatisticalVariable(stat_var=_IDS_TOTAL, type_of=()),
+        DegenerateObservationProperties(
+            stat_var=_IDS_TOTAL, observation_properties=("observationAbout",)
+        ),
+    ],
+)
+def test_an_unreadable_candidate_refuses_request_invalid_naming_it(monkeypatch, error):
+    """A candidate the graph walk cannot read as a member refuses `request_invalid` at the
+    identity, naming the candidate in a sentence that carries no Python repr."""
+
+    class _Refusing:
+        def enumerate(self, **kwargs):
+            raise error
+
+    monkeypatch.setattr(population_module, "shared_enumerator", _Refusing)
+
+    with pytest.raises(EngineInputError) as exc_info:
+        options_population(_ids_identity({}), graph=_ids_reader(_IDS_NOT_NESTED))
+
+    assert exc_info.value.code == "request_invalid"
+    assert exc_info.value.status == 400
+    assert exc_info.value.pointer == "/identity"
+    message = str(exc_info.value)
+    assert _IDS_TOTAL in message
+    assert not set("'[]") & set(message.replace("identity's", ""))
 
 
 def test_index_member_refining_another_over_an_unbound_constraint_is_dropped(monkeypatch):

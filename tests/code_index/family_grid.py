@@ -17,7 +17,7 @@ from collections.abc import Set as AbstractSet
 from code_index.members import FamilyQuery
 from code_index.query import CodeIndex, row_five_tuple
 from code_index.types import StatVarRow
-from statvar_members import FiveTuple, elect_role_class
+from statvar_members import FiveTuple, elect_role_class, five_tuple_from_identity
 
 STRAY_PROPERTY = "propertyNoRowCarries"
 OUTSIDE_PROVENANCE = "provenance/NotInTheIndex"
@@ -100,6 +100,8 @@ def _identity(
         for field in ("population_type", "measured_property", "stat_type", "measurement_qualifier")
         if (value := getattr(five_tuple, field)) is not None
     }
+    if five_tuple.measurement_denominator is not None:
+        shape["measurement_denominator"] = {"ref": five_tuple.measurement_denominator}
     identity: dict = {
         "identity_version": "spec1",
         "shape": {"kind": "statvar_schema", **shape},
@@ -119,18 +121,20 @@ def _identity(
 
 
 def grid_identities(index: CodeIndex) -> Iterator[dict]:
-    """Every identity of the grid over `index`: on each five-tuple several datasets publish
-    (none of which has a denominator), each slot-key set (`_key_sets`) under each binding
-    (`_bindings`), naming no dataset, each declared dataset, each dataset publishing the
-    five-tuple, and a provenance the index does not hold."""
+    """Every identity of the grid over `index`: on each five-tuple several datasets publish,
+    each slot-key set (`_key_sets`) under each binding (`_bindings`), naming no dataset,
+    each declared dataset, each dataset publishing the five-tuple, and a provenance the
+    index does not hold. Each identity's shape reads back as its five-tuple, denominator
+    included, so a grid over a five-tuple with a denominator never tests the one without."""
     for five_tuple in shared_five_tuples(index):
-        assert five_tuple.measurement_denominator is None, five_tuple
         published = five_tuple_rows(index, five_tuple)
         declared = {*index.datasets, *index.datasets_by_five_tuple[five_tuple]}
         sources = (None, *sorted(declared), OUTSIDE_PROVENANCE)
         for keys in _key_sets(published):
             for bound, source in itertools.product(_bindings(published, keys), sources):
-                yield _identity(five_tuple, keys, bound, source)
+                identity = _identity(five_tuple, keys, bound, source)
+                assert five_tuple_from_identity(identity["shape"]) == five_tuple, five_tuple
+                yield identity
 
 
 @dataclasses.dataclass(frozen=True)

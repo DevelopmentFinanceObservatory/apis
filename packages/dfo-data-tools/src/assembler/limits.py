@@ -24,6 +24,9 @@ MAX_SELECTORS = 16
 
 The write path currently normalizes `select` to one selector."""
 
+LABEL_MAX = 200
+"""Code points kept of every label a payload or its provenance carries, unit labels included."""
+
 MAX_ENVELOPE_BYTES = 2 * 1024 * 1024
 """UTF-8 bytes allowed for `component` and `provenance`, using compact JSON with
 `ensure_ascii=False`. Checked after minting and again on an in-transaction
@@ -32,8 +35,35 @@ rebuild, before a create pins its frame.
 The four envelope scalars add under 200 bytes. Replies also carry a fact
 summary capped at 2,000 approximate tokens. Readback trusts revisions stored
 before this limit. A 2,000-row table with 200-character ASCII labels
-uses about 1.24 MB. `_LABEL_MAX` counts code points. Repeated multi-byte
-labels can reach 9.6 MB. Unit and source URL text have no separate length cap."""
+uses about 1.24 MB. `LABEL_MAX` counts code points. Repeated multi-byte
+labels can reach 9.6 MB. Unit labels are cut at `LABEL_MAX`. A source's `url` is
+copied at full length."""
+
+
+def joined_label(*parts: str, joiner: str) -> str:
+    """Joins `parts` with `joiner` within `LABEL_MAX`, so every part and every joiner stays in
+    the label.
+
+    A join over `LABEL_MAX` shortens its longest parts to one shared length. A shorter part
+    keeps its text, and the later of the shortened parts take any code points left over."""
+    room = LABEL_MAX - len(joiner) * (len(parts) - 1)
+    shortened = len(parts)
+    for length in sorted(map(len, parts)):
+        if length * shortened > room:
+            break
+        room -= length
+        shortened -= 1
+    else:
+        return joiner.join(parts)
+    share, spare = divmod(room, shortened)
+    kept: list[str] = []
+    for part in parts:
+        if len(part) > share:
+            shortened -= 1
+            part = part[: share + (shortened < spare)]
+        kept.append(part)
+    return joiner.join(kept)
+
 
 MAX_INTENT_BYTES = 65_536
 """Raw intent bytes, checked by the pipeline before schema validation."""

@@ -20,6 +20,7 @@ from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.version_store import LiveVersionRecordWriter
 from datasets_api.versions import MemberSignal, SubjectHead
+from dc_graph import GraphReadError
 from materialise.formats import FRAME1_MEDIA_TYPE
 from materialise.graph import Facet
 from materialise.recipe_bodies import RECIPE_BODIES
@@ -1362,3 +1363,79 @@ def test_head_recheck_declines_on_a_non_currency_native_unit_and_serve_remints_t
     assert problem["code"] == "facet_binding_unsupported"
     assert problem["retryable"] is False
     assert "pointer" not in problem
+
+
+class _ReReadGraph(FakeMintGraphReader):
+    """A graph whose withheld-provenance re-read fails while `re_read_fails`, and otherwise
+    finds nothing withheld."""
+
+    re_read_fails = True
+
+    def withheld_at(self, variables, entities, *, deadline=None, max_bytes=None):
+        if self.re_read_fails:
+            raise GraphReadError("503", upstream_status=503)
+        return {}
+
+
+def test_an_empty_probe_writes_nothing_until_its_registry_check_completes():
+    stat_var = "Count_Person"
+    facets: dict[tuple[str, str], list[Facet]] = {}
+    graph = _ReReadGraph(
+        arcs={
+            stat_var: {"typeOf": ("StatisticalVariable",), "measuredProperty": ("count",)},
+            _RECIPIENT: {"typeOf": ("Country",), "name": ("Kenya",)},
+        },
+        facets=facets,
+        labels={"OECD_DAC2A": "OECD DAC2a", _RECIPIENT: "Kenya"},
+    )
+    header = _CSV_HEADER.replace(",recipient,", ",observationAbout,")
+    transport, sdmx_calls = _counting_transport(
+        {"text": header + _row(stat_var_ref=f"dcid:{stat_var}", obs_value="7")}
+    )
+    head_store = _FakeHeadStore()
+    version_store = FakeVersionRecordDatasetStore()
+    artifact_store = _RenderableArtifactStore(inventory=LiveArtifactInventory(store=version_store))
+    client = _base_client(
+        graph=graph,
+        sdmx_transport=transport,
+        head_writer=head_store,
+        version_store=version_store,
+        artifact_store=artifact_store,
+    )
+    body = {
+        "schema_version": 1,
+        "input": {
+            "kind": "statvar_set",
+            "statvars": [f"dcid:{stat_var}"],
+            "scope": {"entities": {"observationAbout": [_RECIPIENT]}},
+        },
+        "options": {"bundle": False},
+    }
+
+    # The re-read that would tell withheld data from no data fails, so the mint refuses and
+    # writes no artifact, version or head.
+    refused = client.post("/api/datasets", json=body)
+    assert refused.status_code == 502, refused.text
+    assert (refused.json()["code"], refused.json()["retryable"]) == ("upstream_error", True)
+    assert artifact_store.put_calls == 0
+    assert head_store.advance_head_calls == 0
+
+    # The check completes and finds nothing withheld, so the empty version is written.
+    graph.re_read_fails = False
+    minted = client.post("/api/datasets", json=body)
+    assert minted.status_code == 200, minted.text
+    empty = minted.json()
+    spec_id = empty["definition"]["spec_id"]
+    assert empty["coverage"]["rows"] == 0
+    assert head_store.head_for(spec_id).content_version == empty["content_version"]
+    assert sdmx_calls.n == 0
+
+    # Data arrives. The probe finds a facet, and a new version replaces the empty one.
+    head_store.age_head(spec_id, age=_PAST_INTERVAL)
+    facets[(stat_var, _RECIPIENT)] = [_FACET]
+    arrived = client.get(f"/api/datasets/{spec_id}")
+    assert arrived.status_code == 200, arrived.text
+    assert arrived.json()["trace"]["served_from"] == "materialise"
+    assert arrived.json()["coverage"]["rows"] == 1
+    assert arrived.json()["content_version"] != empty["content_version"]
+    assert head_store.head_for(spec_id).content_version == arrived.json()["content_version"]

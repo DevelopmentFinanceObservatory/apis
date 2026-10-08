@@ -467,6 +467,7 @@ def _index_carrying_the_fixture_family(*, member_crs_purpose: str) -> CodeIndex:
                 description="A test table.",
                 opt_in=False,
                 absent_observation="zero",
+                account="provider",
                 rank=1,
             ),
         ),

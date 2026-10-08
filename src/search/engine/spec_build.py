@@ -256,24 +256,72 @@ class NamedGroup:
     """A group the request named ("EU member states") and the entity dcids it stands for.
 
     `label` is the group's name as the request gave it. `dcid` is its own graph node, when
-    the graph holds one.
+    the graph holds one, and `entity_type` is that node's graph type. `named_alone` are the
+    members the request also named on their own, each as the role key it fills and its
+    dcid.
     """
 
     label: str
     dcid: str | None
     member_dcids: frozenset[str]
+    entity_type: str | None = None
+    named_alone: frozenset[tuple[str, str]] = frozenset()
 
 
 def spec_named_groups(spec: Spec) -> tuple[NamedGroup, ...]:
-    """The groups `spec` serves, each standing for its role's entities in the identity.
+    """The groups `spec` names: each set whose every member one of its roles binds
+    (`ResolvedSpec.named_sets`), then each group it serves on a role, standing for that
+    role's entities in the identity.
 
-    The members come from ``definition.identity.entities``, since ``resolved.entities`` is
-    the display projection and can collapse origin and destination.
+    A served group's members come from ``definition.identity.entities``, since
+    ``resolved.entities`` is the display projection and can collapse origin and destination.
     """
     entities = spec.definition.identity.entities
-    return tuple(
-        NamedGroup(label=group.label, dcid=group.dcid, member_dcids=frozenset(entities[role]))
+    alone = spec.resolved.named_alone
+    named = [
+        NamedGroup(
+            label=group.label,
+            dcid=group.dcid,
+            member_dcids=members,
+            entity_type=group.entity_type,
+            named_alone=frozenset((r, d) for r, d in alone if r == role and d in members),
+        )
+        for role, group, members in spec.resolved.named_sets
+    ]
+    named.extend(
+        NamedGroup(
+            label=group.label,
+            dcid=group.dcid,
+            member_dcids=frozenset(entities[role]),
+            entity_type=group.entity_type,
+            named_alone=frozenset((r, d) for r, d in alone if r == role and d in entities[role]),
+        )
         for role, group in (spec.resolved.entity_groups or {}).items()
+    )
+    return tuple(dict.fromkeys(named))
+
+
+def role_named_sets(
+    groups: Iterable[NamedGroup], entities: Iterable[Entity]
+) -> tuple[tuple[str, EntityGroup, frozenset[str]], ...]:
+    """The groups whose every member a role binds, as `(role, group, member dcids)` in
+    role order, then the order of `groups` (`ResolvedSpec.named_sets`). A role that binds
+    a group's members beside other places names the group here and carries no entity
+    group (`role_entity_groups`). A group whose own node the role binds is served at that
+    node, so the role does not name it: the members it binds came from other names."""
+    dcids_by_role: dict[str, set[str]] = {}
+    for entity in entities:
+        dcids_by_role.setdefault(entity_role_key(entity), set()).add(entity.ref.dcid)
+    distinct = tuple(dict.fromkeys(groups))
+    return tuple(
+        (
+            role,
+            EntityGroup(dcid=group.dcid, label=group.label, entity_type=group.entity_type),
+            group.member_dcids,
+        )
+        for role, dcids in dcids_by_role.items()
+        for group in distinct
+        if group.member_dcids and group.member_dcids <= dcids and group.dcid not in dcids
     )
 
 
@@ -283,8 +331,9 @@ def role_entity_groups(
     """The group each role's entities stand for, keyed by identity role key.
 
     A role takes a group when its bound dcids are exactly the group's members, so a role
-    whose entities were capped, widened or edited reads as its members instead. The first
-    matching group wins.
+    whose entities were capped, widened or edited reads as its members instead. Of groups
+    with the same members, one with a node wins over one without, then the first by dcid,
+    then label, whatever order the request named them in.
     """
     dcids_by_role: dict[str, set[str]] = {}
     for entity in entities:
@@ -292,9 +341,15 @@ def role_entity_groups(
     groups = tuple(groups)
     result: dict[str, EntityGroup] = {}
     for role, dcids in dcids_by_role.items():
-        group = next((g for g in groups if g.member_dcids == dcids), None)
+        group = min(
+            (g for g in groups if g.member_dcids == dcids),
+            key=lambda g: (g.dcid is None, g.dcid or "", g.label),
+            default=None,
+        )
         if group is not None:
-            result[role] = EntityGroup(dcid=group.dcid, label=group.label)
+            result[role] = EntityGroup(
+                dcid=group.dcid, label=group.label, entity_type=group.entity_type
+            )
     return result
 
 
@@ -958,7 +1013,8 @@ def build_spec(
             the hashed entities.
         named_groups: The groups the request named. A role whose identity entities are
             exactly one group's members carries that group on
-            ``ResolvedSpec.entity_groups`` (`role_entity_groups`).
+            ``ResolvedSpec.entity_groups`` (`role_entity_groups`), and every group a role
+            binds whole becomes one of ``ResolvedSpec.named_sets`` (`role_named_sets`).
         facet_bindings: Measurement-method and unit bindings included in identity.
         inapplicable_slots and unresolved_slots: Graph constraint facts reported in
             ``ResolvedSpec`` and excluded from identity.
@@ -995,6 +1051,7 @@ def build_spec(
 
     # spec_id and identity derive from one projection through build_spec_identity.
     hashed_entities = identity_entities if identity_entities is not None else entities
+    named_groups = tuple(named_groups)
     entity_groups = role_entity_groups(named_groups, hashed_entities)
     spec_id, identity_doc = build_spec_identity(
         identity_shape_from_wire(shape),
@@ -1113,6 +1170,10 @@ def build_spec(
                 for e in entities
                 if (entity_role_key(e), e.ref.dcid) in unserved
             )
+        )
+        .stating_named_sets(
+            role_named_sets(named_groups, hashed_entities),
+            frozenset(alone for group in named_groups for alone in group.named_alone),
         )
         .stating_data_years(data_years(plan))
         .stating_members(stat_vars)

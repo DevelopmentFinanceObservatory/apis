@@ -6,9 +6,14 @@ The refusal scan includes reserved codes without an EngineInputError raise site.
 from __future__ import annotations
 
 import ast
+import inspect
 import pathlib
 
-from search.engine.codes import REFUSAL_CODES, WARNING_CODES
+import pytest
+
+from search.engine.app import classify_search_exception
+from search.engine.codes import REFUSAL_CODES, SEARCH_CODE_CATALOGUE, WARNING_CODES
+from search.engine.errors import EngineInputError
 from search.engine.region.codes import (
     NO_MEMBER_ASSERTS_BOUND_PROPERTIES,
     NO_MEMBER_HAS_DATA_AT_PLACE,
@@ -415,6 +420,36 @@ def _sweep_minted_refusal_codes() -> tuple[frozenset[str], tuple[str, ...]]:
     return frozenset(resolved), tuple(failures)
 
 
+def _sweep_refusal_call_arguments() -> tuple[int, tuple[str, ...]]:
+    """Count EngineInputError calls and report each whose arguments are not one positional
+    message plus keywords the class declares.
+    """
+    parameters = inspect.signature(EngineInputError).parameters.values()
+    accepted = {p.name for p in parameters if p.kind is inspect.Parameter.KEYWORD_ONLY}
+    calls = 0
+    failures: list[str] = []
+    for path in sorted(_SEARCH_SRC.rglob("*.py")):
+        tree = ast.parse(path.read_text(), filename=str(path))
+        bindings = _engine_input_error_import_bindings(tree)
+        if bindings is None:
+            continue
+        rel_path = path.relative_to(_SEARCH_SRC).as_posix()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            if _resolve_dotted_target(node.func, bindings) not in _ENGINE_INPUT_ERROR_CLASS_TARGETS:
+                continue
+            calls += 1
+            location = f"{rel_path}:{node.lineno}"
+            if len(node.args) != 1 or isinstance(node.args[0], ast.Starred):
+                failures.append(f"{location}: expected one positional message")
+            for keyword in node.keywords:
+                if keyword.arg not in accepted:
+                    passed = "**" if keyword.arg is None else keyword.arg
+                    failures.append(f"{location}: keyword {passed!r} is not a parameter")
+    return calls, tuple(failures)
+
+
 # Computed once at collection time: every warning code the engine actually
 # mints, discovered by AST sweep rather than hand-mirrored.
 _MINTED_WARNING_CODES, _UNRESOLVED_WARNING_CODE_KWARGS = _sweep_minted_warning_codes()
@@ -465,6 +500,27 @@ def test_every_refusal_code_kwarg_resolves_statically():
     assert not _UNRESOLVED_REFUSAL_CODE_KWARGS, "unresolvable code= expression(s):\n" + "\n".join(
         _UNRESOLVED_REFUSAL_CODE_KWARGS
     )
+
+
+def test_every_refusal_call_passes_one_message_and_declared_keywords():
+    """Every EngineInputError call gives one positional message and only keywords the class
+    declares, so no call can carry a second text for the wire.
+    """
+    calls, failures = _sweep_refusal_call_arguments()
+    assert calls >= 40, f"only found {calls} EngineInputError calls; check _SEARCH_SRC"
+    assert not failures, "EngineInputError call(s) with unexpected arguments:\n" + "\n".join(
+        failures
+    )
+
+
+@pytest.mark.parametrize("code", sorted(SEARCH_CODE_CATALOGUE))
+def test_coded_refusal_serves_its_message_as_detail(code):
+    """A coded refusal's problem detail is the message its raise site wrote."""
+    message = f"message written for {code}"
+    problem = classify_search_exception(EngineInputError(message, code=code, status=422))
+    assert problem is not None
+    assert problem.code == code
+    assert problem.detail == message
 
 
 def test_no_constant_name_collides_across_modules():

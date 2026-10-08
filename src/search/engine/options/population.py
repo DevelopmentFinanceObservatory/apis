@@ -23,12 +23,13 @@ integrity failures raise `request_invalid`. The search-owned
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, cast
 
 from code_index.query import dedupe_first_seen
 from code_index.shared import get_index
+from dfo_platform.named import named_capped
 from materialise import GraphReader
 from materialise.facets import ElectedDataset
 from search.engine.config import settings
@@ -173,10 +174,33 @@ def _widen_hierarchical_slots(slots: Mapping[str, SlotBinding]) -> dict[str, Slo
     return widened
 
 
-def _role_signature_incompatible(source: str, cause: Exception) -> EngineInputError:
+def _unusable_member(
+    exc: MultiValuedConstraint | NotAStatisticalVariable | DegenerateObservationProperties,
+) -> str:
+    """Name the candidate the graph walk could not read as a member, and why."""
+    match exc:
+        case MultiValuedConstraint():
+            return (
+                f"{exc.stat_var} matches this identity and carries {len(exc.values)} values "
+                f"on {exc.property} where a member carries one: {named_capped(exc.values)}"
+            )
+        case NotAStatisticalVariable():
+            typed = f"is typed {named_capped(exc.type_of)}" if exc.type_of else "has no type"
+            return (
+                f"{exc.stat_var} matches this identity and {typed} in the graph, where a "
+                "member is a StatisticalVariable"
+            )
+        case DegenerateObservationProperties():
+            return (
+                f"{exc.stat_var} matches this identity and declares observationAbout among "
+                "its observation properties, which a member does not"
+            )
+
+
+def _role_signature_incompatible(stat_vars: Iterable[str]) -> EngineInputError:
     return EngineInputError(
-        f"the {source} population's members disagree on declared entity-role "
-        f"signatures, so no single role signature describes it: {cause}",
+        "the StatVars this identity denotes declare different entity roles, so no "
+        f"single role signature describes them: {named_capped(sorted(stat_vars))}",
         code="role_signature_incompatible",
         status=422,
         pointer="/identity",
@@ -227,7 +251,7 @@ def options_population(
         try:
             declared_roles = declared_role_signature(member_facts)
         except RoleSignatureError as exc:
-            raise _role_signature_incompatible("index-sourced", exc) from exc
+            raise _role_signature_incompatible(member_facts) from exc
         stat_var_dcids = tuple(sorted(member_facts))
         datasets = elected_datasets(member_facts)
     else:
@@ -256,15 +280,23 @@ def options_population(
                 pointer="/identity",
             ) from exc
         except MemberRoleDisagreement as exc:
-            raise _role_signature_incompatible("graph-enumerated", exc) from exc
+            raise _role_signature_incompatible(exc.roles_by_stat_var) from exc
+        except MemberQueryUnanchored as exc:
+            raise EngineInputError(
+                "the posted identity's shape names no measured property, so its StatVars "
+                "cannot be enumerated",
+                code="request_invalid",
+                status=400,
+                pointer="/identity",
+            ) from exc
         except (
-            MemberQueryUnanchored,
             MultiValuedConstraint,
             NotAStatisticalVariable,
             DegenerateObservationProperties,
         ) as exc:
             raise EngineInputError(
-                str(exc),
+                f"{_unusable_member(exc)}, so the identity's StatVars cannot be enumerated; "
+                "bind a what/how slot that leaves it out",
                 code="request_invalid",
                 status=400,
                 pointer="/identity",

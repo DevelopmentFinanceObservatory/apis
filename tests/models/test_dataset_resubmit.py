@@ -11,6 +11,7 @@ from search.engine.codes import WARNING_CODES
 from search.models import (
     _RESUBMIT_MAX_CANDIDATES,
     DatasetResubmitInput,
+    EntityGroup,
     EntryPath,
     ResolveRequest,
     ResubmitCandidate,
@@ -112,6 +113,41 @@ class TestDatasetResubmitDiscrimination:
             "parsed",
             "dataset_resubmit",
         }
+
+
+_AFRICA = {"dcid": "africa", "label": "Africa", "entity_type": "Continent"}
+
+
+class TestEntityGroup:
+    def test_a_node_s_type_round_trips_and_a_typeless_group_serves_no_key(self):
+        typed = EntityGroup.model_validate(_AFRICA)
+        typeless = EntityGroup(label="Baltic states")
+
+        assert typed.model_dump(mode="json", exclude_none=True) == _AFRICA
+        assert typeless.entity_type is None
+        assert typeless.model_dump(mode="json", exclude_none=True) == {"label": "Baltic states"}
+
+    def test_the_schema_bounds_the_type_as_the_dcid_and_requires_neither(self):
+        schema = EntityGroup.model_json_schema()
+
+        properties = schema["properties"]
+        assert properties["entity_type"]["anyOf"] == properties["dcid"]["anyOf"]
+        assert properties["entity_type"]["default"] is None
+        assert schema["required"] == ["label"]
+        with pytest.raises(ValidationError):
+            EntityGroup(label="Africa", entity_type="C" * 1025)
+
+    @pytest.mark.parametrize(
+        ("model", "document"),
+        [
+            (ResubmitIdentityEntry, _identity_entry()),
+            (ResubmitCandidate, {"identity": _identity()}),
+        ],
+    )
+    def test_a_resubmit_accepts_a_posted_group_that_carries_its_type(self, model, document):
+        posted = model.model_validate({**document, "entity_groups": {"origin": _AFRICA}})
+
+        assert posted.entity_groups == {"origin": EntityGroup.model_validate(_AFRICA)}
 
 
 class TestResubmitIdentityEntry:

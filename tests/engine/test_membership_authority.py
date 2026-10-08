@@ -28,7 +28,7 @@ from search.engine.errors import GraphInfraError
 from search.engine.region import promote_reread, resolve_spec_resubmit, resolve_variable
 from search.engine.region.codes import MEMBERSHIP_UNVERIFIED
 from search.engine.region.grounding import carrier_flag_warnings
-from search.engine.region.place_context import empty_place_context
+from search.engine.region.place_context import PlaceContext
 from search.engine.region.place_roles import PlaceRoles
 from search.engine.region.promote_state import _PromoteState
 from search.engine.region.state import EngineOptions, served_stat_vars
@@ -37,7 +37,9 @@ from search.engine.retrieval.bound_values import (
     MembershipAuthority,
     ResubmitWalk,
     RoleClassWalks,
+    RoleKeys,
     elected_role_class_shape,
+    entity_role_keys,
     shape_query,
 )
 from search.engine.retrieval.derive import derive_shapes
@@ -646,7 +648,7 @@ def test_a_walk_that_finds_the_total_of_a_subject_only_part_replaces_the_part(po
     assert resolution.authority is MembershipAuthority.AUTHORITATIVE
     assert set(resolution.value.sv_arc_facts or {}) == {_POPULATION, _POPULATION_FEMALE}
     assert resolution.value.sv_arc_facts_complete is posted
-    assert served_stat_vars(resolution.value, [], empty_place_context().roles) == [_POPULATION]
+    assert served_stat_vars(resolution.value, [], RoleKeys()) == [_POPULATION]
 
 
 def test_a_walked_family_keeps_the_order_of_the_members_the_shape_held():
@@ -719,6 +721,10 @@ def test_a_subject_only_answer_whose_walk_settles_nothing_answers_its_recall_and
 # ---------------------------------------------------------------------------
 
 
+def _role_keys(place: PlaceContext) -> RoleKeys:
+    return entity_role_keys(place.roles.resolved_entities, open_axes=place.roles.open_axes)
+
+
 def _alternates(
     member_graph: FakeMintGraphReader,
     shape: ShapeDraft | None = None,
@@ -786,7 +792,7 @@ def test_an_alternate_a_settled_walk_narrows_is_scoped_and_answered_over_the_wal
 
     (answered,), _ = _alternates(_walk_reader(_DEBT_NODES), shape)
 
-    assert served_stat_vars(answered.shape, answered.bindings, answered.place.roles) == [
+    assert served_stat_vars(answered.shape, answered.bindings, _role_keys(answered.place)) == [
         _TOTAL_GUARANTEED
     ]
     assert answered.mat.sv_dcids == [_TOTAL_GUARANTEED]
@@ -819,7 +825,7 @@ def test_an_alternate_whose_walk_settles_nothing_is_scoped_over_the_members_it_a
 
     assert answered.mat.membership_unverified is True
     assert answered.mat.sv_dcids == [_TOTAL_GUARANTEED]
-    assert served_stat_vars(answered.shape, answered.bindings, answered.place.roles) == [
+    assert served_stat_vars(answered.shape, answered.bindings, _role_keys(answered.place)) == [
         _TOTAL_GUARANTEED
     ]
 

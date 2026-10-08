@@ -32,7 +32,6 @@ from search.engine.errors import (
     RoleEntityUnplaced,
 )
 from search.engine.extract import DateRequest
-from search.engine.ground import graphref
 from search.engine.region.arcs import (
     inapplicable_slots_from_member_facts,
     unresolved_slots_from_member_facts,
@@ -44,7 +43,7 @@ from search.engine.region.codes import (
     ROLE_DECLARATION_UNVERIFIED,
     ROLE_SCOPE_DEFAULTED,
 )
-from search.engine.region.decisions import detect_set_ref
+from search.engine.region.decisions import PlaceSetRefusedError, detect_set_ref
 from search.engine.region.facets import answer_facet_dcids, answer_facets, cited_facets
 from search.engine.region.refs import (
     _ref_or_miss,
@@ -67,7 +66,11 @@ from search.engine.retrieval.coverage import citable_source_ids
 from search.engine.retrieval.elected_dataset import elected_datasets
 from search.engine.retrieval.facts import read_slot_taxonomy
 from search.engine.retrieval.member_facts import ArcsMemberFacts, MemberFacts
-from search.engine.retrieval.standard import standard_option_coverage, standard_resolve
+from search.engine.retrieval.standard import (
+    FacetBatch,
+    standard_option_coverage,
+    standard_resolve,
+)
 from search.engine.shape import (
     ShapeDraft,
     SlotKeyDraft,
@@ -108,7 +111,7 @@ from search.observations import provenance_refs, unlisted_provenances
 
 if TYPE_CHECKING:
     from materialise.place_scope import DefaultPresence
-    from search.engine.region.place_context import PlaceContext
+    from search.engine.region.place_context import PlaceContext, UnsettledPlace
     from search.engine.retrieval.read_plan import ReadPlan
     from search.engine.retrieval.retrieve import Materialised
     from search.engine.retrieval.role_scope import DiscoveredScope
@@ -540,8 +543,10 @@ def _ground_answer_lookup(
     `node_labels_batch` call. Missing graph labels fall back to packaged code-index labels.
     Source labels come from the origin catalogue; only provenance ids it does not list
     join the batch.
-    Index-sourced taxonomies offer the bound value's parent and children. Unbound slots and
-    bound sets offer each root and its children. Deeper levels are excluded from the lookup.
+    Index-sourced taxonomies offer a bound code's children and its parent, or, for a bound
+    root, its children and every other root (`CodeIndex.level_scoped_options`). Unbound
+    slots and bound sets offer each root and its children. Deeper levels are excluded from
+    the lookup.
     A slot gets an index-sourced menu only when a dataset that can serve the family
     `bindings`, the roles' keys and `open_axes` state publishes a row carrying its property
     (`code_index.members.offers_slot`), so a table without the slot's code system offers no
@@ -773,7 +778,8 @@ def _ground_entities_and_sources(
     graph: EngineGraphClient,
     query_entity_text_by_dcid: Mapping[str, str],
 ) -> tuple[list[GraphRef], list, list[ProvenanceRef], list[Warning]]:
-    """Build StatVar, entity, and source refs from batched labels. Resolve entity types separately.
+    """Build StatVar, entity, and source refs from batched labels. The entities' types are
+    read in one batch, and the labels of the distinct types in one more.
 
     Every StatVar in `sv_dcids` is a member the answer serves, so one with no graph label
     keeps a dcid-echo ref, as a no-data answer's elected members do
@@ -787,6 +793,11 @@ def _ground_entities_and_sources(
 
     sv_refs = [GraphRef(dcid=dcid, label=labels.get(dcid, dcid)) for dcid in sv_dcids]
 
+    entity_dcids = list(dict.fromkeys(dcid for dcid, _role in lookup.resolved_role_bindings))
+    node_types = graph.node_types_batch(entity_dcids) if entity_dcids else {}
+    type_dcids = list(dict.fromkeys(node_types.values()))
+    type_labels = graph.node_labels_batch(type_dcids) if type_dcids else {}
+
     entity_objects_data = []
     unresolved_entity_dcids: list[str] = []
     for dcid, role in lookup.resolved_role_bindings:
@@ -798,13 +809,13 @@ def _ground_entities_and_sources(
         if query_text := query_entity_text_by_dcid.get(dcid):
             entity_ref = GraphRef(dcid=dcid, label=query_text)
 
-        entity_type_ref: GraphRef | None = None
-        node_type = graph.node_type(dcid)
-        if node_type:
-            try:
-                entity_type_ref = graphref(node_type, graph=graph)
-            except GroundingMiss:
-                entity_type_ref = GraphRef(dcid=node_type, label=node_type)
+        # A type the graph gives no label keeps a dcid-echo ref.
+        node_type = node_types.get(dcid)
+        entity_type_ref = (
+            GraphRef(dcid=node_type, label=type_labels.get(node_type) or node_type)
+            if node_type
+            else None
+        )
 
         entity_objects_data.append((role, entity_ref, entity_type_ref))
 
@@ -939,6 +950,9 @@ class _RelaxationProbeContext:
     shape_draft: ShapeDraft
     # The original answer's place context and the request's presence read.
     place: PlaceContext
+    # The original answer's places before its place sets settled. A relaxation settles
+    # them on its own read. `None` when the answer's context is all there is to read in.
+    unsettled: UnsettledPlace | None
     presence: DefaultPresence | None
     date_request: DateRequest | None
     deadline: float | None
@@ -964,6 +978,20 @@ class SuggestionRead:
     plan: ReadPlan | None
     place: PlaceContext
     member_facts: Mapping[str, MemberFacts] | None
+
+
+def _relaxation_place(
+    ctx: _RelaxationProbeContext, shape: ShapeDraft
+) -> PlaceContext | UnsettledPlace:
+    """The places a relaxed query answered through `shape` is read in. These are the original
+    answer's places before its sets settled, set to `shape`, so the relaxation settles them
+    on its own read. Where a walk turns the shape from role-bearing to subject-only, or the
+    reverse, the assignment describes another kind of shape, and the places are the original
+    answer's context."""
+    unsettled = ctx.unsettled
+    if unsettled is None or is_role_bearing(shape) != is_role_bearing(unsettled.shape):
+        return ctx.place
+    return dataclasses.replace(unsettled, shape=shape)
 
 
 def _relaxation_places(place: PlaceContext) -> list[str]:
@@ -1085,52 +1113,58 @@ def _relaxed_binding_suggestion(
     ground_warnings, probe_warning)`. `walked` is what the mint states of the members that
     query's walk settled.
 
-    No data, no StatVars, or any exception returns no suggestion. Ground warnings are None
+    No data, no StatVars, places over the bound on the places a Spec binds
+    (`PlaceSetTooLargeError`), or any exception returns no suggestion. Ground warnings are None
     until grounding runs. Probe warnings report option-coverage failures, from a probe over
     the suggestion's own places. This optional no-data probe fails open and leaves the
     resolved response intact.
     """
-    from search.engine.region.place_context import settled_shape
+    from search.engine.region.place_context import settle_sets, settled_shape, with_where
     from search.engine.retrieval.retrieve import Materialised
     from search.engine.retrieval.role_resolve import graph_confirm_resolve
 
-    roles = ctx.place.roles
     ground_warnings: list[Warning] | None = None
     probe_warning: Warning | None = None
-    try:
-        # A standard shape resolves as the standard route answers it, over the original
-        # answer's entities and places or its default-scope presence read; a role-bearing
-        # shape confirms against coverage.
-        mat = (
-            graph_confirm_resolve(
+
+    def read(place: PlaceContext, facet_batch: FacetBatch | None) -> object:
+        """The relaxed query's own resolve in `place`. A standard shape resolves as the
+        standard route answers it, over the context's entities and places or its
+        default-scope presence read; a role-bearing shape confirms against coverage."""
+        if is_role_bearing(shape):
+            return graph_confirm_resolve(
                 shape=shape,
                 bindings=relaxed,
-                subject_dcids=_relaxation_places(ctx.place),
-                origin_dcids=roles.origin_dcids,
+                subject_dcids=_relaxation_places(place),
+                origin_dcids=place.roles.origin_dcids,
                 graph=ctx.graph,
                 sdmx=ctx.sdmx,
                 date_request=ctx.date_request,
                 deadline=ctx.deadline,
-                open_axes=roles.open_axes,
+                open_axes=place.roles.open_axes,
                 coverage_snapshot=ctx.coverage,
             )
-            if is_role_bearing(shape)
-            else standard_resolve(
-                shape=shape,
-                bindings=relaxed,
-                entities=roles.resolved_entities,
-                graph=ctx.graph,
-                date_request=ctx.date_request,
-                place_dcids=ctx.place.probe_places,
-                default_presence=ctx.place.presence_for(ctx.presence),
-            )
+        return standard_resolve(
+            shape=shape,
+            bindings=relaxed,
+            entities=place.roles.resolved_entities,
+            graph=ctx.graph,
+            date_request=ctx.date_request,
+            place_dcids=place.probe_places,
+            default_presence=place.presence_for(ctx.presence),
+            facet_batch=facet_batch,
         )
+
+    try:
+        bound, mat = settle_sets(_relaxation_place(ctx, shape), read)
         if not isinstance(mat, Materialised):
             return None, None, None, None
         # A flagged-unavailable carrier represents the original binding.
         if not mat.has_data:
             return None, None, None, None
-        place = ctx.place.settled(mat)
+        roles = bound.roles
+        if bound.where != ctx.place.where:
+            relaxed = with_where(relaxed, bound)
+        place = bound.settled(mat)
         shape = settled_shape(shape, mat)
 
         ground = _ground_answer(
@@ -1298,6 +1332,9 @@ def _relaxed_binding_suggestion(
             walked=walked,
         )
         spec = apply_declaration_version(spec, relaxed)
+    except PlaceSetRefusedError:
+        # A relaxation that cannot bind its places is not suggested.
+        return None, None, ground_warnings, probe_warning
     except (GraphReadError, GraphInfraError, TimeoutError):
         note_degraded_read("nearest-real suggestion")
         return None, None, ground_warnings, probe_warning
@@ -1337,6 +1374,7 @@ def _suggest_nearest_real(
     named_groups: tuple[NamedGroup, ...] = (),
     n_max: int = 2,
     coverage: CoverageSnapshot,
+    unsettled: UnsettledPlace | None = None,
 ) -> tuple[list[NearestRealSpec], list[Warning], dict[str, SuggestionRead], DefaultPresence | None]:
     """Relax one value/set binding at a time and return up to `n_max` confirmed suggestions,
     the warnings, what each suggestion is read over by spec id, and the presence the
@@ -1346,9 +1384,11 @@ def _suggest_nearest_real(
     Runs synchronously on the no-observations path. Every relaxation first walks its own
     members with `role_class_walks`, all in one round, as the relaxed query's first answer
     does (`_walked_relaxations`), and is then probed in query order, in `place`, the
-    original answer's place context, until `n_max` suggestions are found. A role-bearing
-    shape confirms it against coverage at the context's probe places (else its observation
-    destination) and origins; a standard shape resolves it through
+    original answer's place context, until `n_max` suggestions are found. With `unsettled`,
+    the original answer's places before its place sets settled, each relaxation settles
+    them on its own read (`_relaxation_place`), so it binds a set's node where its own
+    StatVars hold data there. A role-bearing shape confirms it against coverage at the
+    context's probe places (else its observation destination) and origins; a standard shape resolves it through
     `standard.standard_resolve` over the context's entities and probe places, or `presence`
     on a default scope. The request's presence read covers every recalled member, so the
     relaxed queries read no scope beside the walks; one read after them adds the members
@@ -1370,6 +1410,7 @@ def _suggest_nearest_real(
         sdmx=sdmx,
         shape_draft=shape_draft,
         place=place,
+        unsettled=unsettled,
         presence=presence,
         date_request=date_request,
         deadline=deadline,

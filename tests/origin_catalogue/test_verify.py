@@ -9,10 +9,10 @@ from pathlib import Path
 
 import pytest
 
-from origin_catalogue import STALE_AFTER
-from origin_catalogue.schema import UnCarryForward
+from origin_catalogue import STALE_AFTER, artifact
+from origin_catalogue.schema import FORMAT_ROOT, UN_VARIABLES_FILE, UnCarryForward
 from origin_catalogue.verify import main
-from tests.origin_catalogue.support import BUILT_AT, publish_sample
+from tests.origin_catalogue.support import BUILT_AT, publish_sample, sample_un_mirror
 
 
 def _uri(tmp_path: Path) -> str:
@@ -33,8 +33,44 @@ def test_verify_prints_the_build_row_counts_and_staleness(
     assert f"built {BUILT_AT.isoformat()}" in out.out
     staleness = "stale" if datetime.now(UTC) - BUILT_AT > STALE_AFTER else "fresh"
     assert f"days ago, {staleness})" in out.out
-    counts = json.loads(out.out.split("row counts ", 1)[1])
-    assert counts == dict(build.manifest.row_counts)
+    loaded = out.out.splitlines()[0]
+    assert json.loads(loaded.split("row counts ", 1)[1]) == dict(build.manifest.row_counts)
+
+
+def test_verify_prints_the_un_table_counts_from_one_read_of_each_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    uri = _uri(tmp_path)
+    build = publish_sample(uri, un_mirror=sample_un_mirror())
+    reads: list[str] = []
+    read = artifact._read
+    monkeypatch.setattr(artifact, "_read", lambda uri: reads.append(uri) or read(uri))
+
+    assert main([uri]) == 0
+
+    assert any(Path(read).name == UN_VARIABLES_FILE for read in reads)
+    assert len(reads) == len(set(reads))
+    un_tables = capsys.readouterr().out.splitlines()[1]
+    counts, rest = un_tables.split("row counts ", 1)[1].split(", ", 1)[0], un_tables
+    assert '"un_variables": 2' in rest
+    assert f"{build.manifest.un_mirror.resident_bytes} bytes in memory" in rest
+    agencies = json.loads(rest.split("agencies ", 1)[1])
+    assert agencies == {
+        "who": {"series": 2, "variables": 3, "excluded_series": 1, "excluded_variables": 1}
+    }
+    assert counts.startswith("{")
+
+
+def test_verify_fails_when_the_un_tables_do_not_load(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    uri = _uri(tmp_path)
+    build = publish_sample(uri, un_mirror=sample_un_mirror())
+    build_dir = tmp_path / "catalogue" / FORMAT_ROOT / "versions" / build.manifest.build_id
+    (build_dir / "un_variables.parquet").unlink()
+
+    assert main([uri]) == 1
+    assert "un_variables.parquet" in capsys.readouterr().err
 
 
 def test_verify_notes_a_un_carry_forward(
@@ -47,8 +83,9 @@ def test_verify_notes_a_un_carry_forward(
 
     assert main([uri]) == 0
 
-    assert "carries its UN rows and refused places from build 'build-0': UN read failed" in (
-        capsys.readouterr().out
+    assert (
+        "carries its UN rows, refused places and UN tables from build 'build-0': UN read failed"
+        in capsys.readouterr().out
     )
 
 

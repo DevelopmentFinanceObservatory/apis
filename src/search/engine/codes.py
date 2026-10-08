@@ -231,10 +231,7 @@ WARNING_CODES: frozenset[str] = frozenset(
         "skills_not_matchable",
         "skills_index_incomplete",
         # Region pipeline (region/codes.py).
-        "multi_recipient_truncated",
         "retrieval_score_weak",
-        "child_places_clamped",
-        "standard_probe_places_clamped",
         "redundant_binding_dropped",
         "degenerate_binding_detected",
         "starved_axis_binding_restored",

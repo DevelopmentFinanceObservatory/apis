@@ -130,7 +130,9 @@ class TestParsedInputParts:
             "parts": [
                 {
                     "variable_text": "health ODA grants",
-                    "entities": [{"text": "USA", "role_text": "from", "dcid": None}],
+                    "entities": [
+                        {"text": "USA", "role_text": "from", "dcid": None, "members": None}
+                    ],
                     "time_text": "2015 to 2024",
                     "unit_text": "constant 2023 USD",
                     "source_text": "OECD CRS",
@@ -238,6 +240,23 @@ class TestParsedEntityFields:
     def test_dcid_defaults_to_none(self):
         entity = ParsedEntity.model_validate({"text": "Congo"})
         assert entity.dcid is None
+
+    @pytest.mark.parametrize("posted", [{}, {"members": False}, {"members": None}])
+    def test_an_entity_that_does_not_ask_for_members_carries_no_members(self, posted):
+        """Omitted, false and null are one unset state, and the wire dump, which drops
+        nulls, omits it."""
+        entity = ParsedEntity.model_validate({"text": "Africa", **posted})
+        assert entity == ParsedEntity(text="Africa")
+        assert entity.members is None
+        assert entity.model_dump(mode="json", exclude_none=True) == {"text": "Africa"}
+
+    def test_an_entity_that_asks_for_members_states_it(self):
+        entity = ParsedEntity.model_validate({"text": "Africa", "members": True})
+        assert entity.model_dump(mode="json", exclude_none=True) == {
+            "text": "Africa",
+            "members": True,
+        }
+        assert ParsedEntity.model_validate(entity.model_dump(mode="json")) == entity
 
     def test_empty_dcid_refuses(self):
         with pytest.raises(ValidationError):

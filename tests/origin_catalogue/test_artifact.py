@@ -4,39 +4,48 @@ from __future__ import annotations
 
 import io
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from origin_catalogue import UN_SYSTEM, CataloguePointer
+from origin_catalogue import UN_SYSTEM, CataloguePointer, artifact
 from origin_catalogue.artifact import (
     CatalogueArtifactError,
     CatalogueTooLargeError,
+    encode_build,
     load_catalogue,
     publish_build,
     read_published_pointer,
+    read_un_mirror,
     resident_bytes,
 )
 from origin_catalogue.schema import (
     CATALOGUE_FORMAT_VERSION,
     FORMAT_ROOT,
+    UN_TOPICS_FILE,
+    CatalogueManifest,
     UnCarryForward,
     identity_key,
 )
+from origin_catalogue.un_mirror import EMPTY_UN_MIRROR
 from tests.origin_catalogue.support import (
     BUILT_AT,
     CENSUS_POVERTY,
     EUROSTAT_GDP,
     GDP,
     POPULATION,
+    UN_VARIABLE,
+    UN_VARIABLE_FEMALE,
     UN_WHO,
     WDI,
     WDI_DATASET,
     encode_sample,
     publish_sample,
     sample_tables,
+    sample_un_mirror,
 )
 
 
@@ -50,12 +59,13 @@ def _build_dir(tmp_path: Path, build_id: str = "build-a") -> Path:
 
 def test_round_trip_reproduces_the_tables(tmp_path: Path) -> None:
     uri = _uri(tmp_path)
-    publish_sample(uri)
+    publish_sample(uri, un_mirror=sample_un_mirror())
     snapshot = load_catalogue(uri)
     assert snapshot.tables == sample_tables()
+    assert snapshot.un.mirror == sample_un_mirror()
     assert snapshot.un_system_enabled
     assert not load_catalogue(uri, un_system_enabled=False).un_system_enabled
-    assert snapshot.admit_candidate("undata/who/MORT_U5_RATE") == UN_SYSTEM
+    assert snapshot.admit_candidate(UN_VARIABLE) == UN_SYSTEM
     assert snapshot.admit_candidate(CENSUS_POVERTY) is None
     assert snapshot.base_places(GDP) == ("country/KEN", "country/USA", "nuts/DE11")
 
@@ -82,6 +92,8 @@ def test_manifest_records_counts_overlaps_identity_and_size(tmp_path: Path) -> N
         "scan_places": 5,
         "un_blocked_places": 2,
         "dataset_facts": 3,
+        "superseded_variables": 0,
+        "successor_variables": 0,
     }
     assert manifest.resident_bytes == resident_bytes(load_catalogue(uri).tables)
     assert manifest.un_carried_forward is None
@@ -127,12 +139,14 @@ def test_load_refuses_a_build_over_the_memory_budget_before_reading_tables(
     tmp_path: Path,
 ) -> None:
     uri = _uri(tmp_path)
-    build = publish_sample(uri)
+    manifest = publish_sample(uri, un_mirror=sample_un_mirror()).manifest
+    needed = manifest.resident_bytes + manifest.un_mirror.resident_bytes
+    assert manifest.un_mirror.resident_bytes > 1
     (_build_dir(tmp_path) / "base_variables.parquet").unlink()
     with pytest.raises(CatalogueTooLargeError, match="over the"):
-        load_catalogue(uri, max_resident_bytes=build.manifest.resident_bytes - 1)
+        load_catalogue(uri, max_resident_bytes=needed - 1)
     with pytest.raises(CatalogueArtifactError, match="missing"):
-        load_catalogue(uri, max_resident_bytes=build.manifest.resident_bytes)
+        load_catalogue(uri, max_resident_bytes=needed)
 
 
 def test_load_refuses_a_missing_pointer(tmp_path: Path) -> None:
@@ -337,3 +351,191 @@ def test_manifest_records_a_un_carry_forward(tmp_path: Path) -> None:
     carried = UnCarryForward(from_build="build-0", reason="UN deployment read failed: HTTP 503")
     publish_sample(uri, un_carried_forward=carried)
     assert load_catalogue(uri).manifest.un_carried_forward == carried
+
+
+# --- UN tables ---------------------------------------------------------------
+
+
+def _publish_with_un_tables(tmp_path: Path) -> tuple[str, CatalogueManifest]:
+    uri = _uri(tmp_path)
+    build = publish_sample(uri, un_mirror=sample_un_mirror())
+    return uri, build.manifest
+
+
+def test_the_superseded_variable_table_round_trips_and_is_counted(tmp_path: Path) -> None:
+    uri = _uri(tmp_path)
+    superseded = {CENSUS_POVERTY: UN_VARIABLE_FEMALE, "old/X": None}
+    tables = replace(
+        sample_tables(),
+        withheld_variables=frozenset(superseded),
+        superseded=superseded,
+    )
+    build = encode_build(
+        tables,
+        build_id="build-a",
+        built_at=BUILT_AT,
+        build_seconds=1.0,
+        identity_inputs={"week": "w"},
+        registry_hash="r1",
+        un_mirror=sample_un_mirror(),
+    )
+    assert publish_build(uri, build, expected_generation=None)
+
+    snapshot = load_catalogue(uri)
+
+    assert snapshot.tables.superseded == superseded
+    assert snapshot.successor(CENSUS_POVERTY) == UN_VARIABLE_FEMALE
+    assert snapshot.is_superseded("old/X")
+    assert snapshot.successor("old/X") is None
+    counts = build.manifest.row_counts
+    assert (counts["superseded_variables"], counts["successor_variables"]) == (2, 1)
+    assert build.manifest.files["superseded_variables"] == "superseded_variables.parquet"
+
+
+def test_load_refuses_a_build_without_its_superseded_variable_table(tmp_path: Path) -> None:
+    uri = _uri(tmp_path)
+    publish_sample(uri)
+    (_build_dir(tmp_path) / "superseded_variables.parquet").unlink()
+
+    with pytest.raises(CatalogueArtifactError, match=r"superseded_variables\.parquet"):
+        load_catalogue(uri)
+
+
+def test_load_refuses_a_successor_the_un_tables_do_not_admit(tmp_path: Path) -> None:
+    uri = _uri(tmp_path)
+    publish_sample(uri, un_mirror=sample_un_mirror())
+    path = _build_dir(tmp_path) / "superseded_variables.parquet"
+    pq.write_table(pa.table({"variable": [CENSUS_POVERTY], "successor": ["undata/who/GONE"]}), path)
+    manifest_path = _build_dir(tmp_path) / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["row_counts"]["superseded_variables"] = 1
+    manifest["row_counts"]["successor_variables"] = 1
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(CatalogueArtifactError, match="not admitted UN variables"):
+        load_catalogue(uri)
+
+
+def test_the_un_tables_round_trip_beside_the_tables_the_loader_reads(tmp_path: Path) -> None:
+    uri, manifest = _publish_with_un_tables(tmp_path)
+
+    assert read_un_mirror(uri, manifest) == sample_un_mirror()
+    assert load_catalogue(uri).tables == sample_tables()
+    assert manifest.un_mirror.row_counts == {
+        "un_variables": 2,
+        "un_arcs": 6,
+        "un_excluded_variables": 1,
+        "un_excluded_series": 1,
+        "un_series": 1,
+        "un_topics": 1,
+    }
+    assert manifest.un_mirror.agencies == sample_un_mirror().agencies
+    assert manifest.un_mirror.resident_bytes == resident_bytes(read_un_mirror(uri, manifest))
+    assert CatalogueManifest.from_json(manifest.to_json()) == manifest
+
+
+def test_a_build_without_un_agencies_writes_empty_un_tables(tmp_path: Path) -> None:
+    uri = _uri(tmp_path)
+    build = publish_sample(uri)
+
+    assert read_un_mirror(uri, build.manifest) == EMPTY_UN_MIRROR
+    assert set(build.manifest.un_mirror.row_counts.values()) == {0}
+
+
+def test_load_refuses_un_tables_the_manifest_disagrees_with(tmp_path: Path) -> None:
+    uri, _manifest = _publish_with_un_tables(tmp_path)
+    # A well-formed topic table of another build: it decodes, and holds no topic.
+    (_build_dir(tmp_path) / UN_TOPICS_FILE).write_bytes(encode_sample().files[UN_TOPICS_FILE])
+
+    with pytest.raises(CatalogueArtifactError, match="UN row counts"):
+        load_catalogue(uri)
+
+
+def test_decoded_un_variables_share_one_object_per_arc_row_and_series(tmp_path: Path) -> None:
+    uri, manifest = _publish_with_un_tables(tmp_path)
+
+    variables = read_un_mirror(uri, manifest).variables
+    plain, female = variables[UN_VARIABLE], variables[UN_VARIABLE_FEMALE]
+    assert plain.series is female.series
+    shared = [arc for arc in plain.arcs if any(arc is other for other in female.arcs)]
+    assert {arc.property for arc in shared} == {"measuredProperty", "populationType"}
+
+
+def test_un_tables_decode_a_batch_at_a_time_and_read_no_file_whole(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    uri, manifest = _publish_with_un_tables(tmp_path)
+    whole: list[object] = []
+    monkeypatch.setattr(artifact.pq, "read_table", lambda *args, **kwargs: whole.append(args))
+    monkeypatch.setattr(artifact, "_UN_DECODE_ROWS", 1)
+
+    mirror = read_un_mirror(uri, manifest)
+
+    assert whole == []
+    assert mirror == sample_un_mirror()
+    # Rows of different batches share their strings and arc rows.
+    plain, female = mirror.variables[UN_VARIABLE], mirror.variables[UN_VARIABLE_FEMALE]
+    assert plain.series is female.series
+    assert any(arc is other for arc in plain.arcs for other in female.arcs)
+
+
+def test_reading_un_tables_refuses_counts_the_manifest_does_not_record(tmp_path: Path) -> None:
+    uri, manifest = _publish_with_un_tables(tmp_path)
+    recorded = replace(
+        manifest.un_mirror, row_counts={**manifest.un_mirror.row_counts, "un_variables": 3}
+    )
+
+    with pytest.raises(CatalogueArtifactError, match="UN row counts"):
+        read_un_mirror(uri, replace(manifest, un_mirror=recorded))
+
+
+def test_reading_un_tables_refuses_tables_that_break_their_invariants(tmp_path: Path) -> None:
+    uri, manifest = _publish_with_un_tables(tmp_path)
+    path = _build_dir(tmp_path) / "un_variables.parquet"
+    pq.write_table(pq.read_table(path).slice(0, 1), path)
+
+    with pytest.raises(CatalogueArtifactError, match="UnMirrorTableError"):
+        read_un_mirror(uri, manifest)
+
+
+def test_reading_un_tables_refuses_an_arc_row_out_of_range(tmp_path: Path) -> None:
+    uri, manifest = _publish_with_un_tables(tmp_path)
+    arcs = _build_dir(tmp_path) / "un_arcs.parquet"
+    pq.write_table(pq.read_table(arcs).slice(0, 2), arcs)
+
+    with pytest.raises(CatalogueArtifactError, match="out of range"):
+        read_un_mirror(uri, manifest)
+
+
+def test_loading_refuses_a_un_variable_no_agency_prefix_starts(tmp_path: Path) -> None:
+    mirror = sample_un_mirror()
+    who = mirror.agencies["who"]
+    foreign = replace(
+        mirror,
+        variables={**mirror.variables, "undata/unicef/X": mirror.variables[UN_VARIABLE]},
+        agencies={"who": replace(who, variables=who.variables + 1)},
+    )
+    uri = _uri(tmp_path)
+    publish_sample(uri, un_mirror=foreign)
+
+    with pytest.raises(CatalogueArtifactError, match="no agency's id prefix starts"):
+        load_catalogue(uri)
+
+
+def test_reading_un_tables_refuses_a_missing_file(tmp_path: Path) -> None:
+    uri, manifest = _publish_with_un_tables(tmp_path)
+    (_build_dir(tmp_path) / "un_mirror.json").unlink()
+
+    with pytest.raises(CatalogueArtifactError, match="missing"):
+        read_un_mirror(uri, manifest)
+
+
+def test_reading_un_tables_requires_the_excluded_series_names(tmp_path: Path) -> None:
+    uri, manifest = _publish_with_un_tables(tmp_path)
+    path = _build_dir(tmp_path) / "un_mirror.json"
+    payload = json.loads(path.read_bytes())
+    del payload["series_names"]
+    path.write_text(json.dumps(payload))
+
+    with pytest.raises(CatalogueArtifactError, match="series_names"):
+        read_un_mirror(uri, manifest)

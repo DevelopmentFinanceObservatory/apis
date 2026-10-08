@@ -1,10 +1,12 @@
 """`python -m origin_catalogue.verify` checks that the serving image can load
 its origin catalogue. It loads the build `current.json` names with
 `load_catalogue`, under the memory budget and UN setting the services read at
-startup (`CatalogueSettings`), and checks only this image's format root. It
-prints the build id, row counts and age, notes a build whose UN rows were
-carried forward from an earlier one, and returns a non-zero status when no
-build loads.
+startup (`CatalogueSettings`), which reads the build's UN tables once, and
+checks only this image's format root. It prints the
+build id, row counts and age, then the UN tables' row counts, size in memory
+and each agency's series and variable counts, notes a build whose UN rows,
+refused places and UN tables were carried forward from an earlier one, and
+returns a non-zero status when no build loads or its UN tables do not.
 
 Pass an artifact URI as an argument, or set `ORIGIN_CATALOGUE_URI`. A job
 run that skips or discards its build exits 0 without publishing, so deploys
@@ -68,11 +70,25 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"{manifest.built_at.isoformat()} ({age_days:.1f} days ago, {staleness}); row counts "
         f"{json.dumps(dict(manifest.row_counts), sort_keys=True)}"
     )
+    agencies = {
+        segment: {
+            "series": counts.series,
+            "variables": counts.variables,
+            "excluded_series": counts.excluded_series,
+            "excluded_variables": counts.excluded_variables,
+        }
+        for segment, counts in sorted(snapshot.un.mirror.agencies.items())
+    }
+    print(
+        f"origin_catalogue.verify: UN tables of build {manifest.build_id!r}: row counts "
+        f"{json.dumps(dict(manifest.un_mirror.row_counts), sort_keys=True)}, "
+        f"{manifest.un_mirror.resident_bytes} bytes in memory; agencies {json.dumps(agencies)}"
+    )
     carried = manifest.un_carried_forward
     if carried is not None:
         print(
-            f"origin_catalogue.verify: build {manifest.build_id!r} carries its UN rows and "
-            f"refused places from build {carried.from_build!r}: {carried.reason}"
+            f"origin_catalogue.verify: build {manifest.build_id!r} carries its UN rows, refused "
+            f"places and UN tables from build {carried.from_build!r}: {carried.reason}"
         )
     return 0
 

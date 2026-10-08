@@ -10,10 +10,8 @@ import pytest
 
 from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.clients.graph import Facet
-from search.engine.config import settings
 from search.engine.conjoin import _build_part
 from search.engine.extract import DateRequest
-from search.engine.region import MULTI_RECIPIENT_TRUNCATED
 from search.engine.region import candidate_grounding as candidate_grounding_module
 from search.engine.region import candidates as candidates_module
 from search.engine.region import materialise_step as materialise_step_module
@@ -611,19 +609,20 @@ def test_role_bearing_shape_the_index_does_not_carry_is_held_to_the_unknown_scor
     assert result.no_data_reason == "variable_not_resolved"
 
 
-def test_role_axis_placement_respects_the_multi_place_cap():
-    """Role placement uses only the capped place set.
-
-    The origin fills the cap before Kenya. The dropped destination yields no observations."""
-    donor_names = [f"Donor{i}" for i in range(settings().max_standard_places)]
-    donor_dcids = [f"country/D{i}" for i in range(settings().max_standard_places)]
+def test_role_axis_placement_binds_every_named_place(monkeypatch):
+    """Ten origins and one destination all bind on their axes. No place is dropped, so the
+    destination is read and the answer has its data."""
+    donor_names = [f"Donor{i}" for i in range(10)]
+    donor_dcids = [f"country/D{i}" for i in range(10)]
     resolve = dict(zip(donor_names, donor_dcids, strict=True))
     resolve["Kenya"] = _KEN
     entities = [*donor_names, "Kenya"]
     role_query = "aid " + " ".join(f"from {name}" for name in donor_names) + " to Kenya"
 
-    sdmx = FakeSdmxClient(
-        observations={_SV_DCID: {(("creditor", donor_dcids[0]), ("debtor", _KEN)): [_facet()]}},
+    index = patch_coverage(
+        monkeypatch,
+        [(_SV_DCID, "f1", donor_dcids[0], _KEN, _years(3))],
+        role_names={_SV_DCID: _CREDITOR_DEBTOR_ROLE_NAMES},
     )
     result = _run(
         entities=entities,
@@ -632,17 +631,14 @@ def test_role_axis_placement_respects_the_multi_place_cap():
         resolve=resolve,
         sv_score=0.9,
         role_query=role_query,
-        sdmx=sdmx,
-        coverage=empty_coverage_snapshot(),
+        sdmx=FakeSdmxClient(observations={}),
+        coverage=FakeCoverageService(index).snapshot(),
     )
-    assert result.status == "no_data"
-    assert result.no_data_reason == "no_observations"
-    assert sdmx.series_calls == []
-    truncation_warnings = [w for w in result.warnings if w.code == MULTI_RECIPIENT_TRUNCATED]
-    assert len(truncation_warnings) == 1
-    assert (
-        f"{len(entities)} places detected; first {settings().max_standard_places} used (1 dropped)."
-        in truncation_warnings[0].message
+    assert result.status == "definite", result
+    # The fixture runs no member walk, so no warning concerns the places.
+    assert [w.code for w in result.warnings] == ["membership_unverified"]
+    assert sorted((e.ref, e.role) for e in result.specs[0].resolved.entities) == sorted(
+        [(_KEN, "destination"), *((dcid, "origin") for dcid in donor_dcids)]
     )
 
 

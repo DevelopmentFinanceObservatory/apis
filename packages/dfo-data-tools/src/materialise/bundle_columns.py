@@ -256,9 +256,9 @@ def _codable(text: str) -> bool:
 
 
 def _frame_distinct(table: pa.Table, column: str) -> list[object]:
-    """A Frame column's distinct cells. The grammar stores `unit` as a struct holding either a
-    unit `ref` or a conversion `request`; its refs are its codes, and a request, which carries
-    no code, stands in as one non-string marker."""
+    """A Frame column's distinct cells. The grammar stores `unit` as a struct holding a unit
+    `ref`, a conversion `request`, or a `composed` unit; its refs are its codes, and a request
+    or a composed unit, which carries no code, stands in as one non-string marker."""
     values = table.column(column)
     if not pa.types.is_struct(values.type):
         return pc.unique(values).to_pylist()

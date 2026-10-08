@@ -29,6 +29,7 @@ def _dataset(provenance: str, *, rank: int = 0) -> dict:
         "description": "A test table.",
         "opt_in": False,
         "absent_observation": "unknown",
+        "account": "provider",
         "rank": rank,
         "invariants": {},
     }

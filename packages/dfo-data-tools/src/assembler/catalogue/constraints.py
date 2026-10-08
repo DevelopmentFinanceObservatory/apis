@@ -1,17 +1,18 @@
 """Versioned checks for resolved-payload constraints beyond JSON Schema.
 
 Checks receive `component` and, when needed, binding-time facts such as
-`observed_periods`. Their pointers address the component subtree. The
+`observed_periods` and `unit_keys`. Their pointers address the component subtree. The
 pipeline translates failures to intent-relative pointers. Bar baseline
 checks bind by component type because only bars encode magnitude from zero.
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
+
+from materialise.unit_cells import unit_identity
 
 
 @dataclass(frozen=True)
@@ -124,16 +125,24 @@ def _comparable_units_required(context: Mapping[str, object]) -> ConstraintFailu
 
     Presentation performs no unit conversion, so units compare exactly.
     `null` and populated units differ. Currency-aware equivalence belongs to
-    the structured-unit design."""
+    the structured-unit design. Binding supplies `unit_keys`, each series' frame
+    `unit` key by series id, and the series compare by those (`unit_identity`),
+    so two units whose labels read alike differ."""
     component = _mapping(context, "component")
     series_list = _sequence(component, "series")
     if len(series_list) < 2:
         return None
+    unit_keys = cast("Mapping[str, object] | None", context.get("unit_keys"))
+
+    def identity(series: Mapping[str, object]) -> tuple[str, object]:
+        return unit_identity(
+            series_id=series.get("id"), payload_unit=series.get("unit"), frame_unit_keys=unit_keys
+        )
+
     first = series_list[0]
-    first_key = json.dumps(first.get("unit"), sort_keys=True)
+    first_key = identity(first)
     for series in series_list[1:]:
-        key = json.dumps(series.get("unit"), sort_keys=True)
-        if key != first_key:
+        if identity(series) != first_key:
             return ConstraintFailure(
                 pointer="/component/series",
                 detail=(

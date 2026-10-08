@@ -11,7 +11,7 @@ the `bind_catalogue` fixture.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -30,10 +30,14 @@ from origin_catalogue import (
     ProvenanceRow,
     SeriesAdmission,
     SourceRef,
+    UnTables,
     entry_ref,
 )
+from origin_catalogue.catalogue import EMPTY_UN_TABLES
 from origin_catalogue.origins import UN_ID_PREFIX
+from origin_catalogue.schema import UnAgencyCounts
 from origin_catalogue.service import CatalogueService
+from origin_catalogue.un_mirror import EMPTY_UN_MIRROR, UnArc, UnMirror, UnVariable
 
 FAKE_BUILT_AT = datetime(2026, 9, 29, tzinfo=UTC)
 
@@ -53,7 +57,13 @@ class FakeCatalogue:
     callers fall back as they do for a provenance the catalogue does not
     list. Admission stays permissive whatever `provenances` holds. `card_facts`
     answers `dataset_facts`, empty by default. Facet reads send no domain
-    filter, and no place is a scan place, so presence is always read live."""
+    filter, and no place is a scan place, so presence is always read live.
+    `un` holds no UN table by default, so every UN node is read from the UN
+    deployment; a UN dcid outside the tables it is given is admitted too.
+    `successors` maps a superseded variable to the UN variable standing for
+    it, empty by default, and names none with the UN origin off.
+    `superseded` holds the superseded dcids with no successor. A superseded
+    dcid is the one candidate it refuses, as a snapshot withholds it."""
 
     build_id: str = "fake-catalogue"
     built_at: datetime = FAKE_BUILT_AT
@@ -63,6 +73,9 @@ class FakeCatalogue:
     un_blocked_places: frozenset[str] = frozenset()
     provenances: Mapping[str, ProvenanceRow] = field(default_factory=dict, compare=False)
     card_facts: Mapping[str, CardFacts] = field(default_factory=dict, compare=False)
+    un: UnTables = field(default=EMPTY_UN_TABLES, compare=False)
+    successors: Mapping[str, str] = field(default_factory=dict, compare=False)
+    superseded: frozenset[str] = frozenset()
 
     def is_stale(self, *, now: datetime | None = None) -> bool:
         return False
@@ -85,7 +98,9 @@ class FakeCatalogue:
     def admit_series(self, provenance_ids: Iterable[str]) -> SeriesAdmission:
         return SeriesAdmission(admitted=tuple(dict.fromkeys(provenance_ids)), withheld=())
 
-    def admit_candidate(self, dcid: str) -> DataCommons:
+    def admit_candidate(self, dcid: str) -> DataCommons | None:
+        if self.is_superseded(dcid):
+            return None
         return _origin_of(dcid, self.dfo_variables)
 
     def data_commons(self, variable: str) -> tuple[DataCommons, ...]:
@@ -96,6 +111,30 @@ class FakeCatalogue:
 
     def variable_provenances(self, variable: str) -> tuple[ProvenanceRow, ...]:
         return ()
+
+    def un_variable(self, dcid: str) -> UnVariable | None:
+        return self.un.mirror.variables.get(dcid)
+
+    def un_series_members(self, series: str) -> tuple[str, ...]:
+        return self.un.series_members.get(series, ())
+
+    def un_topic_leaves(self, topic: str) -> tuple[str, ...] | None:
+        return self.un.mirror.topics.get(topic)
+
+    def un_node(self, dcid: str) -> UnArc | None:
+        return self.un.nodes.get(dcid)
+
+    def superseded_by(self, variable: str) -> str | None:
+        return self.un.superseded_by(variable)
+
+    def successor(self, dcid: str) -> str | None:
+        return self.successors.get(dcid) if self.un_system_enabled else None
+
+    def is_superseded(self, dcid: str) -> bool:
+        return dcid in self.successors or dcid in self.superseded
+
+    def un_excluded_series_name(self, series: str) -> str | None:
+        return self.un.mirror.excluded_series_names.get(series)
 
 
 def fake_catalogue_service(catalogue: Catalogue | None = None) -> CatalogueService:
@@ -127,6 +166,8 @@ def restrictive_catalogue(
     topics: Mapping[str, Iterable[str]] | None = None,
     scan_places: Iterable[str] = (),
     un_blocked_places: Iterable[str] = (),
+    un_mirror: UnMirror = EMPTY_UN_MIRROR,
+    successors: Mapping[str, str | None] | None = None,
     un_system_enabled: bool = True,
     dataset_facts: Mapping[str, CardFacts] | None = None,
     build_id: str = "restrictive-catalogue",
@@ -136,7 +177,9 @@ def restrictive_catalogue(
     maps a variable to its admitted base provenances and the scan places
     holding it, and each provenance holds data at every place of every
     variable naming it. A base candidate it does not list is admitted unless
-    `withheld_variables` names it. `dataset_facts` defaults to empty facts
+    `withheld_variables` names it. A UN candidate is admitted when `un_mirror`
+    holds it. `successors` maps a superseded variable, which must be
+    withheld, to the UN variable standing for it, or to `None`. `dataset_facts` defaults to empty facts
     for every DFO and base row's entry (`empty_dataset_facts`)."""
     rows = {row.id: row for row in provenances}
     places = tuple(scan_places)
@@ -160,6 +203,7 @@ def restrictive_catalogue(
             empty_dataset_facts(rows.values()) if dataset_facts is None else dataset_facts
         ),
         un_blocked_places=frozenset(un_blocked_places),
+        superseded=dict(successors or {}),
     )
     manifest = CatalogueManifest(
         build_id=build_id,
@@ -172,7 +216,73 @@ def restrictive_catalogue(
         overlaps=(),
         files={},
     )
-    return CatalogueSnapshot(manifest=manifest, tables=tables, un_system_enabled=un_system_enabled)
+    return CatalogueSnapshot(
+        manifest=manifest,
+        tables=tables,
+        un=UnTables(mirror=un_mirror),
+        un_system_enabled=un_system_enabled,
+    )
+
+
+def un_variable(
+    series: str,
+    *,
+    name: str,
+    constraints: Mapping[str, tuple[str, str, str]] | None = None,
+    observation_properties: Sequence[str] = (),
+) -> UnVariable:
+    """A UN variable as the catalogue job copies one: a StatisticalVariable
+    of `series` measuring `value`, named `name`. `constraints` maps each
+    constraint property to its label, its value and the value's label."""
+    arcs = [
+        *(
+            UnArc(property="constraintProperties", dcid=prop, name=label, types=("Property",))
+            for prop, (label, _value, _value_label) in (constraints or {}).items()
+        ),
+        UnArc(property="measuredProperty", dcid="value", name="value", types=("Property",)),
+        UnArc(property="name", value=name),
+        *(
+            UnArc(property="observationProperties", dcid=prop, types=("Property",))
+            for prop in observation_properties
+        ),
+        UnArc(property="populationType", dcid=series, name=f"{series} name", types=("Class",)),
+        UnArc(property="statType", dcid="measuredValue", name="measuredValue"),
+        UnArc(property="typeOf", dcid="StatisticalVariable", name="StatisticalVariable"),
+        *(
+            UnArc(property=prop, dcid=value, name=value_label, types=("Enumeration",))
+            for prop, (_label, value, value_label) in (constraints or {}).items()
+        ),
+    ]
+    return UnVariable(series=series, arcs=tuple(arcs))
+
+
+def un_mirror(
+    variables: Mapping[str, UnVariable],
+    *,
+    excluded: Mapping[str, str] | None = None,
+    topics: Mapping[str, Iterable[str]] | None = None,
+    superseded_by: str = "provenance/OECDCreditorReportingSystem",
+) -> UnMirror:
+    """UN tables holding `variables`, the `excluded` variables by series and
+    `topics`, counted under one agency. Every excluded series names
+    `superseded_by`."""
+    excluded = dict(excluded or {})
+    exclusions = dict.fromkeys(excluded.values(), superseded_by)
+    return UnMirror(
+        variables=dict(variables),
+        excluded_variables=excluded,
+        topics={topic: tuple(leaves) for topic, leaves in (topics or {}).items()},
+        exclusions=exclusions,
+        excluded_series_names={series: f"{series} name" for series in exclusions},
+        agencies={
+            "agency": UnAgencyCounts(
+                series=len({variable.series for variable in variables.values()} | set(exclusions)),
+                variables=len(variables) + len(excluded),
+                excluded_series=len(exclusions),
+                excluded_variables=len(excluded),
+            )
+        },
+    )
 
 
 def empty_dataset_facts(rows: Iterable[ProvenanceRow]) -> dict[str, CardFacts]:
@@ -210,4 +320,6 @@ __all__ = [
     "provenance_row",
     "restrictive_catalogue",
     "spread_provenance_places",
+    "un_mirror",
+    "un_variable",
 ]

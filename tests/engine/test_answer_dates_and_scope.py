@@ -178,17 +178,17 @@ _NAMED_FIRST = [
     "node_arcs_many",
     *["default_facet_policy"] * 3,
     "node_labels_batch",
-    *["node_type", "node_label"] * 2,
+    "node_types_batch",
+    "node_labels_batch",
     "node_labels_batch",
 ]
 _NAMED_RESUBMIT = [
     "node_arcs_batch",
     "node_labels_batch",
-    "node_type",
-    "node_type",
     *["default_facet_policy"] * 3,
     "node_labels_batch",
-    *["node_type", "node_label"] * 2,
+    "node_types_batch",
+    "node_labels_batch",
     "node_labels_batch",
 ]
 _DISCOVERED_FIRST = [
@@ -228,8 +228,8 @@ _STANDARD_FIRST = [
     *["default_facet_policy"] * 3,
     "observation_facets_batch",
     "node_labels_batch",
-    "node_type",
-    "node_label",
+    "node_types_batch",
+    "node_labels_batch",
     "observation_facets_batch",
     "node_labels_batch",
 ]
@@ -240,12 +240,11 @@ _STANDARD_RESUBMIT = [
     "node_arcs_batch",
     "node_labels_batch",
     "node_labels_batch",
-    "node_type",
     *["default_facet_policy"] * 3,
     "observation_facets_batch",
     "node_labels_batch",
-    "node_type",
-    "node_label",
+    "node_types_batch",
+    "node_labels_batch",
     "observation_facets_batch",
     "node_labels_batch",
 ]

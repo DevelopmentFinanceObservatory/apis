@@ -113,12 +113,6 @@
      }
     ],
     [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
@@ -131,6 +125,14 @@
        "country/NOR",
        "dc/base/ScenarioFixture",
        "measuredValue"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
+       "Country"
       ]
      }
     ],
@@ -154,9 +156,11 @@
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "country/NOR"
+      "dcids": [
+       "country/NOR"
+      ]
      }
     ],
     [
@@ -704,18 +708,6 @@
      }
     ],
     [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
@@ -744,6 +736,22 @@
        "country/NOR",
        "dc/base/ScenarioFixture",
        "measuredValue"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
+       "Country"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
+       "Country"
       ]
      }
     ],
@@ -784,23 +792,27 @@
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "country/NOR"
-     }
-    ],
-    [
-     "FakeGraph.node_type",
-     {
-      "dcid": "country/NOR"
+      "dcids": [
+       "country/GHA",
+       "country/USA"
+      ]
      }
     ],
     [
      "FakeGraph.node_types_batch",
      {
       "dcids": [
-       "country/GHA",
-       "country/USA"
+       "country/NOR"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_types_batch",
+     {
+      "dcids": [
+       "country/NOR"
       ]
      }
     ],
@@ -1723,12 +1735,6 @@
      }
     ],
     [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
@@ -1741,6 +1747,14 @@
        "dc/base/CoverageFixture",
        "economicActivityType",
        "measuredValue"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
+       "Country"
       ]
      }
     ],
@@ -1773,17 +1787,19 @@
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "country/NOR"
+      "dcids": [
+       "country/GHA",
+       "country/USA"
+      ]
      }
     ],
     [
      "FakeGraph.node_types_batch",
      {
       "dcids": [
-       "country/GHA",
-       "country/USA"
+       "country/NOR"
       ]
      }
     ],
@@ -2294,1425 +2310,6 @@
   },
   "baseline_serial_depth": 21
  },
- "income-reelect-clamp-beside-clamped-elected": {
-  "answer": {
-   "alternate_match": null,
-   "elected_stat_vars": [],
-   "flagged_match": [],
-   "nearest_real": [],
-   "no_data_bound_role_dcids": {},
-   "no_data_reason": null,
-   "no_data_role_axis": null,
-   "observation_entities": [
-    [
-     "phase_answer",
-     {
-      "observationAbout": [
-       "country/GHA"
-      ]
-     }
-    ]
-   ],
-   "requests": [
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.detect_svs",
-     {
-      "query": "gross national income to Ghana and Kenya"
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_batch",
-     {
-      "dcids": [
-       "Amount_EconomicActivity_GrossNationalIncome_NominalScenario",
-       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_many",
-     {
-      "dcids": [
-       "AdministrativeArea"
-      ],
-      "properties": [
-       "subClassOf"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_many",
-     {
-      "dcids": [
-       "Country"
-      ],
-      "properties": [
-       "subClassOf"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_many",
-     {
-      "dcids": [
-       "country/GHA",
-       "country/KEN"
-      ],
-      "deadline": null,
-      "properties": [
-       "name",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_many",
-     {
-      "dcids": [
-       "financingRecipient"
-      ],
-      "properties": [
-       "rangeIncludes"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_many",
-     {
-      "dcids": [
-       "observationAbout"
-      ],
-      "properties": [
-       "rangeIncludes"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
-     "FakeGraph.node_labels_batch",
-     {
-      "dcids": [
-       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario",
-       "EconomicActivity",
-       "GrossNationalIncome",
-       "PurchasingPowerParity",
-       "activitySource",
-       "amount",
-       "country/GHA",
-       "country/KEN",
-       "dc/base/ScenarioFixture",
-       "measuredValue"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_labels_batch",
-     {
-      "dcids": [
-       "EconomicActivity",
-       "GrossNationalIncome",
-       "activitySource",
-       "economicActivityType"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_labels_batch",
-     {
-      "dcids": [
-       "dc/base/ScenarioFixture"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_type",
-     {
-      "dcid": "country/GHA"
-     }
-    ],
-    [
-     "FakeGraph.node_type",
-     {
-      "dcid": "country/KEN"
-     }
-    ],
-    [
-     "FakeGraph.observation_facets_batch",
-     {
-      "entities": [
-       "country/GHA",
-       "country/KEN"
-      ],
-      "needs_dates": false,
-      "stat_vars": [
-       "Amount_EconomicActivity_GrossNationalIncome_NominalScenario",
-       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.observation_facets_batch",
-     {
-      "entities": [
-       "country/GHA"
-      ],
-      "needs_dates": false,
-      "stat_vars": [
-       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.observation_facets_batch",
-     {
-      "entities": [
-       "country/GHA"
-      ],
-      "needs_dates": false,
-      "stat_vars": [
-       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.observation_facets_batch",
-     {
-      "entities": [
-       "country/GHA"
-      ],
-      "needs_dates": true,
-      "stat_vars": [
-       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.generation_stamp",
-     {}
-    ],
-    [
-     "FakeMintGraphReader.generation_stamp",
-     {}
-    ],
-    [
-     "FakeMintGraphReader.node_arcs_many",
-     {
-      "dcids": [
-       "Amount_EconomicActivity_GrossNationalIncome_NominalScenario",
-       "Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario"
-      ],
-      "deadline": "set",
-      "individual_probe_budget": null,
-      "properties": [
-       "constraintProperties",
-       "economicActivityType",
-       "measuredProperty",
-       "measurementDenominator",
-       "measurementQualifier",
-       "observationProperties",
-       "populationType",
-       "statType",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_arcs_many",
-     {
-      "dcids": [
-       "Amount_EconomicActivity_GrossNationalIncome_NominalScenario"
-      ],
-      "deadline": "set",
-      "individual_probe_budget": null,
-      "properties": [
-       "constraintProperties",
-       "economicActivityType",
-       "measuredProperty",
-       "measurementDenominator",
-       "measurementQualifier",
-       "observationProperties",
-       "populationType",
-       "statType",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_arcs_many",
-     {
-      "dcids": [
-       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-      ],
-      "deadline": "set",
-      "individual_probe_budget": null,
-      "properties": [
-       "activitySource",
-       "constraintProperties",
-       "measuredProperty",
-       "measurementDenominator",
-       "measurementQualifier",
-       "observationProperties",
-       "populationType",
-       "statType",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_arcs_many",
-     {
-      "dcids": [
-       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-      ],
-      "deadline": "set",
-      "individual_probe_budget": null,
-      "properties": [
-       "activitySource",
-       "constraintProperties",
-       "measuredProperty",
-       "measurementDenominator",
-       "measurementQualifier",
-       "observationProperties",
-       "populationType",
-       "statType",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_subjects",
-     {
-      "dcid": "amount",
-      "deadline": "set",
-      "filters": {
-       "activitySource": "GrossNationalIncome",
-       "measurementQualifier": "PurchasingPowerParity",
-       "populationType": "EconomicActivity",
-       "statType": "measuredValue"
-      },
-      "max_results": 4000,
-      "property": "measuredProperty"
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_subjects",
-     {
-      "dcid": "amount",
-      "deadline": "set",
-      "filters": {
-       "measurementQualifier": "Nominal",
-       "populationType": "EconomicActivity",
-       "statType": "measuredValue"
-      },
-      "max_results": 4000,
-      "property": "measuredProperty"
-     }
-    ]
-   ],
-   "sentence": {
-    "departures": [
-     [
-      "direction_discarded",
-      "where:",
-      "Ghana",
-      null,
-      "You named Ghana as a recipient. This measure has no recipients, so this shows the place itself."
-     ],
-     [
-      "direction_discarded",
-      "where:",
-      "Kenya",
-      null,
-      "You named Kenya as a recipient. This measure has no recipients, so this shows the place itself."
-     ]
-    ],
-    "rendered_sentence": "Gross national income based on purchasing power parity in Ghana and Kenya, 2015 to 2022. You named Ghana as a recipient. This measure has no recipients, so this shows the place itself. You named Kenya as a recipient. This measure has no recipients, so this shows the place itself."
-   },
-   "specs": [
-    {
-     "identity_entities": {
-      "observationAbout": [
-       "country/GHA",
-       "country/KEN"
-      ]
-     },
-     "resolved": {
-      "alternative_measures": null,
-      "available_at_place": true,
-      "confidence": "high",
-      "coverage": {
-       "dimensions": [
-        {
-         "count": 1,
-         "label": "sources"
-        },
-        {
-         "count": 5,
-         "label": "observations"
-        },
-        {
-         "count": 1,
-         "label": "variables"
-        }
-       ],
-       "evidence": "facet_metadata",
-       "has_data": true,
-       "kind": "exact",
-       "observation_count": 5,
-       "window": null
-      },
-      "download": {
-       "licence": null,
-       "rows": 5,
-       "rows_exact": true,
-       "series": 1,
-       "window": {
-        "end_year": 2022,
-        "start_year": 2015
-       }
-      },
-      "entities": [
-       {
-        "confidence": null,
-        "entity_type": "Country",
-        "label": "Ghana",
-        "ref": "country/GHA",
-        "role": "observationAbout"
-       },
-       {
-        "confidence": null,
-        "entity_type": "Country",
-        "label": "Kenya",
-        "ref": "country/KEN",
-        "role": "observationAbout"
-       }
-      ],
-      "entity_groups": null,
-      "entity_options": [],
-      "equivalent_readings": null,
-      "facet_options": [
-       {
-        "axis": "provenance",
-        "options": [
-         {
-          "coverage": null,
-          "member_count": null,
-          "parent": null,
-          "relation": null,
-          "served_rows": null,
-          "served_rows_exact": null,
-          "value": {
-           "literal": null,
-           "ref": {
-            "dcid": "dc/base/ScenarioFixture",
-            "label": "dc/base/ScenarioFixture"
-           },
-           "time_window": null,
-           "value_kind": "source"
-          }
-         }
-        ],
-        "source": "observed",
-        "truncated": false
-       }
-      ],
-      "facets": {
-       "provenance": {
-        "basis": "fallback",
-        "currency": null,
-        "data_commons": null,
-        "label": null,
-        "ref": "dc/base/ScenarioFixture",
-        "request_basis": null,
-        "selection": null,
-        "source": null
-       }
-      },
-      "headline": null,
-      "inapplicable_slots": [],
-      "measure_axis_values": [],
-      "measure_label": null,
-      "measure_label_axes": [],
-      "observations": null,
-      "open_axis_facts": null,
-      "related_group": null,
-      "related_measures": [],
-      "rendered_sentence": null,
-      "role_axis_facts": null,
-      "scope": null,
-      "sentence_plan": null,
-      "skills": null,
-      "slot_options": [],
-      "slots": [
-       {
-        "binding": {
-         "kind": "value",
-         "value": {
-          "literal": null,
-          "ref": {
-           "dcid": "GrossNationalIncome",
-           "label": "GrossNationalIncome"
-          },
-          "time_window": null,
-          "value_kind": "enum_value"
-         }
-        },
-        "expansion": null,
-        "key": {
-         "axis": "how",
-         "label": "activity source",
-         "property": {
-          "dcid": "activitySource",
-          "label": "activitySource"
-         }
-        },
-        "summable": false
-       },
-       {
-        "binding": {
-         "kind": "set",
-         "set_ref": null,
-         "values": [
-          {
-           "literal": null,
-           "ref": {
-            "dcid": "country/GHA",
-            "label": "Ghana"
-           },
-           "time_window": null,
-           "value_kind": "entity"
-          },
-          {
-           "literal": null,
-           "ref": {
-            "dcid": "country/KEN",
-            "label": "Kenya"
-           },
-           "time_window": null,
-           "value_kind": "entity"
-          }
-         ]
-        },
-        "expansion": null,
-        "key": {
-         "axis": "where",
-         "label": "place",
-         "property": null
-        },
-        "summable": false
-       },
-       {
-        "binding": {
-         "kind": "unbound"
-        },
-        "expansion": null,
-        "key": {
-         "axis": "when",
-         "label": "time window",
-         "property": null
-        },
-        "summable": false
-       },
-       {
-        "binding": {
-         "kind": "unbound"
-        },
-        "expansion": null,
-        "key": {
-         "axis": "source",
-         "label": "data source",
-         "property": null
-        },
-        "summable": false
-       }
-      ],
-      "stat_vars": {
-       "data_date_range": {
-        "end": "2022",
-        "start": "2015"
-       },
-       "member_count": 1,
-       "member_count_exact": false,
-       "served_count": 1
-      },
-      "trace": {
-       "capability_version": "cap_daf889452657d56d",
-       "conversion": null,
-       "default_reading": {
-        "applied": true,
-        "removed_stat_vars": []
-       },
-       "query_qualifiers": [],
-       "requested_window": null,
-       "resolved_entities": [
-        {
-         "dcid": "country/GHA",
-         "label": "Ghana"
-        },
-        {
-         "dcid": "country/KEN",
-         "label": "Kenya"
-        }
-       ],
-       "resolved_sources": [],
-       "slot_filters": [
-        {
-         "binding_kind": "value",
-         "key": {
-          "axis": "how",
-          "label": "activity source",
-          "property": {
-           "dcid": "activitySource",
-           "label": "activitySource"
-          }
-         },
-         "provenance": "binder",
-         "refs": [
-          {
-           "dcid": "GrossNationalIncome",
-           "label": "GrossNationalIncome"
-          }
-         ]
-        },
-        {
-         "binding_kind": "set",
-         "key": {
-          "axis": "where",
-          "label": "place",
-          "property": null
-         },
-         "provenance": "binder",
-         "refs": [
-          {
-           "dcid": "country/GHA",
-           "label": "Ghana"
-          },
-          {
-           "dcid": "country/KEN",
-           "label": "Kenya"
-          }
-         ]
-        },
-        {
-         "binding_kind": "unbound",
-         "key": {
-          "axis": "when",
-          "label": "time window",
-          "property": null
-         },
-         "provenance": "binder",
-         "refs": []
-        },
-        {
-         "binding_kind": "unbound",
-         "key": {
-          "axis": "source",
-          "label": "data source",
-          "property": null
-         },
-         "provenance": "binder",
-         "refs": []
-        }
-       ]
-      },
-      "unit_conversion": null,
-      "unresolved_slots": []
-     },
-     "spec_id": "spec_316fba469a05797e664706bc18aa4b5e"
-    }
-   ],
-   "status": "definite",
-   "unsupported": null,
-   "warnings": [
-    [
-     "direction_discarded",
-     "warn",
-     "Ghana was named as the recipient; this shape reports the place as its own subject, so the direction was dropped.",
-     null
-    ],
-    [
-     "direction_discarded",
-     "warn",
-     "Kenya was named as the recipient; this shape reports the place as its own subject, so the direction was dropped.",
-     null
-    ],
-    [
-     "standard_probe_places_clamped",
-     "warn",
-     "2 probe places detected across 2 named place(s); resolved the first 1.",
-     null
-    ],
-    [
-     "elected_shape_no_data",
-     "info",
-     "the originally chosen reading had no observations at this place; a sibling reading confirmed with real data was elected instead.",
-     null
-    ]
-   ]
-  },
-  "baseline_answer": {
-   "served_series": "cfb2169b43668209cb23db99f5ab54190d00ed988c8171fc3106025f8c0318cc",
-   "status": "definite"
-  },
-  "baseline_serial_depth": 23
- },
- "income-reelect-clamp-beside-unclamped-elected": {
-  "answer": {
-   "alternate_match": null,
-   "elected_stat_vars": [],
-   "flagged_match": [],
-   "nearest_real": [],
-   "no_data_bound_role_dcids": {},
-   "no_data_reason": null,
-   "no_data_role_axis": null,
-   "observation_entities": [
-    [
-     "phase_answer",
-     {
-      "observationAbout": [
-       "country/GHA"
-      ]
-     }
-    ]
-   ],
-   "requests": [
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-     }
-    ],
-    [
-     "FakeGraph.detect_svs",
-     {
-      "query": "gross national income of Ghana from Norway"
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_batch",
-     {
-      "dcids": [
-       "Amount_EconomicActivity_GrossNationalIncome_NominalScenario",
-       "Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario",
-       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_many",
-     {
-      "dcids": [
-       "AdministrativeArea"
-      ],
-      "properties": [
-       "subClassOf"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_many",
-     {
-      "dcids": [
-       "Country"
-      ],
-      "properties": [
-       "subClassOf"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_many",
-     {
-      "dcids": [
-       "country/GHA",
-       "country/NOR"
-      ],
-      "deadline": null,
-      "properties": [
-       "name",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_many",
-     {
-      "dcids": [
-       "financingProvider"
-      ],
-      "properties": [
-       "rangeIncludes"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_many",
-     {
-      "dcids": [
-       "observationAbout"
-      ],
-      "properties": [
-       "rangeIncludes"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
-     "FakeGraph.node_labels_batch",
-     {
-      "dcids": [
-       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario",
-       "EconomicActivity",
-       "GrossNationalIncome",
-       "PurchasingPowerParity",
-       "activitySource",
-       "amount",
-       "country/GHA",
-       "country/NOR",
-       "dc/base/ScenarioFixture",
-       "measuredValue"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_labels_batch",
-     {
-      "dcids": [
-       "EconomicActivity",
-       "GrossNationalIncome",
-       "activitySource",
-       "economicActivityType"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_labels_batch",
-     {
-      "dcids": [
-       "dc/base/ScenarioFixture"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_type",
-     {
-      "dcid": "country/GHA"
-     }
-    ],
-    [
-     "FakeGraph.node_type",
-     {
-      "dcid": "country/NOR"
-     }
-    ],
-    [
-     "FakeGraph.observation_facets_batch",
-     {
-      "entities": [
-       "country/GHA",
-       "country/NOR"
-      ],
-      "needs_dates": false,
-      "stat_vars": [
-       "Amount_EconomicActivity_GrossNationalIncome_NominalScenario",
-       "Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario",
-       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.observation_facets_batch",
-     {
-      "entities": [
-       "country/GHA"
-      ],
-      "needs_dates": false,
-      "stat_vars": [
-       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.observation_facets_batch",
-     {
-      "entities": [
-       "country/GHA"
-      ],
-      "needs_dates": false,
-      "stat_vars": [
-       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.observation_facets_batch",
-     {
-      "entities": [
-       "country/GHA"
-      ],
-      "needs_dates": true,
-      "stat_vars": [
-       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.generation_stamp",
-     {}
-    ],
-    [
-     "FakeMintGraphReader.generation_stamp",
-     {}
-    ],
-    [
-     "FakeMintGraphReader.node_arcs_many",
-     {
-      "dcids": [
-       "Amount_EconomicActivity_GrossNationalIncome_NominalScenario",
-       "Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario"
-      ],
-      "deadline": "set",
-      "individual_probe_budget": null,
-      "properties": [
-       "constraintProperties",
-       "economicActivityType",
-       "measuredProperty",
-       "measurementDenominator",
-       "measurementQualifier",
-       "observationProperties",
-       "populationType",
-       "statType",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_arcs_many",
-     {
-      "dcids": [
-       "Amount_EconomicActivity_GrossNationalIncome_Nominal_ByCreditorScenario"
-      ],
-      "deadline": "set",
-      "individual_probe_budget": null,
-      "properties": [
-       "constraintProperties",
-       "economicActivityType",
-       "measuredProperty",
-       "measurementDenominator",
-       "measurementQualifier",
-       "observationProperties",
-       "populationType",
-       "statType",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_arcs_many",
-     {
-      "dcids": [
-       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-      ],
-      "deadline": "set",
-      "individual_probe_budget": null,
-      "properties": [
-       "activitySource",
-       "constraintProperties",
-       "measuredProperty",
-       "measurementDenominator",
-       "measurementQualifier",
-       "observationProperties",
-       "populationType",
-       "statType",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_arcs_many",
-     {
-      "dcids": [
-       "Amount_EconomicActivity_GrossNationalIncome_PPPScenario"
-      ],
-      "deadline": "set",
-      "individual_probe_budget": null,
-      "properties": [
-       "activitySource",
-       "constraintProperties",
-       "measuredProperty",
-       "measurementDenominator",
-       "measurementQualifier",
-       "observationProperties",
-       "populationType",
-       "statType",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_subjects",
-     {
-      "dcid": "amount",
-      "deadline": "set",
-      "filters": {
-       "activitySource": "GrossNationalIncome",
-       "measurementQualifier": "PurchasingPowerParity",
-       "populationType": "EconomicActivity",
-       "statType": "measuredValue"
-      },
-      "max_results": 4000,
-      "property": "measuredProperty"
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_subjects",
-     {
-      "dcid": "amount",
-      "deadline": "set",
-      "filters": {
-       "measurementQualifier": "Nominal",
-       "populationType": "EconomicActivity",
-       "statType": "measuredValue"
-      },
-      "max_results": 4000,
-      "property": "measuredProperty"
-     }
-    ]
-   ],
-   "sentence": {
-    "departures": [
-     [
-      "direction_discarded",
-      "where:",
-      "Norway",
-      null,
-      "You named Norway as a provider. This measure has no providers, so this shows the place itself."
-     ]
-    ],
-    "rendered_sentence": "Gross national income based on purchasing power parity in Ghana and Norway, 2015 to 2022. You named Norway as a provider. This measure has no providers, so this shows the place itself."
-   },
-   "specs": [
-    {
-     "identity_entities": {
-      "observationAbout": [
-       "country/GHA",
-       "country/NOR"
-      ]
-     },
-     "resolved": {
-      "alternative_measures": null,
-      "available_at_place": true,
-      "confidence": "high",
-      "coverage": {
-       "dimensions": [
-        {
-         "count": 1,
-         "label": "sources"
-        },
-        {
-         "count": 5,
-         "label": "observations"
-        },
-        {
-         "count": 1,
-         "label": "variables"
-        }
-       ],
-       "evidence": "facet_metadata",
-       "has_data": true,
-       "kind": "exact",
-       "observation_count": 5,
-       "window": null
-      },
-      "download": {
-       "licence": null,
-       "rows": 5,
-       "rows_exact": true,
-       "series": 1,
-       "window": {
-        "end_year": 2022,
-        "start_year": 2015
-       }
-      },
-      "entities": [
-       {
-        "confidence": null,
-        "entity_type": "Country",
-        "label": "Ghana",
-        "ref": "country/GHA",
-        "role": "observationAbout"
-       },
-       {
-        "confidence": null,
-        "entity_type": "Country",
-        "label": "Norway",
-        "ref": "country/NOR",
-        "role": "observationAbout"
-       }
-      ],
-      "entity_groups": null,
-      "entity_options": [],
-      "equivalent_readings": null,
-      "facet_options": [
-       {
-        "axis": "provenance",
-        "options": [
-         {
-          "coverage": null,
-          "member_count": null,
-          "parent": null,
-          "relation": null,
-          "served_rows": null,
-          "served_rows_exact": null,
-          "value": {
-           "literal": null,
-           "ref": {
-            "dcid": "dc/base/ScenarioFixture",
-            "label": "dc/base/ScenarioFixture"
-           },
-           "time_window": null,
-           "value_kind": "source"
-          }
-         }
-        ],
-        "source": "observed",
-        "truncated": false
-       }
-      ],
-      "facets": {
-       "provenance": {
-        "basis": "fallback",
-        "currency": null,
-        "data_commons": null,
-        "label": null,
-        "ref": "dc/base/ScenarioFixture",
-        "request_basis": null,
-        "selection": null,
-        "source": null
-       }
-      },
-      "headline": null,
-      "inapplicable_slots": [],
-      "measure_axis_values": [],
-      "measure_label": null,
-      "measure_label_axes": [],
-      "observations": null,
-      "open_axis_facts": null,
-      "related_group": null,
-      "related_measures": [],
-      "rendered_sentence": null,
-      "role_axis_facts": null,
-      "scope": null,
-      "sentence_plan": null,
-      "skills": null,
-      "slot_options": [],
-      "slots": [
-       {
-        "binding": {
-         "kind": "value",
-         "value": {
-          "literal": null,
-          "ref": {
-           "dcid": "GrossNationalIncome",
-           "label": "GrossNationalIncome"
-          },
-          "time_window": null,
-          "value_kind": "enum_value"
-         }
-        },
-        "expansion": null,
-        "key": {
-         "axis": "how",
-         "label": "activity source",
-         "property": {
-          "dcid": "activitySource",
-          "label": "activitySource"
-         }
-        },
-        "summable": false
-       },
-       {
-        "binding": {
-         "kind": "set",
-         "set_ref": null,
-         "values": [
-          {
-           "literal": null,
-           "ref": {
-            "dcid": "country/GHA",
-            "label": "Ghana"
-           },
-           "time_window": null,
-           "value_kind": "entity"
-          },
-          {
-           "literal": null,
-           "ref": {
-            "dcid": "country/NOR",
-            "label": "Norway"
-           },
-           "time_window": null,
-           "value_kind": "entity"
-          }
-         ]
-        },
-        "expansion": null,
-        "key": {
-         "axis": "where",
-         "label": "place",
-         "property": null
-        },
-        "summable": false
-       },
-       {
-        "binding": {
-         "kind": "unbound"
-        },
-        "expansion": null,
-        "key": {
-         "axis": "when",
-         "label": "time window",
-         "property": null
-        },
-        "summable": false
-       },
-       {
-        "binding": {
-         "kind": "unbound"
-        },
-        "expansion": null,
-        "key": {
-         "axis": "source",
-         "label": "data source",
-         "property": null
-        },
-        "summable": false
-       }
-      ],
-      "stat_vars": {
-       "data_date_range": {
-        "end": "2022",
-        "start": "2015"
-       },
-       "member_count": 1,
-       "member_count_exact": false,
-       "served_count": 1
-      },
-      "trace": {
-       "capability_version": "cap_daf889452657d56d",
-       "conversion": null,
-       "default_reading": {
-        "applied": true,
-        "removed_stat_vars": []
-       },
-       "query_qualifiers": [],
-       "requested_window": null,
-       "resolved_entities": [
-        {
-         "dcid": "country/GHA",
-         "label": "Ghana"
-        },
-        {
-         "dcid": "country/NOR",
-         "label": "Norway"
-        }
-       ],
-       "resolved_sources": [],
-       "slot_filters": [
-        {
-         "binding_kind": "value",
-         "key": {
-          "axis": "how",
-          "label": "activity source",
-          "property": {
-           "dcid": "activitySource",
-           "label": "activitySource"
-          }
-         },
-         "provenance": "binder",
-         "refs": [
-          {
-           "dcid": "GrossNationalIncome",
-           "label": "GrossNationalIncome"
-          }
-         ]
-        },
-        {
-         "binding_kind": "set",
-         "key": {
-          "axis": "where",
-          "label": "place",
-          "property": null
-         },
-         "provenance": "binder",
-         "refs": [
-          {
-           "dcid": "country/GHA",
-           "label": "Ghana"
-          },
-          {
-           "dcid": "country/NOR",
-           "label": "Norway"
-          }
-         ]
-        },
-        {
-         "binding_kind": "unbound",
-         "key": {
-          "axis": "when",
-          "label": "time window",
-          "property": null
-         },
-         "provenance": "binder",
-         "refs": []
-        },
-        {
-         "binding_kind": "unbound",
-         "key": {
-          "axis": "source",
-          "label": "data source",
-          "property": null
-         },
-         "provenance": "binder",
-         "refs": []
-        }
-       ]
-      },
-      "unit_conversion": null,
-      "unresolved_slots": []
-     },
-     "spec_id": "spec_7b713899f629aa3f0ed7e3617cae8520"
-    }
-   ],
-   "status": "definite",
-   "unsupported": null,
-   "warnings": [
-    [
-     "direction_discarded",
-     "warn",
-     "Norway was named as the provider; this shape reports the place as its own subject, so the direction was dropped.",
-     null
-    ],
-    [
-     "standard_probe_places_clamped",
-     "warn",
-     "2 probe places detected across 2 named place(s); resolved the first 1.",
-     null
-    ],
-    [
-     "elected_shape_no_data",
-     "info",
-     "the originally chosen reading had no observations at this place; a sibling reading confirmed with real data was elected instead.",
-     null
-    ]
-   ]
-  },
-  "baseline_answer": {
-   "served_series": "5cfb0ef5dff17f854b764aba759d30614c30c6dbab0e44adf7b53acaefb868d7",
-   "status": "definite"
-  },
-  "baseline_serial_depth": 23
- },
  "income-reelect-directed-two-places": {
   "answer": {
    "alternate_match": null,
@@ -3851,18 +2448,6 @@
      }
     ],
     [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
@@ -3876,6 +2461,14 @@
        "country/NOR",
        "dc/base/ScenarioFixture",
        "measuredValue"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
+       "Country"
       ]
      }
     ],
@@ -3899,15 +2492,12 @@
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "country/GHA"
-     }
-    ],
-    [
-     "FakeGraph.node_type",
-     {
-      "dcid": "country/NOR"
+      "dcids": [
+       "country/GHA",
+       "country/NOR"
+      ]
      }
     ],
     [
@@ -4596,30 +3186,6 @@
      }
     ],
     [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
@@ -4657,6 +3223,22 @@
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
+       "Country"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
+       "Country"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
        "EconomicActivity",
        "GrossNationalIncome",
        "activitySource",
@@ -4681,27 +3263,21 @@
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "country/GHA"
+      "dcids": [
+       "country/GHA",
+       "country/NOR"
+      ]
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "country/GHA"
-     }
-    ],
-    [
-     "FakeGraph.node_type",
-     {
-      "dcid": "country/NOR"
-     }
-    ],
-    [
-     "FakeGraph.node_type",
-     {
-      "dcid": "country/NOR"
+      "dcids": [
+       "country/GHA",
+       "country/NOR"
+      ]
      }
     ],
     [
@@ -5723,12 +4299,6 @@
      }
     ],
     [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
@@ -5741,6 +4311,14 @@
        "country/GHA",
        "dc/base/ScenarioFixture",
        "measuredValue"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
+       "Country"
       ]
      }
     ],
@@ -5764,9 +4342,11 @@
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "country/GHA"
+      "dcids": [
+       "country/GHA"
+      ]
      }
     ],
     [
@@ -6370,18 +4950,6 @@
      }
     ],
     [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
@@ -6417,6 +4985,22 @@
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
+       "Country"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
+       "Country"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
        "EconomicActivity",
        "GrossNationalIncome",
        "activitySource",
@@ -6441,15 +5025,19 @@
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "country/GHA"
+      "dcids": [
+       "country/GHA"
+      ]
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "country/GHA"
+      "dcids": [
+       "country/GHA"
+      ]
      }
     ],
     [
@@ -7356,30 +5944,6 @@
      }
     ],
     [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
@@ -7417,6 +5981,22 @@
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
+       "Country"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
+       "Country"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
        "EconomicActivity",
        "GrossNationalIncome",
        "activitySource",
@@ -7441,27 +6021,21 @@
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "country/GHA"
+      "dcids": [
+       "country/GHA",
+       "country/NOR"
+      ]
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "country/GHA"
-     }
-    ],
-    [
-     "FakeGraph.node_type",
-     {
-      "dcid": "country/NOR"
-     }
-    ],
-    [
-     "FakeGraph.node_type",
-     {
-      "dcid": "country/NOR"
+      "dcids": [
+       "country/GHA",
+       "country/NOR"
+      ]
      }
     ],
     [
@@ -8420,18 +6994,6 @@
      }
     ],
     [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
@@ -8467,6 +7029,22 @@
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
+       "Country"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
+       "Country"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
        "EconomicActivity",
        "GrossNationalIncome",
        "activitySource",
@@ -8491,15 +7069,19 @@
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "country/GHA"
+      "dcids": [
+       "country/GHA"
+      ]
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "country/GHA"
+      "dcids": [
+       "country/GHA"
+      ]
      }
     ],
     [
@@ -9257,995 +7839,6 @@
   },
   "baseline_serial_depth": 22
  },
- "named-clamped": {
-  "answer": {
-   "alternate_match": null,
-   "elected_stat_vars": [
-    "Count_MortalityEventScenario"
-   ],
-   "flagged_match": [
-    {
-     "identity_entities": {
-      "observationAbout": [
-       "country/GHA",
-       "country/KEN"
-      ]
-     },
-     "resolved": {
-      "alternative_measures": null,
-      "available_at_place": false,
-      "confidence": "low",
-      "coverage": {
-       "has_data": false,
-       "kind": "bare",
-       "window": null
-      },
-      "download": null,
-      "entities": [
-       {
-        "confidence": null,
-        "entity_type": "Country",
-        "label": "Ghana",
-        "ref": "country/GHA",
-        "role": "observationAbout"
-       },
-       {
-        "confidence": null,
-        "entity_type": "Country",
-        "label": "Kenya",
-        "ref": "country/KEN",
-        "role": "observationAbout"
-       }
-      ],
-      "entity_groups": null,
-      "entity_options": [],
-      "equivalent_readings": null,
-      "facet_options": [],
-      "facets": {},
-      "headline": null,
-      "inapplicable_slots": [],
-      "measure_axis_values": [],
-      "measure_label": null,
-      "measure_label_axes": [],
-      "observations": null,
-      "open_axis_facts": null,
-      "related_group": null,
-      "related_measures": null,
-      "rendered_sentence": null,
-      "role_axis_facts": null,
-      "scope": null,
-      "sentence_plan": null,
-      "skills": null,
-      "slot_options": [],
-      "slots": [
-       {
-        "binding": {
-         "kind": "set",
-         "set_ref": null,
-         "values": [
-          {
-           "literal": null,
-           "ref": {
-            "dcid": "country/GHA",
-            "label": "Ghana"
-           },
-           "time_window": null,
-           "value_kind": "entity"
-          },
-          {
-           "literal": null,
-           "ref": {
-            "dcid": "country/KEN",
-            "label": "Kenya"
-           },
-           "time_window": null,
-           "value_kind": "entity"
-          }
-         ]
-        },
-        "expansion": null,
-        "key": {
-         "axis": "where",
-         "label": "place",
-         "property": null
-        },
-        "summable": false
-       },
-       {
-        "binding": {
-         "kind": "unbound"
-        },
-        "expansion": null,
-        "key": {
-         "axis": "when",
-         "label": "time window",
-         "property": null
-        },
-        "summable": false
-       },
-       {
-        "binding": {
-         "kind": "unbound"
-        },
-        "expansion": null,
-        "key": {
-         "axis": "source",
-         "label": "data source",
-         "property": null
-        },
-        "summable": false
-       }
-      ],
-      "stat_vars": {
-       "data_date_range": null,
-       "member_count": 0,
-       "member_count_exact": false,
-       "served_count": 1
-      },
-      "trace": {
-       "capability_version": "cap_daf889452657d56d",
-       "conversion": null,
-       "default_reading": {
-        "applied": true,
-        "removed_stat_vars": []
-       },
-       "query_qualifiers": [],
-       "requested_window": null,
-       "resolved_entities": [
-        {
-         "dcid": "country/GHA",
-         "label": "Ghana"
-        },
-        {
-         "dcid": "country/KEN",
-         "label": "Kenya"
-        }
-       ],
-       "resolved_sources": [],
-       "slot_filters": [
-        {
-         "binding_kind": "set",
-         "key": {
-          "axis": "where",
-          "label": "place",
-          "property": null
-         },
-         "provenance": "binder",
-         "refs": [
-          {
-           "dcid": "country/GHA",
-           "label": "Ghana"
-          },
-          {
-           "dcid": "country/KEN",
-           "label": "Kenya"
-          }
-         ]
-        },
-        {
-         "binding_kind": "unbound",
-         "key": {
-          "axis": "when",
-          "label": "time window",
-          "property": null
-         },
-         "provenance": "binder",
-         "refs": []
-        },
-        {
-         "binding_kind": "unbound",
-         "key": {
-          "axis": "source",
-          "label": "data source",
-          "property": null
-         },
-         "provenance": "binder",
-         "refs": []
-        }
-       ]
-      },
-      "unit_conversion": null,
-      "unresolved_slots": []
-     },
-     "spec_id": "spec_ab9d3f1755a051bc7c71f8ae670f2d58"
-    }
-   ],
-   "nearest_real": [],
-   "no_data_bound_role_dcids": {},
-   "no_data_reason": "no_observations",
-   "no_data_role_axis": null,
-   "observation_entities": [
-    [
-     "phase_answer",
-     {
-      "observationAbout": [
-       "country/GHA"
-      ]
-     }
-    ]
-   ],
-   "requests": [
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.detect_svs",
-     {
-      "query": "mortality count in Kenya and Ghana"
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_batch",
-     {
-      "dcids": [
-       "Count_MortalityEventScenario"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_many",
-     {
-      "dcids": [
-       "AdministrativeArea"
-      ],
-      "properties": [
-       "subClassOf"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_many",
-     {
-      "dcids": [
-       "Country"
-      ],
-      "properties": [
-       "subClassOf"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_many",
-     {
-      "dcids": [
-       "country/GHA",
-       "country/KEN"
-      ],
-      "deadline": null,
-      "properties": [
-       "name",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_many",
-     {
-      "dcids": [
-       "observationAbout"
-      ],
-      "properties": [
-       "rangeIncludes"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
-     "FakeGraph.node_labels_batch",
-     {
-      "dcids": [
-       "Count_MortalityEventScenario",
-       "MortalityEvent",
-       "count",
-       "country/GHA",
-       "country/KEN",
-       "measuredValue"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_labels_batch",
-     {
-      "dcids": [
-       "MortalityEvent"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_type",
-     {
-      "dcid": "country/GHA"
-     }
-    ],
-    [
-     "FakeGraph.node_type",
-     {
-      "dcid": "country/KEN"
-     }
-    ],
-    [
-     "FakeGraph.observation_facets_batch",
-     {
-      "entities": [
-       "country/GHA",
-       "country/KEN"
-      ],
-      "needs_dates": false,
-      "stat_vars": [
-       "Count_MortalityEventScenario"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.observation_facets_batch",
-     {
-      "entities": [
-       "country/GHA"
-      ],
-      "needs_dates": false,
-      "stat_vars": [
-       "Count_MortalityEventScenario"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.generation_stamp",
-     {}
-    ],
-    [
-     "FakeMintGraphReader.node_arcs_many",
-     {
-      "dcids": [
-       "Count_MortalityEventEstimatedScenario",
-       "Count_MortalityEventProjectedScenario",
-       "Count_MortalityEventScenario"
-      ],
-      "deadline": "set",
-      "individual_probe_budget": null,
-      "properties": [
-       "constraintProperties",
-       "measuredProperty",
-       "measurementDenominator",
-       "measurementQualifier",
-       "observationProperties",
-       "populationType",
-       "statType",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_arcs_many",
-     {
-      "dcids": [
-       "Count_MortalityEventScenario"
-      ],
-      "deadline": "set",
-      "individual_probe_budget": null,
-      "properties": [
-       "constraintProperties",
-       "measuredProperty",
-       "measurementDenominator",
-       "measurementQualifier",
-       "observationProperties",
-       "populationType",
-       "statType",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_subjects",
-     {
-      "dcid": "count",
-      "deadline": "set",
-      "filters": {
-       "populationType": "MortalityEvent",
-       "statType": "measuredValue"
-      },
-      "max_results": 4000,
-      "property": "measuredProperty"
-     }
-    ]
-   ],
-   "sentence": {
-    "departures": [],
-    "rendered_sentence": "No data for mortality event count in Ghana and Kenya."
-   },
-   "specs": [],
-   "status": "no_data",
-   "unsupported": null,
-   "warnings": [
-    [
-     "standard_probe_places_clamped",
-     "warn",
-     "2 probe places detected across 2 named place(s); resolved the first 1.",
-     null
-    ]
-   ]
-  },
-  "baseline_answer": {
-   "served_series": "6754ba16c6af061afa285c38832f55e440a0babf64c782d484568c1e312b0905",
-   "status": "no_data"
-  },
-  "baseline_serial_depth": 16
- },
- "named-clamped-reelect": {
-  "answer": {
-   "alternate_match": null,
-   "elected_stat_vars": [
-    "Count_MortalityEventScenario"
-   ],
-   "flagged_match": [
-    {
-     "identity_entities": {
-      "observationAbout": [
-       "country/GHA",
-       "country/KEN"
-      ]
-     },
-     "resolved": {
-      "alternative_measures": null,
-      "available_at_place": false,
-      "confidence": "low",
-      "coverage": {
-       "has_data": false,
-       "kind": "bare",
-       "window": null
-      },
-      "download": null,
-      "entities": [
-       {
-        "confidence": null,
-        "entity_type": "Country",
-        "label": "Ghana",
-        "ref": "country/GHA",
-        "role": "observationAbout"
-       },
-       {
-        "confidence": null,
-        "entity_type": "Country",
-        "label": "Kenya",
-        "ref": "country/KEN",
-        "role": "observationAbout"
-       }
-      ],
-      "entity_groups": null,
-      "entity_options": [],
-      "equivalent_readings": null,
-      "facet_options": [],
-      "facets": {},
-      "headline": null,
-      "inapplicable_slots": [],
-      "measure_axis_values": [],
-      "measure_label": null,
-      "measure_label_axes": [],
-      "observations": null,
-      "open_axis_facts": null,
-      "related_group": null,
-      "related_measures": null,
-      "rendered_sentence": null,
-      "role_axis_facts": null,
-      "scope": null,
-      "sentence_plan": null,
-      "skills": null,
-      "slot_options": [],
-      "slots": [
-       {
-        "binding": {
-         "kind": "set",
-         "set_ref": null,
-         "values": [
-          {
-           "literal": null,
-           "ref": {
-            "dcid": "country/GHA",
-            "label": "Ghana"
-           },
-           "time_window": null,
-           "value_kind": "entity"
-          },
-          {
-           "literal": null,
-           "ref": {
-            "dcid": "country/KEN",
-            "label": "Kenya"
-           },
-           "time_window": null,
-           "value_kind": "entity"
-          }
-         ]
-        },
-        "expansion": null,
-        "key": {
-         "axis": "where",
-         "label": "place",
-         "property": null
-        },
-        "summable": false
-       },
-       {
-        "binding": {
-         "kind": "unbound"
-        },
-        "expansion": null,
-        "key": {
-         "axis": "when",
-         "label": "time window",
-         "property": null
-        },
-        "summable": false
-       },
-       {
-        "binding": {
-         "kind": "unbound"
-        },
-        "expansion": null,
-        "key": {
-         "axis": "source",
-         "label": "data source",
-         "property": null
-        },
-        "summable": false
-       }
-      ],
-      "stat_vars": {
-       "data_date_range": null,
-       "member_count": 0,
-       "member_count_exact": false,
-       "served_count": 1
-      },
-      "trace": {
-       "capability_version": "cap_daf889452657d56d",
-       "conversion": null,
-       "default_reading": {
-        "applied": true,
-        "removed_stat_vars": []
-       },
-       "query_qualifiers": [],
-       "requested_window": null,
-       "resolved_entities": [
-        {
-         "dcid": "country/GHA",
-         "label": "Ghana"
-        },
-        {
-         "dcid": "country/KEN",
-         "label": "Kenya"
-        }
-       ],
-       "resolved_sources": [],
-       "slot_filters": [
-        {
-         "binding_kind": "set",
-         "key": {
-          "axis": "where",
-          "label": "place",
-          "property": null
-         },
-         "provenance": "binder",
-         "refs": [
-          {
-           "dcid": "country/GHA",
-           "label": "Ghana"
-          },
-          {
-           "dcid": "country/KEN",
-           "label": "Kenya"
-          }
-         ]
-        },
-        {
-         "binding_kind": "unbound",
-         "key": {
-          "axis": "when",
-          "label": "time window",
-          "property": null
-         },
-         "provenance": "binder",
-         "refs": []
-        },
-        {
-         "binding_kind": "unbound",
-         "key": {
-          "axis": "source",
-          "label": "data source",
-          "property": null
-         },
-         "provenance": "binder",
-         "refs": []
-        }
-       ]
-      },
-      "unit_conversion": null,
-      "unresolved_slots": []
-     },
-     "spec_id": "spec_ab9d3f1755a051bc7c71f8ae670f2d58"
-    }
-   ],
-   "nearest_real": [],
-   "no_data_bound_role_dcids": {},
-   "no_data_reason": "no_observations",
-   "no_data_role_axis": null,
-   "observation_entities": [
-    [
-     "phase_answer",
-     {
-      "observationAbout": [
-       "country/GHA"
-      ]
-     }
-    ]
-   ],
-   "requests": [
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.detect_svs",
-     {
-      "query": "mortality count in Kenya and Ghana"
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_batch",
-     {
-      "dcids": [
-       "Count_MortalityEventEstimatedScenario",
-       "Count_MortalityEventScenario"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_many",
-     {
-      "dcids": [
-       "AdministrativeArea"
-      ],
-      "properties": [
-       "subClassOf"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_many",
-     {
-      "dcids": [
-       "Country"
-      ],
-      "properties": [
-       "subClassOf"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_many",
-     {
-      "dcids": [
-       "country/GHA",
-       "country/KEN"
-      ],
-      "deadline": null,
-      "properties": [
-       "name",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_many",
-     {
-      "dcids": [
-       "observationAbout"
-      ],
-      "properties": [
-       "rangeIncludes"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
-     "FakeGraph.node_labels_batch",
-     {
-      "dcids": [
-       "Count_MortalityEventScenario",
-       "MortalityEvent",
-       "count",
-       "country/GHA",
-       "country/KEN",
-       "measuredValue"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_labels_batch",
-     {
-      "dcids": [
-       "MortalityEvent"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_type",
-     {
-      "dcid": "country/GHA"
-     }
-    ],
-    [
-     "FakeGraph.node_type",
-     {
-      "dcid": "country/KEN"
-     }
-    ],
-    [
-     "FakeGraph.observation_facets_batch",
-     {
-      "entities": [
-       "country/GHA",
-       "country/KEN"
-      ],
-      "needs_dates": false,
-      "stat_vars": [
-       "Count_MortalityEventEstimatedScenario",
-       "Count_MortalityEventScenario"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.observation_facets_batch",
-     {
-      "entities": [
-       "country/GHA"
-      ],
-      "needs_dates": false,
-      "stat_vars": [
-       "Count_MortalityEventEstimatedScenario"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.observation_facets_batch",
-     {
-      "entities": [
-       "country/GHA"
-      ],
-      "needs_dates": false,
-      "stat_vars": [
-       "Count_MortalityEventEstimatedScenario"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.observation_facets_batch",
-     {
-      "entities": [
-       "country/GHA"
-      ],
-      "needs_dates": false,
-      "stat_vars": [
-       "Count_MortalityEventScenario"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.generation_stamp",
-     {}
-    ],
-    [
-     "FakeMintGraphReader.generation_stamp",
-     {}
-    ],
-    [
-     "FakeMintGraphReader.node_arcs_many",
-     {
-      "dcids": [
-       "Count_MortalityEventEstimatedScenario",
-       "Count_MortalityEventProjectedScenario",
-       "Count_MortalityEventScenario"
-      ],
-      "deadline": "set",
-      "individual_probe_budget": null,
-      "properties": [
-       "constraintProperties",
-       "measuredProperty",
-       "measurementDenominator",
-       "measurementQualifier",
-       "observationProperties",
-       "populationType",
-       "statType",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_arcs_many",
-     {
-      "dcids": [
-       "Count_MortalityEventEstimatedScenario"
-      ],
-      "deadline": "set",
-      "individual_probe_budget": null,
-      "properties": [
-       "constraintProperties",
-       "measuredProperty",
-       "measurementDenominator",
-       "measurementQualifier",
-       "observationProperties",
-       "populationType",
-       "statType",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_arcs_many",
-     {
-      "dcids": [
-       "Count_MortalityEventEstimatedScenario"
-      ],
-      "deadline": "set",
-      "individual_probe_budget": null,
-      "properties": [
-       "constraintProperties",
-       "measuredProperty",
-       "measurementDenominator",
-       "measurementQualifier",
-       "observationProperties",
-       "populationType",
-       "statType",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_arcs_many",
-     {
-      "dcids": [
-       "Count_MortalityEventScenario"
-      ],
-      "deadline": "set",
-      "individual_probe_budget": null,
-      "properties": [
-       "constraintProperties",
-       "measuredProperty",
-       "measurementDenominator",
-       "measurementQualifier",
-       "observationProperties",
-       "populationType",
-       "statType",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_subjects",
-     {
-      "dcid": "count",
-      "deadline": "set",
-      "filters": {
-       "measurementQualifier": "Estimated",
-       "populationType": "MortalityEvent",
-       "statType": "measuredValue"
-      },
-      "max_results": 4000,
-      "property": "measuredProperty"
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_subjects",
-     {
-      "dcid": "count",
-      "deadline": "set",
-      "filters": {
-       "populationType": "MortalityEvent",
-       "statType": "measuredValue"
-      },
-      "max_results": 4000,
-      "property": "measuredProperty"
-     }
-    ]
-   ],
-   "sentence": {
-    "departures": [],
-    "rendered_sentence": "No data for mortality event count in Ghana and Kenya."
-   },
-   "specs": [],
-   "status": "no_data",
-   "unsupported": null,
-   "warnings": [
-    [
-     "standard_probe_places_clamped",
-     "warn",
-     "2 probe places detected across 2 named place(s); resolved the first 1.",
-     null
-    ]
-   ]
-  },
-  "baseline_answer": {
-   "served_series": "6754ba16c6af061afa285c38832f55e440a0babf64c782d484568c1e312b0905",
-   "status": "no_data"
-  },
-  "baseline_serial_depth": 18
- },
  "named-definite": {
   "answer": {
    "alternate_match": null,
@@ -10348,12 +7941,6 @@
      }
     ],
     [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
@@ -10363,6 +7950,14 @@
        "country/KEN",
        "dc/base/ScenarioFixture",
        "measuredValue"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
+       "Country"
       ]
      }
     ],
@@ -10383,9 +7978,11 @@
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "country/KEN"
+      "dcids": [
+       "country/KEN"
+      ]
      }
     ],
     [
@@ -10721,1248 +8318,6 @@
   },
   "baseline_serial_depth": 14
  },
- "named-directed-clamped-reelect": {
-  "answer": {
-   "alternate_match": null,
-   "elected_stat_vars": [
-    "Count_MortalityEventScenario"
-   ],
-   "flagged_match": [
-    {
-     "identity_entities": {
-      "observationAbout": [
-       "country/GHA",
-       "country/KEN"
-      ]
-     },
-     "resolved": {
-      "alternative_measures": null,
-      "available_at_place": false,
-      "confidence": "low",
-      "coverage": {
-       "has_data": false,
-       "kind": "bare",
-       "window": null
-      },
-      "download": null,
-      "entities": [
-       {
-        "confidence": null,
-        "entity_type": "Country",
-        "label": "Ghana",
-        "ref": "country/GHA",
-        "role": "observationAbout"
-       },
-       {
-        "confidence": null,
-        "entity_type": "Country",
-        "label": "Kenya",
-        "ref": "country/KEN",
-        "role": "observationAbout"
-       }
-      ],
-      "entity_groups": null,
-      "entity_options": [],
-      "equivalent_readings": null,
-      "facet_options": [],
-      "facets": {},
-      "headline": null,
-      "inapplicable_slots": [],
-      "measure_axis_values": [],
-      "measure_label": null,
-      "measure_label_axes": [],
-      "observations": null,
-      "open_axis_facts": null,
-      "related_group": null,
-      "related_measures": null,
-      "rendered_sentence": null,
-      "role_axis_facts": null,
-      "scope": null,
-      "sentence_plan": null,
-      "skills": null,
-      "slot_options": [],
-      "slots": [
-       {
-        "binding": {
-         "kind": "set",
-         "set_ref": null,
-         "values": [
-          {
-           "literal": null,
-           "ref": {
-            "dcid": "country/GHA",
-            "label": "Ghana"
-           },
-           "time_window": null,
-           "value_kind": "entity"
-          },
-          {
-           "literal": null,
-           "ref": {
-            "dcid": "country/KEN",
-            "label": "Kenya"
-           },
-           "time_window": null,
-           "value_kind": "entity"
-          }
-         ]
-        },
-        "expansion": null,
-        "key": {
-         "axis": "where",
-         "label": "place",
-         "property": null
-        },
-        "summable": false
-       },
-       {
-        "binding": {
-         "kind": "unbound"
-        },
-        "expansion": null,
-        "key": {
-         "axis": "when",
-         "label": "time window",
-         "property": null
-        },
-        "summable": false
-       },
-       {
-        "binding": {
-         "kind": "unbound"
-        },
-        "expansion": null,
-        "key": {
-         "axis": "source",
-         "label": "data source",
-         "property": null
-        },
-        "summable": false
-       }
-      ],
-      "stat_vars": {
-       "data_date_range": null,
-       "member_count": 0,
-       "member_count_exact": false,
-       "served_count": 1
-      },
-      "trace": {
-       "capability_version": "cap_daf889452657d56d",
-       "conversion": null,
-       "default_reading": {
-        "applied": true,
-        "removed_stat_vars": []
-       },
-       "query_qualifiers": [],
-       "requested_window": null,
-       "resolved_entities": [
-        {
-         "dcid": "country/GHA",
-         "label": "Ghana"
-        },
-        {
-         "dcid": "country/KEN",
-         "label": "Kenya"
-        }
-       ],
-       "resolved_sources": [],
-       "slot_filters": [
-        {
-         "binding_kind": "set",
-         "key": {
-          "axis": "where",
-          "label": "place",
-          "property": null
-         },
-         "provenance": "binder",
-         "refs": [
-          {
-           "dcid": "country/GHA",
-           "label": "Ghana"
-          },
-          {
-           "dcid": "country/KEN",
-           "label": "Kenya"
-          }
-         ]
-        },
-        {
-         "binding_kind": "unbound",
-         "key": {
-          "axis": "when",
-          "label": "time window",
-          "property": null
-         },
-         "provenance": "binder",
-         "refs": []
-        },
-        {
-         "binding_kind": "unbound",
-         "key": {
-          "axis": "source",
-          "label": "data source",
-          "property": null
-         },
-         "provenance": "binder",
-         "refs": []
-        }
-       ]
-      },
-      "unit_conversion": null,
-      "unresolved_slots": []
-     },
-     "spec_id": "spec_ab9d3f1755a051bc7c71f8ae670f2d58"
-    }
-   ],
-   "nearest_real": [],
-   "no_data_bound_role_dcids": {},
-   "no_data_reason": "no_observations",
-   "no_data_role_axis": null,
-   "observation_entities": [
-    [
-     "phase_answer",
-     {
-      "observationAbout": [
-       "country/GHA"
-      ]
-     }
-    ]
-   ],
-   "requests": [
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.detect_svs",
-     {
-      "query": "mortality count from Kenya and Ghana"
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_batch",
-     {
-      "dcids": [
-       "Count_MortalityEventEstimatedScenario",
-       "Count_MortalityEventScenario"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_many",
-     {
-      "dcids": [
-       "AdministrativeArea"
-      ],
-      "properties": [
-       "subClassOf"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_many",
-     {
-      "dcids": [
-       "Country"
-      ],
-      "properties": [
-       "subClassOf"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_many",
-     {
-      "dcids": [
-       "country/GHA",
-       "country/KEN"
-      ],
-      "deadline": null,
-      "properties": [
-       "name",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_many",
-     {
-      "dcids": [
-       "observationAbout"
-      ],
-      "properties": [
-       "rangeIncludes"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
-     "FakeGraph.node_labels_batch",
-     {
-      "dcids": [
-       "Count_MortalityEventScenario",
-       "MortalityEvent",
-       "count",
-       "country/GHA",
-       "country/KEN",
-       "measuredValue"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_labels_batch",
-     {
-      "dcids": [
-       "MortalityEvent"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_type",
-     {
-      "dcid": "country/GHA"
-     }
-    ],
-    [
-     "FakeGraph.node_type",
-     {
-      "dcid": "country/KEN"
-     }
-    ],
-    [
-     "FakeGraph.observation_facets_batch",
-     {
-      "entities": [
-       "country/GHA",
-       "country/KEN"
-      ],
-      "needs_dates": false,
-      "stat_vars": [
-       "Count_MortalityEventEstimatedScenario",
-       "Count_MortalityEventScenario"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.observation_facets_batch",
-     {
-      "entities": [
-       "country/GHA"
-      ],
-      "needs_dates": false,
-      "stat_vars": [
-       "Count_MortalityEventEstimatedScenario"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.observation_facets_batch",
-     {
-      "entities": [
-       "country/GHA"
-      ],
-      "needs_dates": false,
-      "stat_vars": [
-       "Count_MortalityEventEstimatedScenario"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.observation_facets_batch",
-     {
-      "entities": [
-       "country/GHA"
-      ],
-      "needs_dates": false,
-      "stat_vars": [
-       "Count_MortalityEventScenario"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.generation_stamp",
-     {}
-    ],
-    [
-     "FakeMintGraphReader.generation_stamp",
-     {}
-    ],
-    [
-     "FakeMintGraphReader.node_arcs_many",
-     {
-      "dcids": [
-       "Count_MortalityEventEstimatedScenario",
-       "Count_MortalityEventProjectedScenario",
-       "Count_MortalityEventScenario"
-      ],
-      "deadline": "set",
-      "individual_probe_budget": null,
-      "properties": [
-       "constraintProperties",
-       "measuredProperty",
-       "measurementDenominator",
-       "measurementQualifier",
-       "observationProperties",
-       "populationType",
-       "statType",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_arcs_many",
-     {
-      "dcids": [
-       "Count_MortalityEventEstimatedScenario"
-      ],
-      "deadline": "set",
-      "individual_probe_budget": null,
-      "properties": [
-       "constraintProperties",
-       "measuredProperty",
-       "measurementDenominator",
-       "measurementQualifier",
-       "observationProperties",
-       "populationType",
-       "statType",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_arcs_many",
-     {
-      "dcids": [
-       "Count_MortalityEventEstimatedScenario"
-      ],
-      "deadline": "set",
-      "individual_probe_budget": null,
-      "properties": [
-       "constraintProperties",
-       "measuredProperty",
-       "measurementDenominator",
-       "measurementQualifier",
-       "observationProperties",
-       "populationType",
-       "statType",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_arcs_many",
-     {
-      "dcids": [
-       "Count_MortalityEventScenario"
-      ],
-      "deadline": "set",
-      "individual_probe_budget": null,
-      "properties": [
-       "constraintProperties",
-       "measuredProperty",
-       "measurementDenominator",
-       "measurementQualifier",
-       "observationProperties",
-       "populationType",
-       "statType",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_subjects",
-     {
-      "dcid": "count",
-      "deadline": "set",
-      "filters": {
-       "measurementQualifier": "Estimated",
-       "populationType": "MortalityEvent",
-       "statType": "measuredValue"
-      },
-      "max_results": 4000,
-      "property": "measuredProperty"
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_subjects",
-     {
-      "dcid": "count",
-      "deadline": "set",
-      "filters": {
-       "populationType": "MortalityEvent",
-       "statType": "measuredValue"
-      },
-      "max_results": 4000,
-      "property": "measuredProperty"
-     }
-    ]
-   ],
-   "sentence": {
-    "departures": [
-     [
-      "direction_discarded",
-      "where:",
-      "Ghana",
-      null,
-      "You named Ghana as a provider. This measure has no providers, so this checked the place itself."
-     ],
-     [
-      "direction_discarded",
-      "where:",
-      "Kenya",
-      null,
-      "You named Kenya as a provider. This measure has no providers, so this checked the place itself."
-     ]
-    ],
-    "rendered_sentence": "No data for mortality event count in Ghana and Kenya. You named Ghana as a provider. This measure has no providers, so this checked the place itself. You named Kenya as a provider. This measure has no providers, so this checked the place itself."
-   },
-   "specs": [],
-   "status": "no_data",
-   "unsupported": null,
-   "warnings": [
-    [
-     "direction_discarded",
-     "warn",
-     "Ghana was named as the provider; this shape reports the place as its own subject, so the direction was dropped.",
-     null
-    ],
-    [
-     "direction_discarded",
-     "warn",
-     "Kenya was named as the provider; this shape reports the place as its own subject, so the direction was dropped.",
-     null
-    ],
-    [
-     "standard_probe_places_clamped",
-     "warn",
-     "2 probe places detected across 2 named place(s); resolved the first 1.",
-     null
-    ]
-   ]
-  },
-  "baseline_answer": {
-   "served_series": "6754ba16c6af061afa285c38832f55e440a0babf64c782d484568c1e312b0905",
-   "status": "no_data"
-  },
-  "baseline_serial_depth": 18
- },
- "named-directed-clamped-reelect-menu": {
-  "answer": {
-   "alternate_match": null,
-   "elected_stat_vars": [
-    "Count_MortalityEventScenario"
-   ],
-   "flagged_match": [
-    {
-     "identity_entities": {
-      "observationAbout": [
-       "country/GHA",
-       "country/KEN"
-      ]
-     },
-     "resolved": {
-      "alternative_measures": null,
-      "available_at_place": false,
-      "confidence": "low",
-      "coverage": {
-       "has_data": false,
-       "kind": "bare",
-       "window": null
-      },
-      "download": null,
-      "entities": [
-       {
-        "confidence": null,
-        "entity_type": "Country",
-        "label": "Ghana",
-        "ref": "country/GHA",
-        "role": "observationAbout"
-       },
-       {
-        "confidence": null,
-        "entity_type": "Country",
-        "label": "Kenya",
-        "ref": "country/KEN",
-        "role": "observationAbout"
-       }
-      ],
-      "entity_groups": null,
-      "entity_options": [],
-      "equivalent_readings": null,
-      "facet_options": [],
-      "facets": {},
-      "headline": null,
-      "inapplicable_slots": [],
-      "measure_axis_values": [],
-      "measure_label": null,
-      "measure_label_axes": [],
-      "observations": null,
-      "open_axis_facts": null,
-      "related_group": null,
-      "related_measures": null,
-      "rendered_sentence": null,
-      "role_axis_facts": null,
-      "scope": null,
-      "sentence_plan": null,
-      "skills": null,
-      "slot_options": [],
-      "slots": [
-       {
-        "binding": {
-         "kind": "set",
-         "set_ref": null,
-         "values": [
-          {
-           "literal": null,
-           "ref": {
-            "dcid": "country/GHA",
-            "label": "Ghana"
-           },
-           "time_window": null,
-           "value_kind": "entity"
-          },
-          {
-           "literal": null,
-           "ref": {
-            "dcid": "country/KEN",
-            "label": "Kenya"
-           },
-           "time_window": null,
-           "value_kind": "entity"
-          }
-         ]
-        },
-        "expansion": null,
-        "key": {
-         "axis": "where",
-         "label": "place",
-         "property": null
-        },
-        "summable": false
-       },
-       {
-        "binding": {
-         "kind": "unbound"
-        },
-        "expansion": null,
-        "key": {
-         "axis": "when",
-         "label": "time window",
-         "property": null
-        },
-        "summable": false
-       },
-       {
-        "binding": {
-         "kind": "unbound"
-        },
-        "expansion": null,
-        "key": {
-         "axis": "source",
-         "label": "data source",
-         "property": null
-        },
-        "summable": false
-       }
-      ],
-      "stat_vars": {
-       "data_date_range": null,
-       "member_count": 0,
-       "member_count_exact": false,
-       "served_count": 1
-      },
-      "trace": {
-       "capability_version": "cap_daf889452657d56d",
-       "conversion": null,
-       "default_reading": {
-        "applied": true,
-        "removed_stat_vars": []
-       },
-       "query_qualifiers": [],
-       "requested_window": null,
-       "resolved_entities": [
-        {
-         "dcid": "country/GHA",
-         "label": "Ghana"
-        },
-        {
-         "dcid": "country/KEN",
-         "label": "Kenya"
-        }
-       ],
-       "resolved_sources": [],
-       "slot_filters": [
-        {
-         "binding_kind": "set",
-         "key": {
-          "axis": "where",
-          "label": "place",
-          "property": null
-         },
-         "provenance": "binder",
-         "refs": [
-          {
-           "dcid": "country/GHA",
-           "label": "Ghana"
-          },
-          {
-           "dcid": "country/KEN",
-           "label": "Kenya"
-          }
-         ]
-        },
-        {
-         "binding_kind": "unbound",
-         "key": {
-          "axis": "when",
-          "label": "time window",
-          "property": null
-         },
-         "provenance": "binder",
-         "refs": []
-        },
-        {
-         "binding_kind": "unbound",
-         "key": {
-          "axis": "source",
-          "label": "data source",
-          "property": null
-         },
-         "provenance": "binder",
-         "refs": []
-        }
-       ]
-      },
-      "unit_conversion": null,
-      "unresolved_slots": []
-     },
-     "spec_id": "spec_ab9d3f1755a051bc7c71f8ae670f2d58"
-    }
-   ],
-   "nearest_real": [],
-   "no_data_bound_role_dcids": {},
-   "no_data_reason": "no_observations",
-   "no_data_role_axis": null,
-   "observation_entities": [
-    [
-     "phase_answer",
-     {
-      "observationAbout": [
-       "country/GHA"
-      ]
-     }
-    ]
-   ],
-   "requests": [
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventProjectedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventProjectedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventProjectedScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "measurementMethod",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "provenance",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.default_facet_policy",
-     {
-      "axis": "unit",
-      "stat_var": "dcid:Count_MortalityEventScenario"
-     }
-    ],
-    [
-     "FakeGraph.detect_svs",
-     {
-      "query": "mortality count from Kenya and Ghana"
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_batch",
-     {
-      "dcids": [
-       "Count_MortalityEventEstimatedScenario",
-       "Count_MortalityEventProjectedScenario",
-       "Count_MortalityEventScenario"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_many",
-     {
-      "dcids": [
-       "AdministrativeArea"
-      ],
-      "properties": [
-       "subClassOf"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_many",
-     {
-      "dcids": [
-       "Country"
-      ],
-      "properties": [
-       "subClassOf"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_many",
-     {
-      "dcids": [
-       "country/GHA",
-       "country/KEN"
-      ],
-      "deadline": null,
-      "properties": [
-       "name",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_arcs_many",
-     {
-      "dcids": [
-       "observationAbout"
-      ],
-      "properties": [
-       "rangeIncludes"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
-     "FakeGraph.node_labels_batch",
-     {
-      "dcids": [
-       "Count_MortalityEventScenario",
-       "MortalityEvent",
-       "count",
-       "country/GHA",
-       "country/KEN",
-       "measuredValue"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_labels_batch",
-     {
-      "dcids": [
-       "MortalityEvent"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.node_type",
-     {
-      "dcid": "country/GHA"
-     }
-    ],
-    [
-     "FakeGraph.node_type",
-     {
-      "dcid": "country/KEN"
-     }
-    ],
-    [
-     "FakeGraph.observation_facets_batch",
-     {
-      "entities": [
-       "country/GHA",
-       "country/KEN"
-      ],
-      "needs_dates": false,
-      "stat_vars": [
-       "Count_MortalityEventEstimatedScenario",
-       "Count_MortalityEventProjectedScenario",
-       "Count_MortalityEventScenario"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.observation_facets_batch",
-     {
-      "entities": [
-       "country/GHA"
-      ],
-      "needs_dates": false,
-      "stat_vars": [
-       "Count_MortalityEventEstimatedScenario",
-       "Count_MortalityEventProjectedScenario"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.observation_facets_batch",
-     {
-      "entities": [
-       "country/GHA"
-      ],
-      "needs_dates": false,
-      "stat_vars": [
-       "Count_MortalityEventEstimatedScenario"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.observation_facets_batch",
-     {
-      "entities": [
-       "country/GHA"
-      ],
-      "needs_dates": false,
-      "stat_vars": [
-       "Count_MortalityEventProjectedScenario"
-      ]
-     }
-    ],
-    [
-     "FakeGraph.observation_facets_batch",
-     {
-      "entities": [
-       "country/GHA"
-      ],
-      "needs_dates": false,
-      "stat_vars": [
-       "Count_MortalityEventScenario"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.generation_stamp",
-     {}
-    ],
-    [
-     "FakeMintGraphReader.generation_stamp",
-     {}
-    ],
-    [
-     "FakeMintGraphReader.generation_stamp",
-     {}
-    ],
-    [
-     "FakeMintGraphReader.node_arcs_many",
-     {
-      "dcids": [
-       "Count_MortalityEventEstimatedScenario",
-       "Count_MortalityEventProjectedScenario",
-       "Count_MortalityEventScenario"
-      ],
-      "deadline": "set",
-      "individual_probe_budget": null,
-      "properties": [
-       "constraintProperties",
-       "measuredProperty",
-       "measurementDenominator",
-       "measurementQualifier",
-       "observationProperties",
-       "populationType",
-       "statType",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_arcs_many",
-     {
-      "dcids": [
-       "Count_MortalityEventEstimatedScenario"
-      ],
-      "deadline": "set",
-      "individual_probe_budget": null,
-      "properties": [
-       "constraintProperties",
-       "measuredProperty",
-       "measurementDenominator",
-       "measurementQualifier",
-       "observationProperties",
-       "populationType",
-       "statType",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_arcs_many",
-     {
-      "dcids": [
-       "Count_MortalityEventEstimatedScenario"
-      ],
-      "deadline": "set",
-      "individual_probe_budget": null,
-      "properties": [
-       "constraintProperties",
-       "measuredProperty",
-       "measurementDenominator",
-       "measurementQualifier",
-       "observationProperties",
-       "populationType",
-       "statType",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_arcs_many",
-     {
-      "dcids": [
-       "Count_MortalityEventProjectedScenario"
-      ],
-      "deadline": "set",
-      "individual_probe_budget": null,
-      "properties": [
-       "constraintProperties",
-       "measuredProperty",
-       "measurementDenominator",
-       "measurementQualifier",
-       "observationProperties",
-       "populationType",
-       "statType",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_arcs_many",
-     {
-      "dcids": [
-       "Count_MortalityEventProjectedScenario"
-      ],
-      "deadline": "set",
-      "individual_probe_budget": null,
-      "properties": [
-       "constraintProperties",
-       "measuredProperty",
-       "measurementDenominator",
-       "measurementQualifier",
-       "observationProperties",
-       "populationType",
-       "statType",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_arcs_many",
-     {
-      "dcids": [
-       "Count_MortalityEventScenario"
-      ],
-      "deadline": "set",
-      "individual_probe_budget": null,
-      "properties": [
-       "constraintProperties",
-       "measuredProperty",
-       "measurementDenominator",
-       "measurementQualifier",
-       "observationProperties",
-       "populationType",
-       "statType",
-       "typeOf"
-      ]
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_subjects",
-     {
-      "dcid": "count",
-      "deadline": "set",
-      "filters": {
-       "measurementQualifier": "Estimated",
-       "populationType": "MortalityEvent",
-       "statType": "measuredValue"
-      },
-      "max_results": 4000,
-      "property": "measuredProperty"
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_subjects",
-     {
-      "dcid": "count",
-      "deadline": "set",
-      "filters": {
-       "measurementQualifier": "Projected",
-       "populationType": "MortalityEvent",
-       "statType": "measuredValue"
-      },
-      "max_results": 4000,
-      "property": "measuredProperty"
-     }
-    ],
-    [
-     "FakeMintGraphReader.node_subjects",
-     {
-      "dcid": "count",
-      "deadline": "set",
-      "filters": {
-       "populationType": "MortalityEvent",
-       "statType": "measuredValue"
-      },
-      "max_results": 4000,
-      "property": "measuredProperty"
-     }
-    ]
-   ],
-   "sentence": {
-    "departures": [
-     [
-      "direction_discarded",
-      "where:",
-      "Ghana",
-      null,
-      "You named Ghana as a provider. This measure has no providers, so this checked the place itself."
-     ],
-     [
-      "direction_discarded",
-      "where:",
-      "Kenya",
-      null,
-      "You named Kenya as a provider. This measure has no providers, so this checked the place itself."
-     ]
-    ],
-    "rendered_sentence": "No data for mortality event count in Ghana and Kenya. You named Ghana as a provider. This measure has no providers, so this checked the place itself. You named Kenya as a provider. This measure has no providers, so this checked the place itself."
-   },
-   "specs": [],
-   "status": "no_data",
-   "unsupported": null,
-   "warnings": [
-    [
-     "direction_discarded",
-     "warn",
-     "Ghana was named as the provider; this shape reports the place as its own subject, so the direction was dropped.",
-     null
-    ],
-    [
-     "direction_discarded",
-     "warn",
-     "Kenya was named as the provider; this shape reports the place as its own subject, so the direction was dropped.",
-     null
-    ],
-    [
-     "standard_probe_places_clamped",
-     "warn",
-     "2 probe places detected across 2 named place(s); resolved the first 1.",
-     null
-    ]
-   ]
-  },
-  "baseline_answer": {
-   "served_series": "6754ba16c6af061afa285c38832f55e440a0babf64c782d484568c1e312b0905",
-   "status": "no_data"
-  },
-  "baseline_serial_depth": 19
- },
  "named-directed-reelect": {
   "answer": {
    "alternate_match": null,
@@ -12087,12 +8442,6 @@
      }
     ],
     [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
@@ -12103,6 +8452,14 @@
        "country/KEN",
        "dc/base/ScenarioFixture",
        "measuredValue"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
+       "Country"
       ]
      }
     ],
@@ -12123,9 +8480,11 @@
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "country/KEN"
+      "dcids": [
+       "country/KEN"
+      ]
      }
     ],
     [
@@ -12697,18 +9056,6 @@
      }
     ],
     [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
@@ -12738,6 +9085,22 @@
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
+       "Country"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
+       "Country"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
        "MortalityEvent",
        "UnrelatedThing"
       ]
@@ -12760,15 +9123,19 @@
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "country/KEN"
+      "dcids": [
+       "country/KEN"
+      ]
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "country/KEN"
+      "dcids": [
+       "country/KEN"
+      ]
      }
     ],
     [
@@ -13683,12 +10050,6 @@
      }
     ],
     [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
@@ -13704,14 +10065,24 @@
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
+       "Country"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
        "MortalityEvent"
       ]
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "country/KEN"
+      "dcids": [
+       "country/KEN"
+      ]
      }
     ],
     [
@@ -13812,6 +10183,174 @@
    "status": "no_data"
   },
   "baseline_serial_depth": 14
+ },
+ "named-over-bound": {
+  "answer": {
+   "alternate_match": null,
+   "elected_stat_vars": [],
+   "flagged_match": [],
+   "nearest_real": [],
+   "no_data_bound_role_dcids": {},
+   "no_data_reason": "entity_set_too_large",
+   "no_data_role_axis": null,
+   "observation_entities": [],
+   "requests": [
+    [
+     "FakeGraph.detect_svs",
+     {
+      "query": "mortality count in Kenya and Ghana"
+     }
+    ],
+    [
+     "FakeGraph.node_arcs_batch",
+     {
+      "dcids": [
+       "Count_MortalityEventScenario"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_arcs_many",
+     {
+      "dcids": [
+       "AdministrativeArea"
+      ],
+      "properties": [
+       "subClassOf"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_arcs_many",
+     {
+      "dcids": [
+       "Country"
+      ],
+      "properties": [
+       "subClassOf"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_arcs_many",
+     {
+      "dcids": [
+       "country/GHA",
+       "country/KEN"
+      ],
+      "deadline": null,
+      "properties": [
+       "name",
+       "typeOf"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_arcs_many",
+     {
+      "dcids": [
+       "observationAbout"
+      ],
+      "properties": [
+       "rangeIncludes"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
+       "MortalityEvent"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.observation_facets_batch",
+     {
+      "entities": [
+       "country/GHA",
+       "country/KEN"
+      ],
+      "needs_dates": false,
+      "stat_vars": [
+       "Count_MortalityEventScenario"
+      ]
+     }
+    ],
+    [
+     "FakeMintGraphReader.generation_stamp",
+     {}
+    ],
+    [
+     "FakeMintGraphReader.node_arcs_many",
+     {
+      "dcids": [
+       "Count_MortalityEventEstimatedScenario",
+       "Count_MortalityEventProjectedScenario",
+       "Count_MortalityEventScenario"
+      ],
+      "deadline": "set",
+      "individual_probe_budget": null,
+      "properties": [
+       "constraintProperties",
+       "measuredProperty",
+       "measurementDenominator",
+       "measurementQualifier",
+       "observationProperties",
+       "populationType",
+       "statType",
+       "typeOf"
+      ]
+     }
+    ],
+    [
+     "FakeMintGraphReader.node_arcs_many",
+     {
+      "dcids": [
+       "Count_MortalityEventScenario"
+      ],
+      "deadline": "set",
+      "individual_probe_budget": null,
+      "properties": [
+       "constraintProperties",
+       "measuredProperty",
+       "measurementDenominator",
+       "measurementQualifier",
+       "observationProperties",
+       "populationType",
+       "statType",
+       "typeOf"
+      ]
+     }
+    ],
+    [
+     "FakeMintGraphReader.node_subjects",
+     {
+      "dcid": "count",
+      "deadline": "set",
+      "filters": {
+       "populationType": "MortalityEvent",
+       "statType": "measuredValue"
+      },
+      "max_results": 4000,
+      "property": "measuredProperty"
+     }
+    ]
+   ],
+   "sentence": {
+    "departures": [],
+    "rendered_sentence": "This query names more places, counting the members of any group or region it names, than this deployment reads in one request. Try naming fewer places or a narrower group."
+   },
+   "specs": [],
+   "status": "no_data",
+   "unsupported": null,
+   "warnings": []
+  },
+  "baseline_answer": {
+   "served_series": "6754ba16c6af061afa285c38832f55e440a0babf64c782d484568c1e312b0905",
+   "status": "no_data"
+  },
+  "baseline_serial_depth": 16
  },
  "named-reelect-adopt": {
   "answer": {
@@ -13937,12 +10476,6 @@
      }
     ],
     [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
@@ -13953,6 +10486,14 @@
        "country/KEN",
        "dc/base/ScenarioFixture",
        "measuredValue"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
+       "Country"
       ]
      }
     ],
@@ -13973,9 +10514,11 @@
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "country/KEN"
+      "dcids": [
+       "country/KEN"
+      ]
      }
     ],
     [
@@ -14525,12 +11068,6 @@
      }
     ],
     [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
@@ -14541,6 +11078,14 @@
        "country/KEN",
        "dc/base/ScenarioFixture",
        "measuredValue"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
+       "Country"
       ]
      }
     ],
@@ -14561,9 +11106,11 @@
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "country/KEN"
+      "dcids": [
+       "country/KEN"
+      ]
      }
     ],
     [
@@ -15158,18 +11705,6 @@
      }
     ],
     [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
@@ -15201,6 +11736,22 @@
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
+       "Country"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
+       "Country"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
        "MortalityEvent"
       ]
      }
@@ -15222,15 +11773,19 @@
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "country/KEN"
+      "dcids": [
+       "country/KEN"
+      ]
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "country/KEN"
+      "dcids": [
+       "country/KEN"
+      ]
      }
     ],
     [
@@ -16002,7 +12557,28 @@
     [
      "FakeGraph.default_facet_policy",
      {
+      "axis": "measurementMethod",
+      "stat_var": "dcid:Count_MortalityEventScenario"
+     }
+    ],
+    [
+     "FakeGraph.default_facet_policy",
+     {
       "axis": "provenance",
+      "stat_var": "dcid:Count_MortalityEventScenario"
+     }
+    ],
+    [
+     "FakeGraph.default_facet_policy",
+     {
+      "axis": "provenance",
+      "stat_var": "dcid:Count_MortalityEventScenario"
+     }
+    ],
+    [
+     "FakeGraph.default_facet_policy",
+     {
+      "axis": "unit",
       "stat_var": "dcid:Count_MortalityEventScenario"
      }
     ],
@@ -16031,7 +12607,29 @@
      "FakeGraph.node_arcs_many",
      {
       "dcids": [
+       "AdministrativeArea"
+      ],
+      "properties": [
+       "subClassOf"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_arcs_many",
+     {
+      "dcids": [
        "Continent"
+      ],
+      "properties": [
+       "subClassOf"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_arcs_many",
+     {
+      "dcids": [
+       "Country"
       ],
       "properties": [
        "subClassOf"
@@ -16074,9 +12672,14 @@
      }
     ],
     [
-     "FakeGraph.node_label",
+     "FakeGraph.node_arcs_many",
      {
-      "dcid": "Continent"
+      "dcids": [
+       "observationAbout"
+      ],
+      "properties": [
+       "rangeIncludes"
+      ]
      }
     ],
     [
@@ -16085,10 +12688,20 @@
       "dcids": [
        "Count_MortalityEventScenario",
        "MortalityEvent",
-       "africa",
        "count",
+       "country/GHA",
+       "country/KEN",
+       "country/TZA",
        "dc/base/ScenarioFixture",
        "measuredValue"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
+       "Country"
       ]
      }
     ],
@@ -16104,20 +12717,33 @@
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
+       "africa"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
        "dc/base/ScenarioFixture"
       ]
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "africa"
+      "dcids": [
+       "country/GHA",
+       "country/KEN",
+       "country/TZA"
+      ]
      }
     ],
     [
      "FakeGraph.observation_facets_batch",
      {
       "entities": [
+       "africa",
        "country/GHA",
        "country/KEN",
        "country/TZA"
@@ -16203,14 +12829,31 @@
     ]
    ],
    "sentence": {
-    "departures": [],
-    "rendered_sentence": "Africa's mortality event count, 2015 to 2022."
+    "departures": [
+     [
+      "entity_unavailable",
+      "where:",
+      "Africa",
+      null,
+      "The data holds no values for 1 of the 3 countries and territories in Africa."
+     ],
+     [
+      "group_read_as_members",
+      "where:",
+      "Africa",
+      null,
+      "You asked for Africa. This shows the countries and territories in it, each on its own."
+     ]
+    ],
+    "rendered_sentence": "Mortality event count in the 3 countries and territories in Africa, 2015 to 2022. The data holds no values for 1 of the 3 countries and territories in Africa. You asked for Africa. This shows the countries and territories in it, each on its own."
    },
    "specs": [
     {
      "identity_entities": {
       "observationAbout": [
-       "africa"
+       "country/GHA",
+       "country/KEN",
+       "country/TZA"
       ]
      },
      "resolved": {
@@ -16251,13 +12894,33 @@
       "entities": [
        {
         "confidence": null,
-        "entity_type": "Continent",
-        "label": "Africa",
-        "ref": "africa",
+        "entity_type": "Country",
+        "label": "Ghana",
+        "ref": "country/GHA",
+        "role": "observationAbout"
+       },
+       {
+        "confidence": null,
+        "entity_type": "Country",
+        "label": "Kenya",
+        "ref": "country/KEN",
+        "role": "observationAbout"
+       },
+       {
+        "confidence": null,
+        "entity_type": "Country",
+        "label": "Tanzania",
+        "ref": "country/TZA",
         "role": "observationAbout"
        }
       ],
-      "entity_groups": null,
+      "entity_groups": {
+       "observationAbout": {
+        "dcid": "africa",
+        "entity_type": "Continent",
+        "label": "Africa"
+       }
+      },
       "entity_options": [],
       "equivalent_readings": null,
       "facet_options": [
@@ -16316,16 +12979,37 @@
       "slots": [
        {
         "binding": {
-         "kind": "value",
-         "value": {
-          "literal": null,
-          "ref": {
-           "dcid": "africa",
-           "label": "Africa"
+         "kind": "set",
+         "set_ref": null,
+         "values": [
+          {
+           "literal": null,
+           "ref": {
+            "dcid": "country/GHA",
+            "label": "Ghana"
+           },
+           "time_window": null,
+           "value_kind": "entity"
           },
-          "time_window": null,
-          "value_kind": "entity"
-         }
+          {
+           "literal": null,
+           "ref": {
+            "dcid": "country/KEN",
+            "label": "Kenya"
+           },
+           "time_window": null,
+           "value_kind": "entity"
+          },
+          {
+           "literal": null,
+           "ref": {
+            "dcid": "country/TZA",
+            "label": "Tanzania"
+           },
+           "time_window": null,
+           "value_kind": "entity"
+          }
+         ]
         },
         "expansion": null,
         "key": {
@@ -16380,14 +13064,22 @@
        "requested_window": null,
        "resolved_entities": [
         {
-         "dcid": "africa",
-         "label": "Africa"
+         "dcid": "country/GHA",
+         "label": "Ghana"
+        },
+        {
+         "dcid": "country/KEN",
+         "label": "Kenya"
+        },
+        {
+         "dcid": "country/TZA",
+         "label": "Tanzania"
         }
        ],
        "resolved_sources": [],
        "slot_filters": [
         {
-         "binding_kind": "value",
+         "binding_kind": "set",
          "key": {
           "axis": "where",
           "label": "place",
@@ -16396,8 +13088,16 @@
          "provenance": "binder",
          "refs": [
           {
-           "dcid": "africa",
-           "label": "Africa"
+           "dcid": "country/GHA",
+           "label": "Ghana"
+          },
+          {
+           "dcid": "country/KEN",
+           "label": "Kenya"
+          },
+          {
+           "dcid": "country/TZA",
+           "label": "Tanzania"
           }
          ]
         },
@@ -16426,7 +13126,7 @@
       "unit_conversion": null,
       "unresolved_slots": []
      },
-     "spec_id": "spec_f7df2fb5ca504bb66d9b86683e5514d6"
+     "spec_id": "spec_4c6a67120777427227383ef14ac1b7fe"
     }
    ],
    "status": "definite",
@@ -16481,7 +13181,28 @@
     [
      "FakeGraph.default_facet_policy",
      {
+      "axis": "measurementMethod",
+      "stat_var": "dcid:Count_MortalityEventScenario"
+     }
+    ],
+    [
+     "FakeGraph.default_facet_policy",
+     {
       "axis": "provenance",
+      "stat_var": "dcid:Count_MortalityEventScenario"
+     }
+    ],
+    [
+     "FakeGraph.default_facet_policy",
+     {
+      "axis": "provenance",
+      "stat_var": "dcid:Count_MortalityEventScenario"
+     }
+    ],
+    [
+     "FakeGraph.default_facet_policy",
+     {
+      "axis": "unit",
       "stat_var": "dcid:Count_MortalityEventScenario"
      }
     ],
@@ -16576,15 +13297,14 @@
      }
     ],
     [
-     "FakeGraph.node_label",
+     "FakeGraph.node_arcs_many",
      {
-      "dcid": "Continent"
-     }
-    ],
-    [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
+      "dcids": [
+       "observationAbout"
+      ],
+      "properties": [
+       "rangeIncludes"
+      ]
      }
     ],
     [
@@ -16593,11 +13313,21 @@
       "dcids": [
        "Count_MortalityEventScenario",
        "MortalityEvent",
-       "africa",
        "count",
+       "country/GHA",
+       "country/KEN",
        "country/NOR",
+       "country/TZA",
        "dc/base/ScenarioFixture",
        "measuredValue"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
+       "Country"
       ]
      }
     ],
@@ -16613,26 +13343,34 @@
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
+       "africa"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
        "dc/base/ScenarioFixture"
       ]
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "africa"
-     }
-    ],
-    [
-     "FakeGraph.node_type",
-     {
-      "dcid": "country/NOR"
+      "dcids": [
+       "country/GHA",
+       "country/KEN",
+       "country/NOR",
+       "country/TZA"
+      ]
      }
     ],
     [
      "FakeGraph.observation_facets_batch",
      {
       "entities": [
+       "africa",
        "country/GHA",
        "country/KEN",
        "country/NOR",
@@ -16732,15 +13470,25 @@
     ]
    ],
    "sentence": {
-    "departures": [],
-    "rendered_sentence": "Mortality event count in Africa and Norway, 2015 to 2022."
+    "departures": [
+     [
+      "entity_unavailable",
+      "where:",
+      "Africa",
+      null,
+      "You asked for Africa. The data holds no values for 2 of the 3 countries and territories in Africa."
+     ]
+    ],
+    "rendered_sentence": "Mortality event count in 4 places, 2015 to 2022. You asked for Africa. The data holds no values for 2 of the 3 countries and territories in Africa."
    },
    "specs": [
     {
      "identity_entities": {
       "observationAbout": [
-       "africa",
-       "country/NOR"
+       "country/GHA",
+       "country/KEN",
+       "country/NOR",
+       "country/TZA"
       ]
      },
      "resolved": {
@@ -16781,9 +13529,16 @@
       "entities": [
        {
         "confidence": null,
-        "entity_type": "Continent",
-        "label": "Africa",
-        "ref": "africa",
+        "entity_type": "Country",
+        "label": "Ghana",
+        "ref": "country/GHA",
+        "role": "observationAbout"
+       },
+       {
+        "confidence": null,
+        "entity_type": "Country",
+        "label": "Kenya",
+        "ref": "country/KEN",
         "role": "observationAbout"
        },
        {
@@ -16791,6 +13546,13 @@
         "entity_type": "Country",
         "label": "Norway",
         "ref": "country/NOR",
+        "role": "observationAbout"
+       },
+       {
+        "confidence": null,
+        "entity_type": "Country",
+        "label": "Tanzania",
+        "ref": "country/TZA",
         "role": "observationAbout"
        }
       ],
@@ -16859,8 +13621,17 @@
           {
            "literal": null,
            "ref": {
-            "dcid": "africa",
-            "label": "Africa"
+            "dcid": "country/GHA",
+            "label": "Ghana"
+           },
+           "time_window": null,
+           "value_kind": "entity"
+          },
+          {
+           "literal": null,
+           "ref": {
+            "dcid": "country/KEN",
+            "label": "Kenya"
            },
            "time_window": null,
            "value_kind": "entity"
@@ -16870,6 +13641,15 @@
            "ref": {
             "dcid": "country/NOR",
             "label": "Norway"
+           },
+           "time_window": null,
+           "value_kind": "entity"
+          },
+          {
+           "literal": null,
+           "ref": {
+            "dcid": "country/TZA",
+            "label": "Tanzania"
            },
            "time_window": null,
            "value_kind": "entity"
@@ -16929,12 +13709,20 @@
        "requested_window": null,
        "resolved_entities": [
         {
-         "dcid": "africa",
-         "label": "Africa"
+         "dcid": "country/GHA",
+         "label": "Ghana"
+        },
+        {
+         "dcid": "country/KEN",
+         "label": "Kenya"
         },
         {
          "dcid": "country/NOR",
          "label": "Norway"
+        },
+        {
+         "dcid": "country/TZA",
+         "label": "Tanzania"
         }
        ],
        "resolved_sources": [],
@@ -16949,12 +13737,20 @@
          "provenance": "binder",
          "refs": [
           {
-           "dcid": "africa",
-           "label": "Africa"
+           "dcid": "country/GHA",
+           "label": "Ghana"
+          },
+          {
+           "dcid": "country/KEN",
+           "label": "Kenya"
           },
           {
            "dcid": "country/NOR",
            "label": "Norway"
+          },
+          {
+           "dcid": "country/TZA",
+           "label": "Tanzania"
           }
          ]
         },
@@ -16983,7 +13779,7 @@
       "unit_conversion": null,
       "unresolved_slots": []
      },
-     "spec_id": "spec_d3f1693808c7d9706242d02df88178cb"
+     "spec_id": "spec_a7f22fe379f23323ef7e76b5a94ff9c6"
     }
    ],
    "status": "definite",
@@ -17037,7 +13833,28 @@
     [
      "FakeGraph.default_facet_policy",
      {
+      "axis": "measurementMethod",
+      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+     }
+    ],
+    [
+     "FakeGraph.default_facet_policy",
+     {
       "axis": "provenance",
+      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+     }
+    ],
+    [
+     "FakeGraph.default_facet_policy",
+     {
+      "axis": "provenance",
+      "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
+     }
+    ],
+    [
+     "FakeGraph.default_facet_policy",
+     {
+      "axis": "unit",
       "stat_var": "dcid:Count_MortalityEventEstimatedScenario"
      }
     ],
@@ -17058,7 +13875,28 @@
     [
      "FakeGraph.default_facet_policy",
      {
+      "axis": "measurementMethod",
+      "stat_var": "dcid:Count_MortalityEventScenario"
+     }
+    ],
+    [
+     "FakeGraph.default_facet_policy",
+     {
       "axis": "provenance",
+      "stat_var": "dcid:Count_MortalityEventScenario"
+     }
+    ],
+    [
+     "FakeGraph.default_facet_policy",
+     {
+      "axis": "provenance",
+      "stat_var": "dcid:Count_MortalityEventScenario"
+     }
+    ],
+    [
+     "FakeGraph.default_facet_policy",
+     {
+      "axis": "unit",
       "stat_var": "dcid:Count_MortalityEventScenario"
      }
     ],
@@ -17088,7 +13926,29 @@
      "FakeGraph.node_arcs_many",
      {
       "dcids": [
+       "AdministrativeArea"
+      ],
+      "properties": [
+       "subClassOf"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_arcs_many",
+     {
+      "dcids": [
        "Continent"
+      ],
+      "properties": [
+       "subClassOf"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_arcs_many",
+     {
+      "dcids": [
+       "Country"
       ],
       "properties": [
        "subClassOf"
@@ -17131,9 +13991,14 @@
      }
     ],
     [
-     "FakeGraph.node_label",
+     "FakeGraph.node_arcs_many",
      {
-      "dcid": "Continent"
+      "dcids": [
+       "observationAbout"
+      ],
+      "properties": [
+       "rangeIncludes"
+      ]
      }
     ],
     [
@@ -17143,10 +14008,20 @@
        "Count_MortalityEventEstimatedScenario",
        "Estimated",
        "MortalityEvent",
-       "africa",
        "count",
+       "country/GHA",
+       "country/KEN",
+       "country/TZA",
        "dc/base/ScenarioFixture",
        "measuredValue"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
+       "Country"
       ]
      }
     ],
@@ -17162,20 +14037,33 @@
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
+       "africa"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
        "dc/base/ScenarioFixture"
       ]
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "africa"
+      "dcids": [
+       "country/GHA",
+       "country/KEN",
+       "country/TZA"
+      ]
      }
     ],
     [
      "FakeGraph.observation_facets_batch",
      {
       "entities": [
+       "africa",
        "country/GHA",
        "country/KEN",
        "country/TZA"
@@ -17190,6 +14078,7 @@
      "FakeGraph.observation_facets_batch",
      {
       "entities": [
+       "africa",
        "country/GHA",
        "country/KEN",
        "country/TZA"
@@ -17218,6 +14107,7 @@
      "FakeGraph.observation_facets_batch",
      {
       "entities": [
+       "africa",
        "country/GHA",
        "country/KEN",
        "country/TZA"
@@ -17347,14 +14237,31 @@
     ]
    ],
    "sentence": {
-    "departures": [],
-    "rendered_sentence": "Africa's estimated mortality event count, 2015 to 2022."
+    "departures": [
+     [
+      "entity_unavailable",
+      "where:",
+      "Africa",
+      null,
+      "The data holds no values for 2 of the 3 countries and territories in Africa."
+     ],
+     [
+      "group_read_as_members",
+      "where:",
+      "Africa",
+      null,
+      "You asked for Africa. This shows the countries and territories in it, each on its own."
+     ]
+    ],
+    "rendered_sentence": "Estimated mortality event count in the 3 countries and territories in Africa, 2015 to 2022. The data holds no values for 2 of the 3 countries and territories in Africa. You asked for Africa. This shows the countries and territories in it, each on its own."
    },
    "specs": [
     {
      "identity_entities": {
       "observationAbout": [
-       "africa"
+       "country/GHA",
+       "country/KEN",
+       "country/TZA"
       ]
      },
      "resolved": {
@@ -17395,13 +14302,33 @@
       "entities": [
        {
         "confidence": null,
-        "entity_type": "Continent",
-        "label": "Africa",
-        "ref": "africa",
+        "entity_type": "Country",
+        "label": "Ghana",
+        "ref": "country/GHA",
+        "role": "observationAbout"
+       },
+       {
+        "confidence": null,
+        "entity_type": "Country",
+        "label": "Kenya",
+        "ref": "country/KEN",
+        "role": "observationAbout"
+       },
+       {
+        "confidence": null,
+        "entity_type": "Country",
+        "label": "Tanzania",
+        "ref": "country/TZA",
         "role": "observationAbout"
        }
       ],
-      "entity_groups": null,
+      "entity_groups": {
+       "observationAbout": {
+        "dcid": "africa",
+        "entity_type": "Continent",
+        "label": "Africa"
+       }
+      },
       "entity_options": [],
       "equivalent_readings": null,
       "facet_options": [
@@ -17460,16 +14387,37 @@
       "slots": [
        {
         "binding": {
-         "kind": "value",
-         "value": {
-          "literal": null,
-          "ref": {
-           "dcid": "africa",
-           "label": "Africa"
+         "kind": "set",
+         "set_ref": null,
+         "values": [
+          {
+           "literal": null,
+           "ref": {
+            "dcid": "country/GHA",
+            "label": "Ghana"
+           },
+           "time_window": null,
+           "value_kind": "entity"
           },
-          "time_window": null,
-          "value_kind": "entity"
-         }
+          {
+           "literal": null,
+           "ref": {
+            "dcid": "country/KEN",
+            "label": "Kenya"
+           },
+           "time_window": null,
+           "value_kind": "entity"
+          },
+          {
+           "literal": null,
+           "ref": {
+            "dcid": "country/TZA",
+            "label": "Tanzania"
+           },
+           "time_window": null,
+           "value_kind": "entity"
+          }
+         ]
         },
         "expansion": null,
         "key": {
@@ -17524,14 +14472,22 @@
        "requested_window": null,
        "resolved_entities": [
         {
-         "dcid": "africa",
-         "label": "Africa"
+         "dcid": "country/GHA",
+         "label": "Ghana"
+        },
+        {
+         "dcid": "country/KEN",
+         "label": "Kenya"
+        },
+        {
+         "dcid": "country/TZA",
+         "label": "Tanzania"
         }
        ],
        "resolved_sources": [],
        "slot_filters": [
         {
-         "binding_kind": "value",
+         "binding_kind": "set",
          "key": {
           "axis": "where",
           "label": "place",
@@ -17540,8 +14496,16 @@
          "provenance": "binder",
          "refs": [
           {
-           "dcid": "africa",
-           "label": "Africa"
+           "dcid": "country/GHA",
+           "label": "Ghana"
+          },
+          {
+           "dcid": "country/KEN",
+           "label": "Kenya"
+          },
+          {
+           "dcid": "country/TZA",
+           "label": "Tanzania"
           }
          ]
         },
@@ -17570,7 +14534,7 @@
       "unit_conversion": null,
       "unresolved_slots": []
      },
-     "spec_id": "spec_99e24b213f9ccf18c4888da0f9e94d78"
+     "spec_id": "spec_296d6b2d9682d86962f2e82a18dbf3c5"
     }
    ],
    "status": "definite",
@@ -17744,18 +14708,6 @@
      }
     ],
     [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
@@ -17778,6 +14730,22 @@
        "country/KEN",
        "dc/base/ScenarioFixture",
        "measuredValue"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
+       "Country"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
+       "Country"
       ]
      }
     ],
@@ -17808,15 +14776,19 @@
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "country/KEN"
+      "dcids": [
+       "country/KEN"
+      ]
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "country/KEN"
+      "dcids": [
+       "country/KEN"
+      ]
      }
     ],
     [
@@ -18670,18 +15642,6 @@
      }
     ],
     [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
-     "FakeGraph.node_label",
-     {
-      "dcid": "Country"
-     }
-    ],
-    [
      "FakeGraph.node_labels_batch",
      {
       "dcids": [
@@ -18692,6 +15652,14 @@
        "country/KEN",
        "dc/base/ScenarioFixture",
        "measuredValue"
+      ]
+     }
+    ],
+    [
+     "FakeGraph.node_labels_batch",
+     {
+      "dcids": [
+       "Country"
       ]
      }
     ],
@@ -18712,15 +15680,12 @@
      }
     ],
     [
-     "FakeGraph.node_type",
+     "FakeGraph.node_types_batch",
      {
-      "dcid": "country/GHA"
-     }
-    ],
-    [
-     "FakeGraph.node_type",
-     {
-      "dcid": "country/KEN"
+      "dcids": [
+       "country/GHA",
+       "country/KEN"
+      ]
      }
     ],
     [

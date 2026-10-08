@@ -2,11 +2,44 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping, Sequence
+from typing import cast
+
+from dfo_frame_grammar import UNIT_COLUMN, unit_cell_to_json
+
+from assembler.frame_view import compute_structural_view
+from assembler.ports import FrameRef, ResolvedFrame
 from assembler.testing import (
+    FIXTURE_RETRIEVED_ON,
+    build_frame_doc,
     build_resolved_frame,
     malaria_ethiopia_frame_ref,
     malaria_ethiopia_resolved_frame,
 )
+
+
+def _stored_resolved_frame(
+    *,
+    frame_ref: FrameRef,
+    role_keys: Sequence[str],
+    rows: Iterable[Mapping[str, object]],
+    labels: Mapping[str, str] | None = None,
+) -> ResolvedFrame:
+    """Build a resolved frame whose `unit` cells are frame1 JSON, as a stored frame's are.
+
+    `Frame.build` holds a converted or composed unit as an object."""
+    doc = build_frame_doc(role_keys=role_keys, rows=rows)
+    unit_index = cast("list[str]", doc["columns"]).index(UNIT_COLUMN)
+    for row in cast("list[list[object]]", doc["rows"]):
+        row[unit_index] = unit_cell_to_json(row[unit_index])
+    return ResolvedFrame(
+        frame_ref=frame_ref,
+        frame=doc,
+        structural_view=compute_structural_view(frame=doc),
+        manifest={"schema_version": 1},
+        labels=labels or {},
+        retrieved_on=FIXTURE_RETRIEVED_ON,
+    )
 
 
 def _malaria_intent(**overrides):

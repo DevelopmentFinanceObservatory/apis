@@ -2,9 +2,9 @@
 for an authenticated principal.
 
 Only the principal in `DATASETS_PIN_FIRST_PARTY_PRINCIPAL` may pin, using the
-`DATASETS_PRINCIPAL_HEADER` header (default `x-dfo-principal`). The access proxy
-authenticates callers. This door enforces pin permission. Pinning is
-irreversible on this surface.
+`DATASETS_PRINCIPAL_HEADER` header (default `x-dfo-principal`). The website sends
+that value itself on its server-side pin call, and nothing in front of this
+service sets or removes the header. Pinning is irreversible on this surface.
 
 The door checks the spec, version, and revocation before copying. The reference
 write checks revocation again in the same transaction, closing the race during

@@ -29,6 +29,7 @@ from origin_catalogue.catalogue import (
     ProvenanceRow,
     SeriesAdmission,
     SourceRef,
+    UnTables,
     entry_ref,
 )
 from origin_catalogue.context import (
@@ -115,6 +116,7 @@ __all__ = [
     "SourceRef",
     "UnBlockedPlaces",
     "UnReadFailure",
+    "UnTables",
     "UnUnserved",
     "bind_catalogue",
     "bound_catalogue",

@@ -28,6 +28,10 @@ verified against `src/presentation_api` and the shared platform envelope it rend
 | C6     | GET /api/presentation/frames/{spec_id}/{content_version} describes a frame (structural view, one dimension's values, or a query-filtered view) | implemented |     |
 | C7     | GET /api/presentation/release returns the pinned catalogue release's identity, retry-mode table, envelope JSON Schema, and its per-member-type component schemas | implemented |     |
 | C7a    | GET /api/presentation/components/{component_id}/revisions/{revision}/data serves the frame rows behind every value that revision shows, as `format=csv`, `xlsx`, or `parquet` (default `csv`), in a zip bundle by default or as the bare file with `bundle=false`. It sends `Content-Disposition: attachment; filename="dfo_{card-title-slug}_{YYYY-MM-DD}_{format}_r{revision}.zip"` for a bundle and `filename="dfo_{card-title-slug}_{YYYY-MM-DD}_r{revision}.{csv\|xlsx\|parquet}"` for the bare file, and `Cache-Control: private, max-age=3600`. The slug is the card's title in lowercase ASCII words joined by hyphens (the component id when the card has no title), and the date is the UTC date the revision was stored, so one revision keeps one name | implemented |     |
+| C7b    | POST /api/presentation/components/{component_id}/revisions/{revision}/render takes `{"frame": {spec_id, content_version}}` and answers what a component read answers for that revision, built from its stored intent on the named frame, with `resolved_payload.provenance.inputs` naming that frame and `provenance.refreshed_from` set to the revision. It appends no revision and pins the frame for the component. It admits only the caller holding `LIVE_REFRESH_PRINCIPAL` in the `DATASETS_PRINCIPAL_HEADER` header, checked before the path or body is validated | implemented |     |
+| C7c    | GET /api/presentation/components/{component_id}/revisions/{revision}/render/data?spec_id=&content_version= serves the C7a export of that revision rendered on the named frame, with the same `format` and `bundle` options, under the caller rule of C7b. It pins nothing | implemented |     |
+| C7d    | C7b and C7c accept the frame the revision is stored on, a dataset frame of the same `spec_id` and rendering, or a derived frame whose recipe has the stored frame's `normal_form_hash`. Any other frame refuses `render_target_mismatch`, 409 | implemented |     |
+| C7e    | On C7b and C7c `binding_invalid` and `constraint_violation` answer 422, and `frame_unavailable`, `release_mismatch`, and `resource_exhausted` answer 409, the statuses the code registry maps for `presentation.render`. "Refusal code detail" below gives the statuses create and revise serve | implemented |     |
 
 ## Request shape
 
@@ -101,6 +105,8 @@ alone.
 | timeout                          | 504            | retry_after_delay                               | implemented |     |
 | internal_error                   | 500            | do_not_retry                                    | implemented |     |
 | unsupported_schema_version         | 422            | do_not_retry                                    | implemented |     |
+| refresh_not_permitted            | 403            | do_not_retry                                    | implemented |     |
+| render_target_mismatch           | 409            | do_not_retry                                    | implemented |     |
 
 ### frame_unavailable outcome by reason
 

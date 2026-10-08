@@ -6,7 +6,7 @@ import asyncio
 import dataclasses
 import logging
 import time
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Final, Literal, cast
 
 import dc_graph
@@ -67,7 +67,7 @@ logger = logging.getLogger(__name__)
 # No-data reasons about the request's entities. The second pass fills a gap in our variables,
 # so it does not run after these.
 _ENTITY_TERMINALS: Final = frozenset(
-    {"entity_not_resolved", "entity_ambiguous", "entity_role_not_admitted"}
+    {"entity_not_resolved", "entity_ambiguous", "entity_set_too_large", "entity_role_not_admitted"}
 )
 
 # The second pass ends this long before the request deadline. The fan-out cancels a leg still
@@ -102,6 +102,7 @@ async def resolve_variable(
     detect_query: str,
     role_query: str,
     entity_roles: dict[str, list[DoorRole]] | None = None,
+    member_entities: frozenset[str] = frozenset(),
     dropped_qualifier_phrases: list[str] | None = None,
     operations: Sequence[Operation] = (),
     open_axes: frozenset[RoleAxis] = frozenset(),
@@ -130,7 +131,8 @@ async def resolve_variable(
     feeds binding, qualifier matching, and deduplication. `role_query` checks door-supplied axes
     against query wording and never supplies one. Raw-text doors share the full query across legs. Parsed doors use a
     per-part query. `entity_roles` maps surface names to door-supplied flow axes. An empty map
-    treats entities as undirected.
+    treats entities as undirected. `member_entities` are the entities the door asks for as
+    their members (`ResolveState.member_entities`).
 
     `dropped_qualifier_phrases` are the request's match text, plus on the raw-text door this
     variable's own operation phrases, which bind treats alike. `operations` are the leg's
@@ -163,8 +165,8 @@ async def resolve_variable(
 
     Recall runs once. The pipeline answers from our candidates first; when that pass ends
     `no_data`, it waits for the UN System Data Commons resolve that recall started and runs
-    again on its candidates (`_fill_gap`). A part answered on the first pass never waits for
-    that resolve.
+    again on its candidates (`_fill_gap`), less the shape the first pass elected and found
+    without observations. A part answered on the first pass never waits for that resolve.
 
     Returns a `RegionResult` with status `definite`, `candidates`, `no_data`, or `unsupported`.
     When the pipeline's UN System Data Commons reads named places the UN front door refuses,
@@ -194,6 +196,7 @@ async def resolve_variable(
         emit: EventSink | None,
         deadline: float | None,
         timing: dict[str, int],
+        excluded_shapes: Mapping[str, frozenset[str]] | None = None,
     ) -> ResolveState:
         return ResolveState(
             variable=variable,
@@ -202,6 +205,7 @@ async def resolve_variable(
             detect_query=detect_query,
             role_query=role_query,
             entity_roles=entity_roles or {},
+            member_entities=member_entities,
             dropped_qualifier_phrases=dropped_qualifier_phrases or [],
             operations=tuple(operations),
             open_axes=open_axes,
@@ -233,6 +237,7 @@ async def resolve_variable(
             role_class_walks=role_class_walks,
             coverage=coverage,
             pool=pool,
+            excluded_shapes=dict(excluded_shapes or {}),
             timing=timing,
             warnings=[],
             var_usage=None,
@@ -265,19 +270,19 @@ async def resolve_variable(
     with recording_degraded_reads() as lost:
         with recording_un_blocked_places() as un_blocked:
             await _phase_recall(state)
-            rcl = cast(Recall, state.rcl)
-            # `_phase_resolve_places` rewrites both entity maps in place, so the second pass
-            # starts from recall's own.
-            recalled = rcl.model_copy(
-                update={
-                    "resolutions": dict(rcl.resolutions),
-                    "resolved_entity_names": dict(rcl.resolved_entity_names),
-                }
-            )
             result = await _run_phases(state)
+            # A superseded variable stands in the first pass as a UN variable the second
+            # pass may recall too, so the second pass leaves out the shape the first elected
+            # and found without observations, whichever resolver scored it.
+            elected = state.shape_draft
+            found_empty = (
+                {elected.shape_id: frozenset(elected.sv_arc_facts or {})}
+                if result.no_data_reason == "no_observations" and elected is not None
+                else {}
+            )
             result = await _fill_gap(
                 result,
-                rcl=recalled,
+                rcl=cast(Recall, state.rcl),
                 deadline=_options.deadline,
                 variable_index=variable_index,
                 emit=emit,
@@ -290,6 +295,7 @@ async def resolve_variable(
                     emit=sink,
                     deadline=bound,
                     timing={},
+                    excluded_shapes=found_empty,
                 ),
             )
         result = with_un_unavailable_warning(result, un_blocked)
@@ -606,10 +612,16 @@ async def _end_related_reads(state: ResolveState) -> None:
 
 
 # `_PHASES` follows `NO_DATA_RESOLUTION_ORDER`. Each phase mints reasons ranked after those
-# available earlier, so the first terminal is the earliest applicable reason.
+# available earlier, so the first terminal is the earliest applicable reason, with one
+# exception, `entity_set_too_large` for an elected shape, below.
 # Entity errors come from `_phase_check_entities` and `_unresolved_entity_terminal` before
 # earlier shape or bind exits. `entity_ambiguous` means every unresolved entity has an
 # Ambiguous resolution.
+# `entity_set_too_large` means every unresolved entity is a Group with more members than a
+# Spec binds, and ranks with the entity errors. `_phase_place_bindings` mints it too, for an
+# elected shape whose places exceed that bound. The count depends on the elected shape's
+# roles, so it is known only once a shape is elected. A request whose variable does not
+# resolve answers `variable_not_resolved` even when its places exceed the bound.
 # `_phase_derive_shapes` mints `entity_role_not_admitted` when each shape fails to admit at
 # least one resolved request entity. It mints `role_signature_incompatible` for
 # mismatched signatures across candidate groups.

@@ -27,6 +27,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from types import MappingProxyType
 from typing import Final
 
+from dfo_platform.named import named_capped
 from origin_catalogue import UnBlockedPlaces
 from origin_catalogue.graph import is_un_dcid
 from search.engine.departures import (
@@ -39,7 +40,6 @@ from search.engine.region.result import RegionResult, with_departure_facts
 from search.heading.departure_fact import DepartureFact
 from search.models import Spec, Warning
 
-_MAX_NAMED: Final = 5
 _SUBJECT_ROLE: Final = "observationAbout"
 
 
@@ -57,13 +57,6 @@ def member_labels(specs: Iterable[Spec]) -> dict[str, str]:
     }
 
 
-def _named(items: Sequence[str]) -> str:
-    named = ", ".join(items[:_MAX_NAMED])
-    if len(items) > _MAX_NAMED:
-        named = f"{named} and {len(items) - _MAX_NAMED} more"
-    return named
-
-
 def un_unavailable_warning(record: UnBlockedPlaces, *, labels: Mapping[str, str]) -> Warning | None:
     """The warning naming the refused places and failed reads in `record`, or `None` when it
     holds neither. Its `params` list the refused place dcids as `places`, the variables of
@@ -78,8 +71,8 @@ def un_unavailable_warning(record: UnBlockedPlaces, *, labels: Mapping[str, str]
             "the answer holds no UN data there."
         )
     sentences.extend(
-        f"The UN System Data Commons read for {_named(failure.variables)} at "
-        f"{_named(failure.places)} failed; the answer holds no UN data for them."
+        f"The UN System Data Commons read for {named_capped(failure.variables)} at "
+        f"{named_capped(failure.places)} failed; the answer holds no UN data for them."
         for failure in failures
     )
     if not sentences:

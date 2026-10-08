@@ -376,3 +376,13 @@
     window: {kind: latest}
     definite: {measure: {family: weo.gdp_ppp_per_capita}}
     candidates: {include_families: [weo.gdp_ppp_per_capita]}
+
+- id: dq-weo-036
+  query: GDP per capita PPP for countries in Western Africa
+  why: '"countries in Western Africa" asks for the subregion''s members, so the role binds them with Western Africa as its group; as weo-004 on the measure.'
+  tags: {theme: macro, entity: region_group, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
+  expect:
+    entities:
+      - {dcid: WesternAfrica, role: observationAbout, expands: true}
+    definite: {measure: {family: weo.gdp_ppp_per_capita}}
+    candidates: {include_families: [weo.gdp_ppp_per_capita]}

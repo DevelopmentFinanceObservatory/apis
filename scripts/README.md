@@ -89,9 +89,10 @@ The graph supplies the code rows and StatVar rows. The coverage build supplies e
 | `label`              | The name a sentence uses for the dataset.                                                                                                              |
 | `opt_in`             | Whether a question answers from the table only when it names the table.                                                                                |
 | `absent_observation` | Whether an observation the table holds no row for reads as `zero`, or `unknown`.                                                                       |
+| `account`            | Whose account of a flow the table gives, `provider`. It names the two parties of a series and says which one leads a heading.                          |
 | `rank`               | The serving order among datasets that publish one five-tuple: of those that can serve a family, the lowest rank serves it. Unique across declarations. |
 
-ONE Imputed Multilateral Sectors is opt-in, and OECD DAC1 and CRS are not. CRS and ONE Imputed Multilateral Sectors read an absent observation as zero, and OECD DAC1 reads it as unknown. CRS has rank 0, ONE Imputed Multilateral Sectors rank 10 and OECD DAC1 rank 20. DAC1 shares the CRS five-tuples under its own codes, so it forms families of its own and its rank orders it against no other table.
+ONE Imputed Multilateral Sectors is opt-in, and CRS, OECD DAC1, OECD DAC2a and OECD DAC2b are not. CRS and ONE Imputed Multilateral Sectors read an absent observation as zero, and OECD DAC1, OECD DAC2a and OECD DAC2b read it as unknown. All five give the provider's account. CRS has rank 0, ONE Imputed Multilateral Sectors rank 10, OECD DAC1 rank 20, OECD DAC2a rank 30 and OECD DAC2b rank 40. DAC1, DAC2a and DAC2b share the CRS five-tuples under their own codes, so each forms families of its own and its rank orders it against no other table. ONE Imputed Multilateral Sectors and OECD DAC2a's code 106 share the `attributedAmount` five-tuple under different key sets: the imputed rows hold a sector and a flow type beside the aid type, and DAC2a's row holds neither. A question's keys therefore decide which table answers.
 
 The export and the loader refuse a document in which a StatVar carries a provenance no dataset declares, a declared dataset has no StatVar, or a dataset's `rank` is not an integer or repeats another's. The second case means a stale or misjoined coverage build. A StatVar may carry several provenances, and several datasets may publish one five-tuple. `code_index.members.elect_dataset` serves each family from the dataset the identity names. Without one, a dataset whose rows cover the identity's role keys serves before one whose rows do not, then one whose family declares exactly the roles those keys place, then the lowest rank.
 
@@ -106,7 +107,7 @@ Run the export by hand when either gate reports a difference. The coverage check
 
 ## `export_graph_entities.py`
 
-Regenerates `entity_resolution`'s committed graph-derived pack data: every `Organization`/`DACRecipientUnallocatedByCountry` node (`graph_entities.json`) and the resolvekit region-to-dcid mapping (`region_ids.json`).
+Regenerates `entity_resolution`'s committed graph-derived pack data: every `Organization`, `DACRecipientUnallocatedByCountry` and `DACUnspecifiedParty` node (`graph_entities.json`) and the resolvekit region-to-dcid mapping (`region_ids.json`). A record's `dac_code` is the node's numerically lowest `dacCode`; its other codes join its aliases, since a resolvekit entity holds one code per system and every code must resolve.
 
 ```bash
 uv run --env-file .env python scripts/export_graph_entities.py entities \
@@ -117,7 +118,7 @@ uv run --env-file .env python scripts/export_graph_entities.py regions \
 
 Needs `SEARCH_GRAPH_BASE`.
 
-By hand, when the graph's organization/recipient population or the resolvekit region mapping changes.
+By hand, when the graph's organisation, unallocated-recipient or unspecified-party population or the resolvekit region mapping changes.
 
 ## `generate_sample_bundle.py`
 
@@ -234,9 +235,15 @@ Writes `tests/fixtures/origin_catalogue/`, the sample origin catalogue build the
 uv run python scripts/record_origin_catalogue_fixture.py
 ```
 
-No credentials needed; the build is `tests.origin_catalogue.support.sample_tables()`.
+No credentials needed; the build is `tests.origin_catalogue.support.sample_tables()` with the UN tables of `sample_un_mirror()`.
 
-By hand, when `tests/origin_catalogue/test_fixture.py` reports that the committed files stopped matching the sample, as after a change to `origin_catalogue.schema.CATALOGUE_FORMAT_VERSION`.
+With `--eval-from`, it replaces `tests/fixtures/origin_catalogue_eval/` with the build a local catalogue root publishes, once the loader accepts that build under the services' memory budget:
+
+```bash
+uv run python scripts/record_origin_catalogue_fixture.py --eval-from /tmp/catalogue-eval
+```
+
+By hand, when `tests/origin_catalogue/test_fixture.py` reports that a committed build stopped loading or matching, as after a change to `origin_catalogue.schema.CATALOGUE_FORMAT_VERSION`. The eval build comes from `python -m origin_catalogue.job --local-dir` (see `tests/fixtures/origin_catalogue_eval/README.md`).
 
 ## `record_rate_tables.py`
 

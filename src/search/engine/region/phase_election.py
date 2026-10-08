@@ -56,26 +56,28 @@ from search.engine.region.phase_rank_bind import (
     _log_admitted_qualifiers,
     _open_operation_slots,
     _resolve_query_qualifiers,
+    _shape_qualifiers,
     _unbound_dataset,
+    _undeclared_qualifiers,
     _unheld_bound_codes,
+    _unread_qualifier_phrases,
     _validate_requested_all_bindings,
     _validate_sole_option_bindings,
 )
-from search.engine.region.place_roles import bind_place_roles, capped_place_dcids
+from search.engine.region.place_roles import bind_place_roles
 from search.engine.region.qualifier_readings import (
     bound_value_reads_measure,
     reading_for_shape,
     shape_carries_measure_match,
 )
 from search.engine.region.result import RegionResult
-from search.engine.region.state import ResolveState
+from search.engine.region.state import ResolveState, for_shape
 from search.engine.retrieval.bound_values import (
     PartNotServed,
     RoleKeys,
     bind_shared_values,
     canonical_pin_bindings,
     elect_measure_family,
-    entity_role_keys,
     part_datasets,
     part_source,
     shape_datasets,
@@ -101,9 +103,11 @@ async def _phase_vet_election(state: ResolveState) -> RegionResult | None:
     the elected shape and every alternate answer as the parsed door's part would. The part
     refuses ``qualifier_not_bound`` when two source drafts contradict each other
     (`bind.conflicting_sources`), naming the tables they disagree on, when the tables the
-    slot excludes leave the elected shape none (`_slot_shape`), or when the part's tables,
+    slot excludes leave the elected shape none (`_slot_shape`), when the part's tables,
     less the excluded ones, hold no row with a code the bindings bind
-    (`_unheld_bound_codes`). The elected shape then
+    (`_unheld_bound_codes`), or when the part names a table, at the seam or through the
+    slot, and the variable names a code term the elected shape's own reading does not hold
+    in full (`_undeclared_qualifiers`). The elected shape then
     names the dataset the part is served from wherever its unnamed identity would resolve
     to another at the mint (`_name_served_dataset`), with or without a source slot, so
     every later read of the part's family names it. Binding repair names it again under
@@ -161,6 +165,17 @@ async def _phase_vet_election(state: ResolveState) -> RegionResult | None:
         state.applied_dropped_qualifier_phrases |= _source_slot_phrases(
             bind_result, state.dropped_qualifier_phrases
         )
+    if state.named_dataset is not None:
+        # A part naming a table, at the seam or through the slot, holds a term only where
+        # the elected shape's own reading covers it.
+        undeclared = _undeclared_qualifiers(
+            state.variable,
+            state.variable_spans_in_every_system,
+            [state.shape_draft],
+            state.variable_spans_by_vocabulary,
+        )
+        if undeclared:
+            return state.no_data("qualifier_not_bound", unbound_qualifiers=undeclared)
     capped_shapes = state.capped_shapes
     shape_draft: ShapeDraft = state.shape_draft
     # Candidacy stamped every shape with the dataset it names, so the election decides the
@@ -313,6 +328,10 @@ def _settle_bindings(
         bind_result.bindings, state.operations, shape_draft
     )
 
+    # The elected shape's own qualifiers: the matches its vocabulary reads and admits, and its
+    # ties. Election vets only what that shape was shown, and reports its unheld ties, which
+    # bind never offered, as dropped.
+    own_matches, state.admitted_ties, unheld_ties = _shape_qualifiers(state, shape_draft)
     # Vet model tie choices against its original bindings before forced matches are added.
     # A row counts when a value binding names its code. One bound row satisfies the tie.
     # Zero or multiple rows leave it unresolved. Multiple bound properties reopen.
@@ -345,6 +364,9 @@ def _settle_bindings(
             for b in bind_result.bindings
         ]
     state.elected_tie_phrases = frozenset(elected_tie_phrases)
+    for tie in unheld_ties:
+        if tie.phrase not in elected_tie_phrases:
+            tie_dropped.setdefault(tie.phrase, tie)
     for phrase in sorted(tie_dropped.keys() & state.variable_matched_qualifier_phrases):
         tie = tie_dropped[phrase]
         systems = {row.code_system for row in tie.rows}
@@ -358,15 +380,11 @@ def _settle_bindings(
             )
         )
 
-    # Keep only qualifier matches admitted by the elected shape. A two-reading span admits
-    # its code reading only when the elected shape carries that reading alone.
+    # Keep only the qualifier matches the elected shape's own vocabulary reads and admits. A
+    # two-reading span admits its code reading only when the elected shape carries that
+    # reading alone.
     readings = {r: reading_for_shape(r, shape_draft) for r in state.query_qualifier_readings}
-    reading_codes = {r.code for r in readings}
-    admitted_qualifiers = _admit_qualifier_matches_against_elected_shape(
-        tuple(m for m in state.admitted_qualifiers if m not in reading_codes)
-        + tuple(r.code for r, kept in readings.items() if kept is r.code),
-        shape_draft,
-    )
+    admitted_qualifiers = _admit_qualifier_matches_against_elected_shape(own_matches, shape_draft)
     state.admitted_qualifiers = admitted_qualifiers
     if admitted_qualifiers:
         bind_result.bindings = _force_qualifier_bindings(
@@ -542,14 +560,12 @@ def _source_slot_phrases(
 
 def _query_role_keys(state: ResolveState, shape: ShapeDraft) -> RoleKeys:
     """The role keys an identity minted for `shape` binds the query's places under and the
-    axes it leaves open (`entity_role_keys`), read before place binding installs them: the
-    binding `bind_place_roles` gives over `capped_place_dcids`. Places that refuse to bind
-    give none, as the flagged identity of a role refusal binds no entity and leaves no axis
+    axes it leaves open. They are read before place binding installs them, from the assignment
+    `bind_place_roles` gives (`PlaceAssignment.role_keys`). Places that refuse to bind give
+    none, as the flagged identity of a role refusal binds no entity and leaves no axis
     open."""
-    bound = bind_place_roles(state, shape, places=capped_place_dcids(state)[0])
-    if isinstance(bound, str):
-        return RoleKeys()
-    return entity_role_keys(bound.resolved_entities, open_axes=bound.open_axes)
+    bound = bind_place_roles(state, shape)
+    return RoleKeys() if isinstance(bound, str) else bound.role_keys
 
 
 async def _phase_repair_bindings(state: ResolveState) -> RegionResult | None:
@@ -642,55 +658,18 @@ async def _phase_repair_bindings(state: ResolveState) -> RegionResult | None:
     role_keys = _query_role_keys(state, state.shape_draft)
     pinned = frozenset(shape_invariants(state.shape_draft))
 
-    # Force measure axes left open after query matches and starved-axis restoration.
-    # Run after draft repair, which judges realizability against a capped recall sample.
-    # Keep dropped axes for slot metadata and the elected partition for the sentence event.
-    # The final Spec derives its measure from served rows, which can differ from this vote.
-    election = elect_measure_family(
-        state.shape_draft,
-        get_index(),
-        get_measure_index().axes,
-        shape_query(state.shape_draft, bindings, role_keys.bound, open_role_keys=role_keys.open),
-    )
-    forced_pairs = election.forced if election is not None else ()
-    state.measure_dropped_axes = election.dropped if election is not None else ()
-    state.measure_elected_partition = election.elected if election is not None else None
-    if forced_pairs:
-        axis_by_property = {
-            slot.property_dcid: slot.axis
-            for slot in state.shape_draft.slot_keys
-            if slot.property_dcid
-        }
-        forced_bindings = []
-        forced_props: set[str] = set()
-        for prop, value in forced_pairs:
-            axis = axis_by_property.get(prop)
-            if axis is None:
-                continue
-            forced_bindings.append(
-                SlotBindingDraft(axis=axis, property_dcid=prop, kind="value", value_dcids=[value])
-            )
-            forced_props.add(prop)
-        if forced_bindings:
-            bindings = [
-                b
-                for b in bindings
-                if not (b.property_dcid in forced_props and b.kind in ("unbound", "absent"))
-            ] + forced_bindings
-            state.bindings = bindings
-            state.measure_elected_properties = frozenset(forced_props)
-
     # Apply a declared default when the variable, raw query, or bindings trigger it. Raw
     # query text is available only for a single-variable request and participates in the
-    # response cache key. Engine-authored defaults add no warning.
+    # response cache key. Engine-authored defaults add no warning. Defaults bind before the
+    # measure vote, so a default code published at one basis elects that basis.
     bindings, _defaulted_bindings = apply_declared_defaults(
         bindings,
         state.shape_draft,
         index=get_index(),
         variable=state.variable,
         query_text=state.query_text,
-        query_qualifier_matches=state.query_qualifier_matches,
-        query_qualifier_ties=state.query_qualifier_ties,
+        query_qualifier_matches=for_shape(state.query_qualifier_matches, state.shape_draft),
+        query_qualifier_ties=for_shape(state.query_qualifier_ties, state.shape_draft),
         engine_authored_properties=state.measure_elected_properties,
         pinned_properties=pinned,
     )
@@ -740,6 +719,44 @@ async def _phase_repair_bindings(state: ResolveState) -> RegionResult | None:
             )
         )
 
+    # Force measure axes left open after query matches, starved-axis restoration and declared
+    # defaults. Run after draft repair, which judges realizability against a capped recall sample.
+    # Keep dropped axes for slot metadata and the elected partition for the sentence event.
+    # The final Spec derives its measure from served rows, which can differ from this vote.
+    election = elect_measure_family(
+        state.shape_draft,
+        get_index(),
+        get_measure_index().axes,
+        shape_query(state.shape_draft, bindings, role_keys.bound, open_role_keys=role_keys.open),
+    )
+    forced_pairs = election.forced if election is not None else ()
+    state.measure_dropped_axes = election.dropped if election is not None else ()
+    state.measure_elected_partition = election.elected if election is not None else None
+    if forced_pairs:
+        axis_by_property = {
+            slot.property_dcid: slot.axis
+            for slot in state.shape_draft.slot_keys
+            if slot.property_dcid
+        }
+        forced_bindings = []
+        forced_props: set[str] = set()
+        for prop, value in forced_pairs:
+            axis = axis_by_property.get(prop)
+            if axis is None:
+                continue
+            forced_bindings.append(
+                SlotBindingDraft(axis=axis, property_dcid=prop, kind="value", value_dcids=[value])
+            )
+            forced_props.add(prop)
+        if forced_bindings:
+            bindings = [
+                b
+                for b in bindings
+                if not (b.property_dcid in forced_props and b.kind in ("unbound", "absent"))
+            ] + forced_bindings
+            state.bindings = bindings
+            state.measure_elected_properties = frozenset(forced_props)
+
     # Bind each slot the elected shape's population type declares a default for and the
     # query left open.
     bindings, _shape_defaulted_bindings = apply_shape_slot_defaults(bindings, state.shape_draft)
@@ -760,7 +777,14 @@ async def _phase_repair_bindings(state: ResolveState) -> RegionResult | None:
     if refused is not None:
         return refused
 
-    # Resolve query qualifiers against the final bindings.
+    # Resolve query qualifiers against the final bindings. A word of a qualifier term the
+    # elected shape's own reading leaves unread is not applied, and the answer says so
+    # (`_unread_qualifier_phrases`); a part naming a dataset refused such a term at the seam.
     state.query_qualifiers = _resolve_query_qualifiers(state)
+    for phrase in _unread_qualifier_phrases(state):
+        state.depart(
+            _qualifier_dropped_warning(phrase),
+            measure_not_applied(asked=phrase, property_dcid=None),
+        )
 
     return None

@@ -16,6 +16,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 from typing import Protocol
 
+from dfo_platform.named import named_capped
 from origin_catalogue import current_catalogue
 from search.engine.clients.graph import EngineGraphClient, Facet
 from search.engine.errors import EngineInputError
@@ -112,12 +113,11 @@ def confirm_dcids_present(
     for group, dcids in dcid_groups.items():
         absent = sorted({dcid for dcid in dcids if dcid not in confirmed})
         if absent:
-            detail = f"posted entity {noun}(s) not found in the graph: {absent!r}"
+            detail = f"posted entity {noun}(s) not found in the graph: {named_capped(absent)}"
             raise EngineInputError(
                 detail,
                 code="invalid_role_ref",
                 status=422,
                 pointer=pointer_for(group, absent),
-                detail=detail,
             )
     return confirmed

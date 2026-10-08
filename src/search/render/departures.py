@@ -37,7 +37,7 @@ from search.models import (
 )
 
 from .how import _HOW_PHRASE_LEADS_WITH_PREPOSITION
-from .labels import _join_labels, group_text
+from .labels import _join_labels, group_members_text, group_text
 
 _OPERATION_NOUNS: Final[Mapping[OperationVerb, tuple[str, str]]] = MappingProxyType(
     {
@@ -178,22 +178,42 @@ def _entity_unavailable(fact: DepartureFact, _family: FlowFamily | None, _shows_
     """The entities the data holds no values for, by name. On a role the request named as
     a group, a count of the group as the heading names it (`labels.group_text`), since the
     request named none of its members. The group's `group_read_as_members` departure
-    states the ask, so this one does not repeat it. On a `latest` request it names the
-    latest period the answer serves (`_latest_period`). Sources that hold values for the
-    entities but that Search does not read (`DepartureFact.sources`) close it."""
-    if not fact.entities:
+    states the ask, so this one does not repeat it. On a role that binds the members of
+    sets the request named beside other places (`DepartureFact.sets`), the places named
+    one by one are named and each set's members are counted. When no place is named, the
+    sentence opens with the sets asked for. On a `latest` request it names the latest
+    period the answer serves (`_latest_period`). Sources that hold values for the entities
+    but that Search does not read (`DepartureFact.sources`) close it."""
+    # The closing sentence's pronoun counts places, and a place named one by one can also
+    # be counted under its set.
+    unserved = len({*fact.entities, *(e for members in fact.sets for e in members.entities)})
+    if not unserved:
         raise ValueError("entity_unavailable needs the entities the data holds no values for")
     period = _latest_period(fact.latest_years)
-    pronoun = "it" if len(fact.entities) == 1 else "them"
+    pronoun = "it" if unserved == 1 else "them"
+    sentences: list[str] = []
     if fact.group is not None and fact.group_size is not None:
-        group = EntityGroup(label=fact.group)
+        group = EntityGroup(label=fact.group, entity_type=fact.group_type)
         members = group_text(fact.group_size, group)
-        text = f"The data holds no values{period} for {len(fact.entities)} of {members}."
-    else:
-        text = (
+        sentences.append(f"The data holds no values{period} for {len(fact.entities)} of {members}.")
+    elif fact.entities:
+        named = "it" if len(fact.entities) == 1 else "them"
+        sentences.append(
             f"You asked for {_join_labels(list(fact.entities))}. "
-            f"The data holds no values for {pronoun}{period}."
+            f"The data holds no values for {named}{period}."
         )
+    if fact.sets:
+        counts = [
+            f"{len(members.entities)} of "
+            + group_text(
+                members.size, EntityGroup(label=members.label, entity_type=members.entity_type)
+            )
+            for members in fact.sets
+        ]
+        if not fact.entities and fact.asked is not None:
+            sentences.append(f"You asked for {_join_labels([m.asked for m in fact.sets])}.")
+        sentences.append(f"The data holds no values{period} for {_join_labels(counts)}.")
+    text = " ".join(sentences)
     if not fact.sources:
         return text
     holds = "holds" if len(fact.sources) == 1 else "hold"
@@ -346,15 +366,17 @@ def _modelled_values(fact: DepartureFact, _family: FlowFamily | None, _shows_dat
 def _group_read_as_members(
     fact: DepartureFact, _family: FlowFamily | None, shows_data: bool
 ) -> str:
-    """The group asked for, read as its members. A door holding no words for the group (a
+    """The group asked for, read as its members, which a region group names as the places
+    in it (`labels.group_members_text`). A door holding no words for the group (a
     resubmit, `asked` is `None`) states only the members shown, as the heading names them
     (`labels.group_text`)."""
     verb = "shows" if shows_data else "checked"
     if fact.asked is not None:
-        return f"You asked for {_asked(fact)}. This {verb} its members, each on its own."
+        members = group_members_text(fact.group_type)
+        return f"You asked for {_asked(fact)}. This {verb} {members}, each on its own."
     if fact.group is None or fact.group_size is None:
         raise ValueError("group_read_as_members with nothing asked needs the group shown")
-    group = EntityGroup(label=fact.group)
+    group = EntityGroup(label=fact.group, entity_type=fact.group_type)
     members = group_text(fact.group_size, group)
     return f"This {verb} {members}, each on its own."
 

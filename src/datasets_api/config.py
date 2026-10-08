@@ -68,6 +68,16 @@ class DatasetsBuildSettings(BaseSettings):
     # when full.
     definition_max_concurrency: int = Field(default=4, ge=1)
 
+    # Frame refresh executor threads, apart from the definition pool so a canvas of refreshes
+    # cannot fill it and refuse a public definition read. A same-sized semaphore returns
+    # retryable 503 when full. A refresh that rebuilds does a mint's work under the shared
+    # materialise semaphore, so at most `materialise_max_concurrency` (2) of these threads
+    # hold the memory of a rebuild whatever this is set to. Every other one reads stored
+    # records or waits for a slot or a shared rebuild, which costs a parked thread. The mint
+    # door admits `mint_max_concurrency` (4) callers that may each rebuild. Twice that admits a
+    # canvas of eight dataset cards refreshing together.
+    refresh_max_concurrency: int = Field(default=8, ge=1)
+
     # Definition client wait limit. On a head hit it also covers on-demand rendering and storage.
     definition_timeout_seconds: float = Field(default=120, gt=0)
 
@@ -131,6 +141,11 @@ class DatasetsBuildSettings(BaseSettings):
 
     # Sole pin principal, independent of publish. Empty denies all.
     pin_first_party_principal: str = Field(default="")
+
+    # Sole principal of the live-refresh routes: the frame refresh here and the Presentation
+    # render routes. Read from `LIVE_REFRESH_PRINCIPAL`, the name the website and dfo-ai mount
+    # the same secret under. Empty denies all. It opens no publish, recipe, or pin route.
+    live_refresh_principal: str = Field(default="", validation_alias="live_refresh_principal")
 
     # Lease expires after this many seconds. Workers renew it every ~20s. Queue min_backoff must
     # be at least this value (60s by default) to avoid retries colliding with a live lease.

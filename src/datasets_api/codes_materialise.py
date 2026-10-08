@@ -17,9 +17,9 @@ series at some of its places.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from typing import Final
+from collections.abc import Mapping
 
+from dfo_platform.named import named_capped
 from materialise.codes import MATERIALISE_CODE_CATALOGUE
 from materialise.errors import MaterialisationError
 from materialise.formats import FORMATS_CODE_CATALOGUE
@@ -82,18 +82,6 @@ MATERIALISE_DOOR_CODE_CATALOGUE: dict[str, tuple[str, str]] = {
     "collection_probe_ceiling": MATERIALISE_CODE_CATALOGUE["collection_probe_ceiling"],
     "members_not_held": MATERIALISE_CODE_CATALOGUE["members_not_held"],
 }
-
-
-_MAX_NAMED: Final[int] = 5
-
-
-def named_capped(values: Sequence[str]) -> str:
-    """The first five `values` joined by commas, then a count of the rest, so a refusal or
-    warning over every country stays short."""
-    named = ", ".join(values[:_MAX_NAMED])
-    if len(values) > _MAX_NAMED:
-        named = f"{named} and {len(values) - _MAX_NAMED} more"
-    return named
 
 
 class ExcludedByRegistry(MaterialisationError):

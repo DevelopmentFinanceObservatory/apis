@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from dfo_platform.named import MAX_VALUE_CHARS
 from search.engine.app import create_app
 from search.models import ResolveRequest, ResolveResponse
 from tests.engine._harness import EMPTY_SDMX
@@ -123,6 +124,14 @@ def test_a_country_the_catalogue_does_not_hold_is_request_invalid(client: TestCl
     body = _assert_problem(resp, status=400, code="request_invalid")
     assert body["detail"] == "The catalogue holds no data for place 'country/ZZZ'."
     assert body["retryable"] is False
+
+
+def test_a_long_place_the_catalogue_does_not_hold_is_not_echoed_whole(client: TestClient) -> None:
+    place = "country/" + "Z" * 4000
+    resp = client.get(_ROUTE, params={"place": place})
+    _assert_problem(resp, status=400, code="request_invalid")
+    assert place[:MAX_VALUE_CHARS] in resp.text
+    assert place[: MAX_VALUE_CHARS + 1] not in resp.text
 
 
 @pytest.mark.parametrize("place", ["geoId/06", "africa", "country/", ""])

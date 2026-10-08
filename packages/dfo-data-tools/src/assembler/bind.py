@@ -4,8 +4,9 @@ A frame whose rows share one span binds that span as its only period.
 Missing rows become `status: "missing"`. Non-null statuses pass through,
 and other rows contribute their observed value. `source_ref` comes from the
 series coordinates. `unit` comes from the rows: a unit dcid becomes its label,
-and a structured unit passes through. Labels use `ResolvedFrame.labels` with
-the raw ref as fallback.
+a converted unit passes through, and a composed unit binds side by side, a
+StatVar side becoming `{stat_var, label}`. Labels use `ResolvedFrame.labels`
+with the raw ref as fallback, and a unit label is cut to 200 characters.
 """
 
 from __future__ import annotations
@@ -25,9 +26,12 @@ from dfo_frame_grammar import (
     VALUE_COLUMN,
     parse_time_period,
 )
+from dfo_frame_grammar.grammar import STAT_VAR_REF_PREFIX
 
+from assembler.limits import LABEL_MAX, joined_label
 from assembler.ports import ResolvedFrame
 from assembler.resolve import ResolvedSeries
+from materialise.unit_cells import composed_unit_sides
 
 __all__ = [
     "BoundSeries",
@@ -50,8 +54,9 @@ class BoundSeries:
 
     `source_ref` is the raw graph ref or `None`. Minting resolves it to an
     envelope source id. `unit` is `None`, a unit dcid's label (the dcid when
-    unlabelled), or the resolved `{currency, prices, base_year}` object. No
-    unit conversion occurs here.
+    unlabelled) cut to 200 characters, the resolved `{currency, prices,
+    base_year}` object, or the catalogue's composed unit `{numerator,
+    denominator}`. No unit conversion occurs here.
     """
 
     id: str
@@ -101,9 +106,31 @@ def _unit(*, resolved_frame: ResolvedFrame, rows: Sequence[Mapping[str, object]]
     """Returns the first row's unit, a unit dcid replaced by its label when it has one.
 
     Coordinate groups are non-empty and units are uniform. Empty input returns `None`, and a
-    structured unit passes through unchanged."""
+    converted unit passes through unchanged. A composed unit binds each side as a part."""
     unit = rows[0].get(UNIT_COLUMN) if rows else None
-    return resolved_frame.labels.get(unit, unit) if isinstance(unit, str) else unit
+    labels = resolved_frame.labels
+    if sides := composed_unit_sides(unit):
+        numerator, denominator = sides
+        return {
+            "numerator": _unit_part(part=numerator, labels=labels),
+            "denominator": _unit_part(part=denominator, labels=labels),
+        }
+    return labels.get(unit, unit)[:LABEL_MAX] if isinstance(unit, str) else unit
+
+
+def _unit_part(*, part: object, labels: Mapping[str, str]) -> object:
+    """Returns one side of a composed unit in the catalogue's `unit_part` shape.
+
+    A unit dcid becomes its label, or stays the dcid when unlabelled. A converted unit passes
+    through. A StatVar side keeps its ref and gains its label, the ref without `dcid:` when
+    unlabelled. Each label is cut to 200 characters."""
+    if isinstance(part, str):
+        return labels.get(part, part)[:LABEL_MAX]
+    if isinstance(part, Mapping) and "stat_var" in part:
+        ref = cast("Mapping[str, str]", part)["stat_var"]
+        label = labels.get(ref, ref.removeprefix(STAT_VAR_REF_PREFIX))
+        return {"stat_var": ref, "label": label[:LABEL_MAX]}
+    return part
 
 
 def bind_all(
@@ -115,16 +142,40 @@ def bind_all(
 
 
 def _label(*, resolved_frame: ResolvedFrame, coordinates: Mapping[str, str | None]) -> str:
-    """Joins entity-role labels in column order, using raw refs for missing labels.
+    """A series' label on its own frame, from the frame's columns and labels."""
+    return series_label(
+        coordinates=coordinates,
+        columns=cast("Sequence[str]", resolved_frame.frame["columns"]),
+        labels=resolved_frame.labels,
+    )
 
-    Frames without entity roles use the stat-var ref or label."""
-    columns = tuple(cast("Sequence[str]", resolved_frame.frame["columns"]))
-    roles = role_columns(columns=columns)
+
+def series_label(
+    *,
+    coordinates: Mapping[str, str | None],
+    columns: Sequence[str],
+    labels: Mapping[str, str],
+) -> str:
+    """Joins the series' label parts as `joined_label` fits them."""
+    parts = series_label_parts(coordinates=coordinates, columns=columns, labels=labels)
+    return joined_label(*parts, joiner=" / ")
+
+
+def series_label_parts(
+    *,
+    coordinates: Mapping[str, str | None],
+    columns: Sequence[str],
+    labels: Mapping[str, str],
+) -> tuple[str, ...]:
+    """Returns the entity-role labels in column order, using raw refs for missing labels.
+
+    Coordinates without an entity role use the stat-var ref or label."""
+    roles = role_columns(columns=tuple(columns))
     refs = [coordinates[column] for column in roles if coordinates.get(column) is not None]
     if not refs:
         refs = [coordinates[STAT_VAR_COLUMN]]
     ref_strings = cast("list[str]", refs)
-    return " / ".join(resolved_frame.labels.get(ref, ref) for ref in ref_strings)
+    return tuple(labels.get(ref, ref) for ref in ref_strings)
 
 
 def role_columns(*, columns: Sequence[str]) -> tuple[str, ...]:

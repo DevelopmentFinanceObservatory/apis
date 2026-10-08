@@ -69,6 +69,6 @@ def test_twin_stays_nested_under_its_part_in_a_two_variable_combine():
     assert _sv_refs(population_part.spec) == {"Count_Person"}
 
     # The twin never surfaces as its own part: no part in the envelope elects
-    # sdg/EG_ACS_ELEC as its leading spec.
+    # undata/sdg/EG_ACS_ELEC as its leading spec.
     for part in response.parts:
         assert _sv_refs(part.spec) != {_ELEC_SDG}

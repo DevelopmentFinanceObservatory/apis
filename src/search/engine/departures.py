@@ -37,7 +37,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal
 
 from code_index.shared import get_index
-from search.heading.departure_fact import DepartureFact, ordered_facts
+from search.heading.departure_fact import DepartureFact, UnservedMembers, ordered_facts
 from search.heading.words import content_words
 from search.models import (
     UNIT_REF,
@@ -261,6 +261,7 @@ def spec_departure_facts(
             asked=words.get(group.label, group.label),
             group=group.label,
             group_size=sum(1 for entity in spec.resolved.entities if entity.role == role),
+            group_type=group.entity_type,
         )
         for role, group in (spec.resolved.entity_groups or {}).items()
     )
@@ -360,8 +361,12 @@ def unavailable_entity_facts(
     that group's members. Each names the entities by label, else by dcid. A role the
     request named as a group (`ResolvedSpec.entity_groups`) is asked as that group, in the
     request's words for it (`entity_words`, else its label), with its label and member
-    count, since the request named none of its members. On a `latest` request each names
-    the latest period the answer serves."""
+    count, since the request named none of its members. Any other role that binds every
+    member of a set the request named (`ResolvedSpec.named_sets`) counts that set's members
+    under the set (`DepartureFact.sets`) and names only the places the request named one by
+    one, a member the request named alone on this role (`ResolvedSpec.named_alone`)
+    included. A role whose group holds such a member is read the same way. On a `latest`
+    request each names the latest period the answer serves."""
     window = spec.resolved.coverage.window
     latest_years = (
         (window.start_year, window.end_year)
@@ -372,31 +377,93 @@ def unavailable_entity_facts(
         else None
     )
     groups = spec.resolved.entity_groups or {}
-    names_by_role: dict[str, list[str]] = {}
+    alone = spec.resolved.named_alone
+    names_by_role: dict[str, dict[str, str]] = {}
     size_by_role: dict[str, int] = {}
     for entity in spec.resolved.entities:
         size_by_role[entity.role] = size_by_role.get(entity.role, 0) + 1
         if (entity.role, entity.ref) in unserved:
-            names_by_role.setdefault(entity.role, []).append(entity.label or entity.ref)
+            names_by_role.setdefault(entity.role, {})[entity.ref] = entity.label or entity.ref
     facts: list[DepartureFact] = []
     for role, names in names_by_role.items():
         group = groups.get(role)
+        if group is not None and not any((role, dcid) in alone for dcid in names):
+            facts.append(
+                DepartureFact(
+                    code="entity_unavailable",
+                    binding_ref=role_ref(role),
+                    asked=entity_words.get(group.label, group.label),
+                    entities=tuple(names.values()),
+                    group=group.label,
+                    group_size=size_by_role[role],
+                    group_type=group.entity_type,
+                    latest_years=latest_years,
+                )
+            )
+            continue
+        sets, entities = _unserved_members(spec, role, names, entity_words=entity_words)
         facts.append(
             DepartureFact(
                 code="entity_unavailable",
                 binding_ref=role_ref(role),
-                asked=(
-                    entity_words.get(group.label, group.label)
-                    if group is not None
-                    else ", ".join(names)
-                ),
-                entities=tuple(names),
-                group=group.label if group is not None else None,
-                group_size=size_by_role[role] if group is not None else None,
+                asked=_asked_entities(entities, sets),
+                entities=entities,
+                sets=sets,
                 latest_years=latest_years,
             )
         )
     return facts
+
+
+def _unserved_members(
+    spec: Spec, role: str, names: Mapping[str, str], *, entity_words: Mapping[str, str]
+) -> tuple[tuple[UnservedMembers, ...], tuple[str, ...]]:
+    """The sets `role` of `spec` binds whole (`ResolvedSpec.named_sets`) that hold one of
+    the unserved entities `names`, dcid to name, each with its members among them, and the
+    names of the entities the request named one by one or that sit in no set. A member the
+    request also named on its own on `role` (`ResolvedSpec.named_alone`) is both: counted
+    under its set and named one by one. An entity in several sets counts toward the
+    largest, of equals one with a node before one without, then the first by dcid, then
+    label."""
+    alone = spec.resolved.named_alone
+    named = sorted(
+        (
+            (group, members)
+            for set_role, group, members in spec.resolved.named_sets
+            if set_role == role
+        ),
+        key=lambda named_set: (
+            -len(named_set[1]),
+            named_set[0].dcid is None,
+            named_set[0].dcid or "",
+            named_set[0].label,
+        ),
+    )
+    uncounted = dict(names)
+    one_by_one = dict(names)
+    sets: list[UnservedMembers] = []
+    for group, members in named:
+        held = [dcid for dcid in uncounted if dcid in members]
+        if held:
+            sets.append(
+                UnservedMembers(
+                    label=group.label,
+                    entity_type=group.entity_type,
+                    size=len(members),
+                    asked=entity_words.get(group.label, group.label),
+                    entities=tuple(uncounted.pop(dcid) for dcid in held),
+                )
+            )
+            for dcid in held:
+                if (role, dcid) not in alone:
+                    del one_by_one[dcid]
+    return tuple(sets), tuple(one_by_one.values())
+
+
+def _asked_entities(entities: Sequence[str], sets: Sequence[UnservedMembers]) -> str:
+    """What the request named on a role with no group: the places it named one by one,
+    then each set it named."""
+    return ", ".join((*entities, *(members.asked for members in sets)))
 
 
 def merged_entity_facts(facts: Iterable[DepartureFact]) -> list[DepartureFact]:
@@ -420,13 +487,25 @@ def merged_entity_facts(facts: Iterable[DepartureFact]) -> list[DepartureFact]:
 
 
 def _folded(first: DepartureFact, other: DepartureFact) -> DepartureFact:
-    """`first` naming the entities and sources of `other` too. A fact on no group asks
-    for every entity it names."""
+    """`first` naming the entities, set members and sources of `other` too. A fact on no
+    group asks for every entity and set it names."""
     entities = tuple(dict.fromkeys((*first.entities, *other.entities)))
+    by_label = {members.label: members for members in first.sets}
+    for members in other.sets:
+        held = by_label.get(members.label)
+        by_label[members.label] = (
+            members
+            if held is None
+            else dataclasses.replace(
+                held, entities=tuple(dict.fromkeys((*held.entities, *members.entities)))
+            )
+        )
+    sets = tuple(by_label.values())
     return dataclasses.replace(
         first,
-        asked=first.asked if first.group is not None else ", ".join(entities),
+        asked=first.asked if first.group is not None else _asked_entities(entities, sets),
         entities=entities,
+        sets=sets,
         sources=tuple(dict.fromkeys((*first.sources, *other.sources))),
     )
 

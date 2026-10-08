@@ -897,6 +897,13 @@ class ResolvedSpec(StrictModel):
     # from the cache holds neither. Equality compares the wire state (`__eq__`).
     _unserved_entities: tuple[tuple[str, str], ...] = PrivateAttr(default=())
     _data_years: tuple[int, int] | None = PrivateAttr(default=None)
+    # The sets the request named whose every member a role binds, each with its role and
+    # member dcids (`ResolvedSpec.named_sets`). The part's departures count a set's members
+    # without values against it. `entity_groups` carries the one set a role's entities equal.
+    _named_sets: tuple[tuple[str, EntityGroup, frozenset[str]], ...] = PrivateAttr(default=())
+    # The members of those sets the request also named on their own, by role
+    # (`ResolvedSpec.named_alone`).
+    _named_alone: frozenset[tuple[str, str]] = PrivateAttr(default=frozenset())
     # The members the answer serves and what the renderer reads of them, set by
     # `engine.spec_build.build_spec`. A Spec rebuilt from its wire form holds neither, and
     # reading one there raises `MembersNotStated`.
@@ -917,6 +924,24 @@ class ResolvedSpec(StrictModel):
         served on the other. The part names them in an `entity_unavailable` departure
         (`engine.departures.spec_departure_facts`)."""
         return self._unserved_entities
+
+    @property
+    def named_sets(self) -> tuple[tuple[str, EntityGroup, frozenset[str]], ...]:
+        """The sets the request named whose every member a role of `entities` binds, as
+        `(role, group, member dcids)` (`engine.spec_build.role_named_sets`). A role that
+        binds a set's members beside other places carries no `entity_groups` entry and
+        still names the set here, so an `entity_unavailable` departure counts its members
+        without values against the set (`engine.departures.unavailable_entity_facts`). A
+        set the role binds at its own node is served there and is left out."""
+        return self._named_sets
+
+    @property
+    def named_alone(self) -> frozenset[tuple[str, str]]:
+        """The members of `named_sets` the request also named on their own, as `(role,
+        dcid)` on the role key it named each on. On that role a departure names such a
+        member as the request did and counts only the rest under its set
+        (`engine.departures.unavailable_entity_facts`)."""
+        return self._named_alone
 
     @property
     def data_years(self) -> tuple[int, int] | None:
@@ -981,6 +1006,18 @@ class ResolvedSpec(StrictModel):
         """A copy whose `unserved_entities` are the `(role, dcid)` pairs `entities`."""
         stated = self.model_copy()
         stated._unserved_entities = entities
+        return stated
+
+    def stating_named_sets(
+        self,
+        named_sets: tuple[tuple[str, EntityGroup, frozenset[str]], ...],
+        named_alone: frozenset[tuple[str, str]],
+    ) -> ResolvedSpec:
+        """A copy whose `named_sets` are `named_sets` and whose `named_alone` are
+        `named_alone`."""
+        stated = self.model_copy()
+        stated._named_sets = named_sets
+        stated._named_alone = named_alone
         return stated
 
     def stating_data_years(self, years: tuple[int, int] | None) -> ResolvedSpec:

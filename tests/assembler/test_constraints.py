@@ -60,6 +60,8 @@ def test_bar_zero_in_domain_keys_on_bar_chart_type():
         ("range_contains_visible_data", "negative_min_bound.json"),
         ("comparable_units_required", "positive.json"),
         ("comparable_units_required", "negative_null_vs_string.json"),
+        ("comparable_units_required", "positive_composed.json"),
+        ("comparable_units_required", "negative_composed_denominator_differs.json"),
         ("stat_change_basis_observed", "positive.json"),
         ("stat_change_basis_observed", "negative.json"),
         ("bar_zero_in_domain", "positive.json"),
@@ -114,15 +116,18 @@ def test_range_contains_visible_data_negative_min_bound(fixtures_dir):
     assert failure.pointer == "/component/y_axis/range/min"
 
 
-def test_comparable_units_required_positive(fixtures_dir):
-    context = _read_json(fixtures_dir / "comparable_units_required" / "positive.json")
+@pytest.mark.parametrize("fixture_name", ["positive.json", "positive_composed.json"])
+def test_comparable_units_required_positive(fixtures_dir, fixture_name):
+    context = _read_json(fixtures_dir / "comparable_units_required" / fixture_name)
     assert _REGISTRY_BY_ID["comparable_units_required"].check(context) is None
 
 
-def test_comparable_units_required_negative_null_vs_string(fixtures_dir):
-    context = _read_json(
-        fixtures_dir / "comparable_units_required" / "negative_null_vs_string.json"
-    )
+@pytest.mark.parametrize(
+    "fixture_name",
+    ["negative_null_vs_string.json", "negative_composed_denominator_differs.json"],
+)
+def test_comparable_units_required_negative(fixtures_dir, fixture_name):
+    context = _read_json(fixtures_dir / "comparable_units_required" / fixture_name)
     failure = _REGISTRY_BY_ID["comparable_units_required"].check(context)
     assert failure is not None
     assert "eth_oda" in failure.detail and "ken_oda" in failure.detail

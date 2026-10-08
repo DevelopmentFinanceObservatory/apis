@@ -250,13 +250,10 @@ def _refuse_unserved_open_roles(state: _PromoteState, mat_result: Materialised) 
         return
     nouns = " or ".join(f"every {axis_noun(axis)}" for axis in unserved)
     raise EngineInputError(
-        f"open role(s) {unserved} unavailable",
+        f"The identity asks for {nouns}, and the StatVars this definition elects "
+        "give no series per member on that axis. A fresh search that asks "
+        "for the role elects whatever definition serves it, if one does.",
         code="open_role_unavailable",
         status=422,
         pointer="/input/identity/open_roles",
-        detail=(
-            f"The identity asks for {nouns}, and the StatVars this definition elects "
-            "give no series per member on that axis. A fresh search that asks "
-            "for the role elects whatever definition serves it, if one does."
-        ),
     )

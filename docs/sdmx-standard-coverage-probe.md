@@ -49,8 +49,8 @@ build, standard StatVars return real, non-empty coverage.
 Sequential `stream_data()` calls, one distinct real country entity per call
 (`LifeExpectancy_Person` against 1, 10, and 60 distinct `country/XXX`
 entities), simulating the per-pair calling pattern a region-expansion query
-would drive when `SEARCH_MAX_CHILD_PLACES` (60) entities are bound to a
-single spec:
+would drive when 60 entities are bound to a single spec (`SEARCH_MAX_CHILD_PLACES`
+caps a spec at 256):
 
 | N sequential calls | Wall-clock | Avg per call |
 | ------------------ | ---------- | ------------ |

@@ -197,7 +197,7 @@ def _served_definitions(node: object) -> list[dict]:
             _group_graph,
             "gdp",
             "European Union",
-            {"dcid": "EuropeanUnion", "label": "European Union"},
+            {"dcid": "EuropeanUnion", "label": "European Union", "entity_type": "Place"},
             False,
         ),
         (_group_graph, "gdp", "G7", {"label": "G7"}, False),

@@ -147,7 +147,7 @@ class _PromoteState:
     # Reconstructed from the shared five-tuple and resolved members' arcs.
     shape_draft: ShapeDraft = dataclasses.field(default=cast(ShapeDraft, None))
     # Posted where-set members (destination or observationAbout), read from identity.entities.
-    # Counts above max_standard_places raise in _phase_where_places; accepted values stay intact.
+    # Counts above the place bound raise in _phase_validate; accepted values stay intact.
     standard_where_dcids: list[str] = dataclasses.field(default_factory=list)
     # Posted origin refs from identity.entities, normalised by its schema.
     origin_dcids: list[str] = dataclasses.field(default_factory=list)

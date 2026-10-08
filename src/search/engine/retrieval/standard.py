@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, NamedTuple
 
 from code_index import absent_readings
@@ -571,6 +571,43 @@ def facets_at_own_places(
     return facets
 
 
+@dataclass
+class FacetBatch:
+    """The facet reads the resolves of one Spec share while its place sets settle.
+
+    The Spec is resolved at a set's node and, where the node holds no data, at the set's
+    members. The first resolve reads each StatVar at `places`, every place either reading
+    binds, beside its own places, in one read. A later resolve whose places that read
+    covered makes no request.
+    """
+
+    places: tuple[str, ...]
+    # The pairs read, by date need, and the facets the reads returned for them.
+    _read: set[tuple[bool, str, str]] = field(default_factory=set)
+    _held: dict[tuple[bool, str], dict[str, list[Facet]]] = field(default_factory=dict)
+
+    def facets(
+        self, graph: EngineGraphClient, places_of: Mapping[str, Sequence[str]], *, needs_dates: bool
+    ) -> dict[str, dict[str, list[Facet]]]:
+        """Each StatVar's facets at its own places (`facets_at_own_places`), reading only
+        the StatVars with a place no earlier read covered."""
+        unread = {
+            sv: tuple(dict.fromkeys((*places, *self.places)))
+            for sv, places in places_of.items()
+            if any((needs_dates, sv, place) not in self._read for place in places)
+        }
+        if unread:
+            read = facets_at_own_places(graph, unread, needs_dates=needs_dates)
+            for sv, places in unread.items():
+                self._read.update((needs_dates, sv, place) for place in places)
+                self._held.setdefault((needs_dates, sv), {}).update(read[sv])
+        facets: dict[str, dict[str, list[Facet]]] = {}
+        for sv, places in places_of.items():
+            held, own = self._held.get((needs_dates, sv), {}), set(places)
+            facets[sv] = {place: found for place, found in held.items() if place in own}
+        return facets
+
+
 def _probe_and_scan(
     *,
     places_of: Mapping[str, Sequence[str]],
@@ -580,9 +617,11 @@ def _probe_and_scan(
     years: PlanYears,
     datasets: ElectedDatasets,
     minted: Collection[str],
+    facet_batch: FacetBatch | None = None,
 ) -> tuple[dict[str, dict[str, list[Facet]]], list[_ConfirmedMember], list[_ConfirmedMember]]:
     """Probe every member at its own places (`places_of`, `facets_at_own_places`), then
-    scan eligible members for points in `years`, each at its own places.
+    scan eligible members for points in `years`, each at its own places. With `facet_batch`
+    the probe is one of the reads a settling Spec shares (`FacetBatch.facets`).
 
     Scanning is exhaustive because the reads hold every member's facets. A member's facets
     union across its places, and it is confirmed at a place holding a point in `years` by the
@@ -601,7 +640,11 @@ def _probe_and_scan(
     # Each member is read at its own places, the entities its mint reads it at. A member the
     # mint serves is checked over every facet there, and each keeps the facets its elected
     # dataset publishes.
-    own = facets_at_own_places(graph, places_of, needs_dates=needs_dates)
+    own = (
+        facets_at_own_places(graph, places_of, needs_dates=needs_dates)
+        if facet_batch is None
+        else facet_batch.facets(graph, places_of, needs_dates=needs_dates)
+    )
     check_elected_datasets(
         datasets,
         {
@@ -845,10 +888,12 @@ def standard_resolve(
     date_request: DateRequest | None = None,
     place_dcids: list[str] | None = None,
     default_presence: DefaultPresence | None = None,
+    facet_batch: FacetBatch | None = None,
 ) -> Materialised | NoDataDraft | MaterialisedCandidates:
     """Resolve a confirmed shape against its subject entities.
 
-    Probe every admitted member at its own places (`facets_at_own_places`). Bindings
+    Probe every admitted member at its own places (`facets_at_own_places`), through
+    `facet_batch` when the Spec's place sets are settling (`FacetBatch`). Bindings
     determine eligibility.
     Election reads only the members the datasets mint keeps from the eligible
     family (``_elect_family``): a ``kind="set"`` binding returns each of them with
@@ -974,6 +1019,7 @@ def standard_resolve(
         years=years,
         datasets=elected_datasets(member_facts),
         minted=family.order,
+        facet_batch=facet_batch,
     )
 
     population = MemberPopulation(

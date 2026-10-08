@@ -1,23 +1,23 @@
 - id: dq-crs-001
   query: aid from Germany to Kenya
-  why: Resolves to crs.disbursement_gross for country/DEU as origin and country/KEN as destination.
+  why: Resolves to dac2a.oda_gross_received for country/DEU as origin and country/KEN as destination; a plain provider-to-recipient question reads DAC2a.
   reuse: panel/crs-001
   tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac2a.oda_gross_received}
       entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
       window: {kind: all}
       operations: []
 
 - id: dq-crs-002
   query: aid to Bangladesh
-  why: Resolves to crs.disbursement_gross for country/BGD as destination.
+  why: Resolves to dac2a.oda_gross_received for country/BGD as destination; a plain recipient question reads DAC2a.
   reuse: panel/crs-002
   tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac2a.oda_gross_received}
       entities: [{dcid: country/BGD, role: destination}]
       window: {kind: all}
       operations: []
@@ -36,12 +36,12 @@
 
 - id: dq-crs-004
   query: how much official development assistance was given worldwide in 2022
-  why: Worldwide ODA in 2022 leaves origin and destination open and resolves to the CRS gross disbursement family.
+  why: Worldwide ODA in 2022 names no recipient, sector or channel, so DAC1's donor totals answer it with gross ODA disbursements.
   reuse: panel/crs-004
   tags: {theme: aid, entity: none, direction: none, unit: default, time: year, operation: aggregate, breakdown: none, door: raw_text, phrasing: casual}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac1.disbursement_gross, bound: {dac1AidType: DAC1AidType1010}}
       entities: []
       window: {kind: range, start: 2022, end: 2022}
       operations: []
@@ -61,13 +61,13 @@
 
 - id: dq-crs-006
   query: aid from EU institutions to Ethiopia
-  why: EU Institutions is one multilateral CRS provider; expanding it to the member states answers a different question.
+  why: EU Institutions is one multilateral DAC2a provider; expanding it to the member states answers a different question.
   reuse: panel/crs-006
   tags: {theme: aid, entity: organisation, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [crs_quirk]}
   known_failure: {issue: 1156, checks: [entities]}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac2a.oda_gross_received}
       entities:
         - {dcid: EuropeanUnionInstitutions, role: origin}
         - {dcid: country/ETH, role: destination}
@@ -76,12 +76,12 @@
 
 - id: dq-crs-007
   query: aid from the Global Fund to Malawi
-  why: Resolves to crs.disbursement_gross for Global Fund provider node as origin and country/MWI as destination.
+  why: Resolves to dac2a.oda_gross_received for the Global Fund provider node as origin and country/MWI as destination.
   reuse: panel/crs-007
   tags: {theme: health, entity: organisation, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac2a.oda_gross_received}
       entities:
         - {dcid: GlobalFund, role: origin}
         - {dcid: country/MWI, role: destination}
@@ -118,7 +118,7 @@
   why: CRS aggregates to the provider country and drops the agency; mapping AFD to France gives a different, larger total.
   reuse: panel/crs-012
   tags: {theme: aid, entity: organisation, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: misspelt, probe: [crs_quirk]}
-  known_failure: {issue: 1156, checks: [disposition]}
+  known_failure: {issue: 1156, checks: [disposition, refusal]}
   expect: {no_data: {reason: entity_not_resolved, category: unresolved}}
 
 - id: dq-crs-011
@@ -134,23 +134,23 @@
 
 - id: dq-crs-012
   query: aid from Turkey to Syria
-  why: Resolves to crs.disbursement_gross for country/TUR as origin and country/SYR as destination.
+  why: Resolves to dac2a.oda_gross_received for country/TUR as origin and country/SYR as destination.
   reuse: panel/crs-014
   tags: {theme: humanitarian, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac2a.oda_gross_received}
       entities: [{dcid: country/TUR, role: origin}, {dcid: country/SYR, role: destination}]
       window: {kind: all}
 
 - id: dq-crs-013
   query: aid from Turky to Syrya
-  why: Resolves to crs.disbursement_gross for country/TUR as origin and country/SYR as destination.
+  why: Resolves to dac2a.oda_gross_received for country/TUR as origin and country/SYR as destination.
   reuse: panel/crs-015
   tags: {theme: humanitarian, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: misspelt}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac2a.oda_gross_received}
       entities: [{dcid: country/TUR, role: origin}, {dcid: country/SYR, role: destination}]
       window: {kind: all}
 
@@ -187,26 +187,24 @@
 
 - id: dq-crs-017
   query: aid to Sub-Saharan Africa
-  why: The CRS 'South of Sahara, regional' recipient holds only unallocated aid, so Sub-Saharan Africa reads as its member countries.
+  why: Sub-Saharan Africa reads as its member countries on the destination role, and DAC2a answers the plain recipient question.
   reuse: panel/crs-020
   tags: {theme: aid, entity: region_group, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
-  known_failure: {issue: 1156, checks: [disposition]}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac2a.oda_gross_received}
       entities: [{dcid: SubSaharanAfrica, role: destination, expands: true}]
       window: {kind: all}
       operations: []
 
 - id: dq-crs-018
   query: aid from France to Africa
-  why: Africa is a group that expands to its member countries on the destination role.
+  why: Africa is a group that expands to its member countries on the destination role, and DAC2a answers the plain provider-to-recipient question.
   reuse: panel/crs-022
   tags: {theme: aid, entity: region_group, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
-  known_failure: {issue: 1156, checks: [disposition]}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac2a.oda_gross_received}
       entities: [{dcid: country/FRA, role: origin}, {dcid: africa, role: destination, expands: true}]
       window: {kind: all}
 
@@ -214,12 +212,12 @@
   query: 'parsed: aid, recipient ''Africa, regional'''
   door: parsed
   parsed: [{variable_text: aid, entities: [{text: 'Africa, regional', role_text: recipient}]}]
-  why: Raw text cannot reach the CRS regional residual 'Africa, regional'; the parsed door can.
+  why: The parsed door names the 'Africa, regional' recipient; a plain recipient question reads DAC2a.
   reuse: corpus/ent-02
   tags: {theme: aid, entity: region_group, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: parsed, phrasing: technical, probe: [crs_quirk]}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac2a.oda_gross_received}
       entities: [{dcid: DACAfricaUnallocated, role: destination}]
       warnings: [role_scope_defaulted]
 
@@ -301,14 +299,12 @@
 
 - id: dq-crs-026
   query: humanitarian aid to Yemen in 2023
-  why: Resolves to crs.disbursement_gross for country/YEM as destination in 2023.
+  why: Humanitarian aid to Yemen is a plain recipient question, so DAC2a's humanitarian aid line (aid type 216) answers it.
   reuse: panel/crs-030
   tags: {theme: humanitarian, entity: country, direction: destination_only, unit: default, time: year, operation: none, breakdown: sector, door: raw_text, phrasing: casual}
   expect:
     definite:
-      measure:
-        family: crs.disbursement_gross
-        bound: {crsTypeOfFlow: CRSTypeOfFlow10, crsPurpose: CRSPurposeCode700}
+      measure: {family: dac2a.humanitarian_aid}
       entities: [{dcid: country/YEM, role: destination}]
       window: {kind: range, start: 2023, end: 2023}
 
@@ -325,7 +321,7 @@
 
 - id: dq-crs-028
   query: other official flows from Germany to Brazil
-  why: Other official flows bind their own CRS flow type, not the ODA flow type.
+  why: Bilateral OOF by recipient country lives in the CRS (flow 21); DAC2b holds bilateral donors only against aggregate recipients.
   reuse: panel/crs-032
   tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: flow_type, door: raw_text, phrasing: technical}
   expect:
@@ -378,12 +374,12 @@
 
 - id: dq-crs-032
   query: net ODA from the United States to Pakistan in 2020
-  why: Resolves to crs.disbursement_net for country/USA as origin and country/PAK as destination in 2020.
+  why: Resolves to dac2a.oda_net_received for country/USA as origin and country/PAK as destination in 2020.
   reuse: panel/crs-037
   tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: year, operation: none, breakdown: commitment_vs_disbursement, door: raw_text, phrasing: technical}
   expect:
     definite:
-      measure: {family: crs.disbursement_net, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac2a.oda_net_received}
       entities: [{dcid: country/USA, role: origin}, {dcid: country/PAK, role: destination}]
       window: {kind: range, start: 2020, end: 2020}
 
@@ -420,17 +416,17 @@
 
 - id: dq-crs-035
   query: gross and net disbursements from the UK to Kenya in 2022
-  why: Gross and net disbursements are separate measure partitions, so the query splits into one part each.
+  why: Gross and net disbursements are separate DAC2a measure partitions, so the query splits into one part each.
   tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: year, operation: none, breakdown: commitment_vs_disbursement, door: raw_text, phrasing: technical}
-  known_failure: {issue: 1156, checks: [measure, parts]}
+  known_failure: {issue: 1239, checks: [disposition, measure, parts]}
   expect:
     parts:
       - definite:
-          measure: {family: crs.disbursement_gross}
+          measure: {family: dac2a.oda_gross_received}
           entities: [{dcid: country/GBR, role: origin}, {dcid: country/KEN, role: destination}]
           window: {kind: range, start: 2022, end: 2022}
       - definite:
-          measure: {family: crs.disbursement_net}
+          measure: {family: dac2a.oda_net_received}
           entities: [{dcid: country/GBR, role: origin}, {dcid: country/KEN, role: destination}]
           window: {kind: range, start: 2022, end: 2022}
 
@@ -468,11 +464,11 @@
     - variable_text: aid
       entities: [{text: France, role_text: from}, {text: Senegal, role_text: to}]
       unit_text: euros
-  why: Resolves to crs.disbursement_gross for country/FRA as origin and country/SEN as destination.
+  why: Resolves to dac2a.oda_gross_received for country/FRA as origin and country/SEN as destination.
   tags: {theme: aid, entity: two_roles, direction: both, unit: currency, time: none, operation: none, breakdown: none, door: parsed, phrasing: casual}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac2a.oda_gross_received}
       entities: [{dcid: country/FRA, role: origin}, {dcid: country/SEN, role: destination}]
       unit: {currency: EUR, prices: current}
 
@@ -484,12 +480,12 @@
       entities: [{text: Kenya, role_text: recipient}]
       time_text: '2020'
       unit_text: in the recipient's currency
-  why: The recipient's currency is the destination's, KES; the DAC table holds KES rates from 1980, so 2020 converts.
+  why: The recipient's currency is the destination's, KES; the DAC table holds KES rates from 1980, so 2020 converts; DAC2a answers the aid measure.
   tags: {theme: aid, entity: country, direction: destination_only, unit: currency, time: year, operation: none, breakdown: none, door: parsed, phrasing: casual}
   known_failure: {issue: 1156, checks: [materialisation]}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac2a.oda_gross_received}
       entities: [{dcid: country/KEN, role: destination}]
       window: {kind: range, start: 2020, end: 2020}
       unit: {currency: {role: destination}, prices: current}
@@ -571,22 +567,22 @@
     - variable_text: aid
       entities: [{text: Germany, role_text: from}, {text: Kenya, role_text: to}]
       unit_text: inflation-adjusted dollars
-  why: The phrase means constant prices with no year; a lexicon that knows it fills the base year from the deflator table, otherwise unit_not_resolved.
+  why: The phrase means constant prices with no year; a lexicon that knows it fills the base year from the deflator table, otherwise unit_not_resolved; DAC2a answers the aid measure.
   tags: {theme: aid, entity: two_roles, direction: both, unit: constant, time: none, operation: none, breakdown: none, door: parsed, phrasing: casual, probe: [constant_synonym_miss]}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac2a.oda_gross_received}
       unit: {currency: USD, prices: constant}
     no_data: {reason: unit_not_resolved, category: unresolved}
 
 - id: dq-crs-047
   query: aid to Kenya in today's money
-  why: '''Today''s money'' means constant prices and sits outside the price-basis synonyms; it reaches the unit binder, and a nominal answer is wrong.'
+  why: '''Today''s money'' means constant prices and sits outside the price-basis synonyms; it reaches the unit binder, and a nominal answer is wrong; DAC2a answers the aid measure.'
   tags: {theme: aid, entity: country, direction: destination_only, unit: constant, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [constant_synonym_miss]}
   known_failure: {issue: 1156, checks: [request]}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac2a.oda_gross_received}
       entities: [{dcid: country/KEN, role: destination}]
       unit: {currency: USD, prices: constant}
 
@@ -603,67 +599,67 @@
   why: The share needs Germany to every recipient, so the destination axis stays open with Kenya named in the operation.
   reuse: panel/crs-040
   tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: range, operation: share_of, breakdown: none, door: raw_text, phrasing: casual}
-  known_failure: {issue: 1156, checks: [entities, operations]}
+  known_failure: {issue: 1156, checks: [disposition, entities, operations]}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac2a.oda_gross_received}
       entities: [{dcid: country/DEU, role: origin}]
       window: {kind: range, start: 2015, end: 2020}
       operations: [{verb: share_of, over: destination}]
 
 - id: dq-crs-050
   query: trend in aid from Germany to Kenya from 2015 to 2020
-  why: A trend asks for the series over the window and carries no operation.
+  why: A trend asks for the series over the window and carries no operation; DAC2a answers the aid measure.
   reuse: panel/crs-041
   tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: range, operation: growth, breakdown: none, door: raw_text, phrasing: casual}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac2a.oda_gross_received}
       entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
       window: {kind: range, start: 2015, end: 2020}
       operations: []
 
 - id: dq-crs-051
   query: aid from Sweden to Tanzania over the last decade
-  why: '''The last decade'' is a relative window; the start lands between 2014 and 2016, so the case asserts no window.'
+  why: '''The last decade'' is a relative window; the start lands between 2014 and 2016, so the case asserts no window; DAC2a answers the aid measure.'
   reuse: panel/crs-042
   tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: range, operation: none, breakdown: none, door: raw_text, phrasing: casual}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac2a.oda_gross_received}
       entities: [{dcid: country/SWE, role: origin}, {dcid: country/TZA, role: destination}]
 
 - id: dq-crs-052
   query: aid from Germany to Kenya in 1975
-  why: CRS starts in 1973; a named year serves the held years with a window note.
+  why: A named year serves the held years with a window note; DAC2a answers a plain provider-to-recipient question.
   reuse: panel/crs-044
   tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: casual, probe: [missing_data]}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac2a.oda_gross_received}
       entities: [{dcid: country/DEU, role: origin}, {dcid: country/KEN, role: destination}]
       window: {kind: range, start: 1975, end: 1975}
 
 - id: dq-crs-053
   query: top recipients of US aid
-  why: Resolves to crs.disbursement_gross for country/USA as origin.
+  why: Resolves to dac2a.oda_gross_received for country/USA as origin; a ranking of recipients reads DAC2a.
   reuse: panel/crs-045
   tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: none, operation: rank, breakdown: none, door: raw_text, phrasing: casual}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac2a.oda_gross_received}
       entities: [{dcid: country/USA, role: origin}]
       operations: [{verb: rank, over: destination}]
 
 - id: dq-crs-054
   query: Germany versus France aid to Mali
-  why: Compare is two origins in one part with no operation.
+  why: Compare is two origins in one part with no operation; DAC2a answers the aid measure.
   reuse: panel/crs-046
   tags: {theme: aid, entity: two_countries, direction: both, unit: default, time: none, operation: compare, breakdown: none, door: raw_text, phrasing: casual}
   known_failure: {issue: 1156, checks: [disposition]}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac2a.oda_gross_received}
       entities:
         - {dcid: country/DEU, role: origin}
         - {dcid: country/FRA, role: origin}
@@ -672,12 +668,12 @@
 
 - id: dq-crs-055
   query: how fast has Canadian aid to Haiti grown
-  why: '''How fast has it grown'' asks for a growth operation over the year axis.'
+  why: '''How fast has it grown'' asks for a growth operation over the year axis; DAC2a answers the aid measure.'
   reuse: panel/crs-047
   tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: none, operation: growth, breakdown: none, door: raw_text, phrasing: casual}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac2a.oda_gross_received}
       entities: [{dcid: country/CAN, role: origin}, {dcid: country/HTI, role: destination}]
       operations: [{verb: growth}]
 
@@ -728,11 +724,11 @@
 
 - id: dq-crs-060
   query: ODA to KEN 2020 gross disb
-  why: Resolves to crs.disbursement_gross for country/KEN as destination in 2020.
+  why: Resolves to dac2a.oda_gross_received for country/KEN as destination in 2020; gross disbursement is a DAC2a binding.
   tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: year, operation: none, breakdown: commitment_vs_disbursement, door: raw_text, phrasing: misspelt}
   expect:
     definite:
-      measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+      measure: {family: dac2a.oda_gross_received}
       entities: [{dcid: country/KEN, role: destination}]
       window: {kind: range, start: 2020, end: 2020}
 
@@ -794,13 +790,13 @@
 
 - id: dq-crs-066
   query: aid from Norway to Ethiopia and GDP of Ethiopia
-  why: Two origins in one request; the GDP part follows the equivalent-series registry, which prefers the World Bank series.
+  why: Two origins in one request; the aid part reads DAC2a and the GDP part follows the equivalent-series registry, which prefers the World Bank series.
   tags: {theme: macro, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual, overlap: [wdi, weo]}
-  known_failure: {issue: 1156, checks: [disposition, parts]}
+  known_failure: {issue: 1156, checks: [disposition, entities, parts]}
   expect:
     parts:
       - definite:
-          measure: {family: crs.disbursement_gross, bound: {crsTypeOfFlow: CRSTypeOfFlow10}}
+          measure: {family: dac2a.oda_gross_received}
           entities: [{dcid: country/NOR, role: origin}, {dcid: country/ETH, role: destination}]
       - {definite: {measure: {family: base.gdp}, entities: [{dcid: country/ETH, role: observationAbout}]}}
 

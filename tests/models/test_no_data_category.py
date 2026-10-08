@@ -13,7 +13,7 @@ _CATEGORY_BY_REASON: dict[NoDataReason, str] = {
     "entity_not_resolved": "unresolved",
     "entity_ambiguous": "unresolved",
     "entity_role_not_admitted": "unresolved",
-    "entity_set_too_large": "absent",  # the entity resolved; only its membership is too large
+    "entity_set_too_large": "unresolved",  # refused before any place is read
     "variable_not_resolved": "unresolved",
     "role_not_resolved": "unresolved",
     "unit_not_resolved": "unresolved",

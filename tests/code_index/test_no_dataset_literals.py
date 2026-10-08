@@ -19,6 +19,7 @@ from scripts.export_code_index import DATASETS
 _REPO = Path(__file__).resolve().parents[2]
 _ROOTS = (
     _REPO / "src" / "search" / "engine",
+    _REPO / "src" / "search" / "catalogue",
     _REPO / "src" / "datasets_api",
     _REPO / "packages" / "dfo-data-tools" / "src" / "code_index",
 )

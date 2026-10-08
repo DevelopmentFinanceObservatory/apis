@@ -21,7 +21,7 @@ import dataclasses
 import logging
 import threading
 import time
-from collections.abc import Callable, Collection, Coroutine
+from collections.abc import Callable, Collection, Coroutine, Sequence
 from datetime import date
 from types import SimpleNamespace
 from typing import Any, cast
@@ -78,6 +78,7 @@ from search.models import (
 )
 from series_coverage.schema import RoleNames
 from tests.engine import test_first_answer_place_scenarios as scenarios
+from tests.engine._builders import place_sets, settled_place_roles
 from tests.engine._fake_coverage import (
     FakeCoverageService,
     build_coverage_index,
@@ -679,66 +680,370 @@ def test_siblings_probed_in_separate_scopes_join_the_menu_in_rank_order() -> Non
 _TWO_RECIPIENTS_QUERY = "gross national income to Ghana and Kenya"
 
 
-@pytest.mark.parametrize(
-    ("query", "entities", "graph", "coverage_rows"),
-    [
-        pytest.param(
-            _MIXED_QUERY,
-            _MIXED_ENTITIES,
-            _mixed_graph,
-            [
-                (_GNI_IDS, "f_ids", "", _USA, _YEARS),
-                (_GNI_IDS_BY_CREDITOR, "f_ids", _USA, _USA, _YEARS),
-            ],
-            id="elected-scope-unclamped",
-        ),
-        pytest.param(
-            _TWO_RECIPIENTS_QUERY,
-            ["Ghana", "Kenya"],
-            lambda: FakeGraph(
-                nodes={**_NODES, _KEN: {"label": "Kenya", "type": "Country"}},
-                obs={f"{_GNI_PPP}|{_GHA}": _GHA_OBS},
-                detect={
-                    _TWO_RECIPIENTS_QUERY: {
-                        "svs": [_GNI_IDS, _GNI_PPP],
-                        "cosine_scores": [0.85, 0.84],
-                    }
-                },
-                resolve={"Ghana": _GHA, "Kenya": _KEN},
-            ),
-            [(_GNI_IDS, "f_ids", "", _NOR, _YEARS)],
-            id="elected-scope-clamped",
-        ),
-    ],
-)
-def test_reelected_sibling_reports_its_own_probe_clamp(
-    search_settings, query, entities, graph, coverage_rows
-) -> None:
-    """With one probe place allowed, re-elected GNI PPP unions two subject places and
-    reports that clamp once: beside an IDS shape that probes Ghana alone and never clamps,
-    and beside one whose own two-recipient clamp it replaces."""
-    search_settings(max_standard_probe_places=1)
-    result = _resolve_electing_first(
-        query,
-        entities,
-        graph=graph(),
-        coverage_rows=coverage_rows,
-        role_names=_MIXED_ROLE_NAMES,
+_NORDIA = "nordia"
+_NORDIA_QUERY = "gross national income of Ghana from Nordia"
+_NORDIA_ENTITIES = ["Ghana", "Nordia"]
+# Nordia's rows as the provider of Ghana's income, which give the IDS shape data.
+_NORDIA_ROWS = [
+    (_GNI_IDS_BY_CREDITOR, "f_ids", _NORDIA, _GHA, _YEARS),
+    (_GNI_IDS, "f_ids", "", _GHA, _YEARS),
+]
+# Rows that leave the IDS shape without data at Ghana.
+_ELSEWHERE_ROWS = [
+    (_GNI_IDS, "f_ids", "", _USA, _YEARS),
+    (_GNI_IDS_BY_CREDITOR, "f_ids", _USA, _USA, _YEARS),
+]
+
+
+def _nordia_graph(order: list[str], scores: list[float], query: str = _NORDIA_QUERY) -> FakeGraph:
+    """Nordia, a continent of three countries the provider role admits, beside Ghana. The
+    IDS shape binds Ghana as recipient and Nordia as provider, as Nordia's node where it
+    holds rows as Ghana's provider (two places) and otherwise as its three members (four
+    places). GNI PPP
+    holds no observation at Nordia's node, so it binds Ghana and Nordia's three members as
+    its subjects, four places."""
+    members = ["country/DNK", "country/NOR", "country/SWE"]
+    return FakeGraph(
+        nodes={
+            **_MIXED_NODES,
+            _NORDIA: {"label": "Nordia", "type": "Continent", "arcs": {}},
+            **{dcid: {"label": dcid, "type": "Country"} for dcid in members},
+            "financingProvider": {
+                "arcs": {"rangeIncludes": {"nodes": [{"dcid": "Country"}, {"dcid": "Continent"}]}}
+            },
+        },
+        obs={f"{_GNI_PPP}|{_GHA}": _GHA_OBS},
+        detect={query: {"svs": order, "cosine_scores": scores}},
+        resolve={"Ghana": _GHA, "Norway": _NOR},
+        places={"Nordia": {"dcid": _NORDIA, "type_of": "Continent"}},
+        children={_NORDIA: {"Country": members}},
     )
 
-    assert result.status == "definite", result
-    assert [item.ref.dcid for item in result.specs[0].resolved.members] == [_GNI_PPP]
-    assert [w.message for w in result.warnings if w.code == "standard_probe_places_clamped"] == [
-        "2 probe places detected across 2 named place(s); resolved the first 1."
+
+def _resolve_nordia(
+    order: list[str],
+    scores: list[float],
+    *,
+    coverage_rows: list,
+    llm,
+    operations: Sequence[Operation] = (),
+    query: str = _NORDIA_QUERY,
+    entities: Sequence[str] = tuple(_NORDIA_ENTITIES),
+):
+    graph = _nordia_graph(order, scores, query)
+    coverage = FakeCoverageService(
+        build_coverage_index(coverage_rows, role_names=_MIXED_ROLE_NAMES)
+    )
+    return asyncio.run(
+        resolve_variable(
+            query,
+            entities=list(entities),
+            date_request=None,
+            detect_query=query,
+            role_query=query,
+            entity_roles=door_roles_for_test_query(query, list(entities)),
+            pac=True,
+            graph=graph,
+            resolver=make_resolver(graph),
+            llm=llm,
+            sdmx=FakeSdmxClient(observations={}, scope_availability=graph.scope_availability),
+            base_timing={},
+            coverage=coverage.snapshot(),
+            operations=operations,
+        )
+    )
+
+
+def _served_members(result) -> list[list[str]]:
+    return [[item.ref.dcid for item in spec.resolved.members] for spec in result.specs]
+
+
+def _places_bound(result) -> list[int]:
+    """The dcids each served spec binds, distinct per role and summed over its roles."""
+    return [
+        sum(len(set(dcids)) for dcids in spec.definition.identity.entities.values())
+        for spec in result.specs
     ]
 
 
-def test_reelected_sibling_place_warnings_follow_its_installation(search_settings) -> None:
-    """The IDS series binds Ghana and Kenya as its recipients and clamps their union, then
-    finds no data. Re-elected GNI PPP drops both directions and clamps the same union: its
-    place warnings follow in its own order, directions then the clamp, and the re-election
-    warning follows them."""
-    search_settings(max_standard_probe_places=1)
+# A rank over the recipients: Ghana, the one recipient of the IDS shape, is no set, and
+# Nordia is a subject of GNI PPP, so the rank asks for Nordia's members there alone.
+_RANK_RECIPIENTS = (Operation(verb="rank", phrase="highest", over="destination"),)
+
+
+@pytest.mark.parametrize("operations", [(), _RANK_RECIPIENTS], ids=["read-decides", "rank-decides"])
+@pytest.mark.parametrize(
+    ("bound", "status", "served"),
+    [
+        pytest.param(None, "candidates", [[_GNI_IDS_BY_CREDITOR], [_GNI_PPP]], id="default-bound"),
+        pytest.param(3, "definite", [[_GNI_IDS_BY_CREDITOR]], id="bound-of-three"),
+    ],
+)
+def test_alternate_over_the_place_bound_is_dropped_and_the_elected_shape_served(
+    search_settings, bound, status, served, operations
+) -> None:
+    """The elected IDS shape binds two places and its alternate GNI PPP four. Under the
+    default bound both are offered. Under a bound of three the alternate is dropped whole,
+    the elected shape is served, and no spec binds more places than the bound. The
+    alternate binds Nordia's members because its own read finds no data at Nordia's node,
+    or, before any read, because a rank runs over its subjects."""
+    if bound is not None:
+        search_settings(max_child_places=bound)
+    result = _resolve_nordia(
+        [_GNI_IDS, _GNI_IDS_BY_CREDITOR, _GNI_PPP],
+        [0.85, 0.85, 0.84],
+        coverage_rows=_NORDIA_ROWS,
+        llm=_ElectFirstWithAlternate(),
+        operations=operations,
+    )
+
+    assert result.status == status, result
+    assert _served_members(result) == served
+    assert _places_bound(result) == [2, 4][: len(served)]
+
+
+_GNI_TRADE = "Amount_TradeActivity_GrossNationalIncome"
+_GNI_AID = "Amount_AidActivity_GrossNationalIncome"
+_GNI_REMITTED_BY_CREDITOR = "Amount_RemittanceActivity_GrossNationalIncome_ByCreditor"
+
+
+def _population_arcs(population: str, roles: tuple[str, ...] = ()) -> dict:
+    """The current-price GNI arcs over another population, a semantically distinct reading."""
+    return {
+        **_economic_activity_arcs(
+            "Nominal", {"economicActivityType": "GrossNationalIncome"}, roles
+        ),
+        "populationType": {"nodes": [{"dcid": population}]},
+    }
+
+
+@pytest.mark.parametrize(
+    ("bound", "status", "served", "tie_warnings"),
+    [
+        pytest.param(
+            None,
+            "candidates",
+            [[_GNI_IDS_BY_CREDITOR], [_GNI_REMITTED_BY_CREDITOR]],
+            ["near_neighbor_ambiguous", "near_neighbor_pool_widened"],
+            id="default-bound",
+        ),
+        pytest.param(3, "definite", [[_GNI_IDS_BY_CREDITOR]], [], id="bound-of-three"),
+    ],
+)
+def test_a_tied_reading_over_the_place_bound_does_not_widen_the_search(
+    monkeypatch, search_settings, bound, status, served, tie_warnings
+) -> None:
+    """The elected IDS shape is tied with a subject-only trade reading that holds no data
+    and is read at four places. A remittance reading lies beyond the tie's margin. Under
+    the default bound the trade reading is read, found empty, and the search widens to the
+    remittance reading. Under a bound of three the trade reading is dropped unread, so no
+    search widens for want of its data, and the elected shape is served without the tie."""
+    monkeypatch.setitem(
+        _MIXED_NODES,
+        _GNI_TRADE,
+        {
+            "label": "Gross national income of trade",
+            "type": "StatisticalVariable",
+            "arcs": _population_arcs("TradeActivity"),
+        },
+    )
+    monkeypatch.setitem(
+        _MIXED_NODES,
+        _GNI_REMITTED_BY_CREDITOR,
+        {
+            "label": "Gross national remittance amount, by creditor",
+            "type": "StatisticalVariable",
+            "arcs": _population_arcs(
+                "RemittanceActivity", ("financingProvider", "financingRecipient")
+            ),
+        },
+    )
+    monkeypatch.setitem(
+        _MIXED_ROLE_NAMES,
+        _GNI_REMITTED_BY_CREDITOR,
+        RoleNames(donor="financingProvider", recipient="financingRecipient"),
+    )
+    if bound is not None:
+        search_settings(max_child_places=bound)
+    result = _resolve_nordia(
+        [_GNI_IDS, _GNI_IDS_BY_CREDITOR, _GNI_TRADE, _GNI_REMITTED_BY_CREDITOR],
+        [0.85, 0.85, 0.849, 0.80],
+        coverage_rows=[
+            *_NORDIA_ROWS,
+            (_GNI_REMITTED_BY_CREDITOR, "f_remitted", _NORDIA, _GHA, _YEARS),
+        ],
+        llm=_ElectFirstOnly(),
+    )
+
+    assert result.status == status, result
+    assert _served_members(result) == served
+    assert [w.code for w in result.warnings if w.code.startswith("near_neighbor")] == tie_warnings
+
+
+def _admissions(monkeypatch) -> list[Any]:
+    """Record each candidate admission (`_AlternatesAdmission`) the request makes."""
+    real = candidate_admission.admit_alternates
+    seen: list[Any] = []
+
+    async def _admit(state: Any) -> Any:
+        admission = await real(state)
+        seen.append(admission)
+        return admission
+
+    monkeypatch.setattr(candidate_admission, "admit_alternates", _admit)
+    return seen
+
+
+def test_an_alternate_over_the_place_bound_is_not_reported_read_and_empty(
+    monkeypatch, search_settings
+) -> None:
+    """The alternate GNI PPP, read at four places over a bound of three, is dropped unread:
+    admission lists it neither as admitted nor as rejected, so no alternate counts as
+    evaluated, and the elected shape is served down the single-shape path with its
+    `options` step."""
+    search_settings(max_child_places=3)
+    admissions = _admissions(monkeypatch)
+    result = _resolve_nordia(
+        [_GNI_IDS, _GNI_IDS_BY_CREDITOR, _GNI_PPP],
+        [0.85, 0.85, 0.84],
+        coverage_rows=_NORDIA_ROWS,
+        llm=_ElectFirstWithAlternate(),
+    )
+
+    (admission,) = admissions
+    assert (admission.admitted, admission.rejected, admission.evaluated) == ([], [], False)
+    assert (result.status, result.no_data_reason) == ("definite", None)
+    assert "options" in result.timing_by_step
+
+
+def test_a_widened_search_shape_over_the_place_bound_is_not_reported_read_and_empty(
+    monkeypatch, search_settings
+) -> None:
+    """The elected IDS shape is tied with a trade reading that binds provider and
+    recipient and holds no data, so it binds Ghana and Nordia's three members. The widened
+    search finds a remittance reading with data at two places and an aid reading at four.
+    Under the default bound the trade and aid readings are read and found empty, so both
+    are rejected, and the remittance reading is admitted. Under a bound of three the tied
+    trade reading is dropped unread, so no search widens: no reading is admitted and none
+    is rejected."""
+    directional = ("financingProvider", "financingRecipient")
+    for dcid, label, population, roles in (
+        (_GNI_TRADE, "Gross national income of trade", "TradeActivity", directional),
+        (
+            _GNI_REMITTED_BY_CREDITOR,
+            "Gross national remittance amount",
+            "RemittanceActivity",
+            directional,
+        ),
+        (_GNI_AID, "Gross national aid amount", "AidActivity", ()),
+    ):
+        monkeypatch.setitem(
+            _MIXED_NODES,
+            dcid,
+            {
+                "label": label,
+                "type": "StatisticalVariable",
+                "arcs": _population_arcs(population, roles),
+            },
+        )
+        if roles:
+            monkeypatch.setitem(
+                _MIXED_ROLE_NAMES,
+                dcid,
+                RoleNames(donor="financingProvider", recipient="financingRecipient"),
+            )
+    admissions = _admissions(monkeypatch)
+    for bound in (None, 3):
+        if bound is not None:
+            search_settings(max_child_places=bound)
+        _resolve_nordia(
+            [_GNI_IDS, _GNI_IDS_BY_CREDITOR, _GNI_TRADE, _GNI_REMITTED_BY_CREDITOR, _GNI_AID],
+            [0.85, 0.85, 0.849, 0.80, 0.79],
+            coverage_rows=[
+                *_NORDIA_ROWS,
+                (_GNI_REMITTED_BY_CREDITOR, "f_remitted", _NORDIA, _GHA, _YEARS),
+            ],
+            llm=_ElectFirstOnly(),
+        )
+
+    within_default, over_bound = admissions
+    assert (len(within_default.admitted), len(within_default.rejected)) == (1, 2)
+    assert (len(over_bound.admitted), len(over_bound.rejected)) == (0, 0)
+
+
+@pytest.mark.parametrize(
+    ("bound", "status", "reason", "served"),
+    [
+        pytest.param(None, "definite", None, [[_GNI_PPP]], id="default-bound"),
+        pytest.param(3, "no_data", "entity_set_too_large", [], id="bound-of-three"),
+    ],
+)
+def test_an_elected_shape_with_no_data_at_a_node_binds_the_members_before_reelection(
+    search_settings, bound, status, reason, served
+) -> None:
+    """The elected IDS shape has no data at Ghana from Nordia's node, so it binds Nordia's
+    three members beside Ghana. Under the default bound its sibling GNI PPP, which binds
+    the same four places, is re-elected. Under a bound of three the elected shape's four
+    places are over the bound and no sibling is elected in its place."""
+    if bound is not None:
+        search_settings(max_child_places=bound)
+    result = _resolve_nordia(
+        [_GNI_IDS, _GNI_IDS_BY_CREDITOR, _GNI_PPP],
+        [0.85, 0.85, 0.84],
+        coverage_rows=_ELSEWHERE_ROWS,
+        llm=_ElectFirstOnly(),
+    )
+
+    assert result.status == status, result
+    assert result.no_data_reason == reason
+    assert _served_members(result) == served
+
+
+def test_reelection_sibling_over_the_place_bound_is_dropped(search_settings) -> None:
+    """Elected GNI PPP holds no data at Norway or at Nordia's members, three subjects in
+    all since Norway is one of them. A rank over the providers asks for Nordia's members
+    on its sibling the IDS shape too, which binds Norway as recipient and those three as
+    providers: four places, over a bound of three before any read. The sibling is dropped
+    and the elected shape keeps its own no-data answer."""
+    search_settings(max_child_places=3)
+    query = "gross national income of Norway from Nordia"
+
+    result = _resolve_nordia(
+        [_GNI_PPP, _GNI_IDS, _GNI_IDS_BY_CREDITOR],
+        [0.85, 0.84, 0.84],
+        coverage_rows=_ELSEWHERE_ROWS,
+        llm=_ElectFirstOnly(),
+        operations=(Operation(verb="rank", phrase="largest", over="origin"),),
+        query=query,
+        entities=("Norway", "Nordia"),
+    )
+
+    assert result.status == "no_data", result
+    assert result.no_data_reason == "no_observations"
+    assert result.specs == ()
+
+
+def test_elected_shape_over_the_place_bound_is_not_reelected(search_settings) -> None:
+    """Elected GNI PPP is read at four places, over a bound of three, and answers
+    `entity_set_too_large`. The IDS shape holds data within the bound and is not elected
+    in its place."""
+    search_settings(max_child_places=3)
+    result = _resolve_nordia(
+        [_GNI_PPP, _GNI_IDS, _GNI_IDS_BY_CREDITOR],
+        [0.85, 0.84, 0.84],
+        coverage_rows=_NORDIA_ROWS,
+        llm=_ElectFirstWithAlternate(),
+    )
+
+    assert result.status == "no_data", result
+    assert result.no_data_reason == "entity_set_too_large"
+    assert result.specs == ()
+
+
+def test_reelected_sibling_place_warnings_follow_its_installation() -> None:
+    """The IDS series binds Ghana and Kenya as its recipients, then finds no data.
+    Re-elected GNI PPP drops both directions. Its place warnings follow in its own order,
+    and the re-election warning follows them."""
     result = _resolve_electing_first(
         _TWO_RECIPIENTS_QUERY,
         ["Ghana", "Kenya"],
@@ -760,7 +1065,6 @@ def test_reelected_sibling_place_warnings_follow_its_installation(search_setting
         "membership_unverified",
         "direction_discarded",
         "direction_discarded",
-        "standard_probe_places_clamped",
         "elected_shape_no_data",
     ]
 
@@ -858,8 +1162,7 @@ def _state(*, names_and_roles: dict[str, list[DoorRole]], places: dict[str, str]
         variable="flow",
         entities=list(places),
         entity_roles=names_and_roles,
-        rcl=cast(Any, SimpleNamespace(resolved_entity_names=places)),
-        standard_place_dcids=list(places.values()),
+        place_sets=place_sets(places),
         role_bearing_recalled=True,
         date_request=None,
         detect_query="flow",
@@ -1040,8 +1343,7 @@ def test_an_operation_over_one_flow_axis_places_an_undirected_place(
     places = {place: "country/KEN"} if not groups else {}
     state = _state(names_and_roles={}, places=places)
     state.entities = [place]
-    state.group_member_dcids_by_name = dict(groups)
-    state.standard_place_dcids = groups.get(place, ["country/KEN"])
+    state.place_sets = place_sets(places, groups=groups)
     state.operations = (Operation(verb="rank", phrase="top", over=over),)
     if elected_origin:
         state.shape_draft = _shape_for(
@@ -1049,19 +1351,35 @@ def test_an_operation_over_one_flow_axis_places_an_undirected_place(
         )
         elected = bind_place_roles(state, state.shape_draft)
         assert not isinstance(elected, str)
-        assert elected.origin_dcids == ["country/KEN"]
+        assert settled_place_roles(state.shape_draft, elected).origin_dcids == ["country/KEN"]
         state.elected_place_roles = elected
 
-    roles_bound = bind_place_roles(state, shape)
+    assigned = bind_place_roles(state, shape)
 
     if isinstance(bound, str):
-        assert roles_bound == bound
+        assert assigned == bound
     else:
-        assert not isinstance(roles_bound, str), roles_bound
+        assert not isinstance(assigned, str), assigned
+        roles_bound = settled_place_roles(shape, assigned)
         assert {
             "destination": roles_bound.destination_dcids,
             "origin": roles_bound.origin_dcids,
         } == bound
+
+
+def test_a_region_beside_a_rank_over_one_flow_axis_is_read_as_a_group() -> None:
+    """A continent named with no direction holds members, so a rank over the recipients
+    does not send it to the origin axis as it does a single place: like a group it can
+    scope the ranked axis or name the other."""
+    shape = _shape_for(
+        _economic_activity_arcs("Nominal", {}, ("financingProvider", "financingRecipient"))
+    )
+    state = _state(names_and_roles={}, places={})
+    state.entities = ["Africa"]
+    state.place_sets = place_sets(regions={"Africa": ("africa", [_GHA, "country/KEN"])})
+    state.operations = (Operation(verb="rank", phrase="top", over="destination"),)
+
+    assert bind_place_roles(state, shape) == "role_not_resolved"
 
 
 @pytest.mark.parametrize(
@@ -1145,7 +1463,7 @@ def test_elected_shape_drops_a_model_emitted_entity_only_where_binding(places, e
     """The elected shape's where slot holds only the places it binds: a model-emitted where
     binding without a property gives way to the resolved place, or is dropped with none."""
     state = _state(names_and_roles={}, places=places)
-    state.rcl = cast(Any, SimpleNamespace(resolved_entity_names=places, resolutions={}))
+    state.rcl = cast(Any, SimpleNamespace(resolutions={}))
     state.shape_draft = _shape_for(
         _economic_activity_arcs("PurchasingPowerParity", {"activitySource": "GrossNationalIncome"})
     )
@@ -1189,7 +1507,7 @@ def test_placeless_election_reads_presence_for_its_flagged_alternates_too() -> N
         for shape in derive_shapes(confirmed_svs=[_GNI_PPP, atlas], graph=graph)
     }
     state = _state(names_and_roles={}, places={})
-    state.rcl = cast(Any, SimpleNamespace(resolved_entity_names={}, resolutions={}))
+    state.rcl = cast(Any, SimpleNamespace(resolutions={}))
     state.graph = graph
     state.sdmx = FakeSdmxClient(observations={}, scope_availability=graph.scope_availability)
     state.capped_shapes = [shapes[_GNI_PPP], shapes[atlas]]
@@ -1276,8 +1594,7 @@ def _place_warnings(result) -> list[tuple[str, str | None]]:
     return [
         (w.code, w.spec_id)
         for w in result.warnings
-        if w.code
-        in {"direction_discarded", "place_scope_defaulted", "standard_probe_places_clamped"}
+        if w.code in {"direction_discarded", "place_scope_defaulted"}
     ]
 
 

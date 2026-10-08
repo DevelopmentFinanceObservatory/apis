@@ -4,8 +4,8 @@ Each scenario resolves one query part through `resolve_variable` on the offline 
 doubles. The scenarios cover first elections with and without a named place, flagged
 alternates and mixed menus of subject-only and role-bearing shapes, near-neighbour ties that
 widen the search, zero-observation re-elections that adopt one sibling or offer several,
-index-sourced shapes that take no default scope, clamped probe unions, regions and directed
-places.
+index-sourced shapes that take no default scope, places over the bound a Spec binds, regions
+and directed places.
 
 `test_first_answer_matches_its_snapshot` projects each answer: its status and reason, every
 offered spec (`specs`, `flagged_match`, `alternate_match`, `nearest_real`) with its identity
@@ -64,7 +64,12 @@ from search.engine.bind import _UniversalBindOutput
 from search.engine.clients import materialise_bridge
 from search.engine.conjoin import assemble_region
 from search.engine.envelope import now_ms
-from search.engine.region import candidate_grounding, phase_answer, phase_place_materialise
+from search.engine.region import (
+    candidate_grounding,
+    phase_answer,
+    phase_place_materialise,
+    resubmit_request,
+)
 from search.engine.region.observations import fetch as observation_fetch
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.result import RegionResult
@@ -85,7 +90,7 @@ _RECORD_BASELINE_ENV = "SEARCH_RECORD_BASELINE_DEPTH"
 _SNAPSHOT = Path(__file__).parent.parent / "fixtures" / "first_answer_place_scenarios.json"
 _RECORDED_CLASSES: tuple[type, ...] = (FakeGraph, FakeSdmxClient, FakeMintGraphReader)
 # The modules whose thread pools fan requests out inside one executor function.
-_POOL_MODULES = (observation_fetch, materialise_bridge, candidate_grounding)
+_POOL_MODULES = (observation_fetch, materialise_bridge, candidate_grounding, resubmit_request)
 # The pools a module builds at import, on which requests run beside the resolve.
 _EXECUTORS = (
     (phase_place_materialise, "_ALTERNATES_POOL"),
@@ -334,7 +339,8 @@ class _Scenario:
     coverage_rows: tuple[tuple[str, str, str, str, list[int]], ...] = ()
     # Read each place's direction from the query's `from` and `to`.
     directed: bool = False
-    max_probe_places: int | None = None
+    # The bound on the places a Spec binds, when the scenario lowers it.
+    max_child_places: int | None = None
     include_observations: bool = False
     include_option_coverage: bool = False
     stream_slot_options: bool = False
@@ -734,21 +740,14 @@ _SCENARIOS: dict[str, _Scenario] = {
         (0.9,),
         _at(_MORT, _KEN, _NOR),
     ),
-    "named-clamped": _Scenario(
+    # Two named places over a bound of one, so the elected shape refuses and reads no place.
+    "named-over-bound": _Scenario(
         "mortality count in Kenya and Ghana",
         ("Kenya", "Ghana"),
         (_MORT,),
         (0.9,),
         _at(_MORT, _KEN),
-        max_probe_places=1,
-    ),
-    "named-clamped-reelect": _Scenario(
-        "mortality count in Kenya and Ghana",
-        ("Kenya", "Ghana"),
-        _SIBLINGS[:2],
-        _SIBLING_SCORES[:2],
-        _at(_MORT_EST, _KEN),
-        max_probe_places=1,
+        max_child_places=1,
     ),
     "named-directed-reelect": _Scenario(
         "mortality count from Kenya",
@@ -757,24 +756,6 @@ _SCENARIOS: dict[str, _Scenario] = {
         _SIBLING_SCORES[:2],
         _at(_MORT_EST, _KEN),
         directed=True,
-    ),
-    "named-directed-clamped-reelect": _Scenario(
-        "mortality count from Kenya and Ghana",
-        ("Kenya", "Ghana"),
-        _SIBLINGS[:2],
-        _SIBLING_SCORES[:2],
-        _at(_MORT_EST, _KEN),
-        directed=True,
-        max_probe_places=1,
-    ),
-    "named-directed-clamped-reelect-menu": _Scenario(
-        "mortality count from Kenya and Ghana",
-        ("Kenya", "Ghana"),
-        _SIBLINGS,
-        _SIBLING_SCORES,
-        {**_at(_MORT_EST, _KEN), **_at(_MORT_PROJ, _KEN)},
-        directed=True,
-        max_probe_places=1,
     ),
     # Named places, role-bearing and subject-only readings together.
     "income-role-bearing-elected-subject-alternate": _Scenario(
@@ -827,29 +808,6 @@ _SCENARIOS: dict[str, _Scenario] = {
             (_REAL, "f_real", "", _GHA, _YEARS),
         ),
         directed=True,
-    ),
-    "income-reelect-clamp-beside-unclamped-elected": _Scenario(
-        "gross national income of Ghana from Norway",
-        ("Ghana", "Norway"),
-        (_IDS, _IDS_BC, _PPP),
-        (0.85, 0.85, 0.84),
-        {**_at(_PPP, _GHA), **_at(_PPP, _NOR)},
-        coverage_rows=(
-            (_IDS, "f_ids", "", _USA, _YEARS),
-            (_IDS_BC, "f_ids", _USA, _USA, _YEARS),
-        ),
-        directed=True,
-        max_probe_places=1,
-    ),
-    "income-reelect-clamp-beside-clamped-elected": _Scenario(
-        "gross national income to Ghana and Kenya",
-        ("Ghana", "Kenya"),
-        (_IDS, _PPP),
-        (0.85, 0.84),
-        _at(_PPP, _GHA),
-        coverage_rows=((_IDS, "f_ids", "", _NOR, _YEARS),),
-        directed=True,
-        max_probe_places=1,
     ),
     "income-alternate-role-cannot-take-the-place": _Scenario(
         "gross national income from Norway",
@@ -1204,8 +1162,8 @@ def _first_difference(expected: Any, observed: Any, path: str = "") -> str | Non
 
 
 def _patch_settings(scenario: _Scenario, search_settings: Callable[..., Any]) -> None:
-    if scenario.max_probe_places is not None:
-        search_settings(max_standard_probe_places=scenario.max_probe_places)
+    if scenario.max_child_places is not None:
+        search_settings(max_child_places=scenario.max_child_places)
 
 
 def _recording(env: str = _RECORD_ENV) -> bool:
@@ -1288,11 +1246,11 @@ _SERIAL_STEPS_ADDED_FOR_A_SHAPE_THE_BASELINE_DROPS: dict[str, int] = {
 # The serial steps a scenario saves against its baseline depth, each with the reason its
 # group gives. A saving needs no changed answer.
 _SERIAL_STEPS_SAVED: dict[str, int] = {
+    # The baseline clamps the probe union of two named places to one place and reads it.
+    # Here the two places exceed the bound of one, so the answer refuses and reads no place.
+    "named-over-bound": 6,
     # A sibling is walked before it is materialised, so an adopted sibling is materialised
     # once, where the baseline materialises it, walks it, and materialises it again.
-    "income-reelect-clamp-beside-clamped-elected": 5,
-    "income-reelect-clamp-beside-unclamped-elected": 5,
-    "income-reelect-directed-two-places": 5,
     "income-reelect-subject-from-role-bearing": 5,
     "named-directed-reelect": 5,
     "named-reelect-adopt": 5,
@@ -1314,7 +1272,6 @@ _SERIAL_STEPS_SAVED: dict[str, int] = {
     # each as re-election materialised it, where the baseline materialises each a second
     # time, and the candidates are grounded side by side. Named or not, a sibling's facet
     # reads are made once.
-    "income-reelect-siblings-in-separate-scopes": 8,
     "named-reelect-menu": 6,
     "placeless-reelect-earth-sibling-and-country-sibling": 9,
     "placeless-reelect-menu-beside-flagged-alternate": 12,
@@ -1358,10 +1315,22 @@ _SERIAL_STEPS_SAVED: dict[str, int] = {
     # The candidates of an answer are grounded side by side, where the baseline grounds them
     # one after another, and the alternates' walks start beside the elected shape's.
     "income-role-bearing-elected-subject-alternate": 3,
-    "income-role-bearing-elected-subject-alternate-at-both": 5,
     "income-subject-elected-role-bearing-alternate": 6,
     "named-flagged-alternate": 3,
     "named-tie-widened": 3,
+    # An answer that binds several places reads their types in one request and the labels
+    # of those types in one more, where the baseline reads each place's type and its label
+    # in turn, which saves two steps for a second place. Three of these also save the steps their
+    # groups above give: an adopted sibling's (5), re-election's offered siblings' (8) and
+    # candidates grounded side by side (5).
+    "named-two-places": 2,
+    # It also asks role admission about the region's node and member types in one batch,
+    # where the baseline asks of the region and then of the country in turn, which saves
+    # the country's two-step class walk.
+    "named-region-and-country": 4,
+    "income-reelect-directed-two-places": 7,
+    "income-reelect-siblings-in-separate-scopes": 10,
+    "income-role-bearing-elected-subject-alternate-at-both": 7,
     # With no place named, the elected one-role shape stays in the election, and its subject
     # siblings take fewer reads in series than the baseline's subject-only answer, or join
     # it as candidates grounded side by side.

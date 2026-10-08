@@ -67,12 +67,11 @@ def _rewrite_candidate_pointer(
     else:
         new_pointer = prefix
     return EngineInputError(
-        *exc.args,
+        str(exc),
         code=exc.code,
         status=exc.status,
         pointer=new_pointer,
         alternatives=exc.alternatives,
-        detail=exc.detail,
     )
 
 
@@ -193,7 +192,6 @@ def check_candidates_ceiling(entry: ResubmitCandidatesEntry, *, index: int) -> N
             message,
             code="request_invalid",
             pointer=f"/input/entries/{index}/candidates",
-            detail=message,
         )
 
 
@@ -298,7 +296,9 @@ async def resolve_parsed_entries(
     # overlay each part's pins. Identity and candidate entries resolve their own dcids.
     pointer_prefixes = [f"/input/entries/{entry_index}/part" for entry_index, _ in entries]
     confirm_part_datasets(parts, pointer_prefixes=pointer_prefixes)
-    pins = await confirm_part_pins(parts, graph=graph, pointer_prefixes=pointer_prefixes)
+    pins = await confirm_part_pins(
+        parts, graph=graph, resolver=resolver, pointer_prefixes=pointer_prefixes
+    )
     interpretation = interpret_parts(parts, pointer_prefixes=pointer_prefixes)
     per_variable_pre_resolved = await per_part_pre_resolved(
         parts, pins, resolver=resolver, deadline=deadline
@@ -335,6 +335,7 @@ async def resolve_parsed_entries(
         per_variable_date_requests=interpretation.date_requests,
         per_variable_role_queries=interpretation.role_queries,
         per_variable_entity_roles=interpretation.entity_roles,
+        per_variable_member_entities=interpretation.member_entities,
         per_variable_unit_texts=interpretation.unit_texts,
         per_variable_source_texts=interpretation.source_texts,
         per_variable_provenances=interpretation.provenances,

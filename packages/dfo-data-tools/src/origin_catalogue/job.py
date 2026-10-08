@@ -27,14 +27,33 @@ A run:
 7. refuses to publish on any `Refusal`, naming each in the log and exiting
    non-zero, so the execution shows failed;
 8. reads the UN stage: a row per registered agency, read from the UN
-   deployment together with its root group `undata/g/<segment>`, and the
+   deployment together with its root group `undata/g/<segment>`, the
    scan-set countries the UN front door refuses to have named in an
-   observation GET, so the origin client never pays to find them. When a
-   UN read fails, the build carries the published build's UN rows and
-   refused places forward and records it in the manifest, so a UN outage
-   delays no DFO or base update. With no published build to carry from, it
-   fails. A UN row the checks reject refuses the build, as any refusal does;
-9. discards the build if the lock or the fingerprint moved while it ran,
+   observation GET, so the origin client never pays to find them, and the
+   UN tables (`origin_catalogue.un_mirror`): every member variable of every
+   agency with the arcs search derives a shape from, the member variables
+   of each excluded series, and the UN topic table. The UN tables are
+   copied from the published build when (format version, `UN_MIRROR_MODULES`
+   code hash, registry hash, ISO week) is unchanged and that build read them
+   from the UN, and enumerated otherwise. When a UN read fails or the
+   enumeration is incomplete (a read that stops advancing, a variable count
+   that differs from the UN deployment's own, a variable naming no series,
+   a topic answering no arcs, a topic tree yielding no topic, tables that do
+   not hold together),
+   the build carries the published build's UN rows, refused places and UN
+   tables forward whole and records it in the manifest, so a UN outage
+   delays no DFO or base update and no build holds a partial UN table. With
+   no published build to carry from, it fails. A UN row the checks reject,
+   an excluded series the agency does not hold and a carried table that
+   disagrees with the registry on excluded series or agencies refuse the
+   build, as any refusal does;
+9. derives the superseded variable table (`origin_catalogue.successors`)
+   from the withheld variables and the UN tables the build publishes,
+   enumerated, copied or carried forward: each withheld variable of a base
+   provenance a UN agency supersedes, with the UN variable standing for it
+   where one does. A successor the UN tables do not admit refuses the
+   build;
+10. discards the build if the lock or the fingerprint moved while it ran,
    and otherwise publishes it with a conditional `current.json` write.
 
 Every run prunes old builds. `origin_catalogue_publish_stale` is logged
@@ -51,7 +70,8 @@ Environment: `ORIGIN_CATALOGUE_URI` (`gs://` or `file://`),
 API root, including `/core/api`) are required. `UN_GRAPH_BASE_URL`, the UN
 deployment's API root, defaults to `origin_catalogue.graph.UN_BASE_URL`. The
 serving surfaces read the same variable with the same default, so the build
-and serving read one UN deployment. `DATASETS_GRAPH_TOKEN` is optional.
+and serving read one UN deployment. `UN_SITE_BASE_URL`, the UN site root that serves the group counts, defaults
+to `UN_GRAPH_BASE_URL` without its `/core/api`. `DATASETS_GRAPH_TOKEN` is optional.
 `ORIGIN_CATALOGUE_BQ_PROJECT` defaults to the connection's project, `ORIGIN_CATALOGUE_GRAPH_TIMEOUT_SECONDS` to 120
 and `ORIGIN_CATALOGUE_CYCLE_SECONDS` to 900. `--local-dir PATH` publishes
 under a local directory in place of `ORIGIN_CATALOGUE_URI`.
@@ -65,6 +85,7 @@ import logging
 import sys
 import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
+from contextlib import closing
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from functools import cache
@@ -97,9 +118,10 @@ from origin_catalogue.artifact import (
     CatalogueArtifactError,
     encode_build,
     format_root,
-    load_catalogue,
+    load_tables,
     publish_build,
     read_manifest,
+    read_un_mirror,
 )
 from origin_catalogue.card_facts import (
     CHILD_PROPERTIES,
@@ -133,6 +155,7 @@ from origin_catalogue.registry import (
     BaseSource,
     Registry,
     RegistryError,
+    UnSupersededProvenance,
     packaged_registry,
     parse_registry,
     registry_hash,
@@ -144,6 +167,18 @@ from origin_catalogue.schema import (
     CataloguePointer,
     UnCarryForward,
     identity_key,
+)
+from origin_catalogue.successors import Successors, derive_successors, unheld_successors
+from origin_catalogue.un_mirror import (
+    EMPTY_UN_MIRROR,
+    UnGroupCounts,
+    UnMirror,
+    UnMirrorFaultKind,
+    UnSiteClient,
+    build_un_mirror,
+    registry_exclusions,
+    un_root_group,
+    un_site_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -162,8 +197,13 @@ _WEEK_SECONDS: Final[float] = 7 * 86_400.0
 goes between publishes."""
 
 _PUBLISH_RESERVE_SECONDS: Final[float] = 900.0
-"""Time kept back from the base-table deadline: the topic walk, whose reads
-take no deadline, and the checks and writes that follow the build."""
+"""Time kept back from the UN stage's deadline: the base topic walk, whose
+reads take no deadline, and the checks and writes that follow the build."""
+
+_UN_STAGE_RESERVE_SECONDS: Final[float] = 1800.0
+"""Time kept back from the base-table deadline for the UN stage, which
+enumerates every agency in about 7 minutes and waits up to 100 seconds on
+each read the UN front door rate-limits."""
 
 _MAX_SOURCE_SUBJECTS: Final[int] = 5000
 """The most nodes a registered source's `<-source` read may return. A
@@ -175,7 +215,6 @@ _UN_PROBE_VARIABLE: Final[str] = "undata/who/MORT_U5_RATE"
 GET by the places it names, whatever the variable."""
 
 _COUNTRY_PREFIX = "country/"
-_UN_ROOT_GROUP_PREFIX = "undata/g/"
 
 _PROVENANCE_PROPERTIES: Final[tuple[str, ...]] = tuple(
     dict.fromkeys(("typeOf", "name", "url", "source", "isPartOf", *CHILD_PROPERTIES))
@@ -214,6 +253,7 @@ class JobSettings(AliasOnlySettings):
     graph_base_url: str = Field(min_length=1, alias="DATASETS_GRAPH_BASE_URL")
     graph_token: str | None = Field(default=None, alias="DATASETS_GRAPH_TOKEN")
     un_base_url: str = Field(default=UN_BASE_URL, min_length=1, alias=UN_BASE_URL_ENV)
+    un_site_url: str = Field(default="", alias="UN_SITE_BASE_URL")
     graph_timeout_seconds: float = Field(
         default=120.0, alias="ORIGIN_CATALOGUE_GRAPH_TIMEOUT_SECONDS"
     )
@@ -230,6 +270,18 @@ class JobSettings(AliasOnlySettings):
     def _default_bq_project(self) -> Self:
         if not self.bq_project:
             object.__setattr__(self, "bq_project", self.bq_connection.split(".")[0])
+        return self
+
+    @model_validator(mode="after")
+    def _default_un_site_url(self) -> Self:
+        if not self.un_site_url:
+            derived = un_site_url(self.un_base_url)
+            if derived is None:
+                raise ValueError(
+                    f"{UN_BASE_URL_ENV} {self.un_base_url!r} does not end in /core/api, so "
+                    "UN_SITE_BASE_URL must name the UN site root"
+                )
+            object.__setattr__(self, "un_site_url", derived)
         return self
 
 
@@ -261,12 +313,15 @@ class CatalogueGraph(Protocol):
 
 
 class UnGraph(CatalogueGraph, Protocol):
-    """The UN deployment's reads: the provenance stage's node reads, and the
-    observation GET the blocked-place probe sends, which `dc_graph.GraphClient`
-    built with an observation GET budget provides. `clear` forgets the
-    blocked places, so the probe can name them again."""
+    """The UN deployment's reads: the provenance stage's node reads, the
+    `/v2/node` POST the UN tables are enumerated with, and the observation
+    GET the blocked-place probe sends, which `dc_graph.GraphClient` built
+    with an observation GET budget provides. `clear` forgets the blocked
+    places, so the probe can name them again."""
 
     def clear(self) -> None: ...
+
+    def post(self, path: str, payload: dict, *, deadline: float | None = None) -> dict: ...
 
     def observation_facets_batch(
         self,
@@ -308,7 +363,9 @@ JOB_MODULES: Final[tuple[str, ...]] = (
     "origins.py",
     "registry.py",
     "schema.py",
+    "successors.py",
     "topic_walk.py",
+    "un_mirror.py",
 )
 """The `origin_catalogue` modules whose code shapes a build: the job, what it
 enumerates and encodes with, the card-fact derivation, and the ids and
@@ -320,6 +377,10 @@ no build."""
 ENUMERATION_MODULES: Final[tuple[str, ...]] = ("enumerate.py", "topic_walk.py")
 """The modules that build the base variable, withheld variable and topic
 tables. A change to either rebuilds them, where an unchanged build carries them forward."""
+
+UN_MIRROR_MODULES: Final[tuple[str, ...]] = ("topic_walk.py", "un_mirror.py")
+"""The modules that enumerate the UN tables. A change to either enumerates
+them again, where an unchanged build copies them from the published one."""
 
 
 def iso_week(at: datetime) -> str:
@@ -348,15 +409,17 @@ def identity_inputs(
     week: str,
     job_code: str,
     enumeration_code: str,
+    un_mirror_code: str,
 ) -> dict[str, str]:
     """What a build's identity hashes. A registry edit, an ingestion, a new
     ISO week and a change to `JOB_MODULES` each change it, so each produces
-    a new build. `enumeration_code` is recorded so the next build can
-    recompute this one's `base_tables_key`."""
+    a new build. `enumeration_code` and `un_mirror_code` are recorded so the
+    next build can recompute this one's `base_tables_key` and `un_mirror_key`."""
     return {
         "format_version": str(CATALOGUE_FORMAT_VERSION),
         "job_code": job_code,
         "enumeration_code": enumeration_code,
+        "un_mirror_code": un_mirror_code,
         "registry": registry_digest,
         "dfo_fingerprint": dfo_stamp,
         "iso_week": week,
@@ -387,6 +450,32 @@ def base_tables_key(
             "dfo_provenances": "\n".join(sorted(dfo_provenances)),
             "iso_week": week,
         }
+    )
+
+
+def un_mirror_key(*, registry_digest: str, week: str, un_mirror_code: str) -> str:
+    """The key under which the UN tables are copied from one build to the
+    next: every input their enumeration reads besides the UN deployment,
+    which the weekly enumeration refreshes."""
+    return identity_key(
+        {
+            "format_version": str(CATALOGUE_FORMAT_VERSION),
+            "un_mirror_code": un_mirror_code,
+            "registry": registry_digest,
+            "iso_week": week,
+        }
+    )
+
+
+def _published_un_mirror_key(manifest: CatalogueManifest) -> str | None:
+    """The published build's `un_mirror_key`, or `None` when it carried its
+    UN tables forward, since no enumeration of its own week stands behind them."""
+    week = manifest.identity_inputs.get("iso_week")
+    un_mirror_code = manifest.identity_inputs.get("un_mirror_code")
+    if week is None or un_mirror_code is None or manifest.un_carried_forward is not None:
+        return None
+    return un_mirror_key(
+        registry_digest=manifest.registry_hash, week=week, un_mirror_code=un_mirror_code
     )
 
 
@@ -454,15 +543,24 @@ def read_dfo_holdings(bq: BigQueryReader, *, connection: str) -> DfoHoldings:
 
 # --- Provenance stage --------------------------------------------------------
 
-type RefusalKind = Literal[
-    "base_source_without_variables",
-    "exclusion_not_held",
-    "dfo_provenance_under_unreviewed_source",
-    "dfo_provenance_without_source",
-    "provenance_without_url",
-    "un_agency_root_group_missing",
-    "un_carried_segment_mismatch",
-]
+type RefusalKind = (
+    Literal[
+        "base_source_without_variables",
+        "exclusion_not_held",
+        "dfo_provenance_under_unreviewed_source",
+        "dfo_provenance_without_source",
+        "provenance_without_url",
+        "un_agency_root_group_missing",
+        "un_carried_agency_mismatch",
+        "un_carried_exclusions_mismatch",
+        "un_carried_segment_mismatch",
+        "un_exclusion_provenance_not_held",
+        "un_successor_not_held",
+        "un_successor_ambiguous",
+        "un_successor_not_served",
+    ]
+    | UnMirrorFaultKind
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -817,37 +915,135 @@ def sources_without_variables(
 
 @dataclass(frozen=True, slots=True)
 class UnStage:
-    """The UN rows of the provenance table and the scan-set countries the UN
-    front door refuses to have named in an observation GET.
-    `carried_forward` is set when both come from an earlier build."""
+    """The UN rows of the provenance table, the scan-set countries the UN
+    front door refuses to have named in an observation GET, and the UN
+    tables. `carried_forward` is set when all three come from an earlier
+    build. `mirror_source` says where the UN tables come from: enumerated by
+    this build, copied from the published build under an unchanged
+    `un_mirror_key`, or carried forward after a failed UN read or an
+    incomplete enumeration."""
 
     rows: Mapping[str, ProvenanceRow]
     blocked_places: frozenset[str]
+    mirror: UnMirror = EMPTY_UN_MIRROR
+    mirror_source: Literal["enumerated", "copied", "carried"] = "enumerated"
     carried_forward: UnCarryForward | None = None
 
 
 class UnReadError(Exception):
-    """A read of the UN deployment failed, so the UN stage has no result."""
+    """A read of the UN deployment failed or its enumeration is incomplete,
+    so the UN stage has no result."""
 
 
 def read_un_stage(
     registry: Registry,
     *,
     un_graph: UnGraph,
+    un_group_counts: UnGroupCounts,
     scan_places: Sequence[str],
     refusals: list[Refusal],
+    published_mirror: Callable[[], UnMirror | None] | None = None,
+    deadline: float | None = None,
 ) -> UnStage:
     """Reads the UN rows, appending a refusal for each row the checks reject,
     then, when none is refused, probes the UN front door over the scan-set
-    countries. Raises `UnReadError` when a UN read fails."""
+    countries and reads the UN tables: `published_mirror`'s when it returns
+    them, and `build_un_mirror`'s otherwise. A fault the registry causes is
+    a refusal, and beside one every other fault is too, so one run names
+    them all. Raises `UnReadError` when a UN read fails, when `deadline`, an
+    absolute `time.monotonic()` value, passes, and when every fault is an
+    incomplete enumeration."""
     try:
         found: list[Refusal] = []
         rows = _un_rows(registry, un_graph=un_graph, refusals=found)
         refusals.extend(found)
-        blocked = frozenset() if found else probe_un_blocked_places(un_graph, scan_places)
-        return UnStage(rows=rows, blocked_places=blocked)
+        if found:
+            return UnStage(rows=rows, blocked_places=frozenset())
+        blocked = probe_un_blocked_places(un_graph, scan_places)
+        copied = published_mirror() if published_mirror is not None else None
+        if copied is not None:
+            return UnStage(rows=rows, blocked_places=blocked, mirror=copied, mirror_source="copied")
+        built = build_un_mirror(
+            registry, graph=un_graph, group_counts=un_group_counts, deadline=deadline
+        )
     except GraphReadError as exc:
         raise UnReadError(f"UN deployment read failed: {exc}") from exc
+    if built.faults and all(fault.incomplete for fault in built.faults):
+        faults = "; ".join(
+            f"{fault.kind} at {fault.subject}: {fault.detail}" for fault in built.faults
+        )
+        raise UnReadError(f"UN enumeration incomplete: {faults}")
+    refusals.extend(
+        Refusal(kind=fault.kind, subject=fault.subject, detail=fault.detail)
+        for fault in built.faults
+    )
+    return UnStage(rows=rows, blocked_places=blocked, mirror=built.mirror or EMPTY_UN_MIRROR)
+
+
+def un_registry_refusals(
+    registry: Registry, *, dfo_provenances: frozenset[str], un_rows: Mapping[str, ProvenanceRow]
+) -> list[Refusal]:
+    """A refusal for each excluded UN series whose `dfo_provenance` DFO does
+    not hold, and for each base provenance superseded by a UN agency the
+    build has no row for."""
+    refusals = [
+        Refusal(
+            kind="un_exclusion_provenance_not_held",
+            subject=exclusion.series,
+            detail=(
+                f"{agency.provenance} excludes {exclusion.series} as superseded by "
+                f"{exclusion.dfo_provenance}, which DFO does not hold"
+            ),
+        )
+        for agency in registry.un_system
+        for exclusion in agency.exclusions
+        if exclusion.dfo_provenance not in dfo_provenances
+    ]
+    refusals.extend(
+        Refusal(
+            kind="un_successor_not_served",
+            subject=exclusion.provenance,
+            detail=(
+                f"{entry.source} excludes {exclusion.provenance} as superseded by "
+                f"{exclusion.successor}, which has no row in this build"
+            ),
+        )
+        for entry in registry.base
+        for exclusion in entry.exclusions or ()
+        if isinstance(exclusion, UnSupersededProvenance) and exclusion.successor not in un_rows
+    )
+    return refusals
+
+
+def successor_refusals(successors: Successors, mirror: UnMirror) -> list[Refusal]:
+    """A refusal for each successor row naming a variable `mirror` does not
+    admit, one of an excluded series or one the UN tables do not hold, and
+    for each superseded variable whose code and constraint pairs two UN
+    variables share."""
+    return [
+        *(
+            Refusal(
+                kind="un_successor_ambiguous",
+                subject=variable,
+                detail=(
+                    f"{len(matched)} variables of the successor agency hold {variable}'s "
+                    f"series code and constraint pairs: {list(matched)!r}"
+                ),
+            )
+            for variable, matched in successors.ambiguous.items()
+        ),
+        *(
+            Refusal(
+                kind="un_successor_not_held",
+                subject=variable,
+                detail=(
+                    f"{variable} has successor {successors.rows[variable]}, which is not an "
+                    "admitted variable of the build's UN tables"
+                ),
+            )
+            for variable in unheld_successors(successors.rows, mirror)
+        ),
+    ]
 
 
 def _un_rows(
@@ -857,10 +1053,7 @@ def _un_rows(
     by the registry's label, as the agency's parent Dataset on the UN
     deployment is the UN Statistics Division for every agency. An agency
     whose root group `undata/g/<segment>` is absent is refused."""
-    groups = {
-        agency.provenance: f"{_UN_ROOT_GROUP_PREFIX}{agency.segment}"
-        for agency in registry.un_system
-    }
+    groups = {agency.provenance: un_root_group(agency) for agency in registry.un_system}
     arcs = un_graph.node_arcs_many([*groups, *groups.values()], properties=("typeOf", "url"))
     rows: dict[str, ProvenanceRow] = {}
     for agency in registry.un_system:
@@ -935,19 +1128,38 @@ def _read_published(root: str) -> tuple[CataloguePointer | None, str | None]:
 
 @dataclass(frozen=True, slots=True)
 class _CarriedUn:
-    """The published build's UN rows and refused places, and the build that
-    last read them from the UN deployment."""
+    """The published build's UN rows and refused places, a reader of its UN
+    tables, their `un_mirror_key` (`None` when that build carried them
+    forward), and the build that last read all three from the UN deployment."""
 
     rows: Mapping[str, ProvenanceRow]
     blocked_places: frozenset[str]
+    read_mirror: Callable[[], UnMirror]
+    mirror_key: str | None
     from_build: str
+
+    def copied_mirror(self, key: str) -> UnMirror | None:
+        """The published UN tables when their key equals `key`, else `None`.
+        Unreadable tables are enumerated again."""
+        if self.mirror_key != key:
+            return None
+        try:
+            return self.read_mirror()
+        except CatalogueArtifactError as exc:
+            logger.warning("origin_catalogue: published UN tables unreadable, enumerating: %s", exc)
+            return None
 
     def stage(self, registry: Registry, *, reason: str, refusals: list[Refusal]) -> UnStage:
         """The carried rows of the agencies `registry` still lists, each
         keeping its own segment and taking the registry's current label,
-        with the carried refused places. A carried row whose segment is not
-        the registry's is refused, since no UN read has checked the new
-        segment's root group."""
+        with the carried refused places and the carried UN tables, whole. A
+        carried row whose segment is not the registry's is refused, since no
+        UN read has checked the new segment's root group. Carried UN tables
+        whose excluded series are not the registry's are refused, since
+        their variables were admitted under other exclusions, and so are
+        carried UN tables holding an agency segment the registry no longer
+        lists or lists under another provenance, since admission of a UN
+        candidate reads the tables."""
         rows: dict[str, ProvenanceRow] = {}
         for agency in registry.un_system:
             row = self.rows.get(agency.provenance)
@@ -968,28 +1180,68 @@ class _CarriedUn:
             rows[agency.provenance] = replace(
                 row, source=SourceRef(ref=agency.provenance, label=agency.label), name=agency.label
             )
+        try:
+            mirror = self.read_mirror()
+        except CatalogueArtifactError as exc:
+            raise CatalogueBuildError(
+                f"{reason}, and the published build's UN tables are unreadable: {exc}"
+            ) from exc
+        carried, current = mirror.exclusions, registry_exclusions(registry)
+        refusals.extend(
+            Refusal(
+                kind="un_carried_exclusions_mismatch",
+                subject=series,
+                detail=(
+                    f"the UN tables carried from build {self.from_build} exclude {series} as "
+                    f"superseded by {carried.get(series)!r}, and the registry names "
+                    f"{current.get(series)!r}"
+                ),
+            )
+            for series in sorted(carried.keys() | current.keys())
+            if carried.get(series) != current.get(series)
+        )
+        listed = {agency.segment: agency.provenance for agency in registry.un_system}
+        carried_provenance = {
+            row.segment: provenance for provenance, row in self.rows.items() if row.segment
+        }
+        refusals.extend(
+            Refusal(
+                kind="un_carried_agency_mismatch",
+                subject=segment,
+                detail=(
+                    f"the UN tables carried from build {self.from_build} hold agency segment "
+                    f"{segment!r} under provenance {carried_provenance.get(segment)!r}, and the "
+                    f"registry lists {listed.get(segment)!r} for it"
+                ),
+            )
+            for segment in sorted(mirror.agencies)
+            if listed.get(segment) is None or listed[segment] != carried_provenance.get(segment)
+        )
         return UnStage(
             rows=rows,
             blocked_places=self.blocked_places,
+            mirror=mirror,
+            mirror_source="carried",
             carried_forward=UnCarryForward(from_build=self.from_build, reason=reason),
         )
 
 
 def _published_carry(base_uri: str, *, key: str) -> tuple[BaseTables | None, _CarriedUn | None]:
     """What the published build can carry forward: its base tables when
-    their carry-forward key equals `key`, and its UN rows and refused
-    places. Only these outlive the call, so a base-table build does not hold
-    the whole published build in memory. Carried tables are re-encoded into
+    their carry-forward key equals `key`, and its UN rows, refused places
+    and UN tables. Only these outlive the call, and the UN tables are read
+    and decoded when a build takes them and not before, so a base-table
+    build does not hold the whole
+    published build in memory. Carried tables are re-encoded into
     the new build directory, so the new build does not reference the old
     one, which a later prune deletes."""
     try:
-        snapshot = load_catalogue(base_uri)
+        manifest, tables = load_tables(base_uri)
     except CatalogueArtifactError as exc:
         logger.warning("origin_catalogue: published build unreadable, building afresh: %s", exc)
         return None, None
-    tables = snapshot.tables
     base = None
-    if _published_base_tables_key(snapshot.manifest, tables) == key:
+    if _published_base_tables_key(manifest, tables) == key:
         base = BaseTables(
             base_variables=tables.base_variables,
             provenance_places=tables.provenance_places,
@@ -998,11 +1250,13 @@ def _published_carry(base_uri: str, *, key: str) -> tuple[BaseTables | None, _Ca
             scan_places=tables.scan_places,
             scan_levels=tables.scan_levels,
         )
-    earlier = snapshot.manifest.un_carried_forward
+    earlier = manifest.un_carried_forward
     un = _CarriedUn(
         rows={pid: row for pid, row in tables.provenances.items() if row.data_commons == UN_SYSTEM},
         blocked_places=tables.un_blocked_places,
-        from_build=snapshot.build_id if earlier is None else earlier.from_build,
+        read_mirror=lambda: read_un_mirror(base_uri, manifest),
+        mirror_key=_published_un_mirror_key(manifest),
+        from_build=manifest.build_id if earlier is None else earlier.from_build,
     )
     return base, un
 
@@ -1110,17 +1364,29 @@ def _un_stage_or_carried(
     registry: Registry,
     *,
     un_graph: UnGraph,
+    un_group_counts: UnGroupCounts,
     scan_places: Sequence[str],
     carried: _CarriedUn | None,
+    mirror_key: str,
     refusals: list[Refusal],
+    deadline: float,
 ) -> UnStage:
-    """The UN stage read afresh, or, when a UN read fails, the published
-    build's UN stage carried forward. Refusals from either land in
-    `refusals`. A failed read with no published build to carry from fails
-    the build."""
+    """The UN stage read afresh, or, when a UN read fails or the enumeration
+    is incomplete, the published build's UN stage carried forward. A fresh
+    stage copies the published UN tables when their key equals `mirror_key`.
+    Refusals from either land in `refusals`. With no published build to
+    carry from, either fails the build."""
     try:
         return read_un_stage(
-            registry, un_graph=un_graph, scan_places=scan_places, refusals=refusals
+            registry,
+            un_graph=un_graph,
+            un_group_counts=un_group_counts,
+            scan_places=scan_places,
+            refusals=refusals,
+            published_mirror=(
+                None if carried is None else lambda: carried.copied_mirror(mirror_key)
+            ),
+            deadline=deadline,
         )
     except UnReadError as exc:
         if carried is None:
@@ -1147,6 +1413,7 @@ def run(
     bq: BigQueryReader,
     graph: GraphClient,
     un_graph: UnGraph,
+    un_group_counts: UnGroupCounts,
     build_base_tables: BaseTablesBuilder,
     registry_raw: bytes,
     clock: Callable[[], float] = time.time,
@@ -1160,6 +1427,7 @@ def run(
         bq=bq,
         graph=graph,
         un_graph=un_graph,
+        un_group_counts=un_group_counts,
         build_base_tables=build_base_tables,
         registry_raw=registry_raw,
         clock=clock,
@@ -1173,6 +1441,7 @@ def _build(
     bq: BigQueryReader,
     graph: GraphClient,
     un_graph: UnGraph,
+    un_group_counts: UnGroupCounts,
     build_base_tables: BaseTablesBuilder,
     registry_raw: bytes,
     clock: Callable[[], float],
@@ -1196,12 +1465,14 @@ def _build(
         )
     week = iso_week(datetime.fromtimestamp(clock(), UTC))
     enumeration_code = source_digest(ENUMERATION_MODULES)
+    un_mirror_code = source_digest(UN_MIRROR_MODULES)
     inputs = identity_inputs(
         registry_digest=registry_digest,
         dfo_stamp=fingerprint.stamp,
         week=week,
         job_code=source_digest(JOB_MODULES),
         enumeration_code=enumeration_code,
+        un_mirror_code=un_mirror_code,
     )
     identity = identity_key(inputs)
 
@@ -1246,17 +1517,37 @@ def _build(
                 registry=registry,
                 admitted_base_provenances=base_rows,
                 dfo_provenances=stage.dfo_ids,
-                deadline=started + _MAX_RUN_SECONDS - _PUBLISH_RESERVE_SECONDS,
+                deadline=(
+                    started
+                    + _MAX_RUN_SECONDS
+                    - _PUBLISH_RESERVE_SECONDS
+                    - _UN_STAGE_RESERVE_SECONDS
+                ),
             )
         refusals = list(stage.refusals)
         un = _un_stage_or_carried(
             registry,
             un_graph=un_graph,
+            un_group_counts=un_group_counts,
             scan_places=base.scan_places,
             carried=carried_un,
+            mirror_key=un_mirror_key(
+                registry_digest=registry_digest, week=week, un_mirror_code=un_mirror_code
+            ),
             refusals=refusals,
+            deadline=started + _MAX_RUN_SECONDS - _PUBLISH_RESERVE_SECONDS,
+        )
+        refusals.extend(
+            un_registry_refusals(registry, dfo_provenances=dfo.provenances, un_rows=un.rows)
         )
         refusals.extend(sources_without_variables(stage.by_source, base))
+        successors = derive_successors(
+            registry,
+            withheld_variables=base.withheld_variables,
+            dfo_variables=dfo.variables,
+            mirror=un.mirror,
+        )
+        refusals.extend(successor_refusals(successors, un.mirror))
         if refusals:
             emit(
                 "origin_catalogue_job_refused",
@@ -1309,6 +1600,7 @@ def _build(
             scan_levels=base.scan_levels,
             dataset_facts=stage.dataset_facts,
             un_blocked_places=un.blocked_places,
+            superseded=successors.rows,
         )
         build = encode_build(
             tables,
@@ -1318,6 +1610,7 @@ def _build(
             identity_inputs=inputs,
             registry_hash=registry_digest,
             un_carried_forward=un.carried_forward,
+            un_mirror=un.mirror,
         )
         if not publish_build(
             settings.artifact_uri, build, expected_generation=published_generation
@@ -1340,6 +1633,14 @@ def _build(
             un_carried_from=(
                 un.carried_forward.from_build if un.carried_forward is not None else None
             ),
+            un_mirror=un.mirror_source,
+            un_row_counts=dict(build.manifest.un_mirror.row_counts),
+            un_resident_bytes=build.manifest.un_mirror.resident_bytes,
+            successors={
+                name: count
+                for name, count in asdict(successors).items()
+                if name not in {"rows", "ambiguous"}
+            },
             overlaps=len(build.manifest.overlaps),
             resident_bytes=build.manifest.resident_bytes,
             build_seconds=round(build.manifest.build_seconds, 1),
@@ -1375,13 +1676,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         user_agent=_USER_AGENT,
         observation_get_url_budget_bytes=UN_OBSERVATION_GET_URL_BUDGET_BYTES,
     )
-    with graph, un_graph:
+    un_site = UnSiteClient(
+        site_url=settings.un_site_url,
+        timeout=settings.graph_timeout_seconds,
+        user_agent=_USER_AGENT,
+    )
+    with graph, un_graph, closing(un_site):
         try:
             run(
                 settings,
                 bq=bq,
                 graph=graph,
                 un_graph=un_graph,
+                un_group_counts=un_site,
                 build_base_tables=build_base_tables,
                 registry_raw=packaged_registry().read_bytes(),
             )
@@ -1409,6 +1716,7 @@ if __name__ == "__main__":
 __all__ = [
     "ENUMERATION_MODULES",
     "JOB_MODULES",
+    "UN_MIRROR_MODULES",
     "BaseTablesBuilder",
     "CatalogueBuildError",
     "CatalogueGraph",
@@ -1434,4 +1742,7 @@ __all__ = [
     "run",
     "source_digest",
     "sources_without_variables",
+    "successor_refusals",
+    "un_mirror_key",
+    "un_registry_refusals",
 ]

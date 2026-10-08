@@ -372,6 +372,59 @@ def test_unit_request_cell_is_projected_via_as_json():
     assert json.loads(row["facet"])["unit"] == {"currency": "USD", "prices": "current"}
 
 
+def test_series_that_differ_only_in_a_composed_unit_stay_apart():
+    per_person = {"numerator": "USDollar", "denominator": {"stat_var": "dcid:Count_Person"}}
+    per_woman = {"numerator": "USDollar", "denominator": {"stat_var": "dcid:Count_Person_Female"}}
+    frame = build_frame(
+        role_keys=("recipient",),
+        rows=[
+            {
+                "stat_var": _STAT_VAR,
+                "recipient": "dcid:country/TGO",
+                "time_period": "2015",
+                "value": value,
+                "unit": unit,
+            }
+            for unit, value in ((per_person, 10.0), (per_woman, 20.0))
+        ],
+    )
+
+    rows = _rows(frame)
+
+    assert [json.loads(row["facet"])["unit"] for row in rows] == [per_person, per_woman]
+    assert [row["observations"] for row in rows] == [1, 1]
+
+
+def test_a_frame_mixing_all_four_unit_forms_keeps_one_series_per_unit():
+    units = [
+        None,
+        "USDollar",
+        {"currency": "USD", "prices": "current"},
+        {"numerator": "USDollar", "denominator": {"stat_var": "dcid:Count_Person"}},
+    ]
+    frame = build_frame(
+        role_keys=("recipient",),
+        rows=[
+            {
+                "stat_var": _STAT_VAR,
+                "recipient": "dcid:country/TGO",
+                "time_period": period,
+                "value": 1.0,
+                "unit": unit,
+            }
+            for unit in units
+            for period in ("2015", "2016")
+        ],
+    )
+
+    rows = _rows(frame)
+
+    assert sorted(
+        json.dumps(json.loads(row["facet"]).get("unit"), sort_keys=True) for row in rows
+    ) == sorted(json.dumps(unit, sort_keys=True) for unit in units)
+    assert [row["observations"] for row in rows] == [2] * 4
+
+
 def test_facet_json_has_sorted_keys_and_no_whitespace():
     frame = build_frame(
         role_keys=("recipient",),

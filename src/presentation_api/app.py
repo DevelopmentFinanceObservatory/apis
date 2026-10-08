@@ -5,7 +5,9 @@ Construction resolves the pinned catalogue to compute `capability_version` from 
 and loads the origin catalogue, whose snapshot each request binds. Live stores and credentials
 load in door lifespans. The fronting Data access proxy authenticates requests. A `cmp_` or
 `cps_` id grants read of a draft, and the write token its create returned grants write, so the
-doors take no caller or session.
+doors take no caller or session. The two render routes of `presentation_api.doors.render` are
+the exception. They admit the live-refresh principal the composition passes in, and refuse
+every caller when it passes none.
 
 The surface maps refusals to RFC 9457 problem details through the platform `Envelope`.
 """
@@ -19,6 +21,9 @@ from fastapi import FastAPI
 
 from assembler.catalogue import BakedReleaseRegistry
 from assembler.ports import FrameStore, ReleaseRegistry, RevisionStore
+from dataset_store.snapshot import SnapshotReader
+from datasets_api.live_refresh import LiveRefreshPrincipal
+from datasets_api.recipe_store import RecipeReader
 from dfo_platform.app import Surface
 from dfo_platform.doors import DoorContribution, combine_classifiers, flatten
 from origin_catalogue import bound_catalogue
@@ -41,9 +46,19 @@ def presentation_surface(
     revision_store: RevisionStore | None = None,
     frame_store: FrameStore | None = None,
     release_registry: ReleaseRegistry | None = None,
+    snapshot_reader: SnapshotReader | None = None,
+    recipe_reader: RecipeReader | None = None,
+    live_refresh: LiveRefreshPrincipal | None = None,
 ) -> Surface:
     """Build the Presentation `Surface`. Unset stores use live dependencies. Injected stores
     are shared across doors. The pinned release supplies the surface capability version.
+
+    `live_refresh` is the caller the render routes admit. `None`, the default, refuses every
+    call to them, as an empty principal does. `snapshot_reader` and `recipe_reader` are the
+    Datasets records those routes accept a target frame from: version records for a dataset
+    frame and recipes for a derived one. With no `frame_store` injected the components door
+    builds both over the datasets pool. With one injected, a reader left out accepts no frame
+    by its rule, so only the frame a revision is stored on renders.
     """
     effective_release_registry: ReleaseRegistry = (
         release_registry if release_registry is not None else BakedReleaseRegistry()
@@ -65,6 +80,9 @@ def presentation_surface(
             frame_store=frame_store,
             revision_store=revision_store,
             release_registry=effective_release_registry,
+            snapshot_reader=snapshot_reader,
+            recipe_reader=recipe_reader,
+            live_refresh=live_refresh,
         ),
         build_frames_door(frame_store=frame_store),
         build_release_door(release_registry=effective_release_registry),
