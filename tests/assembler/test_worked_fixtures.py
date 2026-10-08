@@ -34,11 +34,18 @@ def test_intent_variants_validate_against_strict_schema(release, catalogue_dir, 
     jsonschema.Draft202012Validator(release.intent_schemas[member]).validate(intent)
 
 
-@pytest.mark.parametrize("member", _MEMBERS)
+@pytest.mark.parametrize(
+    ("member", "fixture_name"),
+    [
+        *((member, "payload.json") for member in _MEMBERS),
+        ("stat_card", "payload_composed_unit.json"),
+        ("table", "payload_composed_unit.json"),
+    ],
+)
 def test_worked_payload_validates_against_envelope_and_component_schema(
-    release, catalogue_dir, member
+    release, catalogue_dir, member, fixture_name
 ):
-    payload = _read_json(catalogue_dir / "fixtures" / member / "payload.json")
+    payload = _read_json(catalogue_dir / "fixtures" / member / fixture_name)
 
     registry = component_registry(release)
     jsonschema.Draft202012Validator(release.envelope_schema, registry=registry).validate(payload)

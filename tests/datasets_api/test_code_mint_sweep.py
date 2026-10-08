@@ -58,6 +58,11 @@ _KNOWN_PASSTHROUGHS: frozenset[tuple[str, str | None, str]] = frozenset(
             "cause_from_recipe_error",
             "exc.cause",
         ),
+        (
+            "packages/dfo-data-tools/src/materialise/group_facets.py",
+            "_as_issue",
+            "exc.code",
+        ),
         # A codes-table entry's `code` is a data cell, not an error code.
         ("packages/dfo-data-tools/src/materialise/bundle_columns.py", "bundle_codes", "code"),
     }

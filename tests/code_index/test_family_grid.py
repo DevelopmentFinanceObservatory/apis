@@ -74,7 +74,10 @@ def test_the_index_rows_decide_the_family_of_every_grid_identity(name: str):
     """The named dataset's rows whose constraint properties lie within the identity's keys
     decide the outcome: the identity resolves to those that hold its bound values, refuses
     `SourceNotInFamily` when only another dataset has such rows, and is left to the graph
-    walk when none has. `index_family` answers the deciding query alike."""
+    walk when none has. `index_family` answers the deciding query alike. DAC1 and DAC2a
+    share the five-tuple of net disbursements as a share of GNI until DAC2a's recipient
+    denominators land (ONEcampaign/dfo-pipelines#271), so the packaged grid holds a shared
+    five-tuple with a denominator."""
     index = _INDEXES[name]()
     rows = {
         five_tuple: five_tuple_rows(index, five_tuple) for five_tuple in shared_five_tuples(index)

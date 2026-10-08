@@ -36,8 +36,9 @@ from search.render.tokens import sentence_from_plan
         ),
         (
             "entity_set_too_large",
-            "An entity named in this query resolved to more member entities than this "
-            "deployment reads in one request. Try naming a narrower entity.",
+            "This query names more places, counting the members of any group or region it "
+            "names, than this deployment reads in one request. Try naming fewer places or a "
+            "narrower group.",
         ),
         (
             "variable_not_resolved",

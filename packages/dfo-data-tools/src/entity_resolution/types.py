@@ -36,7 +36,11 @@ class Entity:
 
 @dataclass(frozen=True, slots=True)
 class Resolved:
+    """One graph-confirmed entity. `names_members` is true when the text resolved through a
+    query alias that declares it names the entity's members ("EU countries")."""
+
     entity: Entity
+    names_members: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,10 +50,13 @@ class Group:
     `members` are ordered by dcid. An empty held-member set returns `NotHeld`, even if `entity`
     exists. `entity` is the group's node, a confirmed `org.organisation` survivor, or `None`.
     Callers choose between `entity` and `members` based on role admission. Display text uses the
-    query wording, so this type has no separate `name` field."""
+    query wording, so this type has no separate `name` field. `names_members` is true when the
+    text resolved through a query alias that declares it names the group's members
+    ("EU countries")."""
 
     members: tuple[Entity, ...]
     entity: Entity | None
+    names_members: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,6 +144,7 @@ _KIND_BY_GRAPH_TYPE: dict[str, EntityKind] = {
     "ContinentalUnion": "continental_union",
     "Organization": "organisation",
     "DACRecipientUnallocatedByCountry": "aggregate",
+    "DACUnspecifiedParty": "aggregate",
     "State": "place_other",
     "City": "place_other",
     "AdministrativeArea": "place_other",

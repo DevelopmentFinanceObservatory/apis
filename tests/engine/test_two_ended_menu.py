@@ -4,14 +4,19 @@ A subject-only shape has one subject slot, so it cannot hold an origin and a des
 at once, and `place_roles.bind_place_roles` refuses it ``role_incompatible``. When the
 query's places name both ends and a role-bearing shape survives the score floor,
 `_phase_prune_and_rank` drops subject-only shapes before the bind menu is built
-(`subject_shapes_refused`). A query
-naming one end or none keeps every shape on the menu. The fixtures mirror "Kenya's debt to
+(`subject_shapes_refused`). A query naming one end or none keeps every shape on the menu.
+The fixtures mirror "Kenya's debt to
 China" on the dev graph: a subject-only government debt series outranks the by-creditor
 series that declares both roles.
 
 A role-bearing shape that declares no role on an axis the query needs, a directed place's
 or an operation's, leaves the menu the same way (`lacks_query_axis`): a creditor-only
 series, ranked first, cannot hold "to Kenya" or rank debtors.
+
+The converse holds once the per-vocabulary readings exist (`without_unasked_axes`). A
+role-bearing shape publishing on an axis the query neither needs nor opens leaves for one
+that reads every query phrase it reads without that axis, so "aid from France" reads DAC1's
+donor totals over CRS flows by recipient.
 
 An axis the query asks every member of removes a shape only when the code index carries
 the shape and another role-bearing shape declares the axis (`without_open_axis_gaps`). The
@@ -54,6 +59,24 @@ _CRS_SV = (
 _DAC1_SV = "Amount_FinancialFlow_Gross_Disbursement_DAC1AidType1010_Nominal"
 # One of the two DAC1 rows that hold a recipient beside the donor.
 _DAC1_FLOW_SV = "Amount_FinancialFlow_Net_Disbursement_DAC1AidType8863_Nominal"
+_DAC1_MULTILATERAL_SV = "Amount_FinancialFlow_Gross_Disbursement_DAC1AidType2000_Nominal"
+_DAC2A_IMPUTED_SV = "AttributedAmount_FinancialFlow_Gross_Disbursement_DAC2aAidType106_Nominal"
+_DAC2A_ODA_SV = "Amount_FinancialFlow_Gross_Disbursement_DAC2aAidType206_Nominal"
+_DEU = "country/DEU"
+_NOR = "country/NOR"
+_JPN = "country/JPN"
+_CRS_COMMITMENT_SV = (
+    "Amount_FinancialObligation_Commitment_CRSTypeOfFlow10_CRSTypeOfFinance110_"
+    "CRSPurposeCode11110_Nominal"
+)
+_SECTORS_SV = (
+    "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_"
+    "CRSPurposeCode11220_Nominal"
+)
+_CRS_GRANT_EQUIVALENT_SV = (
+    "GrantEquivalent_FinancialFlow_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_"
+    "CRSPurposeCode99810_Nominal"
+)
 
 
 _ONE_END_DATASET = "provenance/TwoEndedMenu"
@@ -102,6 +125,7 @@ def _one_end_index() -> CodeIndex:
                 description="A test table.",
                 opt_in=False,
                 absent_observation="zero",
+                account="provider",
                 rank=0,
                 invariants={},
             ),
@@ -161,11 +185,20 @@ _NODES = {
     _CRS_SV: _index_row_node(_CRS_SV),
     _DAC1_SV: _index_row_node(_DAC1_SV),
     _DAC1_FLOW_SV: _index_row_node(_DAC1_FLOW_SV),
+    _DAC1_MULTILATERAL_SV: _index_row_node(_DAC1_MULTILATERAL_SV),
+    _DAC2A_IMPUTED_SV: _index_row_node(_DAC2A_IMPUTED_SV),
+    _DAC2A_ODA_SV: _index_row_node(_DAC2A_ODA_SV),
+    _CRS_GRANT_EQUIVALENT_SV: _index_row_node(_CRS_GRANT_EQUIVALENT_SV),
+    _SECTORS_SV: _index_row_node(_SECTORS_SV),
+    _CRS_COMMITMENT_SV: _index_row_node(_CRS_COMMITMENT_SV),
     _PROVIDER_ROW.dcid: _index_row_node(_PROVIDER_ROW),
     _RECIPIENT_ROW.dcid: _index_row_node(_RECIPIENT_ROW),
     _FRA: {"label": "France", "type": "Country"},
     _KEN: {"label": "Kenya", "type": "Country"},
     _CHN: {"label": "China", "type": "Country"},
+    _DEU: {"label": "Germany", "type": "Country"},
+    _NOR: {"label": "Norway", "type": "Country"},
+    _JPN: {"label": "Japan", "type": "Country"},
 }
 
 
@@ -205,7 +238,14 @@ def _resolve(
                 "cosine_scores": [score for _sv, score in recalled],
             }
         },
-        resolve={"Kenya": _KEN, "China": _CHN, "France": _FRA},
+        resolve={
+            "Kenya": _KEN,
+            "China": _CHN,
+            "France": _FRA,
+            "Germany": _DEU,
+            "Norway": _NOR,
+            "Japan": _JPN,
+        },
         obs={},
     )
     coverage = FakeCoverageService(
@@ -353,9 +393,9 @@ def test_an_open_axis_keeps_a_shape_the_index_does_not_carry(
             [(_DAC1_SV,), (_SUBJECT_SV,)],
             id="beside-a-subject-only-shape",
         ),
-        pytest.param(
-            frozenset(), (_DAC1_SV, _CRS_SV), [(_DAC1_SV,), (_CRS_SV,)], id="no-open-axis"
-        ),
+        # With no recipient asked for, the CRS flow publishes on an axis the query does not
+        # name and DAC1 reads the query as well without it (`without_unasked_axes`).
+        pytest.param(frozenset(), (_DAC1_SV, _CRS_SV), [(_DAC1_SV,)], id="no-open-axis"),
     ],
 )
 def test_an_open_axis_removes_an_index_shape_only_for_one_declaring_it(
@@ -366,8 +406,8 @@ def test_an_open_axis_removes_an_index_shape_only_for_one_declaring_it(
 ) -> None:
     """ "Aid from France to every recipient" recalls a DAC1 shape first. Its dataset
     declares no recipient, whichever member recall confirmed, so it leaves for the CRS flow
-    that lists recipients, and stays when no role-bearing shape does or no recipient is
-    asked for."""
+    that lists recipients, and stays when no role-bearing shape does. With no recipient
+    asked for, the CRS flow leaves instead."""
     _result, menu = _resolve(
         monkeypatch,
         "aid from France",
@@ -405,3 +445,154 @@ def test_two_open_axes_keep_the_index_shape_declaring_the_destination(
         )
 
     assert menu == [(_RECIPIENT_ROW.dcid,)]
+
+
+@pytest.mark.parametrize(
+    ("query", "entities", "variable", "recalled", "expected"),
+    [
+        # DAC1 publishes donor totals and CRS each donor's flows by recipient. Both read
+        # "aid" alike, so the query naming no recipient reads DAC1's totals.
+        pytest.param(
+            "aid from France",
+            ["France"],
+            "aid",
+            (_CRS_SV, _DAC1_SV),
+            [(_DAC1_SV,)],
+            id="donor-only",
+        ),
+        pytest.param(
+            "aid worldwide", [], "aid", (_CRS_SV, _DAC1_SV), [(_DAC1_SV,)], id="worldwide"
+        ),
+        # France may be the donor or the recipient, so no axis is unasked.
+        pytest.param(
+            "France aid",
+            ["France"],
+            "aid",
+            (_CRS_SV, _DAC1_SV),
+            [(_CRS_SV,), (_DAC1_SV,)],
+            id="undirected-place",
+        ),
+        # DAC1 reads "multilateral ODA" and DAC2a "imputed multilateral ODA", so DAC1 does
+        # not read as much of the query and DAC2a's imputed table stays.
+        pytest.param(
+            "imputed multilateral ODA from Germany",
+            ["Germany"],
+            "imputed multilateral ODA",
+            (_DAC2A_IMPUTED_SV, _DAC1_MULTILATERAL_SV),
+            [(_DAC2A_IMPUTED_SV,), (_DAC1_MULTILATERAL_SV,)],
+            id="imputed-from-donor",
+        ),
+        # No longer label matches, and DAC2a's imputed code reads "imputed" through its
+        # declared synonym, which DAC1's donor totals do not read.
+        pytest.param(
+            "imputed aid from Norway",
+            ["Norway"],
+            "imputed aid",
+            (_DAC2A_IMPUTED_SV, _DAC1_SV),
+            [(_DAC2A_IMPUTED_SV,), (_DAC1_SV,)],
+            id="vacuous-words",
+        ),
+        # "Grant equivalent" names the grant-equivalent five-tuple, which DAC1's donor
+        # disbursements do not read, so the CRS grant equivalents the query names stay.
+        pytest.param(
+            "grant equivalent ODA from France",
+            ["France"],
+            "grant equivalent ODA",
+            (_CRS_GRANT_EQUIVALENT_SV, _DAC1_SV),
+            [(_CRS_GRANT_EQUIVALENT_SV,), (_DAC1_SV,)],
+            id="measure-word",
+        ),
+        # A query naming no measure reads nothing on any table, so DAC1's donor totals displace
+        # a role-bearing table of another five-tuple too, in either recall order.
+        *(
+            pytest.param(
+                query,
+                entities,
+                "aid",
+                recalled,
+                [(_DAC1_SV,)],
+                id=f"{row_id}-{rival_id}-{'rival' if recalled[0] != _DAC1_SV else 'dac1'}-first",
+            )
+            for query, entities, row_id in (
+                ("aid from France", ["France"], "donor-only"),
+                ("aid worldwide", [], "worldwide"),
+            )
+            for rival, rival_id in (
+                (_DAC2A_IMPUTED_SV, "dac2a-imputed"),
+                (_SECTORS_SV, "imputed-sectors"),
+                (_CRS_GRANT_EQUIVALENT_SV, "crs-grant-equivalent"),
+            )
+            for recalled in ((rival, _DAC1_SV), (_DAC1_SV, rival))
+        ),
+        # CRS commitments, another five-tuple, read "ODA" as DAC1 does, so DAC1's donor
+        # totals displace them; "commitments" reads only on the commitments table.
+        pytest.param(
+            "ODA from Japan",
+            ["Japan"],
+            "ODA",
+            (_CRS_COMMITMENT_SV, _DAC1_SV),
+            [(_DAC1_SV,)],
+            id="oda-across-five-tuples",
+        ),
+        pytest.param(
+            "ODA commitments from Japan",
+            ["Japan"],
+            "ODA commitments",
+            (_CRS_COMMITMENT_SV, _DAC1_SV),
+            [(_CRS_COMMITMENT_SV,), (_DAC1_SV,)],
+            id="commitments-measure-word",
+        ),
+        # "Attributed to donors" names the attributed-amount measure, which the imputed table
+        # holds and DAC1's disbursements do not, so the imputed table stays.
+        pytest.param(
+            "aid attributed to donors via multilaterals",
+            [],
+            "aid attributed to donors via multilaterals",
+            (_SECTORS_SV, _DAC1_SV),
+            [(_SECTORS_SV,), (_DAC1_SV,)],
+            id="attributed-measure",
+        ),
+        # Both debt series are recalled samples the index does not carry, so the
+        # creditor-only one shows no more than its sample's axes and the by-creditor
+        # series stays.
+        pytest.param(
+            "debt worldwide",
+            [],
+            "debt",
+            (_FLOW_SV, _CREDITOR_SV),
+            [(_FLOW_SV,), (_CREDITOR_SV,)],
+            id="unindexed-sample",
+        ),
+        # The by-creditor debt series is a recalled sample the index does not carry, so it
+        # reads no index code and its axes are its sample's; it stays beside DAC1.
+        pytest.param(
+            "debt from France",
+            ["France"],
+            "debt",
+            (_FLOW_SV, _DAC1_SV),
+            [(_FLOW_SV,), (_DAC1_SV,)],
+            id="unindexed-leaver",
+        ),
+    ],
+)
+def test_a_shape_publishing_on_an_axis_the_query_does_not_ask_for_leaves_the_menu(
+    monkeypatch,
+    query: str,
+    entities: list[str],
+    variable: str,
+    recalled: tuple[str, ...],
+    expected: list[tuple[str, ...]],
+) -> None:
+    """A role-bearing shape leaves for one that declares fewer of the axes the query does
+    not ask for and reads every phrase it reads (`without_unasked_axes`), across
+    five-tuples, unless a named place has no direction. Both shapes are ones the index
+    carries."""
+    _result, menu = _resolve(
+        monkeypatch,
+        query,
+        entities,
+        variable=variable,
+        recalled=tuple((sv, 0.95 - 0.05 * rank) for rank, sv in enumerate(recalled)),
+    )
+
+    assert menu == expected

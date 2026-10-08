@@ -15,6 +15,23 @@ from search.models import DEPARTURE_ORDER, DepartureCode, OperationVerb, RoleAxi
 
 
 @dataclass(frozen=True)
+class UnservedMembers:
+    """The members of one set the request named that the data holds no values for, on a
+    role that binds every member of the set beside other places.
+
+    `label`, `entity_type` and `size` are the set's label, the graph type of its node and
+    its member count, `asked` the request's own words for it, and `entities` the names of
+    its members without values, in the answer's entity order.
+    """
+
+    label: str
+    entity_type: str | None
+    size: int
+    asked: str
+    entities: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class DepartureFact:
     """One way a part's answer differs from its request, for code.
 
@@ -30,10 +47,14 @@ class DepartureFact:
       broke the answer down by, or named the place on.
     - `entities` (`entity_unavailable`): the names of the entities the data holds no
       values for, in the answer's entity order.
-    - `group` and `group_size` (`entity_unavailable`, `group_read_as_members`): the label
-      and member count of the group the request named for the role, when it named one;
-      `asked` is then the request's own words for the group, `None` on a door that holds
-      none.
+    - `sets` (`entity_unavailable`): on a role that binds the members of sets the request
+      named beside other places, each set with the members the data holds no values for.
+      `entities` then names only the places the request named one by one.
+    - `group`, `group_size` and `group_type` (`entity_unavailable`,
+      `group_read_as_members`): the label, the member count and the graph type of the
+      node (`EntityGroup.entity_type`) of the group the request named for the role, when
+      it named one; `asked` is then the request's own words for the group, `None` on a
+      door that holds none.
     - `sources` (`entity_unavailable`): the names of sources that hold values for the
       entities but that Search does not read, because the origin registry withholds them.
     - `latest_years` (`entity_unavailable`): on a `latest` request, the first and last
@@ -68,8 +89,10 @@ class DepartureFact:
     verb: OperationVerb | None = None
     over: RoleAxis | None = None
     entities: tuple[str, ...] = ()
+    sets: tuple[UnservedMembers, ...] = ()
     group: str | None = None
     group_size: int | None = None
+    group_type: str | None = None
     sources: tuple[str, ...] = ()
     latest_years: tuple[int, int] | None = None
     readings: bool = False

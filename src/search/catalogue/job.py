@@ -67,6 +67,7 @@ from artifact_publication.jobs import (
     release_lease,
 )
 from artifact_publication.uri import ArtifactUriError
+from code_index.shared import get_index
 from dc_graph import GraphReadError
 from dfo_platform.build import build_commit
 from origin_catalogue import bound_catalogue
@@ -327,7 +328,9 @@ async def _assemble(
         except PresenceRefusal as refusal:
             _drop(example, reason=refusal.reason, detail=refusal.detail)
 
-    counted = catalogue_counts(catalogue=catalogue, coverage=covered.index)
+    counted = catalogue_counts(
+        catalogue=catalogue, coverage=covered.index, datasets=get_index().datasets
+    )
     names = place_names(sorted(counted.places))
 
     bounded = _bounded(resolve, limit=settings.max_concurrency)

@@ -20,6 +20,7 @@ from dc_graph import (
     GraphClient,
     GraphDeadlineExceededError,
     GraphReadError,
+    parse_arcs,
 )
 from graph_generation import FakeGeneration
 from origin_catalogue import (
@@ -40,7 +41,8 @@ from origin_catalogue.graph import (
     build_graph_client,
     is_un_dcid,
 )
-from tests.origin_catalogue.fake_catalogue import restrictive_catalogue
+from origin_catalogue.topic_walk import walk_topics
+from tests.origin_catalogue.fake_catalogue import restrictive_catalogue, un_mirror, un_variable
 
 _OURS_HOST = "graph.example.org"
 _UN_HOST = "un.example.org"
@@ -56,6 +58,28 @@ _GDP = "Amount_EconomicActivity_GrossDomesticProduction_Nominal"
 _CRS_VARIABLE = "Amount_FinancialFlow_Gross_Disbursement_Nominal_ODA"
 _UN_MORTALITY = "undata/who/MORT_U5_RATE"
 _UN_AGE = "undataAge"
+_UN_SERIES = "undata/who/SERIES-MORT_U5_RATE"
+_UN_MORTALITY_FEMALE = "undata/who/MORT_U5_RATE.SEX--F"
+_UN_SEX = "undataSex"
+_UN_FEMALE = "undata/SEX-F"
+_UN_TOPIC = "undata/topic/who/MORT_U5_RATE"
+_UN_AID = "undata/who/ODA_1_3"
+_UN_AID_SERIES = "undata/who/SERIES-ODA_1_3"
+_UN_UNIT = "undata/UNIT_MEASURE-PT"
+
+_UN_TABLES = un_mirror(
+    {
+        _UN_MORTALITY: un_variable(_UN_SERIES, name="Under-five mortality"),
+        _UN_MORTALITY_FEMALE: un_variable(
+            _UN_SERIES,
+            name="Under-five mortality [Sex=Female]",
+            constraints={_UN_SEX: ("Sex", _UN_FEMALE, "Female")},
+        ),
+    },
+    excluded={_UN_AID: _UN_AID_SERIES},
+    topics={_UN_TOPIC: (_UN_MORTALITY, _UN_MORTALITY_FEMALE)},
+    superseded_by=_CRS,
+)
 
 _URLS = {
     _CRS: "https://data-explorer.oecd.org/crs",
@@ -86,13 +110,15 @@ def _catalogue(
 ) -> CatalogueSnapshot:
     """Admits CRS (DFO), WDI (base) and WHO (UN). The US Census provenance is not admitted.
     `_GDP` holds data at KEN; KEN and USA are scan places, `geoId/06` is not. `overlaps` are
-    base variables DFO also holds."""
+    base variables DFO also holds. The UN tables hold `_UN_MORTALITY`, its by-sex variant
+    and a topic reaching both, and exclude `_UN_AID`."""
     return restrictive_catalogue(
         provenances=[_row(_CRS, DFO), _row(_WDI, BASE), _row(_UN_WHO, UN_SYSTEM, segment="who")],
         dfo_variables=[_CRS_VARIABLE, *overlaps],
         base_variables={_GDP: ([_WDI], ["country/KEN"]), _POPULATION: ([_WDI], ["country/USA"])},
         scan_places=["country/KEN", "country/USA"],
         un_blocked_places=un_blocked_places,
+        un_mirror=_UN_TABLES,
         un_system_enabled=un_system_enabled,
         build_id=build_id,
     )
@@ -299,7 +325,8 @@ def test_batch_reads_split_by_origin_and_merge_in_first_occurrence_order(
 
     assert list(labels) == [_UN_MORTALITY, "country/KEN", _UN_AGE, "country/USA"]
     assert graph.dcids_sent(_OURS_HOST) == ["country/KEN", "country/USA"]
-    assert graph.dcids_sent(_UN_HOST) == [_UN_MORTALITY, _UN_AGE]
+    # The UN tables name the variable, and no arc of theirs names `undataAge`.
+    assert graph.dcids_sent(_UN_HOST) == [_UN_AGE]
 
 
 def test_node_arcs_many_and_names_keep_every_requested_dcid_in_order(
@@ -417,6 +444,222 @@ def test_un_disabled_answers_un_dcids_empty_and_sends_them_nowhere(
 
     assert graph.on(_UN_HOST) == []
     assert not any(is_un_dcid(dcid) for dcid in graph.dcids_sent(_OURS_HOST))
+
+
+# -- UN node facts from the catalogue's UN tables --
+
+
+def test_a_un_variables_facts_come_from_the_un_tables_with_no_un_request(
+    graph: _Graph, client: OriginGraphClient, bind_catalogue
+) -> None:
+    bind_catalogue(_catalogue())
+    members = [_UN_MORTALITY, _UN_MORTALITY_FEMALE]
+
+    arcs = client.node_arcs_batch(members)
+    labels = client.node_labels_batch([*members, _UN_SEX, _UN_FEMALE, _UN_SERIES])
+
+    assert parse_arcs(arcs[_UN_MORTALITY_FEMALE] or {}, ["populationType", _UN_SEX, "name"]) == {
+        "populationType": (_UN_SERIES,),
+        _UN_SEX: (_UN_FEMALE,),
+        "name": ("Under-five mortality [Sex=Female]",),
+    }
+    assert client.node_arcs(_UN_MORTALITY) == arcs[_UN_MORTALITY]
+    assert labels == {
+        _UN_MORTALITY: "Under-five mortality",
+        _UN_MORTALITY_FEMALE: "Under-five mortality [Sex=Female]",
+        _UN_SEX: "Sex",
+        _UN_FEMALE: "Female",
+        _UN_SERIES: f"{_UN_SERIES} name",
+    }
+    assert client.node_label(_UN_FEMALE) == "Female"
+    assert client.node_types_batch([_UN_MORTALITY, _UN_TOPIC, _UN_FEMALE]) == {
+        _UN_MORTALITY: "StatisticalVariable",
+        _UN_TOPIC: "Topic",
+        _UN_FEMALE: "Enumeration",
+    }
+    assert client.node_type(_UN_MORTALITY) == "StatisticalVariable"
+    assert client.node_observation_properties_batch(members) == dict.fromkeys(members, ())
+    assert client.node_arcs_many(members, properties=["constraintProperties"]) == {
+        _UN_MORTALITY: {"constraintProperties": ()},
+        _UN_MORTALITY_FEMALE: {"constraintProperties": (_UN_SEX,)},
+    }
+    assert client.node_arc_values(_UN_MORTALITY_FEMALE, properties=[_UN_SEX, "unit"]) == {
+        _UN_SEX: (_UN_FEMALE,),
+        "unit": (),
+    }
+    assert client.node_names_many([_UN_MORTALITY]) == {_UN_MORTALITY: ("Under-five mortality",)}
+    assert client.exists(_UN_MORTALITY)
+    assert client.exists_batch([*members, _UN_AID, _UN_TOPIC]) == {*members, _UN_TOPIC}
+    assert graph.on(_UN_HOST) == []
+
+
+@pytest.mark.parametrize(
+    ("filters", "max_results", "expected"),
+    [
+        pytest.param({}, 10, ((_UN_MORTALITY, _UN_MORTALITY_FEMALE), False), id="whole_series"),
+        pytest.param(
+            {_UN_SEX: _UN_FEMALE}, 10, ((_UN_MORTALITY_FEMALE,), False), id="bound_breakdown"
+        ),
+        pytest.param({_UN_SEX: "undata/SEX-M"}, 10, ((), False), id="value_no_member_holds"),
+        pytest.param({"statType": "medianValue"}, 10, ((), False), id="other_stat_type"),
+        pytest.param({}, 1, ((_UN_MORTALITY,), True), id="past_the_cap"),
+        pytest.param({}, 2, ((_UN_MORTALITY, _UN_MORTALITY_FEMALE), False), id="at_the_cap"),
+    ],
+)
+def test_a_un_series_subjects_come_from_the_un_tables_with_no_request(
+    graph: _Graph,
+    client: OriginGraphClient,
+    bind_catalogue,
+    filters: dict[str, str],
+    max_results: int,
+    expected: tuple[tuple[str, ...], bool],
+) -> None:
+    """The series decides the read whether it is the lead or a filter value."""
+    bind_catalogue(_catalogue())
+
+    as_filter = client.node_subjects(
+        "value",
+        property="measuredProperty",
+        filters={"populationType": _UN_SERIES, **filters},
+        max_results=max_results,
+    )
+    as_lead = client.node_subjects(
+        _UN_SERIES,
+        property="populationType",
+        filters={"measuredProperty": "value", **filters},
+        max_results=max_results,
+    )
+
+    assert (as_filter.dcids, as_filter.truncated) == expected
+    assert as_lead == as_filter
+    assert graph.requests == []
+
+
+def test_an_excluded_un_series_has_no_subjects_and_sends_no_request(
+    graph: _Graph, client: OriginGraphClient, bind_catalogue
+) -> None:
+    bind_catalogue(_catalogue())
+
+    page = client.node_subjects(
+        "value",
+        property="measuredProperty",
+        filters={"populationType": _UN_AID_SERIES},
+        max_results=10,
+    )
+
+    assert (page.dcids, page.truncated) == ((), False)
+    assert graph.requests == []
+
+
+def test_subject_reads_naming_no_series_the_un_tables_hold_route_as_before(
+    graph: _Graph, client: OriginGraphClient, bind_catalogue
+) -> None:
+    """A base series goes to our mixer, and a UN name beside no held series to the UN."""
+    bind_catalogue(_catalogue())
+
+    client.node_subjects(
+        "count", property="measuredProperty", filters={"populationType": "Person"}, max_results=10
+    )
+    assert [json.loads(r.content)["nodes"] for r in graph.on(_OURS_HOST)] == [["count"]]
+    assert graph.on(_UN_HOST) == []
+
+    client.node_subjects(
+        "value",
+        property="measuredProperty",
+        filters={"populationType": _UN_DEBT_SERIES, _UN_SEX: _UN_FEMALE},
+        max_results=10,
+    )
+    client.node_subjects(_UN_FEMALE, property=_UN_SEX, max_results=10)
+    assert len(graph.on(_UN_HOST)) == 2
+    assert len(graph.on(_OURS_HOST)) == 1
+
+
+def test_a_batch_of_series_leads_reads_only_the_ones_the_un_tables_lack(
+    graph: _Graph, client: OriginGraphClient, bind_catalogue
+) -> None:
+    bind_catalogue(_catalogue())
+
+    pages = client.node_subjects_many(
+        [_UN_SERIES, "Person", _UN_AID_SERIES], property="populationType", max_results=1
+    )
+
+    assert pages == {
+        _UN_SERIES: ((_UN_MORTALITY,), "capped"),
+        "Person": ((), "complete"),
+        _UN_AID_SERIES: ((), "complete"),
+    }
+    assert graph.dcids_sent(_OURS_HOST) == ["Person"]
+    assert graph.on(_UN_HOST) == []
+
+
+def test_a_un_topic_walks_to_its_table_leaves_with_no_un_request(
+    graph: _Graph, client: OriginGraphClient, bind_catalogue
+) -> None:
+    bind_catalogue(_catalogue())
+
+    walked = walk_topics([_UN_TOPIC], graph=client)
+
+    assert walked == {_UN_TOPIC: [_UN_MORTALITY, _UN_MORTALITY_FEMALE]}
+    assert graph.on(_UN_HOST) == []
+
+
+def test_an_excluded_un_variable_reads_as_an_absent_node_and_holds_no_data(
+    graph: _Graph, client: OriginGraphClient, bind_catalogue
+) -> None:
+    graph.labels[_UN_AID] = "Aid for health"
+    graph.facets[(_UN_AID, "country/KEN")] = [_UN_WHO]
+    bind_catalogue(_catalogue())
+
+    assert client.node_arcs_batch([_UN_AID]) == {_UN_AID: None}
+    assert client.node_labels_batch([_UN_AID]) == {}
+    assert client.node_arcs_many([_UN_AID], properties=["name"]) == {_UN_AID: None}
+    assert client.node_observation_properties_batch([_UN_AID]) == {_UN_AID: ()}
+    assert not client.exists(_UN_AID)
+    assert client.observation_facets_batch([_UN_AID], ["country/KEN"]) == {
+        _UN_AID: {"country/KEN": []}
+    }
+    assert client.entities_with_data([_UN_AID], ["country/KEN"]) == []
+    assert client.entities_with_data_by_variable([_UN_AID], ["country/KEN"]) == {_UN_AID: []}
+    assert graph.on(_UN_HOST) == []
+
+
+def test_withheld_at_names_every_provenance_holding_an_excluded_un_variable(
+    graph: _Graph, client: OriginGraphClient, bind_catalogue
+) -> None:
+    graph.facets[(_UN_AID, "country/KEN")] = [_UN_WHO]
+    bind_catalogue(_catalogue())
+
+    assert client.withheld_at([_UN_AID], ["country/KEN", "country/USA"]) == {
+        "country/KEN": (_UN_WHO,)
+    }
+
+
+def test_a_un_dcid_outside_the_un_tables_is_read_live_as_a_node_and_never_for_data(
+    graph: _Graph, client: OriginGraphClient, bind_catalogue
+) -> None:
+    unknown = "undata/who/NOT_IN_THE_BUILD"
+    graph.labels[_UN_UNIT] = "Percent"
+    graph.facets[(unknown, "country/KEN")] = [_UN_WHO]
+    bind_catalogue(_catalogue())
+
+    assert client.node_labels_batch([_UN_UNIT]) == {_UN_UNIT: "Percent"}
+    assert graph.dcids_sent(_UN_HOST) == [_UN_UNIT]
+    assert client.observation_facets_batch([unknown], ["country/KEN"]) == {
+        unknown: {"country/KEN": []}
+    }
+    assert client.withheld_at([unknown], ["country/KEN"]) == {}
+    assert graph.observation_requests(_UN_HOST) == []
+
+
+def test_with_the_un_off_the_un_tables_answer_nothing(
+    graph: _Graph, client: OriginGraphClient, bind_catalogue
+) -> None:
+    bind_catalogue(_catalogue(un_system_enabled=False))
+
+    assert client.node_arcs_batch([_UN_MORTALITY]) == {_UN_MORTALITY: None}
+    assert client.node_labels_batch([_UN_MORTALITY, _UN_FEMALE]) == {}
+    assert client.node_type(_UN_TOPIC) is None
+    assert graph.on(_UN_HOST) == []
 
 
 # -- admission and the domain filter --

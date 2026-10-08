@@ -1,6 +1,8 @@
 """One shape's place context: how it binds the places, where it is probed and read, and the
 place warnings it carries.
 
+`UnsettledPlace` holds a shape's places before its place sets settle, and `settle_sets`
+reads the Spec once per reading it has to compare and returns the context it settles to.
 `place_context` builds the context from a shape's bound places and makes no graph request.
 `PlaceContext.settled` gives the context an answer is read over once materialisation has
 run, and `settled_shape` the shape it is read under. `default_scope_stat_vars` chooses the
@@ -12,30 +14,38 @@ context, and `install_place_warnings` makes one context's the answer's own.
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 from materialise.place_scope import DefaultPlaceScope, DefaultPresence
 from materialise.roles import axis_noun
+from search.engine.config import settings
 from search.engine.departures import WarningKey, direction_discarded, warning_key
 from search.engine.errors import DefaultScopeIndexSourcedError
-from search.engine.region.codes import (
-    DIRECTION_DISCARDED,
-    PLACE_SCOPE_DEFAULTED,
-    STANDARD_PROBE_PLACES_CLAMPED,
-)
+from search.engine.region.codes import DIRECTION_DISCARDED, PLACE_SCOPE_DEFAULTED
 from search.engine.region.convertibility import survivor_declared_roles
-from search.engine.region.decisions import place_scope_defaulted_warning, standard_probe_union
-from search.engine.region.place_roles import PlaceRoles, where_binding
+from search.engine.region.decisions import place_scope_defaulted_warning
+from search.engine.region.place_roles import (
+    PlaceAssignment,
+    PlaceLists,
+    PlaceRoles,
+    place_order,
+    settle_place_sets,
+    settled_roles,
+    undecided_sets,
+    where_binding,
+)
+from search.engine.region.place_set import PlaceNode
 from search.engine.retrieval.bound_values import shape_member_facts, shape_query
-from search.engine.shape import ShapeDraft, is_role_bearing
+from search.engine.retrieval.retrieve import Materialised
+from search.engine.retrieval.standard import FacetBatch
+from search.engine.shape import ShapeDraft, is_role_bearing, role_names_by_axis
 from search.heading.departure_fact import DepartureFact
-from search.models import Warning
+from search.models import EntityRoleKey, Warning
 
 if TYPE_CHECKING:
     from search.engine.bind import SlotBindingDraft
-    from search.engine.retrieval.retrieve import Materialised
 
 # Where a context's probe places come from: the shape's bound places, the members a
 # role-bearing shape's materialisation discovered, or a default scope, which is every place
@@ -43,9 +53,7 @@ if TYPE_CHECKING:
 PlaceMode = Literal["bound", "discovered", "every_place", "countries_fallback"]
 
 # The codes of the place warnings a context carries (`PlaceContext.warnings`).
-PLACE_WARNING_CODES = frozenset(
-    {DIRECTION_DISCARDED, STANDARD_PROBE_PLACES_CLAMPED, PLACE_SCOPE_DEFAULTED}
-)
+PLACE_WARNING_CODES = frozenset({DIRECTION_DISCARDED, PLACE_SCOPE_DEFAULTED})
 
 
 @dataclass(frozen=True)
@@ -55,12 +63,12 @@ class PlaceContext:
     # The shape's binding of the places: flow axes, role entities, wire roles, where places,
     # the observation fallback place and dropped directions.
     roles: PlaceRoles
-    # Where the shape is probed and read. `None` probes its one bound place unexpanded, or
-    # no place on a role-bearing shape with no destination.
+    # Where the shape is probed and read: its where places when it binds several, a
+    # discovered scope's members, or a default scope's places. `None` probes its one bound
+    # place, or no place on a role-bearing shape with no destination.
     probe_dcids: tuple[str, ...] | None
     mode: PlaceMode
-    # `PLACE_SCOPE_DEFAULTED` on a default scope, `STANDARD_PROBE_PLACES_CLAMPED` on a
-    # clamped probe union, else `None`.
+    # `PLACE_SCOPE_DEFAULTED` on a default scope, else `None`.
     scope_warning: Warning | None
 
     @property
@@ -247,9 +255,11 @@ def empty_place_context() -> PlaceContext:
     )
 
 
-def takes_default_scope(shape: ShapeDraft, roles: PlaceRoles) -> bool:
-    """Whether `shape` is probed over a default scope: it is subject-only and binds no place."""
-    return not roles.where_dcids and not is_role_bearing(shape)
+def takes_default_scope(shape: ShapeDraft, roles: PlaceRoles | PlaceAssignment) -> bool:
+    """Whether `shape` is probed over a default scope: it is subject-only and `roles`, its
+    binding of the query's places or its assignment of them, names no place."""
+    named = roles.where_dcids if isinstance(roles, PlaceRoles) else roles.sets
+    return not named and not is_role_bearing(shape)
 
 
 def direction_discarded_warnings(roles: PlaceRoles) -> tuple[Warning, ...]:
@@ -303,9 +313,7 @@ def place_context(
     roles: PlaceRoles,
     *,
     stat_vars: Sequence[str],
-    children: Mapping[str, list[str]],
     presence: DefaultPresence | None,
-    max_probe_places: int,
 ) -> PlaceContext:
     """Build `shape`'s place context from its bound places.
 
@@ -314,13 +322,9 @@ def place_context(
     Datasets mint serves for it (`state.served_stat_vars`), each of which is read at its own
     scope; the context carries a `PLACE_SCOPE_DEFAULTED` warning. It needs `presence`, and
     raises `AssertionError` without it. Materialisation narrows it to the scopes of the
-    StatVars the answer serves (`settled`). One bound place probes its expanded members
-    from `children`, or itself unexpanded when it has none.
-    Several probe the deduplicated union of their expansions, capped at `max_probe_places`
-    with a `STANDARD_PROBE_PLACES_CLAMPED` warning (`standard_probe_union`). A role-bearing
-    shape with no bound destination probes no place and takes no default scope.
-
-    `children` maps a place dcid to its expanded members.
+    StatVars the answer serves (`settled`). Any other shape is probed at the where places
+    it binds. A role-bearing shape with no bound destination probes no place and takes no
+    default scope.
     """
     where = roles.where_dcids
     if takes_default_scope(shape, roles):
@@ -335,18 +339,150 @@ def place_context(
             mode=_default_scope_mode(scope),
             scope_warning=place_scope_defaulted_warning(scope),
         )
-    if len(where) <= 1:
-        members = children.get(where[0]) if where else None
-        return PlaceContext(
-            roles=roles,
-            probe_dcids=None if members is None else tuple(members),
-            mode="bound",
-            scope_warning=None,
+    probe_dcids = None if len(where) <= 1 else tuple(where)
+    return PlaceContext(roles=roles, probe_dcids=probe_dcids, mode="bound", scope_warning=None)
+
+
+@dataclass(frozen=True)
+class UnsettledPlace:
+    """One shape's places before its place sets settle: its assignment of the query's sets
+    to its roles, and what the context of a settled reading is built from."""
+
+    shape: ShapeDraft
+    assignment: PlaceAssignment
+    # The role name and graph type pairs role admission admits, among
+    # `admission_questions`.
+    admitted: frozenset[tuple[str, str]] = frozenset()
+    # The StatVars and presence read a default scope is built from (`place_context`).
+    stat_vars: tuple[str, ...] = ()
+    presence: DefaultPresence | None = None
+
+    def _role_name(self, key: EntityRoleKey) -> str | None:
+        if key == "observationAbout":
+            return key
+        return role_names_by_axis(self.shape).get(key)
+
+    @property
+    def admission_questions(self) -> set[tuple[str, str]]:
+        """The role name and graph type pairs settling asks role admission about: each role
+        a set that holds members fills, with the node's type and the members' type
+        (`place_roles.set_choices`)."""
+        return {
+            (role, graph_type)
+            for place_set in self.assignment.distinct_sets
+            if place_set.members
+            for graph_type in (
+                *(() if place_set.node is None else (place_set.node.graph_type,)),
+                *(() if place_set.member_type is None else (place_set.member_type,)),
+            )
+            for key in self.assignment.roles_of(place_set)
+            if (role := self._role_name(key)) is not None
+        }
+
+    def _admits(self, key: EntityRoleKey, graph_type: str) -> bool:
+        return (self._role_name(key), graph_type) in self.admitted
+
+    @property
+    def decided(self) -> bool:
+        """Whether every set has one reading before the Spec is read
+        (`place_roles.undecided_sets`)."""
+        return not undecided_sets(self.assignment, admits=self._admits)
+
+    def context(self, places: PlaceLists) -> PlaceContext:
+        """The context of the shape bound to `places`."""
+        return place_context(
+            self.shape,
+            settled_roles(self.shape, self.assignment, places),
+            stat_vars=self.stat_vars,
+            presence=self.presence,
         )
-    dcids, clamped = standard_probe_union(where, children, max_probe_places=max_probe_places)
-    return PlaceContext(
-        roles=roles,
-        probe_dcids=tuple(dcids),
-        mode="bound",
-        scope_warning=clamped[0] if clamped else None,
-    )
+
+    def unread(self) -> PlaceContext:
+        """The context before the Spec is read, with each set the read decides at its
+        members. When the read decides none (`decided`) this is the settled context, and
+        places over the bound on the places a Spec binds raise `PlaceSetTooLargeError`."""
+        return self.context(
+            settle_place_sets(
+                self.assignment,
+                admits=self._admits,
+                has_data=lambda _places: False,
+                bound=settings().max_child_places if self.decided else None,
+            )
+        )
+
+    @property
+    def read_places(self) -> tuple[str, ...]:
+        """The places one facet read covers for a subject-only shape whose read decides a
+        set: the node and the members of each of its sets. Empty when no read decides a
+        set, on a role-bearing shape, whose data the coverage index holds, and when the
+        members exceed the bound on the places a Spec binds, so that a node holding no data
+        refuses the Spec with no read of them."""
+        if is_role_bearing(self.shape) or self.decided:
+            return ()
+        members = self.unread().roles.where_dcids
+        if len(members) > settings().max_child_places:
+            return ()
+        nodes = [
+            cast(PlaceNode, place_set.node).dcid
+            for place_set in undecided_sets(self.assignment, admits=self._admits)
+        ]
+        return tuple(place_order([*nodes, *members]))
+
+    def settle[T](
+        self, read: Callable[[PlaceContext, FacetBatch | None], T]
+    ) -> tuple[PlaceContext, T]:
+        """Settle the shape's sets (`place_roles.settle_place_sets`) and return the context
+        it settles to with the Spec's read there.
+
+        `read` is the Spec's own read in a context, which holds data when `holds_data` says
+        so. Every read shares one `FacetBatch` over `read_places`, so comparing a node
+        with its members adds no request. A read that raises propagates, and places over
+        the bound on the places a Spec binds raise `PlaceSetTooLargeError`.
+        """
+        read_places = self.read_places
+        batch = FacetBatch(read_places) if read_places else None
+        reads: dict[tuple[tuple[str, tuple[str, ...]], ...], tuple[PlaceContext, T]] = {}
+
+        def read_at(places: PlaceLists) -> tuple[PlaceContext, T]:
+            key = tuple(sorted(places.items()))
+            if key not in reads:
+                context = self.context(places)
+                reads[key] = (context, read(context, batch))
+            return reads[key]
+
+        places = settle_place_sets(
+            self.assignment,
+            admits=self._admits,
+            has_data=lambda places: holds_data(read_at(places)[1]),
+            bound=settings().max_child_places,
+        )
+        return read_at(places)
+
+
+def unread_context(place: PlaceContext | UnsettledPlace) -> PlaceContext:
+    """The context `place` has before its Spec is read: `place` itself once settled, else
+    `UnsettledPlace.unread`."""
+    return place.unread() if isinstance(place, UnsettledPlace) else place
+
+
+def holds_data(result: object) -> bool:
+    """Whether a Spec's read is a materialisation holding data in the years read, the one
+    test a set's node passes to bind (`UnsettledPlace.settle`)."""
+    return isinstance(result, Materialised) and result.has_data
+
+
+def settle_sets[T](
+    place: PlaceContext | UnsettledPlace, read: Callable[[PlaceContext, FacetBatch | None], T]
+) -> tuple[PlaceContext, T]:
+    """The context `place` settles to and the Spec's read there (`UnsettledPlace.settle`).
+    A context whose sets are settled is read as it stands."""
+    if isinstance(place, UnsettledPlace):
+        return place.settle(read)
+    return place, read(place, None)
+
+
+def with_where(bindings: Sequence[SlotBindingDraft], place: PlaceContext) -> list[SlotBindingDraft]:
+    """`bindings` with the where slot binding `place`'s bound places. A where binding
+    without a property gives way to them."""
+    kept = [b for b in bindings if not (b.axis == "where" and b.property_dcid is None)]
+    return kept if place.where is None else [*kept, place.where]

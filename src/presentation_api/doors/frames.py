@@ -127,10 +127,10 @@ def build_frames_door(
         try:
             if frame_store is None:
                 settings = PresentationSettings.from_env()
-                live_frame_store, live_graph = build_live_frame_store(settings=settings)
+                live = build_live_frame_store(settings=settings)
                 opened_dataset_pool = True
-                owned_graph = live_graph
-                deps.frame_store = live_frame_store
+                owned_graph = live.graph
+                deps.frame_store = live.frame_store
         except BaseException:
             _close_live_clients_built_here()
             raise

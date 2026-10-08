@@ -10,13 +10,13 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from search.engine.region.availability import _shape_group_key
-from search.engine.region.candidates import _Candidate, _materialise_alt_shapes
+from search.engine.region.candidates import _Alternate, _Candidate, _materialise_alt_shapes
 from search.engine.region.codes import ALTERNATES_UNEVALUATED, NEAR_NEIGHBOR_POOL_WIDENED
 from search.engine.region.near_neighbor import NEAR_NEIGHBOR_UNRESOLVED_MESSAGE
 from search.engine.region.phase_place_materialise import (
     _plan_admission,
     _read_alternates_presence,
-    _shape_place_contexts,
+    _unsettled_places,
     _walked_alternates,
 )
 from search.engine.region.state import AlternateUnevaluatedReason, ResolveState
@@ -65,11 +65,12 @@ class _AlternatesAdmission:
 
 async def _materialise_candidates(
     state: ResolveState, indices: list[int], *, group: Sequence[int]
-) -> tuple[dict[int, _Candidate], dict[int, AlternateUnevaluatedReason], bool]:
+) -> tuple[dict[int, _Candidate], dict[int, AlternateUnevaluatedReason], frozenset[int], bool]:
     """Materialise the capped shapes at `indices`, each in its own place context. Returns
     the candidates with data by index, in `indices` order, the indices left unevaluated for
-    want of a presence read, each with the reason, and whether a capped shape blocked the
-    fan-out, in which case `state.mat_result` holds its refusal.
+    want of a presence read, each with the reason, the indices dropped for the bound on the
+    places a Spec binds, and whether a capped shape blocked the fan-out, in which case
+    `state.mat_result` holds its refusal.
 
     A sibling that zero-observation re-election offered is taken as re-election materialised
     it (`state.sibling_candidates`) and is not read again: re-election probed it in the
@@ -79,7 +80,11 @@ async def _materialise_candidates(
     presence they need and the request has not read is read here, over those shapes and
     `group` (`_read_alternates_presence`), so only a shape that passed the admission guards
     and is about to be materialised can ask for a read. A shape whose read could not be
-    completed is left unevaluated and is neither materialised nor offered.
+    completed is left unevaluated and is neither materialised nor offered. Each shape
+    settles its own place sets on its own read (`_materialise_alt_shapes`). A shape whose
+    places exceed the bound on the places a Spec binds is dropped, as a shape the admission
+    guards reject is. It is not offered or counted as evaluated, since no read of the
+    places it would bind found it empty.
     """
     candidates = {i: state.sibling_candidates[i] for i in indices if i in state.sibling_candidates}
     walked = await _walked_alternates(
@@ -90,16 +95,19 @@ async def _materialise_candidates(
     shapes = {i: (alternate.shape, alternate.roles) for i, alternate in walked.items()}
     unevaluated = await _read_alternates_presence(state, shapes, group=group)
     unread = [i for i in walked if i not in unevaluated]
+    over_bound: frozenset[int] = frozenset()
     if unread:
-        places = _shape_place_contexts(
+        places = await _unsettled_places(
             state,
             [(walked[i].shape, walked[i].alternate.bindings, walked[i].roles) for i in unread],
             state.default_presence,
         )
+        refused: list[_Alternate] = []
         read, blocking_unsupported = await asyncio.to_thread(
             _materialise_alt_shapes,
             [walked[i].alternate for i in unread],
             places=places,
+            over_bound=refused,
             presence=state.default_presence,
             named_place_dcids=state.standard_place_dcids,
             graph=state.graph,
@@ -108,14 +116,17 @@ async def _materialise_candidates(
             deadline=state.deadline,
             coverage=state.coverage,
         )
+        over_bound = frozenset(
+            i for i in unread if any(walked[i].alternate is alternate for alternate in refused)
+        )
         if blocking_unsupported is not None:
             # A capped alternate keeps the ambiguous refusal intact across candidate ordering.
             state.mat_result = blocking_unsupported
-            return {}, unevaluated, True
+            return {}, unevaluated, over_bound, True
         # The role-class election can replace a shape, so a result maps back by its group.
         index_by_group = {_shape_group_key(walked[i].shape): i for i in unread}
         candidates.update({index_by_group[_shape_group_key(cand.shape)]: cand for cand in read})
-    return {i: candidates[i] for i in indices if i in candidates}, unevaluated, False
+    return {i: candidates[i] for i in indices if i in candidates}, unevaluated, over_bound, False
 
 
 def _drop_near_neighbor_tie(state: ResolveState) -> None:
@@ -166,6 +177,10 @@ async def admit_alternates(state: ResolveState) -> _AlternatesAdmission:
     with `alternates_unevaluated`. A fired tie then stays: its warning and its effect on
     confidence hold (`ResolveState.tie_unresolved`). No search widens past an unevaluated
     tied reading, since nothing read its data.
+
+    An alternate whose places exceed the bound on the places a Spec binds is dropped unread
+    and is not listed as rejected. A tie whose other reading is dropped this way is dropped
+    with it (`_drop_near_neighbor_tie`).
     """
     state.elected_has_data = (
         isinstance(state.mat_result, Materialised) and state.mat_result.has_data
@@ -188,13 +203,17 @@ async def admit_alternates(state: ResolveState) -> _AlternatesAdmission:
     unevaluated: dict[int, AlternateUnevaluatedReason] = {}
     evaluated: list[int] = []
     if alt_indices:
-        admitted, unevaluated, blocked = await _materialise_candidates(
+        admitted, unevaluated, over_bound, blocked = await _materialise_candidates(
             state, alt_indices, group=[*alt_indices, *cascade_indices]
         )
         if blocked:
             return _AlternatesAdmission(unevaluated=unevaluated, blocked=True)
-        evaluated = [i for i in alt_indices if i not in unevaluated]
+        evaluated = [i for i in alt_indices if i not in unevaluated and i not in over_bound]
         if state.near_neighbor_fired_index in unevaluated:
+            widens = False
+        if state.near_neighbor_fired_index in over_bound:
+            # Nothing read the tied reading, so no search widens past it for want of data.
+            _drop_near_neighbor_tie(state)
             widens = False
 
     if widens and state.near_neighbor_fired_index not in admitted:
@@ -205,9 +224,12 @@ async def admit_alternates(state: ResolveState) -> _AlternatesAdmission:
         )
         cascade: dict[int, _Candidate] = {}
         if cascade_indices:
-            cascade, cascade_unevaluated, blocked = await _materialise_candidates(
-                state, cascade_indices, group=cascade_indices
-            )
+            (
+                cascade,
+                cascade_unevaluated,
+                cascade_over_bound,
+                blocked,
+            ) = await _materialise_candidates(state, cascade_indices, group=cascade_indices)
             unevaluated = {**unevaluated, **cascade_unevaluated}
             if blocked:
                 return _AlternatesAdmission(unevaluated=unevaluated, blocked=True)
@@ -226,7 +248,14 @@ async def admit_alternates(state: ResolveState) -> _AlternatesAdmission:
                 )
             )
             admitted = {**admitted, **cascade}
-            evaluated = [*evaluated, *(i for i in cascade_indices if i not in unevaluated)]
+            evaluated = [
+                *evaluated,
+                *(
+                    i
+                    for i in cascade_indices
+                    if i not in unevaluated and i not in cascade_over_bound
+                ),
+            ]
 
     if unevaluated:
         _keep_tie_unresolved(state)

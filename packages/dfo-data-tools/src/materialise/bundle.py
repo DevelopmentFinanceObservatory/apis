@@ -344,7 +344,7 @@ def assemble_component_bundle(
     *,
     export: ComponentExport,
     member: MemberProvenance,
-    reproducing_call: ReproducingCall,
+    reproducing_call: ReproducingCall | None,
     context: BundleContext,
     codes: Sequence[CodeEntry],
 ) -> dict[str, bytes]:
@@ -353,7 +353,9 @@ def assemble_component_bundle(
     `member` carries the one rendered file and the frame's sources. The descriptor's `dfo`
     property holds `component` (`component_id`, `revision`, `frame_ref`, `select`, `window`),
     `prepared_at`, `links`, and `reproducing_call`, the export route itself. The README names
-    the frame's `spec_id` and `content_version`, the Datasets identity of the rows. Raises
+    the frame's `spec_id` and `content_version`, the Datasets identity of the rows.
+    `reproducing_call=None` omits `dfo.reproducing_call`, for rows no public route serves again.
+    The README then offers `links.version` as the card's saved export. Raises
     `MaterialisationUsageError` as `assemble_bundle` does."""
     dfo_property: dict[str, object] = {
         "component": {
@@ -365,8 +367,9 @@ def assemble_component_bundle(
         },
         "prepared_at": _rfc3339(context.prepared_at),
         "links": _links_entry(context, (member,)),
-        "reproducing_call": _reproducing_call_entry(reproducing_call, context),
     }
+    if reproducing_call is not None:
+        dfo_property["reproducing_call"] = _reproducing_call_entry(reproducing_call, context)
     return _assemble(
         members=(member,),
         context=context,

@@ -347,10 +347,11 @@ class TestFacetTruthTable:
             "country/KEN,country/TGO"
         }
 
-    def test_subject_only_statvar_with_no_scope_and_no_data_refuses_default_facet_undefined(
-        self,
-    ):
-        # The refusal a mint binding no entity can still meet: no place holds data.
+    @pytest.mark.parametrize(
+        "scope", [None, {"entities": {"observationAbout": ["country/KEN"]}}], ids=["none", "kenya"]
+    )
+    def test_subject_only_statvar_with_no_data_at_its_places_mints_the_empty_result(self, scope):
+        # No place holds data, whether the mint binds none or names a country.
         stat_var = "Count_Person"
         graph = FakeMintGraphReader(
             arcs={stat_var: {"typeOf": ("StatisticalVariable",), "measuredProperty": ("count",)}},
@@ -365,16 +366,23 @@ class TestFacetTruthTable:
                 transport=ScopeTransport(_sdmx_transport(sdmx_requests), no_data),
             ),
         )
-        body = {
-            "schema_version": 1,
-            "input": {"kind": "statvar_set", "statvars": [f"dcid:{stat_var}"]},
-        }
+        statvar_set: dict[str, object] = {"kind": "statvar_set", "statvars": [f"dcid:{stat_var}"]}
+        if scope is not None:
+            statvar_set["scope"] = scope
 
-        resp = client.post("/api/datasets", json=body)
+        resp = client.post("/api/datasets", json={"schema_version": 1, "input": statvar_set})
 
-        assert resp.status_code == 422, resp.text
-        assert resp.json()["code"] == "default_facet_undefined"
+        assert resp.status_code == 200, resp.text
+        manifest = resp.json()
+        assert manifest["coverage"]["rows"] == 0
+        assert "empty_result" in {warning["code"] for warning in manifest["warnings"]}
+        assert manifest["citation"]["sources"] == []
+        assert manifest["trace"]["facets"] == []
         assert sdmx_requests == []
+        # The definition and its version are on record, so the id serves the same version.
+        fetched = client.get(f"/api/datasets/{manifest['definition']['spec_id']}")
+        assert fetched.status_code == 200, fetched.text
+        assert fetched.json()["content_version"] == manifest["content_version"]
 
     def test_unbound_provenance_with_no_declared_policy_refuses_default_facet_undefined(self):
         # The probed facet has no provenance or declared default policy.

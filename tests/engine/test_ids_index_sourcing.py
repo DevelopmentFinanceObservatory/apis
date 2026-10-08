@@ -32,8 +32,10 @@ from search.engine.retrieval.bound_values import (
     collapse_measure_families,
     elect_five_tuple_family,
     elect_measure_family,
+    held_codes,
     identity_query,
     index_carries_shape,
+    query_phrases_read,
     shape_query,
 )
 from search.engine.retrieval.derive import derive_shapes, member_group_class
@@ -314,7 +316,12 @@ def _half(shape: ShapeDraft) -> tuple[bool, frozenset[str]]:
 def _collapse(
     shapes: list[ShapeDraft], *named: QualifierMatch
 ) -> list[tuple[bool, frozenset[str]]]:
-    return [_half(shape) for shape in elect_five_tuple_family(shapes, named)]
+    return [
+        _half(shape)
+        for shape in elect_five_tuple_family(
+            shapes, lambda shape: query_phrases_read(held_codes(shape), named, ())
+        )
+    ]
 
 
 def test_a_named_value_only_the_index_shape_carries_drops_the_recall_shape():

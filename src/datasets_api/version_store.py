@@ -8,6 +8,10 @@ so records are immutable and retries are idempotent. Store errors become
 `record_version` uses `RETURNING` to report whether its insert created the
 row. Concurrent first writes have one winner, without a racy existence read.
 `record_artifact` adds an idempotent rendering in its own transaction.
+`LiveVersionLister.list_versions` reads a subject's versions by `recorded_at`, newest first,
+each with the renderings of the files linked under it. The second statement selects and orders
+those files as `LiveSnapshotReader.read_artifact_locations` does, so a rendering read from the
+list is the one a read of that version's locations gives.
 
 An artifact link keeps its digest while that digest is servable, and a new rendering under
 the same key replaces it once it is not (`_insert_artifact`). Every link write and every pin
@@ -40,6 +44,7 @@ from dataset_store.snapshot import WORKING_TIER_RETENTION
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.versions import (
     ArtifactRecord,
+    ListedVersion,
     MalformedSignalError,
     MemberSignal,
     SubjectHead,
@@ -205,6 +210,56 @@ class LiveVersionRecordWriter:
             sqlstate = extract_sqlstate(exc)
         if failure is not None:
             raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
+
+
+class LiveVersionLister:
+    def __init__(self, *, store: DatasetStore) -> None:
+        self._store = store
+
+    def list_versions(self, subject_id: str) -> list[ListedVersion]:
+        failure: str | None = None
+        sqlstate: str | None = None
+        rows: list[Mapping[str, object]] = []
+        linked: list[Mapping[str, object]] = []
+        try:
+            with self._store.transaction() as tx:
+                rows = tx.fetch_all(
+                    "SELECT content_version, base_content_version "
+                    "FROM datasets.version_record WHERE subject_id = %s "
+                    # `content_version` orders versions recorded at one instant.
+                    "ORDER BY recorded_at DESC, content_version DESC",
+                    (subject_id,),
+                )
+                linked = tx.fetch_all(
+                    "SELECT va.content_version AS content_version, va.rendering AS rendering "
+                    "FROM datasets.version_artifact va "
+                    "JOIN datasets.artifact_inventory ai "
+                    "ON ai.artifact_digest = va.artifact_digest "
+                    "JOIN datasets.artifact_location al "
+                    "ON al.artifact_digest = va.artifact_digest "
+                    "WHERE va.subject_id = %s "
+                    "ORDER BY COALESCE((va.rendering ->> 'statistics') = 'series', false), "
+                    "va.artifact_digest, va.rendering_key, al.tier",
+                    (subject_id,),
+                )
+        except Exception as exc:
+            failure = f"listing versions subject_id {subject_id!r} failed: {safe_diagnostics(exc)}"
+            sqlstate = extract_sqlstate(exc)
+        if failure is not None:
+            raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
+        renderings: dict[str, list[Mapping[str, object]]] = {}
+        for link in linked:
+            renderings.setdefault(cast(str, link["content_version"]), []).append(
+                cast("Mapping[str, object]", link["rendering"])
+            )
+        return [
+            ListedVersion(
+                content_version=cast(str, row["content_version"]),
+                base_content_version=cast("str | None", row["base_content_version"]),
+                renderings=tuple(renderings.get(cast(str, row["content_version"]), ())),
+            )
+            for row in rows
+        ]
 
 
 class LiveHeadStore:

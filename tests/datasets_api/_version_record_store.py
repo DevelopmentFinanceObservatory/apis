@@ -10,7 +10,9 @@ from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import datetime
 
-# The schema covers version records, artifacts, revocations, references, inventory, and subject heads.
+# The schema covers version records, artifacts, revocations, references, inventory, frame recipes,
+# and subject heads. `LiveRecipeStore` and `LiveVersionLister` over this store are the recipe and
+# version-list doubles.
 # SQLite runs the real reader/writer SQL here, but does not enforce cross-table foreign keys.
 _VERSION_RECORD_SCHEMA = """
 CREATE TABLE datasets.version_record (
@@ -64,6 +66,15 @@ CREATE TABLE datasets.artifact_location (
     stored_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (artifact_digest, tier)
 );
+CREATE TABLE datasets.frame_recipe (
+    subject_id TEXT NOT NULL,
+    content_version TEXT NOT NULL,
+    normal_form_hash TEXT NOT NULL,
+    replay_key TEXT NOT NULL UNIQUE,
+    recipe TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (subject_id, content_version)
+);
 CREATE TABLE datasets.subject_head (
     subject_id TEXT PRIMARY KEY,
     content_version TEXT NOT NULL,
@@ -101,7 +112,7 @@ def _sqlite_param(value: object) -> object:
 
 
 # Decode SQLite text to the dict and datetime values that pg8000 returns for JSONB and timestamps.
-_JSON_COLUMNS = frozenset({"immutable_body", "rendering", "signal"})
+_JSON_COLUMNS = frozenset({"immutable_body", "rendering", "signal", "recipe"})
 _TIMESTAMP_COLUMNS = frozenset(
     {
         "recorded_at",

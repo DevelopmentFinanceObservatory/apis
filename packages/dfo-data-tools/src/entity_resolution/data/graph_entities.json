@@ -26,6 +26,15 @@
     "dac_code": "913"
   },
   {
+    "dcid": "AfricanDevelopmentBankGroup",
+    "name": "African Development Bank Group",
+    "kind": "organisation",
+    "aliases": [
+      "African Development Bank, Total"
+    ],
+    "dac_code": "20016"
+  },
+  {
     "dcid": "AfricanDevelopmentFund",
     "name": "African Development Fund",
     "kind": "organisation",
@@ -145,9 +154,21 @@
     "aliases": [
       "ADB",
       "AsDB",
-      "Asian Dev. Bank"
+      "Asian Dev. Bank",
+      "Asian Development Bank, Total",
+      "20015"
     ],
     "dac_code": "915"
+  },
+  {
+    "dcid": "AsianDevelopmentBankSpecialFunds",
+    "name": "Asian Development Bank Special Funds",
+    "kind": "organisation",
+    "aliases": [
+      "ADB Special Funds",
+      "AsDB Special Funds"
+    ],
+    "dac_code": "916"
   },
   {
     "dcid": "AsianForestCooperationOrganization",
@@ -464,6 +485,24 @@
     "dac_code": "1032"
   },
   {
+    "dcid": "DACCentralAndEasternEuropeanCountriesAndNewIndependentStatesUnallocated",
+    "name": "Central and Eastern European countries and New Independent States, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "CEEC/NIS Unspecified"
+    ],
+    "dac_code": "79"
+  },
+  {
+    "dcid": "DACCentralAndEasternEuropeanCountriesUnallocated",
+    "name": "Central and Eastern European countries, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "CEEC Unspecified"
+    ],
+    "dac_code": "101"
+  },
+  {
     "dcid": "DACCentralAsiaUnallocated",
     "name": "Central Asia, unallocated by country (DAC)",
     "kind": "aggregate",
@@ -513,6 +552,15 @@
     "dac_code": "789"
   },
   {
+    "dcid": "DACMekongDeltaProject",
+    "name": "Mekong Delta Project (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Mekong Delta Project"
+    ],
+    "dac_code": "752"
+  },
+  {
     "dcid": "DACMelanesiaUnallocated",
     "name": "Melanesia, unallocated by country (DAC)",
     "kind": "aggregate",
@@ -553,6 +601,24 @@
     "dac_code": "589"
   },
   {
+    "dcid": "DACMoreAdvancedDevelopingCountriesAndTerritoriesUnallocated",
+    "name": "more advanced developing countries and territories, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "MADCT Unspecified"
+    ],
+    "dac_code": "105"
+  },
+  {
+    "dcid": "DACNewIndependentStatesUnallocated",
+    "name": "New Independent States of the former Soviet Union, unallocated by country (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "NIS Unspecified"
+    ],
+    "dac_code": "102"
+  },
+  {
     "dcid": "DACNorthOfSaharaUnallocated",
     "name": "North of Sahara, unallocated by country (DAC)",
     "kind": "aggregate",
@@ -571,6 +637,69 @@
       "Oceania, regional"
     ],
     "dac_code": "889"
+  },
+  {
+    "dcid": "DACOtherEUInstitutions",
+    "name": "other EU institutions (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Other EU institutions"
+    ],
+    "dac_code": "927"
+  },
+  {
+    "dcid": "DACOtherMultilateralPartII",
+    "name": "other multilateral, Part II (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Other Multilateral (Part II)"
+    ],
+    "dac_code": "98"
+  },
+  {
+    "dcid": "DACOtherMultilateralRecipient",
+    "name": "other multilateral recipient (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Other Multilateral"
+    ],
+    "dac_code": "989"
+  },
+  {
+    "dcid": "DACOtherMultilaterals",
+    "name": "other multilaterals (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Other Multilaterals"
+    ],
+    "dac_code": "20018"
+  },
+  {
+    "dcid": "DACOtherRegionalDevelopmentBanks",
+    "name": "other regional development banks (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Other Regional Banks"
+    ],
+    "dac_code": "816"
+  },
+  {
+    "dcid": "DACOtherUnitedNations",
+    "name": "other United Nations entities (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Other UN"
+    ],
+    "dac_code": "975"
+  },
+  {
+    "dcid": "DACOtherWorldBank",
+    "name": "other World Bank (DAC)",
+    "kind": "aggregate",
+    "aliases": [
+      "Other World Bank (AMCs)"
+    ],
+    "dac_code": "900"
   },
   {
     "dcid": "DACPolynesiaUnallocated",
@@ -780,6 +909,16 @@
     "dac_code": null
   },
   {
+    "dcid": "EuropeanCommission",
+    "name": "European Commission",
+    "kind": "organisation",
+    "aliases": [
+      "Commission of the European Communities",
+      "EC"
+    ],
+    "dac_code": "917"
+  },
+  {
     "dcid": "EuropeanDevelopmentFund",
     "name": "European Development Fund",
     "kind": "organisation",
@@ -814,7 +953,7 @@
     "aliases": [
       "EIB"
     ],
-    "dac_code": null
+    "dac_code": "919"
   },
   {
     "dcid": "EuropeanReliefFund",
@@ -837,8 +976,10 @@
     "name": "European Union institutions",
     "kind": "organisation",
     "aliases": [
+      "CEC FOR CEEC/NIS",
       "EU Institutions",
-      "European Union"
+      "European Union",
+      "996"
     ],
     "dac_code": "918"
   },
@@ -1015,6 +1156,15 @@
     "dac_code": "1058"
   },
   {
+    "dcid": "IndusBasinDevelopmentFund",
+    "name": "Indus Basin Development Fund",
+    "kind": "organisation",
+    "aliases": [
+      "Indus Basin"
+    ],
+    "dac_code": "650"
+  },
+  {
     "dcid": "InterAmericanDevelopmentBank",
     "name": "Inter-American Development Bank",
     "kind": "organisation",
@@ -1024,6 +1174,27 @@
       "Inter-American Dev. Bank"
     ],
     "dac_code": "909"
+  },
+  {
+    "dcid": "InterAmericanDevelopmentBankFundForSpecialOperations",
+    "name": "Inter-American Development Bank Fund for Special Operations",
+    "kind": "organisation",
+    "aliases": [
+      "FSO",
+      "IDB Fund for Special Operations",
+      "IDB Special Oper. Fund"
+    ],
+    "dac_code": "912"
+  },
+  {
+    "dcid": "InterAmericanDevelopmentBankGroup",
+    "name": "Inter-American Development Bank Group",
+    "kind": "organisation",
+    "aliases": [
+      "IDB Group",
+      "Inter-American Development Bank, Total"
+    ],
+    "dac_code": "20014"
   },
   {
     "dcid": "InternationalAtomicEnergyAgency",
@@ -1097,9 +1268,11 @@
     "kind": "organisation",
     "aliases": [
       "IDA",
-      "World Bank-IDA"
+      "IDA-MDRI",
+      "World Bank-IDA",
+      "905"
     ],
-    "dac_code": "905"
+    "dac_code": "904"
   },
   {
     "dcid": "InternationalFinanceCorporation",
@@ -1144,7 +1317,9 @@
     "name": "International Monetary Fund",
     "kind": "organisation",
     "aliases": [
-      "IMF"
+      "IMF",
+      "International Monetary Fund, Total",
+      "20013"
     ],
     "dac_code": "907"
   },
@@ -1500,6 +1675,15 @@
     "dac_code": null
   },
   {
+    "dcid": "PostcodeLotteryGroup",
+    "name": "Postcode Lottery Group",
+    "kind": "organisation",
+    "aliases": [
+      "Postcode Lottery Group, Total"
+    ],
+    "dac_code": "20035"
+  },
+  {
     "dcid": "PrivateInfrastructureDevelopmentGroup",
     "name": "Private Infrastructure Development Group",
     "kind": "organisation",
@@ -1828,9 +2012,10 @@
     "name": "United Nations Regular Programme of Technical Assistance",
     "kind": "organisation",
     "aliases": [
-      "UN-Regular Programme of Technical Assistance"
+      "UN-Regular Programme of Technical Assistance",
+      "UNTA"
     ],
-    "dac_code": null
+    "dac_code": "960"
   },
   {
     "dcid": "UnitedNationsRegularProgrammeOfTechnicalCooperation",
@@ -1912,6 +2097,15 @@
     "kind": "organisation",
     "aliases": [],
     "dac_code": "1624"
+  },
+  {
+    "dcid": "WorldBankGroup",
+    "name": "World Bank Group",
+    "kind": "organisation",
+    "aliases": [
+      "World Bank Group, Total"
+    ],
+    "dac_code": "20012"
   },
   {
     "dcid": "WorldDiabetesFoundation",

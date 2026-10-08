@@ -27,21 +27,20 @@ from search.engine.region import resolve_spec_resubmit
 from search.engine.region.codes import (
     DIRECTION_DISCARDED,
     PLACE_SCOPE_DEFAULTED,
-    STANDARD_PROBE_PLACES_CLAMPED,
 )
 from search.engine.region.observations.bulk_scope import bulk_scope_for
 from search.engine.region.phase_place_materialise import (
     _await_alternates_presence,
-    _place_children_by_dcid,
 )
 from search.engine.region.place_context import (
     PlaceContext,
+    UnsettledPlace,
     default_scope_stat_vars,
     place_context,
     settle_place,
     stamp_offered_place_warnings,
 )
-from search.engine.region.place_roles import PlaceRoles
+from search.engine.region.place_roles import PlaceAssignment, PlaceRoles
 from search.engine.retrieval.retrieve import Materialised
 from search.engine.shape import ShapeDraft
 from search.heading.departure_fact import DepartureFact
@@ -86,9 +85,9 @@ def _fresh_scope_memo() -> Iterator[None]:
     place_scope.clear_memo()
 
 
-def _served_context(shape, roles, **kwargs):
+def _served_context(shape, roles, *, presence):
     """`place_context` over every StatVar `shape` holds, the members a mint serves for it."""
-    return place_context(shape, roles, stat_vars=list(shape.sv_arc_facts or {}), **kwargs)
+    return place_context(shape, roles, stat_vars=list(shape.sv_arc_facts or {}), presence=presence)
 
 
 def _shape(*stat_vars: str, declared_roles: tuple[str, ...] | None = None) -> ShapeDraft:
@@ -250,9 +249,7 @@ class TestPlaceContext:
         context = _served_context(
             _shape(_FEMALE),
             subject_place_roles(),
-            children={},
             presence=_PRESENCE,
-            max_probe_places=256,
         )
 
         assert context.probe_dcids == (_AFRICA, _TZA)
@@ -265,9 +262,7 @@ class TestPlaceContext:
         context = _served_context(
             _shape(_MALE),
             subject_place_roles(),
-            children={},
             presence=_PRESENCE,
-            max_probe_places=256,
         )
 
         assert context.probe_dcids == (_KEN,)
@@ -285,9 +280,7 @@ class TestPlaceContext:
         context = _served_context(
             _shape("Count_Death_None"),
             subject_place_roles(),
-            children={},
             presence=_PRESENCE,
-            max_probe_places=256,
         )
 
         assert context.probe_dcids == ()
@@ -297,9 +290,7 @@ class TestPlaceContext:
         context = _served_context(
             _shape("Count_Death_World"),
             subject_place_roles(),
-            children={},
             presence=_PRESENCE,
-            max_probe_places=256,
         )
 
         assert context.probe_dcids == ("Earth",)
@@ -312,9 +303,7 @@ class TestPlaceContext:
         context = _served_context(
             _shape("Count_Death_None"),
             subject_place_roles(),
-            children={},
             presence=_PRESENCE,
-            max_probe_places=256,
         )
 
         assert context.probe_dcids == ()
@@ -323,17 +312,13 @@ class TestPlaceContext:
 
     def test_a_placeless_subject_shape_without_presence_raises(self) -> None:
         with pytest.raises(AssertionError, match="no default-scope presence was read"):
-            _served_context(
-                _SUBJECT, subject_place_roles(), children={}, presence=None, max_probe_places=256
-            )
+            _served_context(_SUBJECT, subject_place_roles(), presence=None)
 
     def test_a_placeless_role_bearing_shape_takes_no_default_scope(self) -> None:
         context = _served_context(
             _FLOW,
             flow_place_roles(_FLOW, origin=[_GHA]),
-            children={},
             presence=_PRESENCE,
-            max_probe_places=256,
         )
 
         assert context.probe_dcids is None
@@ -341,67 +326,38 @@ class TestPlaceContext:
         assert context.default_scope is None
         assert context.warnings == ()
 
-    def test_one_place_probes_its_members(self) -> None:
-        context = _served_context(
-            _SUBJECT,
-            subject_place_roles("africa"),
-            children={"africa": [_KEN, _TZA]},
-            presence=None,
-            max_probe_places=256,
-        )
-
-        assert context.probe_dcids == (_KEN, _TZA)
-        assert context.probe_places == [_KEN, _TZA]
-        assert context.mode == "bound"
-        assert context.default_scope is None
-        assert context.warnings == ()
-        assert context.where is not None
-        assert (context.where.kind, context.where.value_dcids) == ("value", ["africa"])
-
-    def test_one_place_without_members_probes_itself_unexpanded(self) -> None:
-        context = _served_context(
-            _SUBJECT,
-            subject_place_roles(_KEN),
-            children={},
-            presence=None,
-            max_probe_places=256,
-        )
+    @pytest.mark.parametrize("place", [_KEN, "africa"])
+    def test_one_place_is_probed_at_itself(self, place: str) -> None:
+        context = _served_context(_SUBJECT, subject_place_roles(place), presence=None)
 
         assert context.probe_dcids is None
         assert context.probe_places is None
+        assert context.where is not None
+        assert (context.where.kind, context.where.value_dcids) == ("value", [place])
 
-    def test_a_role_bearing_shape_probes_its_destination(self) -> None:
-        context = _served_context(
-            _FLOW,
-            flow_place_roles(_FLOW, destination=["africa"], origin=[_GHA]),
-            children={"africa": [_KEN, _TZA], _GHA: ["unused"]},
-            presence=None,
-            max_probe_places=256,
-        )
-
-        assert context.probe_dcids == (_KEN, _TZA)
-
-    def test_several_places_probe_their_union_capped_with_a_warning(self) -> None:
+    def test_several_places_are_probed_at_themselves(self) -> None:
         context = _served_context(
             _SUBJECT,
             subject_place_roles("africa", _GHA, "eastafrica"),
-            children={"africa": [_KEN, _TZA], "eastafrica": [_TZA, "country/UGA"]},
             presence=None,
-            max_probe_places=3,
         )
 
-        assert context.probe_dcids == (_KEN, _TZA, _GHA)
-        assert [(w.code, w.severity, w.message) for w in context.warnings] == [
-            (
-                STANDARD_PROBE_PLACES_CLAMPED,
-                "warn",
-                "4 probe places detected across 3 named place(s); resolved the first 3.",
-            )
-        ]
+        assert context.probe_dcids == ("africa", _GHA, "eastafrica")
+        assert context.warnings == ()
         assert context.where is not None
         assert context.where.kind == "set"
 
-    def test_dropped_directions_precede_the_scope_warning_in_query_order(self) -> None:
+    def test_a_default_scope_is_outside_the_bound(self, search_settings) -> None:
+        """A default scope binds no dcid, so its places do not count against the bound."""
+        search_settings(max_child_places=1)
+        shape = _shape(_FEMALE)
+        context = UnsettledPlace(
+            shape, PlaceAssignment(), stat_vars=tuple(shape.sv_arc_facts or {}), presence=_PRESENCE
+        ).unread()
+
+        assert context.probe_dcids == (_AFRICA, _TZA)
+
+    def test_dropped_directions_warn_in_query_order(self) -> None:
         roles = PlaceRoles(
             **{
                 **vars(subject_place_roles(_KEN, _GHA, _TZA)),
@@ -409,13 +365,9 @@ class TestPlaceContext:
             }
         )
 
-        context = _served_context(_SUBJECT, roles, children={}, presence=None, max_probe_places=2)
+        context = _served_context(_SUBJECT, roles, presence=None)
 
-        assert [w.code for w in context.warnings] == [
-            DIRECTION_DISCARDED,
-            DIRECTION_DISCARDED,
-            STANDARD_PROBE_PLACES_CLAMPED,
-        ]
+        assert [w.code for w in context.warnings] == [DIRECTION_DISCARDED, DIRECTION_DISCARDED]
         assert context.warnings[0].message.startswith("Kenya was named as the ")
         assert context.warnings[1].message.startswith("Ghana was named as the ")
         assert {w.severity for w in context.warnings} == {"warn"}
@@ -445,7 +397,7 @@ class TestPlaceContext:
             }
         )
 
-        context = _served_context(_SUBJECT, roles, children={}, presence=None, max_probe_places=2)
+        context = _served_context(_SUBJECT, roles, presence=None)
 
         assert [w.code for w in context.warnings] == [DIRECTION_DISCARDED, DIRECTION_DISCARDED]
         assert [fact.asked for fact in context.departure_facts.values()] == ["Kenya"]
@@ -456,9 +408,7 @@ class TestSettled:
         context = _served_context(
             _FLOW,
             flow_place_roles(_FLOW, origin=[_GHA]),
-            children={},
             presence=None,
-            max_probe_places=256,
         )
         # The plan serves a subset of the discovered members; the probes bind them all.
         mat = cast(
@@ -482,9 +432,7 @@ class TestSettled:
         context = _served_context(
             _SUBJECT,
             subject_place_roles(),
-            children={},
             presence=_PRESENCE,
-            max_probe_places=256,
         )
         mat = cast(
             Materialised,
@@ -511,7 +459,7 @@ class TestSettled:
         roles = dataclasses.replace(
             flow_place_roles(_FLOW, destination=[_KEN]), open_axes=frozenset({"origin"})
         )
-        context = _served_context(_FLOW, roles, children={}, presence=None, max_probe_places=256)
+        context = _served_context(_FLOW, roles, presence=None)
         mat = cast(
             Materialised,
             SimpleNamespace(discovered_scope=None, default_scope=None, open_axes=served),
@@ -535,9 +483,7 @@ class TestSettled:
         context = _served_context(
             _SUBJECT,
             subject_place_roles(),
-            children={},
             presence=_PRESENCE,
-            max_probe_places=256,
         )
         mat = cast(
             Materialised,
@@ -560,9 +506,7 @@ class TestSettlePlace:
         return _served_context(
             _SUBJECT,
             subject_place_roles(),
-            children={},
             presence=_PRESENCE,
-            max_probe_places=256,
         )
 
     def test_a_changed_scope_warning_is_replaced_where_it_stands(self) -> None:
@@ -664,16 +608,12 @@ class TestStampOfferedPlaceWarnings:
         in_play = _served_context(
             _shape(_FEMALE),
             subject_place_roles(),
-            children={},
             presence=_PRESENCE,
-            max_probe_places=256,
         )
         worldwide = _served_context(
             _shape("Count_Death_World"),
             subject_place_roles(),
-            children={},
             presence=_PRESENCE,
-            max_probe_places=256,
         )
         warnings = list(in_play.warnings)
 
@@ -687,35 +627,6 @@ class TestStampOfferedPlaceWarnings:
         ]
         assert warnings[1].message == worldwide.scope_warning.message
         assert warnings[1].message != warnings[0].message
-
-
-class TestPlaceChildrenByDcid:
-    def test_a_named_place_maps_to_its_expanded_members(self) -> None:
-        state = cast(
-            Any,
-            SimpleNamespace(
-                standard_place_dcids=["africa", _KEN],
-                query_entity_text_by_dcid={"africa": "Africa", _KEN: "Kenya"},
-                place_children_by_name={"Africa": [_GHA, _TZA]},
-            ),
-        )
-
-        assert _place_children_by_dcid(state) == {"africa": [_GHA, _TZA]}
-
-    def test_a_named_place_with_no_surface_name_refuses(self) -> None:
-        """Expansions are keyed by the name the query gave a place, so a named place with
-        no resolved surface name cannot be looked up and refuses."""
-        state = cast(
-            Any,
-            SimpleNamespace(
-                standard_place_dcids=[_KEN, _TZA],
-                query_entity_text_by_dcid={_KEN: "Kenya"},
-                place_children_by_name={},
-            ),
-        )
-
-        with pytest.raises(AssertionError, match=f"no resolved surface name .*{_TZA}"):
-            _place_children_by_dcid(state)
 
 
 class TestBulkScopeFor:
@@ -736,9 +647,7 @@ class TestBulkScopeFor:
         context = _served_context(
             _shape(stat_var),
             subject_place_roles(*([place] if place else [])),
-            children={},
             presence=_PRESENCE,
-            max_probe_places=256,
         )
         sdmx = cast(Any, object())
         mat = cast(Materialised, SimpleNamespace(facets_by_entity=facets_by_entity))

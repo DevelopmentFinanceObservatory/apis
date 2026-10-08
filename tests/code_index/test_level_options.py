@@ -15,6 +15,8 @@ from code_index import (
     CrossSystemParent,
     IndexStamp,
     StatVarRow,
+    default_index_path,
+    load_index,
 )
 
 _STAMP = IndexStamp(
@@ -154,26 +156,30 @@ def test_value_counts_omits_a_value_no_statvar_declares():
 # --- level_scoped_options: bound hierarchical ---
 
 
-def test_a_bound_hierarchical_node_publishes_its_children_then_its_parent():
+@pytest.mark.parametrize(
+    ("bound", "expected"),
+    [
+        (
+            "A1",
+            [("A1a", "child", 2, "A1"), ("A1b", "child", 1, "A1"), ("RootA", "parent", 1, None)],
+        ),
+        (
+            "RootA",
+            [("A1", "child", 0, "RootA"), ("A2", "child", 0, "RootA"), ("RootB", "root", 3, None)],
+        ),
+        ("RootB", [("B1", "child", 0, "RootB"), ("RootA", "root", 1, None)]),
+        ("A1a", [("A1", "parent", 0, "RootA")]),
+    ],
+    ids=["node", "root", "other-root", "leaf"],
+)
+def test_a_bound_hierarchical_node_publishes_its_children_then_its_parent_or_the_other_roots(
+    bound: str, expected: list[tuple[str, str, int, str | None]]
+):
+    """A bound root has no parent, so the other roots follow its children, without their
+    own children."""
     index = _synthetic_index()
-    options = index.level_scoped_options("hier", "A1")
-    assert [(o.dcid, o.relation, o.member_count, o.parent) for o in options] == [
-        ("A1a", "child", 2, "A1"),
-        ("A1b", "child", 1, "A1"),
-        ("RootA", "parent", 1, None),
-    ]
-
-
-def test_a_bound_root_has_no_parent_entry():
-    index = _synthetic_index()
-    options = index.level_scoped_options("hier", "RootA")
-    assert [(o.dcid, o.relation) for o in options] == [("A1", "child"), ("A2", "child")]
-
-
-def test_a_bound_leaf_with_no_children_publishes_only_its_parent():
-    index = _synthetic_index()
-    options = index.level_scoped_options("hier", "A1a")
-    assert [(o.dcid, o.relation, o.parent) for o in options] == [("A1", "parent", "RootA")]
+    options = index.level_scoped_options("hier", bound)
+    assert [(o.dcid, o.relation, o.member_count, o.parent) for o in options] == expected
 
 
 # --- level_scoped_options: unbound ---
@@ -255,3 +261,42 @@ def test_real_flat_type_of_flow_is_never_invented_into_a_hierarchy(code_index: C
     assert {o.dcid for o in bound} == all_flow_dcids
     assert bound == unbound
     assert all(o.relation == "root" for o in bound)
+
+
+@pytest.mark.parametrize(
+    ("code_system", "bound"),
+    [
+        ("crsPurpose", "CRSPurposeCode100"),
+        ("dac2aAidType", "DAC2aAidType106"),
+        ("dac2aAidType", "DAC2aAidType216"),
+        ("crsPurpose", "CRSPurposeCode120"),
+    ],
+    ids=["crs-purpose-root", "dac2a-childless-root", "dac2a-other-childless-root", "non-root"],
+)
+def test_a_real_bound_root_offers_the_other_roots_an_unbound_slot_lists(
+    code_system: str, bound: str
+):
+    """On the packaged index, a bound root's children are followed by the roots an unbound
+    slot lists, in its order and less the bound root. A bound code with a parent is followed
+    by that parent alone."""
+    index = load_index(default_index_path())
+    row = index.code_by_dcid(bound)
+    assert row is not None
+
+    options = index.level_scoped_options(code_system, bound)
+
+    children = [o for o in options if o.relation == "child"]
+    assert {o.dcid for o in children} == {
+        r.dcid for r in index.codes if r.code_system == code_system and r.parent == bound
+    }
+    assert options[: len(children)] == tuple(children)
+    if row.parent is None:
+        other_roots = tuple(
+            o
+            for o in index.level_scoped_options(code_system, None)
+            if o.relation == "root" and o.dcid != bound
+        )
+        assert other_roots
+        assert options[len(children) :] == other_roots
+    else:
+        assert [(o.dcid, o.relation) for o in options[len(children) :]] == [(row.parent, "parent")]

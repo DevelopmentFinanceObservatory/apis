@@ -289,8 +289,8 @@ class TestStandardPromoteSourceSlotRefusal:
         error = exc_info.value
         assert error.code == "facet_not_available"
         assert error.pointer == "/input/identity/facets/provenance"
-        assert f"provenance: missing {_SOURCE_WDI}" in (error.detail or "")
-        assert "measurementMethod: missing Census" in (error.detail or "")
+        assert f"provenance: missing {_SOURCE_WDI}" in str(error)
+        assert "measurementMethod: missing Census" in str(error)
 
     def test_a_pin_the_posted_source_carries_is_served(self):
         region = _resolve_standard_with_method(

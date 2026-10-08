@@ -17,6 +17,7 @@ from tests.engine._base_identity import GDP_SHAPE, make_identity, subject_entity
 from tests.engine._builders import value_slot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import member_walk_reader
+from tests.engine._refusal_detail import assert_names_plainly
 from tests.engine._search_app import search_app
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
 
@@ -753,7 +754,9 @@ class TestEngineInputError:
             "/api/search/resolve",
             json={"input": {"kind": "raw_text", "query": "test"}},
         )
-        _assert_error(resp, status=422, code="invalid_role_ref")
+        _assert_error(
+            resp, status=422, code="invalid_role_ref", detail="recipient not found in the graph"
+        )
 
     def test_engine_input_error_routing_failure_falls_back_to_request_invalid(self, monkeypatch):
         # Routing errors use a generic detail without exposing available shape ids.
@@ -830,9 +833,7 @@ def test_resubmit_identity_missing_role_refs_name_every_missing_dcid():
 
     body = _assert_error(resp, status=422, code="invalid_role_ref")
     assert body["pointer"] == "/input/entries/0/identity/entities/observationAbout"
-    assert body["detail"] == (
-        f"posted entity reference(s) not found in the graph: {sorted(missing_dcids)!r}"
-    )
+    assert_names_plainly(body["detail"], sorted(missing_dcids))
 
 
 def test_resubmit_identity_shape_with_unknown_member_returns_400():

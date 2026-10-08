@@ -1,9 +1,9 @@
 """Mints of a UN System Data Commons variable through the datasets doors, over the
-UN deployment double. The mint doors run the facet probe before `origin_reads` opens its record,
+UN deployment double. The mint doors run the facet probe before the prewrite opens its UN record,
 so these tests post to the doors. A request that binds no entity carries the
-`un_system_unavailable` warning a request naming the same places carries, and a request with
-no candidate refuses the same way at every mint door, naming the places the
-warning names.
+`un_system_unavailable` warning a request naming the same places carries. A request with no
+candidate is the empty result at every mint door, with that warning, and refuses
+`upstream_error` when the only places it names are ones the UN refused.
 """
 
 from __future__ import annotations
@@ -169,8 +169,12 @@ def test_a_mint_binding_no_entity_reads_the_un_availability_once(graph, deployme
 _DOORS = pytest.mark.parametrize("body", [_spec_body])
 
 
+def _warning_codes(manifest: dict) -> set[str]:
+    return {warning["code"] for warning in manifest["warnings"]}
+
+
 @_DOORS
-def test_a_request_binding_no_entity_with_no_un_data_refuses_no_data_at_every_door(
+def test_a_request_binding_no_entity_with_no_un_data_is_the_empty_result_at_every_door(
     graph, deployments, body
 ):
     # The UN's availability lists Nigeria, and its facet read there holds nothing.
@@ -178,50 +182,47 @@ def test_a_request_binding_no_entity_with_no_un_data_refuses_no_data_at_every_do
 
     resp = _client(graph).post("/api/datasets", json=body(graph))
 
-    assert resp.status_code == 422, resp.text
-    problem = resp.json()
-    assert (problem["code"], problem["retryable"]) == ("default_facet_undefined", False)
+    assert resp.status_code == 200, resp.text
+    manifest = resp.json()
+    assert manifest["coverage"]["rows"] == 0
+    assert "empty_result" in _warning_codes(manifest)
+    assert _un_warnings(manifest) == []
 
 
 @_DOORS
-def test_a_request_binding_no_entity_names_the_refused_place_in_its_no_data_refusal(
+def test_an_empty_result_binding_no_entity_warns_of_the_place_the_un_refused(
     graph, deployments, body
 ):
     # Greece is refused and Nigeria holds nothing. The UN front door refuses Greece on every
-    # read, so a retry would meet the same refusal. The request refuses as no data and names
-    # Greece, the place its warning would name.
+    # read, so a retry would meet the same refusal. The request is the empty result and its
+    # warning names Greece.
     deployments.available = [_GRC, _NGA]
 
     resp = _client(graph).post("/api/datasets", json=body(graph))
 
-    assert resp.status_code == 422, resp.text
-    problem = resp.json()
-    assert (problem["code"], problem["retryable"]) == ("default_facet_undefined", False)
-    assert problem["detail"].endswith(
-        f"No UN data was read for {_GRC}, which the UN System Data Commons front door refuses"
-    )
+    assert resp.status_code == 200, resp.text
+    manifest = resp.json()
+    assert manifest["coverage"]["rows"] == 0
+    assert "empty_result" in _warning_codes(manifest)
+    (warning,) = _un_warnings(manifest)
+    assert warning.endswith(_UNREAD_GREECE)
 
 
 @pytest.mark.parametrize("body", [_spec_body])
-def test_the_worker_fails_a_request_binding_no_entity_with_no_un_data_as_no_data(
+def test_the_worker_serves_a_request_binding_no_entity_with_no_un_data_as_the_empty_result(
     graph, deployments, monkeypatch, body
 ):
     deployments.available = [_GRC, _NGA]
 
-    refused = _client(graph).post("/api/datasets", json=body(graph))
-    assert refused.status_code == 422, refused.text
-
     polled = _through_the_worker(body(graph), graph, monkeypatch)
 
-    assert polled.status_code == 500
-    problem = polled.json()
-    assert (problem["code"], problem["retryable"]) == ("operation_failed", False)
-    assert problem["cause"]["code"] == "default_facet_undefined"
-    # The poll carries the detail the synchronous door renders for the same request.
-    assert problem["detail"] == refused.json()["detail"]
-    assert problem["detail"].endswith(
-        f"No UN data was read for {_GRC}, which the UN System Data Commons front door refuses"
-    )
+    assert polled.status_code == 200, polled.text
+    assert polled.json()["operation"]["status"] == "done", polled.text
+    manifest = polled.json()["manifest"]
+    assert manifest["coverage"]["rows"] == 0
+    assert "empty_result" in _warning_codes(manifest)
+    (warning,) = _un_warnings(manifest)
+    assert warning.endswith(_UNREAD_GREECE)
 
 
 @_DOORS

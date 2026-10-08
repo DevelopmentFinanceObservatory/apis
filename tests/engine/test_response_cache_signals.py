@@ -30,12 +30,12 @@ def _count_state_attribute_reads(attr: str) -> int:
 
 
 def test_query_text_and_role_query_reader_counts_are_covered() -> None:
-    """Pin the 6 `query_text` readers and 1 `role_query` reader covered by cache signals."""
+    """Pin the 5 `query_text` readers and 1 `role_query` reader covered by cache signals."""
     query_text_reads = _count_state_attribute_reads("query_text")
     role_query_reads = _count_state_attribute_reads("role_query")
-    assert query_text_reads == 6, (
+    assert query_text_reads == 5, (
         f"state.query_text has {query_text_reads} readers in src/search/engine/region/, "
-        "not the 6 compute_layer2_signals computes signals for. Update "
+        "not the 5 compute_layer2_signals computes signals for. Update "
         "compute_layer2_signals (and this test) to cover the new reader."
     )
     assert role_query_reads == 1, (
@@ -232,13 +232,14 @@ def test_declared_default_slot_named_against_the_real_index() -> None:
 
 
 def test_layer2_signals_carries_one_field_per_numbered_signal() -> None:
-    """The dataclass has one field for each of the seven cache signals."""
+    """The dataclass has one field for each of the eight cache signals."""
     field_names = {f.name for f in fields(Layer2Signals)}
     assert field_names == {
         "role_contradictions",
         "query_text_qualifier_matches",
         "query_text_qualifier_ties",
         "query_text_qualifier_readings",
+        "query_text_qualifier_occurrences",
         "unsupported_qualifier_phrases",
         "declared_default_trigger_words",
         "declared_default_slots_named",

@@ -24,7 +24,7 @@ from search.engine.departures import (
 )
 from search.engine.entry.raw_text import _dropped_phrase_fact
 from search.engine.retrieval.read_plan import WindowGap, data_years, plan_standard, served_dates
-from search.heading.departure_fact import DepartureFact, ordered_facts
+from search.heading.departure_fact import DepartureFact, UnservedMembers, ordered_facts
 from search.heading.words import content_words
 from search.models import (
     DateRange,
@@ -346,13 +346,17 @@ def test_modelled_values_when_some_series_are_modelled(methods, projected, model
     ],
 )
 def test_group_read_as_members_asks_in_the_request_s_words(role, binding_ref, entity_words, asked):
-    groups = {role: EntityGroup(dcid="EuropeanUnion", label="European Union")}
+    groups = {
+        role: EntityGroup(
+            dcid="EuropeanUnion", label="European Union", entity_type="ContinentalUnion"
+        )
+    }
 
     facts = spec_departure_facts(_spec(groups=groups), operations=(), entity_words=entity_words)
 
-    assert [(fact.code, fact.binding_ref, fact.asked, fact.group) for fact in facts] == [
-        ("group_read_as_members", binding_ref, asked, "European Union")
-    ]
+    assert [
+        (fact.code, fact.binding_ref, fact.asked, fact.group, fact.group_type) for fact in facts
+    ] == [("group_read_as_members", binding_ref, asked, "European Union", "ContinentalUnion")]
 
 
 def test_entity_unavailable_names_each_role_s_unserved_entities_on_its_token():
@@ -437,7 +441,8 @@ def test_entity_unavailable_on_a_group_asks_for_the_group_and_names_no_member():
         for code, label in (("AUT", "Austria"), ("BGR", "Bulgaria"), ("CYP", "Cyprus"))
     ]
     eth = ResolvedEntity(ref="country/ETH", label="Ethiopia", role="destination")
-    spec = _spec(groups={"origin": EntityGroup(label="European Union")})
+    group = EntityGroup(label="European Union", entity_type="ContinentalUnion")
+    spec = _spec(groups={"origin": group})
     resolved = spec.resolved.model_copy(update={"entities": [*members, eth]}).stating_unserved(
         (("origin", "country/BGR"), ("origin", "country/CYP"))
     )
@@ -451,6 +456,7 @@ def test_entity_unavailable_on_a_group_asks_for_the_group_and_names_no_member():
     ]
 
     assert (fact.binding_ref, fact.asked, fact.group_size) == ("origin:", "European Union", 3)
+    assert fact.group_type == "ContinentalUnion"
     assert fact.entities == ("Bulgaria", "Cyprus")
 
 
@@ -478,6 +484,146 @@ def test_an_entity_unserved_inside_a_group_counts_toward_the_group_alone():
 
     assert [(f.binding_ref, f.entities, f.group_size) for f in facts] == [
         ("where:", ("Norway", "Somalia"), 3)
+    ]
+
+
+_AFRICA = EntityGroup(dcid="africa", label="Africa", entity_type="Continent")
+_ASIA = EntityGroup(dcid="asia", label="Asia", entity_type="Continent")
+_BALTIC = EntityGroup(label="Baltic states")
+_PLACES = {
+    "country/GHA": "Ghana",
+    "country/TZA": "Tanzania",
+    "country/KEN": "Kenya",
+    "country/NPL": "Nepal",
+    "country/JPN": "Japan",
+    "country/NOR": "Norway",
+}
+_AFRICAN = frozenset({"country/GHA", "country/TZA", "country/KEN"})
+# Two sets of one size that share Kenya.
+_EAST = EntityGroup(dcid="east", label="East")
+_WEST = EntityGroup(dcid="west", label="West")
+# A set with no node, of the same size, that sorts first by label.
+_NODELESS = EntityGroup(label="Coast")
+_EAST_MEMBERS = frozenset({"country/KEN", "country/TZA"})
+_WEST_MEMBERS = frozenset({"country/KEN", "country/GHA"})
+_ASIAN = frozenset({"country/NPL", "country/JPN"})
+
+
+@pytest.mark.parametrize(
+    ("named_sets", "bound", "unserved", "asked", "entities", "sets"),
+    [
+        pytest.param(
+            [(_AFRICA, _AFRICAN)],
+            [*sorted(_AFRICAN), "country/NOR"],
+            ["country/GHA", "country/TZA"],
+            "Africa",
+            (),
+            (UnservedMembers("Africa", "Continent", 3, "Africa", ("Ghana", "Tanzania")),),
+            id="a region beside a place",
+        ),
+        pytest.param(
+            [(_AFRICA, _AFRICAN)],
+            [*sorted(_AFRICAN), "country/NOR"],
+            ["country/GHA", "country/NOR"],
+            "Norway, Africa",
+            ("Norway",),
+            (UnservedMembers("Africa", "Continent", 3, "Africa", ("Ghana",)),),
+            id="the place named beside a region is unserved too",
+        ),
+        pytest.param(
+            [(_BALTIC, _AFRICAN)],
+            [*sorted(_AFRICAN), "country/NOR"],
+            ["country/KEN"],
+            "the Baltics",
+            (),
+            (UnservedMembers("Baltic states", None, 3, "the Baltics", ("Kenya",)),),
+            id="a resolver group beside a place",
+        ),
+        pytest.param(
+            [(_AFRICA, _AFRICAN), (_ASIA, _ASIAN)],
+            [*sorted(_AFRICAN), *sorted(_ASIAN)],
+            ["country/GHA", "country/JPN", "country/TZA"],
+            "Africa, Asia",
+            (),
+            (
+                UnservedMembers("Africa", "Continent", 3, "Africa", ("Ghana", "Tanzania")),
+                UnservedMembers("Asia", "Continent", 2, "Asia", ("Japan",)),
+            ),
+            id="two regions on one role",
+        ),
+        pytest.param(
+            [(_ASIA, _ASIAN), (_AFRICA, _AFRICAN | _ASIAN)],
+            [*sorted(_AFRICAN), *sorted(_ASIAN), "country/NOR"],
+            ["country/JPN"],
+            "Africa",
+            (),
+            (UnservedMembers("Africa", "Continent", 5, "Africa", ("Japan",)),),
+            id="a member of two sets counts toward the larger",
+        ),
+        pytest.param(
+            [],
+            [*sorted(_AFRICAN), "country/NOR"],
+            ["country/GHA", "country/TZA"],
+            "Ghana, Tanzania",
+            ("Ghana", "Tanzania"),
+            (),
+            id="places named one by one",
+        ),
+        *(
+            pytest.param(
+                order,
+                [*sorted(_AFRICAN), "country/NPL"],
+                ["country/KEN"],
+                "East",
+                (),
+                (UnservedMembers("East", None, 2, "East", ("Kenya",)),),
+                id=f"a member of two sets of one size counts toward the first by dcid ({label})",
+            )
+            for label, order in (
+                ("as listed", [(_EAST, _EAST_MEMBERS), (_WEST, _WEST_MEMBERS)]),
+                ("reversed", [(_WEST, _WEST_MEMBERS), (_EAST, _EAST_MEMBERS)]),
+                ("a set with no node", [(_NODELESS, _WEST_MEMBERS), (_EAST, _EAST_MEMBERS)]),
+            )
+        ),
+    ],
+)
+def test_entity_unavailable_counts_a_named_set_s_members_against_the_set(
+    named_sets, bound, unserved, asked, entities, sets
+):
+    """A role binding every member of a set the request named beside other places carries
+    no entity group. The set's members without values are counted under it, and only a
+    place the request named one by one is named as the ask."""
+    spec = _spec()
+    resolved = (
+        spec.resolved.model_copy(
+            update={
+                "entities": [
+                    ResolvedEntity(ref=dcid, label=_PLACES[dcid], role="observationAbout")
+                    for dcid in bound
+                ]
+            }
+        )
+        .stating_unserved(tuple(("observationAbout", dcid) for dcid in unserved))
+        .stating_named_sets(
+            tuple(("observationAbout", group, members) for group, members in named_sets),
+            frozenset(),
+        )
+    )
+
+    facts = spec_departure_facts(
+        spec.model_copy(update={"resolved": resolved}),
+        operations=(),
+        entity_words={"Baltic states": "the Baltics"},
+    )
+
+    assert facts == [
+        DepartureFact(
+            code="entity_unavailable",
+            binding_ref="where:",
+            asked=asked,
+            entities=entities,
+            sets=sets,
+        )
     ]
 
 
@@ -768,6 +914,27 @@ def _unavailable(*entities: str, **fields) -> DepartureFact:
             [_unavailable("Ghana"), _unavailable("France", binding_ref="origin:")],
             [_unavailable("Ghana"), _unavailable("France", binding_ref="origin:")],
             id="each_role_departs_on_its_own",
+        ),
+        pytest.param(
+            [
+                _unavailable(
+                    asked="Africa",
+                    sets=(UnservedMembers("Africa", "Continent", 59, "Africa", ("Ghana",)),),
+                ),
+                _unavailable(
+                    "Norway",
+                    asked="Norway, Africa",
+                    sets=(UnservedMembers("Africa", "Continent", 59, "Africa", ("Ghana", "Togo")),),
+                ),
+            ],
+            [
+                _unavailable(
+                    "Norway",
+                    asked="Norway, Africa",
+                    sets=(UnservedMembers("Africa", "Continent", 59, "Africa", ("Ghana", "Togo")),),
+                )
+            ],
+            id="a_set_s_members_merge_under_the_set",
         ),
     ],
 )

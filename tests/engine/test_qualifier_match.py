@@ -16,29 +16,45 @@ from code_index.types import (
     IndexStamp,
     MeasureIndex,
     MeasureValueRow,
+    StatVarRow,
 )
+from scripts.export_code_index import _MEASURE_WORD_SYNONYMS_KEPT
 from search.engine.qualifier_match import (
     QualifierMatch,
     QualifierTie,
+    VocabularyReading,
     _all_system_markers,
     _max_phrase_words,
     match_qualifier_readings,
     match_qualifier_ties,
     match_qualifiers,
     match_unsupported_qualifier_phrases,
+    read_by_vocabulary,
 )
-from tests.engine._index_slots import crs_shape_systems
+from tests.engine._index_slots import crs_vocabulary, read_text
 
 # ---------------------------------------------------------------------------
 # The packaged, committed index -- the same file any real caller parses.
 # ---------------------------------------------------------------------------
 
 _REAL_INDEX = get_index()
+_CRS = crs_vocabulary()
+# The vocabularies of the DAC1 flow shape and the imputed multilateral shape, as the
+# committed index's families declare them.
+_DAC1 = frozenset({"dac1AidType", "dacTypeOfFinance", "financialFlowType", "nettingBasis"})
+_IMPUTED = frozenset(
+    {"crsPurpose", "crsTypeOfFlow", "dac2aAidType", "financialFlowType", "nettingBasis"}
+)
+
+
+def _read(query: str, vocabulary: frozenset[str] = _CRS) -> VocabularyReading:
+    """`query` read in `vocabulary`, a CRS shape's by default, as the prune step reads it."""
+    return read_text(query, _REAL_INDEX, vocabularies=[vocabulary]).by_vocabulary[vocabulary]
 
 
 def _matches(query: str) -> tuple[QualifierMatch, ...]:
     """The matches of `query` with a CRS shape in play, as the prune step reads them."""
-    return match_qualifiers(query, _REAL_INDEX, shape_systems=crs_shape_systems())
+    return _read(query).matches
 
 
 def _by_system(matches: tuple[QualifierMatch, ...]) -> dict[str, QualifierMatch]:
@@ -188,9 +204,8 @@ def test_label_present_in_two_real_code_systems_stays_unmatched():
     # "budget support" is a real collision: registered as the label on both
     # CRSCooperationModalityA and CRSPurposeCode510, two systems one CRS shape declares. A
     # wrong guess here is worse than none -- left to the binder.
-    (crs_systems,) = crs_shape_systems()
     rows = _REAL_INDEX.codes_by_normalized_text("budget support")
-    assert len([row for row in rows if row.code_system in crs_systems]) == 2
+    assert len([row for row in rows if row.code_system in _CRS]) == 2
     by_system = _by_system(_matches("ODA grants for budget support"))
     assert "crsPurpose" not in by_system
     assert "crsCooperationModality" not in by_system
@@ -528,6 +543,149 @@ def test_ppp_is_one_match_with_a_code_and_a_measure_reading():
     )
 
 
+def _published_vocabulary(provenance: str) -> frozenset[str]:
+    """Every property a family `provenance` publishes carries."""
+    return frozenset(
+        prop
+        for families in _REAL_INDEX.families_by_five_tuple.values()
+        for family in families
+        if provenance in family.datasets
+        for prop in family.properties
+    )
+
+
+@pytest.mark.parametrize(
+    "provenance",
+    ["provenance/OECDCreditorReportingSystem", "provenance/OECDDAC1", "provenance/OECDDAC2A"],
+)
+@pytest.mark.parametrize(
+    ("query", "basis"),
+    [("gross ODA", "Gross"), ("net ODA", "Net"), ("net debt relief", "Net")],
+)
+def test_a_basis_word_before_a_code_text_reads_the_netting_basis(
+    query: str, basis: str, provenance: str
+):
+    """A code synonym holding the basis word ("Gross ODA", "Net debt relief") would claim the
+    whole span and leave the basis unread in every vocabulary."""
+    vocabulary = _published_vocabulary(provenance)
+    reading = read_text(
+        query, _REAL_INDEX, get_measure_index(), vocabularies=[vocabulary]
+    ).by_vocabulary[vocabulary]
+
+    assert ("nettingBasis", basis) in {(m.code_system, m.code_dcid) for m in reading.matches}
+
+
+@pytest.mark.parametrize(
+    ("query", "basis"), [("gross ODA loans", "Gross"), ("net ODA loans", "Net")]
+)
+def test_a_basis_word_reads_beside_the_code_text_left_without_it(query: str, basis: str):
+    """ "Gross ODA Loans" on DAC2aAidType218 is exported as "ODA Loans", so the code reads in
+    the remainder and the basis in its own word."""
+    vocabulary = _published_vocabulary("provenance/OECDDAC2A")
+    reading = read_text(
+        query, _REAL_INDEX, get_measure_index(), vocabularies=[vocabulary]
+    ).by_vocabulary[vocabulary]
+
+    assert {(m.code_system, m.code_dcid) for m in reading.matches} >= {
+        ("nettingBasis", basis),
+        ("dac2aAidType", "DAC2aAidType218"),
+    }
+
+
+@pytest.mark.parametrize(
+    ("query", "code"),
+    [
+        ("ODA grant equivalents of bilateral loans", "DAC1AidType11017"),
+        ("ODA grant equivalents of debt relief operations", "DAC1AidType11026"),
+        ("grant equivalents of debt relief", "DAC1AidType11026"),
+        ("ODA grant equivalents of private sector instruments", "DAC1AidType11040"),
+    ],
+)
+def test_a_synonym_naming_a_measure_its_code_implies_reads_the_code(query: str, code: str):
+    """Every series of these codes is a grant equivalent, so their synonyms keep the measure
+    words and a question in DAC1's wording reads the code."""
+    vocabulary = _published_vocabulary("provenance/OECDDAC1")
+    reading = read_text(
+        query, _REAL_INDEX, get_measure_index(), vocabularies=[vocabulary]
+    ).by_vocabulary[vocabulary]
+
+    assert ("dac1AidType", code) in {(m.code_system, m.code_dcid) for m in reading.matches}
+
+
+_SHAPE_MEASURE_FIELDS = {
+    "populationType": "population_type",
+    "measuredProperty": "measured_property",
+    "measurementQualifier": "measurement_qualifier",
+}
+
+
+def _carries(statvar: StatVarRow, value: MeasureValueRow) -> bool:
+    if value.axis in _SHAPE_MEASURE_FIELDS:
+        return getattr(statvar, _SHAPE_MEASURE_FIELDS[value.axis]) == value.dcid
+    return statvar.constraint_properties.get(value.axis) == value.dcid
+
+
+def test_no_code_synonym_takes_a_measure_value_its_code_does_not_imply():
+    """A code synonym the matcher reads whole, holding a measure value's words, would take
+    them from the measure reading in every vocabulary
+    (`scripts.export_code_index._strip_measure_words`). It may hold them only when every
+    series carrying its code has that measure, as DAC1AidType11017's "ODA grant equivalents
+    of bilateral loans" does. A synonym that is itself a measure text ("PPP") keeps both
+    readings on its one span, and a declared one names no measure."""
+    synonyms = sorted(
+        text
+        for text in {text for row in _REAL_INDEX.codes for text in row.synonyms}
+        if text.casefold() not in _MEASURE_WORD_SYNONYMS_KEPT
+    )
+    together = read_by_vocabulary(synonyms, _REAL_INDEX, get_measure_index(), vocabularies=())
+    measures_alone = read_by_vocabulary(
+        synonyms, _synthetic_index(), get_measure_index(), vocabularies=()
+    )
+    measure_spans = {
+        text: measure_reading.everywhere.spans
+        for text, reading, measure_reading in zip(synonyms, together, measures_alone, strict=True)
+        for span in reading.everywhere.spans
+        if span.start == 0
+        and span.end == len(text)
+        and not any(isinstance(row, MeasureValueRow) for row in span.rows)
+    }
+    series_by_code: dict[str, list[StatVarRow]] = {}
+    for statvar in _REAL_INDEX.statvars:
+        for value in statvar.constraint_properties.values():
+            series_by_code.setdefault(value, []).append(statvar)
+
+    taking = [
+        (row.dcid, text)
+        for row in _REAL_INDEX.codes
+        for text in row.synonyms
+        for span in measure_spans.get(text, ())
+        if not series_by_code.get(row.dcid)
+        or not all(
+            any(
+                _carries(statvar, value)
+                for value in span.rows
+                if isinstance(value, MeasureValueRow)
+            )
+            for statvar in series_by_code[row.dcid]
+        )
+    ]
+
+    assert measure_spans
+    assert taking == []
+
+
+def test_a_declared_measure_word_synonym_keeps_its_code_and_reads_no_basis():
+    """The word "net" in "social safety net" names no netting basis
+    (`scripts.export_code_index._MEASURE_WORD_SYNONYMS_KEPT`)."""
+    reading = read_text(
+        "social safety nets in Kenya", _REAL_INDEX, get_measure_index(), vocabularies=[_CRS]
+    ).by_vocabulary[_CRS]
+
+    by_system = _by_system(reading.matches)
+    assert by_system["crsPurpose"].code_dcid == "CRSPurposeCode16010"
+    assert "nettingBasis" not in by_system
+
+
 def test_a_span_naming_two_code_rows_and_a_measure_value_has_no_readings():
     code_index = _synthetic_index(
         CodeRow(
@@ -767,10 +925,10 @@ def _ties_by_text(ties: tuple[QualifierTie, ...]) -> dict[str, QualifierTie]:
 def test_budget_support_yields_one_tie_of_two_rows():
     # "budget support" is registered as the label on both
     # CRSCooperationModalityA and CRSPurposeCode510 -- match_qualifiers
-    # refuses it outright (see test_qualifier_recognise_spans' own
+    # refuses it outright (see test_qualifier_spans' own
     # coverage); match_qualifier_ties surfaces it instead, with the rows a CRS shape
     # declares.
-    ties = match_qualifier_ties("budget support", _REAL_INDEX, shape_systems=crs_shape_systems())
+    ties = _read("budget support").ties
     assert len(ties) == 1
     tie = ties[0]
     assert tie.matched_text == "budget support"
@@ -788,9 +946,7 @@ def test_budget_support_yields_one_tie_of_two_rows():
 
 
 def test_debt_relief_grants_yields_two_ties_four_rows_and_two_rows():
-    ties = _ties_by_text(
-        match_qualifier_ties("debt relief grants", _REAL_INDEX, shape_systems=crs_shape_systems())
-    )
+    ties = _ties_by_text(_read("debt relief grants").ties)
     assert set(ties) == {"debt relief", "grants"}
 
     debt_relief = ties["debt relief"]
@@ -820,34 +976,75 @@ def test_match_qualifier_ties_excludes_a_measure_value_only_tie():
 
 
 def test_match_qualifier_ties_empty_when_nothing_is_ambiguous():
-    assert (
-        match_qualifier_ties(
-            "ODA standard grants for health", _REAL_INDEX, shape_systems=crs_shape_systems()
-        )
-        == ()
-    )
+    assert _read("ODA standard grants for health").ties == ()
 
 
-def test_a_tie_across_two_families_systems_resolves_per_shape():
-    """ "ODA" names the CRS flow type and the DAC1 aid type, systems no one shape declares
-    together. With a CRS shape alone in play it is the CRS match; with a DAC1 shape beside
-    it, each shape's own code is a match, and it is no tie."""
-    (crs_systems,) = crs_shape_systems()
-    dac1_systems = frozenset({"dac1AidType", "financialFlowType", "nettingBasis"})
-
+def test_a_text_two_families_share_is_a_tie_in_every_system_together():
+    """ "ODA" names the CRS flow type and the DAC1 aid type. Read in every code system at
+    once, it names two rows and is a tie, not a match."""
     assert match_qualifier_ties("ODA", _REAL_INDEX) != ()
     assert [m.code_dcid for m in match_qualifiers("ODA", _REAL_INDEX)] == []
-    assert [
-        m.code_dcid for m in match_qualifiers("ODA", _REAL_INDEX, shape_systems=(crs_systems,))
-    ] == ["CRSTypeOfFlow10"]
-    both = (crs_systems, dac1_systems)
-    assert {m.code_dcid for m in match_qualifiers("ODA", _REAL_INDEX, shape_systems=both)} == {
-        "CRSTypeOfFlow10",
-        "DAC1AidType1010",
-    }
-    assert match_qualifier_ties("ODA", _REAL_INDEX, shape_systems=both) == ()
-
     assert match_qualifiers("amount", _REAL_INDEX, get_measure_index()) == ()
+
+
+@pytest.mark.parametrize(
+    ("query", "vocabulary", "matches", "ties"),
+    [
+        ("ODA", _CRS, ["CRSTypeOfFlow10"], []),
+        ("ODA", _DAC1, ["DAC1AidType1010"], []),
+        (
+            "ODA grants for health",
+            _CRS,
+            ["CRSTypeOfFlow10", "CRSPurposeCode120"],
+            [{"CRSTypeOfFinance100", "CRSTypeOfFinance110"}],
+        ),
+        (
+            "bilateral ODA grants to Kenya",
+            _CRS,
+            ["CRSTypeOfFlow10"],
+            [{"CRSTypeOfFinance100", "CRSTypeOfFinance110"}],
+        ),
+        ("bilateral ODA grants to Kenya", _DAC1, ["DAC1AidType11016"], []),
+        ("multilateral ODA", _CRS, ["CRSTypeOfFlow10"], []),
+        # The imputed sectors table declares the CRS flow type and the DAC2a aid type, and
+        # both read "ODA".
+        ("multilateral ODA", _IMPUTED, [], [{"CRSTypeOfFlow10", "DAC2aAidType206"}]),
+        ("multilateral ODA", _DAC1, ["DAC1AidType2000"], []),
+        ("budget support", _CRS, [], [{"CRSCooperationModalityA", "CRSPurposeCode510"}]),
+        ("aid type 106", _IMPUTED, ["DAC2aAidType106"], []),
+        ("aid type 106", _CRS, [], []),
+    ],
+)
+def test_each_vocabulary_reads_the_query_in_its_own_systems(query, vocabulary, matches, ties):
+    """A shape's vocabulary reads only its own systems' labels. A longer label of another
+    family ("bilateral ODA grants", DAC1 11016; "multilateral ODA", DAC1 2000) claims its
+    words only in that family's vocabulary, so a CRS shape still reads ODA and the "grants"
+    tie. A tie remains where one vocabulary's own systems share a text ("budget
+    support"). A bare code after another system's marker ("aid type 106", DAC2a) reads only
+    in a vocabulary holding that system."""
+    reading = _read(query, vocabulary)
+    assert [m.code_dcid for m in reading.matches] == matches
+    assert [{row.code_dcid for row in tie.rows} for tie in reading.ties] == ties
+
+
+@pytest.mark.parametrize(
+    ("query", "vocabulary", "matches"),
+    [
+        ("net ODA to Kenya", _DAC1, ["Net", "DAC1AidType1010"]),
+        ("gross national income of Ghana", _DAC1, []),
+        ("gross national income of Ghana", _CRS, ["CRSTypeOfFinance1"]),
+        ("PPP", _DAC1, []),
+    ],
+)
+def test_a_measure_value_keeps_its_reading_in_every_system(query, vocabulary, matches):
+    """A vocabulary drops another system's code rows, not the cover their labels give a
+    measure word. "gross" inside "gross national income", a CRS type of finance, is no
+    netting basis on a DAC1 shape, and "PPP", a CRS purpose and a price basis, stays a
+    two-reading span there (`match_qualifier_readings`)."""
+    reading = read_text(
+        query, _REAL_INDEX, get_measure_index(), vocabularies=[vocabulary]
+    ).by_vocabulary[vocabulary]
+    assert [m.code_dcid for m in reading.matches] == matches
 
 
 # ---------------------------------------------------------------------------
@@ -865,8 +1062,9 @@ def test_each_code_systems_markers_come_from_its_name():
         "crsTypeOfFlow": ["flow"],
         "dac1AidType": ["dac1"],
         "dac2aAidType": ["dac2a"],
+        "dac2bAidType": ["dac2b"],
     }
-    # "aid" names both aid-type systems, so it marks neither, measure word or not.
+    # "aid" names every aid-type system, so it marks none, measure word or not.
     assert {
         system: sorted(m.measure_words) for system, m in markers.items() if m.measure_words
     } == {}
@@ -888,7 +1086,8 @@ def test_each_code_systems_markers_come_from_its_name():
     ],
 )
 def test_a_bare_code_after_its_systems_marker_matches(text: str, code_dcid: str):
-    assert [m.code_dcid for m in _matches(text) if m.source == "code"] == [code_dcid]
+    matches = match_qualifiers(text, _REAL_INDEX)
+    assert [m.code_dcid for m in matches if m.source == "code"] == [code_dcid]
 
 
 @pytest.mark.parametrize(
@@ -897,4 +1096,4 @@ def test_a_bare_code_after_its_systems_marker_matches(text: str, code_dcid: str)
 def test_a_word_that_names_the_measure_marks_no_code_on_its_own(text: str):
     """ "aid" is the word a declared default reads as naming the measure, and a word of both
     `dac2aAidType` and `dac1AidType`, so it marks neither system alone."""
-    assert [m for m in _matches(text) if m.source == "code"] == []
+    assert [m for m in match_qualifiers(text, _REAL_INDEX) if m.source == "code"] == []

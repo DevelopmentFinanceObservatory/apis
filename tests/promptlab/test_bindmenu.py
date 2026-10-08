@@ -248,7 +248,9 @@ def prompt() -> str:
 
 @pytest.fixture
 def prompt_with_fixed_context() -> str:
-    return _build_universal_bind_prompt(VARIABLE, SHAPES, admitted_qualifiers=ADMITTED_QUALIFIERS)
+    return _build_universal_bind_prompt(
+        VARIABLE, SHAPES, admitted_qualifiers=[ADMITTED_QUALIFIERS] * len(SHAPES)
+    )
 
 
 def test_parse_menu_recovers_the_variable_phrase(prompt: str) -> None:
@@ -396,7 +398,7 @@ def test_truncate_menu_with_fixed_context_equals_rebuilding_from_the_truncated_s
     prompt_with_fixed_context: str, k: int
 ) -> None:
     rebuilt = _build_universal_bind_prompt(
-        VARIABLE, SHAPES[:k], admitted_qualifiers=ADMITTED_QUALIFIERS
+        VARIABLE, SHAPES[:k], admitted_qualifiers=[ADMITTED_QUALIFIERS] * k
     )
     assert truncate_menu(prompt_with_fixed_context, k) == rebuilt
 
@@ -404,7 +406,8 @@ def test_truncate_menu_with_fixed_context_equals_rebuilding_from_the_truncated_s
 def test_truncate_menu_preserves_the_fixed_context_block(
     prompt_with_fixed_context: str,
 ) -> None:
-    truncated = truncate_menu(prompt_with_fixed_context, 3)
+    # Shape 3 is the first to list the `p:a` slot that `Annual` fixes.
+    truncated = truncate_menu(prompt_with_fixed_context, 4)
     assert "FIXED CONTEXT (" in truncated
     assert "property_dcid=p:unit, value_dcid=USDollar (US Dollar)" in truncated
     assert "property_dcid=p:a, value_dcid=Annual (Annual)" in truncated
@@ -461,7 +464,7 @@ def test_parse_menu_round_trips_a_prompt_with_both_fixed_context_and_dropped_qua
     prompt = _build_universal_bind_prompt(
         VARIABLE,
         SHAPES,
-        admitted_qualifiers=ADMITTED_QUALIFIERS,
+        admitted_qualifiers=[ADMITTED_QUALIFIERS] * len(SHAPES),
         dropped_qualifier_phrases=DROPPED_QUALIFIER_PHRASES,
     )
     variable, entries = parse_menu(prompt)

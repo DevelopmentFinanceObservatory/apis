@@ -53,6 +53,7 @@ class CollectionProbeCeilingExceededError(MaterialisationError):
 
 class DefaultFacetUndefinedError(MaterialisationError):
     """422 `default_facet_undefined`. Raised when an unbound axis has no default candidate.
+    None survives narrowing by the bound axes, or the winning candidate carries no provenance.
     Aggregated member errors give this refusal priority over `facet_not_available`. `request`
     names the member whose selection failed, where one member's selection raised it."""
 
@@ -71,10 +72,7 @@ class DefaultFacetUndefinedError(MaterialisationError):
 
 class FacetNotAvailableError(MaterialisationError):
     """422 `facet_not_available`. Raised when a bound ref or declared default has no
-    observations, or when member errors contain no `default_facet_undefined`.
-    When no member of a group holds a candidate with a facet id, `empty_members` names them
-    all, so a caller can tell an empty answer from a read that failed, as `request` lets it
-    for `DefaultFacetUndefinedError`. It is empty for every other refusal."""
+    observations, or when member errors contain no `default_facet_undefined`."""
 
     def __init__(
         self,
@@ -83,7 +81,6 @@ class FacetNotAvailableError(MaterialisationError):
         alternatives: list[Alternative] | None = None,
         alternatives_truncated: bool = False,
         issues: tuple[MaterialisationIssue, ...] | None = None,
-        empty_members: Sequence[MaterialisationRequest] = (),
     ) -> None:
         super().__init__(
             *args,
@@ -95,7 +92,6 @@ class FacetNotAvailableError(MaterialisationError):
         )
         # `group_facets._as_issue` combines this with its cap check for the wire `truncated` flag.
         self.alternatives_truncated = alternatives_truncated
-        self.empty_members = tuple(empty_members)
 
 
 class OverCeilingError(MaterialisationError):

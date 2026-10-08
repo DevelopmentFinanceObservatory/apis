@@ -43,6 +43,17 @@ allowlist.
 `publish_frame` rejects more than 250,000 rows with `over_ceiling` (422), before
 `Frame.build`. Coverage cannot estimate derived-frame size because analysis-mcp
 computes the rows. Frame grammar rejects empty strings and lone surrogates.
+A frame in which a unit ref spells the key text of a converted or composed unit
+(`materialise.unit_cells.shared_unit_key`) is refused `request_invalid` at `/rows`
+and not stored, since Presentation refuses to open one.
+
+`composed_stat_vars` describes each StatVar an analysis sum, quotient or share wrote
+its rows under, as `{stat_var, relation, first, second}` (`publish_models`). The door
+stores the list in the version's `immutable_body` under `composed_stat_vars`,
+with the key absent for an empty list, and `LiveFrameStore` words each entry as
+its label. The list is written with the pair's first publish and is no part of
+its lineage: a repeat publish compares bytes, `op_spec_hash` and
+`input_content_versions`, and the stored body stands.
 Other layers set row, column, and string-length limits. Accepted frames are
 permanent and eligible for pinned-tier retention.
 
@@ -59,7 +70,7 @@ parsed bodies.
 
 The route class from `_publish_route_class` then admits each request in this
 order: principal, permit, body read or gzip inflation, JSON decode.
-`_admit_publish_request` checks the principal from the headers, so an
+`PublishPrincipals.admit` checks the principal from the headers, so an
 unauthorized caller gets `publish_not_permitted` (403) without holding a permit
 or having its body read, whatever the body holds. The permit comes from the
 door's semaphore, sized by `publish_max_concurrency`, and stays held until the
@@ -72,6 +83,21 @@ decoded size passes `MAX_PUBLISH_BODY_BYTES`. Corrupt or truncated gzip data,
 or bytes after the gzip member, refuse with `PublishBodyEncodingInvalid`. Both
 map to `request_invalid` (400) before JSON decoding. A client disconnect during
 the read returns the same 400 as one during an identity read.
+
+A publish may carry the frame's `recipe`. `publish_frame` hands it to the
+recipe store once the version row is verified, on a first publish and on a
+republish alike, and never puts it in the immutable body. A republish may
+therefore add a recipe to a frame published without one, and a republish
+without a recipe leaves the stored one in place. The store keeps a pair's
+first recipe: a later one with a different `normal_form_hash` or `replay_key`,
+or a `replay_key` another frame holds, refuses with `publish_conflict` (409)
+under its own `constraint_id` (`datasets_api.recipe_store`). The frame is
+recorded by then, so the caller may republish without the recipe. A door built
+without a recipe store refuses a publish carrying a recipe with
+`internal_error` (500) before it writes anything.
+
+`PublishPrincipals` is the door's caller check. The recipe door
+(`datasets_api.doors.recipe`) admits its callers through the same object.
 """
 
 from __future__ import annotations
@@ -85,9 +111,9 @@ from collections.abc import AsyncIterator, Callable, Coroutine, Mapping, Sequenc
 from concurrent.futures import BrokenExecutor, Future
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Self
 
-from dfo_frame_grammar import FrameError
+from dfo_frame_grammar import UNIT_COLUMN, FrameError, unit_cell_to_json, unit_cells, unit_codes
 from fastapi import APIRouter, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
@@ -107,10 +133,22 @@ from dataset_store import LiveDatasetStore, close_shared_pool, shared_pool
 from dataset_store.snapshot import LiveSnapshotReader, SnapshotReader, SnapshotRevoked
 from datasets_api.config import DatasetsBuildSettings, DatasetsConfigError, DatasetsSettings
 from datasets_api.door_executor import DoorExecutor, build_door_executor
+from datasets_api.principals import principal_allowed
 from datasets_api.publish_models import (
+    COMPOSED_STAT_VARS_KEY,
+    MAX_ECHO_CHARS,
     PublishedFrameCoordinates,
     PublishFrameRequest,
     PublishFrameResponse,
+    Recipe,
+)
+from datasets_api.recipe_store import (
+    LiveRecipeStore,
+    RecipeDiverges,
+    RecipeRecord,
+    RecipeStore,
+    ReplayKeyHeld,
+    classify_recipe_store_exception,
 )
 from datasets_api.render import FRAME1_MAX_ROWS, render_and_store_frame1
 from datasets_api.shutdown import ShutdownBudget
@@ -124,6 +162,7 @@ from dfo_platform.trace import get_trace_id
 from materialise.errors import OverCeilingError
 from materialise.formats import FRAME1_MEDIA_TYPE
 from materialise.frame_build import build_frame
+from materialise.unit_cells import shared_unit_key
 
 logger = logging.getLogger(__name__)
 
@@ -154,12 +193,13 @@ _PUBLISH_CONTENT_ENCODINGS = frozenset({"identity", "gzip"})
 
 
 class PublishFrameInvalid(Exception):
-    """Frame grammar rejected `role_keys` or `rows`. Maps to non-retryable
-    `request_invalid` (400), like schema validation failures.
+    """Frame grammar rejected `role_keys` or `rows`, or the built frame is one no reader can
+    open. Maps to non-retryable `request_invalid` (400), like schema validation failures.
     """
 
-    def __init__(self, *, category: str, message: str) -> None:
+    def __init__(self, *, category: str, message: str, pointer: str | None = None) -> None:
         self.category = category
+        self.pointer = pointer
         super().__init__(message)
 
 
@@ -282,6 +322,22 @@ class PublishRecordMissing(Exception):
         )
 
 
+class PublishRecipeStoreMissing(Exception):
+    """A publish carries a recipe and this door has no recipe store to hold it. Maps to
+    non-retryable `internal_error` (500). The door refuses before any write, so no frame is
+    published with its recipe dropped.
+    """
+
+    def __init__(self, *, spec_id: str, content_version: str) -> None:
+        self.spec_id = spec_id
+        self.content_version = content_version
+        super().__init__(
+            f"spec_id {spec_id!r} content_version {content_version!r} was published with a "
+            "recipe, but this publish door was composed without a recipe_store; retrying "
+            "will refuse identically under the same wiring"
+        )
+
+
 class PublishNotPermitted(Exception):
     """No allowed publish principal. Maps to `publish_not_permitted` (403)."""
 
@@ -305,12 +361,41 @@ class PublishResult:
     created: bool
 
 
-def _immutable_body(*, spec_id: str, input_content_versions: Sequence[str]) -> Mapping[str, object]:
-    """Build the derived-frame manifest body from its op-spec id and lineage."""
-    return {
+_LINEAGE_KEYS = ("op_spec_hash", "input_content_versions")
+
+
+def _immutable_body(
+    *,
+    spec_id: str,
+    input_content_versions: Sequence[str],
+    composed_stat_vars: Sequence[Mapping[str, object]],
+) -> Mapping[str, object]:
+    """Build the derived-frame manifest body from its op-spec id and lineage, with the
+    composed StatVars the request describes when it describes any."""
+    body: dict[str, object] = {
         "op_spec_hash": spec_id,
         "input_content_versions": list(input_content_versions),
     }
+    if composed_stat_vars:
+        body[COMPOSED_STAT_VARS_KEY] = [dict(entry) for entry in composed_stat_vars]
+    return body
+
+
+def write_frame_recipe(
+    *, recipe_store: RecipeStore, spec_id: str, content_version: str, recipe: Recipe
+) -> bool:
+    """Store `recipe` for the frame and index its replay key. Return `True` when this call
+    creates the row, `False` when the frame already holds a matching recipe.
+    """
+    return recipe_store.write_recipe(
+        RecipeRecord(
+            spec_id=spec_id,
+            content_version=content_version,
+            normal_form_hash=recipe.normal_form_hash,
+            replay_key=recipe.replay_key,
+            body=recipe.model_dump(mode="json"),
+        )
+    )
 
 
 def publish_frame(
@@ -323,8 +408,11 @@ def publish_frame(
     artifact_store: ArtifactStore,
     snapshot_reader: SnapshotReader,
     version_writer: VersionRecordWriter,
+    composed_stat_vars: Sequence[Mapping[str, object]] = (),
     trace_id: str | None = None,
     ceiling: int = PUBLISH_MAX_ROWS,
+    recipe: Recipe | None = None,
+    recipe_store: RecipeStore | None = None,
 ) -> PublishResult:
     """Publish one frame synchronously and verify the stored version.
 
@@ -335,7 +423,19 @@ def publish_frame(
     matching conflict. Otherwise record the version, then reread it to verify
     the winning bytes, lineage, and revocation state. `created` comes from the
     writer's insert result. Missing read-back raises `PublishRecordMissing`.
+
+    A `recipe` goes to `recipe_store` after the version is verified, whether
+    this call or an earlier one recorded it. It takes no part in the body
+    comparison. A `recipe` with no `recipe_store` raises
+    `PublishRecipeStoreMissing` before any write.
+
+    `composed_stat_vars` is stored with the first publish of a pair and is no part of its
+    lineage: a repeat publish with matching bytes and lineage succeeds whether or not it
+    carries the list, and the stored body stands.
     """
+    if recipe is not None and recipe_store is None:
+        raise PublishRecipeStoreMissing(spec_id=spec_id, content_version=content_version)
+
     if len(rows) > ceiling:
         raise OverCeilingError(
             f"published frame has {len(rows)} rows, exceeding the sync materialisation "
@@ -355,6 +455,20 @@ def publish_frame(
             frame = build_frame(role_keys=role_keys, rows=rows)
     except FrameError as exc:
         raise PublishFrameInvalid(category=exc.category, message=str(exc)) from exc
+    unit_column = frame.table.column(UNIT_COLUMN)
+    shared = shared_unit_key(
+        cells=[unit_cell_to_json(cell) for cell in unit_cells(unit_column, unit_codes(unit_column))]
+    )
+    if shared is not None:
+        # Presentation groups rows by each unit's key text and refuses a frame that shares one.
+        raise PublishFrameInvalid(
+            category="invalid_unit",
+            message=(
+                f"the unit ref {shared[:MAX_ECHO_CHARS]!r} reads as the same text as a converted or composed "
+                "unit in this frame; units must read apart"
+            ),
+            pointer="/rows",
+        )
 
     artifact = render_and_store_frame1(
         frame_chunks=(frame,),
@@ -363,7 +477,11 @@ def publish_frame(
         artifact_store=artifact_store,
     )
 
-    requested_body = _immutable_body(spec_id=spec_id, input_content_versions=input_content_versions)
+    requested_body = _immutable_body(
+        spec_id=spec_id,
+        input_content_versions=input_content_versions,
+        composed_stat_vars=composed_stat_vars,
+    )
 
     def _recorded_frame1_digest() -> str | None:
         locations = snapshot_reader.read_artifact_locations(spec_id, content_version)
@@ -372,8 +490,19 @@ def publish_frame(
 
     def _raise_if_diverges(stored: Mapping[str, object]) -> None:
         """Compare stored lineage after the caller confirms frame1 bytes match."""
-        if dict(stored) != dict(requested_body):
+        if any(stored.get(key) != requested_body[key] for key in _LINEAGE_KEYS):
             raise PublishLineageDiverge(spec_id=spec_id, content_version=content_version)
+
+    def _store_recipe() -> None:
+        if recipe is None or recipe_store is None:
+            return
+        with phase("recipe"):
+            write_frame_recipe(
+                recipe_store=recipe_store,
+                spec_id=spec_id,
+                content_version=content_version,
+                recipe=recipe,
+            )
 
     with phase("check"):
         existing_version = snapshot_reader.read_version(spec_id, content_version)
@@ -387,6 +516,7 @@ def publish_frame(
             if recorded_digest != artifact.artifact_digest:
                 raise PublishBytesDiverge(spec_id=spec_id, content_version=content_version)
             _raise_if_diverges(existing_version.immutable_body)
+            _store_recipe()
             return PublishResult(
                 spec_id=spec_id,
                 content_version=content_version,
@@ -420,6 +550,7 @@ def publish_frame(
     if recorded_digest != artifact.artifact_digest:
         raise PublishBytesDiverge(spec_id=spec_id, content_version=content_version)
     _raise_if_diverges(recorded_version.immutable_body)
+    _store_recipe()
 
     return PublishResult(
         spec_id=spec_id,
@@ -431,7 +562,13 @@ def publish_frame(
 
 def classify_publish_exception(exc: BaseException) -> ProblemSpec | None:
     if isinstance(exc, PublishFrameInvalid):
-        return ProblemSpec(status=400, code="request_invalid", detail=str(exc), retryable=False)
+        return ProblemSpec(
+            status=400,
+            code="request_invalid",
+            detail=str(exc),
+            retryable=False,
+            pointer=exc.pointer,
+        )
 
     if isinstance(exc, PublishBodyTooLarge):
         return ProblemSpec(status=400, code="request_invalid", detail=str(exc), retryable=False)
@@ -493,6 +630,15 @@ def classify_publish_exception(exc: BaseException) -> ProblemSpec | None:
         )
         return ProblemSpec(status=500, code="internal_error", detail=str(exc), retryable=False)
 
+    if isinstance(exc, PublishRecipeStoreMissing):
+        logger.error(
+            "Datasets publish door refused a publish for spec_id %s content_version %s: it "
+            "carries a recipe and this door was composed without a recipe_store",
+            exc.spec_id,
+            exc.content_version,
+        )
+        return ProblemSpec(status=500, code="internal_error", detail=str(exc), retryable=False)
+
     if isinstance(exc, PublishNotPermitted):
         return ProblemSpec(
             status=403, code="publish_not_permitted", detail=str(exc), retryable=False
@@ -549,7 +695,7 @@ def classify_publish_exception(exc: BaseException) -> ProblemSpec | None:
             retryable=True,
         )
 
-    return None
+    return classify_recipe_store_exception(exc)
 
 
 _PUBLISH_ROUTE = "/api/datasets/frames/publish"
@@ -697,6 +843,57 @@ class _PublishPermit:
             self._semaphore.release()
 
 
+@dataclass(frozen=True)
+class PublishPrincipals:
+    """The callers allowed to publish, and the header that names a caller."""
+
+    header: str
+    allowed: frozenset[str]
+
+    @classmethod
+    def resolve(
+        cls,
+        *,
+        settings: DatasetsBuildSettings,
+        principal_header: str | None = None,
+        allowed_principals: frozenset[str] | None = None,
+    ) -> Self:
+        """Default the header to `settings.principal_header` and the allowlist to
+        `settings.first_party_principal`. An empty principal yields an empty allowlist.
+        """
+        return cls(
+            header=principal_header if principal_header is not None else settings.principal_header,
+            allowed=allowed_principals
+            if allowed_principals is not None
+            else frozenset({settings.first_party_principal} - {""}),
+        )
+
+    def admit(self, request: Request) -> None:
+        """Check authorization from the headers alone, before a door reads the body.
+
+        Reject missing, repeated, or unlisted principal headers. `getlist` exposes
+        duplicate values after the first header. The comparison with the allowlist takes
+        constant time (`principals.principal_allowed`).
+
+        Raises:
+            PublishNotPermitted: The request names no allowed principal.
+        """
+        principal_values = request.headers.getlist(self.header)
+        if not principal_values:
+            raise PublishNotPermitted(principal=None)
+        if len(principal_values) > 1:
+            logger.warning(
+                "Datasets publish principal check saw %d values for the %r principal header "
+                "on one request; refusing rather than trusting either one",
+                len(principal_values),
+                self.header,
+            )
+            raise PublishNotPermitted(principal=principal_values[0])
+        principal = principal_values[0]
+        if not principal_allowed(principal, self.allowed):
+            raise PublishNotPermitted(principal=principal)
+
+
 @dataclass
 class _PublishResolvedDeps:
     """Store dependencies resolved in place by lifespan."""
@@ -704,6 +901,7 @@ class _PublishResolvedDeps:
     artifact_store: ArtifactStore | None
     snapshot_reader: SnapshotReader | None
     version_writer: VersionRecordWriter | None
+    recipe_store: RecipeStore | None
 
 
 @dataclass
@@ -724,13 +922,13 @@ class _PublishDoorState:
     door_executor: DoorExecutor
     # The factory accepts all three dependencies injected or all three unset.
     store_deps_injected: bool
-    principal_header: str
-    allowed_principals: frozenset[str]
+    principals: PublishPrincipals
     ceiling: int
 
 
 def _publish_open_store_deps(state: _PublishDoorState, borrow: _PublishStoreBorrow) -> None:
-    """Build the live reader and writer when the store dependencies are unset.
+    """Build the live reader and writer when the store dependencies are unset, and the recipe
+    store when none is injected.
 
     This phase has no local cleanup path.
     """
@@ -741,6 +939,8 @@ def _publish_open_store_deps(state: _PublishDoorState, borrow: _PublishStoreBorr
     borrow.opened_here = True
     state.resolved.snapshot_reader = LiveSnapshotReader(store=store)
     state.resolved.version_writer = LiveVersionRecordWriter(store=store)
+    if state.resolved.recipe_store is None:
+        state.resolved.recipe_store = LiveRecipeStore(store=store)
 
 
 def _publish_open_artifact_store(state: _PublishDoorState, borrow: _PublishStoreBorrow) -> None:
@@ -809,28 +1009,6 @@ async def _run_publish(
     return await asyncio.wrap_future(future)
 
 
-def _admit_publish_request(request: Request, *, state: _PublishDoorState) -> None:
-    """Check authorization from the headers alone, before the door reads the body.
-
-    Reject missing, repeated, or unlisted principal headers. `getlist` exposes
-    duplicate values after the first header.
-    """
-    principal_values = request.headers.getlist(state.principal_header)
-    if not principal_values:
-        raise PublishNotPermitted(principal=None)
-    if len(principal_values) > 1:
-        logger.warning(
-            "Datasets publish door saw %d values for the %r principal header on one "
-            "request; refusing rather than trusting either one",
-            len(principal_values),
-            state.principal_header,
-        )
-        raise PublishNotPermitted(principal=principal_values[0])
-    principal = principal_values[0]
-    if principal not in state.allowed_principals:
-        raise PublishNotPermitted(principal=principal)
-
-
 def _publish_route_class(state: _PublishDoorState) -> type[APIRoute]:
     """Return the publish route class, which admits a request before FastAPI reads its body.
 
@@ -844,7 +1022,7 @@ def _publish_route_class(state: _PublishDoorState) -> type[APIRoute]:
             handler = super().get_route_handler()
 
             async def admit_then_handle(request: Request) -> Response:
-                _admit_publish_request(request, state=state)
+                state.principals.admit(request)
                 permit = _PublishPermit.take(state.door_executor.semaphore)
                 try:
                     if _publish_content_encoding(request) == "gzip":
@@ -875,11 +1053,14 @@ async def _post_publish_impl(
             role_keys=body.role_keys,
             rows=body.rows,
             input_content_versions=body.input_content_versions,
+            composed_stat_vars=[entry.model_dump() for entry in body.composed_stat_vars],
             artifact_store=state.resolved.artifact_store,
             snapshot_reader=state.resolved.snapshot_reader,
             version_writer=state.resolved.version_writer,
             trace_id=trace_id,
             ceiling=state.ceiling,
+            recipe=body.recipe,
+            recipe_store=state.resolved.recipe_store,
         )
     response = PublishFrameResponse(
         published=PublishedFrameCoordinates(
@@ -901,6 +1082,7 @@ def build_publish_door(
     artifact_store: ArtifactStore | None = None,
     snapshot_reader: SnapshotReader | None = None,
     version_writer: VersionRecordWriter | None = None,
+    recipe_store: RecipeStore | None = None,
     principal_header: str | None = None,
     allowed_principals: frozenset[str] | None = None,
     ceiling: int = PUBLISH_MAX_ROWS,
@@ -920,6 +1102,10 @@ def build_publish_door(
     or leave all three unset for lifespan to build them with one pool borrow.
     The writer and reader share a store because each publish verifies its
     version row. Pass `NullVersionRecordWriter` explicitly to disable writes.
+    Lifespan also builds the recipe store on that borrow unless one is
+    injected. With the three injected, inject `recipe_store` over the same
+    store, or leave it unset for a door that refuses a publish carrying a
+    recipe.
     `budget` is shared across mounted doors. An omitted budget creates a private one.
     """
     missing = [
@@ -942,15 +1128,6 @@ def build_publish_door(
 
     _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
     _budget = budget if budget is not None else ShutdownBudget()
-    _principal_header = (
-        principal_header if principal_header is not None else _settings.principal_header
-    )
-    _allowed_principals = (
-        allowed_principals
-        if allowed_principals is not None
-        else frozenset({_settings.first_party_principal} - {""})
-    )
-
     effective_pool_size = pool_size if pool_size is not None else _settings.publish_max_concurrency
     door_executor = build_door_executor(effective_pool_size, "publish")
 
@@ -959,13 +1136,17 @@ def build_publish_door(
             artifact_store=artifact_store,
             snapshot_reader=snapshot_reader,
             version_writer=version_writer,
+            recipe_store=recipe_store,
         ),
         settings=_settings,
         budget=_budget,
         door_executor=door_executor,
         store_deps_injected=snapshot_reader is not None,
-        principal_header=_principal_header,
-        allowed_principals=_allowed_principals,
+        principals=PublishPrincipals.resolve(
+            settings=_settings,
+            principal_header=principal_header,
+            allowed_principals=allowed_principals,
+        ),
         ceiling=ceiling,
     )
 
@@ -988,12 +1169,15 @@ def build_publish_door(
             PublishLineageDiverge,
             SnapshotRevoked,
             PublishRecordMissing,
+            PublishRecipeStoreMissing,
             PublishNotPermitted,
             OverCeilingError,
             PublishBackpressure,
             ArtifactRecordConflictError,
             ArtifactInventoryError,
             ArtifactWriteError,
+            RecipeDiverges,
+            ReplayKeyHeld,
             # Surface-level classification handles exceptions version writes can raise.
             DatasetsStoreUnavailable,
         ),
@@ -1006,6 +1190,7 @@ def build_publish_door(
             PublishLineageDiverge(spec_id="ops_exemplar", content_version="ocv_exemplar"),
             SnapshotRevoked(id="ops_exemplar", content_version="ocv_exemplar", reason=None),
             PublishRecordMissing(spec_id="ops_exemplar", content_version="ocv_exemplar"),
+            PublishRecipeStoreMissing(spec_id="ops_exemplar", content_version="ocv_exemplar"),
             PublishNotPermitted(principal=None),
             OverCeilingError("exemplar", ceiling_kind="rows", count=1, cap=1),
             PublishBackpressure(),
@@ -1021,6 +1206,16 @@ def build_publish_door(
             ),
             ArtifactInventoryError(digest="sha256:exemplar"),
             ArtifactWriteError(object_name="sha256:exemplar", digest="sha256:exemplar"),
+            RecipeDiverges(
+                spec_id="ops_exemplar", content_version="ocv_exemplar", field="normal_form_hash"
+            ),
+            ReplayKeyHeld(
+                replay_key="rpk_exemplar",
+                spec_id="ops_exemplar",
+                content_version="ocv_exemplar",
+                holder_spec_id="ops_holder",
+                holder_content_version="ocv_holder",
+            ),
             DatasetsStoreUnavailable("exemplar"),
         ),
         lifespan=functools.partial(_publish_lifespan, state=state),
@@ -1037,9 +1232,12 @@ __all__ = [
     "PublishFrameInvalid",
     "PublishLineageDiverge",
     "PublishNotPermitted",
+    "PublishPrincipals",
+    "PublishRecipeStoreMissing",
     "PublishRecordMissing",
     "PublishResult",
     "build_publish_door",
     "classify_publish_exception",
     "publish_frame",
+    "write_frame_recipe",
 ]

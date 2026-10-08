@@ -31,7 +31,7 @@ from assembler.ports import (
     WriteSubjectKind,
     WriteTokenInUse,
 )
-from assembler.reply import WriteReply, applied_defaults, build_changed_fields, build_reply
+from assembler.reply import WriteReply, build_changed_fields, build_reply
 from assembler.resolve import ResolvedSeries
 from assembler.write_token import (
     COMPONENT_WRITE_TOKEN_PREFIX,
@@ -260,11 +260,11 @@ def write_component(
                 and _series_coordinates_equal(
                     candidate=series_coordinates, stored=current.series_coordinates
                 )
-                and _defaults_equal(
-                    component=cast("Mapping[str, object]", envelope["component"]),
-                    candidate_intent=candidate.stored_intent,
-                    stored_intent=current.stored_intent,
-                )
+                # Two intents can mint one envelope on this frame and differ on a later one:
+                # a stated window beside an omitted one, a label beside the relative period
+                # resolving to it, a listed select beside the default that draws the same
+                # values. The head must store the intent just sent.
+                and candidate.stored_intent == current.stored_intent
             ):
                 is_noop = True
                 noop_component_id = ctx.component_id
@@ -520,20 +520,6 @@ def _excluding_volatile(payload: Mapping[str, object]) -> dict[str, object]:
     provenance.pop("generated_at", None)
     stripped["provenance"] = provenance
     return stripped
-
-
-def _defaults_equal(
-    *,
-    component: Mapping[str, object],
-    candidate_intent: Mapping[str, object],
-    stored_intent: Mapping[str, object],
-) -> bool:
-    """Checks that the candidate intent states the same defaults as the stored head's, so a
-    no-op reply, which reports the head's stored intent, describes the intent just sent."""
-    member = cast(str, component["type"])
-    return applied_defaults(
-        component=component, member=member, stored_intent=candidate_intent
-    ) == applied_defaults(component=component, member=member, stored_intent=stored_intent)
 
 
 def _structurally_equal(a: Mapping[str, object], b: Mapping[str, object]) -> bool:

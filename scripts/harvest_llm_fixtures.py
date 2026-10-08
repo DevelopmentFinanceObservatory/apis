@@ -26,6 +26,11 @@ coverage index and catalogue. Pytest imports the `-p` outcome plugin before that
 `GEMINI_API_KEY`. The harvest process sets the same placeholder graph base for its own
 engine imports when none is set.
 
+Before collection, a key whose schema fingerprint (the part before the colon) belongs to none of
+the recorded schemas is dropped, because no prompt can request it again and the key-shape test in
+`tests/fixtures/test_keys.py` fails on it. The step backs up the bank, prints the count dropped per
+stale fingerprint, and writes the bank only when something was dropped.
+
 After convergence, pruning keeps every key requested on the final pass, hit or miss. `FakeLLM`
 records both outcomes. A miss-only set is empty at convergence. A narrowed `--pytest-args` run
 skips pruning because its key set is incomplete. The prune backs up the bank,
@@ -52,9 +57,10 @@ import tempfile
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import yaml
+from pydantic import BaseModel
 
 _ENGINE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ENGINE_ROOT / "src"))
@@ -73,6 +79,7 @@ from tests._harvest_outcome_plugin import (  # noqa: E402
     SCHEMA_VERSION as OUTCOME_SCHEMA_VERSION,
 )
 from tests.fixtures import HARVEST_MISS_PATH_ENV, MissingFixtureError  # noqa: E402
+from tests.fixtures.keys import schema_fingerprint  # noqa: E402
 
 if TYPE_CHECKING:
     from search.engine.clients.llm import SupportsLLM
@@ -187,7 +194,10 @@ def _parse_requested_keys(harvest_file: Path, lines: Iterable[str]) -> frozenset
     return frozenset(keys)
 
 
-def _schema_and_stage(schema_name: str) -> tuple[type, str]:
+_RECORDED_SCHEMA_NAMES = ("Extraction", "_UniversalBindOutput", "_SourceSlotBindOutput")
+
+
+def _schema_and_stage(schema_name: str) -> tuple[type[BaseModel], Literal["extract", "bind"]]:
     """Map `Extraction`, `_UniversalBindOutput` and `_SourceSlotBindOutput` to a schema
     and stage.
 
@@ -563,6 +573,42 @@ def _write_bank(bank: dict, *, path: Path = _BANK_PATH) -> None:
     _write_json(path, bank)
 
 
+def _current_fingerprints() -> frozenset[str]:
+    """The `Name@fingerprint` prefix every recorded schema's keys carry today."""
+    schemas = (_schema_and_stage(name)[0] for name in _RECORDED_SCHEMA_NAMES)
+    return frozenset(f"{schema.__name__}@{schema_fingerprint(schema)}" for schema in schemas)
+
+
+def _drop_stale_fingerprints(bank: dict, *, bank_path: Path = _BANK_PATH) -> dict:
+    """Drop every key whose fingerprint no recorded schema has, and return the bank.
+
+    A schema change moves its fingerprint, so the keys recorded under the old one can never be
+    requested again. The bank is backed up before the drop and is returned as given when nothing
+    is stale. Keys without `:` are metadata and pass through unchanged.
+    """
+    current = _current_fingerprints()
+    stale_counts: dict[str, int] = {}
+    kept: dict = {}
+    for key, value in bank.items():
+        fingerprint = key.split(":", 1)[0]
+        if ":" not in key or fingerprint in current:
+            kept[key] = value
+        else:
+            stale_counts[fingerprint] = stale_counts.get(fingerprint, 0) + 1
+    if not stale_counts:
+        return bank
+
+    sidecar = bank_path.with_name(bank_path.name + ".prestale")
+    _write_bank(bank, path=sidecar)
+    print(f"Pre-drop bank backed up to {sidecar}")
+    breakdown = ", ".join(f"{count} {fp}" for fp, count in sorted(stale_counts.items()))
+    print(
+        f"Stale fingerprints: dropping {sum(stale_counts.values())}/{len(bank)} key(s): {breakdown}"
+    )
+    _write_bank(kept, path=bank_path)
+    return kept
+
+
 _PRUNE_MAX_DROP_FRACTION = 0.90
 """A high, unconditional backstop -- see the module docstring's safeguard
 (5). A narrowed `--pytest-args` run is handled upstream by main() skipping
@@ -702,13 +748,14 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    existing = json.loads(_BANK_PATH.read_text())
+    recorded = json.loads(_BANK_PATH.read_text())
+    existing = _drop_stale_fingerprints(recorded, bank_path=_BANK_PATH)
     live_llm = LLM()
     # Preserve quoted arguments as single argv entries for pytest and `_refuse_xdist`.
     pytest_args = shlex.split(args.pytest_args) if args.pytest_args else []
 
     print(
-        f"LLM fixture harvest (existing bank: {len(existing)} entries; "
+        f"LLM fixture harvest (existing bank: {len(recorded)} entries; "
         f"max_passes={args.max_passes}; requires GEMINI_API_KEY)"
     )
 
@@ -751,7 +798,7 @@ def main() -> None:
         _write_bank(pruned_bank)
     _report(
         result,
-        existing_count=len(existing),
+        existing_count=len(recorded),
         dropped_by_schema=dropped_by_schema,
         final_count=len(pruned_bank),
     )

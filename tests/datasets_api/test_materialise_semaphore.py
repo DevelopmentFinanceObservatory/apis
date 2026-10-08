@@ -31,6 +31,7 @@ from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 
+from ._app_factories import offline_recipe_stores
 from ._artifact_doubles import FakeArtifactStore
 from ._graph_doubles import FakeMintGraphReader
 from ._snapshot_doubles import FakeSnapshotReader
@@ -196,6 +197,8 @@ def _client(
         # Avoid creating a live Cloud Tasks client during lifespan startup.
         task_client=NullTaskClient(),
         coverage=_coverage_service(),
+        # Keep the recipe door from opening a live store connection.
+        **offline_recipe_stores(),
     )
     with (
         mock.patch.dict(os.environ, _SETTINGS_ENV),

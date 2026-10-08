@@ -25,14 +25,22 @@ from search.engine.extract import DateRequest
 from search.engine.qualifier_match import _normalize
 from search.engine.region.arcs import standard_bindings_from_arcs
 from search.engine.region.codes import OBSERVATIONS_NOTHING_TO_PROBE
+from search.engine.region.decisions import PlaceSetNotAdmittedError, PlaceSetTooLargeError
 from search.engine.region.named_source import with_named_source
-from search.engine.region.place_context import PlaceContext, settled_shape
-from search.engine.region.place_roles import PlaceRoles, where_binding
+from search.engine.region.place_context import (
+    PlaceContext,
+    UnsettledPlace,
+    settle_sets,
+    settled_shape,
+    unread_context,
+    with_where,
+)
 from search.engine.region.result import RegionResult
 from search.engine.region.state import ResolveState
 from search.engine.retrieval.bound_values import (
     PartNotServed,
     RoleClassWalks,
+    RoleKeys,
     WalkedMembers,
     canonical_pin_bindings,
     elected_role_class_shape,
@@ -47,10 +55,12 @@ from search.engine.retrieval.representative import shape_agreement_representativ
 from search.engine.retrieval.retrieve import (
     BoundValuesUnrealisable,
     Materialised,
+    MaterialisedCandidates,
+    NoDataDraft,
     UnsupportedDraft,
     materialise,
 )
-from search.engine.retrieval.standard import facets_at_own_places
+from search.engine.retrieval.standard import FacetBatch, facets_at_own_places
 from search.engine.shape import ShapeDraft, is_role_bearing
 from search.models import ResolvedQualifier, SpecObservations, Warning, omitted_observations
 from series_coverage.shared import CoverageSnapshot
@@ -90,15 +100,18 @@ def _prewarm_places(
     place: PlaceContext,
     presence: DefaultPresence | None,
     named_place_dcids: Sequence[str],
+    read_places: Sequence[str] = (),
 ) -> dict[str, tuple[str, ...]]:
     """The places a shape's facet prewarm reads each of `members` at: on a default scope,
     each member of the presence read at its own scope (`DefaultPresence.scope`), else every
-    member at the shape's probe places, else at every named place."""
+    member at `read_places`, the places the settling of the shape's place sets reads
+    (`UnsettledPlace.read_places`), else at the shape's probe places, else at every named
+    place."""
     scoped = place.presence_for(presence)
     if scoped is not None:
         covered = shape.sv_arc_facts or {}
         return {sv: scoped.scope(sv).places for sv in members if sv in covered}
-    entities = tuple(place.probe_dcids or named_place_dcids)
+    entities = tuple(read_places or place.probe_dcids or named_place_dcids)
     return dict.fromkeys(members, entities)
 
 
@@ -139,7 +152,7 @@ def alternate_representative(
 
 def walk_alternate(
     shape: ShapeDraft,
-    roles: PlaceRoles,
+    role_keys: RoleKeys,
     rep_sv: str,
     *,
     graph: EngineGraphClient,
@@ -164,19 +177,18 @@ def walk_alternate(
     of the dataset its family elects take their canonical form as the chosen shape's do
     (`canonical_pin_bindings`), so its slots state what its canonical identity binds.
 
-    ``roles`` is the alternate's binding of the query's places. Its entities, keyed as the
-    alternate's own identity binds them, elect one role class among its members
-    (``elected_role_class_shape``), settled by the mint's walk when ``role_class_walks`` is
-    given, whether or not the alternate declares a flow role, as the elected shape's is. An
+    ``role_keys`` are the keys the alternate's own identity binds the query's places under
+    and the axes it leaves open (`PlaceAssignment.role_keys`). They elect one role class
+    among its members (``elected_role_class_shape``), settled by the mint's walk when
+    ``role_class_walks`` is given, whether or not the alternate declares a flow role, as the
+    elected shape's is. The election reads no place, so it runs before the places settle. An
     alternate whose members the walk does not settle is marked `unverified`, and its result
     carries ``membership_unverified``. A walk that meets role sets the election cannot
     order, or a member at fault, drops the alternate, as the mint refuses its identity. The
-    walk can change the roles the shape declares, so the caller binds the returned shape's
-    places (`place_roles.bound_after_election`) and builds its place context after this
-    call.
+    walk can change the roles the shape declares, so the caller assigns the returned
+    shape's places (`place_roles.bound_after_election`) and settles them after this call.
     """
     bindings = standard_bindings_from_arcs(shape=shape, rep_sv_dcid=rep_sv)
-    role_keys = entity_role_keys(roles.resolved_entities, open_axes=roles.open_axes)
     try:
         source = part_source(shape, bindings, lambda: role_keys, excluded=excluded)
     except PartNotServed:
@@ -184,16 +196,10 @@ def walk_alternate(
     if source is not None and shape.named_dataset is None:
         shape = shape_for_part(shape, source)
     bindings = with_named_source(bindings, shape)
-    where = where_binding(roles.where_dcids)
     try:
         resolution = elected_role_class_shape(
             shape,
-            shape_query(
-                shape,
-                bindings if where is None else [*bindings, where],
-                role_keys.bound,
-                open_role_keys=role_keys.open,
-            ),
+            shape_query(shape, bindings, role_keys.bound, open_role_keys=role_keys.open),
             walks=role_class_walks,
             arcs_graph=graph,
             deadline=deadline,
@@ -207,7 +213,7 @@ def walk_alternate(
 
 def elect_alternate(
     shape: ShapeDraft,
-    roles: PlaceRoles,
+    role_keys: RoleKeys,
     *,
     elected_bindings: list[SlotBindingDraft],
     elected_has_data: bool,
@@ -224,7 +230,7 @@ def elect_alternate(
         return None
     return walk_alternate(
         shape,
-        roles,
+        role_keys,
         rep_sv,
         graph=graph,
         deadline=deadline,
@@ -235,7 +241,7 @@ def elect_alternate(
 def _materialise_alt_shapes(
     alternates: Sequence[_Alternate],
     *,
-    places: Sequence[PlaceContext],
+    places: Sequence[PlaceContext | UnsettledPlace],
     presence: DefaultPresence | None = None,
     named_place_dcids: Sequence[str],
     graph: EngineGraphClient,
@@ -243,12 +249,17 @@ def _materialise_alt_shapes(
     date_request: DateRequest | None,
     deadline: float | None = None,
     coverage: CoverageSnapshot,
+    over_bound: list[_Alternate] | None = None,
 ) -> tuple[list[_Candidate], UnsupportedDraft | None]:
     """Materialise alternates (`elect_alternate`), each in its own place context.
 
-    ``places`` holds each alternate's place context, in ``alternates`` order, built for
-    the shape the alternate holds: its where slot, role entities and probe places come from
-    there, and each result carries the context settled on it. A context with no probe
+    ``places`` holds each alternate's places, in ``alternates`` order, for the shape the
+    alternate holds. An alternate whose place sets are unsettled settles them on its own
+    read (`place_context.settle_sets`): its where slot, role entities and probe places come
+    from the context it settles to, and each result carries that context settled on it. An
+    alternate whose places exceed the bound on the places a Spec binds
+    (`PlaceSetTooLargeError`) is dropped and appended to ``over_bound`` when one is given,
+    so the caller can tell it from an alternate read and found empty. A context with no probe
     places has its cache warm read every named place (``named_place_dcids``), so no one
     place decides it. ``presence`` is the request's presence read, which a default-scoped
     shape's materialisation derives its scope from (`PlaceContext.presence_for`). Shapes
@@ -260,24 +271,46 @@ def _materialise_alt_shapes(
     Batched observation-facet requests warm the cache before the loop, avoiding up to
     ``max_candidates - 1`` sequential reads. Shapes probed over the same places share one
     batch, and every default-scoped shape joins one batch that reads each member at its own
-    scope (`_prewarm_places`, `facets_at_own_places`), in first-shape order. Each batch reads
-    the members its materialisation reads, those of the family the alternate's own query
-    elects (its bindings and role keys, `shape_query`), so its resolve hits the cache keyed
-    by StatVar, entity, and date need. Each batch is capped at ``region_max_members``: index
+    scope (`_prewarm_places`, `facets_at_own_places`), in first-shape order. A shape whose
+    read decides a place set is warmed at every place either reading binds
+    (`UnsettledPlace.read_places`). Each batch reads the members its materialisation reads,
+    those of the family the alternate's own query elects (its bindings and role keys,
+    `shape_query`), so its resolve hits the cache keyed by StatVar, entity, and date need.
+    Each batch is capped at ``region_max_members``: index
     populations may span the full CRS vocabulary, while recall is capped at
     ``SEARCH_MAX_CONFIRM_CANDIDATES`` per shape. Materialisation is uncapped.
     """
     # Prewarm key: one for every default-scoped shape, else the probe places themselves.
     # Each batch maps its members to the places they are read at, the first shape's first.
+    readable: list[tuple[_Alternate, PlaceContext | UnsettledPlace]] = []
     prewarms: dict[tuple[str, ...] | None, dict[str, tuple[str, ...]]] = {}
-    for alternate, place in zip(alternates, places, strict=True):
+    for alternate, unsettled in zip(alternates, places, strict=True):
         shape = alternate.shape
+        try:
+            place = unread_context(unsettled)
+        except PlaceSetTooLargeError as exc:
+            _drop_over_bound(alternate, exc, over_bound)
+            continue
+        except PlaceSetNotAdmittedError:
+            logger.info(
+                "shape %r admits no reading of a place set; dropped from the offer",
+                alternate.shape.shape_id,
+            )
+            continue
+        readable.append((alternate, unsettled))
         role_keys = entity_role_keys(place.roles.resolved_entities, open_axes=place.roles.open_axes)
         shape_members, _index_sourced = shape_member_facts(
             shape,
             shape_query(shape, alternate.bindings, role_keys.bound, open_role_keys=role_keys.open),
         )
-        places_of = _prewarm_places(shape, list(shape_members), place, presence, named_place_dcids)
+        places_of = _prewarm_places(
+            shape,
+            list(shape_members),
+            place,
+            presence,
+            named_place_dcids,
+            unsettled.read_places if isinstance(unsettled, UnsettledPlace) else (),
+        )
         if not any(places_of.values()):
             continue
         key = None if place.default_scope is not None else next(iter(places_of.values()))
@@ -291,32 +324,49 @@ def _materialise_alt_shapes(
         )
 
     results: list[_Candidate] = []
-    for alternate, place in zip(alternates, places, strict=True):
+    for alternate, unsettled in readable:
         bindings = list(alternate.bindings)
-        if place.where is not None:
-            bindings.append(place.where)
+
+        def read(
+            place: PlaceContext,
+            facet_batch: FacetBatch | None,
+            alternate: _Alternate = alternate,
+            bindings: list[SlotBindingDraft] = bindings,
+        ) -> Materialised | NoDataDraft | MaterialisedCandidates | UnsupportedDraft:
+            return materialise(
+                alternate.shape,
+                with_where(bindings, place),
+                place.roles.resolved_entities,
+                graph=graph,
+                sdmx=sdmx,
+                date_request=date_request,
+                deadline=deadline,
+                place_dcids=place.probe_places,
+                default_presence=place.presence_for(presence),
+                discover_scope=True,
+                open_axes=place.roles.open_axes,
+                coverage=coverage,
+                facet_batch=facet_batch,
+            )
+
         try:
             # The alternate's values come from its representative StatVar, none from the
             # request, so values that match no member together are unbound silently, a
             # minimal set per round (`BoundValuesUnrealisable.relaxation`).
             while True:
-                result = materialise(
-                    alternate.shape,
-                    bindings,
-                    place.roles.resolved_entities,
-                    graph=graph,
-                    sdmx=sdmx,
-                    date_request=date_request,
-                    deadline=deadline,
-                    place_dcids=place.probe_places,
-                    default_presence=place.presence_for(presence),
-                    discover_scope=True,
-                    open_axes=place.roles.open_axes,
-                    coverage=coverage,
-                )
+                place, result = settle_sets(unsettled, read)
                 if not isinstance(result, BoundValuesUnrealisable):
                     break
-                bindings = without_values(bindings, result.relaxation())
+                bindings[:] = without_values(bindings, result.relaxation())
+        except PlaceSetTooLargeError as exc:
+            _drop_over_bound(alternate, exc, over_bound)
+            continue
+        except PlaceSetNotAdmittedError:
+            logger.info(
+                "shape %r admits no reading of a place set; dropped from the offer",
+                alternate.shape.shape_id,
+            )
+            continue
         except DatasetDisagreementError:
             # The mint refuses this alternate's identity, so it is dropped as one whose walk
             # the mint refuses is; the elected answer stands.
@@ -334,13 +384,28 @@ def _materialise_alt_shapes(
             results.append(
                 _Candidate(
                     settled_shape(alternate.shape, result),
-                    bindings,
+                    with_where(bindings, place),
                     result,
                     place.settled(result),
                     alternate.walked,
                 )
             )
     return results, None
+
+
+def _drop_over_bound(
+    alternate: _Alternate, exc: PlaceSetTooLargeError, over_bound: list[_Alternate] | None
+) -> None:
+    """Log an alternate dropped for the bound on the places a Spec binds, and record it in
+    `over_bound` when the caller keeps one."""
+    logger.info(
+        "shape %r binds %d places, over the bound of %d; dropped from the offer",
+        alternate.shape.shape_id,
+        exc.count,
+        exc.bound,
+    )
+    if over_bound is not None:
+        over_bound.append(alternate)
 
 
 def _unbound_query_qualifiers(

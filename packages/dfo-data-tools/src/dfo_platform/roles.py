@@ -20,13 +20,25 @@ type RoleAxis = Literal["origin", "destination"]
 type FlowFamily = Literal["aid", "debt_service", "debt_stock", "debt_lending"]
 """What a role-bearing series counts, which decides how its roles read.
 
-- `aid`: development finance from providers to recipients (OECD CRS flows and commitments,
-  ONE imputed multilateral flows).
+- `aid`: development finance from providers to recipients (the OECD CRS, DAC1, DAC2a and DAC2b
+  tables, ONE imputed multilateral flows).
 - `debt_service`: payments a debtor makes on its debt (debt service, interest, principal).
 - `debt_stock`: debt a debtor holds at a point in time (outstanding debt, arrears).
 - `debt_lending`: lending from creditors to a debtor (disbursements, undisbursed debt).
 
-`search.heading.flow_family.flow_family` computes it from a shape's constraint values.
+`search.heading.flow_family.flow_family` computes it from the account a code-index series'
+datasets declare, and from the constraint values of a series outside the index.
+"""
+
+type FlowAccount = Literal["provider"]
+"""Whose account of a flow a dataset gives, which names its two parties and says which one
+leads a heading.
+
+- `provider`: the provider's account, as in the aid tables a provider reports. The series
+  reads in the `aid` family: the parties are provider and recipient, and the provider leads
+  ("France's net disbursements to Kenya").
+
+A dataset declares it (`code_index.types.DatasetDeclaration.account`).
 """
 
 # Maps known role names to engine-owned flow axes. Search slot axes

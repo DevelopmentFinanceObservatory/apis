@@ -227,6 +227,7 @@ def layer2_key(
     query_text_qualifier_matches: Sequence[Mapping[str, object]],
     query_text_qualifier_ties: Sequence[Mapping[str, object]],
     query_text_qualifier_readings: Sequence[Mapping[str, object]],
+    query_text_qualifier_occurrences: Sequence[Mapping[str, object]],
     unsupported_qualifier_phrases: Sequence[str],
     declared_default_trigger_words: Sequence[Mapping[str, str]],
     declared_default_slots_named: Sequence[str],
@@ -242,7 +243,9 @@ def layer2_key(
     `variables`: each part echoes its own, and their phrases reach its bind.
 
     The raw-text signals cover role contradictions, query-text qualifier matches,
-    ties and two-reading spans, unsupported phrases, declared-default trigger words, and the
+    ties and two-reading spans, every place a row of any system names a query-text word
+    (`qualifier_match.qualifier_occurrences`, which decides each shape vocabulary's
+    reading), unsupported phrases, declared-default trigger words, and the
     slots with a declared default whose plain name the query names. They keep
     layer 2 sound when distinct queries produce the same extraction without
     hashing raw query text, preserving reuse when those readers agree.
@@ -259,6 +262,7 @@ def layer2_key(
         "query_text_qualifier_matches": list(query_text_qualifier_matches),
         "query_text_qualifier_ties": list(query_text_qualifier_ties),
         "query_text_qualifier_readings": list(query_text_qualifier_readings),
+        "query_text_qualifier_occurrences": list(query_text_qualifier_occurrences),
         "unsupported_qualifier_phrases": list(unsupported_qualifier_phrases),
         "declared_default_trigger_words": [dict(word) for word in declared_default_trigger_words],
         "declared_default_slots_named": list(declared_default_slots_named),

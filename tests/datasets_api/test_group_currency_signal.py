@@ -245,6 +245,76 @@ def test_group_signal_tracks_the_shared_facet_not_either_members_own_top():
     assert head_store.head_for(spec_id).signal == (MemberSignal(_SHARED, 2, "2020", "2021"),)
 
 
+_NO_DISPATCH = MemberSignal(None, 0, None, None)
+
+
+def test_an_empty_probe_mints_the_empty_result_and_its_head_serves_until_data_arrives():
+    rows_by_ref = {
+        _GRANTS_REF: {"text": _row(ref=_GRANTS_REF, value="1000")},
+        _LOANS_REF: {"text": _row(ref=_LOANS_REF, value="500")},
+    }
+    # Coverage holds no series for either member, so no probe returns a candidate.
+    coverage_rows: dict[tuple[str, str], dict[str, object]] = {}
+    head_store = _FakeHeadStore()
+    client = _client(
+        graph=_graph(),
+        sdmx_transport=_sdmx_transport(rows_by_ref),
+        head_writer=head_store,
+        coverage=_MutableCoverageService(coverage_rows),
+    )
+    spec_id, sidecar = _spec_id_and_sidecar()
+
+    minted = client.post(
+        "/api/datasets",
+        json={
+            "schema_version": 1,
+            "input": {"kind": "spec_id", "spec_id": spec_id, "definition": sidecar},
+            "options": {"bundle": False},
+        },
+    )
+
+    assert minted.status_code == 200, minted.text
+    manifest = minted.json()
+    assert manifest["coverage"]["rows"] == 0
+    assert "empty_result" in {warning["code"] for warning in manifest["warnings"]}
+    assert manifest["citation"]["sources"] == []
+    assert head_store.head_for(spec_id).signal == (_NO_DISPATCH,)
+
+    # The probe is still empty, so the head serves the stored empty version.
+    head_store.age_head(spec_id, age=timedelta(minutes=20))
+    unchanged = client.get(f"/api/datasets/{spec_id}")
+    assert unchanged.status_code == 200, unchanged.text
+    assert unchanged.json()["trace"]["served_from"] == "head"
+    assert unchanged.json()["content_version"] == manifest["content_version"]
+
+    # A rendering the empty version does not hold yet is built from its stored frame.
+    parquet = client.get(f"/api/datasets/{spec_id}?format=parquet")
+    assert parquet.status_code == 200, parquet.text
+    assert parquet.json()["content_version"] == manifest["content_version"]
+
+    # Data arrives, the signal moves, and the definition rematerialises with rows.
+    head_store.age_head(spec_id, age=timedelta(minutes=20))
+    coverage_rows.update(_group_coverage_rows())
+    arrived = client.get(f"/api/datasets/{spec_id}")
+    assert arrived.status_code == 200, arrived.text
+    assert arrived.json()["trace"]["served_from"] == "materialise"
+    assert arrived.json()["coverage"]["rows"] == 2
+
+
+def test_a_single_member_whose_probe_is_empty_signals_no_dispatched_facet():
+    request = MaterialisationRequest(
+        stat_var=_GRANTS_REF,
+        role_bindings={"recipient": [_RECIPIENT]},
+        declared_roles=("recipient",),
+        facet_bindings={},
+        window=RequestedWindow(kind="all"),
+    )
+
+    signals = derive_signals([request], _coverage_probe(((),)), graph=FakeMintGraphReader())
+
+    assert signals == (_NO_DISPATCH,)
+
+
 def test_group_signal_is_none_when_the_shared_facet_carries_no_provenance():
     # Without provenance or a declared default, real dispatch raises `DefaultFacetUndefinedError`.
     # The currency check must therefore return no signal.

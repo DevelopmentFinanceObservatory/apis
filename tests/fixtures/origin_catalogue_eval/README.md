@@ -1,8 +1,8 @@
 # Eval origin catalogue
 
-A published origin catalogue build from the dev graph. The eval job in `.github/workflows/eval-gate.yml` reads it, because that job has no GCP credentials to read the build the catalogue job publishes. `tests/origin_catalogue/test_fixture.py` checks that it loads.
+A published origin catalogue build from the dev graph and the UN System Data Commons, for serving or scoring without GCP credentials. `tests/origin_catalogue/test_fixture.py` checks that it loads under the services' memory budget.
 
-The build ages. Once its `built_at` is more than 14 days old, every answer the eval scores carries the `origin_catalogue_stale` warning, and admissions drift from the dev graph as imports change. Re-record it when either matters.
+The build ages. Once its `built_at` is more than 14 days old, every answer served from it carries the `origin_catalogue_stale` warning, and admissions drift from the dev graph and the UN deployment as imports change. Re-record it when either matters, and after a change to `origin_catalogue.schema.CATALOGUE_FORMAT_VERSION`.
 
 ## Re-record
 
@@ -12,16 +12,13 @@ Run the catalogue job against a local directory from the repository root, with t
 uv run python -m origin_catalogue.job --local-dir /tmp/catalogue-eval
 ```
 
-The run takes about 14 minutes and logs `origin_catalogue_job_published` when it has written a build under the format root, `origin_catalogue.schema.FORMAT_ROOT`. This directory holds that root's contents. Copy only `current.json` and the build directory it names, leaving out lease and state files:
+The run takes about 17 minutes, 8 of them reading the UN deployment, and logs `origin_catalogue_job_published` when it has written a build under the format root, `origin_catalogue.schema.FORMAT_ROOT`. This directory holds that root's contents. Copy the published build here:
 
 ```sh
-src="/tmp/catalogue-eval/$(uv run python -c 'from origin_catalogue.schema import FORMAT_ROOT; print(FORMAT_ROOT)')"
-build=$(python -c 'import json, sys; print(json.load(open(sys.argv[1]))["build_id"])' "$src/current.json")
-rm -rf tests/fixtures/origin_catalogue_eval/current.json tests/fixtures/origin_catalogue_eval/versions
-mkdir tests/fixtures/origin_catalogue_eval/versions
-cp "$src/current.json" tests/fixtures/origin_catalogue_eval/
-cp -R "$src/versions/$build" tests/fixtures/origin_catalogue_eval/versions/
+uv run python scripts/record_origin_catalogue_fixture.py --eval-from /tmp/catalogue-eval
 ```
+
+The script loads the build with the services' loader and memory budget, then replaces `current.json` and `versions/` with the pointer and the build directory it names, leaving the job's lease and state files behind.
 
 ## Read it
 

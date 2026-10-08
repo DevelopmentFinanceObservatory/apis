@@ -66,7 +66,7 @@ export DFO_API=https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app
    | `not_found`       | The resolver found zero matches. `near_matches` suggests spellings.                                                                             |
    | `not_held`        | A real entity missing from this deployment's graph.                                                                                             |
 
-   Every status arrives with HTTP `200`. `kind` sorts the entity into one of eight classes: `country`, `continent`, `subregion`, `continental_union`, `organisation`, `aggregate`, `place_other` or `other`. `aggregate` marks a DAC "unallocated by country" bucket, a non-territorial reporting category.
+   Every status arrives with HTTP `200`. `kind` sorts the entity into one of eight classes: `country`, `continent`, `subregion`, `continental_union`, `organisation`, `aggregate`, `place_other` or `other`. `aggregate` marks a DAC stand-in for parties it does not name, such as "Africa, unallocated by country" or "other multilaterals".
 
 1. **Look up a dcid.** `GET /api/graph/node/{dcid}` returns what the graph holds, in one of four shapes chosen by the node's type.
 

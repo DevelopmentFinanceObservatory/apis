@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from search.engine.config import settings
+from dfo_platform.named import named_capped
 from search.engine.envelope import now_ms
 from search.engine.errors import EngineInputError, RoleEntityUnplaced
-from search.engine.place import expand_places, read_default_presence
-from search.engine.region.codes import CHILD_PLACES_CLAMPED
+from search.engine.place import read_default_presence
 from search.engine.region.place_context import default_scope_stat_vars, place_context
 from search.engine.region.place_roles import PlaceRoles
 from search.engine.region.promote_results import _no_data_region
@@ -15,7 +14,6 @@ from search.engine.region.refs import confirm_dcids_present
 from search.engine.region.result import RegionResult
 from search.engine.region.state import identity_served_stat_vars
 from search.engine.shape import entities_by_role, is_role_bearing
-from search.models import Warning
 
 
 def _posted_entities(state: _PromoteState) -> dict[str, list[str]] | None:
@@ -33,7 +31,6 @@ def _posted_entities(state: _PromoteState) -> dict[str, list[str]] | None:
                 code="role_incompatible",
                 status=422,
                 pointer="/input/identity/entities/observationAbout",
-                detail=detail,
             )
         try:
             return entities_by_role(
@@ -50,7 +47,7 @@ def _posted_entities(state: _PromoteState) -> dict[str, list[str]] | None:
         if not role_dcids:
             continue
         detail = (
-            f"{role} reference(s) {role_dcids!r} are not a role shape "
+            f"{role} reference(s) {named_capped(role_dcids)} are not a role shape "
             f"{state.shape_draft.shape_id!r}'s resolved StatVars declare; its "
             "members assert no directional role"
         )
@@ -59,7 +56,6 @@ def _posted_entities(state: _PromoteState) -> dict[str, list[str]] | None:
             code="role_incompatible",
             status=422,
             pointer=f"/input/identity/entities/{role}",
-            detail=detail,
         )
     try:
         return entities_by_role(
@@ -107,35 +103,18 @@ def _posted_place_roles(
 def _phase_where_places(state: _PromoteState) -> RegionResult | None:
     """Bind the posted places to the shape and derive its place context (`place_context`).
 
-    Enforce `max_standard_places`, confirm every entity ref, and expand region membership,
-    appending a warning per clamped expansion. A subject shape with no posted place reads the
-    default-scope presence of its StatVars. Missing refs raise `invalid_role_ref` (422), and a
-    ref on a role the shape cannot take raises `role_incompatible` (422). An entity on an axis
-    the shape declares no role on returns `no_data` with `role_incompatible`, carrying the
-    place warnings."""
+    Every read the context drives names the posted dcids themselves. A posted continent or
+    subregion is read at its own node, as the Datasets mint reads it. Confirm every entity
+    ref. A subject shape with no posted place reads the default-scope presence of its
+    StatVars. Missing refs raise `invalid_role_ref` (422), and a ref on a role the shape
+    cannot take raises `role_incompatible` (422). An entity on an axis the shape declares no
+    role on returns `no_data` with `role_incompatible`, carrying the place warnings."""
     t0 = now_ms()
     try:
         # entity_dcid and the complete role member list were read directly from
         # identity.entities in _phase_validate. The identity core canonicalises
         # these values, so no slot-level reconstruction is needed here.
         standard_where_dcids = state.standard_where_dcids
-
-        # destination wins when present, matching _phase_validate. Computed
-        # ahead of the cap check below so a refusal can point at the role that's
-        # actually oversized.
-        active_entity_role = (
-            "destination" if state.identity_entities.get("destination") else "observationAbout"
-        )
-
-        # Enforce the cap on resubmits. Identity canonicalisation loses naming order, so
-        # truncation would choose an arbitrary subset.
-        if len(standard_where_dcids) > settings().max_standard_places:
-            raise EngineInputError(
-                f"{len(standard_where_dcids)} places exceed the "
-                f"{settings().max_standard_places}-place limit; re-post with the places you want",
-                code="request_invalid",
-                pointer=f"/input/identity/entities/{active_entity_role}",
-            )
 
         # Confirm every posted entity role ref, including the full where set. Missing refs
         # raise `invalid_role_ref` (422); constraint values come from confirmed SV arcs.
@@ -149,33 +128,6 @@ def _phase_where_places(state: _PromoteState) -> RegionResult | None:
             read=state.graph.node_labels_batch,
             pointer_for=lambda role, _absent: f"/input/identity/entities/{role}",
         )
-
-        # Resubmits provide dcids. Read each place type, then batch-expand region membership
-        # so a region such as Africa probes its member countries.
-        children: dict[str, list[str]] = {}
-        if standard_where_dcids:
-            resolved_places = [
-                (dcid, type_of)
-                for dcid in standard_where_dcids
-                if (type_of := state.graph.node_type(dcid)) is not None
-            ]
-            if resolved_places:
-                expansions = expand_places(resolved_places, graph=state.graph)
-                for dcid, expansion in expansions.items():
-                    if expansion is None:
-                        continue
-                    children[dcid] = expansion.children
-                    if expansion.clamped:
-                        state.warnings.append(
-                            Warning(
-                                code=CHILD_PLACES_CLAMPED,
-                                severity="warn",
-                                message=(
-                                    f"{dcid!r} expands to {expansion.total_members} places; "
-                                    f"resolved the first {len(expansion.children)}."
-                                ),
-                            )
-                        )
 
         # A subject shape with no posted place probes the countries where its StatVars,
         # the resubmit's membership, have data.
@@ -201,9 +153,7 @@ def _phase_where_places(state: _PromoteState) -> RegionResult | None:
                 if presence is not None
                 else ()
             ),
-            children=children,
             presence=presence,
-            max_probe_places=settings().max_standard_probe_places,
         )
         state.warnings.extend(place.warnings)
         if resolved_entities is None:

@@ -13,7 +13,6 @@ from materialise.member_conversion import request_conversion_reader
 from origin_catalogue import recording_un_blocked_places
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.sdmx import EngineSdmxClient
-from search.engine.config import settings
 from search.engine.degraded_reads import recording_degraded_reads
 from search.engine.errors import EngineInputError
 from search.engine.identity_edit import check_described_arm
@@ -41,13 +40,12 @@ def _with_nested_identity_pointer(exc: EngineInputError) -> EngineInputError:
     else:
         return exc
     return EngineInputError(
-        *exc.args,
+        str(exc),
         code=exc.code,
         status=exc.status,
         pointer=nested_pointer,
         alternatives=exc.alternatives,
         cause=exc.cause,
-        detail=exc.detail,
     )
 
 
@@ -69,21 +67,13 @@ def resolve_spec_resubmit(
 
     Pinned StatVar identities raise `request_invalid` (400). Missing graph
     nodes produce `no_data`, except absent observationAbout role refs, which
-    raise `invalid_role_ref` (422). Origin lists are capped at
-    `max_standard_places`. Origin refs require a role-bearing shape.
+    raise `invalid_role_ref` (422). An identity binding more places than a Spec holds
+    raises `request_invalid` (400) in validation. Origin refs require a role-bearing shape.
     `coverage` and `options` carry request-scoped enrichment inputs. `options=None` uses
     the un-enriched baseline. The result is `degraded` when the promote swallowed a read
     (`degraded_reads`).
     """
     check_described_arm(inp.identity.shape, pointer="/input/identity/shape")
-    origin_dcids = inp.identity.entities.get("origin", [])
-    if len(origin_dcids) > settings().max_standard_places:
-        raise EngineInputError(
-            f"{len(origin_dcids)} unique origin references exceed the "
-            f"{settings().max_standard_places}-origin limit",
-            code="request_invalid",
-            pointer="/input/identity/entities/origin",
-        )
     _options = options if options is not None else EngineOptions()
 
     # `_phase_materialise` checks origins after rebuilding the shape.

@@ -12,6 +12,7 @@ import json
 from collections.abc import Mapping, Sequence
 from importlib.resources.abc import Traversable
 from pathlib import Path
+from typing import get_args
 
 from code_index.query import CodeIndex
 from code_index.types import (
@@ -28,12 +29,14 @@ from code_index.types import (
     StatVarRow,
     invalid_when_named_entry,
 )
+from dfo_platform.roles import FlowAccount
 
 _PACKAGE = __package__
 _DATA_DIR = "data"
 _GZIP_MAGIC = b"\x1f\x8b"
 _INDEX_FILENAME = "index.json.gz"
 _ABSENT_OBSERVATION_VALUES: frozenset[AbsentObservation] = frozenset({"zero", "unknown"})
+_FLOW_ACCOUNTS: frozenset[FlowAccount] = frozenset(get_args(FlowAccount.__value__))
 
 
 def default_index_path() -> Traversable:
@@ -151,9 +154,10 @@ def _parse_declaration(payload: Mapping) -> CodeSystemDeclaration:
 
 def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
     """Parses `datasets` rows, failing closed on a row missing a field, an
-    `absent_observation` value outside `{"zero", "unknown"}`, an `opt_in`
-    that is not a boolean, a `rank` that is not an integer, an empty `label`,
-    an empty `description`, or a `provenance` or `rank` repeated across rows. Each raises
+    `absent_observation` value outside `{"zero", "unknown"}`, an `account`
+    outside `dfo_platform.roles.FlowAccount`, an `opt_in` that is not a boolean,
+    a `rank` that is not an integer, an empty `label`, an empty `description`,
+    or a `provenance` or `rank` repeated across rows. Each raises
     `IndexFormatError` naming the offending row (or the repeated value)."""
     datasets: list[DatasetDeclaration] = []
     seen: set[str] = set()
@@ -166,6 +170,7 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
                 description=row["description"],
                 opt_in=row["opt_in"],
                 absent_observation=row["absent_observation"],
+                account=row["account"],
                 rank=row["rank"],
                 invariants=dict(row["invariants"]),
             )
@@ -176,6 +181,12 @@ def _parse_datasets(rows: Sequence[Mapping]) -> list[DatasetDeclaration]:
                 f"datasets row for {dataset.provenance!r} carries "
                 f"absent_observation={dataset.absent_observation!r}, outside the vocabulary "
                 f"{sorted(_ABSENT_OBSERVATION_VALUES)!r}"
+            )
+        if dataset.account not in _FLOW_ACCOUNTS:
+            raise IndexFormatError(
+                f"datasets row for {dataset.provenance!r} carries "
+                f"account={dataset.account!r}, outside the vocabulary "
+                f"{sorted(_FLOW_ACCOUNTS)!r}"
             )
         if not isinstance(dataset.opt_in, bool):
             raise IndexFormatError(

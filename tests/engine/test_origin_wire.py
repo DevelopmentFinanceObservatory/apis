@@ -79,6 +79,8 @@ from tests.origin_catalogue.fake_catalogue import (
     FakeCatalogue,
     provenance_row,
     restrictive_catalogue,
+    un_mirror,
+    un_variable,
 )
 from tests.render._helpers import _unbound_source_slot
 
@@ -123,6 +125,9 @@ def test_shape_lists_every_origin_holding_a_member_in_wire_order(bind_catalogue)
             ],
             dfo_variables=["Count_Person"],
             base_variables={"Count_Person": (["dc/base/WHO"], [])},
+            un_mirror=un_mirror(
+                {"undata/who/MORT": un_variable("undata/who/SERIES-MORT", name="Mortality")}
+            ),
         )
     )
     members = ["undata/who/MORT", "Count_Person", "NotListed"]

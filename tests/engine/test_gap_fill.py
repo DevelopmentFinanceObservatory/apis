@@ -38,6 +38,7 @@ from tests.fixtures import FakeGraph, make_resolver
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue
 
 _KEN = "country/KEN"
+_TZA = "country/TZA"
 _OURS = "Percent_Person_Literate"
 _ENROLMENT = "Percent_Person_EnrolledInSchool"
 _UN = "undata/unicef/SERIES-ED_LR"
@@ -439,13 +440,31 @@ def test_a_second_pass_that_also_ends_no_data_keeps_the_first(caplog) -> None:
     assert "pass2=ran pass2_status=no_data/" in line
 
 
-def test_an_unresolved_entity_runs_no_second_pass(caplog) -> None:
+@pytest.mark.parametrize(
+    ("entities", "reason"),
+    [
+        pytest.param(["Atlantis"], "entity_not_resolved", id="unresolved-entity"),
+        pytest.param(["Kenya", "Tanzania"], "entity_set_too_large", id="places-over-the-bound"),
+    ],
+)
+def test_an_entity_terminal_runs_no_second_pass(caplog, search_settings, entities, reason) -> None:
+    """A first pass that ends on the request's entities is not filled from the UN's
+    candidates, which hold data at Kenya. Two named places are over a bound of one."""
+    search_settings(max_child_places=1)
+    kwargs = _graph_kwargs()
+    graph = FakeGraph(
+        **{
+            **kwargs,
+            "nodes": {**_NODES, _TZA: {"label": "Tanzania", "type": "Country"}},
+            "resolve": {**kwargs["resolve"], "Tanzania": _TZA},
+        }
+    )
     llm = _ElectFirstLLM()
     with caplog.at_level(logging.INFO, logger="search.engine.region.pipeline"):
-        result = _resolve(_graph(), entities=["Atlantis"], llm=llm)
+        result = _resolve(graph, entities=entities, llm=llm)
 
     assert result.status == "no_data"
-    assert result.no_data_reason == "entity_not_resolved"
+    assert result.no_data_reason == reason
     assert not _menu_named(llm, _UN)
     (line,) = _gap_fill_lines(caplog)
     assert "pass2=skipped:entity" in line

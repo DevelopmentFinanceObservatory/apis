@@ -8,6 +8,18 @@ both halves, and merge in first-occurrence input order. Methods that carry
 no UN dcids (place containment, resolve, currency units) go to our mixer
 whole.
 
+A read of a UN node's facts is answered from the request's catalogue where
+its UN tables hold them, and sends the UN deployment nothing: a variable's
+arcs, the name and type of a variable and of a node a variable's arc names,
+a topic's member variables, and the variables of a series (the subjects of
+a reverse read naming the series as `populationType`). A variable of a
+series the registry excludes reads as an absent node, and such a series has
+no subjects. Any other UN dcid, such as a unit or the arcs of a constraint
+value, is read from the UN deployment, and so are the subjects of a reverse
+read that names a UN node and no series. An observation
+read names only the UN variables the catalogue admits; the others read as
+holding no data there.
+
 Every facet it returns has passed admission: a facet whose provenance the
 request's catalogue does not admit is dropped, and where a DFO facet is
 present for a variable and place the others are dropped too. Facet reads to
@@ -33,11 +45,14 @@ import contextvars
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import UTC, date, datetime
+from enum import Enum
 from typing import Any, Final, Protocol, Self, TypedDict, Unpack
 
 import httpx
 
 from dc_graph import (
+    IMPORT_ADDED_CONSTRAINT_PROPERTIES,
+    UNRESOLVED_NODE,
     CapErrorFactory,
     Facet,
     FacetDefaultPolicy,
@@ -46,6 +61,7 @@ from dc_graph import (
     ReadErrorFactory,
     SubjectPage,
     SubjectsCoverageFlag,
+    parse_arcs,
 )
 from graph_generation import (
     UNKNOWN_GENERATION,
@@ -60,7 +76,8 @@ from origin_catalogue.context import (
     note_un_blocked_places,
     record_un_read_failure,
 )
-from origin_catalogue.origins import DFO, UN_ID_PREFIX
+from origin_catalogue.origins import DFO, UN_ID_PREFIX, UN_SYSTEM
+from origin_catalogue.un_mirror import UnVariable
 
 UN_BASE_URL: Final[str] = "https://unsd-datacommons.gcp.un-icc.cloud/core/api"
 """The UN System Data Commons API root. It needs no token."""
@@ -87,6 +104,157 @@ def is_un_dcid(dcid: str) -> bool:
     return dcid.startswith(UN_ID_PREFIX) or (
         dcid.startswith(_UN_PROPERTY_PREFIX) and dcid[len(_UN_PROPERTY_PREFIX) :][:1].isupper()
     )
+
+
+class _Unmirrored(Enum):
+    """What a UN table read answers for a dcid the tables hold no fact for."""
+
+    LIVE = "live"
+    """The tables do not hold the dcid, so the UN deployment is read."""
+    OMITTED = "omitted"
+    """The tables hold the dcid and it has no such fact, so the result leaves it out."""
+
+
+_LIVE: Final = _Unmirrored.LIVE
+_OMITTED: Final = _Unmirrored.OMITTED
+
+_CONSTRAINT_PROPERTIES: Final[str] = "constraintProperties"
+_SERIES_ARC: Final[str] = "populationType"
+_NAME_PROPERTIES: Final[tuple[str, str]] = ("name", "alternateName")
+_TOPIC_MEMBER_ARC: Final[str] = "relevantVariable"
+_TOPIC_TYPE: Final[str] = "Topic"
+
+
+def _table_arcs(catalogue: Catalogue, dcid: str) -> dict | None | _Unmirrored:
+    """A UN dcid's `->*` arcs from the catalogue's UN tables, as
+    `GraphClient.node_arcs_batch` returns them.
+
+    A variable's arcs are the ones the catalogue job copied. A topic's arcs
+    are its type and its admitted leaves as `relevantVariable` targets, and
+    nothing else: the topic walk reaches the same variables in one level.
+    A variable of an excluded series is absent, `None`. `_LIVE` for a dcid
+    the tables do not hold."""
+    variable = catalogue.un_variable(dcid)
+    if variable is not None:
+        arcs = variable.wire_arcs()
+        constraints = arcs.get(_CONSTRAINT_PROPERTIES)
+        if constraints is not None:
+            constraints["nodes"] = [
+                node
+                for node in constraints["nodes"]
+                if node.get("dcid") not in IMPORT_ADDED_CONSTRAINT_PROPERTIES
+            ]
+        return arcs
+    leaves = catalogue.un_topic_leaves(dcid)
+    if leaves is not None:
+        return {
+            "typeOf": {"nodes": [{"dcid": _TOPIC_TYPE}]},
+            _TOPIC_MEMBER_ARC: {
+                "nodes": [
+                    {"dcid": leaf, "types": _variable_types(member)}
+                    for leaf in leaves
+                    if (member := catalogue.un_variable(leaf)) is not None
+                ]
+            },
+        }
+    return None if catalogue.superseded_by(dcid) is not None else _LIVE
+
+
+def _variable_types(variable: UnVariable) -> list[str]:
+    return [arc.dcid for arc in variable.arcs if arc.property == "typeOf" and arc.dcid is not None]
+
+
+def _table_exists(catalogue: Catalogue, dcid: str) -> bool | _Unmirrored:
+    arcs = _table_arcs(catalogue, dcid)
+    return arcs if isinstance(arcs, _Unmirrored) else arcs is not None
+
+
+def _table_arc_values(
+    catalogue: Catalogue, dcid: str, properties: Sequence[str]
+) -> dict[str, tuple[str, ...]] | None | _Unmirrored:
+    """The named arcs of a UN dcid, as `GraphClient.node_arcs_many` returns them."""
+    arcs = _table_arcs(catalogue, dcid)
+    if arcs is None or isinstance(arcs, _Unmirrored):
+        return arcs
+    return parse_arcs(arcs, properties, mark_unresolved=True)
+
+
+def _table_observation_properties(catalogue: Catalogue, dcid: str) -> tuple[str, ...] | _Unmirrored:
+    arcs = _table_arc_values(catalogue, dcid, ("observationProperties",))
+    if isinstance(arcs, _Unmirrored):
+        return arcs
+    if arcs is None:
+        return ()
+    return tuple(v for v in arcs["observationProperties"] if v != UNRESOLVED_NODE)
+
+
+def _table_names(catalogue: Catalogue, dcid: str) -> tuple[str, ...] | _Unmirrored:
+    """A UN variable's `name` then `alternateName` values. The tables hold
+    one name of any other node, so its names are read live."""
+    variable = catalogue.un_variable(dcid)
+    if variable is None:
+        return () if catalogue.superseded_by(dcid) is not None else _LIVE
+    names = parse_arcs(variable.wire_arcs(), _NAME_PROPERTIES)
+    return tuple(dict.fromkeys(name for prop in _NAME_PROPERTIES for name in names[prop]))
+
+
+def _table_label(catalogue: Catalogue, dcid: str) -> str | _Unmirrored:
+    """A UN dcid's label as `GraphClient.node_label` picks it: a variable's
+    last `name` value, or the name an arc naming the node carries."""
+    variable = catalogue.un_variable(dcid)
+    if variable is not None:
+        names = [arc.value for arc in variable.arcs if arc.property == "name" and arc.value]
+        return names[-1] if names else _OMITTED
+    if catalogue.superseded_by(dcid) is not None:
+        return _OMITTED
+    node = catalogue.un_node(dcid)
+    return node.name if node is not None and node.name else _LIVE
+
+
+def _table_type(catalogue: Catalogue, dcid: str) -> str | _Unmirrored:
+    """A UN dcid's first type, as `GraphClient.node_type` picks it."""
+    variable = catalogue.un_variable(dcid)
+    if variable is not None:
+        types = _variable_types(variable)
+        return types[0] if types else _OMITTED
+    if catalogue.un_topic_leaves(dcid) is not None:
+        return _TOPIC_TYPE
+    if catalogue.superseded_by(dcid) is not None:
+        return _OMITTED
+    node = catalogue.un_node(dcid)
+    return node.types[0] if node is not None and node.types else _LIVE
+
+
+def _table_subjects(
+    catalogue: Catalogue, arcs: Sequence[tuple[str, str]], *, max_results: int
+) -> SubjectPage | _Unmirrored:
+    """The variables holding every arc in `arcs`, pairs of property and target dcid, from
+    the catalogue's UN tables, as `GraphClient.node_subjects` pages them.
+
+    A `populationType` arc naming a series the tables hold decides the read: every
+    variable of that series is in the tables with all its arcs, so the subjects are the
+    series' members holding the other arcs too, in the tables' sorted order. More than
+    `max_results` of them is a truncated page, at any series size. A series the registry
+    excludes has no subjects. `_LIVE` when no arc names a series the tables know."""
+    members: tuple[str, ...] = ()
+    for prop, target in arcs:
+        if prop != _SERIES_ARC:
+            continue
+        members = catalogue.un_series_members(target)
+        if members:
+            break
+        if catalogue.un_excluded_series_name(target) is not None:
+            return SubjectPage(dcids=(), truncated=False)
+    if not members:
+        return _LIVE
+    wanted = set(arcs)
+    held = [
+        member
+        for member in members
+        if (variable := catalogue.un_variable(member)) is not None
+        and wanted <= {(arc.property, arc.dcid) for arc in variable.arcs}
+    ]
+    return SubjectPage(dcids=tuple(held[:max_results]), truncated=len(held) > max_results)
 
 
 class UnGeneration:
@@ -206,26 +374,35 @@ class OriginGraphClient:
     # -- node reads --
 
     def node_label(self, dcid: str) -> str | None:
-        backend = self._backend(current_catalogue(), dcid)
-        return None if backend is None else backend.node_label(dcid)
+        return self._route_one(
+            current_catalogue(), dcid, _table_label, lambda backend: backend.node_label(dcid)
+        )
 
     def node_type(self, dcid: str) -> str | None:
-        backend = self._backend(current_catalogue(), dcid)
-        return None if backend is None else backend.node_type(dcid)
+        return self._route_one(
+            current_catalogue(), dcid, _table_type, lambda backend: backend.node_type(dcid)
+        )
 
     def node_labels_batch(self, dcids: list[str]) -> dict[str, str]:
         return self._route_many(
-            current_catalogue(), dcids, lambda backend, part: backend.node_labels_batch(part)
+            current_catalogue(),
+            dcids,
+            lambda backend, part: backend.node_labels_batch(part),
+            tables=_table_label,
         )
 
     def node_types_batch(self, dcids: list[str]) -> dict[str, str]:
         return self._route_many(
-            current_catalogue(), dcids, lambda backend, part: backend.node_types_batch(part)
+            current_catalogue(),
+            dcids,
+            lambda backend, part: backend.node_types_batch(part),
+            tables=_table_type,
         )
 
     def node_arcs(self, dcid: str) -> dict | None:
-        backend = self._backend(current_catalogue(), dcid)
-        return None if backend is None else backend.node_arcs(dcid)
+        return self._route_one(
+            current_catalogue(), dcid, _table_arcs, lambda backend: backend.node_arcs(dcid)
+        )
 
     def node_arcs_batch(
         self, dcids: list[str], *, deadline: float | None = None
@@ -235,27 +412,44 @@ class OriginGraphClient:
             dcids,
             lambda backend, part: backend.node_arcs_batch(part, deadline=deadline),
             disabled=lambda: None,
+            tables=_table_arcs,
         )
 
     def exists(self, dcid: str) -> bool:
-        backend = self._backend(current_catalogue(), dcid)
-        return backend is not None and backend.exists(dcid)
+        return bool(
+            self._route_one(
+                current_catalogue(), dcid, _table_exists, lambda backend: backend.exists(dcid)
+            )
+        )
 
     def exists_batch(self, dcids: list[str]) -> set[str]:
-        ours, un = self._split(current_catalogue(), dcids)
+        catalogue = current_catalogue()
+        ours, un = self._split(catalogue, dcids)
+        held = {dcid: _table_exists(catalogue, dcid) for dcid in un}
+        live = [dcid for dcid, answer in held.items() if answer is _LIVE]
         found_ours, found_un = self._read_both(
             (lambda: self._ours.exists_batch(ours)) if ours else None,
-            (lambda: self._un.exists_batch(un)) if un else None,
+            (lambda: self._un.exists_batch(live)) if live else None,
         )
-        return (found_ours or set()) | (found_un or set())
+        mirrored = {dcid for dcid, answer in held.items() if answer is True}
+        return (found_ours or set()) | (found_un or set()) | mirrored
 
     def node_arc_values(
         self, dcid: str, *, properties: Sequence[str]
     ) -> dict[str, tuple[str, ...]]:
-        backend = self._backend(current_catalogue(), dcid)
-        if backend is None:
-            return dict.fromkeys(properties, ())
-        return backend.node_arc_values(dcid, properties=properties)
+        def tables(catalogue: Catalogue, dcid: str) -> dict[str, tuple[str, ...]] | _Unmirrored:
+            arcs = _table_arcs(catalogue, dcid)
+            if isinstance(arcs, _Unmirrored):
+                return arcs
+            return parse_arcs(arcs or {}, properties)
+
+        found = self._route_one(
+            current_catalogue(),
+            dcid,
+            tables,
+            lambda backend: backend.node_arc_values(dcid, properties=properties),
+        )
+        return dict.fromkeys(properties, ()) if found is None else found
 
     def node_arcs_many(
         self,
@@ -275,6 +469,7 @@ class OriginGraphClient:
                 deadline=deadline,
             ),
             disabled=lambda: None,
+            tables=lambda catalogue, dcid: _table_arc_values(catalogue, dcid, properties),
         )
 
     def node_names_many(
@@ -285,6 +480,7 @@ class OriginGraphClient:
             dcids,
             lambda backend, part: backend.node_names_many(part, deadline=deadline),
             disabled=tuple,
+            tables=_table_names,
         )
 
     def node_subjects(
@@ -296,15 +492,23 @@ class OriginGraphClient:
         max_results: int,
         deadline: float | None = None,
     ) -> SubjectPage:
-        """Routes on every name the read carries: the lead, the property, and each filter's
+        """A read naming a series the catalogue's UN tables hold, as the lead under
+        `populationType` or as that filter's value, is answered from the tables
+        (`_table_subjects`) and sends the UN deployment nothing.
+
+        Any other read routes on every name it carries: the lead, the property, and each filter's
         property and value. A subject holding an arc to a UN node lives only on the UN
         deployment, so one UN name anywhere sends the read there, in any filter order. The
         UN deployment also holds the base vocabulary a UN StatVar points at (`value`,
         `measuredValue`), so a UN population type filtered beside those matches there. A read
         that also names a node only our graph holds matches no subject on either graph and
         returns the UN deployment's empty page."""
-        names = (dcid, property, *(name for item in (filters or {}).items() for name in item))
-        backend = self._backend(current_catalogue(), *names)
+        catalogue = current_catalogue()
+        arcs = [(property, dcid), *(filters or {}).items()]
+        held = _table_subjects(catalogue, arcs, max_results=max_results)
+        if not isinstance(held, _Unmirrored):
+            return held
+        backend = self._backend(catalogue, *(name for arc in arcs for name in arc))
         if backend is None:
             return SubjectPage(dcids=(), truncated=False)
         return backend.node_subjects(
@@ -319,7 +523,9 @@ class OriginGraphClient:
         max_results: int,
         deadline: float | None = None,
     ) -> dict[str, tuple[tuple[str, ...], SubjectsCoverageFlag]]:
-        """A UN `property` sends every lead to the UN. Any other property routes leads by dcid."""
+        """A UN `property` sends every lead to the UN. Any other property routes leads by
+        dcid, and under `populationType` a lead the catalogue's UN tables know as a series is
+        answered from them (`_table_subjects`)."""
         catalogue = current_catalogue()
 
         def read(
@@ -332,12 +538,26 @@ class OriginGraphClient:
         def disabled() -> tuple[tuple[str, ...], SubjectsCoverageFlag]:
             return ((), "complete")
 
+        def tables(
+            catalogue: Catalogue, dcid: str
+        ) -> tuple[tuple[str, ...], SubjectsCoverageFlag] | _Unmirrored:
+            page = _table_subjects(catalogue, [(property, dcid)], max_results=max_results)
+            if isinstance(page, _Unmirrored):
+                return page
+            return (page.dcids, "capped" if page.truncated else "complete")
+
         if is_un_dcid(property):
             unique = list(dict.fromkeys(dcids))
             if not catalogue.un_system_enabled:
                 return {dcid: disabled() for dcid in unique}
             return read(self._un, unique) if unique else {}
-        return self._route_many(catalogue, dcids, read, disabled=disabled)
+        return self._route_many(
+            catalogue,
+            dcids,
+            read,
+            disabled=disabled,
+            tables=tables if property == _SERIES_ARC else None,
+        )
 
     def node_observation_properties_batch(self, dcids: list[str]) -> dict[str, tuple[str, ...]]:
         return self._route_many(
@@ -345,6 +565,7 @@ class OriginGraphClient:
             dcids,
             lambda backend, part: backend.node_observation_properties_batch(part),
             disabled=tuple,
+            tables=_table_observation_properties,
         )
 
     def enum_members(self, property_dcid: str) -> list[str]:
@@ -457,11 +678,19 @@ class OriginGraphClient:
 
         One read per backend with no domain filter, bounded by `deadline` and `max_bytes`
         (each backend's read separately). UN variables read the UN deployment, and read
-        nothing with the UN origin off."""
+        nothing with the UN origin off. A UN variable of a series the registry excludes is
+        admitted under no provenance, so every provenance holding data for it is named. A UN
+        variable the catalogue's UN tables do not hold is not read."""
         catalogue = current_catalogue()
         if not entities:
             return {}
-        ours, un = self._split(catalogue, variables)
+        ours, un = self._split_variables(catalogue, variables)
+        excluded = [
+            variable
+            for variable in self._split(catalogue, variables)[1]
+            if catalogue.superseded_by(variable) is not None
+        ]
+        un = [*un, *excluded]
 
         def read(reader: GraphClient, part: list[str]) -> dict[str, dict[str, list[Facet]]]:
             return reader.observation_facets_batch(
@@ -488,7 +717,7 @@ class OriginGraphClient:
                     for facet in facets.get(variable, {}).get(entity, [])
                     if (provenance_id := facet.provenance_id) is not None
                 ]
-                if not catalogue.admit_series(provenances).admitted:
+                if variable in excluded or not catalogue.admit_series(provenances).admitted:
                     held.update(dict.fromkeys(provenances))
             if held:
                 withheld[entity] = tuple(held)
@@ -675,6 +904,37 @@ class OriginGraphClient:
             (un if is_un_dcid(dcid) else ours).append(dcid)
         return ours, un if catalogue.un_system_enabled else []
 
+    def _split_variables(
+        self, catalogue: Catalogue, variables: Sequence[str]
+    ) -> tuple[list[str], list[str]]:
+        """Distinct variables whose observations our mixer and the UN serve,
+        in input order. A UN variable the catalogue does not admit is left
+        out: one of an excluded series, one the UN tables do not hold, and
+        every one with the UN origin off."""
+        ours, un = self._split(catalogue, variables)
+        return ours, [v for v in un if UN_SYSTEM in catalogue.data_commons(v)]
+
+    def _route_one[V](
+        self,
+        catalogue: Catalogue,
+        dcid: str,
+        tables: Callable[[Catalogue, str], V | _Unmirrored],
+        read: Callable[[GraphClient], V],
+    ) -> V | None:
+        """One dcid's fact: from the catalogue's UN tables where they hold
+        it, else from its backend. `None` for a UN dcid with the UN off and
+        for a fact the tables say the node lacks."""
+        backend = self._backend(catalogue, dcid)
+        if backend is None:
+            return None
+        if backend is self._un:
+            answer = tables(catalogue, dcid)
+            if answer is _OMITTED:
+                return None
+            if not isinstance(answer, _Unmirrored):
+                return answer
+        return read(backend)
+
     def _route_many[V](
         self,
         catalogue: Catalogue,
@@ -682,17 +942,29 @@ class OriginGraphClient:
         read: Callable[[GraphClient, list[str]], Mapping[str, V]],
         *,
         disabled: Callable[[], V] | None = None,
+        tables: Callable[[Catalogue, str], V | _Unmirrored] | None = None,
     ) -> dict[str, V]:
         """Read each backend's dcids and merge in first-occurrence input
-        order. With the UN off, UN dcids map to `disabled()`, or are left
-        out when `disabled` is `None`, as the backend leaves out a dcid it
-        does not hold."""
+        order. A UN dcid `tables` answers is not read from the UN
+        deployment. With the UN off, UN dcids map to `disabled()`, or are
+        left out when `disabled` is `None`, as the backend leaves out a dcid
+        it does not hold."""
         ours, un = self._split(catalogue, dcids)
+        mirrored: dict[str, V] = {}
+        if tables is not None:
+            live: list[str] = []
+            for dcid in un:
+                answer = tables(catalogue, dcid)
+                if answer is _LIVE:
+                    live.append(dcid)
+                elif not isinstance(answer, _Unmirrored):
+                    mirrored[dcid] = answer
+            un = live
         from_ours, from_un = self._read_both(
             (lambda: read(self._ours, ours)) if ours else None,
             (lambda: read(self._un, un)) if un else None,
         )
-        merged = {**(from_ours or {}), **(from_un or {})}
+        merged = {**(from_ours or {}), **(from_un or {}), **mirrored}
         result: dict[str, V] = {}
         for dcid in dict.fromkeys(dcids):
             if dcid in merged:
@@ -726,10 +998,11 @@ class OriginGraphClient:
     ) -> dict[str, dict[str, list[Facet]]]:
         """Read facets from each backend, our mixer under the catalogue's
         domain filter and the UN under none, and admit each pair's facets.
-        Every requested pair maps to a list."""
+        Every requested pair maps to a list, an empty one for a UN variable
+        the catalogue does not admit, which is not read."""
         if not stat_vars or not entities:
             return {}
-        ours, un = self._split(catalogue, stat_vars)
+        ours, un = self._split_variables(catalogue, stat_vars)
         from_ours, from_un = self._read_both(
             (lambda: read(self._ours, ours, catalogue.mixer_domains)) if ours else None,
             (
@@ -786,16 +1059,18 @@ class OriginGraphClient:
         catalogue: Catalogue, variables: Sequence[str]
     ) -> tuple[list[str], list[str], list[str]]:
         """Distinct variables split into DFO, base and UN, in input order.
-        A variable the DFO variable set holds is DFO. UN variables are left
-        out when the UN origin is off."""
+        A variable the DFO variable set holds is DFO. A UN variable the
+        catalogue does not admit is left out, as every one is with the UN
+        origin off."""
         dfo: list[str] = []
         base: list[str] = []
         un: list[str] = []
         for variable in dict.fromkeys(variables):
+            origins = catalogue.data_commons(variable)
             if is_un_dcid(variable):
-                if catalogue.un_system_enabled:
+                if catalogue.un_system_enabled and UN_SYSTEM in origins:
                     un.append(variable)
-            elif DFO in catalogue.data_commons(variable):
+            elif DFO in origins:
                 dfo.append(variable)
             else:
                 base.append(variable)

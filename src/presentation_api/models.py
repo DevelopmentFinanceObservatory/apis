@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = [
@@ -11,6 +13,9 @@ __all__ = [
     "CapabilitiesResponse",
     "ChangedFieldModel",
     "ComponentReadResponse",
+    "ComposedUnitModel",
+    "ConvertedUnitModel",
+    "CountedStatVarModel",
     "CreateReplyResponse",
     "FactSummaryModel",
     "FactSummarySeriesEntry",
@@ -68,6 +73,45 @@ class AppliedDefaultModel(BaseModel):
     )
 
 
+class ConvertedUnitModel(BaseModel):
+    """A converted unit, as the frame's `unit` cell states it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    currency: str = Field(description="the ISO 4217 code of the currency the values are in")
+    prices: Literal["current", "constant"] = Field(description="the price basis of the values")
+    base_year: int | None = Field(
+        default=None, description="the base year of constant prices, absent for current prices"
+    )
+
+
+class CountedStatVarModel(BaseModel):
+    """One side of a composed unit whose measure declares no unit, named by its StatVar."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    stat_var: str = Field(description="the StatVar's `dcid:`-prefixed ref, as the frame holds it")
+    label: str = Field(
+        description="the StatVar's graph name, or its ref without `dcid:` when the graph has none"
+    )
+
+
+class ComposedUnitModel(BaseModel):
+    """The unit of a quotient of two measures, read `<numerator> per <denominator>`.
+
+    Each side is a unit's graph name (its ref when the graph has none), a converted unit, or
+    the StatVar a unit-less side counts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    numerator: str | ConvertedUnitModel | CountedStatVarModel = Field(
+        description="the unit of the measure divided"
+    )
+    denominator: str | ConvertedUnitModel | CountedStatVarModel = Field(
+        description="the unit of the measure divided by"
+    )
+
+
 class FactSummaryModel(BaseModel):
     """The closed, token-capped fact summary a revision reports."""
 
@@ -87,8 +131,12 @@ class FactSummaryModel(BaseModel):
         description="this component's own [start, end] period window, null where its type "
         "defines none"
     )
-    unit: str | None = Field(
-        description="this component's own unit, null where its type defines none"
+    unit: str | ConvertedUnitModel | ComposedUnitModel | None = Field(
+        description="this component's own unit, the value its resolved payload carries: a "
+        "unit's graph name (its ref when the graph has none), a converted unit, or a composed "
+        "unit. A line_chart or bar_chart reports its first series' unit and a table the unit "
+        "every row shares. Null where the type defines none, the rows declare none, or a "
+        "table's rows differ."
     )
     change: dict[str, object] | None = Field(
         description="the stat_card's derived comparison between its two basis periods, null "

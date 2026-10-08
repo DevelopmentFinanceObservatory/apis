@@ -11,13 +11,13 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Final
+from typing import Any, Final
 
 from artifact_publication import POINTER_FILE, VERSIONS_PREFIX
 
-CATALOGUE_FORMAT_VERSION: Final[int] = 1
+CATALOGUE_FORMAT_VERSION: Final[int] = 3
 """The on-disk shape: file names, Parquet schemas and manifest fields. Every
 artifact lives under its format's own root, so a change to this number
 starts a new, empty root that the next job run fills, and the loader refuses
@@ -35,6 +35,12 @@ TOPICS_FILE: Final[str] = "topics.parquet"
 SCAN_FILE: Final[str] = "scan.json"
 UN_FILE: Final[str] = "un.json"
 DATASET_FACTS_FILE: Final[str] = "dataset_facts.json"
+SUPERSEDED_VARIABLES_FILE: Final[str] = "superseded_variables.parquet"
+UN_VARIABLES_FILE: Final[str] = "un_variables.parquet"
+UN_ARCS_FILE: Final[str] = "un_arcs.parquet"
+UN_EXCLUDED_VARIABLES_FILE: Final[str] = "un_excluded_variables.parquet"
+UN_TOPICS_FILE: Final[str] = "un_topics.parquet"
+UN_MIRROR_FILE: Final[str] = "un_mirror.json"
 
 _BUILD_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
@@ -85,13 +91,38 @@ class CataloguePointer:
 
 @dataclass(frozen=True, slots=True)
 class UnCarryForward:
-    """Why a build serves an earlier build's UN rows and refused places:
-    `from_build` is the build that last read them from the UN deployment,
-    and `reason` is the UN stage failure that kept this build from reading
-    them."""
+    """Why a build serves an earlier build's UN rows, refused places and UN
+    tables: `from_build` is the build that last read them from the UN
+    deployment, and `reason` is the UN stage failure that kept this build
+    from reading them."""
 
     from_build: str
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class UnAgencyCounts:
+    """One UN agency's part of the UN tables. `variables` counts every
+    member variable of the agency, the excluded ones included, and equals
+    the UN deployment's own count for the agency's root group.
+    `excluded_series` counts the series its registry entry excludes and
+    `excluded_variables` their member variables."""
+
+    series: int
+    variables: int
+    excluded_series: int
+    excluded_variables: int
+
+
+@dataclass(frozen=True, slots=True)
+class UnMirrorManifest:
+    """The UN tables' part of a manifest: each UN table's row count, the
+    counts of each agency by id segment, and the tables' size in memory once
+    decoded (`origin_catalogue.artifact.decode_un_mirror`)."""
+
+    row_counts: Mapping[str, int] = field(default_factory=dict)
+    agencies: Mapping[str, UnAgencyCounts] = field(default_factory=dict)
+    resident_bytes: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,8 +135,10 @@ class CatalogueManifest:
     checks against its budget before reading them. `overlaps` lists every
     variable the DFO variable set and an admitted base provenance both hold.
     `files` maps each table's logical name to its path in the build directory.
-    `un_carried_forward` is set when the build carries its UN rows and refused
-    places from an earlier build, and `None` when it read them from the UN.
+    `un_carried_forward` is set when the build carries its UN rows, refused
+    places and UN tables from an earlier build, and `None` when it read them
+    from the UN. `un_mirror` describes the UN tables, which `row_counts` and
+    `resident_bytes` leave out.
     """
 
     build_id: str
@@ -118,6 +151,7 @@ class CatalogueManifest:
     overlaps: tuple[str, ...]
     files: Mapping[str, str]
     un_carried_forward: UnCarryForward | None = None
+    un_mirror: UnMirrorManifest = field(default_factory=UnMirrorManifest)
     format_version: int = CATALOGUE_FORMAT_VERSION
 
     @property
@@ -144,6 +178,19 @@ class CatalogueManifest:
                         "reason": self.un_carried_forward.reason,
                     }
                 ),
+                "un_mirror": {
+                    "row_counts": dict(self.un_mirror.row_counts),
+                    "agencies": {
+                        segment: {
+                            "series": counts.series,
+                            "variables": counts.variables,
+                            "excluded_series": counts.excluded_series,
+                            "excluded_variables": counts.excluded_variables,
+                        }
+                        for segment, counts in self.un_mirror.agencies.items()
+                    },
+                    "resident_bytes": self.un_mirror.resident_bytes,
+                },
                 "format_version": self.format_version,
             },
             sort_keys=True,
@@ -176,8 +223,28 @@ class CatalogueManifest:
                     from_build=str(carried["from_build"]), reason=str(carried["reason"])
                 )
             ),
+            un_mirror=UnMirrorManifest(
+                row_counts={
+                    str(k): int(v) for k, v in dict(payload["un_mirror"]["row_counts"]).items()
+                },
+                agencies={
+                    str(segment): agency_counts_from_json(counts)
+                    for segment, counts in dict(payload["un_mirror"]["agencies"]).items()
+                },
+                resident_bytes=int(payload["un_mirror"]["resident_bytes"]),
+            ),
             format_version=int(payload["format_version"]),
         )
+
+
+def agency_counts_from_json(payload: Mapping[str, Any]) -> UnAgencyCounts:
+    """Raises `KeyError` naming a missing count, `ValueError` for a non-integer one."""
+    return UnAgencyCounts(
+        series=int(payload["series"]),
+        variables=int(payload["variables"]),
+        excluded_series=int(payload["excluded_series"]),
+        excluded_variables=int(payload["excluded_variables"]),
+    )
 
 
 __all__ = [
@@ -191,13 +258,22 @@ __all__ = [
     "PROVENANCES_FILE",
     "PROVENANCE_PLACES_FILE",
     "SCAN_FILE",
+    "SUPERSEDED_VARIABLES_FILE",
     "TOPICS_FILE",
+    "UN_ARCS_FILE",
+    "UN_EXCLUDED_VARIABLES_FILE",
     "UN_FILE",
+    "UN_MIRROR_FILE",
+    "UN_TOPICS_FILE",
+    "UN_VARIABLES_FILE",
     "VERSIONS_PREFIX",
     "WITHHELD_VARIABLES_FILE",
     "CatalogueManifest",
     "CataloguePointer",
     "ScanLevel",
+    "UnAgencyCounts",
     "UnCarryForward",
+    "UnMirrorManifest",
+    "agency_counts_from_json",
     "identity_key",
 ]

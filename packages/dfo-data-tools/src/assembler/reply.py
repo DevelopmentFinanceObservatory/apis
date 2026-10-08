@@ -17,12 +17,13 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import cast
 
-from dfo_frame_grammar import STAT_VAR_COLUMN
+from dfo_frame_grammar import STAT_VAR_COLUMN, UNIT_COLUMN
 
 from assembler.errors import ReleaseMismatch, escape_pointer_segment
 from assembler.frame_view import facet_dimension_names
 from assembler.limits import FACT_SUMMARY_SERIES_CAP, FACT_SUMMARY_TOKEN_CAP
 from assembler.select import has_arrayed_dimension
+from materialise.unit_cells import unit_identity
 
 logger = logging.getLogger(__name__)
 
@@ -293,7 +294,7 @@ def build_fact_summary(
             revision=revision,
         )
         window = None
-        unit = _table_unit(component=component)
+        unit = None
     elif member == "source_card":
         # Binds no series. Its `source_refs[]` names every distinct raw
         # provenance ref the resolved frame's own rows carry.
@@ -312,6 +313,10 @@ def build_fact_summary(
         component_id=component_id,
         revision=revision,
     )
+    if member == "table":
+        unit = _table_unit(
+            component=component, series_list=series_list, coordinates=coordinates_by_index
+        )
     per_series = [
         series_entry(
             id=one.get("id"),
@@ -368,13 +373,32 @@ def applied_defaults(
     ]
 
 
-def _table_unit(*, component: Mapping[str, object]) -> object | None:
+def _table_unit(
+    *,
+    component: Mapping[str, object],
+    series_list: Sequence[Mapping[str, object]],
+    coordinates: Sequence[Mapping[str, object]],
+) -> object | None:
     """Returns a table-level unit when every row agrees. Mixed or empty tables return
-    `None`, leaving each row's unit as the reference. Canonical JSON comparison
+    `None`, leaving each row's unit as the reference. Rows compare by `unit_identity`: by
+    their series' frame `unit` coordinate, so two units whose labels read alike differ, and
+    by the canonical JSON of the row's unit for a series stored without coordinates, which
     makes structured-unit equality independent of key order."""
     rows = cast("Sequence[Mapping[str, object]]", component.get("rows") or ())
-    units_by_key = {json.dumps(row.get("unit"), sort_keys=True): row.get("unit") for row in rows}
-    return next(iter(units_by_key.values())) if len(units_by_key) == 1 else None
+    frame_unit_keys = {
+        cast("str", one["id"]): held.get(UNIT_COLUMN)
+        for one, held in zip(series_list, coordinates, strict=True)
+        if one.get("id") is not None and held
+    }
+    units_by_identity = {
+        unit_identity(
+            series_id=row.get("series_id"),
+            payload_unit=row.get("unit"),
+            frame_unit_keys=frame_unit_keys,
+        ): row.get("unit")
+        for row in rows
+    }
+    return next(iter(units_by_identity.values())) if len(units_by_identity) == 1 else None
 
 
 def _table_series_from_rows(

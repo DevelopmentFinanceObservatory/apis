@@ -58,21 +58,104 @@ dac1.gni:
   shape: {gl: GNI series about the provider}
 dac2a.oda_net_received:
   origin: dfo
-  dataset: {gl: DAC2a provenance}
-  shape: {population_type: FinancialFlow, measurement_qualifier: Nominal}
-  fixed: {gl: nettingBasis Net; DAC2a total ODA aid type}
+  dataset: provenance/OECDDAC2A
+  shape:
+    population_type: FinancialFlow
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {dac2aAidType: DAC2aAidType206, financialFlowType: Disbursement, nettingBasis: Net}
+dac2a.oda_gross_received:
+  origin: dfo
+  dataset: provenance/OECDDAC2A
+  shape:
+    population_type: FinancialFlow
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {dac2aAidType: DAC2aAidType206, financialFlowType: Disbursement, nettingBasis: Gross}
 dac2a.imputed_multilateral:
   origin: dfo
-  dataset: {gl: DAC2a provenance}
-  fixed: {dac2aAidType: DAC2aAidType106}
+  dataset: provenance/OECDDAC2A
+  shape:
+    population_type: FinancialFlow
+    measured_property: attributedAmount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {dac2aAidType: DAC2aAidType106, financialFlowType: Disbursement, nettingBasis: Gross}
 dac2a.technical_cooperation:
   origin: dfo
-  dataset: {gl: DAC2a provenance}
-  fixed: {gl: DAC2a technical cooperation aid type}
+  dataset: provenance/OECDDAC2A
+  shape:
+    population_type: FinancialFlow
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {dac2aAidType: DAC2aAidType207, financialFlowType: Disbursement, nettingBasis: Gross}
 dac2a.food_aid:
   origin: dfo
-  dataset: {gl: DAC2a provenance}
-  fixed: {gl: DAC2a development food aid aid type}
+  dataset: provenance/OECDDAC2A
+  shape:
+    population_type: FinancialFlow
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {dac2aAidType: DAC2aAidType213, financialFlowType: Disbursement, nettingBasis: Gross}
+dac2a.humanitarian_aid:
+  origin: dfo
+  dataset: provenance/OECDDAC2A
+  shape:
+    population_type: FinancialFlow
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {dac2aAidType: DAC2aAidType216, financialFlowType: Disbursement, nettingBasis: Gross}
+dac2b.oof_gross:
+  origin: dfo
+  dataset: provenance/OECDDAC2B
+  shape:
+    population_type: FinancialFlow
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {dac2bAidType: DAC2bAidType972, financialFlowType: Disbursement, nettingBasis: Gross}
+dac2b.non_concessional_net:
+  origin: dfo
+  dataset: provenance/OECDDAC2B
+  shape:
+    population_type: FinancialFlow
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {dac2bAidType: DAC2bAidType296, financialFlowType: Disbursement, nettingBasis: Net}
+dac2b.export_credits_gross:
+  origin: dfo
+  dataset: provenance/OECDDAC2B
+  shape:
+    population_type: FinancialFlow
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {dac2bAidType: DAC2bAidType292, financialFlowType: Disbursement, nettingBasis: Gross}
+dac2b.interest_received:
+  origin: dfo
+  dataset: provenance/OECDDAC2B
+  shape:
+    population_type: FinancialFlow
+    measured_property: amount
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {dac2bAidType: DAC2bAidType297, financialFlowType: Disbursement, nettingBasis: Net}
 dac2b.oda_commitment_received:
   origin: dfo
   dataset: {gl: DAC2b provenance}

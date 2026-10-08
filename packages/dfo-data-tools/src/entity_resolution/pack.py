@@ -7,8 +7,14 @@ from __future__ import annotations
 import importlib.resources
 import json
 import os
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from importlib.resources.abc import Traversable
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from resolvekit.core.model.result import CandidateSummary
 
 MODULE_ID = "dfo_graph"
 """The pack's flat resolvekit module id. Flat because `namespace` (and so
@@ -32,6 +38,8 @@ _REGION_IDS_FILENAME = "region_ids.json"
 _QUERY_ALIASES_FILENAME = "query_aliases.json"
 
 _CODE_SYSTEM = "dac"
+_ALIAS_COLUMN_PREFIX = "alias"
+_ORG_PACK_ID = "org"
 
 
 def records_path() -> Traversable:
@@ -117,9 +125,64 @@ def _build_rows(*, records: list[dict], curated: dict[str, list[str]], normalize
             _CODE_SYSTEM: record.get("dac_code"),
         }
         for index, alias in enumerate(aliases):
-            row[f"alias{index}"] = alias
+            row[f"{_ALIAS_COLUMN_PREFIX}{index}"] = alias
         rows.append(row)
     return rows
+
+
+def _rows(
+    *, records_path: Traversable | Path, curated_path: Traversable | Path, normalizer
+) -> list[dict]:
+    return _build_rows(
+        records=_load_records(records_path),
+        curated=_load_curated(curated_path),
+        normalizer=normalizer,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class AliasIndex:
+    """Every name the pack stores for a row, mapped to that row as an org-pack candidate.
+
+    Keys and queries both pass through `normalize`, `OrgNormalizer.normalize_name`, which is
+    the form the BYOD build stores as `value_norm` and the listed-name gate compares against."""
+
+    owners: Mapping[str, tuple[CandidateSummary, ...]]
+    normalize: Callable[[str], str]
+
+    def owners_of(self, text: str) -> tuple[CandidateSummary, ...]:
+        return self.owners.get(self.normalize(text), ())
+
+
+def build_alias_index(
+    *, records_path: Traversable | Path, curated_path: Traversable | Path
+) -> AliasIndex:
+    """Index the canonical name and every alias of each row `build_pack` writes.
+
+    The rows come from the same `_build_rows` call on the same inputs, so the index holds
+    exactly the names the pack holds. Each candidate carries no confidence."""
+    from resolvekit.core.model.result import CandidateSummary
+    from resolvekit.packs.org.normalizer import OrgNormalizer
+
+    normalizer = OrgNormalizer()
+    owners: dict[str, list[CandidateSummary]] = {}
+    for row in _rows(records_path=records_path, curated_path=curated_path, normalizer=normalizer):
+        candidate = CandidateSummary(
+            entity_id=f"{NAMESPACE_PREFIX}{row['id']}",
+            canonical_name=row["name"],
+            entity_type=row["entity_type"],
+            pack_id=_ORG_PACK_ID,
+        )
+        names = [row["name"]] + [
+            value for column, value in row.items() if column.startswith(_ALIAS_COLUMN_PREFIX)
+        ]
+        for key in dict.fromkeys(normalizer.normalize_name(name) for name in names):
+            if key:
+                owners.setdefault(key, []).append(candidate)
+    return AliasIndex(
+        owners={key: tuple(candidates) for key, candidates in owners.items()},
+        normalize=normalizer.normalize_name,
+    )
 
 
 def build_pack(
@@ -137,15 +200,12 @@ def build_pack(
     from resolvekit.core.api._byod import prepare_standalone_pack
     from resolvekit.packs.org.normalizer import OrgNormalizer
 
-    records = _load_records(records_path)
-    curated = _load_curated(curated_path)
-    normalizer = OrgNormalizer()
-    rows = _build_rows(records=records, curated=curated, normalizer=normalizer)
+    rows = _rows(records_path=records_path, curated_path=curated_path, normalizer=OrgNormalizer())
 
     _FIXED_ROW_KEYS = 4  # id, name, entity_type, and the "dac" code column
     max_row_width = max((len(row) for row in rows), default=_FIXED_ROW_KEYS)
     # `from_records` declares alias columns for the whole pack, so size them to the widest row.
-    alias_columns = [f"alias{i}" for i in range(max_row_width - _FIXED_ROW_KEYS)]
+    alias_columns = [f"{_ALIAS_COLUMN_PREFIX}{i}" for i in range(max_row_width - _FIXED_ROW_KEYS)]
 
     out_dir.mkdir(parents=True, exist_ok=True)
     os.environ["RESOLVEKIT_CACHE_DIR"] = str(out_dir)

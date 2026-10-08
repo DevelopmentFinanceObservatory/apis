@@ -528,24 +528,39 @@ def test_subject_only_request_with_a_worldwide_total_alone_mints_earth():
     assert result.default_scope == ("Earth",)
 
 
-def test_subject_only_request_with_no_data_at_any_default_place_refuses_facet_not_available():
-    # A request binding no entity meets this refusal when neither a country nor Earth
-    # holds an observation, so the bound provenance has no candidate. An unbound axis
-    # refuses `default_facet_undefined` on the same empty probe.
+@pytest.mark.parametrize("places", [(), ("country/KEN",)], ids=["default_scope", "bound_place"])
+@pytest.mark.parametrize(
+    "facet_bindings",
+    [
+        {},
+        _BOUND_FACETS,
+        # No rate cache is supplied, so planning this conversion would raise.
+        {
+            "unit": FacetBinding(
+                state="request", request=UnitRequest(currency="USD", prices="current")
+            )
+        },
+    ],
+    ids=["unbound_facets", "bound_facets", "unit_request"],
+)
+def test_a_member_whose_probe_returns_no_candidate_is_the_empty_result(places, facet_bindings):
+    # Neither a country nor Earth holds an observation, so the probe is empty whichever places
+    # the request covers. The result selects no facet and plans no conversion.
     graph = FakeGraphReader(child_places=_EARTH_COUNTRIES)
     sdmx, requests = _sdmx_client(_SUBJECT_CSV_HEADER, availability=graph.scope_availability())
+    request = replace(
+        _subject_request(),
+        role_bindings={"observationAbout": list(places)} if places else {},
+        facet_bindings=facet_bindings,
+    )
 
-    with pytest.raises(FacetNotAvailableError) as excinfo:
-        _spec(_subject_request(), sdmx=sdmx, graph=graph)
+    result = _spec(request, sdmx=sdmx, graph=graph)
 
-    assert excinfo.value.code == "facet_not_available"
-    assert requests == []
-
-    unbound_facets = replace(_subject_request(), facet_bindings={})
-    with pytest.raises(DefaultFacetUndefinedError) as excinfo_unbound:
-        _spec(unbound_facets, sdmx=sdmx, graph=graph)
-
-    assert excinfo_unbound.value.code == "default_facet_undefined"
+    assert result.probe_empty
+    assert result.coverage.rows == 0
+    assert [warning["code"] for warning in result.warnings] == ["empty_result"]
+    assert result.trace.facets == ()
+    assert result.conversion_record is None
     assert requests == []
 
 
@@ -682,6 +697,9 @@ def test_empty_result_zero_rows_survive_window_filter():
     assert len(result.warnings) == 1
     assert result.warnings[0]["code"] == "empty_result"
     assert result.warnings[0]["severity"] == "warn"  # the shared severity vocabulary, not "warning"
+    # The probe held a candidate, so the facets it selected stay in the trace.
+    assert not result.probe_empty
+    assert result.trace.facets
 
 
 def test_blank_obs_value_row_surviving_filters_is_empty_result_not_a_stale_window():
@@ -1001,6 +1019,19 @@ def test_coverage_below_scope_caps_named_entities_at_five():
         "No observations were served for country/Unserved0, country/Unserved1, "
         "country/Unserved2, country/Unserved3, country/Unserved4 and 1 more."
     )
+
+
+def test_as_issue_carries_the_wrapped_errors_code_and_message():
+    exc = DefaultFacetUndefinedError("axis 'unit' has no default", pointer="/facets/unit")
+    issue = _as_issue("unit", exc)
+    assert issue.code == exc.code == "default_facet_undefined"
+    assert issue.detail == str(exc)
+
+
+def test_as_issue_leaves_detail_unset_for_an_error_with_no_message():
+    issue = _as_issue("unit", FacetNotAvailableError(pointer="/facets/unit"))
+    assert issue.code == "facet_not_available"
+    assert issue.detail is None
 
 
 def test_as_issue_truncated_is_none_when_no_alternatives():

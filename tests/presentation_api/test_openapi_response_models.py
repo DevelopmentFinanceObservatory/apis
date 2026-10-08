@@ -13,6 +13,7 @@ _MODELED_OPERATIONS: frozenset[tuple[str, str]] = frozenset(
         ("/api/presentation/components", "post"),
         ("/api/presentation/components/{component_id}", "patch"),
         ("/api/presentation/components/{component_id}", "get"),
+        ("/api/presentation/components/{component_id}/revisions/{revision}/render", "post"),
         ("/api/presentation/healthz", "get"),
         ("/api/presentation/capabilities", "get"),
         ("/api/presentation/frames/{spec_id}/{content_version}", "get"),
@@ -21,15 +22,18 @@ _MODELED_OPERATIONS: frozenset[tuple[str, str]] = frozenset(
 )
 
 # Operations whose 2xx body is a file rather than JSON, with the media types each declares.
+_FILE_MEDIA_TYPES = frozenset(
+    {
+        "application/zip",
+        "text/csv",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.apache.parquet",
+    }
+)
+_REVISION_PATH = "/api/presentation/components/{component_id}/revisions/{revision}"
 _FILE_OPERATIONS: dict[tuple[str, str], frozenset[str]] = {
-    ("/api/presentation/components/{component_id}/revisions/{revision}/data", "get"): frozenset(
-        {
-            "application/zip",
-            "text/csv",
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            "application/vnd.apache.parquet",
-        }
-    ),
+    (f"{_REVISION_PATH}/data", "get"): _FILE_MEDIA_TYPES,
+    (f"{_REVISION_PATH}/render/data", "get"): _FILE_MEDIA_TYPES,
 }
 
 

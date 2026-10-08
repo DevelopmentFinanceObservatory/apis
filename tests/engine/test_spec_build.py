@@ -26,6 +26,7 @@ from search.engine.spec_build import (
     build_spec,
     build_stat_vars,
     pair_slot_drafts,
+    spec_named_groups,
 )
 from search.engine.spec_id import mint_identity
 from search.models import (
@@ -406,6 +407,25 @@ class TestBuildSpecEntityGroups:
             named_groups=named_groups,
         )
 
+    @pytest.mark.parametrize("reverse", [False, True], ids=["as-listed", "reversed"])
+    @pytest.mark.parametrize(
+        "other_dcid", ["undata-geo/G99999999", None], ids=["other-has-a-node", "other-has-none"]
+    )
+    def test_of_groups_with_one_member_list_a_role_carries_the_first_by_dcid(
+        self, reverse, other_dcid
+    ):
+        """Of groups with the same members, one with a node wins over one without, then
+        the first by dcid, in either order."""
+        baltic = replace(self._BALTIC, dcid="undata-geo/G00000000")
+        other = replace(self._BALTIC, dcid=other_dcid, label="Baltic rim")
+        groups = (other, baltic) if reverse else (baltic, other)
+
+        spec = self._spec(sorted(baltic.member_dcids), named_groups=groups)
+
+        assert spec.resolved.entity_groups == {
+            "origin": EntityGroup(dcid=baltic.dcid, label=baltic.label)
+        }
+
     def test_a_grouped_role_mints_the_ungrouped_spec_id_and_states_its_group(self):
         members = ["country/LVA", "country/EST", "country/LTU"]
 
@@ -417,6 +437,20 @@ class TestBuildSpecEntityGroups:
         assert grouped.definition.identity == ungrouped.definition.identity
         assert grouped.resolved.entity_groups == expected
         assert ungrouped.resolved.entity_groups is None
+
+    @pytest.mark.parametrize("entity_type", ["UNGeoRegion", None])
+    def test_a_group_serves_the_type_of_its_node(self, entity_type):
+        baltic = replace(self._BALTIC, dcid="undata-geo/G00000000", entity_type=entity_type)
+
+        spec = self._spec(sorted(baltic.member_dcids), named_groups=(baltic,))
+
+        assert spec.resolved.entity_groups == {
+            "origin": EntityGroup(
+                dcid="undata-geo/G00000000", label="Baltic states", entity_type=entity_type
+            )
+        }
+        assert spec_named_groups(spec) == (baltic,)
+        assert spec.spec_id == self._spec(sorted(baltic.member_dcids), named_groups=()).spec_id
 
     @pytest.mark.parametrize(
         "origin_dcids",
@@ -431,3 +465,28 @@ class TestBuildSpecEntityGroups:
         spec = self._spec(origin_dcids, named_groups=(self._BALTIC,))
 
         assert spec.resolved.entity_groups is None
+
+    def test_a_role_names_each_set_it_binds_whole(self):
+        """A role binding a group's members beside another place carries no group and
+        names the set, which `spec_named_groups` returns."""
+        whole = [*sorted(self._BALTIC.member_dcids), "country/FIN"]
+
+        beside = self._spec(whole, named_groups=(self._BALTIC,))
+        partial = self._spec(whole[1:], named_groups=(self._BALTIC,))
+
+        assert beside.resolved.entity_groups is None
+        assert beside.resolved.named_sets == (
+            ("origin", EntityGroup(dcid=None, label="Baltic states"), self._BALTIC.member_dcids),
+        )
+        assert spec_named_groups(beside) == (self._BALTIC,)
+        assert partial.resolved.named_sets == ()
+
+    def test_a_role_does_not_name_a_set_it_binds_at_its_node(self):
+        """A role binding a set's node beside every member of the set serves the set at
+        its node. The members came from other names, so the set is none of its named
+        sets."""
+        baltic = replace(self._BALTIC, dcid="undata-geo/G00000000")
+
+        spec = self._spec([*sorted(baltic.member_dcids), baltic.dcid], named_groups=(baltic,))
+
+        assert spec.resolved.named_sets == ()

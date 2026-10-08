@@ -62,8 +62,8 @@ def test_committed_records_have_expected_population():
     records = json.loads(pack.records_path().read_text())
     organisations = [r for r in records if r["kind"] == "organisation"]
     aggregates = [r for r in records if r["kind"] == "aggregate"]
-    assert len(organisations) == 187
-    assert len(aggregates) == 25
+    assert len(organisations) == 195
+    assert len(aggregates) == 37
 
     dcids = [r["dcid"] for r in records]
     assert len(dcids) == len(set(dcids)), "committed records carry a duplicate dcid"
@@ -137,6 +137,12 @@ def test_build_pack_refuses_a_curated_alias_naming_an_unknown_dcid(tmp_path: Pat
         ("AfDB", "AfricanDevelopmentBank"),
         ("Africa, regional", "DACAfricaUnallocated"),
         ("913", "AfricanDevelopmentBank"),
+        # A node's lowest DAC code is its code; every other one is an alias.
+        ("915", "AsianDevelopmentBank"),
+        ("20015", "AsianDevelopmentBank"),
+        ("907", "InternationalMonetaryFund"),
+        ("905", "InternationalDevelopmentAssociation"),
+        ("996", "EuropeanUnionInstitutions"),
         ("IMF", "InternationalMonetaryFund"),
         ("WHO", "WorldHealthOrganization"),
         ("Asian Development Bank", "AsianDevelopmentBank"),

@@ -18,7 +18,7 @@ import openpyxl
 import pyarrow.parquet as pq
 import pytest
 from dfo_frame_grammar import Frame, canonical_frame_bytes
-from dfo_frame_grammar.grammar import UnitRequest
+from dfo_frame_grammar.grammar import ComposedUnit, StatVarPart, UnitRequest
 
 import materialise.formats as materialise_formats
 from materialise.errors import MaterialisationError, MaterialisationUsageError
@@ -39,7 +39,7 @@ from materialise.formats import write_csv as _real_write_csv
 from materialise.formats import write_excel as _real_write_excel
 from materialise.formats import write_frame1 as _real_write_frame1
 from materialise.formats import write_parquet as _real_write_parquet
-from materialise.frame_build import build_frame
+from materialise.frame_build import build_frame, unit_cell_for_rebuild
 
 from .conftest import read_fixture_text
 
@@ -443,10 +443,26 @@ def test_write_excel_normalizes_a_datetime_cell_the_same_way_csv_and_parquet_do(
     assert csv_row[0] == str(when)
 
 
-def test_every_tabular_writer_renders_a_unit_request_cell_as_canonical_json():
-    unit = UnitRequest(currency="EUR", prices="constant", base_year=2024)
+@pytest.mark.parametrize(
+    ("unit", "expected"),
+    [
+        (
+            UnitRequest(currency="EUR", prices="constant", base_year=2024),
+            '{"base_year":2024,"currency":"EUR","prices":"constant"}',
+        ),
+        (
+            ComposedUnit(
+                numerator=UnitRequest(currency="EUR", prices="current"),
+                denominator=StatVarPart(stat_var="dcid:Count_Person"),
+            ),
+            '{"denominator":{"stat_var":"dcid:Count_Person"},'
+            '"numerator":{"currency":"EUR","prices":"current"}}',
+        ),
+    ],
+    ids=["converted", "composed"],
+)
+def test_every_tabular_writer_renders_a_structured_unit_cell_as_canonical_json(unit, expected):
     table = _Table(columns=("unit",), rows=((unit,),))
-    expected = '{"base_year":2024,"currency":"EUR","prices":"constant"}'
 
     csv_artifact = write_csv((table,), rendering=_PLAIN_RENDERING)
     excel_artifact = write_excel((table,), rendering=_PLAIN_RENDERING)
@@ -768,6 +784,53 @@ def test_read_frame1_table_round_trips_write_parquet_bytes():
         write_parquet((frame,), rendering=_PLAIN_RENDERING).data
         == write_parquet((table,), rendering=_PLAIN_RENDERING).data
     )
+
+
+@pytest.mark.parametrize(
+    ("unit", "cell"),
+    [
+        (
+            {"currency": "EUR", "prices": "constant", "base_year": 2024},
+            UnitRequest(currency="EUR", prices="constant", base_year=2024),
+        ),
+        (
+            {"numerator": "USDollar", "denominator": {"stat_var": "dcid:Count_Person"}},
+            ComposedUnit(
+                numerator="USDollar", denominator=StatVarPart(stat_var="dcid:Count_Person")
+            ),
+        ),
+    ],
+    ids=["converted", "composed"],
+)
+def test_read_frame1_table_types_a_structured_unit_and_its_rows_rebuild_the_frame(unit, cell):
+    role_keys = ("recipient",)
+    frame = build_frame(
+        role_keys=role_keys,
+        rows=[
+            {
+                "stat_var": "dcid:Exemplar",
+                "recipient": "country/TGO",
+                "time_period": "2015",
+                "value": 1000.0,
+                "unit": unit,
+            }
+        ],
+    )
+    table = read_frame1_table(write_frame1((frame,)).data)
+
+    assert [row[table.columns.index("unit")] for row in table.rows] == [cell]
+    rebuilt = build_frame(
+        role_keys=role_keys,
+        rows=[
+            {
+                column: unit_cell_for_rebuild(value)
+                for column, value in zip(table.columns, row, strict=True)
+                if column != "status"
+            }
+            for row in table.rows
+        ],
+    )
+    assert rebuilt == frame
 
 
 def test_read_frame1_table_columns_and_rows_are_tuples_of_tuples():

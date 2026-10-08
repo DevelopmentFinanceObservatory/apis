@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Annotated, Any
 from pydantic import BaseModel, Discriminator, Tag
 from pydantic.fields import FieldInfo
 
+from dfo_platform.named import MAX_VALUE_CHARS, cut
 from dfo_platform.problem import ProblemSpec
 
 if TYPE_CHECKING:
@@ -262,6 +263,9 @@ def pointer_for_error(
     drop injected tags in place when a segment is absent or the next segment resolves against the
     same body node. This avoids mistaking a tag for a sibling key or shifting a later list index.
 
+    A key longer than `MAX_VALUE_CHARS` ends the pointer at the object holding it, so the
+    pointer stays short whatever key a caller posted.
+
     Discriminated unions supply tag metadata. Drop unresolved synthetic arm names from plain unions,
     including terminal names on arm mismatches. Preserve a missing field's terminal name when it
     matches a union tag. The error type separates missing-field errors from arm mismatches.
@@ -290,6 +294,8 @@ def pointer_for_error(
     current: object = body
     last = len(segments) - 1
     for i, seg in enumerate(segments):
+        if isinstance(seg, str) and len(seg) > MAX_VALUE_CHARS:
+            break
         # Resolve embedded parameter names before checking union tags.
         consumed = False
         if isinstance(state, BodyParams):
@@ -317,6 +323,37 @@ def pointer_for_error(
     return "/" + "/".join(kept) if kept else None
 
 
+def _json_type(value: object) -> str:
+    """The JSON type word for a decoded body value."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, list):
+        return "array"
+    return "object"
+
+
+def _error_detail(error: dict[str, Any]) -> str | None:
+    """The error's message. A tag a caller posted to a discriminated union is named by its
+    JSON type when it is not a string, and cut short when it is.
+
+    `union_tag_invalid` is the one pydantic message that quotes its input, and it quotes
+    the `repr` of a tag that is a list or an object."""
+    message = error.get("msg")
+    ctx = error.get("ctx") or {}
+    tag = ctx.get("tag")
+    if error.get("type") != "union_tag_invalid" or not isinstance(tag, str) or not message:
+        return message
+    posted = error.get("input")
+    name = str(ctx.get("discriminator", "")).strip("'")
+    if isinstance(posted, dict) and name in posted and not isinstance(posted[name], str):
+        return message.replace(f"'{tag}'", f"of JSON type {_json_type(posted[name])}", 1)
+    return message.replace(tag, cut(tag), 1)
+
+
 def validation_problem(
     exc: RequestValidationError, *, model: type[BaseModel] | Any | None = None
 ) -> ProblemSpec:
@@ -332,7 +369,7 @@ def validation_problem(
     detail: str | None = None
     if errors:
         pointer = pointer_for_error(exc, errors[0], model=model)
-        detail = errors[0].get("msg")
+        detail = _error_detail(errors[0])
 
     version_error = next(
         (e for e in errors if error_field_loc(e) == ["schema_version"]),

@@ -174,7 +174,8 @@ class _MemberOutcome:
     native or non-request unit; a conversion plan resolves it before fetch.
     `default_scope` is the member's default place scope (`MemberProbe.scope`), for a
     request that binds no entity. `series_conversions` holds each converted series' record
-    (`_convert_by_series`).
+    (`_convert_by_series`). `probe_empty` is true when the member's probe returned no
+    candidate, and the outcome then holds no row and no selection.
     """
 
     frame: Frame
@@ -186,6 +187,7 @@ class _MemberOutcome:
     conversion_recipe_id: str | None
     default_scope: DefaultPlaceScope = NO_DEFAULT_SCOPE
     series_conversions: dict[SeriesKey, SeriesConversion] = field(default_factory=dict)
+    probe_empty: bool = False
 
 
 @dataclass(frozen=True)
@@ -200,7 +202,9 @@ class _GroupOutcome:
     `None` when no arithmetic ran; recipe IDs are `None` for ref/unbound or
     native-satisfied units. `default_scope` is the group's default place
     scope, for members that bind no entity. `series_conversions` holds every
-    member's converted series' records (`_convert_by_series`).
+    member's converted series' records (`_convert_by_series`). `probe_empty` is true
+    when no member's probe returned a candidate, and the outcome then holds no row and no
+    selection.
     """
 
     frame_chunks: Callable[[], Iterator[Frame]]
@@ -216,6 +220,7 @@ class _GroupOutcome:
     member_conversion_recipe_ids: dict[str, str | None]
     default_scope: DefaultPlaceScope = NO_DEFAULT_SCOPE
     series_conversions: dict[SeriesKey, SeriesConversion] = field(default_factory=dict)
+    probe_empty: bool = False
 
 
 @dataclass(frozen=True)
@@ -307,7 +312,7 @@ def _select_member_facets(
     `request.window` narrows it to facets overlapping the requested years
     (`facets.fallback_pool`). It evaluates all axes and aggregates
     failures. `DefaultFacetUndefinedError` takes priority over
-    `FacetNotAvailableError` and carries `request`; a lone `NonCurrencyUnitError` passes through,
+    `FacetNotAvailableError`; a lone `NonCurrencyUnitError` passes through,
     while mixed failures include it in the aggregate.
 
     With fewer than two bound axes, the selected refs must match one candidate
@@ -839,6 +844,10 @@ def _generate_member(
     period reduction. `_finish_member_table` applies conversion, collapse,
     coverage, ceiling checks, and frame construction.
 
+    A probe with no candidate returns the empty outcome before any selection
+    or conversion plan (`_MemberOutcome.probe_empty`), since the request's places hold
+    no observation of its variable.
+
     Conversion plans resolve before fetch. A supplied one-request
     `precomputed_probe` skips the graph probe; otherwise the function probes
     (`_probe_member`). Rows pass the probe's admission as well as the
@@ -858,6 +867,17 @@ def _generate_member(
         ),
         request.candidate_filter,
     )
+    if not probe.candidates:
+        empty = _finish_member_table(
+            request,
+            {},
+            pa.Table.from_batches([], schema=observation_schema(request.declared_roles)),
+            ceiling=ceiling,
+            conversion_plan=None,
+            currencies=None,
+            default_scope=probe.scope,
+        )
+        return replace(empty, probe_empty=True)
 
     selections = _select_member_facets(
         request, probe.candidates, graph=graph, breadth=probe.breadth_in(request.window)
@@ -1667,6 +1687,21 @@ def _plan_group_members(
     return _GroupPlan(selections=selections, plans=plans)
 
 
+def _empty_group_plan(probes: Sequence[MemberProbe]) -> _GroupPlan:
+    """The plan of a group none of whose probes returned a candidate: no selection, and for
+    each member no dispatch id and no conversion, so `_generate_chunk` fetches nothing and
+    every member contributes its empty table."""
+    return _GroupPlan(
+        selections={},
+        plans=[
+            _MemberFetchPlan(
+                selections={}, dispatch_ids=(), admission=probe.admission, conversion_plan=None
+            )
+            for probe in probes
+        ],
+    )
+
+
 @dataclass(frozen=True)
 class _DcidOrderedGroup:
     """Dcid-sorted requests and plans, with chunks planned over that order."""
@@ -1961,6 +1996,7 @@ def _assemble_group_outcome(
     selections: dict[str, FacetSelection],
     ceiling: int,
     default_scope: DefaultPlaceScope = NO_DEFAULT_SCOPE,
+    probe_empty: bool = False,
 ) -> _GroupOutcome:
     """Drives `streamer`'s streaming fetch to completion, then assembles
     the group's own `_GroupOutcome` from what it accumulated.
@@ -2032,6 +2068,7 @@ def _assemble_group_outcome(
         member_conversion_recipe_ids=streamer.conversion_recipe_ids,
         default_scope=default_scope,
         series_conversions=streamer.series_conversions,
+        probe_empty=probe_empty,
     )
 
 
@@ -2066,7 +2103,9 @@ def _generate_group(
     facet candidates; `_plan_group_members` resolves the group's one shared facet
     selection and each member's own conversion plan, raising
     `DefaultFacetUndefinedError`/`FacetNotAvailableError`/
-    `MaterialisationUsageError`/`NonCurrencyUnitError` as appropriate;
+    `MaterialisationUsageError`/`NonCurrencyUnitError` as appropriate, and is
+    skipped for `_empty_group_plan` when no member's probe returned a candidate
+    (`_GroupOutcome.probe_empty`);
     `_order_group_by_dcid` reorders the members by bare `stat_var` and
     plans the shared SDMX chunks; and `_assemble_group_outcome` drives
     `_GroupRowStreamer`'s chunked fetch to completion and raises
@@ -2090,13 +2129,18 @@ def _generate_group(
         precomputed_probe=precomputed_probe,
         deadline=deadline,
     )
-    group_plan = _plan_group_members(
-        requests,
-        probed,
-        graph=graph,
-        sdmx=sdmx,
-        rate_cache=rate_cache,
-        deadline=deadline,
+    probe_empty = not any(member.candidates for member in probed)
+    group_plan = (
+        _empty_group_plan(probed)
+        if probe_empty
+        else _plan_group_members(
+            requests,
+            probed,
+            graph=graph,
+            sdmx=sdmx,
+            rate_cache=rate_cache,
+            deadline=deadline,
+        )
     )
     ordered = _order_group_by_dcid(
         requests,
@@ -2124,6 +2168,7 @@ def _generate_group(
         selections=group_plan.selections,
         ceiling=ceiling,
         default_scope=default_scope_of(probed),
+        probe_empty=probe_empty,
     )
 
 

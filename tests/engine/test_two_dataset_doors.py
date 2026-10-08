@@ -81,6 +81,7 @@ def _electing(
                 description="A test table.",
                 opt_in=False,
                 absent_observation=absent,
+                account="provider",
                 rank=100 + rank,
             )
             for rank, declared in enumerate(sorted({ALT, IDS, provenance}))

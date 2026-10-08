@@ -6,9 +6,9 @@ import asyncio
 import logging
 import re
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
-from dataclasses import replace
-from typing import Literal, cast
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, replace
+from typing import Literal, NamedTuple
 
 from code_index.query import CodeIndex
 from code_index.shared import get_index, get_measure_index
@@ -21,22 +21,21 @@ from search.engine.bind_repair import (
 )
 from search.engine.config import settings
 from search.engine.envelope import _emit_step, now_ms
-from search.engine.interpret import Recall
 from search.engine.qualifier_match import (
+    _WORD_RE,
     CodedQualifier,
     QualifierMatch,
     QualifierSpan,
     QualifierTie,
+    TextReading,
     _all_normalized_text_ranges,
     _match_source,
     _normalize,
     _ranges_overlap,
     _row_system,
-    match_qualifier_ties,
-    match_qualifiers,
     match_unsupported_qualifier_phrases,
     names_plain_name,
-    recognise_spans,
+    read_by_vocabulary,
     slot_noun_named,
 )
 from search.engine.quantity import (
@@ -62,9 +61,11 @@ from search.engine.region.codes import AVAILABILITY_PROBE_FAILED
 from search.engine.region.grounding import _shape_with_taxonomy
 from search.engine.region.phase_intake import _unresolved_entity_terminal
 from search.engine.region.place_roles import (
+    bind_place_roles,
     lacks_query_axis,
     subject_shapes_refused,
     without_open_axis_gaps,
+    without_unasked_axes,
 )
 from search.engine.region.qualifier_readings import match_query_readings, reading_for_shape
 from search.engine.region.rate_head import (
@@ -74,7 +75,7 @@ from search.engine.region.rate_head import (
 )
 from search.engine.region.result import RegionResult
 from search.engine.region.sentence_events import _build_shape_event
-from search.engine.region.state import ResolveState
+from search.engine.region.state import ResolveState, for_shape, merge_lists, shape_vocabulary
 from search.engine.retrieval.bound_values import (
     DefaultReading,
     collapse_measure_families,
@@ -84,10 +85,12 @@ from search.engine.retrieval.bound_values import (
     part_datasets,
     part_member_rows,
     price_basis_order,
+    query_phrases_read,
     shape_datasets,
     shape_for_part,
 )
 from search.engine.retrieval.representative import _shape_disagreement_props
+from search.engine.retrieval.role_scope import _COVERAGE_ROLE_FOR_AXIS
 from search.engine.shape import (
     ShapeDraft,
     is_role_bearing,
@@ -178,11 +181,6 @@ def _mentioned_raw_qualifier_props(shape: ShapeDraft, variable: str) -> tuple[se
     return mentioned, False
 
 
-def _constraint_property_dcids(shape: ShapeDraft) -> set[str]:
-    """Return the constraint properties a candidate can carry into binding."""
-    return {slot.property_dcid for slot in shape.slot_keys if slot.property_dcid is not None}
-
-
 def _part_codes(shape: ShapeDraft, index: CodeIndex) -> dict[str, frozenset[str]] | None:
     """Each constraint property the rows of `shape`'s five-tuple that its part's datasets
     publish carry (`part_member_rows`), mapped to the values they hold on it. `None` for a
@@ -223,8 +221,7 @@ def _raw_count_is_pending_joint_slice(
         return False
     normalized_shapes = _same_head_normalised_shapes(shapes, head)
     return bool(normalized_shapes) and all(
-        len(mentioned_props - _constraint_property_dcids(candidate)) >= 2
-        for candidate in normalized_shapes
+        len(mentioned_props - shape_vocabulary(candidate)) >= 2 for candidate in normalized_shapes
     )
 
 
@@ -254,7 +251,7 @@ def _prune_explicit_rate_raw_counts(shapes: list[ShapeDraft], variable: str) -> 
             retained_raw_ids.add(id(raw_shape))
             continue
         if all(
-            len(mentioned_props - _constraint_property_dcids(candidate)) >= 2
+            len(mentioned_props - shape_vocabulary(candidate)) >= 2
             for candidate in normalized_shapes
         ):
             retained_raw_ids.add(id(raw_shape))
@@ -321,13 +318,29 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
             "qualifier_not_bound",
             unbound_qualifiers=(_unbound_dataset(state.named_dataset),),
         )
-    # Full spans retain ambiguous rows for final dispositions. Dropped phrases remain owned
-    # by the raw-text path.
-    state.variable_qualifier_spans = recognise_spans(
-        state.variable, get_index(), get_measure_index()
+    # One reading of each text source, in every code system and in each candidate's
+    # vocabulary (`qualifier_match.read_by_vocabulary`), serves the named-dataset check, the
+    # matches and ties, and the elected shape's qualifier records. Each vocabulary, a
+    # shape's slot properties, reads the text on its own: "ODA" binds the CRS flow type on a
+    # CRS shape and the DAC1 aid type on a DAC1 shape, and a DAC1 label such as
+    # "multilateral ODA" never hides "ODA" from a CRS shape.
+    sources = _read_sources(
+        state.variable,
+        state.dropped_qualifier_phrases,
+        query_text=state.query_text,
+        vocabularies=(shape_vocabulary(shape) for shape in candidates),
     )
+    state.variable_spans_in_every_system = sources.variable.everywhere.spans
+    state.variable_spans_by_vocabulary = {
+        vocabulary: reading.spans for vocabulary, reading in sources.variable.by_vocabulary.items()
+    }
     if state.named_dataset is not None:
-        undeclared = _undeclared_qualifiers(state.variable_qualifier_spans, candidates)
+        undeclared = _undeclared_qualifiers(
+            state.variable,
+            state.variable_spans_in_every_system,
+            candidates,
+            state.variable_spans_by_vocabulary,
+        )
         if undeclared:
             await _record_shape_step(state)
             return state.no_data("qualifier_not_bound", unbound_qualifiers=undeclared)
@@ -376,43 +389,38 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
     if _has_strong_rate_intent(state.variable):
         eligible_shapes = _prune_explicit_rate_raw_counts(eligible_shapes, state.variable)
     state.eligible_shapes = eligible_shapes
-    # Share one recognition pass between the availability prune, query-aware measure
-    # collapse and bind admission. A span tying codes of two index families' systems
-    # resolves here, per shape, against the eligible shapes' own slots
-    # (`qualifier_match._rows_per_shape`): "ODA" binds the CRS flow type on a CRS shape and
-    # the DAC1 aid type on a DAC1 shape.
-    shape_systems = tuple(frozenset(_constraint_property_dcids(s)) for s in eligible_shapes)
-    query_qualifier_matches, variable_matched_qualifier_phrases = _match_query_qualifiers(
-        state.variable,
-        state.dropped_qualifier_phrases,
-        query_text=state.query_text,
+    # The availability prune, query-aware measure collapse and bind admission share the
+    # eligible shapes' matches and ties.
+    query_qualifiers = _match_query_qualifiers(
+        sources,
         qualifiers=state.qualifiers,
-        shape_systems=shape_systems,
+        vocabularies=(shape_vocabulary(s) for s in eligible_shapes),
     )
-    state.query_qualifier_matches = query_qualifier_matches
+    state.query_qualifier_matches = query_qualifiers.matches
+    state.query_qualifier_ties = query_qualifiers.ties
     # Spans naming a code and a price basis ("PPP") are read per shape, so the prune, the
     # guard and bind admission each keep the reading their shape carries.
     query_qualifier_readings, reading_owned_phrases = match_query_readings(
         state.variable, state.dropped_qualifier_phrases, query_text=state.query_text
     )
     state.query_qualifier_readings = query_qualifier_readings
+    # Measure values are read in every system together, so the measure matches come from
+    # the union of every vocabulary's matches.
+    query_qualifier_matches = state.all_qualifier_matches()
     # No-place and region-expanded queries need a supplemental availability probe. It uses
     # named places plus a bounded region sample, or representative places when none are
     # named. Probe failure leaves availability unknown and adds a warning.
     #
     # Measure-head pruning needs a named place. Denominator-resolution pruning applies to
     # named and representative-place probes.
-    named_place = bool(state.recall_only_place_dcids or state.place_children_by_name)
-    if not state.entities or state.place_children_by_name:
+    expanding_set = any(place_set.expands for place_set in state.place_sets.values())
+    named_place = bool(state.recall_only_place_dcids) or expanding_set
+    if not state.entities or expanding_set:
         eligible_shapes, _availability_probe_failed = await asyncio.to_thread(
             _resolve_sibling_availability,
             eligible_shapes,
             graph=state.graph,
-            probe_places=_sibling_probe_places(
-                state.recall_only_place_dcids,
-                state.place_children_by_name,
-                cast(Recall, state.rcl).resolved_entity_names,
-            ),
+            probe_places=_sibling_probe_places(state.recall_only_place_dcids, state.place_sets),
             named_place=named_place,
         )
         state.eligible_shapes = eligible_shapes
@@ -434,7 +442,7 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
         variable=state.variable,
         quantity=state.quantity_requirement,
         denominator_kinds=state.denominator_kinds,
-        qualifier_matches=query_qualifier_matches,
+        qualifier_matches=state.query_qualifier_matches,
         qualifier_readings=query_qualifier_readings,
     )
     state.eligible_shapes = eligible_shapes
@@ -442,23 +450,20 @@ async def _phase_prune_and_rank(state: ResolveState) -> RegionResult | None:
         await _record_shape_step(state)
         return _unresolved_entity_terminal(state) or state.no_data("variable_not_resolved")
 
-    # The index's family and an unindexed family of one five-tuple are rival readings, and
-    # one of them reaches the election.
-    eligible_shapes = state.eligible_shapes = elect_five_tuple_family(
-        eligible_shapes, query_qualifier_matches
+    # Families of one five-tuple and role class are rival readings, and the one reading the
+    # most of the query reaches the election; of families reading alike, one with no series
+    # at the named places leaves for one with a series there. Then a role-bearing shape
+    # publishing on an axis the query does not ask for leaves for one reading as much
+    # without it (`without_unasked_axes`).
+    phrases_read = _phrases_reader(state)
+    eligible_shapes = elect_five_tuple_family(
+        eligible_shapes, phrases_read, series_at_places=_series_reader(state)
     )
-    # Merge tie-owned phrases so dropped-qualifier warnings cover matches and ties alike.
-    query_qualifier_ties, tie_owned_phrases = _match_query_qualifier_ties(
-        state.variable,
-        state.dropped_qualifier_phrases,
-        query_text=state.query_text,
-        qualifiers=state.qualifiers,
-        shape_systems=shape_systems,
+    eligible_shapes = state.eligible_shapes = without_unasked_axes(
+        state, eligible_shapes, phrases_read
     )
-    state.query_qualifier_ties = query_qualifier_ties
-    state.variable_matched_qualifier_phrases = (
-        variable_matched_qualifier_phrases | tie_owned_phrases | reading_owned_phrases
-    )
+    # Dropped-qualifier warnings cover matches, ties and two-reading spans alike.
+    state.variable_matched_qualifier_phrases = query_qualifiers.phrases | reading_owned_phrases
     measure_axes = get_measure_index().axes
     measure_query_matches, measure_qualifier_conflict_phrases = _measure_query_matches(
         query_qualifier_matches, measure_axes
@@ -601,11 +606,72 @@ def _bound_code_records(bindings: Sequence[SlotBindingDraft]) -> tuple[ResolvedQ
     return tuple(records)
 
 
+def _unread_words(
+    variable: str, span: QualifierSpan, read: Sequence[tuple[int, int]]
+) -> list[tuple[int, int]]:
+    """The character ranges of `span`'s words in `variable` that no range in `read` covers,
+    in query order: the words of a term a shape's own reading leaves unread."""
+    return [
+        (span.start + word.start(), span.start + word.end())
+        for word in _WORD_RE.finditer(variable[span.start : span.end])
+        if not any(
+            start <= span.start + word.start() and span.start + word.end() <= end
+            for start, end in read
+        )
+    ]
+
+
+def _unread_qualifier_phrases(state: ResolveState) -> tuple[str, ...]:
+    """The words of the variable's code terms, read in every code system together, that the
+    elected shape's own reading leaves unread where it reads others, each run of adjacent
+    words as one phrase, in query order.
+
+    "multilateral ODA" is DAC1 aid type 2000 in every system together; a CRS shape reads
+    "ODA" alone, so "multilateral" is unread there. Every span of the shape's own reading
+    counts as read, a measure value's included. A term the shape reads none of names no
+    code the answer applies in part: "gross national income" is a CRS type of finance and
+    the name of the series a GNI shape measures. A phrase overlapping a recorded
+    qualifier, such as a phrase the bind model listed as unplaced, is left to that record.
+    """
+    variable = state.variable
+    read = [
+        (span.start, span.end)
+        for span in for_shape(state.variable_spans_by_vocabulary, state.shape_draft)
+    ]
+    recorded = [
+        found
+        for qualifier in state.query_qualifiers
+        for found in _all_normalized_text_ranges(qualifier.text, variable.casefold())
+    ]
+    phrases: list[str] = []
+    for span in state.variable_spans_in_every_system:
+        if not all(isinstance(row, CodeRow) for row in span.rows):
+            continue
+        unread = _unread_words(variable, span, read)
+        if len(unread) == len(_unread_words(variable, span, ())):
+            continue
+        runs: list[tuple[int, int]] = []
+        for start, end in unread:
+            if runs and not variable[runs[-1][1] : start].strip():
+                runs[-1] = (runs[-1][0], end)
+            else:
+                runs.append((start, end))
+        phrases.extend(
+            variable[start:end]
+            for start, end in runs
+            if not any(_ranges_overlap((start, end), found) for found in recorded)
+        )
+    return tuple(phrases)
+
+
 def _undeclared_qualifiers(
-    spans: Sequence[QualifierSpan], shapes: Sequence[ShapeDraft]
+    variable: str,
+    spans: Sequence[QualifierSpan],
+    shapes: Sequence[ShapeDraft],
+    own_spans: Mapping[frozenset[str], tuple[QualifierSpan, ...]],
 ) -> tuple[ResolvedQualifier, ...]:
-    """The variable's code terms that no row of a shape in `shapes` can hold, each as an
-    unbound record.
+    """The variable's code terms, `spans` read in every code system, that no shape in
+    `shapes` can hold, each as an unbound record.
 
     A part bound to a named dataset elects from that dataset's rows alone, so a code counts
     as held on a shape only when a row the dataset publishes of its five-tuple holds the
@@ -615,23 +681,48 @@ def _undeclared_qualifiers(
     five-tuple reports. A shape the index does not carry holds any code of a code system it
     declares a slot for. A span holding a measure value is the measure's to read and is
     left alone.
+
+    `own_spans` holds `variable` read in each shape's own vocabulary
+    (`qualifier_match.read_by_vocabulary`). A shape also holds a term when spans of its own
+    reading, each holding a code on it, cover every word of the term. "OOF budget support"
+    names DAC1 aid type 2210 in every code system together, which no CRS row holds, while
+    a CRS shape reads "OOF" and "budget support" and holds both. "multilateral ODA" stays
+    refused on a CRS part: the CRS reading holds "ODA" and leaves "multilateral" unread.
     """
     index = get_index()
     readings = [(shape, _part_codes(shape, index)) for shape in shapes]
 
-    def held(row: CodeRow) -> bool:
-        descendants = frozenset(index.descendants(row.dcid))
-        return any(
-            row.code_system in _constraint_property_dcids(shape)
-            if codes is None
-            else bool(codes.get(row.code_system, frozenset()) & descendants)
-            for shape, codes in readings
+    def held_on(
+        shape: ShapeDraft, codes: Mapping[str, frozenset[str]] | None, row: CodeRow
+    ) -> bool:
+        if codes is None:
+            return row.code_system in shape_vocabulary(shape)
+        return bool(
+            codes.get(row.code_system, frozenset()) & frozenset(index.descendants(row.dcid))
         )
+
+    def read_on(
+        shape: ShapeDraft, codes: Mapping[str, frozenset[str]] | None
+    ) -> list[tuple[int, int]]:
+        """The ranges of `shape`'s own spans that hold a code on it."""
+        return [
+            (own.start, own.end)
+            for own in for_shape(own_spans, shape)
+            if any(isinstance(row, CodeRow) and held_on(shape, codes, row) for row in own.rows)
+        ]
+
+    covered = [read_on(shape, codes) for shape, codes in readings]
+
+    def held(span: QualifierSpan) -> bool:
+        code_rows = [row for row in span.rows if isinstance(row, CodeRow)]
+        if any(held_on(shape, codes, row) for shape, codes in readings for row in code_rows):
+            return True
+        return any(not _unread_words(variable, span, ranges) for ranges in covered)
 
     undeclared: list[ResolvedQualifier] = []
     for span in spans:
         code_rows = [row for row in span.rows if isinstance(row, CodeRow)]
-        if len(code_rows) < len(span.rows) or any(held(row) for row in code_rows):
+        if len(code_rows) < len(span.rows) or held(span):
             continue
         undeclared.append(
             ResolvedQualifier(
@@ -656,7 +747,7 @@ def _unheld_bound_codes(
 
     A part whose source slot names a table elects from that table's rows alone, so a code
     the bind model chose from the unnamed part's menu that the table lacks can bind on none
-    of them, as a term `_undeclared_qualifiers` refuses for a part named at the seam. A
+    of them, as a term `_undeclared_qualifiers` refuses for a part naming a table. A
     shape the index does not carry has no rows to check.
     """
     index = get_index()
@@ -754,164 +845,284 @@ def _measure_query_matches(
     return tuple(named), frozenset(refused_phrases)
 
 
-def _match_query_qualifiers(
+@dataclass(frozen=True, slots=True)
+class _SourceReadings:
+    """Each text source read once in every code system and in each vocabulary
+    (`qualifier_match.read_by_vocabulary`): the variable, then the query text when given,
+    then each dropped phrase. The region path owns the first `owned`; the raw-text path
+    owns the dropped phrases' warnings."""
+
+    texts: tuple[TextReading, ...]
+    owned: int
+
+    @property
+    def variable(self) -> TextReading:
+        return self.texts[0]
+
+
+def _read_sources(
     variable: str,
     dropped_qualifier_phrases: Sequence[str] = (),
     *,
     query_text: str | None = None,
-    qualifiers: Sequence[CodedQualifier] | None = None,
-    shape_systems: Sequence[frozenset[str]] = (),
-) -> tuple[tuple[QualifierMatch, ...], frozenset[str]]:
-    """Collect raw qualifier matches and the phrases owned by this region path.
-
-    Match ``variable``, optional ``query_text``, and each dropped phrase separately so a
-    match cannot span sources. ``shape_systems`` resolves a tie per shape
-    (`qualifier_match.match_qualifiers`). Return matches before shape admission. The normalized second
-    value contains phrases from ``variable``/``query_text`` and the typed sidecar, but omits
-    dropped phrases because the raw-text path already owns their warnings.
-
-    Sidecar matches deduplicate by ``(code_system, code_dcid)``. Their phrases remain owned
-    even when a duplicate match is removed. Full qualifier spans are collected separately.
-    """
-    index = get_index()
-    measure_index = get_measure_index()
-    variable_matches = match_qualifiers(variable, index, measure_index, shape_systems=shape_systems)
-    matches = variable_matches
-    query_text_matches: tuple[QualifierMatch, ...] = ()
-    if query_text:
-        query_text_matches = match_qualifiers(
-            query_text, index, measure_index, shape_systems=shape_systems
-        )
-        matches += query_text_matches
-    for phrase in dropped_qualifier_phrases:
-        matches += match_qualifiers(phrase, index, measure_index, shape_systems=shape_systems)
-    owned_matches = variable_matches + query_text_matches
-    variable_matched_phrases = frozenset(_normalize(m.matched_text) for m in owned_matches)
-    if qualifiers:
-        seen_codes = {(m.code_system, m.code_dcid) for m in matches}
-        sidecar_matches: list[QualifierMatch] = []
-        sidecar_phrases: set[str] = set()
-        for coded in qualifiers:
-            for match in coded.matches:
-                sidecar_phrases.add(_normalize(match.matched_text))
-                key = (match.code_system, match.code_dcid)
-                if key in seen_codes:
-                    continue
-                seen_codes.add(key)
-                sidecar_matches.append(match)
-        matches += tuple(sidecar_matches)
-        variable_matched_phrases |= frozenset(sidecar_phrases)
-    return matches, variable_matched_phrases
-
-
-def _match_query_qualifier_ties(
-    variable: str,
-    dropped_qualifier_phrases: Sequence[str] = (),
-    *,
-    query_text: str | None = None,
-    qualifiers: Sequence[CodedQualifier] | None = None,
-    shape_systems: Sequence[frozenset[str]] = (),
-) -> tuple[tuple[QualifierTie, ...], frozenset[str]]:
-    """Collect ambiguous qualifier ties from each text source and the typed sidecar.
-    ``shape_systems`` drops the ties it resolves per shape
-    (`qualifier_match.match_qualifier_ties`).
-
-    Match ``variable``, optional ``query_text``, and dropped phrases separately. Return
-    normalized ownership phrases only for ``variable``/``query_text`` and sidecar ties.
-    The raw-text path owns dropped phrases. Sidecar spans qualify only when they name at
-    least two ``CodeRow`` values, and ties deduplicate by their row sets.
-    """
-    index = get_index()
-    measure_index = get_measure_index()
-    variable_ties = match_qualifier_ties(
-        variable, index, measure_index, shape_systems=shape_systems
+    vocabularies: Iterable[frozenset[str]],
+) -> _SourceReadings:
+    """Read ``variable``, optional ``query_text`` and each dropped phrase separately, so a
+    match cannot span sources, each in every one of `vocabularies`."""
+    texts = [variable, *([query_text] if query_text else []), *dropped_qualifier_phrases]
+    return _SourceReadings(
+        texts=read_by_vocabulary(
+            texts, get_index(), get_measure_index(), vocabularies=vocabularies
+        ),
+        owned=1 + bool(query_text),
     )
-    ties = variable_ties
-    query_text_ties: tuple[QualifierTie, ...] = ()
-    if query_text:
-        query_text_ties = match_qualifier_ties(
-            query_text, index, measure_index, shape_systems=shape_systems
-        )
-        ties += query_text_ties
-    for phrase in dropped_qualifier_phrases:
-        ties += match_qualifier_ties(phrase, index, measure_index, shape_systems=shape_systems)
-    owned_ties = variable_ties + query_text_ties
-    owned_phrases = frozenset(_normalize(t.matched_text) for t in owned_ties)
-    if qualifiers:
-        seen_row_sets = {
-            frozenset((row.code_system, row.code_dcid) for row in tie.rows) for tie in ties
-        }
-        sidecar_ties: list[QualifierTie] = []
-        sidecar_phrases: set[str] = set()
-        for coded in qualifiers:
-            for span in coded.spans:
-                if len(span.rows) < 2 or not all(isinstance(row, CodeRow) for row in span.rows):
-                    continue
-                candidate_norm = _normalize(span.matched_text)
-                sidecar_phrases.add(candidate_norm)
-                tie_rows = tuple(
-                    QualifierMatch(
-                        code_system=_row_system(row),
-                        code_dcid=row.dcid,
-                        label=row.label,
-                        source=_match_source(row, candidate_norm),
-                        matched_text=span.matched_text,
-                    )
-                    for row in span.rows
+
+
+def _in_vocabulary(code_system: str, vocabulary: frozenset[str]) -> bool:
+    """Whether a sidecar match or tie row on `code_system` belongs to `vocabulary`: a code
+    system's own row when the vocabulary holds the system, a measure value always, as
+    `qualifier_match.read_by_vocabulary` reads measure values in every vocabulary."""
+    return code_system in vocabulary or code_system not in get_index().declarations
+
+
+@dataclass(frozen=True, slots=True)
+class _QueryQualifiers:
+    """The query's qualifier matches and ties, one list per vocabulary, and the normalised
+    phrases this region path owns."""
+
+    matches: dict[frozenset[str], tuple[QualifierMatch, ...]]
+    ties: dict[frozenset[str], tuple[QualifierTie, ...]]
+    phrases: frozenset[str]
+
+
+def _sidecar_ties(qualifiers: Sequence[CodedQualifier]) -> list[QualifierTie]:
+    """Each sidecar span naming two or more ``CodeRow`` values, as a tie."""
+    ties: list[QualifierTie] = []
+    for coded in qualifiers:
+        for span in coded.spans:
+            if len(span.rows) < 2 or not all(isinstance(row, CodeRow) for row in span.rows):
+                continue
+            candidate_norm = _normalize(span.matched_text)
+            ties.append(
+                QualifierTie(
+                    matched_text=span.matched_text,
+                    rows=tuple(
+                        QualifierMatch(
+                            code_system=_row_system(row),
+                            code_dcid=row.dcid,
+                            label=row.label,
+                            source=_match_source(row, candidate_norm),
+                            matched_text=span.matched_text,
+                        )
+                        for row in span.rows
+                    ),
                 )
-                key = frozenset((r.code_system, r.code_dcid) for r in tie_rows)
-                if key in seen_row_sets:
-                    continue
-                seen_row_sets.add(key)
-                sidecar_ties.append(QualifierTie(matched_text=span.matched_text, rows=tie_rows))
-        ties += tuple(sidecar_ties)
-        owned_phrases |= frozenset(sidecar_phrases)
-    return ties, owned_phrases
+            )
+    return ties
+
+
+def _phrases_reader(state: ResolveState) -> Callable[[ShapeDraft], frozenset[str]]:
+    """The query phrases each shape's family reads (`query_phrases_read`), in the shape's
+    own vocabulary's matches and ties, each shape read once."""
+    read: dict[int, frozenset[str]] = {}
+
+    def phrases_read(shape: ShapeDraft) -> frozenset[str]:
+        if id(shape) not in read:
+            read[id(shape)] = query_phrases_read(
+                state.held_codes_of(shape),
+                for_shape(state.query_qualifier_matches, shape),
+                for_shape(state.query_qualifier_ties, shape),
+            )
+        return read[id(shape)]
+
+    return phrases_read
+
+
+def _series_reader(state: ResolveState) -> Callable[[ShapeDraft], bool | None]:
+    """Whether each role-bearing shape's family holds a series at the places the part
+    names, on the roles they bind for the shape (`bind_place_roles`), read from the
+    request's coverage snapshot. A set gives its node and its members. The family is the
+    rows its part may answer from (`part_member_rows`), else its recalled members. `None`
+    when the shape is subject-only, refuses the places, binds none, or has no member the
+    coverage index holds."""
+    coverage = state.coverage.index
+    index = get_index()
+
+    def series_at_places(shape: ShapeDraft) -> bool | None:
+        if not is_role_bearing(shape):
+            return None
+        assignment = bind_place_roles(state, shape)
+        if isinstance(assignment, str) or assignment.binds_no_place:
+            return None
+        bound = {
+            _COVERAGE_ROLE_FOR_AXIS[axis]: frozenset(
+                dcid
+                for place_set in sets
+                for dcid in (*place_set.dcids("default"), *place_set.dcids("members"))
+            )
+            for axis, sets in assignment.sets.items()
+            if axis in _COVERAGE_ROLE_FOR_AXIS and sets
+        }
+        members = [row.dcid for row in part_member_rows(shape, index)] or list(
+            shape.sv_arc_facts or ()
+        )
+        covered = [dcid for dcid in members if coverage.covers(dcid)]
+        if not bound or not covered:
+            return None
+        return bool(coverage.filter_candidates(variables=covered, bound=bound))
+
+    return series_at_places
+
+
+def _match_query_qualifiers(
+    sources: _SourceReadings,
+    *,
+    qualifiers: Sequence[CodedQualifier] | None = None,
+    vocabularies: Iterable[frozenset[str]],
+) -> _QueryQualifiers:
+    """Collect raw qualifier matches and ties per vocabulary, and the phrases owned by this
+    region path, from `sources` read in each of `vocabularies`.
+
+    Return matches and ties before shape admission. The owned phrases are those any
+    vocabulary matches or ties in the variable and query text, and the typed sidecar's;
+    dropped phrases are left out because the raw-text path already owns their warnings.
+
+    Sidecar matches and tie rows join each vocabulary holding their system
+    (`_in_vocabulary`). Matches deduplicate by ``(code_system, code_dcid)`` and ties by
+    their row sets; a sidecar phrase stays owned even when its match is a duplicate. Full
+    qualifier spans are collected separately.
+    """
+    sidecar_matches = [match for coded in qualifiers or () for match in coded.matches]
+    sidecar_ties = _sidecar_ties(qualifiers or ())
+    phrases = {_normalize(match.matched_text) for match in sidecar_matches}
+    phrases |= {_normalize(tie.matched_text) for tie in sidecar_ties}
+    matches: dict[frozenset[str], tuple[QualifierMatch, ...]] = {}
+    ties: dict[frozenset[str], tuple[QualifierTie, ...]] = {}
+    for vocabulary in dict.fromkeys(vocabularies):
+        readings = [text.by_vocabulary[vocabulary] for text in sources.texts]
+        for reading in readings[: sources.owned]:
+            phrases.update(_normalize(match.matched_text) for match in reading.matches)
+            phrases.update(_normalize(tie.matched_text) for tie in reading.ties)
+
+        read_matches = tuple(match for reading in readings for match in reading.matches)
+        seen_codes = {(m.code_system, m.code_dcid) for m in read_matches}
+        joined_matches: list[QualifierMatch] = []
+        for match in sidecar_matches:
+            key = (match.code_system, match.code_dcid)
+            if key in seen_codes or not _in_vocabulary(match.code_system, vocabulary):
+                continue
+            seen_codes.add(key)
+            joined_matches.append(match)
+        matches[vocabulary] = read_matches + tuple(joined_matches)
+
+        read_ties = tuple(tie for reading in readings for tie in reading.ties)
+        seen_row_sets = {
+            frozenset((row.code_system, row.code_dcid) for row in tie.rows) for tie in read_ties
+        }
+        joined_ties: list[QualifierTie] = []
+        for tie in sidecar_ties:
+            rows = tuple(row for row in tie.rows if _in_vocabulary(row.code_system, vocabulary))
+            key = frozenset((row.code_system, row.code_dcid) for row in rows)
+            if not rows or key in seen_row_sets:
+                continue
+            seen_row_sets.add(key)
+            joined_ties.append(QualifierTie(matched_text=tie.matched_text, rows=rows))
+        ties[vocabulary] = read_ties + tuple(joined_ties)
+    return _QueryQualifiers(matches=matches, ties=ties, phrases=frozenset(phrases))
 
 
 def _admit_qualifier_matches(
     shapes: list[ShapeDraft],
-    matches: tuple[QualifierMatch, ...],
+    matches: Mapping[frozenset[str], tuple[QualifierMatch, ...]],
+    also: tuple[QualifierMatch, ...] = (),
 ) -> tuple[QualifierMatch, ...]:
-    """Keep matches whose constraint property is declared by any candidate shape.
+    """Keep each candidate shape's own matches (`for_shape`), with `also`, on the constraint
+    properties that shape declares, merged in shape order (`merge_lists`).
 
     Election vetting narrows them to the chosen shape. The caller supplies the shared raw
-    matches so each variable's text is recognised once.
+    matches so each variable's text is recognised once per vocabulary.
     """
-    declared = {prop for shape in shapes for prop in _constraint_property_dcids(shape)}
-    if not declared:
-        return ()
-    return _filter_admitted_matches(matches, declared)
+    return merge_lists(
+        _filter_admitted_matches((*for_shape(matches, shape), *also), shape_vocabulary(shape))
+        for shape in shapes
+    )
+
+
+class _ShapeTies(NamedTuple):
+    """One reading of a shape's ties (`_admit_qualifier_ties`): the rows that promote to
+    matches, the ties bind chooses among, and the ties the shape declares a system of but
+    whose codes its family holds none of, which bind is not offered and election reports
+    as dropped."""
+
+    promoted: tuple[QualifierMatch, ...]
+    admitted: tuple[QualifierTie, ...]
+    unheld: tuple[QualifierTie, ...]
 
 
 def _admit_qualifier_ties(
     shapes: list[ShapeDraft],
-    ties: tuple[QualifierTie, ...],
-) -> tuple[tuple[QualifierMatch, ...], tuple[QualifierTie, ...]]:
-    """Narrow ties to rows whose properties some candidate declares.
+    ties: Mapping[frozenset[str], tuple[QualifierTie, ...]],
+    *,
+    holds: Callable[[ShapeDraft], Callable[[QualifierMatch], bool]],
+) -> _ShapeTies:
+    """Narrow each candidate shape's own ties (`for_shape`) to rows whose properties that
+    shape declares and whose codes its family holds (`holds`, the reading the five-tuple
+    family election compares; `ResolveState.held_codes_of` keeps one per shape). "ODA"
+    ties the CRS flow type and DAC2a's ODA code on ONE's imputed sectors table, whose rows
+    hold only the flow type.
 
-    Drop empty ties, promote a single surviving row to an ordinary match, and pass ties
-    with two or more rows to the model for election. Vet that election after shape choice.
+    Drop a tie of no declared system, promote a single surviving row to an ordinary match,
+    and pass ties with two or more rows to the model for election, vetted after shape
+    choice. A tie of a declared system whose codes the family holds none of is `unheld`, as
+    "goods donations" ties two CRS cooperation modalities that no CRS flow row holds.
     """
-    declared = {prop for shape in shapes for prop in _constraint_property_dcids(shape)}
-    promoted: list[QualifierMatch] = []
-    admitted: list[QualifierTie] = []
-    for tie in ties:
-        narrowed = tuple(row for row in tie.rows if row.code_system in declared)
-        if not narrowed:
-            continue
-        if len(narrowed) == 1:
-            promoted.append(narrowed[0])
-            continue
-        admitted.append(QualifierTie(matched_text=tie.matched_text, rows=narrowed))
-    return tuple(promoted), tuple(admitted)
+    promoted: list[list[QualifierMatch]] = []
+    admitted: list[list[QualifierTie]] = []
+    unheld: list[list[QualifierTie]] = []
+    for shape in shapes:
+        declared = shape_vocabulary(shape)
+        holds_code = holds(shape)
+        promoted.append([])
+        admitted.append([])
+        unheld.append([])
+        for tie in for_shape(ties, shape):
+            in_vocabulary = tuple(row for row in tie.rows if row.code_system in declared)
+            narrowed = tuple(row for row in in_vocabulary if holds_code(row))
+            if not narrowed:
+                if in_vocabulary:
+                    unheld[-1].append(
+                        QualifierTie(matched_text=tie.matched_text, rows=in_vocabulary)
+                    )
+                continue
+            if len(narrowed) == 1:
+                promoted[-1].append(narrowed[0])
+                continue
+            admitted[-1].append(QualifierTie(matched_text=tie.matched_text, rows=narrowed))
+    return _ShapeTies(merge_lists(promoted), merge_lists(admitted), merge_lists(unheld))
+
+
+def _shape_qualifiers(
+    state: ResolveState, shape: ShapeDraft
+) -> tuple[tuple[QualifierMatch, ...], tuple[QualifierTie, ...], tuple[QualifierTie, ...]]:
+    """`shape`'s own admitted qualifiers and ties: its vocabulary's matches on the properties
+    it declares, the code reading of each two-reading span it reads as the code
+    (`reading_for_shape`), then the tie rows it alone holds, promoted; its ties with two or
+    more rows it holds; and its unheld ties (`_ShapeTies.unheld`)."""
+    reading_codes = tuple(
+        readings.code
+        for readings in state.query_qualifier_readings
+        if reading_for_shape(readings, shape) is readings.code
+    )
+    matches = _admit_qualifier_matches([shape], state.query_qualifier_matches, also=reading_codes)
+    ties = _admit_qualifier_ties([shape], state.query_qualifier_ties, holds=state.held_codes_of)
+    return matches + ties.promoted, ties.admitted, ties.unheld
 
 
 def _admit_qualifier_matches_against_elected_shape(
     matches: tuple[QualifierMatch, ...], shape_draft: ShapeDraft
 ) -> tuple[QualifierMatch, ...]:
     """Keep only matches whose constraint property the elected shape declares."""
-    return _filter_admitted_matches(matches, _constraint_property_dcids(shape_draft))
+    return _filter_admitted_matches(matches, shape_vocabulary(shape_draft))
 
 
 def _force_qualifier_bindings(
@@ -919,10 +1130,27 @@ def _force_qualifier_bindings(
     matches: tuple[QualifierMatch, ...],
     shape_draft: ShapeDraft,
 ) -> list[SlotBindingDraft]:
-    """Replace each admitted property's binding with its graph-sourced value."""
+    """Replace each admitted property's binding with its graph-sourced value.
+
+    Two matches on one property that nest name one slot twice, and the descendant binds
+    whatever their order: "refugee costs in donor countries ODA" binds DAC1's in-donor
+    refugee costs, not ODA, its ancestor. Matches that do not nest still collide, and the
+    last one binds.
+    """
     axis_by_property = {
         slot.property_dcid: slot.axis for slot in shape_draft.slot_keys if slot.property_dcid
     }
+    index = get_index()
+    narrower = [
+        match
+        for match in matches
+        if not any(
+            other.code_system == match.code_system
+            and other.code_dcid != match.code_dcid
+            and other.code_dcid in index.descendants(match.code_dcid)
+            for other in matches
+        )
+    ]
     forced = {
         match.code_system: SlotBindingDraft(
             axis=axis_by_property[match.code_system],
@@ -930,7 +1158,7 @@ def _force_qualifier_bindings(
             kind="value",
             value_dcids=[match.code_dcid],
         )
-        for match in matches
+        for match in narrower
         if match.code_system in axis_by_property
     }
     if not forced:
@@ -989,6 +1217,25 @@ def _names_carried_per_head_rate(
     )
 
 
+def _names_answering_dataset(phrase: str, state: ResolveState, index: CodeIndex) -> bool:
+    """Whether every word of `phrase` occurs in the declared label of the dataset the part
+    answers from: the settled one (`ResolveState.settled_dataset`), else each dataset the
+    elected shape answers from (`ShapeDraft.datasets`), since election may serve any of them.
+
+    Election applied such a word by choosing the table: "imputed" in "imputed education aid"
+    picks "ONE Imputed Multilateral Sectors", whose name describes every row it serves.
+    """
+    settled = state.settled_dataset()
+    datasets = (settled,) if settled is not None else state.shape_draft.datasets or ()
+    labels = [index.datasets[dataset].label for dataset in datasets if dataset in index.datasets]
+    words = {word.casefold() for word in _WORD_RE.findall(phrase)}
+    return (
+        bool(words)
+        and bool(labels)
+        and all(words <= {word.casefold() for word in _WORD_RE.findall(label)} for label in labels)
+    )
+
+
 def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
     """Build qualifier dispositions from final bindings without mutating state.
 
@@ -996,12 +1243,13 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
     dataset published no recalled shape, and election bound the source to it otherwise.
     Five sources contribute records:
 
-    1. Variable spans contribute their ``CodeRow`` values only when the elected shape
-       declares the property. Measure-value-only spans are handled by measure warnings.
-       ``named`` keeps every CodeRow but those of a system only another family of the
-       elected shape's five-tuple carries (`other_families_properties`), so a CRS answer's
-       "ODA" names the CRS flow type, not the DAC1 aid type of the same text. Disposition
-       uses ``_qualifier_disposition``.
+    1. Variable spans, as the elected shape's own vocabulary reads them
+       (`ResolveState.variable_spans_by_vocabulary`), contribute their ``CodeRow`` values,
+       all of systems the shape declares, so a CRS answer's "ODA" names the CRS flow type,
+       not the DAC1 aid type of the same text. A word that reading leaves unread is no
+       recognised span, so it can return as an ``unplaced`` phrase (source 3).
+       Measure-value-only spans are handled by measure warnings. Disposition uses
+       ``_qualifier_disposition``.
     2. ``state.admitted_ties`` records model-offered ambiguities unresolved by the final
        bindings. Keep ties with a row property declared by the elected shape, apply the
        shared disposition rule, and deduplicate normalized phrases against variable spans.
@@ -1010,6 +1258,8 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
        a whole, the declared plain name of a slot the elected shape declares, singular or
        plural (`names_plain_name`): "sector" on a shape with `crsPurpose` names a distinction
        the data records, and its slot stays as bound. A longer phrase holding the noun ("space sector", "by sector") still refuses.
+       Nor may every word of it occur in the label of a dataset the elected shape answers
+       from (`_names_answering_dataset`): "imputed" on the imputed table chose that table.
        Surviving phrases get ``no_vocabulary`` with no named codes.
     4. Match ``non-concessional`` in variable text and optional query text only when the
        shape declares ``crsTypeOfFlow``. Record ``no_vocabulary`` and refuse the qualifier.
@@ -1018,7 +1268,7 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
        of the overlap check on ``variable``.
     """
     index = get_index()
-    declared = _constraint_property_dcids(state.shape_draft)
+    declared = shape_vocabulary(state.shape_draft)
     foreign = other_families_properties(state.shape_draft, index)
     # Each property's final value or set binding.
     bound_values: dict[str, Sequence[str]] = {
@@ -1029,15 +1279,12 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
     # Preserve source offsets by casefolding without stripping.
     normalized_variable = state.variable.casefold()
 
+    variable_spans = for_shape(state.variable_spans_by_vocabulary, state.shape_draft)
     resolved: list[ResolvedQualifier] = []
-    occupied_ranges: list[tuple[int, int]] = [
-        (span.start, span.end) for span in state.variable_qualifier_spans
-    ]
-    for span in state.variable_qualifier_spans:
-        code_rows = [
-            row for row in span.rows if isinstance(row, CodeRow) and row.code_system not in foreign
-        ]
-        if not code_rows or not any(row.code_system in declared for row in code_rows):
+    occupied_ranges: list[tuple[int, int]] = [(span.start, span.end) for span in variable_spans]
+    for span in variable_spans:
+        code_rows = [row for row in span.rows if isinstance(row, CodeRow)]
+        if not code_rows:
             continue
         named = [GraphRef(dcid=row.dcid, label=row.label) for row in code_rows]
         disposition, slot = _qualifier_disposition(
@@ -1101,6 +1348,8 @@ def _resolve_query_qualifiers(state: ResolveState) -> list[ResolvedQualifier]:
             len(phrase.split()) == len(noun.split()) and names_plain_name(phrase, noun)
             for noun in slot_nouns
         ):
+            continue
+        if _names_answering_dataset(phrase, state, index):
             continue
         phrase_ranges = _all_normalized_text_ranges(phrase, normalized_variable)
         if not phrase_ranges:
@@ -1250,24 +1499,17 @@ def _open_operation_slots(
 async def _phase_bind(state: ResolveState) -> RegionResult | None:
     """Run one choose-and-bind call. Return a terminal result for ask or an invalid index.
 
-    The call elects a shape and binds its slots. Admitted qualifiers become fixed context.
-    Ties with one row become matches, while larger ties remain closed alternatives. Declared
+    The call elects a shape and binds its slots. Each shape's own admitted qualifiers become
+    its fixed context (`_shape_qualifiers`). Ties with one row become matches, while larger
+    ties remain closed alternatives. Declared
     constraint-measure axes are withheld from index-sourced shapes for deterministic repair.
     Election vetting checks ``requested_all`` claims against the chosen shape.
     """
-    reading_codes = tuple(
-        readings.code
-        for readings in state.query_qualifier_readings
-        if any(reading_for_shape(readings, shape) is readings.code for shape in state.capped_shapes)
-    )
-    admitted_qualifiers = _admit_qualifier_matches(
-        state.capped_shapes, state.query_qualifier_matches + reading_codes
-    )
-    promoted_tie_matches, admitted_ties = _admit_qualifier_ties(
-        state.capped_shapes, state.query_qualifier_ties
-    )
-    admitted_qualifiers = state.admitted_qualifiers = admitted_qualifiers + promoted_tie_matches
-    state.admitted_ties = admitted_ties
+    per_shape = [_shape_qualifiers(state, shape) for shape in state.capped_shapes]
+    admitted_qualifiers = [matches for matches, _ties, _unheld in per_shape]
+    admitted_ties = [ties for _matches, ties, _unheld in per_shape]
+    state.admitted_qualifiers = merge_lists(admitted_qualifiers)
+    state.admitted_ties = merge_lists(admitted_ties)
     withheld_measure_axes = frozenset(
         axis.axis for axis in get_measure_index().axes if axis.kind == "constraint"
     )

@@ -555,7 +555,7 @@ def test_run_capture_taskgroup_awaits_siblings_before_a_failure_propagates(
         started.append(query)
         try:
             if query == "boom-query":
-                raise EngineInputError(code="some_other_code")
+                raise EngineInputError("refused", code="some_other_code")
             await release.wait()
             raise AssertionError(f"{query} should have been cancelled, not completed")
         finally:
@@ -592,7 +592,7 @@ def test_run_capture_facet_refusal_code_is_skipped_silently(
     """Facet refusals are skipped without an LLM call or capture record."""
 
     async def fake_resolve_async(request, *, graph, llm, sdmx):
-        raise EngineInputError(code="facet_not_available")
+        raise EngineInputError("refused", code="facet_not_available")
 
     monkeypatch.setattr("promptlab.cells.resolve_async", fake_resolve_async)
 
@@ -621,7 +621,7 @@ def test_run_capture_non_facet_refusal_engine_input_error_propagates(
     """Engine input errors outside the facet-refusal set propagate."""
 
     async def fake_resolve_async(request, *, graph, llm, sdmx):
-        raise EngineInputError(code="some_other_code")
+        raise EngineInputError("refused", code="some_other_code")
 
     monkeypatch.setattr("promptlab.cells.resolve_async", fake_resolve_async)
 

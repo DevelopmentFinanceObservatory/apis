@@ -907,7 +907,7 @@ def test_real_index_every_populated_partition_resolves_to_exactly_one_label():
     measure_index = get_measure_index()
     partitions = _real_partitions()
 
-    assert len(partitions) == 8
+    assert len(partitions) == 9
     composed: dict[MeasurePartition, str] = {}
     for partition in partitions:
         match = label_for_partition(partition, measure_index.partition_labels)

@@ -899,6 +899,44 @@ def test_an_ambiguous_part_carries_a_data_query_that_resolves_once_the_pick_is_p
     assert {e.ref for e in resolved.spec.resolved.entities} >= {"country/COD", _E2E_KEN_DCID}
 
 
+def test_a_group_named_beside_an_ambiguous_wording_is_echoed_unpinned():
+    """The data_query echoes a resolver group by its text alone: pinning it to one
+    member's dcid would resubmit that member for the group."""
+    g7 = ("CAN", "DEU", "FRA", "GBR", "ITA", "JPN", "USA")
+    graph = FakeGraph(
+        nodes={
+            **_CONGO_NODES,
+            **{f"country/{iso}": {"label": iso, "type": "Country"} for iso in g7},
+        },
+        detect={_QUERY: {"svs": [_E2E_SV_DCID], "cosine_scores": [0.9]}},
+        resolve={},
+        obs=_E2E_OBS,
+    )
+    llm = _ScriptedLLM(
+        _extraction(
+            entities=[
+                ExtractedEntity(text="G7"),
+                ExtractedEntity(text="Congo", flow_role="destination", role_span="to"),
+            ]
+        )
+    )
+    request = ResolveRequest(
+        input={"kind": "raw_text", "query": "standard grants from the G7 to Congo"},
+        response_options=ResolveOptions(),
+    )
+
+    part = offline_resolve(request, graph=graph, llm=llm, sdmx=_EMPTY_SDMX).parts[0]
+
+    assert isinstance(part, NoDataPart)
+    assert part.no_data.reason == "entity_ambiguous"
+    assert part.no_data.data_query is not None
+    (query_part,) = part.no_data.data_query.parts
+    assert [(e.text, e.dcid) for e in query_part.entities or ()] == [
+        ("G7", None),
+        ("Congo", None),
+    ]
+
+
 def test_an_ambiguous_wording_is_its_own_slot_token_in_the_sentence():
     """The envelope sentence marks "Congo" as a slot token with the part's index and the
     role the query gave it, and the text still reads as before."""

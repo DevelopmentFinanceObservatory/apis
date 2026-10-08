@@ -13,7 +13,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 from dfo_frame_grammar import Frame
 from dfo_frame_grammar.arrow import build_frame_from_arrow
-from dfo_frame_grammar.grammar import UnitRequest
+from dfo_frame_grammar.grammar import ComposedUnit, UnitRequest, unit_cell_to_json
 
 from dc_sdmx import SdmxDataResult
 from dc_sdmx.results import VALUE_COLUMN, VARIABLE_COLUMN
@@ -37,13 +37,15 @@ def build_frame(*, role_keys: Iterable[str], rows: Iterable[Mapping[str, object]
 
 
 def unit_cell_for_rebuild(value: object) -> object:
-    """Converts a `UnitRequest` cell to JSON for rebuilding a `Frame` from `.rows`.
+    """Converts a `UnitRequest` or `ComposedUnit` cell to JSON for rebuilding a `Frame` from
+    `.rows`.
 
     `Frame.build` accepts a string, mapping, or `None` for `unit`, but rejects
-    `UnitRequest` with `FrameError`. Other cell values pass through unchanged.
+    `UnitRequest` and `ComposedUnit` with `FrameError`. Other cell values pass through
+    unchanged.
     """
-    if isinstance(value, UnitRequest):
-        return value.as_json()
+    if isinstance(value, (UnitRequest, ComposedUnit)):
+        return unit_cell_to_json(value)
     return value
 
 

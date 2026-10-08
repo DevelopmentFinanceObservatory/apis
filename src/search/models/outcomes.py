@@ -148,10 +148,11 @@ class NoData(StrictModel):
             "one graph node, but no role any candidate shape declares admits that "
             "node's graph type -- the entity is real, just not the kind of thing "
             "this query's data is reported for; "
-            '"entity_set_too_large" means a named entity resolved and its members '
-            "were graph-confirmed, but its membership count exceeds what the engine "
-            "binds in one request -- distinct from every other entity_* reason, "
-            "where the entity itself, not its membership, is what failed; "
+            '"entity_set_too_large" means every named entity resolved, but the places '
+            "the request names, counting the members of each group or region among "
+            "them and summed over the roles they sit on, exceed what the engine binds "
+            "in one request -- distinct from every other entity_* reason, where one "
+            "entity, not the size of the set, is what failed; "
             '"variable_not_resolved" means no StatVar matched the '
             "variable text (e.g. an absent posted stat_var_dcid or entity, or no "
             'measure match at all); "role_not_resolved" means the query names a '
@@ -198,8 +199,9 @@ class NoData(StrictModel):
         default="absent",
         description=(
             "derived from reason, never independently settable: "
-            '"entity_not_resolved", "entity_ambiguous", "entity_role_not_admitted", '
-            '"variable_not_resolved", "role_not_resolved", and "unit_not_resolved" are '
+            '"entity_not_resolved", "entity_ambiguous", "entity_set_too_large", '
+            '"entity_role_not_admitted", "variable_not_resolved", "role_not_resolved", '
+            'and "unit_not_resolved" are '
             '"unresolved" (the request could not be read into the graph); every other '
             'code is "absent" (the read request names a place holding nothing)'
         ),

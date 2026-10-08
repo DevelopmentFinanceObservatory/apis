@@ -1,33 +1,33 @@
 - id: dq-mls-001
   query: Imputed multilateral ODA from Norway
-  why: Resolves to mls.imputed for country/NOR as origin.
+  why: Imputed multilateral ODA from Norway names no sector, so DAC2a's imputed multilateral line answers it for country/NOR as origin.
   reuse: panel/mls-001
   tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
   expect:
     definite:
-      measure: {family: mls.imputed}
+      measure: {family: dac2a.imputed_multilateral}
       entities: [{dcid: country/NOR, role: origin}]
       window: {kind: all}
       operations: []
 
 - id: dq-mls-002
   query: Imputed multilateral ODA from Norway to Kenya
-  why: Resolves to mls.imputed for country/NOR as origin and country/KEN as destination.
+  why: Imputed multilateral ODA from Norway to Kenya names no sector, so DAC2a's imputed multilateral line answers it.
   reuse: panel/mls-002
   tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
   expect:
     definite:
-      measure: {family: mls.imputed}
+      measure: {family: dac2a.imputed_multilateral}
       entities: [{dcid: country/NOR, role: origin}, {dcid: country/KEN, role: destination}]
       window: {kind: all}
       operations: []
 
 - id: dq-mls-003
   query: Imputed multilateral aid to Kenya
-  why: Imputed multilateral aid to Kenya resolves to the MLS family; the imputed-aid-kenya golden asserts operations only.
+  why: Imputed multilateral aid to Kenya names no sector, so DAC2a's imputed multilateral line answers it.
   reuse: panel/mls-003
   tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: casual}
-  expect: {definite: {measure: {family: mls.imputed}, entities: [{dcid: country/KEN, role: destination}]}}
+  expect: {definite: {measure: {family: dac2a.imputed_multilateral}, entities: [{dcid: country/KEN, role: destination}]}}
 
 - id: dq-mls-004
   query: Imputed multilateral ODA from Germany to basic education in 2020
@@ -53,13 +53,13 @@
 
 - id: dq-mls-006
   query: Imputed multilateral ODA from DAC donors
-  why: MLS has no DAC countries total provider and no graph node holds DAC membership, so 'DAC donors' reads as its member countries.
+  why: No graph node holds DAC membership, so 'DAC donors' reads as its member countries; the question names no sector, so DAC2a's imputed multilateral line answers.
   reuse: panel/mls-009
   tags: {theme: aid, entity: region_group, direction: origin_only, unit: default, time: none, operation: aggregate, breakdown: none, door: raw_text, phrasing: technical}
-  known_failure: {issue: 1156, checks: [disposition]}
+  known_failure: {issue: 1156, checks: [disposition, entities]}
   expect:
     definite:
-      measure: {family: mls.imputed}
+      measure: {family: dac2a.imputed_multilateral}
       entities: [{label: DAC donors, role: origin, expands: true}]
 
 - id: dq-mls-007
@@ -70,24 +70,24 @@
   known_failure: {issue: 1156, checks: [disposition]}
   expect:
     definite:
-      measure: {family: mls.imputed}
+      measure: {family: dac2a.imputed_multilateral}
       entities: [{dcid: EuropeanUnion, role: origin, expands: true}]
 
 - id: dq-mls-008
   query: Imputed multilateral ODA from the UAE
-  why: The UAE is an MLS provider, so the answer is the MLS family; CRS gross disbursements answer a different question.
+  why: Imputed multilateral ODA from the UAE names no sector, so DAC2a's imputed multilateral line answers; CRS gross disbursements answer a different question.
   reuse: panel/mls-012
   tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical, overlap: [crs]}
-  expect: {definite: {measure: {family: mls.imputed}, entities: [{dcid: country/ARE, role: origin}]}}
+  expect: {definite: {measure: {family: dac2a.imputed_multilateral}, entities: [{dcid: country/ARE, role: origin}]}}
 
 - id: dq-mls-009
   query: Which donors give the most imputed multilateral ODA to Ethiopia?
-  why: Resolves to mls.imputed for country/ETH as destination.
+  why: Which donors give the most imputed multilateral ODA to Ethiopia ranks donors on DAC2a's imputed multilateral line, which names no sector.
   reuse: panel/mls-014
   tags: {theme: aid, entity: country, direction: destination_only, unit: default, time: none, operation: rank, breakdown: none, door: raw_text, phrasing: casual}
   expect:
     definite:
-      measure: {family: mls.imputed}
+      measure: {family: dac2a.imputed_multilateral}
       entities: [{dcid: country/ETH, role: destination}]
       operations: [{verb: rank, over: origin}]
 
@@ -104,24 +104,24 @@
 
 - id: dq-mls-011
   query: Imputed multilateral ODA from Norway to Kenya 2015 to 2020
-  why: Resolves to mls.imputed for country/NOR as origin and country/KEN as destination from 2015 to 2020.
+  why: Imputed multilateral ODA from Norway to Kenya from 2015 to 2020 names no sector, so DAC2a's imputed multilateral line answers it.
   reuse: panel/mls-019
   tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: range, operation: none, breakdown: none, door: raw_text, phrasing: technical}
   expect:
     definite:
-      measure: {family: mls.imputed}
+      measure: {family: dac2a.imputed_multilateral}
       entities: [{dcid: country/NOR, role: origin}, {dcid: country/KEN, role: destination}]
       window: {kind: range, start: 2015, end: 2020}
 
 - id: dq-mls-012
   query: Imputed multilateral ODA from Norway in 2010
-  why: MLS starts in 2011; a single earlier year serves the held years with a window note.
+  why: Imputed multilateral ODA from Norway in 2010 names no sector, so DAC2a's imputed multilateral line answers it; a single year it does not hold serves the held years with a window note.
   reuse: panel/mls-020
   tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: technical, probe: [missing_data]}
   known_failure: {issue: 1156, checks: [disposition]}
   expect:
     definite:
-      measure: {family: mls.imputed}
+      measure: {family: dac2a.imputed_multilateral}
       entities: [{dcid: country/NOR, role: origin}]
       window: {kind: range, start: 2010, end: 2010}
 
@@ -231,13 +231,13 @@
 
 - id: dq-mls-023
   query: inputed multilateral ODA from Norway to Kenya
-  why: Resolves to mls.imputed for country/NOR as origin and country/KEN as destination.
+  why: '"Inputed" is a misspelling of "imputed", and the question names no sector, so DAC2a''s imputed multilateral line answers it.'
   reuse: panel/mls-035
   tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: misspelt}
-  known_failure: {issue: 1156, checks: [disposition]}
+  known_failure: {issue: 1156, checks: [disposition, measure, provenance]}
   expect:
     definite:
-      measure: {family: mls.imputed}
+      measure: {family: dac2a.imputed_multilateral}
       entities: [{dcid: country/NOR, role: origin}, {dcid: country/KEN, role: destination}]
 
 - id: dq-mls-024
@@ -253,13 +253,13 @@
 
 - id: dq-mls-025
   query: Compare imputed multilateral ODA from France and Germany
-  why: Resolves to mls.imputed for country/FRA as origin and country/DEU as origin.
+  why: Comparing imputed multilateral ODA from France and Germany names no sector, so DAC2a's imputed multilateral line answers both donors.
   reuse: panel/mls-013
   tags: {theme: aid, entity: two_countries, direction: origin_only, unit: default, time: none, operation: compare, breakdown: none, door: raw_text, phrasing: casual}
   known_failure: {issue: 1156, checks: [disposition]}
   expect:
     definite:
-      measure: {family: mls.imputed}
+      measure: {family: dac2a.imputed_multilateral}
       entities: [{dcid: country/FRA, role: origin}, {dcid: country/DEU, role: origin}]
       operations: []
 

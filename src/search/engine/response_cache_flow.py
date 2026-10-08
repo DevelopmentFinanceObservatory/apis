@@ -26,6 +26,7 @@ from search.engine.qualifier_match import (
     match_qualifier_ties,
     match_qualifiers,
     match_unsupported_qualifier_phrases,
+    qualifier_occurrences,
 )
 from search.engine.region.promote_relaunch import without_relaunches
 from search.engine.region.result import RegionResult
@@ -59,9 +60,10 @@ logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Raw-text inputs absent from Extraction: one `role_query` reader checks each
-# DoorRole occurrence on every leg. Six `query_text` readers run only for one-
-# variable requests: qualifier matches, ties, two-reading spans, unsupported
-# phrases, default triggers, and the defaulted slots the query names.
+# DoorRole occurrence on every leg. Five `query_text` readers run only for one-
+# variable requests: qualifier matches and ties (one reading serves both),
+# two-reading spans, unsupported phrases, default triggers, and the defaulted
+# slots the query names.
 # `test_query_text_and_role_query_reader_counts_are_covered` guards this set.
 # Reuse pipeline helpers and index;
 # the key builder receives JSON-safe results, not raw text or the index.
@@ -79,6 +81,7 @@ class Layer2Signals:
     query_text_qualifier_matches: tuple[dict[str, object], ...]
     query_text_qualifier_ties: tuple[dict[str, object], ...]
     query_text_qualifier_readings: tuple[dict[str, object], ...]
+    query_text_qualifier_occurrences: tuple[dict[str, object], ...]
     unsupported_qualifier_phrases: tuple[str, ...]
     declared_default_trigger_words: tuple[dict[str, str], ...]
     declared_default_slots_named: tuple[str, ...]
@@ -116,6 +119,7 @@ def compute_layer2_signals(
             query_text_qualifier_matches=(),
             query_text_qualifier_ties=(),
             query_text_qualifier_readings=(),
+            query_text_qualifier_occurrences=(),
             unsupported_qualifier_phrases=(),
             declared_default_trigger_words=(),
             declared_default_slots_named=(),
@@ -130,6 +134,7 @@ def compute_layer2_signals(
         query_text_qualifier_matches=tuple(asdict(match) for match in matches),
         query_text_qualifier_ties=tuple(asdict(tie) for tie in ties),
         query_text_qualifier_readings=tuple(asdict(reading) for reading in readings),
+        query_text_qualifier_occurrences=qualifier_occurrences(query_text, index, measure_index),
         unsupported_qualifier_phrases=match_unsupported_qualifier_phrases(query_text),
         declared_default_trigger_words=tuple(
             {"code_system": code_system, "word": word}
@@ -335,6 +340,7 @@ class CacheScope:
             query_text_qualifier_matches=signals.query_text_qualifier_matches,
             query_text_qualifier_ties=signals.query_text_qualifier_ties,
             query_text_qualifier_readings=signals.query_text_qualifier_readings,
+            query_text_qualifier_occurrences=signals.query_text_qualifier_occurrences,
             unsupported_qualifier_phrases=signals.unsupported_qualifier_phrases,
             declared_default_trigger_words=signals.declared_default_trigger_words,
             declared_default_slots_named=signals.declared_default_slots_named,

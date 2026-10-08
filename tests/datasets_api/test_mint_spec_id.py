@@ -20,6 +20,7 @@ from datasets_api.revision import SentinelRevisionReader
 from datasets_api.shape import resolve_shape
 from datasets_api.surgery import apply_scope_surgery
 from dc_sdmx import SdmxClient
+from dfo_platform.named import MAX_VALUE_CHARS, cut
 from graph_generation import FakeGeneration
 from materialise.graph import Facet, FacetDefaultPolicy
 from materialise.rate_tables import RateTableCache
@@ -1072,6 +1073,25 @@ def test_scope_restating_the_stored_state_exactly_serves_the_base_spec_id_with_n
     assert resp.status_code == 200, resp.text
     assert resp.json()["definition"]["spec_id"] == spec_id
     assert len(store.state.spec_registry) == rows_before
+
+
+def test_an_unavailable_unit_ref_refusal_names_the_posted_ref_cut():
+    """Every detail of the refusal names a 1,000-character posted ref by its first 256
+    characters (`cut`)."""
+    ref = "U" * 1000
+    client = _client(artifact_store=FakeArtifactStore())
+    scope = {**_SCOPE_DICT, "facets": {**_SCOPE_DICT["facets"], "unit": {"ref": ref}}}
+    body = {**_STATVAR_SET_BODY, "input": {**_STATVAR_SET_BODY["input"], "scope": scope}}
+
+    resp = client.post("/api/datasets", json=body)
+
+    assert resp.status_code == 422, resp.text
+    problem = resp.json()
+    assert problem["code"] == "facet_not_available"
+    assert problem["issues"]
+    details = [problem["detail"], *(issue["detail"] for issue in problem["issues"])]
+    assert any(cut(ref) in detail for detail in details)
+    assert all(ref[: MAX_VALUE_CHARS + 1] not in detail for detail in details)
 
 
 class TestScopeSurgeryRoleRefusals:

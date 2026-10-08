@@ -1,10 +1,10 @@
 """Regenerate `code_index/data/index.json.gz` from the live graph.
 
-Four CRS code systems, `dac2aAidType` and `dac1AidType` use `<-typeOf` enumeration. `crsPurpose`
-has 289 codes. Each declared dataset's StatVars are enumerated through a system every StatVar of
-that dataset declares, and the union is checked against complete non-spine reads. This graph
-repeats reverse-arc pages, so truncated reads split by code axes and observed `populationType`, to
-depth 6. A second read of each exported five-tuple refuses the export when the graph holds a
+Four CRS code systems, `dac2aAidType`, `dac1AidType` and `dac2bAidType` use `<-typeOf`
+enumeration. `crsPurpose` has 289 codes. Each declared dataset's StatVars are enumerated through
+a system every StatVar of that dataset declares, and the union is checked against complete
+non-spine reads. This graph repeats reverse-arc pages, so truncated reads split by code axes and
+observed `populationType`, to depth 6. A second read of each exported five-tuple refuses the export when the graph holds a
 StatVar the index would decide that is not an exported row.
 
 Pass 1 reads each StatVar's type, shape, and declared constraints. Pass 2 reads their values.
@@ -39,7 +39,8 @@ import json
 import os
 import re
 import sys
-from collections.abc import Mapping, Sequence
+from collections import Counter, defaultdict
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -74,6 +75,9 @@ _ARC_CHUNK_SIZE = 20
 _MAX_PARTITION_DEPTH = 6
 
 _LABEL_SUFFIX_RE = re.compile(r"\s*\((?:CRS|DAC)\s[^()]*\)\s*$")
+# The query-word pattern of `search.engine.qualifier_match._WORD_RE`. The export cannot import
+# the engine, which needs a graph configuration at import.
+_QUERY_WORD_RE = re.compile(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)*")
 
 _CODE_ARC_PROPERTIES = (
     "classificationCode",
@@ -108,9 +112,10 @@ class CodeSystemConfig:
     declares this property. CRS StatVars all declare `crsPurpose`, `crsTypeOfFinance`, and
     `crsTypeOfFlow`; imputed multilateral StatVars all declare `crsPurpose`, `crsTypeOfFlow`, and
     `dac2aAidType`, and none declares `crsTypeOfFinance`. DAC1 StatVars all declare `dac1AidType`
-    and no CRS code system. `crsCooperationModality` is optional for older CRS StatVars. A
-    dataset is enumerated only through systems that list it, and the export checks every
-    exported row against the listing.
+    and no CRS code system, and DAC2a and DAC2b StatVars all declare their own table's aid type
+    (`dac2aAidType`, `dac2bAidType`) and no CRS code system. `crsCooperationModality` is
+    optional for older CRS StatVars. A dataset is enumerated only through systems that list it,
+    and the export checks every exported row against the listing.
 
     `plain_name` is the singular lowercase noun used after "any". A default code belongs to this
     system, scope codes belong to other systems, and `when_named` entries are lowercase and
@@ -131,6 +136,8 @@ class CodeSystemConfig:
 _CRS = "provenance/OECDCreditorReportingSystem"
 _IMPUTED_MULTILATERAL_SECTORS = "provenance/ONEImputedMultilateralSectors"
 _DAC1 = "provenance/OECDDAC1"
+_DAC2A = "provenance/OECDDAC2A"
+_DAC2B = "provenance/OECDDAC2B"
 
 # Exported declarations set CRS behaviour.
 # `crsTypeOfFlow` is flat, with nine root codes.
@@ -183,16 +190,27 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
             when_named=("aid",),
         ),
     ),
-    # Imputed multilateral StatVars carry `dac2aAidType`; CRS StatVars do not.
+    # Imputed multilateral and DAC2a StatVars carry `dac2aAidType`; CRS StatVars do not. DAC2a
+    # aid types nest totals over their parts ("ODA grants" under "ODA"), and a net total holds
+    # gross parts and the repayments netted off them, so siblings neither sum nor exclude the
+    # parent. Every imputed row holds the one root code its table's invariant names.
     CodeSystemConfig(
         code_system="dac2aAidType",
         enum_dcid="DAC2aAidTypeEnum",
-        expected_hierarchical=False,
-        disjoint_from_children=True,
+        expected_hierarchical=True,
+        disjoint_from_children=False,
         summable=False,
         absent_reading="not_declared",
-        declared_by_every_statvar_of=(_IMPUTED_MULTILATERAL_SECTORS,),
+        declared_by_every_statvar_of=(_IMPUTED_MULTILATERAL_SECTORS, _DAC2A),
         plain_name="aid type",
+        # A DAC2a question that names no aid type asks about total ODA. The imputed table's
+        # slot holds its invariant code alone, so the default binds nothing there.
+        default=DeclaredDefault(
+            code="DAC2aAidType206",
+            when_bound_under=(),
+            when_open=True,
+            note="No aid type was named, so the answer covers official development assistance.",
+        ),
     ),
     # DAC1 aid types nest totals over their parts ("bilateral ODA" under "ODA"), and memo items
     # repeat amounts already counted elsewhere, so siblings neither sum nor exclude the parent.
@@ -213,18 +231,44 @@ CODE_SYSTEMS: tuple[CodeSystemConfig, ...] = (
             note="No aid type was named, so the answer covers official development assistance.",
         ),
     ),
+    # DAC2b flow types nest totals over their parts (OOF under official non-concessional
+    # flows), and a net total holds gross parts and the repayments netted off them, so siblings
+    # neither sum nor exclude the parent.
+    CodeSystemConfig(
+        code_system="dac2bAidType",
+        enum_dcid="DAC2bAidTypeEnum",
+        expected_hierarchical=True,
+        disjoint_from_children=False,
+        summable=False,
+        absent_reading="not_declared",
+        declared_by_every_statvar_of=(_DAC2B,),
+        plain_name="official flow type",
+        # A DAC2b question that names no flow type asks about the net total, the one root
+        # holding every other code but interest received. The table publishes it net alone.
+        default=DeclaredDefault(
+            code="DAC2bAidType296",
+            when_bound_under=(),
+            when_open=True,
+            note=(
+                "No official flow type was named, so the answer covers net official"
+                " non-concessional flows."
+            ),
+        ),
+    ),
 )
 
 
 # One declaration per published table. CRS commitments and some disbursement purpose codes carry
 # explicit zero rows, so a missing row for those cells reads as zero, and the imputed sectors table
-# reads the same way. DAC1 reads a missing row as unknown, the reading for a table with no
-# zero-row evidence. The imputed table sits alone on `attributedAmount`, and a question answers
-# from it only when it names the table. Of two tables that can serve one family, the lower rank
-# serves it. DAC1 shares the CRS five-tuples under its own codes (`dac1AidType`), so it forms
-# families of its own (`CodeIndex.family_of`) and its rank orders it against no other table.
-# Every imputed row is an ODA flow of the imputed multilateral aid type, declared as invariants
-# the loader checks against every row.
+# reads the same way. DAC1, DAC2a and DAC2b read a missing row as unknown, the reading for a table
+# with no zero-row evidence. A question answers from the imputed table only when it names the
+# table. Of two tables that can serve one family, the lower rank serves it. DAC1, DAC2a and DAC2b
+# share the CRS five-tuples under their own codes (`dac1AidType`, `dac2aAidType`,
+# `dac2bAidType`), and DAC2a's one `attributedAmount` row declares fewer properties than the
+# imputed rows, so each forms families of its own (`CodeIndex.family_of`) and its rank orders it
+# against no other table. Every imputed row is an ODA flow of the imputed multilateral aid type,
+# declared as invariants the loader checks against every row. Each of the five is a table a
+# provider reports, so each gives the provider's account of a flow.
 DATASETS: tuple[DatasetDeclaration, ...] = (
     DatasetDeclaration(
         provenance=_CRS,
@@ -235,6 +279,7 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         ),
         opt_in=False,
         absent_observation="zero",
+        account="provider",
         rank=0,
     ),
     DatasetDeclaration(
@@ -247,6 +292,7 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         ),
         opt_in=True,
         absent_observation="zero",
+        account="provider",
         rank=10,
         invariants={"crsTypeOfFlow": "CRSTypeOfFlow10", "dac2aAidType": "DAC2aAidType106"},
     ),
@@ -259,7 +305,32 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
         ),
         opt_in=False,
         absent_observation="unknown",
+        account="provider",
         rank=20,
+    ),
+    DatasetDeclaration(
+        provenance=_DAC2A,
+        label="OECD DAC2a",
+        description=(
+            "Donors' official development assistance disbursements reported to the OECD, by"
+            " recipient and type of aid."
+        ),
+        opt_in=False,
+        absent_observation="unknown",
+        account="provider",
+        rank=30,
+    ),
+    DatasetDeclaration(
+        provenance=_DAC2B,
+        label="OECD DAC2b",
+        description=(
+            "Other official flows and officially supported export credits that providers report"
+            " to the OECD, by recipient and type of flow."
+        ),
+        opt_in=False,
+        absent_observation="unknown",
+        account="provider",
+        rank=40,
     ),
 )
 
@@ -370,6 +441,10 @@ _MEASURE_VALUE_TEXT: Mapping[str, _MeasureValueText] = {
     "InflationAdjusted": _MeasureValueText(label="inflation adjusted", same_reading_as="RealValue"),
     "PurchasingPowerParity": _MeasureValueText(label="purchasing power parity", synonyms=("PPP",)),
     "amount": _MeasureValueText(matchable=False),
+    # These phrases name the imputed tables' measure as "grant equivalent" names CRS's. The
+    # bare verb would read in any question using "attributed to" ("deaths attributed to air
+    # pollution") and warn that it was not applied.
+    "attributedAmount": _MeasureValueText(synonyms=("attributed aid", "attributed to donors")),
 }
 
 # Values exported whether or not a CRS StatVar row carries them. The price bases below are
@@ -383,10 +458,101 @@ _DECLARED_MEASURE_VALUES: Mapping[str, tuple[str, ...]] = {
 # Qualifier matching uses text alone, so `aid` would bind ODA for any phrase containing it.
 # `when_named=("aid",)` handles `aid` as the extracted variable when the flow slot is open and
 # qualifier matching leaves the slot unmatched or ambiguous.
+# "Imputed" names DAC2a's imputed multilateral line when the query holds no longer label of it
+# ("imputed aid from Norway"), so DAC1's donor totals, which read nothing, do not cover it.
 _CODE_SYNONYMS: Mapping[str, tuple[str, ...]] = {
     "CRSTypeOfFlow10": ("development assistance",),
     "CRSTypeOfFlow21": ("other official flows",),
+    "DAC1AidType1820": ("refugee costs in donor countries",),
+    "DAC2aAidType106": ("imputed",),
 }
+
+# Code synonyms `_strip_measure_words` keeps whole although a measure value's words sit inside
+# them, because there the word names no measure. Each is written casefolded. Without "social
+# safety net" on CRSPurposeCode16010, "net" in "social safety nets in Kenya" would read as the
+# netting basis. DAC1AidType1900's and 2110's "negative commitments" are recovered amounts,
+# not the commitment measure.
+_MEASURE_WORD_SYNONYMS_KEPT: frozenset[str] = frozenset(
+    {
+        "social safety net",
+        "recoveries on bilateral oda grants and negative commitments",
+        "recoveries on multilateral oda grants and capital subscriptions and negative commitments",
+    }
+)
+
+# Codes of different tables that name one concept, at one scope. The export gives every code
+# of a group the union of the group's labels and synonyms as its synonyms
+# (`_apply_concept_groups`), less the measure words they hold (`_strip_measure_words`). The
+# five-tuple family election compares the query phrases each table's codes read
+# (`search.engine.retrieval.bound_values.elect_five_tuple_family`), so a table whose code
+# misses a text another table's code of the same concept reads loses every question naming it.
+# Each code is named with its code system. A group joins codes of different code systems only;
+# a parent and its child name different scopes and belong to no group together.
+_CONCEPT_GROUPS: tuple[tuple[tuple[str, str], ...], ...] = (
+    (
+        ("crsTypeOfFlow", "CRSTypeOfFlow10"),
+        ("dac1AidType", "DAC1AidType1010"),
+        ("dac2aAidType", "DAC2aAidType206"),
+    ),
+    (
+        ("crsPurpose", "CRSPurposeCode520"),
+        ("dac2aAidType", "DAC2aAidType213"),
+    ),
+    (
+        ("crsPurpose", "CRSPurposeCode700"),
+        ("dac2aAidType", "DAC2aAidType216"),
+    ),
+    (
+        ("crsPurpose", "CRSPurposeCode930"),
+        ("dac1AidType", "DAC1AidType1820"),
+    ),
+    (
+        ("crsTypeOfFlow", "CRSTypeOfFlow21"),
+        ("dac1AidType", "DAC1AidType200"),
+        ("dac2bAidType", "DAC2bAidType972"),
+    ),
+    (
+        ("crsTypeOfFlow", "CRSTypeOfFlow22"),
+        ("dac1AidType", "DAC1AidType3000"),
+        ("dac2bAidType", "DAC2bAidType292"),
+    ),
+    (
+        ("crsTypeOfFlow", "CRSTypeOfFlow36"),
+        ("dac1AidType", "DAC1AidType340"),
+    ),
+    (
+        ("crsTypeOfFinance", "CRSTypeOfFinance310"),
+        ("dac2aAidType", "DAC2aAidType210"),
+    ),
+    (
+        ("crsTypeOfFinance", "CRSTypeOfFinance311"),
+        ("dac2aAidType", "DAC2aAidType211"),
+    ),
+    (
+        ("crsPurpose", "CRSPurposeCode910"),
+        ("dac1AidType", "DAC1AidType1700"),
+    ),
+    (
+        ("crsPurpose", "CRSPurposeCode99820"),
+        ("dac1AidType", "DAC1AidType1810"),
+    ),
+    (
+        ("dac1AidType", "DAC1AidType1902"),
+        ("dac2aAidType", "DAC2aAidType207"),
+    ),
+    (
+        ("dac1AidType", "DAC1AidType1600"),
+        ("dac2aAidType", "DAC2aAidType255"),
+    ),
+    (
+        ("dac1AidType", "DAC1AidType3102"),
+        ("dac2bAidType", "DAC2bAidType295"),
+    ),
+    (
+        ("dac1AidType", "DAC1AidType1020"),
+        ("dac2bAidType", "DAC2bAidType298"),
+    ),
+)
 
 # The graph holds no `shortName` arc on the CRS flow-type or finance-type codes. A flow type's
 # name reads inside a possessive heading ("Germany's gross ODA disbursements"), a finance
@@ -518,8 +684,9 @@ _MEASURE_PARTITION_LABELS: tuple[MeasurePartitionLabel, ...] = (
             ("nettingBasis", "Gross"),
             ("populationType", "FinancialFlow"),
         ),
-        # Only ONE imputed multilateral StatVars hold this partition, all gross
-        # disbursements of one aid type, so the aid type is the measure's name.
+        # ONE imputed multilateral StatVars and DAC2a's imputed multilateral row hold this
+        # partition, all gross disbursements of one aid type, so the aid type is the
+        # measure's name.
         label="imputed multilateral ODA",
         named_values=(
             ("crsTypeOfFlow", "CRSTypeOfFlow10"),
@@ -845,6 +1012,179 @@ def _build_code_row(dcid: str, code_system: str, arcs: dict[str, tuple[str, ...]
         "short_name": short_name,
         "parent": parent,
     }
+
+
+def _apply_concept_groups(
+    codes: Sequence[dict],
+    groups: Sequence[Sequence[tuple[str, str]]],
+    exported_systems: Collection[str],
+) -> None:
+    """Give every code row of each of `groups` the union of the group's labels and synonyms
+    as its synonyms, its own label left out. A member of a code system the export does not
+    enumerate (`exported_systems`) is skipped.
+
+    Raises:
+        SystemExit: a code is in two groups, a group joins two codes of one code system, or
+            a group names a code of an exported system that the export holds no row of.
+    """
+    by_dcid = {row["dcid"]: row for row in codes}
+    repeated = sorted(
+        dcid
+        for dcid, count in Counter(dcid for group in groups for _system, dcid in group).items()
+        if count > 1
+    )
+    if repeated:
+        raise SystemExit(f"concept groups name codes in more than one group: {repeated}")
+    for group in groups:
+        systems = [system for system, _dcid in group]
+        if len(set(systems)) != len(systems):
+            raise SystemExit(f"concept group {group!r} joins two codes of one code system")
+        members = [(system, dcid) for system, dcid in group if system in exported_systems]
+        missing = [
+            dcid
+            for system, dcid in members
+            if dcid not in by_dcid or by_dcid[dcid]["code_system"] != system
+        ]
+        if missing:
+            raise SystemExit(
+                f"concept group {group!r} names codes the export holds no row of: {missing}"
+            )
+        rows = [by_dcid[dcid] for _system, dcid in members]
+        texts = {text for row in rows for text in (row["label"], *row["synonyms"])}
+        for row in rows:
+            row["synonyms"] = sorted(text for text in texts if text != row["label"])
+
+
+type _MeasureNames = frozenset[tuple[str, str]]
+
+
+def _measure_texts(measure_values: Sequence[dict]) -> dict[str, _MeasureNames]:
+    """Every matchable measure-value label and synonym, casefolded, to the `(axis, dcid)`
+    pairs it reads. A text names its value's whole reading: the canonical dcid and every
+    alias dcid filed under it (`same_reading_as`), as the matcher files them."""
+    reading: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for row in measure_values:
+        reading[(row["axis"], row["same_reading_as"] or row["dcid"])].add(row["dcid"])
+    texts: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    for row in measure_values:
+        if not row["matchable"]:
+            continue
+        canonical = (row["axis"], row["same_reading_as"] or row["dcid"])
+        for text in (row["label"], *row["synonyms"]):
+            texts[text.strip().casefold()].update(
+                (row["axis"], dcid) for dcid in reading[canonical]
+            )
+    return {text: frozenset(names) for text, names in texts.items()}
+
+
+def _measure_runs(
+    text: str, measure_texts: Mapping[str, _MeasureNames]
+) -> list[tuple[int, int, _MeasureNames]]:
+    """The runs of `text`'s words a query holding `text` would lose to it, as `(start, end,
+    names)` word ranges, left to right and longest first at each start.
+
+    The matcher (`search.engine.qualifier_match`) reads a query as `_QUERY_WORD_RE` words, and
+    keys a span by its words joined by one space and casefolded, exact or less one trailing
+    "s". `text` matches a span only when it is that join of its own words; one holding other
+    punctuation ("ODA: Total Net") matches no query and takes nothing. A matching `text`
+    claims its every word, so it takes each run of its words that is a measure text. A `text`
+    that is itself a measure text ("PPP") shares its span with the measure value, which keeps
+    both readings (`match_qualifier_readings`), and takes nothing.
+    """
+    words = [word.casefold() for word in _QUERY_WORD_RE.findall(text)]
+    joined = " ".join(words)
+    if joined != text.strip().casefold() or joined in measure_texts:
+        return []
+    runs: list[tuple[int, int, _MeasureNames]] = []
+    start = 0
+    while start < len(words):
+        for end in range(len(words), start, -1):
+            span = " ".join(words[start:end])
+            names = measure_texts.get(span) or (
+                measure_texts.get(span[:-1]) if span.endswith("s") else None
+            )
+            if names:
+                runs.append((start, end, names))
+                start = end
+                break
+        else:
+            start += 1
+    return runs
+
+
+def _strip_measure_words(
+    codes: Sequence[dict],
+    statvars: Sequence[dict],
+    measure_values: Sequence[dict],
+    measure_axes: Sequence[MeasureAxis],
+) -> None:
+    """Take the measure words out of every code synonym that would take them from a query.
+
+    Measure values are read in every code system together, and the matcher claims the longest
+    span first, so a code synonym holding "net" or "gross" would take the word from the netting
+    basis in every vocabulary: "gross ODA" would read the ODA code and no basis
+    (`_measure_runs`). Such a synonym keeps the rest of its words, so "Gross ODA Loans" becomes
+    "ODA Loans": a query reads the code in the remainder and the measure in the word. A run
+    stays when every series carrying any code that holds the text has the measure it names,
+    since the text then implies it ("ODA grant equivalents of bilateral loans" on a code whose
+    one series is a grant equivalent). The test covers every code holding the text, because
+    the text takes the words in every vocabulary, and codes of a concept group must keep
+    reading one set of texts. A synonym left with no words is dropped, and a remainder the code
+    already reads adds nothing. A label stays, since it is the code's own name, and so does a
+    text in `_MEASURE_WORD_SYNONYMS_KEPT`.
+    """
+    measure_texts = _measure_texts(measure_values)
+    axes = {axis.axis: axis for axis in measure_axes}
+    series_by_code: dict[str, list[dict]] = defaultdict(list)
+    for statvar in statvars:
+        for value in statvar["constraint_properties"].values():
+            series_by_code[value].append(statvar)
+
+    codes_by_text: dict[str, list[str]] = defaultdict(list)
+    for row in codes:
+        for text in {text.strip().casefold() for text in (row["label"], *row["synonyms"])}:
+            codes_by_text[text].append(row["dcid"])
+
+    def implied(text: str, names: _MeasureNames) -> bool:
+        series = [
+            statvar
+            for dcid in codes_by_text[text.strip().casefold()]
+            for statvar in series_by_code[dcid]
+        ]
+        return bool(series) and all(
+            any(
+                axis in axes and _measure_axis_value(statvar, axes[axis]) == value
+                for axis, value in names
+            )
+            for statvar in series
+        )
+
+    for row in codes:
+        kept: list[str] = []
+        remainders: list[str] = []
+        for text in row["synonyms"]:
+            stripped = [
+                (start, end)
+                for start, end, names in _measure_runs(text, measure_texts)
+                if not implied(text, names)
+            ]
+            if not stripped or text.strip().casefold() in _MEASURE_WORD_SYNONYMS_KEPT:
+                kept.append(text)
+                continue
+            words = _QUERY_WORD_RE.findall(text)
+            remainders.append(
+                " ".join(
+                    word
+                    for position, word in enumerate(words)
+                    if not any(start <= position < end for start, end in stripped)
+                )
+            )
+        known = {text.casefold() for text in (row["label"], *kept)}
+        for remainder in remainders:
+            if remainder and remainder.casefold() not in known:
+                kept.append(remainder)
+                known.add(remainder.casefold())
+        row["synonyms"] = sorted(kept)
 
 
 def _reject_cross_system_parents(
@@ -1775,6 +2115,7 @@ def _dataset_to_dict(dataset: DatasetDeclaration) -> dict:
         "description": dataset.description,
         "opt_in": dataset.opt_in,
         "absent_observation": dataset.absent_observation,
+        "account": dataset.account,
         "rank": dataset.rank,
         "invariants": dict(sorted(dataset.invariants.items())),
     }
@@ -1845,6 +2186,7 @@ def export_graph_blocks(
         declarations.append(declaration)
         codes.extend(rows)
         code_rows_by_system[config.code_system] = rows
+    _apply_concept_groups(codes, _CONCEPT_GROUPS, code_rows_by_system.keys())
     declarations.sort(key=lambda d: d["code_system"])
     codes.sort(key=lambda row: row["dcid"])
     _validate_declared_defaults(code_systems, code_rows_by_system)
@@ -1866,6 +2208,8 @@ def export_graph_blocks(
     _verify_measure_partition_labels(statvars, measure_axes, measure_partition_labels)
     _verify_measure_nouns(statvars, measure_nouns)
     _verify_measure_label_named_values(statvars, codes, measure_axes, measure_partition_labels)
+    measure_values = export_measure_values(reader, statvars, measure_axes)
+    _strip_measure_words(codes, statvars, measure_values, measure_axes)
 
     return {
         "declarations": declarations,
@@ -1875,7 +2219,7 @@ def export_graph_blocks(
         "codes": codes,
         "statvars": statvars,
         "measure_axes": [_measure_axis_to_dict(axis) for axis in measure_axes],
-        "measure_values": export_measure_values(reader, statvars, measure_axes),
+        "measure_values": measure_values,
         "measure_partition_labels": [
             _measure_partition_label_to_dict(label) for label in measure_partition_labels
         ],

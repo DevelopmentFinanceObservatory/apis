@@ -89,6 +89,14 @@ _ENTITY_SPAN_DESCRIPTION = (
     "of the query names it directly."
 )
 
+_ENTITY_MEMBERS_DESCRIPTION = (
+    "True when the query asks about the members of a named region or group, each in "
+    'its own right ("African countries", "countries in Africa", "each Sub-Saharan '
+    'country", "EU member states"). False when it asks about the region or group as '
+    'one place ("Africa", "Africa as a whole", "the EU"), and for a single place. '
+    '`text` stays the name of the region or group either way ("Africa").'
+)
+
 _FLOW_ROLE_DESCRIPTION = """\
 Which direction of an aid/funding flow this place is on, from the query's OWN WORDING
 only:
@@ -150,7 +158,10 @@ gloss of it. Never invent a span that is not a substring of the query.
 
 
 class ExtractedEntity(BaseModel):
-    """One named place or region the query mentions.
+    """One named place, region or group the query mentions.
+
+    `members` states the reading of a region or group: its members each in their own
+    right, or the set as one place.
 
     `span` and `role_span` are the structural guard against a direction
     supplied from world knowledge rather than the query's own wording: a
@@ -170,6 +181,7 @@ class ExtractedEntity(BaseModel):
         default="unspecified", description=_FLOW_ROLE_DESCRIPTION
     )
     role_span: str | None = Field(default=None, description=_ROLE_SPAN_DESCRIPTION)
+    members: bool = Field(default=False, description=_ENTITY_MEMBERS_DESCRIPTION)
 
 
 class ExtractedOperation(BaseModel):
@@ -242,7 +254,7 @@ class Extraction(BaseModel):
             "every named geographic or group scope, even when it may not resolve in "
             "the graph. Empty list only when the query genuinely names no place or "
             "group scope. Each entry's own field descriptions (text/span/flow_role/"
-            "role_span) define how to fill it; follow those exactly."
+            "role_span/members) define how to fill it; follow those exactly."
         ),
     )
     operations: list[ExtractedOperation] = Field(
@@ -381,8 +393,12 @@ For example, "top 10 countries by population" yields
 `"dropped_qualifiers": ["top 10 countries by population"]` and `"entities": []`:
 generic universe or class nouns wholly contained in that dropped qualifier, such as
 `countries`, are not named scopes. Actual named groups, such as `Least Developed
-Countries`, must remain in `entities`. Do not infer qualifiers that the query did not
-state.
+Countries`, must remain in `entities`. A class noun added to the name of a region or
+group asks for its members: "African countries" and "countries in Africa" are the
+entity "Africa" with `members` true, where "Africa" alone has it false. The class noun
+is never a role_span: "African countries" takes its flow_role and role_span from the
+words around it, exactly as "Africa" would. Do not infer qualifiers that the query did
+not state.
 
 Example — "health ODA grants from USA to Ethiopia":
 {"variables": ["health ODA grants"], "entities": ["USA", "Ethiopia"], "dates": []}
@@ -445,9 +461,12 @@ Ethiopia changed") and a date window are what search shows, and are not operatio
 verbs:
 - rank: an order or a top or bottom N. "top 5 donors" runs over origin, "which countries
   received the most" over destination, "which sectors got the most aid" over category,
-  "countries ranked by GDP" over place.
+  "countries ranked by GDP" over place. "which African countries received the most" runs
+  over destination beside the entity "Africa" with `members` true, flow_role
+  "destination" and role_span "received".
 - aggregate: a sum across a group of entities the query names or implies. "total aid to
-  the Sahel countries" runs over destination.
+  the Sahel countries" runs over destination, and "Sahel" has `members` true, flow_role
+  "destination" and role_span "to".
 These axes describe operations only. An entity's flow_role still comes from the query's
 own wording alone, and its role_span copies that wording. A place the query only locates
 ("literacy rate in Mali", "population of Chad") has flow_role "unspecified" and no
@@ -823,22 +842,15 @@ def _bound_entities(extraction: Extraction) -> Extraction:
             extraction = extraction.model_copy(update={"entities": []})
     elif over_occurrences:
         raise EngineInputError(
-            f"Query named {entity_occurrence_count} entity occurrences, over the "
-            f"{settings().max_entity_occurrences} limit",
+            f"The query named {entity_occurrence_count} entity occurrences; this "
+            f"deployment resolves at most {settings().max_entity_occurrences} per query.",
             code="request_invalid",
-            detail=(
-                f"The query named {entity_occurrence_count} entity occurrences; this "
-                f"deployment resolves at most {settings().max_entity_occurrences} per query."
-            ),
         )
     elif over_entities:
         raise EngineInputError(
-            f"Query named {deduped_entity_count} entities, over the {settings().max_entities} limit",
+            f"The query named {deduped_entity_count} distinct entities; this deployment "
+            f"resolves at most {settings().max_entities} per query.",
             code="request_invalid",
-            detail=(
-                f"The query named {deduped_entity_count} distinct entities; this deployment "
-                f"resolves at most {settings().max_entities} per query."
-            ),
         )
     return extraction
 

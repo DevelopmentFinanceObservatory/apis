@@ -51,6 +51,7 @@ _DATASET_STORE = {
     "0022_drop_null_collection.sql": (
         "1ad07c270360607f2f58904689894c140351404dbc20961218329af91f78257f"
     ),
+    "0023_frame_recipe.sql": "886f346dd6db7d28dc72a320c2c5341406a877a9652b867b85902bc77bda17a1",
 }
 
 _PRESENTATION_STORE = {

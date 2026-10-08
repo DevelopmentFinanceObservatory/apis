@@ -13,5 +13,9 @@ For example, "top 10 countries by population" yields
 `"dropped_qualifiers": ["top 10 countries by population"]` and `"entities": []`:
 generic universe or class nouns wholly contained in that dropped qualifier, such as
 `countries`, are not named scopes. Actual named groups, such as `Least Developed
-Countries`, must remain in `entities`. Do not infer qualifiers that the query did not
-state.
+Countries`, must remain in `entities`. A class noun added to the name of a region or
+group asks for its members: "African countries" and "countries in Africa" are the
+entity "Africa" with `members` true, where "Africa" alone has it false. The class noun
+is never a role_span: "African countries" takes its flow_role and role_span from the
+words around it, exactly as "Africa" would. Do not infer qualifiers that the query did
+not state.

@@ -6,6 +6,16 @@
 #   label             display name (the graph's `name`, except where noted)
 #   exclusions        provenances not admitted, each with a reason. An empty
 #                     list records that overlap with DFO was reviewed
+#                       superseded_by_dfo: an upstream copy of something DFO
+#                       imports
+#                       superseded_by_un_system: the series of `successor`, a
+#                       [[un_system]] provenance, replace it. A variable of
+#                       the provenance is `<variable_prefix><code>` with an
+#                       optional `<code_delimiter><pairs>`, its constraint
+#                       pairs joined by `pair_delimiter`, each a dimension
+#                       and value joined by `value_delimiter`. Its successor
+#                       is the agency's variable of the same code and the
+#                       same pairs in any order
 #   country           a national source's country
 #   scan_type         the place type where the source's series sit, scanned
 #                     inside `country` at any depth, or everywhere when the
@@ -16,6 +26,9 @@
 #   segment           the id segment in undata/<segment>/... and
 #                     undata/topic/<segment>/...
 #   label             display name
+#   exclusions        series not admitted, each undata/<segment>/SERIES-<code>
+#                     with reason superseded_by_dfo and `dfo_provenance`, the
+#                     DFO provenance holding the data the series derives from
 
 [[base]]
 source = "dc/s/BankForInternationalSettlementsBis"
@@ -149,7 +162,9 @@ scan_type = "State"
 [[base]]
 source = "dc/s/UnitedNationsUn"
 label = "United Nations (UN)"
-exclusions = []
+exclusions = [
+  { provenance = "dc/base/UN_SDG", reason = "superseded_by_un_system", successor = "undata/p/SDG", variable_prefix = "sdg/", code_delimiter = ".", pair_delimiter = "__", value_delimiter = "--" },
+]
 
 [[base]]
 source = "dc/s/UnitedNationsOfficeForTheCoordinationOfHumanitarianAffairsUnOcha"
@@ -170,11 +185,24 @@ label = "World Health Organization (WHO)"
 provenance = "undata/p/WHO"
 segment = "who"
 label = "World Health Organization (WHO)"
+exclusions = [
+  # Aid commitments and disbursements for health from the OECD Creditor
+  # Reporting System.
+  { series = "undata/who/SERIES-ODA_1_3", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDCreditorReportingSystem" },
+  { series = "undata/who/SERIES-ODA_2_4", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDCreditorReportingSystem" },
+]
 
 [[un_system]]
 provenance = "undata/p/UNICEF"
 segment = "unicef"
 label = "United Nations Children's Fund (UNICEF)"
+exclusions = [
+  # Aid totals and ratios to GNI from OECD DAC1.
+  { series = "undata/unicef/SERIES-ECON_ODA_INFLOW_PTGNI", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDDAC1" },
+  { series = "undata/unicef/SERIES-ECON_ODA_INFLOW_USD", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDDAC1" },
+  { series = "undata/unicef/SERIES-ECON_ODA_OUTFLOW_PTGNI", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDDAC1" },
+  { series = "undata/unicef/SERIES-ECON_ODA_OUTFLOW_USD", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDDAC1" },
+]
 
 [[un_system]]
 provenance = "undata/p/ILO"
@@ -235,3 +263,42 @@ label = "United Nations Office on Drugs and Crime (UNODC)"
 provenance = "undata/p/SDG"
 segment = "sdg"
 label = "SDG Global Database"
+exclusions = [
+  # Sector, purpose and policy-marker aggregates of the activity-level aid in the
+  # OECD Creditor Reporting System.
+  { series = "undata/sdg/SERIES-DC_FTA_TOTAL", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDCreditorReportingSystem" },
+  { series = "undata/sdg/SERIES-DC_ODA_BDVDL", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDCreditorReportingSystem" },
+  { series = "undata/sdg/SERIES-DC_ODA_BDVL", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDCreditorReportingSystem" },
+  { series = "undata/sdg/SERIES-DC_TOF_AGRL", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDCreditorReportingSystem" },
+  { series = "undata/sdg/SERIES-DC_TOF_HLTHL", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDCreditorReportingSystem" },
+  { series = "undata/sdg/SERIES-DC_TOF_HLTHNT", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDCreditorReportingSystem" },
+  { series = "undata/sdg/SERIES-DC_TOF_INFRAL", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDCreditorReportingSystem" },
+  { series = "undata/sdg/SERIES-DC_TOF_SCHIPSL", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDCreditorReportingSystem" },
+  { series = "undata/sdg/SERIES-DC_TOF_TRDCMDL", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDCreditorReportingSystem" },
+  { series = "undata/sdg/SERIES-DC_TOF_TRDCML", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDCreditorReportingSystem" },
+  { series = "undata/sdg/SERIES-DC_TOF_TRDDBMDL", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDCreditorReportingSystem" },
+  { series = "undata/sdg/SERIES-DC_TOF_TRDDBML", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDCreditorReportingSystem" },
+  { series = "undata/sdg/SERIES-DC_TOF_WASHL", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDCreditorReportingSystem" },
+  # Donor totals and ratios to donor GNI from OECD DAC1.
+  { series = "undata/sdg/SERIES-DC_ODA_LDCG", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDDAC1" },
+  { series = "undata/sdg/SERIES-DC_ODA_LDCS", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDDAC1" },
+  { series = "undata/sdg/SERIES-DC_ODA_LLDC", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDDAC1" },
+  { series = "undata/sdg/SERIES-DC_ODA_LLDCG", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDDAC1" },
+  { series = "undata/sdg/SERIES-DC_ODA_POVDLG", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDDAC1" },
+  { series = "undata/sdg/SERIES-DC_ODA_POVG", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDDAC1" },
+  { series = "undata/sdg/SERIES-DC_ODA_POVLG", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDDAC1" },
+  { series = "undata/sdg/SERIES-DC_ODA_SIDS", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDDAC1" },
+  { series = "undata/sdg/SERIES-DC_ODA_SIDSG", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDDAC1" },
+  { series = "undata/sdg/SERIES-DC_ODA_TOTG", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDDAC1" },
+  { series = "undata/sdg/SERIES-DC_ODA_TOTGGE", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDDAC1" },
+  { series = "undata/sdg/SERIES-DC_ODA_TOTL", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDDAC1" },
+  { series = "undata/sdg/SERIES-DC_ODA_TOTLGE", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDDAC1" },
+  # Total resource flows and assistance for development, compiled from OECD
+  # DAC statistics.
+  { series = "undata/sdg/SERIES-DC_TRF_TFDV", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDDAC1" },
+  { series = "undata/sdg/SERIES-DC_TRF_TOTDL", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDDAC1" },
+  { series = "undata/sdg/SERIES-DC_TRF_TOTL", reason = "superseded_by_dfo", dfo_provenance = "provenance/OECDDAC1" },
+  # External debt ratios built from World Bank International Debt Statistics.
+  { series = "undata/sdg/SERIES-DT_DOD_DECT_GN_ZS", reason = "superseded_by_dfo", dfo_provenance = "provenance/WorldBankInternationalDebtStatistics" },
+  { series = "undata/sdg/SERIES-DT_TDS_DECT", reason = "superseded_by_dfo", dfo_provenance = "provenance/WorldBankInternationalDebtStatistics" },
+]

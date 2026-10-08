@@ -21,10 +21,8 @@ from search.engine.region.arcs import (
 from search.engine.region.candidates import _materialise_alt_shapes
 from search.engine.region.codes import (
     AVAILABILITY_PROBE_FAILED,
-    CHILD_PLACES_CLAMPED,
     DEGENERATE_BINDING_DETECTED,
     DIRECTION_DISCARDED,
-    MULTI_RECIPIENT_TRUNCATED,
     NEAR_NEIGHBOR_AMBIGUOUS,
     NEAR_NEIGHBOR_POOL_WIDENED,
     NO_MEMBER_ASSERTS_BOUND_PROPERTIES,
@@ -38,7 +36,6 @@ from search.engine.region.codes import (
     PLACE_SCOPE_DEFAULTED,
     REDUNDANT_BINDING_DROPPED,
     RETRIEVAL_SCORE_WEAK,
-    STANDARD_PROBE_PLACES_CLAMPED,
     _ObsProbeResult,
     _OptionEvent,
     _OptionProbeResult,
@@ -87,10 +84,8 @@ from search.engine.region.sentence_events import (
 
 __all__ = [
     "AVAILABILITY_PROBE_FAILED",
-    "CHILD_PLACES_CLAMPED",
     "DEGENERATE_BINDING_DETECTED",
     "DIRECTION_DISCARDED",
-    "MULTI_RECIPIENT_TRUNCATED",
     "NEAR_NEIGHBOR_AMBIGUOUS",
     "NEAR_NEIGHBOR_POOL_WIDENED",
     "NO_MEMBER_ASSERTS_BOUND_PROPERTIES",
@@ -104,7 +99,6 @@ __all__ = [
     "PLACE_SCOPE_DEFAULTED",
     "REDUNDANT_BINDING_DROPPED",
     "RETRIEVAL_SCORE_WEAK",
-    "STANDARD_PROBE_PLACES_CLAMPED",
     "RegionResult",
     "_ObsProbeResult",
     "_OptionEvent",

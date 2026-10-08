@@ -26,6 +26,7 @@ import re
 import threading
 import weakref
 
+from dfo_platform.named import named_capped
 from materialise.rate_tables import RateTableInvalidError
 from materialise.recipe_bodies import RECIPE_BODIES
 from search.engine.clients.graph import EngineGraphClient
@@ -102,7 +103,7 @@ def _parse_year(provenance_id: str, values: tuple[str, ...]) -> int:
     if len(values) != 1:
         raise TableBaseYearError(
             f"conversion-table provenance {provenance_id!r} declares {len(values)} "
-            f"{BASE_YEAR_PROPERTY} values {list(values)!r}; exactly one is required"
+            f"{BASE_YEAR_PROPERTY} values {named_capped(values)}; exactly one is required"
         )
     (text,) = values
     if _YEAR_TEXT_RE.fullmatch(text) is None or not MIN_YEAR <= int(text) <= MAX_YEAR:

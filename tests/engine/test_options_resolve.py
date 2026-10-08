@@ -109,6 +109,45 @@ class TestIdentityCoreValidationRunsBeforeDerivation:
         assert exc_info.value.status == 400
         assert exc_info.value.pointer == "/identity"
 
+    @pytest.mark.parametrize(
+        ("counts", "pointer"),
+        [
+            pytest.param(
+                {"observationAbout": 257}, "/identity/entities/observationAbout", id="one-role"
+            ),
+            pytest.param(
+                {"destination": 200, "origin": 200},
+                "/identity/entities",
+                id="same-refs-on-two-roles",
+            ),
+        ],
+    )
+    def test_an_identity_over_the_place_bound_refuses_before_any_read(self, counts, pointer):
+        """The options door holds the bound on the places a Spec binds, as the resubmit
+        does: distinct dcids per role, summed over the roles, refused before the graph
+        is read."""
+
+        class _NoGraph:
+            def __getattr__(self, name):
+                raise AssertionError(f"graph must not be read for the place bound: {name}")
+
+        identity = BaseIdentity(
+            shape=_NON_INDEX_SHAPE,
+            slots=[],
+            entities={
+                role: [f"country/P{i}" for i in range(count)] for role, count in counts.items()
+            },
+            requested_window=IdentityWindowAll(),
+        )
+        req = OptionsRequest(identity=identity, **{"for": OptionsFor(role="observationAbout")})
+
+        with pytest.raises(EngineInputError) as exc_info:
+            resolve_options_target(req, graph=_NoGraph(), materialise_graph=_NoGraph())
+
+        assert exc_info.value.code == "request_invalid"
+        assert exc_info.value.status == 400
+        assert exc_info.value.pointer == pointer
+
 
 # ---------------------------------------------------------------------------
 # Options requests do not support `exact` slot bindings.

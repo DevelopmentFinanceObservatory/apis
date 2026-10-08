@@ -1,7 +1,7 @@
 {
-  "central africa": "Middle Africa",
-  "eu countries": "European Union",
-  "eu member states": "European Union",
-  "european union member states": "European Union",
-  "dac members": "OECD Development Assistance Committee"
+  "central africa": { "name": "Middle Africa" },
+  "eu countries": { "name": "European Union", "members": true },
+  "eu member states": { "name": "European Union", "members": true },
+  "european union member states": { "name": "European Union", "members": true },
+  "dac members": { "name": "OECD Development Assistance Committee", "members": true }
 }

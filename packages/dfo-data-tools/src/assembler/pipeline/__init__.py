@@ -13,6 +13,9 @@ before resolving a frame: a stored create with the same request hash is replayed
 revision 1, and one with another request is refused. A create that loses the race for the
 token's unique index replays the winner the same way.
 
+`render_component` rebuilds a stored revision's intent on a frame the caller has accepted,
+pins that frame, and appends no revision.
+
 `note_narration` has no frame. `source_card` reads frame provenance without
 selecting or binding series. HTTP doors wrap these library operations.
 """
@@ -21,11 +24,14 @@ from __future__ import annotations
 
 from assembler.pipeline.describe_component import get_component
 from assembler.pipeline.describe_frame import get_frame_view
+from assembler.pipeline.render import ComponentHoldsNoFrame, render_component
 from assembler.pipeline.write import ORPHANED_PIN_RECONCILIATION_REQUIRED_MARKER, write_component
 
 __all__ = [
     "ORPHANED_PIN_RECONCILIATION_REQUIRED_MARKER",
+    "ComponentHoldsNoFrame",
     "get_component",
     "get_frame_view",
+    "render_component",
     "write_component",
 ]

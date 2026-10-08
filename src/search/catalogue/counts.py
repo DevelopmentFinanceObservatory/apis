@@ -12,9 +12,10 @@ catalogue build and one coverage index build.
   facets with a row naming it.
 - Countries: `country/` dcids with a base variable's place bit set, or named
   as donor or recipient on a coverage row.
-- Aid: donors, recipients and years over the coverage rows of variables
-  with a CRS facet. At a country, the donors to it, the recipients of its
-  own aid, and the years of either.
+- Aid: donors, recipients and years over the coverage rows on a facet of a
+  declared dataset (`CodeIndex.datasets`). A variable that declares one
+  role adds no entity on the role it lacks. At a country, the donors to it,
+  the recipients of its own aid, and the years of either.
 - Variables (per country only): base variables with data there, plus
   coverage variables with a row naming it.
 """
@@ -22,7 +23,7 @@ catalogue build and one coverage index build.
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Collection, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Final, cast
 
@@ -33,13 +34,14 @@ from origin_catalogue.catalogue import CatalogueSnapshot, entry_ref
 from search.catalogue.artifact import AidCounts, Counts, PlaceCounts, YearRange
 from series_coverage.coverage_types import Role
 from series_coverage.index import CoverageIndex
-from series_coverage.schema import FACET_COLUMN, FIRST_YEAR_COLUMN, LAST_YEAR_COLUMN
+from series_coverage.schema import (
+    ABSENT_ENTITY,
+    FACET_COLUMN,
+    FIRST_YEAR_COLUMN,
+    LAST_YEAR_COLUMN,
+)
 
 COUNTRY_PREFIX: Final[str] = "country/"
-
-CRS_PROVENANCE: Final[str] = "provenance/OECDCreditorReportingSystem"
-"""The provenance of the coverage index's aid rows. Its other rows are World
-Bank debt series."""
 
 _ROLES: Final[tuple[Role, ...]] = ("donor", "recipient")
 
@@ -78,13 +80,19 @@ class _CoverageByCountry:
     aid: AidCounts
 
 
-def catalogue_counts(*, catalogue: CatalogueSnapshot, coverage: CoverageIndex) -> CatalogueCounts:
+def catalogue_counts(
+    *, catalogue: CatalogueSnapshot, coverage: CoverageIndex, datasets: Collection[str]
+) -> CatalogueCounts:
     """Counts over `catalogue`'s admitted provenances and base variable
-    table and every row of `coverage`."""
+    table and every row of `coverage`. `datasets` holds the provenances of
+    the declared datasets (`CodeIndex.datasets`). Their coverage rows are
+    the aid rows."""
     provenances = catalogue.provenance_rows()
     source_of = {row.id: row.source.ref for row in provenances}
     base = _base_by_country(catalogue, source_of)
-    held = _coverage_by_country(coverage, catalogue=catalogue, base=base, source_of=source_of)
+    held = _coverage_by_country(
+        coverage, catalogue=catalogue, base=base, source_of=source_of, datasets=datasets
+    )
     countries = sorted(set(base.variables) | set(held.variables))
     no_sources: frozenset[str] = frozenset()
     places = {
@@ -125,20 +133,21 @@ def _coverage_by_country(
     catalogue: CatalogueSnapshot,
     base: _BaseByCountry,
     source_of: Mapping[str, str],
+    datasets: Collection[str],
 ) -> _CoverageByCountry:
     """Every country's coverage summary from six grouped passes over the
-    index: each role by facet and by variable, the variables by facet, and
-    the aid variables' donor and recipient pairs."""
+    index: each role by facet and by variable, the variables, and the donor
+    and recipient pairs by facet."""
     provenance_of = {
         facet_id: meta.provenance_id for facet_id, meta in coverage.facet_metadata.items()
     }
-    crs_facets = frozenset(
-        facet_id for facet_id, provenance in provenance_of.items() if provenance == CRS_PROVENANCE
+    aid_facets = frozenset(
+        facet_id for facet_id, provenance in provenance_of.items() if provenance in datasets
     )
 
     sources: dict[str, set[str]] = defaultdict(set)
     spans: dict[str, list[tuple[int, int]]] = defaultdict(list)
-    crs_spans: list[tuple[int, int]] = []
+    aid_spans: list[tuple[int, int]] = []
     for role in _ROLES:
         by_facet = coverage.grouped(by=(role, "facet_id"))
         for place, facet, first, last in zip(
@@ -148,40 +157,42 @@ def _coverage_by_country(
             _ints(by_facet[LAST_YEAR_COLUMN]),
             strict=True,
         ):
-            if facet in crs_facets:
-                crs_spans.append((first, last))
+            if facet in aid_facets:
+                aid_spans.append((first, last))
             if not place.startswith(COUNTRY_PREFIX):
                 continue
             provenance = provenance_of.get(facet)
             if provenance is not None and provenance in source_of:
                 sources[place].add(source_of[provenance])
-            if facet in crs_facets:
+            if facet in aid_facets:
                 spans[place].append((first, last))
 
-    by_variable_facet = coverage.grouped(by=("variable", "facet_id"))
-    variable_facets = list(
-        zip(
-            _strings(by_variable_facet["variable"]),
-            _strings(by_variable_facet[FACET_COLUMN]),
+    by_pair_facet = coverage.grouped(by=(*_ROLES, "facet_id"))
+    pairs = {
+        (donor, recipient)
+        for donor, recipient, facet in zip(
+            _strings(by_pair_facet["donor"]),
+            _strings(by_pair_facet["recipient"]),
+            _strings(by_pair_facet[FACET_COLUMN]),
             strict=True,
         )
-    )
-    aid = sorted({variable for variable, facet in variable_facets if facet in crs_facets})
-    pairs = coverage.grouped(by=_ROLES, variables=aid)
-    donors, recipients = _strings(pairs["donor"]), _strings(pairs["recipient"])
+        if facet in aid_facets
+    }
+    # A one-role variable's rows hold `ABSENT_ENTITY` on the role it lacks.
+    donors = {donor for donor, _ in pairs} - {ABSENT_ENTITY}
+    recipients = {recipient for _, recipient in pairs} - {ABSENT_ENTITY}
+    flows = [pair for pair in pairs if ABSENT_ENTITY not in pair]
 
     variables, overlap = _variables_by_country(coverage, catalogue=catalogue, base=base)
     return _CoverageByCountry(
-        covered=frozenset(variable for variable, _ in variable_facets),
+        covered=frozenset(_strings(coverage.grouped(by=("variable",))["variable"])),
         variables=variables,
         overlap=overlap,
         sources={place: frozenset(named) for place, named in sources.items()},
         years={place: years for place, held in spans.items() if (years := _years(held))},
-        aid_donors=Counter(recipients),
-        aid_recipients=Counter(donors),
-        aid=AidCounts(
-            donors=len(set(donors)), recipients=len(set(recipients)), years=_years(crs_spans)
-        ),
+        aid_donors=Counter(recipient for _, recipient in flows),
+        aid_recipients=Counter(donor for donor, _ in flows),
+        aid=AidCounts(donors=len(donors), recipients=len(recipients), years=_years(aid_spans)),
     )
 
 
@@ -296,4 +307,4 @@ def _years(spans: Iterable[tuple[int, int]]) -> YearRange | None:
     return YearRange(first=min(first for first, _ in spans), last=max(last for _, last in spans))
 
 
-__all__ = ["COUNTRY_PREFIX", "CRS_PROVENANCE", "CatalogueCounts", "catalogue_counts"]
+__all__ = ["COUNTRY_PREFIX", "CatalogueCounts", "catalogue_counts"]

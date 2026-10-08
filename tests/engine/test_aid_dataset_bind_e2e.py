@@ -18,6 +18,7 @@ from __future__ import annotations
 import dataclasses
 import sys
 from collections import Counter
+from collections.abc import Mapping
 
 import pytest
 
@@ -127,15 +128,18 @@ def _graph(
     members: tuple[str, ...] = _MEMBERS,
     provenance_labels: tuple[str, str] = (_CRS_LABEL, _IMPUTED_LABEL),
     un_members: tuple[str, ...] = (),
+    countries: Mapping[str, str] | None = None,
 ) -> FakeGraph:
     """A graph whose recall returns `members` in order for each variable: one CRS member
     and one imputed member unless told otherwise. The UN System Data Commons' recall returns
-    `un_members`, each an aid amount holding a series at Kenya."""
+    `un_members`, each an aid amount holding a series at Kenya. Kenya resolves, and so does
+    each of `countries`, by name."""
+    countries = {"Kenya": _KEN, **(countries or {})}
     crs_label, imputed_label = provenance_labels
     return FakeGraph(
         nodes={
-            _KEN: {"label": "Kenya", "type": "Country"},
             _FRA: {"label": "France", "type": "Country"},
+            **{dcid: {"label": name, "type": "Country"} for name, dcid in countries.items()},
             CRS_PROVENANCE: {"label": crs_label},
             IMPUTED_PROVENANCE: {"label": imputed_label},
             _SECOND: {"label": _SECOND_LABEL},
@@ -158,7 +162,7 @@ def _graph(
         }
         if un_members
         else None,
-        resolve={"Kenya": _KEN},
+        resolve=dict(countries),
         obs={
             f"{dcid}|{_KEN}": [{"earliestDate": "2019", "latestDate": "2021", "obsCount": 3}]
             for dcid in un_members
@@ -398,6 +402,7 @@ def _with_second_table(*, opt_in: bool) -> CodeIndex:
                 ),
                 opt_in=opt_in,
                 absent_observation="zero",
+                account="provider",
                 rank=20,
             ),
         ),
@@ -1217,8 +1222,11 @@ def test_every_draft_of_a_pinned_slot_ends_as_its_pinned_value(
 def test_each_pinned_slot_offers_the_menu_around_its_pin(monkeypatch: pytest.MonkeyPatch):
     """The imputed answer binds its two pinned slots to the table's invariants, and each
     slot's menu is the one the code index scopes around the bound value
-    (`level_scoped_options`), less the options that serve no row. Every imputed row holds
-    the invariant's value, so it alone is offered."""
+    (`level_scoped_options`), less the options that serve no row. The flow system is flat,
+    so its menu holds every flow, and every imputed row holds the invariant's value, so it
+    alone is offered. The aid-type system is hierarchical, and aid type 106 is a root with
+    no children, so the index scopes the other aid-type roots around it. No imputed row
+    holds any of them, so each serves nothing and the slot offers no menu."""
     _name_dataset(monkeypatch, IMPUTED_PROVENANCE)
 
     response = _resolve_scripted(f"{_E} to Kenya", _ScriptedLLM(_E), _E)
@@ -1232,9 +1240,17 @@ def test_each_pinned_slot_offers_the_menu_around_its_pin(monkeypatch: pytest.Mon
         for menu in spec.resolved.slot_options
         if menu.key.property is not None and menu.key.property.dcid in pinned
     }
-    assert menus == {prop: [value] for prop, value in pinned.items()}
-    for prop, value in pinned.items():
-        assert value in {option.dcid for option in get_index().level_scoped_options(prop, value)}
+    assert menus == {"crsTypeOfFlow": [pinned["crsTypeOfFlow"]]}
+    flows = get_index().level_scoped_options("crsTypeOfFlow", pinned["crsTypeOfFlow"])
+    assert pinned["crsTypeOfFlow"] in {option.dcid for option in flows}
+    assert len(flows) > 1
+    aid_types = get_index().level_scoped_options(AID_TYPE, pinned[AID_TYPE])
+    assert [option.dcid for option in aid_types] == [
+        option.dcid
+        for option in get_index().level_scoped_options(AID_TYPE, None)
+        if option.relation == "root" and option.dcid != pinned[AID_TYPE]
+    ]
+    assert "DAC2aAidType206" in {option.dcid for option in aid_types}
 
 
 def test_a_code_no_shape_of_the_named_dataset_declares_refuses_before_any_bind_call(
@@ -1292,6 +1308,62 @@ def test_a_code_the_named_dataset_declares_binds_on_its_own_five_tuple(
     assert _sources(spec) == [IMPUTED_PROVENANCE]
 
 
+_DAC2B_PROVENANCE = "provenance/OECDDAC2B"
+_DAC2B_MEMBERS = tuple(
+    row.dcid for row in get_index().statvars if _DAC2B_PROVENANCE in row.provenances
+)
+
+
+@pytest.mark.parametrize("basis", [None, "Gross"])
+def test_an_open_dac2b_flow_type_reads_the_net_total_at_its_one_basis(
+    monkeypatch: pytest.MonkeyPatch, basis: str | None
+):
+    """DAC2b's open flow type defaults to code 296, which the table publishes net alone. A
+    question naming no basis reads 296 net disbursements, since the default binds before the
+    measure vote. A question naming gross asks for a row the table does not hold and is not
+    resolved."""
+    names = RoleNames(donor="financingProvider", recipient="financingRecipient")
+    patch_coverage(
+        monkeypatch,
+        [(dcid, "dac2b", _FRA, _KEN, [2019, 2020, 2021]) for dcid in _DAC2B_MEMBERS],
+        role_names=dict.fromkeys(_DAC2B_MEMBERS, names),
+        facet_metadata={"dac2b": FacetMetadata(provenance_id=_DAC2B_PROVENANCE, unit="USD")},
+    )
+    drafted = [
+        SlotBindingDraft(axis="how", property_dcid="dac2bAidType", kind="unbound"),
+        SlotBindingDraft(
+            axis="how",
+            property_dcid="financialFlowType",
+            kind="value",
+            value_dcids=["Disbursement"],
+        ),
+    ]
+    if basis is not None:
+        drafted.append(
+            SlotBindingDraft(
+                axis="how", property_dcid="nettingBasis", kind="value", value_dcids=[basis]
+            )
+        )
+    variable = "official flows"
+
+    response = _resolve_scripted(
+        f"{variable} to Kenya",
+        _ScriptedLLM(variable, drafted=tuple(drafted)),
+        graph=_graph(variable, members=_DAC2B_MEMBERS),
+    )
+
+    (part,) = response.parts
+    if basis == "Gross":
+        assert isinstance(part, NoDataPart)
+        assert part.no_data.reason == "variable_not_resolved"
+        return
+    (spec,) = _specs(response)
+    assert _bound(spec)["dac2bAidType"] == "DAC2bAidType296"
+    assert _bound(spec)["nettingBasis"] == "Net"
+    assert spec.resolved.shape.member_count == 1
+    assert "slot_defaulted" in {warning.code for warning in part.warnings}
+
+
 @pytest.mark.parametrize("provenance", [CRS_PROVENANCE, IMPUTED_PROVENANCE], ids=["crs", "imputed"])
 def test_a_part_leaving_the_recipient_open_states_the_family_the_mint_resolves(provenance: str):
     """ "Aid from France" asks every recipient, and its role-class election keeps the
@@ -1314,3 +1386,115 @@ def test_a_part_leaving_the_recipient_open_states_the_family_the_mint_resolves(p
         counts.append(spec.resolved.shape.member_count)
 
     assert counts[0] == counts[1]
+
+
+_BRA = "country/BRA"
+_DAC2B_OOF = "Amount_FinancialFlow_Gross_Disbursement_DAC2bAidType972_Nominal"
+_CRS_OOF = next(
+    row.dcid
+    for row in get_index().statvars
+    if row.population_type == "FinancialFlow"
+    and row.constraint_properties.get("crsTypeOfFlow") == "CRSTypeOfFlow21"
+    and row.constraint_properties.get("nettingBasis") == "Gross"
+)
+_DAC2A_ODA = "Amount_FinancialFlow_Gross_Disbursement_DAC2aAidType206_Nominal"
+# A donor aggregate, standing for the all-donors total DAC2b publishes for a recipient.
+_DONOR_AGGREGATE = "dac/AllDonors"
+_PAIRED = ({"text": "Germany", "role_text": "from"}, {"text": "Brazil", "role_text": "to"})
+
+
+def _menus(monkeypatch: pytest.MonkeyPatch) -> list[list[tuple[str, ...]]]:
+    """Each part's bind menu, as the datasets of every shape `_phase_prune_and_rank` caps."""
+    menus: list[list[tuple[str, ...]]] = []
+
+    async def recorded(state: ResolveState):
+        result = await _phase_prune_and_rank(state)
+        menus.append([shape.datasets or () for shape in state.capped_shapes])
+        return result
+
+    monkeypatch.setattr(
+        pipeline_module,
+        "_PHASES",
+        tuple(recorded if phase is _phase_prune_and_rank else phase for phase in _PHASES),
+    )
+    return menus
+
+
+@pytest.mark.parametrize(
+    ("variable", "recalled", "entities", "series", "menu"),
+    [
+        # dq-crs-028: both tables read "other official flows", and DAC2b holds Germany's
+        # flows against aggregate recipients alone, so the CRS answers.
+        pytest.param(
+            "other official flows",
+            (_DAC2B_OOF, _CRS_OOF),
+            _PAIRED,
+            [(_DAC2B_OOF, _DEU, _KEN), (_CRS_OOF, _DEU, _BRA)],
+            [(CRS_PROVENANCE,)],
+            id="dac2b-recalled-first",
+        ),
+        pytest.param(
+            "other official flows",
+            (_CRS_OOF, _DAC2B_OOF),
+            _PAIRED,
+            [(_DAC2B_OOF, _DEU, _KEN), (_CRS_OOF, _DEU, _BRA)],
+            [(CRS_PROVENANCE,)],
+            id="crs-recalled-first",
+        ),
+        # A recipient alone: DAC2b holds Brazil as a recipient of a donor aggregate, so both
+        # stay. Only the CRS holds Brazil as a donor, which this part does not ask.
+        pytest.param(
+            "other official flows",
+            (_DAC2B_OOF, _CRS_OOF),
+            ({"text": "Brazil", "role_text": "to"},),
+            [(_DAC2B_OOF, _DONOR_AGGREGATE, _BRA), (_CRS_OOF, _DEU, _BRA), (_CRS_OOF, _BRA, _KEN)],
+            [(_DAC2B_PROVENANCE,), (CRS_PROVENANCE,)],
+            id="recipient-alone",
+        ),
+        # Neither table holds the pair, so the rule stands down and the part refuses later.
+        pytest.param(
+            "other official flows",
+            (_DAC2B_OOF, _CRS_OOF),
+            _PAIRED,
+            [(_DAC2B_OOF, _DEU, _KEN), (_CRS_OOF, _FRA, _BRA)],
+            [(_DAC2B_PROVENANCE,), (CRS_PROVENANCE,)],
+            id="neither-holds-the-pair",
+        ),
+        # Another pair of tables, the other way round: DAC2a holds the pair, the CRS not.
+        pytest.param(
+            "ODA",
+            (_CRS_MEMBER, _DAC2A_ODA),
+            _PAIRED,
+            [(_DAC2A_ODA, _DEU, _BRA), (_CRS_MEMBER, _DEU, _KEN)],
+            [("provenance/OECDDAC2A",)],
+            id="dac2a-holds-the-pair",
+        ),
+    ],
+)
+def test_of_tables_reading_a_question_alike_one_without_series_at_its_places_leaves(
+    monkeypatch: pytest.MonkeyPatch,
+    variable: str,
+    recalled: tuple[str, str],
+    entities: tuple[dict, ...],
+    series: list[tuple[str, str, str]],
+    menu: list[tuple[str, ...]],
+):
+    """Two families of one five-tuple and role class read the question's phrases alike. One
+    holding no series at the places the part names, on the roles they bind, leaves when the
+    other holds one (`elect_five_tuple_family`), whichever recall ranks first. With a series
+    on both sides, or on neither, both reach bind."""
+    patch_coverage(
+        monkeypatch,
+        [(dcid, dcid, donor, recipient, [2019, 2020]) for dcid, donor, recipient in series],
+        role_names=dict.fromkeys(
+            recalled, RoleNames(donor="financingProvider", recipient="financingRecipient")
+        ),
+    )
+    menus = _menus(monkeypatch)
+    graph = _graph(variable, members=recalled, countries={"Germany": _DEU, "Brazil": _BRA})
+
+    _resolve_parsed(
+        ParsedPart(variable_text=variable, entities=list(entities)), _ScriptedLLM(), graph=graph
+    )
+
+    assert menus == [menu]

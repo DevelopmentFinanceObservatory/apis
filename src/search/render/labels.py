@@ -260,14 +260,32 @@ _MEMBER_NOUNS = frozenset(
 )
 
 
+# Graph types of a node that names an area. The places inside one are said to be in it.
+_REGION_TYPES = frozenset({"Continent", "UNGeoRegion"})
+
+
+def group_members_text(entity_type: str | None) -> str:
+    """Refer back to the members of a group just named: "its members", and for a group
+    whose node is a region (`_REGION_TYPES`) "the countries and territories in it"."""
+    if entity_type in _REGION_TYPES:
+        return "the countries and territories in it"
+    return "its members"
+
+
 def group_text(count: int, group: EntityGroup) -> str:
     """Name a group of ``count`` entities: "the {n} {label} members" ("the 27 European
     Union members").
 
+    A group whose node is a region (`EntityGroup.entity_type` in `_REGION_TYPES`) reads as
+    the places in it: "the 59 countries and territories in Africa".
+
     A label whose last word already names the members keeps its own noun ("the 32 DAC
     donors", "the 27 EU member states"). That word is one of `_MEMBER_NOUNS`, compared as
-    text. The heading and the `entity_unavailable` departure both read this.
+    text. The heading and the `entity_unavailable` and `group_read_as_members` departures
+    all read this.
     """
+    if group.entity_type in _REGION_TYPES:
+        return f"the {count} countries and territories in {group.label}"
     last_word = group.label.rsplit(" ", 1)[-1].lower()
     noun = "" if last_word in _MEMBER_NOUNS else " members"
     return f"the {count} {group.label}{noun}"

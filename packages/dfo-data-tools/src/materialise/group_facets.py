@@ -100,8 +100,7 @@ def _group_shared_candidates(
     `measurementMethod` values while retaining shared provenance and units.
 
     An empty intersection raises one group-level issue per facet axis, with
-    alternatives from all candidates, and names every member as `empty_members` when
-    none is populated. Matching candidates are merged by exact
+    alternatives from all candidates. Matching candidates are merged by exact
     `facet_id` (`facets.merge_facets`), summing counts and points. Currency-native preference
     runs after merging to preserve shared facets that member-level currency
     preferences could discard. Results stay unranked and in first-seen order.
@@ -160,7 +159,6 @@ def _group_shared_candidates(
         raise FacetNotAvailableError(
             "no probed facet serves every member of the group at once",
             issues=tuple(issues),
-            empty_members=() if any(populated) else tuple(requests),
         )
 
     shared: dict[str, list[Facet]] = {}
@@ -441,7 +439,7 @@ def select_group_facets(
 
 
 def _as_issue(axis: str, exc: MaterialisationError) -> MaterialisationIssue:
-    """Copies the error pointer and alternatives into one aggregated issue.
+    """Copies the error pointer, alternatives, code, and message into one aggregated issue.
 
     `truncated` appears only with alternatives, matching the response wire
     shape. It is true when `facets._alternatives` or this backstop applies
@@ -457,4 +455,6 @@ def _as_issue(axis: str, exc: MaterialisationError) -> MaterialisationIssue:
         pointer=exc.pointer,
         alternatives=alternatives,
         truncated=(truncated if alternatives is not None else None),
+        code=exc.code,
+        detail=str(exc) or None,
     )

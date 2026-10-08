@@ -25,6 +25,7 @@ from collections.abc import Sequence
 from typing import Final, Protocol, runtime_checkable
 
 import dc_graph
+from dfo_platform.named import named_capped
 from search.engine.concurrency import current_scope
 from search.engine.deadline import _await_bounded
 from search.engine.degraded_reads import note_degraded_read
@@ -38,7 +39,6 @@ from search.models import Warning
 logger = logging.getLogger(__name__)
 
 _SUBJECT_ROLE: Final = "observationAbout"
-_MAX_NAMED: Final = 5
 
 # The re-read ends this long before the request deadline. The fan-out cancels a leg still
 # running at the deadline and serves a placeholder in place of its answer, so the leg keeps
@@ -77,13 +77,6 @@ async def _source_names(
         note_degraded_read("withheld source labels")
         return ()
     return tuple(dict.fromkeys(labels[dcid] for dcid in withheld if dcid in labels))
-
-
-def _named(items: Sequence[str]) -> str:
-    named = ", ".join(items[:_MAX_NAMED])
-    if len(items) > _MAX_NAMED:
-        named = f"{named} and {len(items) - _MAX_NAMED} more"
-    return named
 
 
 def _elected_series(result: RegionResult) -> tuple[list[str], list[str]] | None:
@@ -148,8 +141,8 @@ async def with_withheld_warning(
         code=WITHHELD_BY_REGISTRY,
         severity="warn",
         message=(
-            f"No admitted source holds data for {_named(variables)} at {_named(places)}. "
-            f"Sources the origin registry does not admit hold data there: {_named(withheld)}."
+            f"No admitted source holds data for {named_capped(variables)} at {named_capped(places)}. "
+            f"Sources the origin registry does not admit hold data there: {named_capped(withheld)}."
         ),
     )
     warned = dataclasses.replace(result, warnings=(*result.warnings, warning))

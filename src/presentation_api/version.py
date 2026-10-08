@@ -55,6 +55,8 @@ def _render_refusal_exemplars(
                         axis="exemplar-axis",
                         alternatives=[Alternative(ref="issue-ref", label="issue-label")],
                         truncated=False,
+                        code=code,
+                        detail="exemplar issue detail",
                     )
                 ],
                 retryable=retryable,

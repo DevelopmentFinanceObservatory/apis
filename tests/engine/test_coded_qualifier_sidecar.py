@@ -20,7 +20,6 @@ from search.engine.qualifier_match import (
     QualifierSpan,
     match_qualifiers,
     recall_text,
-    recognise_spans,
 )
 from search.engine.region.codes import QUERY_QUALIFIER_DROPPED
 from search.engine.region.phase_election import _phase_vet_election
@@ -28,15 +27,15 @@ from search.engine.region.phase_rank_bind import (
     _admit_qualifier_matches,
     _admit_qualifier_ties,
     _force_qualifier_bindings,
-    _match_query_qualifier_ties,
-    _match_query_qualifiers,
     _resolve_query_qualifiers,
 )
-from search.engine.region.state import ResolveState
+from search.engine.region.state import ResolveState, shape_vocabulary
 from search.engine.response_cache_keys import layer2_key, scope_document
+from search.engine.retrieval.bound_values import held_codes
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from tests.engine._fake_coverage import empty_coverage_snapshot
-from tests.engine._index_slots import crs_shape_systems
+from tests.engine._index_slots import crs_vocabulary, own_variable_spans, read_text
+from tests.engine._index_slots import query_qualifiers as read_query_qualifiers
 from tests.fixtures import FakeLLM
 from tests.fixtures.keys import fixture_key
 
@@ -54,12 +53,19 @@ def _shape(shape_id: str, *slot_keys: SlotKeyDraft) -> ShapeDraft:
         meas_qual_dcid="Nominal",
         meas_denom_dcid=None,
         slot_keys=slot_keys,
+        # A recall sample, so its members are the rows of the CRS grant-equivalent family,
+        # whose codes tie admission reads (`held_codes`).
+        sv_arc_facts_complete=False,
     )
 
 
 _FINANCE_SHAPE = _shape(
     "finance_shape",
     SlotKeyDraft(axis="what", property_dcid="crsTypeOfFinance", label="finance type"),
+)
+# The vocabulary of the DAC1 flow shape, as the committed index's family declares it.
+_DAC1_VOCABULARY = frozenset(
+    {"dac1AidType", "dacTypeOfFinance", "financialFlowType", "nettingBasis"}
 )
 _CRS_SHAPE = _shape(
     "crs_shape",
@@ -72,7 +78,7 @@ def _coded(phrase: str) -> CodedQualifier:
     """Build spans and matches from the phrase, as the producer does."""
     return CodedQualifier(
         phrase=phrase,
-        spans=recognise_spans(phrase, _INDEX, _MEASURE_INDEX),
+        spans=read_text(phrase, _INDEX, _MEASURE_INDEX).everywhere.spans,
         matches=match_qualifiers(phrase, _INDEX, _MEASURE_INDEX),
     )
 
@@ -84,13 +90,20 @@ def _coded(phrase: str) -> CodedQualifier:
 
 def test_sidecar_match_reaches_admitted_qualifiers_and_forced_bindings():
     coded = _coded("type of finance 110")
-    matches, variable_matched_phrases = _match_query_qualifiers(
-        "aid to Kenya", [], query_text=None, qualifiers=(coded,)
+    vocabulary = shape_vocabulary(_FINANCE_SHAPE)
+    read = read_query_qualifiers(
+        "aid to Kenya",
+        [],
+        query_text=None,
+        qualifiers=(coded,),
+        vocabularies=[vocabulary, _DAC1_VOCABULARY],
     )
-    assert {m.code_dcid for m in matches} == {"CRSTypeOfFinance110"}
-    assert "110" in variable_matched_phrases
+    assert {m.code_dcid for m in read.matches[vocabulary]} == {"CRSTypeOfFinance110"}
+    # A vocabulary without the CRS type of finance does not receive the sidecar's code.
+    assert read.matches[_DAC1_VOCABULARY] == ()
+    assert "110" in read.phrases
 
-    admitted = _admit_qualifier_matches([_FINANCE_SHAPE], matches)
+    admitted = _admit_qualifier_matches([_FINANCE_SHAPE], read.matches)
     assert {m.code_dcid for m in admitted} == {"CRSTypeOfFinance110"}
 
     forced = _force_qualifier_bindings([], admitted, _FINANCE_SHAPE)
@@ -142,6 +155,7 @@ def _vet_state(
         timing={},
         warnings=[],
         capped_shapes=capped_shapes,
+        query_qualifier_ties={shape_vocabulary(shape): admitted_ties for shape in capped_shapes},
         admitted_ties=admitted_ties,
         variable_matched_qualifier_phrases=variable_matched_qualifier_phrases,
         bind_result=_UniversalBindOutput(
@@ -160,20 +174,25 @@ def test_sidecar_only_tie_left_unresolved_produces_query_qualifier_dropped():
     # exercises that machinery independent of the producer.
     coded = CodedQualifier(
         phrase="budget support",
-        spans=recognise_spans("budget support", _INDEX, _MEASURE_INDEX),
+        spans=read_text("budget support", _INDEX, _MEASURE_INDEX).everywhere.spans,
         matches=(),
     )
-    ties, owned_phrases = _match_query_qualifier_ties(
+    read = read_query_qualifiers(
         "ODA to Kenya",
         [],
         query_text=None,
         qualifiers=(coded,),
-        shape_systems=crs_shape_systems(),
+        vocabularies=[shape_vocabulary(_CRS_SHAPE), _DAC1_VOCABULARY],
     )
-    assert {t.matched_text for t in ties} == {"budget support"}
+    ties, owned_phrases = read.ties, read.phrases
+    assert {t.matched_text for t in ties[shape_vocabulary(_CRS_SHAPE)]} == {"budget support"}
+    # A DAC1 vocabulary keeps only the tie rows of its own system.
+    assert [{row.code_dcid for row in tie.rows} for tie in ties[_DAC1_VOCABULARY]] == [
+        {"DAC1AidType1100", "DAC1AidType2210"}
+    ]
     assert "budget support" in owned_phrases
 
-    _promoted, admitted_ties = _admit_qualifier_ties([_CRS_SHAPE], ties)
+    _promoted, admitted_ties, _unheld = _admit_qualifier_ties([_CRS_SHAPE], ties, holds=held_codes)
     assert len(admitted_ties) == 1, "both rows survive -- _CRS_SHAPE declares both systems"
 
     state = _vet_state(
@@ -193,13 +212,17 @@ def test_sidecar_tie_owned_elsewhere_stays_silent():
     """A tie owned by another phrase source produces no dropped-qualifier warning."""
     coded = CodedQualifier(
         phrase="budget support",
-        spans=recognise_spans("budget support", _INDEX, _MEASURE_INDEX),
+        spans=read_text("budget support", _INDEX, _MEASURE_INDEX).everywhere.spans,
         matches=(),
     )
-    ties, _owned_phrases = _match_query_qualifier_ties(
-        "ODA to Kenya", [], query_text=None, qualifiers=(coded,)
-    )
-    _promoted, admitted_ties = _admit_qualifier_ties([_CRS_SHAPE], ties)
+    ties = read_query_qualifiers(
+        "ODA to Kenya",
+        [],
+        query_text=None,
+        qualifiers=(coded,),
+        vocabularies=[shape_vocabulary(_CRS_SHAPE)],
+    ).ties
+    _promoted, admitted_ties, _unheld = _admit_qualifier_ties([_CRS_SHAPE], ties, holds=held_codes)
 
     state = _vet_state(
         capped_shapes=[_CRS_SHAPE],
@@ -223,10 +246,11 @@ def test_sidecar_duplicate_of_a_variable_match_appears_once():
     variable = "ODA standard grants for health"
     coded = _coded("type of finance 110")  # same CRSTypeOfFinance110 row, different matched_text
 
-    matches, variable_matched_phrases = _match_query_qualifiers(
-        variable, [], query_text=None, qualifiers=(coded,)
+    read = read_query_qualifiers(
+        variable, [], query_text=None, qualifiers=(coded,), vocabularies=[crs_vocabulary()]
     )
-    finance_matches = [m for m in matches if m.code_dcid == "CRSTypeOfFinance110"]
+    matches, variable_matched_phrases = read.matches, read.phrases
+    finance_matches = [m for m in matches[crs_vocabulary()] if m.code_dcid == "CRSTypeOfFinance110"]
     assert len(finance_matches) == 1
     # The surviving copy is variable's own ("standard grants"), not the
     # sidecar's ("110") -- variable is matched first, so it seeds `seen`.
@@ -278,16 +302,16 @@ def _guard_state(
             chosen_shape_index=0, bindings=[], also_plausible=None, ask=None, unplaced=unplaced
         ),
         shape_draft=shape_draft,
-        # No real CRS text in `variable` itself -- variable_qualifier_spans
-        # stays empty, so occupied_ranges (built from it alone) starts empty.
-        variable_qualifier_spans=recognise_spans(variable, _INDEX, _MEASURE_INDEX),
+        # No real CRS text in `variable` itself -- the shape's own spans stay
+        # empty, so occupied_ranges (built from them alone) starts empty.
+        variable_spans_by_vocabulary=own_variable_spans(variable, shape_draft),
         coverage=empty_coverage_snapshot(),
     )
 
 
 def test_sidecar_span_offsets_never_enter_occupied_ranges():
     variable = "aid to Kenya"
-    assert recognise_spans(variable, _INDEX, _MEASURE_INDEX) == ()
+    assert read_text(variable, _INDEX, _MEASURE_INDEX).everywhere.spans == ()
     kenya_start = variable.casefold().index("kenya")
     kenya_end = kenya_start + len("kenya")
 
@@ -296,7 +320,9 @@ def test_sidecar_span_offsets_never_enter_occupied_ranges():
     # _resolve_query_qualifiers ever folded them into occupied_ranges, the
     # unplaced "Kenya" phrase below would be spuriously excluded by the
     # overlap check.
-    real_code_row = recognise_spans("type of finance 110", _INDEX, _MEASURE_INDEX)[0].rows[0]
+    real_code_row = (
+        read_text("type of finance 110", _INDEX, _MEASURE_INDEX).everywhere.spans[0].rows[0]
+    )
     assert isinstance(real_code_row, CodeRow)
     fabricated_span = QualifierSpan(
         matched_text="fabricated phrase text",
@@ -309,7 +335,7 @@ def test_sidecar_span_offsets_never_enter_occupied_ranges():
     # A shape declaring nothing at all: the fabricated span's own code
     # system is never `declared`, so source 5 never records a
     # ResolvedQualifier for it -- only occupied_ranges (built exclusively
-    # from variable_qualifier_spans) is under test here.
+    # from the shape's own variable spans) is under test here.
     bare_shape = _shape("bare_shape")
     state = _guard_state(
         variable=variable, shape_draft=bare_shape, unplaced=["Kenya"], qualifiers=(coded,)
@@ -326,22 +352,22 @@ def test_sidecar_span_offsets_never_enter_occupied_ranges():
 def test_qualifiers_empty_is_the_exact_baseline_behaviour():
     """None and empty sidecars match the no-sidecar baseline."""
     variable = "ODA standard grants for health"
-    matches_none, phrases_none = _match_query_qualifiers(variable, [], query_text=None)
-    matches_default, phrases_default = _match_query_qualifiers(
-        variable, [], query_text=None, qualifiers=None
+    crs = [crs_vocabulary()]
+    read_none = read_query_qualifiers(variable, [], query_text=None, vocabularies=crs)
+    read_default = read_query_qualifiers(
+        variable, [], query_text=None, qualifiers=None, vocabularies=crs
     )
-    matches_empty, phrases_empty = _match_query_qualifiers(
-        variable, [], query_text=None, qualifiers=()
+    read_empty = read_query_qualifiers(
+        variable, [], query_text=None, qualifiers=(), vocabularies=crs
     )
-    assert matches_none == matches_default == matches_empty
-    assert phrases_none == phrases_default == phrases_empty
+    assert read_none == read_default == read_empty
 
-    ties_none, tie_phrases_none = _match_query_qualifier_ties("budget support", [], query_text=None)
-    ties_empty, tie_phrases_empty = _match_query_qualifier_ties(
-        "budget support", [], query_text=None, qualifiers=()
+    ties_none = read_query_qualifiers("budget support", [], query_text=None, vocabularies=crs)
+    ties_empty = read_query_qualifiers(
+        "budget support", [], query_text=None, qualifiers=(), vocabularies=crs
     )
     assert ties_none == ties_empty
-    assert tie_phrases_none == tie_phrases_empty
+    assert ties_none.ties[crs_vocabulary()]
 
 
 # ---------------------------------------------------------------------------
@@ -377,9 +403,14 @@ def _run_qualifier_pipeline(
     """Run admission, election, forced binding, and qualifier resolution without an LLM bind.
     Return each downstream result and the election outcome for equivalence checks.
     """
-    matches, variable_matched_phrases = _match_query_qualifiers(
-        variable, [], query_text=None, qualifiers=qualifiers
+    read = read_query_qualifiers(
+        variable,
+        [],
+        query_text=None,
+        qualifiers=qualifiers,
+        vocabularies=[shape_vocabulary(_EQUIVALENCE_SHAPE)],
     )
+    matches, variable_matched_phrases = read.matches, read.phrases
     pre_bind_admitted = _admit_qualifier_matches([_EQUIVALENCE_SHAPE], matches)
     state = ResolveState(
         variable=variable,
@@ -409,9 +440,10 @@ def _run_qualifier_pipeline(
         timing={},
         warnings=[],
         capped_shapes=[_EQUIVALENCE_SHAPE],
+        query_qualifier_matches=matches,
         admitted_qualifiers=pre_bind_admitted,
         variable_matched_qualifier_phrases=variable_matched_phrases,
-        variable_qualifier_spans=recognise_spans(variable, _INDEX, _MEASURE_INDEX),
+        variable_spans_by_vocabulary=own_variable_spans(variable, _EQUIVALENCE_SHAPE),
         bind_result=_UniversalBindOutput(
             chosen_shape_index=0, bindings=[], also_plausible=None, ask=None
         ),
@@ -669,6 +701,7 @@ def _key_for(result: ExtractionResult) -> str:
         query_text_qualifier_matches=[],
         query_text_qualifier_ties=[],
         query_text_qualifier_readings=[],
+        query_text_qualifier_occurrences=[],
         unsupported_qualifier_phrases=[],
         declared_default_trigger_words=[],
         declared_default_slots_named=[],

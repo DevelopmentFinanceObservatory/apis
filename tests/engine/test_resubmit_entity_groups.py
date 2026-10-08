@@ -4,12 +4,15 @@ no graph node drops, and so does a group on a role the identity leaves unbound."
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import pytest
 from pydantic import ValidationError
 
-from search.engine.region import resolve_spec_resubmit
+from entity_resolution import Entity, Group
+from search.engine.bind import _UniversalBindOutput
+from search.engine.region import resolve_spec_resubmit, resolve_variable
 from search.engine.spec_id import build_spec_identity
 from search.models import (
     BaseIdentity,
@@ -26,7 +29,7 @@ from tests.engine._base_identity import PERSON_COUNT_SHAPE, subject_entity
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import offline_resolve, walk_options
-from tests.fixtures import FakeGraph
+from tests.fixtures import FakeGraph, make_resolver
 
 _SV = "Count_Person"
 _TRIANGLE = ("country/GTM", "country/HND", "country/SLV")
@@ -154,6 +157,96 @@ def test_a_group_posting_a_dcid_is_checked_and_labelled_by_the_graph(
     assert (logged in caplog.text) if logged else "dropped group" not in caplog.text
 
 
+_EU_NODE = "EuropeanUnion"
+_EU_MEMBERS = tuple(f"country/EU{i:02d}" for i in range(27))
+
+
+class _ElectSoleShape:
+    """Elects the sole shape without a recorded LLM response."""
+
+    async def generate_structured(self, *, prompt, system, schema):
+        assert schema.__name__ == "_UniversalBindOutput"
+        return _UniversalBindOutput(
+            chosen_shape_index=0, bindings=[], also_plausible=None, ask=None
+        ), None
+
+
+def _eu_graph() -> FakeGraph:
+    """A group with its own typed graph node and 27 members placed directly in it, two of
+    which hold data."""
+    contained = {"containedInPlace": {"nodes": [{"dcid": _EU_NODE}]}}
+    return FakeGraph(
+        nodes={
+            _SV: _NODES[_SV],
+            _EU_NODE: {"label": "European Union", "type": "ContinentalUnion"},
+            **{
+                dcid: {"label": f"Member {dcid[-2:]}", "type": "Country", "arcs": contained}
+                for dcid in _EU_MEMBERS
+            },
+        },
+        obs={f"{_SV}|{dcid}": _OBS[f"{_SV}|country/GTM"] for dcid in _EU_MEMBERS[:2]},
+        detect={"population": {"svs": [_SV], "entities": []}},
+        resolve={},
+    )
+
+
+def test_a_first_answers_27_member_group_identity_resubmits_with_its_group():
+    """A first answer binds the European Union's 27 members under its group. The identity it
+    serves, posted back with that group, answers with the same `spec_id` and serves the
+    same group: its dcid, the graph's label and the graph type of its node."""
+    graph = _eu_graph()
+    group = Group(
+        members=tuple(
+            Entity(dcid=dcid, name=f"Member {dcid[-2:]}", kind="country", graph_type="Country")
+            for dcid in _EU_MEMBERS
+        ),
+        entity=Entity(
+            dcid=_EU_NODE, name="European Union", kind="aggregate", graph_type="ContinentalUnion"
+        ),
+    )
+    first = asyncio.run(
+        resolve_variable(
+            "population",
+            entities=["European Union"],
+            date_request=None,
+            detect_query="population",
+            role_query="population European Union",
+            pac=True,
+            graph=graph,
+            resolver=make_resolver(graph),
+            llm=_ElectSoleShape(),
+            base_timing={},
+            pre_resolved={"European Union": group},
+            sdmx=FakeSdmxClient(observations={}, availability={}),
+            coverage=empty_coverage_snapshot(),
+        )
+    )
+    assert first.status == "definite", first
+    (served,) = first.specs
+    assert served.definition.identity.entities == {"observationAbout": list(_EU_MEMBERS)}
+    assert served.resolved.entity_groups == {
+        "observationAbout": EntityGroup(
+            dcid=_EU_NODE, label="European Union", entity_type="ContinentalUnion"
+        )
+    }
+
+    region = resolve_spec_resubmit(
+        inp=ResubmitIdentityPayload(
+            identity=served.definition.identity, entity_groups=served.resolved.entity_groups
+        ),
+        graph=graph,
+        sdmx=FakeSdmxClient(observations={}, availability={}),
+        coverage=empty_coverage_snapshot(),
+        options=walk_options(graph),
+    )
+
+    assert region.status == "definite", region
+    (spec,) = region.specs
+    assert spec.spec_id == served.spec_id
+    assert spec.resolved.entity_groups == served.resolved.entity_groups
+    assert spec.resolved.coverage == served.resolved.coverage
+
+
 _CONFIRMED = {"observationAbout": EntityGroup(dcid=_NODE, label="Northern Triangle")}
 
 
@@ -170,13 +263,15 @@ def _resolve_entry(entry: ResubmitIdentityEntry | ResubmitCandidatesEntry):
 
 
 def test_a_group_posted_beside_an_identity_entry_reaches_the_answer():
+    """The served group carries the graph's label and type, whatever the posted group says."""
     spec_id, identity = _identity(_TRIANGLE)
+    posted = EntityGroup(dcid=_NODE, label="posted", entity_type="PostedType")
 
     part = _resolve_entry(
         ResubmitIdentityEntry(
             variable_text="population",
             identity=identity,
-            entity_groups={"observationAbout": EntityGroup(dcid=_NODE, label="posted")},
+            entity_groups={"observationAbout": posted},
         )
     )
 
