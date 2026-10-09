@@ -1,6 +1,10 @@
 {
   "dateless/destination": {
     "bulk_preview": {
+      "entities": {
+        "financingProvider": 9,
+        "financingRecipient": 8
+      },
       "facet_id": "17650800455313554206",
       "order": "fixed",
       "ranking": [
@@ -350,6 +354,10 @@
   },
   "dateless/origin": {
     "bulk_preview": {
+      "entities": {
+        "financingProvider": 9,
+        "financingRecipient": 8
+      },
       "facet_id": "17650800455313554206",
       "order": "fixed",
       "ranking": [
@@ -699,6 +707,9 @@
   },
   "latest/destination": {
     "bulk_preview": {
+      "entities": {
+        "financingProvider": 86
+      },
       "facet_id": "17650800455313554206",
       "order": "ranked",
       "ranking": [
@@ -793,6 +804,9 @@
   },
   "latest/origin": {
     "bulk_preview": {
+      "entities": {
+        "financingProvider": 86
+      },
       "facet_id": "17650800455313554206",
       "order": "ranked",
       "ranking": [
@@ -887,6 +901,10 @@
   },
   "window_2015_2020/destination": {
     "bulk_preview": {
+      "entities": {
+        "financingProvider": 13,
+        "financingRecipient": 7
+      },
       "facet_id": "17650800455313554206",
       "order": "fixed",
       "ranking": [
@@ -1249,6 +1267,10 @@
   },
   "window_2015_2020/origin": {
     "bulk_preview": {
+      "entities": {
+        "financingProvider": 13,
+        "financingRecipient": 7
+      },
       "facet_id": "17650800455313554206",
       "order": "fixed",
       "ranking": [

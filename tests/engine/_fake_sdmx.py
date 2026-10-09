@@ -280,7 +280,10 @@ class FakeSdmxClient:
         deadline: float | None = None,
     ) -> _ObsResult:
         _validate_role_series_params(
-            variables=variables, facet_ids=facet_ids, time_period=time_period
+            variables=variables,
+            entities=entities,
+            facet_ids=facet_ids,
+            time_period=time_period,
         )
         # UN variables only: raw test threads carry no bound catalogue for the base check.
         assert_no_un_variables(method="role_series", variables=variables)

@@ -192,18 +192,32 @@ def _validate_role_variables(*, method: str, variables: Sequence[str]) -> None:
 def _validate_role_series_params(
     *,
     variables: Sequence[str],
+    entities: Mapping[str, Sequence[str]],
     facet_ids: AbstractSet[str],
     time_period: RoleTimePeriod,
 ) -> None:
     """Shared ``role_series`` validation for live, test, and cached clients.
 
-    Facet ids and variables are non-empty, and variables are unique.
+    Facet ids and variables are non-empty, and variables are unique. Entities name at
+    least one role and every named role holds at least one dcid, because the mixer
+    rejects a data request without an entity filter.
     A bare ``str`` or ``bytes`` time period other than ``"LATEST"`` raises ``ValueError``.
     ``None`` selects full history, ``"LATEST"`` each series' latest point, and a sequence
     exact periods. Invalid inputs raise ``ValueError`` before reads or cache keys.
     """
     if not facet_ids:
         raise ValueError("role_series requires a non-empty facet_ids set")
+    if not entities:
+        raise ValueError(
+            "role_series requires at least one entity filter; the mixer rejects a "
+            "data request without one"
+        )
+    empty_roles = sorted(role for role, dcids in entities.items() if not dcids)
+    if empty_roles:
+        raise ValueError(
+            f"role_series entities map {empty_roles} to no dcids; omit a role to leave "
+            "it unfiltered"
+        )
     _validate_role_variables(method="role_series", variables=variables)
     _validate_role_time_period(method="role_series", time_period=time_period)
 
@@ -267,10 +281,11 @@ class EngineSdmxClient(Protocol):
     ) -> dict[str, dict[tuple[tuple[str, str], ...], list[Facet]]]:
         """Fetch real Facets grouped as ``{variable: {role_tuple: [Facet]}}``.
 
-        Each bound role maps to a non-empty sequence of dcid strings. Omit
-        unbound roles. Empty values raise ``SdmxQueryError``. ``None`` raises
-        ``TypeError``. ``facet_ids`` must be a non-empty set. The wire accepts
-        a comma OR-list, split into requests when it exceeds the URL budget.
+        ``entities`` names at least one role, and each role maps to a non-empty
+        sequence of dcid strings. Omit unbound roles. An empty mapping or an empty
+        sequence raises ``ValueError``. ``None`` raises ``TypeError``. ``facet_ids`` must be
+        a non-empty set. The wire accepts a comma OR-list, split into requests when it
+        exceeds the URL budget.
         Rows retain their own ``facet_id`` for attribution. Explicit
         ``time_period`` values select exact periods. ``None`` selects full
         history. ``"LATEST"`` selects each series' latest point, computed by the mixer per
@@ -555,7 +570,10 @@ class LiveSdmxClient:
         (`assert_dfo_role_variables`).
         """
         _validate_role_series_params(
-            variables=variables, facet_ids=facet_ids, time_period=time_period
+            variables=variables,
+            entities=entities,
+            facet_ids=facet_ids,
+            time_period=time_period,
         )
         assert_dfo_role_variables(variables)
         entities_arg = {role: list(dcids) for role, dcids in entities.items()}

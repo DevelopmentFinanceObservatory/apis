@@ -92,7 +92,8 @@ def _candidate_projection(candidate: RoleFacetCandidate) -> dict[str, Any]:
 
 def _bulk_preview(result: Materialised, date_name: str) -> dict[str, Any]:
     """The observation preview's dispatch over this discovery's read plan: the facet it
-    serves, the pairs it fetches, and the coverage points it counts for the rest."""
+    serves, the pairs it fetches, the roles its read filters on with each role's value
+    count, and the coverage points it counts for the rest."""
     plan = result.read_plan
     assert isinstance(plan, BulkPlan) and plan.elected is not None
     ranked = rank_role_candidates(
@@ -112,6 +113,8 @@ def _bulk_preview(result: Materialised, date_name: str) -> dict[str, Any]:
             if fetch.order == "fixed"
             else {"pairs": len(to_fetch), "sha256": _digest(to_fetch)}
         ),
+        # The filter's values travel in the SDMX URL, so the count bounds its size.
+        "entities": {role: len(dcids) for role, dcids in fetch.entities_for_series.items()},
         "unshipped_obs": fetch.population_n_obs - fetch.preview_n_obs,
         "order": fetch.order,
         "ranking": [[c.facet_id, c.pair_count] for c in ranked],
