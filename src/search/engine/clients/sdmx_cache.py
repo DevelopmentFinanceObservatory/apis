@@ -116,7 +116,10 @@ class CachingSdmxClient:
         parameters raise ``ValueError`` under every cache setting.
         """
         _validate_role_series_params(
-            variables=variables, facet_ids=facet_ids, time_period=time_period
+            variables=variables,
+            entities=entities,
+            facet_ids=facet_ids,
+            time_period=time_period,
         )
         if not self._series_cache.enabled:
             return self._inner.role_series(

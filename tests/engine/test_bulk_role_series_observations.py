@@ -33,7 +33,10 @@ from search.engine.region.facets import facet_admitted
 from search.engine.region.observations import bulk_role_series
 from search.engine.region.observations import fetch as region_fetch
 from search.engine.region.observations.bulk_conversion import ConvertedPairs
-from search.engine.region.observations.bulk_role_series import _preview_pairs
+from search.engine.region.observations.bulk_role_series import (
+    _narrowest_common_role,
+    _preview_pairs,
+)
 from search.engine.region.result import FacetAxisFilter
 from search.engine.region.state import EngineOptions
 from search.engine.retrieval.facet_election import (
@@ -975,6 +978,33 @@ def test_narrowed_series_read_disagreeing_with_the_index_is_no_points():
     assert warn is None
 
 
+def test_an_elected_facet_with_no_pair_in_its_years_is_no_points_unread():
+    """A facet elected on a role tuple with no observation in the read's years dispatches
+    no pair, so nothing is read. SDMX refuses a read with no entity filter."""
+    sdmx = FakeSdmxClient(
+        observations={_SV: {_role_tuple("country/BR1"): [_facet(dates=["2024"])]}}
+    )
+    observations, warn = bulk_role_series_planned(
+        [_SV],
+        _obs_entities(["country/BR1"]),
+        sdmx=sdmx,
+        graph=_GRAPH,
+        facet_filter=None,
+        discovered_role_index={
+            _SV: [
+                role_candidate(
+                    facet_id="F1", role_tuples={_role_tuple("country/BR1"): 0}, latest_date="2024"
+                )
+            ]
+        },
+        coverage=empty_coverage_snapshot(),
+    )
+    assert observations.omitted is not None
+    assert observations.omitted.reason == OBSERVATIONS_NO_POINTS
+    assert warn is None
+    assert sdmx.series_calls == []
+
+
 # Under the row gate the read takes every series and ranks them. Over it, or converting
 # into each entity's own currency, coverage chooses a fixed selection before any value.
 
@@ -984,17 +1014,24 @@ def _identity_conversion(pair_points, *, facet, conversion):
 
 
 @pytest.mark.parametrize(
-    ("gate", "target_unit", "order"),
+    ("gate", "target_unit", "order", "bound"),
     [
-        (25, "absent", "ranked"),
-        (25, "CurrencyUSD", "ranked"),
-        (24, "absent", "fixed"),
-        (25, None, "fixed"),
+        (25, "absent", "ranked", {"donor": frozenset({_DONOR})}),
+        (25, "absent", "ranked", {}),
+        (25, "CurrencyUSD", "ranked", {"donor": frozenset({_DONOR})}),
+        (24, "absent", "fixed", {"donor": frozenset({_DONOR})}),
+        (25, None, "fixed", {"donor": frozenset({_DONOR})}),
     ],
-    ids=["ranked-at-the-gate", "ranked-converted", "fixed-over-the-gate", "fixed-role-currency"],
+    ids=[
+        "ranked-at-the-gate",
+        "ranked-every-role-open",
+        "ranked-converted",
+        "fixed-over-the-gate",
+        "fixed-role-currency",
+    ],
 )
 def test_series_truncated_to_the_order_the_row_gate_chooses(
-    monkeypatch, search_settings, gate: int, target_unit: str | None, order: str
+    monkeypatch, search_settings, gate: int, target_unit: str | None, order: str, bound
 ):
     search_settings(role_bulk_rank_max_rows=gate)
     recipients = [f"country/BRTrunc{i}" for i in range(1, 26)]  # 25 recipients, 25 rows
@@ -1016,10 +1053,7 @@ def test_series_truncated_to_the_order_the_row_gate_chooses(
         facet_filter=None,
         coverage=coverage,
         conversion=conversion,
-        roles=PlanRoles(
-            bound={"donor": frozenset({_DONOR})},
-            role_names={"recipient": "recipient", "donor": "provider"},
-        ),
+        roles=PlanRoles(bound=bound, role_names={"recipient": "recipient", "donor": "provider"}),
     )
     shown = observation_settings().role_bulk_series_max
     assert observations is not None
@@ -1037,7 +1071,8 @@ def test_series_truncated_to_the_order_the_row_gate_chooses(
         next(e.ref for e in s.entities if e.role == "destination") for s in observations.series
     ]
     if order == "ranked":
-        # One read of every series, filtered on the bound provider alone.
+        # One read of every series, filtered on the bound provider. With every role open,
+        # the filter is the narrower role, the one provider against 25 recipients.
         assert call["entities"] == {"provider": [_DONOR]}
         assert delivered == recipients[:4:-1]
     else:
@@ -1206,6 +1241,50 @@ def test_unshipped_pair_total_obs_for_a_one_role_shape(monkeypatch):
     assert observations.total_obs == 25
     assert warn is not None
     assert warn.code == OBSERVATIONS_SERIES_TRUNCATED
+
+
+@pytest.mark.parametrize(
+    ("to_fetch", "expected"),
+    [
+        pytest.param(
+            [
+                ("sv", (("a_role", "x1"), ("z_role", "y"))),
+                ("sv", (("a_role", "x2"), ("z_role", "y"))),
+            ],
+            {"z_role": ["y"]},
+            id="narrower-role-sorts-last-by-name",
+        ),
+        pytest.param(
+            [
+                ("sv", (("b_role", "y1"), ("a_role", "x1"))),
+                ("sv", (("b_role", "y2"), ("a_role", "x2"))),
+            ],
+            {"a_role": ["x1", "x2"]},
+            id="tie-resolves-by-role-name",
+        ),
+        pytest.param(
+            [
+                ("sv", (("a_role", "x1"), ("b_role", "y1"))),
+                ("sv", (("a_role", "x2"),)),
+            ],
+            {"a_role": ["x1", "x2"]},
+            id="role-missing-from-a-pair-is-excluded",
+        ),
+        pytest.param(
+            [("sv", (("a_role", "x1"),)), ("sv", (("b_role", "y1"),))],
+            ValueError,
+            id="no-common-role-raises",
+        ),
+    ],
+)
+def test_narrowest_common_role_filters_on_the_role_with_fewest_dcids_every_pair_carries(
+    to_fetch, expected
+) -> None:
+    if expected is ValueError:
+        with pytest.raises(ValueError):
+            _narrowest_common_role(to_fetch)
+    else:
+        assert _narrowest_common_role(to_fetch) == expected
 
 
 def test_preview_pairs_takes_stat_vars_newest_year_first_round_robin_up_to_the_limit() -> None:
