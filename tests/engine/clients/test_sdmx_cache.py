@@ -637,7 +637,7 @@ def test_preconditions_raise_before_any_cache_entry_is_stored():
 
 
 def test_cache_refuses_exactly_what_the_live_client_refuses():
-    """Live, cached, and uncached clients reject both empty inputs before HTTP."""
+    """Live, cached, and uncached clients reject each empty input before HTTP."""
     import httpx
 
     from search.engine.clients.sdmx import LiveSdmxClient
@@ -679,6 +679,17 @@ def test_cache_refuses_exactly_what_the_live_client_refuses():
         )
     )
     assert empty_facet_ids == [ValueError, ValueError, ValueError]
+
+    empty_entities = _types(
+        lambda c: c.role_series(
+            variables=["Count_Person"],
+            entities={},
+            facet_ids={"f1"},
+            max_rows=100,
+            max_bytes=100_000,
+        )
+    )
+    assert empty_entities == [ValueError, ValueError, ValueError]
 
 
 def test_cache_refuses_a_duplicate_variable_that_the_live_client_refuses():

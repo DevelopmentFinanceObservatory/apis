@@ -3,7 +3,8 @@
 The read plan (`read_plan.BulkPlan`) names the one facet the read serves and its years. One
 `sdmx.role_series` call reads the points. Coverage counts the rows the answer keeps before
 any read (`BulkPlan.observation_count`). When they fit `role_bulk_rank_max_rows`, the call
-reads every series with the open role left unfiltered, and the preview shows the first
+reads every series with the open role left unfiltered (or, with every role open, filtered
+on the population's own values of its narrowest role), and the preview shows the first
 `role_bulk_series_max` by `search.observations.series_rank` (`ranked`). Above the gate, or
 under a conversion into each entity's own currency, the call reads only
 `role_bulk_series_max` pairs chosen from coverage, StatVars newest year first and taken
@@ -202,6 +203,9 @@ def _plan_role_bulk_fetch(
 
     `ranked` takes every series of the population (`_population_pairs`) and filters the
     read on the bound roles alone (`PlanRoles.bound`), leaving the open role unfiltered.
+    When that filter comes out empty, as with every role open, the read filters on the
+    narrowest role every pair carries (`_narrowest_common_role`), since SDMX refuses a read
+    with no entity filter.
     `fixed` takes `role_bulk_series_max` pairs by `_preview_pairs`, StatVars ordered by
     their newest year with data in their member's years (`_newest_year_with_data`), read
     lazily rather than materialising the whole population, filtered on every role. Both
@@ -238,6 +242,8 @@ def _plan_role_bulk_fetch(
     entities_for_series: Mapping[str, Sequence[str]] = {
         role: sorted(set(dcids)) for role, dcids in narrowed_entities.items()
     }
+    if not entities_for_series and to_fetch:
+        entities_for_series = _narrowest_common_role(to_fetch)
     return _RoleBulkFetchPlan(
         to_fetch=to_fetch,
         facet_svs=facet_svs,
@@ -247,6 +253,26 @@ def _plan_role_bulk_fetch(
         preview_n_obs=sum(n_obs for _pair, n_obs in preview),
         order=order,
     )
+
+
+def _narrowest_common_role(to_fetch: Sequence[tuple[str, RoleTuple]]) -> dict[str, list[str]]:
+    """The read filter for pairs whose every role is open.
+
+    It names the role every pair in `to_fetch` carries with the fewest distinct dcids there
+    (ties by role name) and lists those dcids. Every pair holds one of them, so the read
+    returns each pair's rows as an unfiltered read would. Raises `ValueError` when no role is
+    common to every pair, since filtering on a role some pairs lack drops those pairs' rows."""
+    dcids_by_role: dict[str, set[str]] = {}
+    for _sv, role_tuple in to_fetch:
+        for role, dcid in role_tuple:
+            dcids_by_role.setdefault(role, set()).add(dcid)
+    common = set(dcids_by_role)
+    for _sv, role_tuple in to_fetch:
+        common &= {role for role, _dcid in role_tuple}
+    if not common:
+        raise ValueError(f"no role is common to every dispatched pair: {to_fetch[:5]!r}")
+    role = min(common, key=lambda r: (len(dcids_by_role[r]), r))
+    return {role: sorted(dcids_by_role[role])}
 
 
 _TRUNCATED_ORDER = {
@@ -359,6 +385,7 @@ def _bulk_role_series(
     and keeps each member's points at its latest period alone (`_at_member_latest`); a
     dateless read takes every year.
 
+    A plan that dispatches no pair reads nothing and returns `OBSERVATIONS_NO_POINTS`.
     Read failures in `_FETCH_FAILURE_EXCEPTIONS` return `OBSERVATIONS_BULK_FETCH_FAILED`
     with a warning. Coverage stays valid and bound-unit handling escalates the failure.
     The shared SDMX deadline returns `OBSERVATIONS_TIMED_OUT` with a warning and bypasses
@@ -394,6 +421,11 @@ def _bulk_role_series(
         converts_to_role_currency=conversion is not None and conversion.target_unit_ref is None,
     )
     try:
+        if not fetch_plan.to_fetch:
+            # No pair to read, and SDMX refuses a read with no entity filter.
+            return _assemble_role_bulk_series(
+                best, fetch_plan, {}, member_constraints=member_constraints, graph=graph
+            )
         return _read_and_assemble(
             plan,
             fetch_plan,
