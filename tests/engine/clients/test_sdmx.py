@@ -677,6 +677,29 @@ def test_role_series_rejects_empty_facet_ids():
         )
 
 
+@pytest.mark.parametrize(
+    "entities",
+    [
+        {},
+        {"provider": []},
+        {"provider": ["country/USA"], "recipient": []},
+    ],
+    ids=["no-roles", "empty-role", "one-role-empty"],
+)
+def test_role_series_rejects_entities_without_a_filter(entities):
+    """The mixer rejects an entity-free request, so an empty role or mapping raises."""
+    client = _client()
+    with pytest.raises(ValueError, match="entit"):
+        client.role_series(
+            variables=["Count_Person"],
+            entities=entities,
+            facet_ids={"facet1"},
+            time_period=None,
+            max_rows=100,
+            max_bytes=100_000,
+        )
+
+
 def test_role_series_max_rows_cap_propagates_uncaught():
     from dc_sdmx.errors import SdmxCapExceededError
 
@@ -946,20 +969,6 @@ def test_availability_unsupported_component_raises_role_not_declared():
 
 
 # Role-map construction with empty lists and None values.
-
-
-def test_role_series_empty_entity_list_raises_sdmx_query_error_uncaught():
-    from dc_sdmx.errors import SdmxQueryError
-
-    client = _client()
-    with pytest.raises(SdmxQueryError):
-        client.role_series(
-            variables=["v"],
-            entities={"provider": []},
-            facet_ids={"facet1"},
-            max_rows=1000,
-            max_bytes=1000,
-        )
 
 
 def test_role_series_none_entity_value_raises_type_error_uncaught():
