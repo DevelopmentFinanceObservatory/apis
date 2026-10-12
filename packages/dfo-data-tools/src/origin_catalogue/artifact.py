@@ -5,7 +5,8 @@ them with `publish_build`; dfo-apis loads the published build with
 `load_catalogue`. Small tables are JSON and large ones Parquet:
 
 - `provenances.json`: one object per admitted provenance (about 160), with
-  its parent Dataset as `dataset` (`{ref, label}`, or null).
+  its parent Dataset as `dataset` (`{ref, label}`, or null) and its
+  `licence` (`{type, label, url}`, each member a string or null).
 - `dfo_variables.parquet`: one `variable` column (about 22,000 rows).
 - `base_variables.parquet`: `variable`, `provenances` (the admitted base
   provenances holding it) and `places`, a little-endian bitset over the scan
@@ -23,6 +24,9 @@ them with `publish_build`; dfo-apis loads the published build with
   named in an observation GET.
 - `dataset_facts.json`: one object per DFO and base source-index entry
   (`catalogue.entry_ref`): its `ref` and its `CardFacts` members.
+- `source_documentation.json`: one object per entry of `dataset_facts.json`:
+  its `ref` and its `SourceDocumentation` members, `documents` an object from
+  document property to its list of stored values.
 - `superseded_variables.parquet`: `variable` and `successor`, each withheld
   variable of a base provenance a UN agency supersedes and the admitted UN
   variable that stands for it, null where none does
@@ -82,7 +86,9 @@ from origin_catalogue.catalogue import (
     CatalogueTableError,
     CatalogueTables,
     DatasetRef,
+    Licence,
     ProvenanceRow,
+    SourceDocumentation,
     SourceRef,
     UnTables,
 )
@@ -98,6 +104,7 @@ from origin_catalogue.schema import (
     PROVENANCE_PLACES_FILE,
     PROVENANCES_FILE,
     SCAN_FILE,
+    SOURCE_DOCUMENTATION_FILE,
     SUPERSEDED_VARIABLES_FILE,
     TOPICS_FILE,
     UN_ARCS_FILE,
@@ -190,6 +197,7 @@ _FILES: Final[dict[str, str]] = {
     "scan": SCAN_FILE,
     "un": UN_FILE,
     "dataset_facts": DATASET_FACTS_FILE,
+    "source_documentation": SOURCE_DOCUMENTATION_FILE,
     "superseded_variables": SUPERSEDED_VARIABLES_FILE,
 }
 
@@ -264,6 +272,7 @@ def encode_build(
             {"blocked_places": sorted(tables.un_blocked_places)}, sort_keys=True
         ).encode("utf-8"),
         DATASET_FACTS_FILE: _encode_dataset_facts(tables.dataset_facts),
+        SOURCE_DOCUMENTATION_FILE: _encode_source_documentation(tables.source_documentation),
         SUPERSEDED_VARIABLES_FILE: _encode_parquet(
             pa.table(
                 {
@@ -354,6 +363,11 @@ def _encode_provenances(provenances: Mapping[str, ProvenanceRow]) -> bytes:
                 if row.dataset is None
                 else {"ref": row.dataset.ref, "label": row.dataset.label}
             ),
+            "licence": {
+                "type": row.licence.type,
+                "label": row.licence.label,
+                "url": row.licence.url,
+            },
         }
         for row in sorted(provenances.values(), key=lambda row: row.id)
     ]
@@ -371,6 +385,24 @@ def _encode_dataset_facts(dataset_facts: Mapping[str, CardFacts]) -> bytes:
             "source_url": facts.source_url,
         }
         for ref, facts in sorted(dataset_facts.items())
+    ]
+    return json.dumps(rows, sort_keys=True).encode("utf-8")
+
+
+def _encode_source_documentation(documentation: Mapping[str, SourceDocumentation]) -> bytes:
+    rows = [
+        {
+            "ref": ref,
+            "provenances": list(entry.provenances),
+            "publisher": entry.publisher,
+            "source_data_url": entry.source_data_url,
+            "citation": entry.citation,
+            "license_url": entry.license_url,
+            "last_update": entry.last_update,
+            "next_expected_update": entry.next_expected_update,
+            "documents": {prop: list(values) for prop, values in entry.documents.items()},
+        }
+        for ref, entry in sorted(documentation.items())
     ]
     return json.dumps(rows, sort_keys=True).encode("utf-8")
 
@@ -513,6 +545,7 @@ def _row_counts(tables: CatalogueTables) -> dict[str, int]:
         "scan_places": len(tables.scan_places),
         "un_blocked_places": len(tables.un_blocked_places),
         "dataset_facts": len(tables.dataset_facts),
+        "source_documentation": len(tables.source_documentation),
         "superseded_variables": len(tables.superseded),
         "successor_variables": sum(
             successor is not None for successor in tables.superseded.values()
@@ -818,6 +851,7 @@ def _decode_tables(files: Mapping[str, bytes], *, label: str) -> CatalogueTables
             scan_places=scan_places,
             scan_levels=scan_levels,
             dataset_facts=_decode_dataset_facts(files[DATASET_FACTS_FILE]),
+            source_documentation=_decode_source_documentation(files[SOURCE_DOCUMENTATION_FILE]),
             un_blocked_places=frozenset(
                 _string(place) for place in json.loads(files[UN_FILE])["blocked_places"]
             ),
@@ -877,6 +911,11 @@ def _decode_provenances(raw: bytes) -> dict[str, ProvenanceRow]:
                 if (dataset := item["dataset"]) is None
                 else DatasetRef(ref=_string(dataset["ref"]), label=_string(dataset["label"]))
             ),
+            licence=Licence(
+                type=_optional_string(item["licence"]["type"]),
+                label=_optional_string(item["licence"]["label"]),
+                url=_optional_string(item["licence"]["url"]),
+            ),
         )
         if row.id in rows:
             raise CatalogueTableError(f"provenance {row.id!r} appears twice")
@@ -898,6 +937,28 @@ def _decode_dataset_facts(raw: bytes) -> dict[str, CardFacts]:
             source_url=_optional_string(item["source_url"]),
         )
     return facts
+
+
+def _decode_source_documentation(raw: bytes) -> dict[str, SourceDocumentation]:
+    documentation: dict[str, SourceDocumentation] = {}
+    for item in json.loads(raw):
+        ref = _string(item["ref"])
+        if ref in documentation:
+            raise CatalogueTableError(f"source documentation for {ref!r} appears twice")
+        documentation[ref] = SourceDocumentation(
+            provenances=tuple(_string(provenance) for provenance in item["provenances"]),
+            publisher=_optional_string(item["publisher"]),
+            source_data_url=_optional_string(item["source_data_url"]),
+            citation=_optional_string(item["citation"]),
+            license_url=_optional_string(item["license_url"]),
+            last_update=_optional_string(item["last_update"]),
+            next_expected_update=_optional_string(item["next_expected_update"]),
+            documents={
+                _string(prop): tuple(_string(value) for value in values)
+                for prop, values in dict(item["documents"]).items()
+            },
+        )
+    return documentation
 
 
 def _decode_base_variables(

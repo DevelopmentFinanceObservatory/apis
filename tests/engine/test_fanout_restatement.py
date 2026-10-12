@@ -103,7 +103,6 @@ class TestOneAxisRule:
             entities=["Kenya"],
             date_request=None,
             unit_text=None,
-            source_text=None,
             entity_roles={
                 "Kenya": [
                     DoorRole(axis="origin", span="from Kenya"),
@@ -119,7 +118,6 @@ class TestOneAxisRule:
             entities=["Kenya"],
             date_request=None,
             unit_text=None,
-            source_text=None,
             entity_roles={"Kenya": [DoorRole(axis="origin", span="from Kenya")]},
         )
         assert restatement == ParsedPart(
@@ -132,7 +130,6 @@ class TestOneAxisRule:
             entities=["France", "Kenya"],
             date_request=None,
             unit_text=None,
-            source_text=None,
             entity_roles={
                 "France": [DoorRole(axis="origin", span="France")],
                 "Kenya": [DoorRole(axis="destination", span="Kenya")],

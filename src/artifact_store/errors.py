@@ -133,9 +133,9 @@ class ArtifactRecordConflictError(ArtifactStoreError):
 
 
 class ArtifactLocationDriftError(ArtifactStoreError):
-    """The bucket differs from tier configuration or the object name differs from the digest.
+    """The recorded bucket differs from tier configuration.
 
-    Signing a mismatched location could return a URL for the wrong object.
+    Signing or reading a location in another bucket could reach the wrong object.
     """
 
     def __init__(
@@ -147,8 +147,8 @@ class ArtifactLocationDriftError(ArtifactStoreError):
         self.stored_object_name = stored_object_name
         super().__init__(
             f"artifact digest {digest!r} tier {tier.value!r} is recorded as bucket "
-            f"{stored_bucket!r} object {stored_object_name!r}, which does not match this "
-            f"store's configured bucket for that tier or the digest's own object name"
+            f"{stored_bucket!r} object {stored_object_name!r}, which is not this store's "
+            f"configured bucket for that tier"
         )
 
 
@@ -177,5 +177,5 @@ class ArtifactIntegrityError(ArtifactStoreError):
         self.computed_digest = computed_digest
         super().__init__(
             f"artifact object for digest {digest!r} in tier {tier.value!r} does not hash to "
-            f"its own name -- computed {computed_digest!r}"
+            f"that digest -- computed {computed_digest!r}"
         )

@@ -1,0 +1,2498 @@
+{
+  "collapsed": {
+    "base_content_version": "cv_fixture",
+    "body": {
+      "citation": {
+        "sources": [
+          {
+            "data_commons": null,
+            "documentation": null,
+            "label": "OECD_DAC2A",
+            "license": null,
+            "license_type": null,
+            "license_url": null,
+            "processing_level": null,
+            "ref": "OECD_DAC2A",
+            "source": null,
+            "url": null
+          }
+        ],
+        "text": "OECD_DAC2A"
+      },
+      "content_version": "cv_golden_collapsed",
+      "coverage": {
+        "dimensions": [],
+        "rows": 2,
+        "window": null
+      },
+      "definition": {
+        "identity": {},
+        "schema_version": 1,
+        "spec_id": "spec_golden"
+      },
+      "output_profile": {
+        "columns": [
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "grain",
+            "name": "stat_var"
+          },
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "role",
+            "name": "recipient"
+          },
+          {
+            "distinct": 2,
+            "droppable": false,
+            "kind": "grain",
+            "name": "time_period"
+          },
+          {
+            "distinct": null,
+            "droppable": true,
+            "kind": "value",
+            "name": "value"
+          },
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "unit",
+            "name": "unit"
+          },
+          {
+            "distinct": 1,
+            "droppable": true,
+            "kind": "facet",
+            "name": "measurementMethod"
+          },
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "facet",
+            "name": "provenance"
+          },
+          {
+            "distinct": null,
+            "droppable": true,
+            "kind": "status",
+            "name": "status"
+          }
+        ],
+        "enrichments": [],
+        "pivots": [],
+        "rows": 2,
+        "schema_version": 1
+      },
+      "prepared_at": "2026-10-04T12:00:00Z",
+      "schema_version": 1,
+      "series_count": 1,
+      "series_coverage_stamp": "sha256:coverage",
+      "trace": {
+        "capability_version": "dset_test",
+        "code_index_stamp": {
+          "content_hash": "6db7833665fc20424b76038fc7d741079f0a9d055373532a59ce62a6267a7226",
+          "exported_at": "2026-10-09T13:55:13Z",
+          "graph_endpoint": "https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app"
+        },
+        "facets": [],
+        "family_member_count": null,
+        "family_member_digest": null,
+        "frame_grammar_version": "1.0.0",
+        "graph_revision": "rev1",
+        "materialiser_build": "test-build",
+        "normalisations": [],
+        "origin_catalogue_build_id": "fake-catalogue",
+        "resolved_stat_vars": [],
+        "source_revisions": []
+      },
+      "warnings": [
+        {
+          "code": "processing_level_undeclared",
+          "message": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier.",
+          "severity": "info"
+        },
+        {
+          "code": "enrichment_unavailable",
+          "message": "A name, code, or requested enrichment column has no value for some rows: the graph names nothing for the value, the name read failed, or two codes of the column's code system share its label. Those cells are left empty rather than fabricated. measurementMethod_label holds only a name that differs from the method's dcid, and its empty cells never raise this warning. Column 'recipient_name' left 2 cells empty.",
+          "severity": "info"
+        }
+      ]
+    },
+    "content_version": "cv_golden_collapsed",
+    "expected": {
+      "default_scope_plural": null,
+      "manifest": {
+        "artifacts": [],
+        "citation": {
+          "sources": [
+            {
+              "data_commons": null,
+              "documentation": null,
+              "label": "OECD_DAC2A",
+              "license": null,
+              "license_type": null,
+              "license_url": null,
+              "processing_level": null,
+              "ref": "OECD_DAC2A",
+              "source": null,
+              "url": null
+            }
+          ],
+          "text": "OECD_DAC2A"
+        },
+        "content_version": "cv_golden_collapsed",
+        "coverage": {
+          "dimensions": [],
+          "rows": 2,
+          "window": null
+        },
+        "definition": {
+          "identity": {},
+          "schema_version": 1,
+          "spec_id": "spec_golden"
+        },
+        "output_options": null,
+        "prepared_at": "2026-10-04T12:00:00Z",
+        "schema_version": 1,
+        "series_count": 1,
+        "series_coverage_stamp": "sha256:coverage",
+        "trace": {
+          "capability_version": "dset_test",
+          "code_index_stamp": {
+            "content_hash": "6db7833665fc20424b76038fc7d741079f0a9d055373532a59ce62a6267a7226",
+            "exported_at": "2026-10-09T13:55:13Z",
+            "graph_endpoint": "https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app"
+          },
+          "facets": [],
+          "family_member_count": null,
+          "family_member_digest": null,
+          "frame_grammar_version": "1.0.0",
+          "graph_revision": "rev1",
+          "materialiser_build": "test-build",
+          "normalisations": [],
+          "origin_catalogue_build_id": "fake-catalogue",
+          "resolved_stat_vars": [],
+          "source_revisions": []
+        },
+        "warnings": [
+          {
+            "code": "processing_level_undeclared",
+            "message": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier.",
+            "severity": "info"
+          },
+          {
+            "code": "enrichment_unavailable",
+            "message": "A name, code, or requested enrichment column has no value for some rows: the graph names nothing for the value, the name read failed, or two codes of the column's code system share its label. Those cells are left empty rather than fabricated. measurementMethod_label holds only a name that differs from the method's dcid, and its empty cells never raise this warning. Column 'recipient_name' left 2 cells empty.",
+            "severity": "info"
+          }
+        ]
+      },
+      "output_profile": {
+        "columns": [
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "grain",
+            "name": "stat_var"
+          },
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "role",
+            "name": "recipient"
+          },
+          {
+            "distinct": 2,
+            "droppable": false,
+            "kind": "grain",
+            "name": "time_period"
+          },
+          {
+            "distinct": null,
+            "droppable": true,
+            "kind": "value",
+            "name": "value"
+          },
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "unit",
+            "name": "unit"
+          },
+          {
+            "distinct": 1,
+            "droppable": true,
+            "kind": "facet",
+            "name": "measurementMethod"
+          },
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "facet",
+            "name": "provenance"
+          },
+          {
+            "distinct": null,
+            "droppable": true,
+            "kind": "status",
+            "name": "status"
+          }
+        ],
+        "enrichments": [],
+        "pivots": [],
+        "rows": 2,
+        "schema_version": 1
+      },
+      "persisted": {
+        "artifacts": [
+          {
+            "artifact_digest": "sha256:abababababababababababababababababababababababababababababababab",
+            "bytes": 12,
+            "created_at": "2026-10-04T12:00:00Z",
+            "media_type": "text/csv",
+            "rendering": {
+              "format": "csv"
+            },
+            "tier": "working",
+            "url": "https://example.test/a.csv"
+          },
+          {
+            "artifact_digest": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+            "bytes": 12,
+            "created_at": "2026-10-04T12:00:00Z",
+            "media_type": "text/csv",
+            "rendering": {
+              "statistics": "series"
+            },
+            "tier": "working",
+            "url": "https://example.test/a.csv"
+          }
+        ],
+        "citation": {
+          "sources": [
+            {
+              "data_commons": null,
+              "documentation": null,
+              "label": "OECD_DAC2A",
+              "license": null,
+              "license_type": null,
+              "license_url": null,
+              "processing_level": null,
+              "ref": "OECD_DAC2A",
+              "source": null,
+              "url": null
+            }
+          ],
+          "text": "OECD_DAC2A"
+        },
+        "content_version": "cv_golden_collapsed",
+        "coverage": {
+          "dimensions": [],
+          "rows": 2,
+          "window": null
+        },
+        "definition": {
+          "identity": {},
+          "schema_version": 1,
+          "spec_id": "spec_golden"
+        },
+        "output_options": null,
+        "prepared_at": "2026-10-04T12:00:00Z",
+        "schema_version": 1,
+        "series_count": 1,
+        "series_coverage_stamp": "sha256:served",
+        "trace": {
+          "capability_version": "dset_test",
+          "code_index_stamp": {
+            "content_hash": "6db7833665fc20424b76038fc7d741079f0a9d055373532a59ce62a6267a7226",
+            "exported_at": "2026-10-09T13:55:13Z",
+            "graph_endpoint": "https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app"
+          },
+          "facets": [],
+          "family_member_count": null,
+          "family_member_digest": null,
+          "frame_grammar_version": "1.0.0",
+          "graph_revision": "rev1",
+          "materialiser_build": "test-build",
+          "normalisations": [],
+          "origin_catalogue_build_id": "fake-catalogue",
+          "resolved_stat_vars": [],
+          "source_revisions": []
+        },
+        "warnings": [
+          {
+            "code": "processing_level_undeclared",
+            "message": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier.",
+            "severity": "info"
+          },
+          {
+            "code": "enrichment_unavailable",
+            "message": "A name, code, or requested enrichment column has no value for some rows: the graph names nothing for the value, the name read failed, or two codes of the column's code system share its label. Those cells are left empty rather than fabricated. measurementMethod_label holds only a name that differs from the method's dcid, and its empty cells never raise this warning. Column 'recipient_name' left 2 cells empty.",
+            "severity": "info"
+          },
+          {
+            "code": "enrichment_unavailable",
+            "message": "call warning",
+            "severity": "info"
+          }
+        ]
+      },
+      "presentation_manifest": {
+        "citation": {
+          "sources": [
+            {
+              "data_commons": null,
+              "documentation": null,
+              "label": "OECD_DAC2A",
+              "license": null,
+              "license_type": null,
+              "license_url": null,
+              "processing_level": null,
+              "ref": "OECD_DAC2A",
+              "source": null,
+              "url": null
+            }
+          ],
+          "text": "OECD_DAC2A"
+        },
+        "content_version": "cv_golden_collapsed",
+        "coverage": {
+          "dimensions": [],
+          "rows": 2,
+          "window": null
+        },
+        "definition": {
+          "identity": {},
+          "schema_version": 1,
+          "spec_id": "spec_golden"
+        },
+        "output_profile": {
+          "columns": [
+            {
+              "distinct": 1,
+              "droppable": false,
+              "kind": "grain",
+              "name": "stat_var"
+            },
+            {
+              "distinct": 1,
+              "droppable": false,
+              "kind": "role",
+              "name": "recipient"
+            },
+            {
+              "distinct": 2,
+              "droppable": false,
+              "kind": "grain",
+              "name": "time_period"
+            },
+            {
+              "distinct": null,
+              "droppable": true,
+              "kind": "value",
+              "name": "value"
+            },
+            {
+              "distinct": 1,
+              "droppable": false,
+              "kind": "unit",
+              "name": "unit"
+            },
+            {
+              "distinct": 1,
+              "droppable": true,
+              "kind": "facet",
+              "name": "measurementMethod"
+            },
+            {
+              "distinct": 1,
+              "droppable": false,
+              "kind": "facet",
+              "name": "provenance"
+            },
+            {
+              "distinct": null,
+              "droppable": true,
+              "kind": "status",
+              "name": "status"
+            }
+          ],
+          "enrichments": [],
+          "pivots": [],
+          "rows": 2,
+          "schema_version": 1
+        },
+        "prepared_at": "2026-10-04T12:00:00Z",
+        "schema_version": 1,
+        "series_count": 1,
+        "series_coverage_stamp": "sha256:coverage",
+        "trace": {
+          "capability_version": "dset_test",
+          "code_index_stamp": {
+            "content_hash": "6db7833665fc20424b76038fc7d741079f0a9d055373532a59ce62a6267a7226",
+            "exported_at": "2026-10-09T13:55:13Z",
+            "graph_endpoint": "https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app"
+          },
+          "facets": [],
+          "family_member_count": null,
+          "family_member_digest": null,
+          "frame_grammar_version": "1.0.0",
+          "graph_revision": "rev1",
+          "materialiser_build": "test-build",
+          "normalisations": [],
+          "origin_catalogue_build_id": "fake-catalogue",
+          "resolved_stat_vars": [],
+          "source_revisions": []
+        },
+        "warnings": [
+          {
+            "code": "processing_level_undeclared",
+            "message": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier.",
+            "severity": "info"
+          },
+          {
+            "code": "enrichment_unavailable",
+            "message": "A name, code, or requested enrichment column has no value for some rows: the graph names nothing for the value, the name read failed, or two codes of the column's code system share its label. Those cells are left empty rather than fabricated. measurementMethod_label holds only a name that differs from the method's dcid, and its empty cells never raise this warning. Column 'recipient_name' left 2 cells empty.",
+            "severity": "info"
+          }
+        ]
+      },
+      "series_conversions": []
+    },
+    "subject_id": "spec_golden"
+  },
+  "conversions": {
+    "base_content_version": null,
+    "body": {
+      "citation": {
+        "sources": [
+          {
+            "data_commons": null,
+            "documentation": null,
+            "label": "OECD_DAC2A",
+            "license": null,
+            "license_type": null,
+            "license_url": null,
+            "processing_level": null,
+            "ref": "OECD_DAC2A",
+            "source": null,
+            "url": null
+          }
+        ],
+        "text": "OECD_DAC2A"
+      },
+      "content_version": "cv_golden_converted",
+      "coverage": {
+        "dimensions": [],
+        "rows": 2,
+        "window": null
+      },
+      "default_scope_plural": false,
+      "definition": {
+        "identity": {},
+        "schema_version": 1,
+        "spec_id": "spec_golden"
+      },
+      "output_profile": {
+        "columns": [
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "grain",
+            "name": "stat_var"
+          },
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "role",
+            "name": "recipient"
+          },
+          {
+            "distinct": 2,
+            "droppable": false,
+            "kind": "grain",
+            "name": "time_period"
+          },
+          {
+            "distinct": null,
+            "droppable": true,
+            "kind": "value",
+            "name": "value"
+          },
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "unit",
+            "name": "unit"
+          },
+          {
+            "distinct": 1,
+            "droppable": true,
+            "kind": "facet",
+            "name": "measurementMethod"
+          },
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "facet",
+            "name": "provenance"
+          },
+          {
+            "distinct": null,
+            "droppable": true,
+            "kind": "status",
+            "name": "status"
+          }
+        ],
+        "enrichments": [],
+        "pivots": [],
+        "rows": 2,
+        "schema_version": 1
+      },
+      "prepared_at": "2026-10-04T12:00:00Z",
+      "schema_version": 1,
+      "series_conversions": [
+        {
+          "deflator_table_version": "sha256:deflators",
+          "exchange_rate_table_version": "sha256:rates",
+          "fallback_count": 2,
+          "fallback_examples": [
+            [
+              "country/DEU",
+              "DACCountriesTotal"
+            ]
+          ],
+          "projected_count": 0,
+          "projected_examples": [],
+          "recipe_id": "ConversionRecipeDAC",
+          "roles": [
+            [
+              "financingProvider",
+              "country/DEU"
+            ],
+            [
+              "financingRecipient",
+              "country/KEN"
+            ]
+          ],
+          "stat_var": "Amount_FinancialFlow_DevelopmentAssistance_Nominal",
+          "table_provenance_id": "provenance/DACTables"
+        },
+        {
+          "deflator_table_version": null,
+          "exchange_rate_table_version": "sha256:rates",
+          "fallback_count": 0,
+          "fallback_examples": [],
+          "projected_count": 3,
+          "projected_examples": [
+            "country/FRA@2022"
+          ],
+          "recipe_id": "ConversionRecipeDAC",
+          "roles": [
+            [
+              "financingProvider",
+              "country/FRA"
+            ],
+            [
+              "financingRecipient",
+              "country/KEN"
+            ]
+          ],
+          "stat_var": "Amount_FinancialFlow_DevelopmentAssistance_Nominal",
+          "table_provenance_id": "provenance/DACTables"
+        }
+      ],
+      "series_count": 1,
+      "series_coverage_stamp": "sha256:coverage",
+      "trace": {
+        "capability_version": "dset_test",
+        "code_index_stamp": {
+          "content_hash": "6db7833665fc20424b76038fc7d741079f0a9d055373532a59ce62a6267a7226",
+          "exported_at": "2026-10-09T13:55:13Z",
+          "graph_endpoint": "https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app"
+        },
+        "conversion": [
+          {
+            "fallback": {
+              "count": 2,
+              "examples": [
+                [
+                  "KEN",
+                  "2020"
+                ]
+              ],
+              "truncated": false
+            },
+            "members": [
+              {
+                "native_unit": "CurrencyEUR",
+                "stat_var": "ODA_Total"
+              },
+              {
+                "native_unit": "CurrencyUSD",
+                "stat_var": "oda_Grants"
+              }
+            ],
+            "projected": {
+              "count": 1,
+              "examples": [
+                "2024"
+              ],
+              "truncated": false
+            },
+            "rate_table_version": "abababababababababababababababababababababababababababababababab",
+            "recipe": "ConversionRecipeDAC"
+          }
+        ],
+        "facets": [],
+        "family_member_count": null,
+        "family_member_digest": null,
+        "frame_grammar_version": "1.0.0",
+        "graph_revision": "rev1",
+        "materialiser_build": "test-build",
+        "normalisations": [],
+        "origin_catalogue_build_id": "fake-catalogue",
+        "resolved_stat_vars": [],
+        "source_revisions": []
+      },
+      "warnings": [
+        {
+          "code": "processing_level_undeclared",
+          "message": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier.",
+          "severity": "info"
+        }
+      ]
+    },
+    "content_version": "cv_golden_converted",
+    "expected": {
+      "default_scope_plural": false,
+      "manifest": {
+        "artifacts": [],
+        "citation": {
+          "sources": [
+            {
+              "data_commons": null,
+              "documentation": null,
+              "label": "OECD_DAC2A",
+              "license": null,
+              "license_type": null,
+              "license_url": null,
+              "processing_level": null,
+              "ref": "OECD_DAC2A",
+              "source": null,
+              "url": null
+            }
+          ],
+          "text": "OECD_DAC2A"
+        },
+        "content_version": "cv_golden_converted",
+        "coverage": {
+          "dimensions": [],
+          "rows": 2,
+          "window": null
+        },
+        "definition": {
+          "identity": {},
+          "schema_version": 1,
+          "spec_id": "spec_golden"
+        },
+        "output_options": null,
+        "prepared_at": "2026-10-04T12:00:00Z",
+        "schema_version": 1,
+        "series_count": 1,
+        "series_coverage_stamp": "sha256:coverage",
+        "trace": {
+          "capability_version": "dset_test",
+          "code_index_stamp": {
+            "content_hash": "6db7833665fc20424b76038fc7d741079f0a9d055373532a59ce62a6267a7226",
+            "exported_at": "2026-10-09T13:55:13Z",
+            "graph_endpoint": "https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app"
+          },
+          "conversion": [
+            {
+              "fallback": {
+                "count": 2,
+                "examples": [
+                  [
+                    "KEN",
+                    "2020"
+                  ]
+                ],
+                "truncated": false
+              },
+              "members": [
+                {
+                  "native_unit": "CurrencyEUR",
+                  "stat_var": "ODA_Total"
+                },
+                {
+                  "native_unit": "CurrencyUSD",
+                  "stat_var": "oda_Grants"
+                }
+              ],
+              "projected": {
+                "count": 1,
+                "examples": [
+                  "2024"
+                ],
+                "truncated": false
+              },
+              "rate_table_version": "abababababababababababababababababababababababababababababababab",
+              "recipe": "ConversionRecipeDAC"
+            }
+          ],
+          "facets": [],
+          "family_member_count": null,
+          "family_member_digest": null,
+          "frame_grammar_version": "1.0.0",
+          "graph_revision": "rev1",
+          "materialiser_build": "test-build",
+          "normalisations": [],
+          "origin_catalogue_build_id": "fake-catalogue",
+          "resolved_stat_vars": [],
+          "source_revisions": []
+        },
+        "warnings": [
+          {
+            "code": "processing_level_undeclared",
+            "message": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier.",
+            "severity": "info"
+          }
+        ]
+      },
+      "output_profile": {
+        "columns": [
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "grain",
+            "name": "stat_var"
+          },
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "role",
+            "name": "recipient"
+          },
+          {
+            "distinct": 2,
+            "droppable": false,
+            "kind": "grain",
+            "name": "time_period"
+          },
+          {
+            "distinct": null,
+            "droppable": true,
+            "kind": "value",
+            "name": "value"
+          },
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "unit",
+            "name": "unit"
+          },
+          {
+            "distinct": 1,
+            "droppable": true,
+            "kind": "facet",
+            "name": "measurementMethod"
+          },
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "facet",
+            "name": "provenance"
+          },
+          {
+            "distinct": null,
+            "droppable": true,
+            "kind": "status",
+            "name": "status"
+          }
+        ],
+        "enrichments": [],
+        "pivots": [],
+        "rows": 2,
+        "schema_version": 1
+      },
+      "persisted": {
+        "artifacts": [
+          {
+            "artifact_digest": "sha256:abababababababababababababababababababababababababababababababab",
+            "bytes": 12,
+            "created_at": "2026-10-04T12:00:00Z",
+            "media_type": "text/csv",
+            "rendering": {
+              "format": "csv"
+            },
+            "tier": "working",
+            "url": "https://example.test/a.csv"
+          },
+          {
+            "artifact_digest": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+            "bytes": 12,
+            "created_at": "2026-10-04T12:00:00Z",
+            "media_type": "text/csv",
+            "rendering": {
+              "statistics": "series"
+            },
+            "tier": "working",
+            "url": "https://example.test/a.csv"
+          }
+        ],
+        "citation": {
+          "sources": [
+            {
+              "data_commons": null,
+              "documentation": null,
+              "label": "OECD_DAC2A",
+              "license": null,
+              "license_type": null,
+              "license_url": null,
+              "processing_level": null,
+              "ref": "OECD_DAC2A",
+              "source": null,
+              "url": null
+            }
+          ],
+          "text": "OECD_DAC2A"
+        },
+        "content_version": "cv_golden_converted",
+        "coverage": {
+          "dimensions": [],
+          "rows": 2,
+          "window": null
+        },
+        "definition": {
+          "identity": {},
+          "schema_version": 1,
+          "spec_id": "spec_golden"
+        },
+        "output_options": null,
+        "prepared_at": "2026-10-04T12:00:00Z",
+        "schema_version": 1,
+        "series_count": 1,
+        "series_coverage_stamp": "sha256:served",
+        "trace": {
+          "capability_version": "dset_test",
+          "code_index_stamp": {
+            "content_hash": "6db7833665fc20424b76038fc7d741079f0a9d055373532a59ce62a6267a7226",
+            "exported_at": "2026-10-09T13:55:13Z",
+            "graph_endpoint": "https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app"
+          },
+          "conversion": [
+            {
+              "fallback": {
+                "count": 2,
+                "examples": [
+                  [
+                    "KEN",
+                    "2020"
+                  ]
+                ],
+                "truncated": false
+              },
+              "members": [
+                {
+                  "native_unit": "CurrencyEUR",
+                  "stat_var": "ODA_Total"
+                },
+                {
+                  "native_unit": "CurrencyUSD",
+                  "stat_var": "oda_Grants"
+                }
+              ],
+              "projected": {
+                "count": 1,
+                "examples": [
+                  "2024"
+                ],
+                "truncated": false
+              },
+              "rate_table_version": "abababababababababababababababababababababababababababababababab",
+              "recipe": "ConversionRecipeDAC"
+            }
+          ],
+          "facets": [],
+          "family_member_count": null,
+          "family_member_digest": null,
+          "frame_grammar_version": "1.0.0",
+          "graph_revision": "rev1",
+          "materialiser_build": "test-build",
+          "normalisations": [],
+          "origin_catalogue_build_id": "fake-catalogue",
+          "resolved_stat_vars": [],
+          "source_revisions": []
+        },
+        "warnings": [
+          {
+            "code": "processing_level_undeclared",
+            "message": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier.",
+            "severity": "info"
+          },
+          {
+            "code": "enrichment_unavailable",
+            "message": "call warning",
+            "severity": "info"
+          }
+        ]
+      },
+      "presentation_manifest": {
+        "citation": {
+          "sources": [
+            {
+              "data_commons": null,
+              "documentation": null,
+              "label": "OECD_DAC2A",
+              "license": null,
+              "license_type": null,
+              "license_url": null,
+              "processing_level": null,
+              "ref": "OECD_DAC2A",
+              "source": null,
+              "url": null
+            }
+          ],
+          "text": "OECD_DAC2A"
+        },
+        "content_version": "cv_golden_converted",
+        "coverage": {
+          "dimensions": [],
+          "rows": 2,
+          "window": null
+        },
+        "default_scope_plural": false,
+        "definition": {
+          "identity": {},
+          "schema_version": 1,
+          "spec_id": "spec_golden"
+        },
+        "output_profile": {
+          "columns": [
+            {
+              "distinct": 1,
+              "droppable": false,
+              "kind": "grain",
+              "name": "stat_var"
+            },
+            {
+              "distinct": 1,
+              "droppable": false,
+              "kind": "role",
+              "name": "recipient"
+            },
+            {
+              "distinct": 2,
+              "droppable": false,
+              "kind": "grain",
+              "name": "time_period"
+            },
+            {
+              "distinct": null,
+              "droppable": true,
+              "kind": "value",
+              "name": "value"
+            },
+            {
+              "distinct": 1,
+              "droppable": false,
+              "kind": "unit",
+              "name": "unit"
+            },
+            {
+              "distinct": 1,
+              "droppable": true,
+              "kind": "facet",
+              "name": "measurementMethod"
+            },
+            {
+              "distinct": 1,
+              "droppable": false,
+              "kind": "facet",
+              "name": "provenance"
+            },
+            {
+              "distinct": null,
+              "droppable": true,
+              "kind": "status",
+              "name": "status"
+            }
+          ],
+          "enrichments": [],
+          "pivots": [],
+          "rows": 2,
+          "schema_version": 1
+        },
+        "prepared_at": "2026-10-04T12:00:00Z",
+        "schema_version": 1,
+        "series_conversions": [
+          {
+            "deflator_table_version": "sha256:deflators",
+            "exchange_rate_table_version": "sha256:rates",
+            "fallback_count": 2,
+            "fallback_examples": [
+              [
+                "country/DEU",
+                "DACCountriesTotal"
+              ]
+            ],
+            "projected_count": 0,
+            "projected_examples": [],
+            "recipe_id": "ConversionRecipeDAC",
+            "roles": [
+              [
+                "financingProvider",
+                "country/DEU"
+              ],
+              [
+                "financingRecipient",
+                "country/KEN"
+              ]
+            ],
+            "stat_var": "Amount_FinancialFlow_DevelopmentAssistance_Nominal",
+            "table_provenance_id": "provenance/DACTables"
+          },
+          {
+            "deflator_table_version": null,
+            "exchange_rate_table_version": "sha256:rates",
+            "fallback_count": 0,
+            "fallback_examples": [],
+            "projected_count": 3,
+            "projected_examples": [
+              "country/FRA@2022"
+            ],
+            "recipe_id": "ConversionRecipeDAC",
+            "roles": [
+              [
+                "financingProvider",
+                "country/FRA"
+              ],
+              [
+                "financingRecipient",
+                "country/KEN"
+              ]
+            ],
+            "stat_var": "Amount_FinancialFlow_DevelopmentAssistance_Nominal",
+            "table_provenance_id": "provenance/DACTables"
+          }
+        ],
+        "series_count": 1,
+        "series_coverage_stamp": "sha256:coverage",
+        "trace": {
+          "capability_version": "dset_test",
+          "code_index_stamp": {
+            "content_hash": "6db7833665fc20424b76038fc7d741079f0a9d055373532a59ce62a6267a7226",
+            "exported_at": "2026-10-09T13:55:13Z",
+            "graph_endpoint": "https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app"
+          },
+          "conversion": [
+            {
+              "fallback": {
+                "count": 2,
+                "examples": [
+                  [
+                    "KEN",
+                    "2020"
+                  ]
+                ],
+                "truncated": false
+              },
+              "members": [
+                {
+                  "native_unit": "CurrencyEUR",
+                  "stat_var": "ODA_Total"
+                },
+                {
+                  "native_unit": "CurrencyUSD",
+                  "stat_var": "oda_Grants"
+                }
+              ],
+              "projected": {
+                "count": 1,
+                "examples": [
+                  "2024"
+                ],
+                "truncated": false
+              },
+              "rate_table_version": "abababababababababababababababababababababababababababababababab",
+              "recipe": "ConversionRecipeDAC"
+            }
+          ],
+          "facets": [],
+          "family_member_count": null,
+          "family_member_digest": null,
+          "frame_grammar_version": "1.0.0",
+          "graph_revision": "rev1",
+          "materialiser_build": "test-build",
+          "normalisations": [],
+          "origin_catalogue_build_id": "fake-catalogue",
+          "resolved_stat_vars": [],
+          "source_revisions": []
+        },
+        "warnings": [
+          {
+            "code": "processing_level_undeclared",
+            "message": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier.",
+            "severity": "info"
+          }
+        ]
+      },
+      "series_conversions": [
+        {
+          "deflator_table_version": "sha256:deflators",
+          "exchange_rate_table_version": "sha256:rates",
+          "fallback_count": 2,
+          "fallback_examples": [
+            [
+              "country/DEU",
+              "DACCountriesTotal"
+            ]
+          ],
+          "projected_count": 0,
+          "projected_examples": [],
+          "recipe_id": "ConversionRecipeDAC",
+          "roles": [
+            [
+              "financingProvider",
+              "country/DEU"
+            ],
+            [
+              "financingRecipient",
+              "country/KEN"
+            ]
+          ],
+          "stat_var": "Amount_FinancialFlow_DevelopmentAssistance_Nominal",
+          "table_provenance_id": "provenance/DACTables"
+        },
+        {
+          "deflator_table_version": null,
+          "exchange_rate_table_version": "sha256:rates",
+          "fallback_count": 0,
+          "fallback_examples": [],
+          "projected_count": 3,
+          "projected_examples": [
+            "country/FRA@2022"
+          ],
+          "recipe_id": "ConversionRecipeDAC",
+          "roles": [
+            [
+              "financingProvider",
+              "country/FRA"
+            ],
+            [
+              "financingRecipient",
+              "country/KEN"
+            ]
+          ],
+          "stat_var": "Amount_FinancialFlow_DevelopmentAssistance_Nominal",
+          "table_provenance_id": "provenance/DACTables"
+        }
+      ]
+    },
+    "subject_id": "spec_golden"
+  },
+  "definition": {
+    "base_content_version": null,
+    "body": {
+      "citation": {
+        "sources": [
+          {
+            "data_commons": null,
+            "documentation": null,
+            "label": "OECD_DAC2A",
+            "license": null,
+            "license_type": null,
+            "license_url": null,
+            "processing_level": null,
+            "ref": "OECD_DAC2A",
+            "source": null,
+            "url": null
+          }
+        ],
+        "text": "OECD_DAC2A"
+      },
+      "content_version": "cv_fixture",
+      "coverage": {
+        "dimensions": [],
+        "rows": 2,
+        "window": null
+      },
+      "default_scope_plural": true,
+      "definition": {
+        "identity": {},
+        "schema_version": 1,
+        "spec_id": "spec_golden"
+      },
+      "output_profile": {
+        "columns": [
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "grain",
+            "name": "stat_var"
+          },
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "role",
+            "name": "recipient"
+          },
+          {
+            "distinct": 2,
+            "droppable": false,
+            "kind": "grain",
+            "name": "time_period"
+          },
+          {
+            "distinct": null,
+            "droppable": true,
+            "kind": "value",
+            "name": "value"
+          },
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "unit",
+            "name": "unit"
+          },
+          {
+            "distinct": 1,
+            "droppable": true,
+            "kind": "facet",
+            "name": "measurementMethod"
+          },
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "facet",
+            "name": "provenance"
+          },
+          {
+            "distinct": null,
+            "droppable": true,
+            "kind": "status",
+            "name": "status"
+          }
+        ],
+        "enrichments": [],
+        "pivots": [],
+        "rows": 2,
+        "schema_version": 1
+      },
+      "prepared_at": "2026-10-04T12:00:00Z",
+      "schema_version": 1,
+      "series_count": 1,
+      "series_coverage_stamp": "sha256:coverage",
+      "trace": {
+        "capability_version": "dset_test",
+        "code_index_stamp": {
+          "content_hash": "6db7833665fc20424b76038fc7d741079f0a9d055373532a59ce62a6267a7226",
+          "exported_at": "2026-10-09T13:55:13Z",
+          "graph_endpoint": "https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app"
+        },
+        "facets": [],
+        "family_member_count": null,
+        "family_member_digest": null,
+        "frame_grammar_version": "1.0.0",
+        "graph_revision": "rev1",
+        "materialiser_build": "test-build",
+        "normalisations": [],
+        "origin_catalogue_build_id": "fake-catalogue",
+        "resolved_stat_vars": [],
+        "source_revisions": []
+      },
+      "warnings": [
+        {
+          "code": "processing_level_undeclared",
+          "message": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier.",
+          "severity": "info"
+        }
+      ]
+    },
+    "content_version": "cv_fixture",
+    "expected": {
+      "default_scope_plural": true,
+      "manifest": {
+        "artifacts": [],
+        "citation": {
+          "sources": [
+            {
+              "data_commons": null,
+              "documentation": null,
+              "label": "OECD_DAC2A",
+              "license": null,
+              "license_type": null,
+              "license_url": null,
+              "processing_level": null,
+              "ref": "OECD_DAC2A",
+              "source": null,
+              "url": null
+            }
+          ],
+          "text": "OECD_DAC2A"
+        },
+        "content_version": "cv_fixture",
+        "coverage": {
+          "dimensions": [],
+          "rows": 2,
+          "window": null
+        },
+        "definition": {
+          "identity": {},
+          "schema_version": 1,
+          "spec_id": "spec_golden"
+        },
+        "output_options": null,
+        "prepared_at": "2026-10-04T12:00:00Z",
+        "schema_version": 1,
+        "series_count": 1,
+        "series_coverage_stamp": "sha256:coverage",
+        "trace": {
+          "capability_version": "dset_test",
+          "code_index_stamp": {
+            "content_hash": "6db7833665fc20424b76038fc7d741079f0a9d055373532a59ce62a6267a7226",
+            "exported_at": "2026-10-09T13:55:13Z",
+            "graph_endpoint": "https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app"
+          },
+          "facets": [],
+          "family_member_count": null,
+          "family_member_digest": null,
+          "frame_grammar_version": "1.0.0",
+          "graph_revision": "rev1",
+          "materialiser_build": "test-build",
+          "normalisations": [],
+          "origin_catalogue_build_id": "fake-catalogue",
+          "resolved_stat_vars": [],
+          "source_revisions": []
+        },
+        "warnings": [
+          {
+            "code": "processing_level_undeclared",
+            "message": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier.",
+            "severity": "info"
+          }
+        ]
+      },
+      "output_profile": {
+        "columns": [
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "grain",
+            "name": "stat_var"
+          },
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "role",
+            "name": "recipient"
+          },
+          {
+            "distinct": 2,
+            "droppable": false,
+            "kind": "grain",
+            "name": "time_period"
+          },
+          {
+            "distinct": null,
+            "droppable": true,
+            "kind": "value",
+            "name": "value"
+          },
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "unit",
+            "name": "unit"
+          },
+          {
+            "distinct": 1,
+            "droppable": true,
+            "kind": "facet",
+            "name": "measurementMethod"
+          },
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "facet",
+            "name": "provenance"
+          },
+          {
+            "distinct": null,
+            "droppable": true,
+            "kind": "status",
+            "name": "status"
+          }
+        ],
+        "enrichments": [],
+        "pivots": [],
+        "rows": 2,
+        "schema_version": 1
+      },
+      "persisted": {
+        "artifacts": [
+          {
+            "artifact_digest": "sha256:abababababababababababababababababababababababababababababababab",
+            "bytes": 12,
+            "created_at": "2026-10-04T12:00:00Z",
+            "media_type": "text/csv",
+            "rendering": {
+              "format": "csv"
+            },
+            "tier": "working",
+            "url": "https://example.test/a.csv"
+          },
+          {
+            "artifact_digest": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+            "bytes": 12,
+            "created_at": "2026-10-04T12:00:00Z",
+            "media_type": "text/csv",
+            "rendering": {
+              "statistics": "series"
+            },
+            "tier": "working",
+            "url": "https://example.test/a.csv"
+          }
+        ],
+        "citation": {
+          "sources": [
+            {
+              "data_commons": null,
+              "documentation": null,
+              "label": "OECD_DAC2A",
+              "license": null,
+              "license_type": null,
+              "license_url": null,
+              "processing_level": null,
+              "ref": "OECD_DAC2A",
+              "source": null,
+              "url": null
+            }
+          ],
+          "text": "OECD_DAC2A"
+        },
+        "content_version": "cv_fixture",
+        "coverage": {
+          "dimensions": [],
+          "rows": 2,
+          "window": null
+        },
+        "definition": {
+          "identity": {},
+          "schema_version": 1,
+          "spec_id": "spec_golden"
+        },
+        "output_options": null,
+        "prepared_at": "2026-10-04T12:00:00Z",
+        "schema_version": 1,
+        "series_count": 1,
+        "series_coverage_stamp": "sha256:served",
+        "trace": {
+          "capability_version": "dset_test",
+          "code_index_stamp": {
+            "content_hash": "6db7833665fc20424b76038fc7d741079f0a9d055373532a59ce62a6267a7226",
+            "exported_at": "2026-10-09T13:55:13Z",
+            "graph_endpoint": "https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app"
+          },
+          "facets": [],
+          "family_member_count": null,
+          "family_member_digest": null,
+          "frame_grammar_version": "1.0.0",
+          "graph_revision": "rev1",
+          "materialiser_build": "test-build",
+          "normalisations": [],
+          "origin_catalogue_build_id": "fake-catalogue",
+          "resolved_stat_vars": [],
+          "source_revisions": []
+        },
+        "warnings": [
+          {
+            "code": "processing_level_undeclared",
+            "message": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier.",
+            "severity": "info"
+          },
+          {
+            "code": "enrichment_unavailable",
+            "message": "call warning",
+            "severity": "info"
+          }
+        ]
+      },
+      "presentation_manifest": {
+        "citation": {
+          "sources": [
+            {
+              "data_commons": null,
+              "documentation": null,
+              "label": "OECD_DAC2A",
+              "license": null,
+              "license_type": null,
+              "license_url": null,
+              "processing_level": null,
+              "ref": "OECD_DAC2A",
+              "source": null,
+              "url": null
+            }
+          ],
+          "text": "OECD_DAC2A"
+        },
+        "content_version": "cv_fixture",
+        "coverage": {
+          "dimensions": [],
+          "rows": 2,
+          "window": null
+        },
+        "default_scope_plural": true,
+        "definition": {
+          "identity": {},
+          "schema_version": 1,
+          "spec_id": "spec_golden"
+        },
+        "output_profile": {
+          "columns": [
+            {
+              "distinct": 1,
+              "droppable": false,
+              "kind": "grain",
+              "name": "stat_var"
+            },
+            {
+              "distinct": 1,
+              "droppable": false,
+              "kind": "role",
+              "name": "recipient"
+            },
+            {
+              "distinct": 2,
+              "droppable": false,
+              "kind": "grain",
+              "name": "time_period"
+            },
+            {
+              "distinct": null,
+              "droppable": true,
+              "kind": "value",
+              "name": "value"
+            },
+            {
+              "distinct": 1,
+              "droppable": false,
+              "kind": "unit",
+              "name": "unit"
+            },
+            {
+              "distinct": 1,
+              "droppable": true,
+              "kind": "facet",
+              "name": "measurementMethod"
+            },
+            {
+              "distinct": 1,
+              "droppable": false,
+              "kind": "facet",
+              "name": "provenance"
+            },
+            {
+              "distinct": null,
+              "droppable": true,
+              "kind": "status",
+              "name": "status"
+            }
+          ],
+          "enrichments": [],
+          "pivots": [],
+          "rows": 2,
+          "schema_version": 1
+        },
+        "prepared_at": "2026-10-04T12:00:00Z",
+        "schema_version": 1,
+        "series_count": 1,
+        "series_coverage_stamp": "sha256:coverage",
+        "trace": {
+          "capability_version": "dset_test",
+          "code_index_stamp": {
+            "content_hash": "6db7833665fc20424b76038fc7d741079f0a9d055373532a59ce62a6267a7226",
+            "exported_at": "2026-10-09T13:55:13Z",
+            "graph_endpoint": "https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app"
+          },
+          "facets": [],
+          "family_member_count": null,
+          "family_member_digest": null,
+          "frame_grammar_version": "1.0.0",
+          "graph_revision": "rev1",
+          "materialiser_build": "test-build",
+          "normalisations": [],
+          "origin_catalogue_build_id": "fake-catalogue",
+          "resolved_stat_vars": [],
+          "source_revisions": []
+        },
+        "warnings": [
+          {
+            "code": "processing_level_undeclared",
+            "message": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier.",
+            "severity": "info"
+          }
+        ]
+      },
+      "series_conversions": []
+    },
+    "subject_id": "spec_golden"
+  },
+  "legacy": {
+    "base_content_version": null,
+    "body": {
+      "citation": {
+        "sources": [
+          {
+            "data_commons": null,
+            "documentation": null,
+            "label": "OECD_DAC2A",
+            "license": null,
+            "license_type": null,
+            "license_url": null,
+            "processing_level": null,
+            "ref": "OECD_DAC2A",
+            "source": null,
+            "url": null
+          }
+        ],
+        "text": "OECD_DAC2A"
+      },
+      "content_version": "cv_golden_legacy",
+      "coverage": {
+        "dimensions": [],
+        "rows": 2,
+        "window": null
+      },
+      "definition": {
+        "identity": {},
+        "schema_version": 1,
+        "spec_id": "spec_golden"
+      },
+      "prepared_at": "2026-10-04T12:00:00Z",
+      "schema_version": 1,
+      "statistics": {
+        "series": []
+      },
+      "trace": {
+        "capability_version": "dset_test",
+        "code_index_stamp": {
+          "content_hash": "6db7833665fc20424b76038fc7d741079f0a9d055373532a59ce62a6267a7226",
+          "exported_at": "2026-10-09T13:55:13Z",
+          "graph_endpoint": "https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app"
+        },
+        "facets": [],
+        "family_member_count": null,
+        "family_member_digest": null,
+        "frame_grammar_version": "1.0.0",
+        "graph_revision": "rev1",
+        "materialiser_build": "test-build",
+        "normalisations": [],
+        "origin_catalogue_build_id": "fake-catalogue",
+        "resolved_stat_vars": [],
+        "source_revisions": []
+      },
+      "warnings": [
+        {
+          "code": "processing_level_undeclared",
+          "message": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier.",
+          "severity": "info"
+        }
+      ]
+    },
+    "content_version": "cv_golden_legacy",
+    "expected": {
+      "default_scope_plural": null,
+      "manifest": {
+        "artifacts": [],
+        "citation": {
+          "sources": [
+            {
+              "data_commons": null,
+              "documentation": null,
+              "label": "OECD_DAC2A",
+              "license": null,
+              "license_type": null,
+              "license_url": null,
+              "processing_level": null,
+              "ref": "OECD_DAC2A",
+              "source": null,
+              "url": null
+            }
+          ],
+          "text": "OECD_DAC2A"
+        },
+        "content_version": "cv_golden_legacy",
+        "coverage": {
+          "dimensions": [],
+          "rows": 2,
+          "window": null
+        },
+        "definition": {
+          "identity": {},
+          "schema_version": 1,
+          "spec_id": "spec_golden"
+        },
+        "output_options": null,
+        "prepared_at": "2026-10-04T12:00:00Z",
+        "schema_version": 1,
+        "series_count": null,
+        "series_coverage_stamp": null,
+        "trace": {
+          "capability_version": "dset_test",
+          "code_index_stamp": {
+            "content_hash": "6db7833665fc20424b76038fc7d741079f0a9d055373532a59ce62a6267a7226",
+            "exported_at": "2026-10-09T13:55:13Z",
+            "graph_endpoint": "https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app"
+          },
+          "facets": [],
+          "family_member_count": null,
+          "family_member_digest": null,
+          "frame_grammar_version": "1.0.0",
+          "graph_revision": "rev1",
+          "materialiser_build": "test-build",
+          "normalisations": [],
+          "origin_catalogue_build_id": "fake-catalogue",
+          "resolved_stat_vars": [],
+          "source_revisions": []
+        },
+        "warnings": [
+          {
+            "code": "processing_level_undeclared",
+            "message": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier.",
+            "severity": "info"
+          }
+        ]
+      },
+      "output_profile": null,
+      "persisted": {
+        "artifacts": [
+          {
+            "artifact_digest": "sha256:abababababababababababababababababababababababababababababababab",
+            "bytes": 12,
+            "created_at": "2026-10-04T12:00:00Z",
+            "media_type": "text/csv",
+            "rendering": {
+              "format": "csv"
+            },
+            "tier": "working",
+            "url": "https://example.test/a.csv"
+          },
+          {
+            "artifact_digest": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+            "bytes": 12,
+            "created_at": "2026-10-04T12:00:00Z",
+            "media_type": "text/csv",
+            "rendering": {
+              "statistics": "series"
+            },
+            "tier": "working",
+            "url": "https://example.test/a.csv"
+          }
+        ],
+        "citation": {
+          "sources": [
+            {
+              "data_commons": null,
+              "documentation": null,
+              "label": "OECD_DAC2A",
+              "license": null,
+              "license_type": null,
+              "license_url": null,
+              "processing_level": null,
+              "ref": "OECD_DAC2A",
+              "source": null,
+              "url": null
+            }
+          ],
+          "text": "OECD_DAC2A"
+        },
+        "content_version": "cv_golden_legacy",
+        "coverage": {
+          "dimensions": [],
+          "rows": 2,
+          "window": null
+        },
+        "definition": {
+          "identity": {},
+          "schema_version": 1,
+          "spec_id": "spec_golden"
+        },
+        "output_options": null,
+        "prepared_at": "2026-10-04T12:00:00Z",
+        "schema_version": 1,
+        "series_count": null,
+        "series_coverage_stamp": "sha256:served",
+        "trace": {
+          "capability_version": "dset_test",
+          "code_index_stamp": {
+            "content_hash": "6db7833665fc20424b76038fc7d741079f0a9d055373532a59ce62a6267a7226",
+            "exported_at": "2026-10-09T13:55:13Z",
+            "graph_endpoint": "https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app"
+          },
+          "facets": [],
+          "family_member_count": null,
+          "family_member_digest": null,
+          "frame_grammar_version": "1.0.0",
+          "graph_revision": "rev1",
+          "materialiser_build": "test-build",
+          "normalisations": [],
+          "origin_catalogue_build_id": "fake-catalogue",
+          "resolved_stat_vars": [],
+          "source_revisions": []
+        },
+        "warnings": [
+          {
+            "code": "processing_level_undeclared",
+            "message": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier.",
+            "severity": "info"
+          },
+          {
+            "code": "enrichment_unavailable",
+            "message": "call warning",
+            "severity": "info"
+          }
+        ]
+      },
+      "presentation_manifest": {
+        "citation": {
+          "sources": [
+            {
+              "data_commons": null,
+              "documentation": null,
+              "label": "OECD_DAC2A",
+              "license": null,
+              "license_type": null,
+              "license_url": null,
+              "processing_level": null,
+              "ref": "OECD_DAC2A",
+              "source": null,
+              "url": null
+            }
+          ],
+          "text": "OECD_DAC2A"
+        },
+        "content_version": "cv_golden_legacy",
+        "coverage": {
+          "dimensions": [],
+          "rows": 2,
+          "window": null
+        },
+        "definition": {
+          "identity": {},
+          "schema_version": 1,
+          "spec_id": "spec_golden"
+        },
+        "prepared_at": "2026-10-04T12:00:00Z",
+        "schema_version": 1,
+        "statistics": {
+          "series": []
+        },
+        "trace": {
+          "capability_version": "dset_test",
+          "code_index_stamp": {
+            "content_hash": "6db7833665fc20424b76038fc7d741079f0a9d055373532a59ce62a6267a7226",
+            "exported_at": "2026-10-09T13:55:13Z",
+            "graph_endpoint": "https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app"
+          },
+          "facets": [],
+          "family_member_count": null,
+          "family_member_digest": null,
+          "frame_grammar_version": "1.0.0",
+          "graph_revision": "rev1",
+          "materialiser_build": "test-build",
+          "normalisations": [],
+          "origin_catalogue_build_id": "fake-catalogue",
+          "resolved_stat_vars": [],
+          "source_revisions": []
+        },
+        "warnings": [
+          {
+            "code": "processing_level_undeclared",
+            "message": "A source StatVar lacks a processing-level declaration; the citation credits the source and omits the processing qualifier.",
+            "severity": "info"
+          }
+        ]
+      },
+      "series_conversions": []
+    },
+    "subject_id": "spec_golden"
+  },
+  "published": {
+    "base_content_version": null,
+    "body": {
+      "composed_stat_vars": [
+        {
+          "first": [
+            "dcid:A"
+          ],
+          "relation": "share",
+          "second": [
+            "dcid:B"
+          ],
+          "stat_var": "dcid:Share_A"
+        }
+      ],
+      "input_content_versions": [
+        "cv_2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d",
+        "ocv_3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c"
+      ],
+      "op_spec_hash": "ops_0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+    },
+    "content_version": "ocv_1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e",
+    "expected": {
+      "presentation_manifest": {
+        "composed_stat_vars": [
+          {
+            "first": [
+              "dcid:A"
+            ],
+            "relation": "share",
+            "second": [
+              "dcid:B"
+            ],
+            "stat_var": "dcid:Share_A"
+          }
+        ],
+        "input_content_versions": [
+          "cv_2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d",
+          "ocv_3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c"
+        ],
+        "op_spec_hash": "ops_0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+      }
+    },
+    "subject_id": "ops_0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+  },
+  "published_plain": {
+    "base_content_version": null,
+    "body": {
+      "input_content_versions": [
+        "cv_2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d"
+      ],
+      "op_spec_hash": "ops_0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+    },
+    "content_version": "ocv_4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b",
+    "expected": {
+      "presentation_manifest": {
+        "input_content_versions": [
+          "cv_2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d"
+        ],
+        "op_spec_hash": "ops_0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+      }
+    },
+    "subject_id": "ops_0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f"
+  },
+  "warnings": {
+    "base_content_version": null,
+    "body": {
+      "citation": {
+        "sources": [
+          {
+            "data_commons": null,
+            "documentation": null,
+            "label": "OECD_DAC2A",
+            "license": null,
+            "license_type": null,
+            "license_url": null,
+            "processing_level": null,
+            "ref": "OECD_DAC2A",
+            "source": null,
+            "url": null
+          }
+        ],
+        "text": "OECD_DAC2A"
+      },
+      "content_version": "cv_golden_warned",
+      "coverage": {
+        "dimensions": [],
+        "rows": 2,
+        "window": null
+      },
+      "default_scope_plural": false,
+      "definition": {
+        "identity": {},
+        "schema_version": 1,
+        "spec_id": "spec_golden"
+      },
+      "output_profile": {
+        "columns": [
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "grain",
+            "name": "stat_var"
+          },
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "role",
+            "name": "recipient"
+          },
+          {
+            "distinct": 2,
+            "droppable": false,
+            "kind": "grain",
+            "name": "time_period"
+          },
+          {
+            "distinct": null,
+            "droppable": true,
+            "kind": "value",
+            "name": "value"
+          },
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "unit",
+            "name": "unit"
+          },
+          {
+            "distinct": 1,
+            "droppable": true,
+            "kind": "facet",
+            "name": "measurementMethod"
+          },
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "facet",
+            "name": "provenance"
+          },
+          {
+            "distinct": null,
+            "droppable": true,
+            "kind": "status",
+            "name": "status"
+          }
+        ],
+        "enrichments": [],
+        "pivots": [],
+        "rows": 2,
+        "schema_version": 1
+      },
+      "prepared_at": "2026-10-04T12:00:00Z",
+      "schema_version": 1,
+      "series_count": 1,
+      "series_coverage_stamp": null,
+      "trace": {
+        "capability_version": "dset_test",
+        "code_index_stamp": {
+          "content_hash": "6db7833665fc20424b76038fc7d741079f0a9d055373532a59ce62a6267a7226",
+          "exported_at": "2026-10-09T13:55:13Z",
+          "graph_endpoint": "https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app"
+        },
+        "facets": [],
+        "family_member_count": null,
+        "family_member_digest": null,
+        "frame_grammar_version": "1.0.0",
+        "graph_revision": "rev1",
+        "materialiser_build": "test-build",
+        "normalisations": [],
+        "origin_catalogue_build_id": "fake-catalogue",
+        "resolved_stat_vars": [],
+        "source_revisions": []
+      },
+      "warnings": [
+        {
+          "code": "stat_vars_summed",
+          "contributing_member_count": 3,
+          "message": "The series sums observations from more than one StatVar in the requested family, and carries the family's reference as its stat_var. 3 StatVars were summed into dcid:Sum.",
+          "severity": "info",
+          "stat_var_label": "Summed family",
+          "stat_var_ref": "dcid:Sum"
+        },
+        {
+          "code": "origin_catalogue_stale",
+          "message": "stored stale",
+          "severity": "warning"
+        },
+        {
+          "code": "facet_default_selected",
+          "message": "facet axis 'unit'",
+          "severity": "info"
+        },
+        {
+          "code": "enrichment_unavailable",
+          "message": "call warning",
+          "severity": "info"
+        }
+      ]
+    },
+    "content_version": "cv_golden_warned",
+    "expected": {
+      "default_scope_plural": false,
+      "manifest": {
+        "artifacts": [],
+        "citation": {
+          "sources": [
+            {
+              "data_commons": null,
+              "documentation": null,
+              "label": "OECD_DAC2A",
+              "license": null,
+              "license_type": null,
+              "license_url": null,
+              "processing_level": null,
+              "ref": "OECD_DAC2A",
+              "source": null,
+              "url": null
+            }
+          ],
+          "text": "OECD_DAC2A"
+        },
+        "content_version": "cv_golden_warned",
+        "coverage": {
+          "dimensions": [],
+          "rows": 2,
+          "window": null
+        },
+        "definition": {
+          "identity": {},
+          "schema_version": 1,
+          "spec_id": "spec_golden"
+        },
+        "output_options": null,
+        "prepared_at": "2026-10-04T12:00:00Z",
+        "schema_version": 1,
+        "series_count": 1,
+        "series_coverage_stamp": null,
+        "trace": {
+          "capability_version": "dset_test",
+          "code_index_stamp": {
+            "content_hash": "6db7833665fc20424b76038fc7d741079f0a9d055373532a59ce62a6267a7226",
+            "exported_at": "2026-10-09T13:55:13Z",
+            "graph_endpoint": "https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app"
+          },
+          "facets": [],
+          "family_member_count": null,
+          "family_member_digest": null,
+          "frame_grammar_version": "1.0.0",
+          "graph_revision": "rev1",
+          "materialiser_build": "test-build",
+          "normalisations": [],
+          "origin_catalogue_build_id": "fake-catalogue",
+          "resolved_stat_vars": [],
+          "source_revisions": []
+        },
+        "warnings": [
+          {
+            "code": "stat_vars_summed",
+            "contributing_member_count": 3,
+            "message": "The series sums observations from more than one StatVar in the requested family, and carries the family's reference as its stat_var. 3 StatVars were summed into dcid:Sum.",
+            "severity": "info",
+            "stat_var_label": "Summed family",
+            "stat_var_ref": "dcid:Sum"
+          },
+          {
+            "code": "origin_catalogue_stale",
+            "message": "stored stale",
+            "severity": "warning"
+          },
+          {
+            "code": "facet_default_selected",
+            "message": "facet axis 'unit'",
+            "severity": "info"
+          },
+          {
+            "code": "enrichment_unavailable",
+            "message": "call warning",
+            "severity": "info"
+          }
+        ]
+      },
+      "output_profile": {
+        "columns": [
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "grain",
+            "name": "stat_var"
+          },
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "role",
+            "name": "recipient"
+          },
+          {
+            "distinct": 2,
+            "droppable": false,
+            "kind": "grain",
+            "name": "time_period"
+          },
+          {
+            "distinct": null,
+            "droppable": true,
+            "kind": "value",
+            "name": "value"
+          },
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "unit",
+            "name": "unit"
+          },
+          {
+            "distinct": 1,
+            "droppable": true,
+            "kind": "facet",
+            "name": "measurementMethod"
+          },
+          {
+            "distinct": 1,
+            "droppable": false,
+            "kind": "facet",
+            "name": "provenance"
+          },
+          {
+            "distinct": null,
+            "droppable": true,
+            "kind": "status",
+            "name": "status"
+          }
+        ],
+        "enrichments": [],
+        "pivots": [],
+        "rows": 2,
+        "schema_version": 1
+      },
+      "persisted": {
+        "artifacts": [
+          {
+            "artifact_digest": "sha256:abababababababababababababababababababababababababababababababab",
+            "bytes": 12,
+            "created_at": "2026-10-04T12:00:00Z",
+            "media_type": "text/csv",
+            "rendering": {
+              "format": "csv"
+            },
+            "tier": "working",
+            "url": "https://example.test/a.csv"
+          },
+          {
+            "artifact_digest": "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+            "bytes": 12,
+            "created_at": "2026-10-04T12:00:00Z",
+            "media_type": "text/csv",
+            "rendering": {
+              "statistics": "series"
+            },
+            "tier": "working",
+            "url": "https://example.test/a.csv"
+          }
+        ],
+        "citation": {
+          "sources": [
+            {
+              "data_commons": null,
+              "documentation": null,
+              "label": "OECD_DAC2A",
+              "license": null,
+              "license_type": null,
+              "license_url": null,
+              "processing_level": null,
+              "ref": "OECD_DAC2A",
+              "source": null,
+              "url": null
+            }
+          ],
+          "text": "OECD_DAC2A"
+        },
+        "content_version": "cv_golden_warned",
+        "coverage": {
+          "dimensions": [],
+          "rows": 2,
+          "window": null
+        },
+        "definition": {
+          "identity": {},
+          "schema_version": 1,
+          "spec_id": "spec_golden"
+        },
+        "output_options": null,
+        "prepared_at": "2026-10-04T12:00:00Z",
+        "schema_version": 1,
+        "series_count": 1,
+        "series_coverage_stamp": "sha256:served",
+        "trace": {
+          "capability_version": "dset_test",
+          "code_index_stamp": {
+            "content_hash": "6db7833665fc20424b76038fc7d741079f0a9d055373532a59ce62a6267a7226",
+            "exported_at": "2026-10-09T13:55:13Z",
+            "graph_endpoint": "https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app"
+          },
+          "facets": [],
+          "family_member_count": null,
+          "family_member_digest": null,
+          "frame_grammar_version": "1.0.0",
+          "graph_revision": "rev1",
+          "materialiser_build": "test-build",
+          "normalisations": [],
+          "origin_catalogue_build_id": "fake-catalogue",
+          "resolved_stat_vars": [],
+          "source_revisions": []
+        },
+        "warnings": [
+          {
+            "code": "stat_vars_summed",
+            "contributing_member_count": 3,
+            "message": "The series sums observations from more than one StatVar in the requested family, and carries the family's reference as its stat_var. 3 StatVars were summed into dcid:Sum.",
+            "severity": "info",
+            "stat_var_label": "Summed family",
+            "stat_var_ref": "dcid:Sum"
+          },
+          {
+            "code": "facet_default_selected",
+            "message": "facet axis 'unit'",
+            "severity": "info"
+          },
+          {
+            "code": "enrichment_unavailable",
+            "message": "call warning",
+            "severity": "info"
+          }
+        ]
+      },
+      "presentation_manifest": {
+        "citation": {
+          "sources": [
+            {
+              "data_commons": null,
+              "documentation": null,
+              "label": "OECD_DAC2A",
+              "license": null,
+              "license_type": null,
+              "license_url": null,
+              "processing_level": null,
+              "ref": "OECD_DAC2A",
+              "source": null,
+              "url": null
+            }
+          ],
+          "text": "OECD_DAC2A"
+        },
+        "content_version": "cv_golden_warned",
+        "coverage": {
+          "dimensions": [],
+          "rows": 2,
+          "window": null
+        },
+        "default_scope_plural": false,
+        "definition": {
+          "identity": {},
+          "schema_version": 1,
+          "spec_id": "spec_golden"
+        },
+        "output_profile": {
+          "columns": [
+            {
+              "distinct": 1,
+              "droppable": false,
+              "kind": "grain",
+              "name": "stat_var"
+            },
+            {
+              "distinct": 1,
+              "droppable": false,
+              "kind": "role",
+              "name": "recipient"
+            },
+            {
+              "distinct": 2,
+              "droppable": false,
+              "kind": "grain",
+              "name": "time_period"
+            },
+            {
+              "distinct": null,
+              "droppable": true,
+              "kind": "value",
+              "name": "value"
+            },
+            {
+              "distinct": 1,
+              "droppable": false,
+              "kind": "unit",
+              "name": "unit"
+            },
+            {
+              "distinct": 1,
+              "droppable": true,
+              "kind": "facet",
+              "name": "measurementMethod"
+            },
+            {
+              "distinct": 1,
+              "droppable": false,
+              "kind": "facet",
+              "name": "provenance"
+            },
+            {
+              "distinct": null,
+              "droppable": true,
+              "kind": "status",
+              "name": "status"
+            }
+          ],
+          "enrichments": [],
+          "pivots": [],
+          "rows": 2,
+          "schema_version": 1
+        },
+        "prepared_at": "2026-10-04T12:00:00Z",
+        "schema_version": 1,
+        "series_count": 1,
+        "series_coverage_stamp": null,
+        "trace": {
+          "capability_version": "dset_test",
+          "code_index_stamp": {
+            "content_hash": "6db7833665fc20424b76038fc7d741079f0a9d055373532a59ce62a6267a7226",
+            "exported_at": "2026-10-09T13:55:13Z",
+            "graph_endpoint": "https://dfo-dev-dc-datacommons-service-zms5lj4zhq-nn.a.run.app"
+          },
+          "facets": [],
+          "family_member_count": null,
+          "family_member_digest": null,
+          "frame_grammar_version": "1.0.0",
+          "graph_revision": "rev1",
+          "materialiser_build": "test-build",
+          "normalisations": [],
+          "origin_catalogue_build_id": "fake-catalogue",
+          "resolved_stat_vars": [],
+          "source_revisions": []
+        },
+        "warnings": [
+          {
+            "code": "stat_vars_summed",
+            "contributing_member_count": 3,
+            "message": "The series sums observations from more than one StatVar in the requested family, and carries the family's reference as its stat_var. 3 StatVars were summed into dcid:Sum.",
+            "severity": "info",
+            "stat_var_label": "Summed family",
+            "stat_var_ref": "dcid:Sum"
+          },
+          {
+            "code": "origin_catalogue_stale",
+            "message": "stored stale",
+            "severity": "warning"
+          },
+          {
+            "code": "facet_default_selected",
+            "message": "facet axis 'unit'",
+            "severity": "info"
+          },
+          {
+            "code": "enrichment_unavailable",
+            "message": "call warning",
+            "severity": "info"
+          }
+        ]
+      },
+      "series_conversions": []
+    },
+    "subject_id": "spec_golden"
+  }
+}

@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -15,12 +17,13 @@ import tests.fixtures
 from artifact_store import Tier
 from code_index import CodeIndex, CodeRow, IndexStamp, StatVarRow
 from dataset_store.snapshot import WORKING_TIER_RETENTION, Revocation, StoredVersion
+from datasets_api.admission import MaterialisePermits
 from datasets_api.codes import DATASETS_CODE_CATALOGUE
 from datasets_api.doors.observations import build_observations_door, observations_body
 from datasets_api.doors.pin import pin_artifact
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from dfo_platform.app import Surface, create_app
-from materialise.formats import FRAME1_MEDIA_TYPE
+from materialise.formats import CANONICAL_FRAME_MEDIA_TYPE, FRAME1_MEDIA_TYPE
 from materialise.graph import GraphReadError
 from materialise.series_conversion import SeriesConversion, encode_series_conversions
 from origin_catalogue import DFO, bound_catalogue
@@ -33,9 +36,11 @@ from tests.engine._fake_coverage import FakeCoverageService, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import build_observations_planned
 from tests.fixtures import FakeGraph
+from tests.materialise._canonical_frame import canonical_frame_of_frame1
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue, provenance_row
 
 from ._artifact_doubles import FakeArtifactStore
+from ._deps_doubles import fake_deps_cell
 from ._graph_doubles import FakeMintGraphReader
 from ._snapshot_doubles import (
     FakeSnapshotReader,
@@ -43,6 +48,8 @@ from ._snapshot_doubles import (
     StoreBackedSnapshotReader,
     _store_and_locate,
 )
+from ._version_facts import facts_from_body
+from .test_materialise_semaphore import _FrameTrackingPermits
 from .test_pin_door import FakeArtifactReferenceWriter
 
 _NOW = datetime(2026, 6, 1, tzinfo=UTC)
@@ -144,6 +151,14 @@ def _graph(*, fail: bool = False) -> FakeMintGraphReader:
     return graph
 
 
+@pytest.fixture(autouse=True, params=["canonical", "frame1"])
+def frame_storage(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Runs every case over a version storing its canonical frame and over one storing only its
+    frame1 document."""
+    monkeypatch.setattr(_World, "storage", request.param)
+    return request.param
+
+
 def _frame(columns: Sequence[str], rows: Sequence[Sequence[object]]) -> bytes:
     return json.dumps(
         {"frame_version": "frame1", "columns": list(columns), "rows": [list(r) for r in rows]}
@@ -210,8 +225,11 @@ def _body(
 
 
 class _World:
-    """One stored version, its frame1 and a listable CSV, behind the door on a test app whose
-    request scope binds a catalogue listing `_PROV`."""
+    """One stored version, its stored frame and a listable CSV, behind the door on a test app
+    whose request scope binds a catalogue listing `_PROV`. `frame` is a frame1 document, stored
+    as given or as its canonical frame (`storage`)."""
+
+    storage = "canonical"
 
     def __init__(
         self,
@@ -223,7 +241,9 @@ class _World:
         store: FakeArtifactStore | None = None,
         now: datetime = _NOW,
         base_content_version: str | None = None,
+        permits: MaterialisePermits | None = None,
     ) -> None:
+        self.permits = permits if permits is not None else MaterialisePermits(1)
         self.store = store if store is not None else FakeArtifactStore()
         self.reader = reader if reader is not None else FakeSnapshotReader()
         self.reader.versions[(_SPEC, _CV)] = StoredVersion(
@@ -231,11 +251,20 @@ class _World:
             subject_kind="spec",
             content_version=_CV,
             schema_version=1,
-            immutable_body=dict(body),
+            facts=facts_from_body(body),
             base_content_version=base_content_version,
         )
         locations = [_store_and_locate(self.store, b"csv")]
-        if frame is not None:
+        if frame is not None and self.storage == "canonical":
+            locations.append(
+                _store_and_locate(
+                    self.store,
+                    canonical_frame_of_frame1(frame),
+                    rendering={"format": "frame"},
+                    media_type=CANONICAL_FRAME_MEDIA_TYPE,
+                )
+            )
+        elif frame is not None:
             locations.append(
                 _store_and_locate(
                     self.store,
@@ -250,12 +279,15 @@ class _World:
 
     def client(self) -> TestClient:
         door = build_observations_door(
-            spec_reader=FakeSpecReader(spec_ids=[_SPEC]),
-            snapshot_reader=self.reader,
-            artifact_store=self.store,
-            graph=self.graph,
-            code_index=_index(),
-            now=lambda: self.now,
+            deps=fake_deps_cell(
+                spec_reader=FakeSpecReader(spec_ids=[_SPEC]),
+                snapshot_reader=self.reader,
+                artifact_store=self.store,
+                graph=self.graph,
+                code_index=_index(),
+                now=lambda: self.now,
+                materialise_semaphore=self.permits,
+            )
         )
         catalogue = FakeCatalogue(provenances={_PROV: provenance_row(_PROV, DFO, source="OECD")})
         surface = Surface(
@@ -337,7 +369,8 @@ def _expired(world: _World) -> str:
 
 def _only_a_superseded_bundle(world: _World) -> str:
     """The listable CSV is replaced by an unpinned bundle with no rendition, which a snapshot
-    does not list, so the version has no listable rendering left."""
+    does not list, and the stored frame, which a snapshot lists when it is the canonical frame,
+    is past working-tier retention, so the version has no listable rendering left."""
     bundle = _store_and_locate(
         world.store,
         b"zip",
@@ -345,7 +378,8 @@ def _only_a_superseded_bundle(world: _World) -> str:
         media_type="application/zip",
     )
     frame = world.reader.locations[(_SPEC, _CV)][1]
-    world.reader.locations[(_SPEC, _CV)] = [bundle, frame]
+    expired = replace(frame, stored_at=_NOW - WORKING_TIER_RETENTION - timedelta(seconds=1))
+    world.reader.locations[(_SPEC, _CV)] = [bundle, expired]
     return _PATH
 
 
@@ -922,6 +956,24 @@ def test_the_too_large_omission_counts_the_stored_series(small_caps):
 # ---------------------------------------------------------------------------
 # Retention
 # ---------------------------------------------------------------------------
+
+
+def test_an_observations_read_frees_its_frame_before_its_permit_is_released():
+    """The read loads and decodes the stored frame under one permit. When it gives the permit
+    back, nothing references the frame's bytes."""
+    permits = _FrameTrackingPermits(1)
+
+    class _TrackingStore(FakeArtifactStore):
+        def get(self, *, artifact_digest: str, tier: Tier) -> bytes:
+            data = super().get(artifact_digest=artifact_digest, tier=tier)
+            # A `bytearray` stands in for the bytes, so the test can hold a weak reference.
+            return cast(bytes, permits.track(data))
+
+    resp = _standard_world(store=_TrackingStore(), permits=permits).get()
+
+    assert resp.status_code == 200, resp.text
+    assert len(permits.read) == 1
+    assert permits.freed_at_release == [True]
 
 
 def test_a_version_pinned_then_read_31_days_later_returns_its_observations():

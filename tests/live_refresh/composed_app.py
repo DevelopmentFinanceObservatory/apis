@@ -29,17 +29,15 @@ storage credential. Routes under `/__test__` exist only in this helper:
   "set_value": {"recipient": "country/KEN", "year": 2024, "value": 5.0},
   "add_stat_var": true, "age_head_seconds": 1200}`. `recipients` narrows `add_year` and
   defaults to all four. `stat_var` narrows `add_year`, which defaults to every member holding
-  observations, and names the series of `set_value`, which defaults to `MEMBER_A`. The head
-  is aged so the next refresh sees the move: past the recheck interval for a move that changes
-  a series' count or dates, past the maximum age for a changed value alone, which no probe
-  signal shows.
+  observations, and names the series of `set_value`, which defaults to `MEMBER_A`. Every move
+  is a new upstream release, so the source's `lastDataRefreshDate` moves with it, and the head
+  is aged past the recheck interval so the next refresh compares its fingerprint.
 - `POST /__test__/head`: `{"age_seconds": 1200}` ages the dataset's head and nothing else.
 - `POST /__test__/budget`: `{"inline": false}` puts every rebuild over the inline budget, so a
   refresh that must rebuild answers `pending` and a mint answers 202 with an operation.
   `{"inline": true}` restores the default.
 - `POST /__test__/worker/run`: runs every queued operation, as the operations worker would,
-  and answers `{"ran": [<operation id>, ...]}`. The worker advances no head, so the head moves
-  at the next inline rebuild.
+  and answers `{"ran": [<operation id>, ...]}`. The worker advances the head.
 - `GET /__test__/artifacts/{tier}/{digest}`: the stored bytes a signed URL names.
 
     curl -s localhost:8093/__test__/state | jq .mint_body > mint.json
@@ -58,7 +56,7 @@ import hashlib
 import itertools
 import os
 import threading
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -87,7 +85,6 @@ from datasets_api.operations.task_client import FakeTaskClient
 from datasets_api.operations.worker import run_operation
 from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.reference_store import LiveArtifactReferenceWriter
-from datasets_api.revision import SentinelRevisionReader
 from datasets_api.version_store import LiveHeadStore, LiveVersionLister, LiveVersionRecordWriter
 from dc_sdmx import SdmxClient
 from dfo_platform.app import create_app
@@ -106,7 +103,6 @@ from spec_registry.reader import LiveSpecReader
 from statvar_members import MemberEnumerator
 from tests.artifact_store.conftest import FakeGCSClient
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
-from tests.datasets_api._operation_store import FakeOperationDatasetStore
 from tests.datasets_api._version_record_store import FakeVersionRecordDatasetStore
 from tests.origin_catalogue.fake_catalogue import FakeCatalogue, fake_catalogue_service
 from tests.series_coverage.support import coverage_table, session_coverage_service
@@ -163,10 +159,10 @@ _CSV_HEADER = (
     "STRUCTURE,STRUCTURE_ID,ACTION,variableMeasured,recipient,unit,measurementMethod,"
     "observationPeriod,provenance,TIME_PERIOD,OBS_VALUE,scalingFactor,facetId\r\n"
 )
-# Past `head_recheck_seconds` (900), so the next read probes the facets.
+# Past `head_recheck_seconds` (900), so the next read compares the head's fingerprint.
 _PAST_RECHECK = timedelta(minutes=20)
-# Past `head_max_age_seconds` (86400), so the next read rebuilds whatever the probe says.
-_PAST_MAX_AGE = timedelta(hours=25)
+# The source's `lastDataRefreshDate` before the first move. Each move advances it a day.
+_FIRST_REFRESH = datetime(2026, 9, 1, tzinfo=UTC)
 _OPERATION_LEASE_SECONDS = 60
 _COVERAGE_SLICE_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "coverage_slice"
 _EXECUTION_IDENTITY = "engine-test|grammar-1.0.0|reduction-test"
@@ -392,6 +388,29 @@ class _Facets(Mapping[tuple[str, str], list[Facet]]):
         return len(self._observations.series())
 
 
+class _Arcs(Mapping[str, Mapping[str, tuple[str, ...]]]):
+    """The graph's node arcs: `static`, and the source provenance dated by the observations'
+    release, so every move refreshes it."""
+
+    def __init__(
+        self, observations: Observations, static: Mapping[str, Mapping[str, tuple[str, ...]]]
+    ) -> None:
+        self._observations = observations
+        self._static = static
+
+    def __getitem__(self, dcid: str) -> Mapping[str, tuple[str, ...]]:
+        if dcid == _PROVENANCE:
+            refreshed = _FIRST_REFRESH + timedelta(days=self._observations.release)
+            return {"lastDataRefreshDate": (refreshed.date().isoformat(),)}
+        return self._static[dcid]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter((*self._static, _PROVENANCE))
+
+    def __len__(self) -> int:
+        return len(self._static) + 1
+
+
 class _Coverage:
     """The coverage service the mint, the currency check, and the worker read, rebuilt from
     the observations on every read. Its stamp names the release, as a coverage build follows
@@ -422,6 +441,14 @@ class _Coverage:
             },
             horizon=horizon,
         )
+
+    def serves(self, snapshot: CoverageSnapshot) -> bool:
+        """`current()` builds an index per call, so the stamp identifies the served build."""
+        return snapshot.stamp == self.stamp
+
+    def register_load_guard(self, guard: object) -> Callable[[], None]:
+        """This fake never loads a build, so no guard is ever entered."""
+        return lambda: None
 
     def snapshot(self) -> CoverageSnapshot:
         index = self.current()
@@ -475,17 +502,24 @@ def _graph(observations: Observations) -> FakeMintGraphReader:
         "constraintProperties": (_AXIS,),
     }
     return FakeMintGraphReader(
-        arcs={
-            **{
-                member: {**member_arcs, _AXIS: (_AXIS_VALUES[member],), "name": (_LABELS[member],)}
-                for member in MEMBERS
+        arcs=_Arcs(
+            observations,
+            {
+                **{
+                    member: {
+                        **member_arcs,
+                        _AXIS: (_AXIS_VALUES[member],),
+                        "name": (_LABELS[member],),
+                    }
+                    for member in MEMBERS
+                },
+                **{
+                    recipient: {"typeOf": ("Place",), "name": (_LABELS[recipient],)}
+                    for recipient in RECIPIENTS
+                },
+                _MEASUREMENT_METHOD: {"name": (_LABELS[_MEASUREMENT_METHOD],)},
             },
-            **{
-                recipient: {"typeOf": ("Place",), "name": (_LABELS[recipient],)}
-                for recipient in RECIPIENTS
-            },
-            _MEASUREMENT_METHOD: {"name": (_LABELS[_MEASUREMENT_METHOD],)},
-        },
+        ),
         facets=_Facets(observations),
         labels=_LABELS,
     )
@@ -564,17 +598,17 @@ class _SelfServedArtifactStore(LiveArtifactStore):
         self._inventory_reads = inventory
         self.base_url = base_url
 
-    def signed_get_url(
+    def signed_location_url(
         self,
         digest: str,
         *,
         tier: Tier,
+        bucket: str,
+        object_name: str,
         ttl: timedelta,
         response_type: str,
         response_disposition: str,
     ) -> str:
-        if self._inventory_reads.get_location(digest, tier=tier) is None:
-            raise ArtifactNotFoundError(digest=digest, tier=tier)
         query = httpx.QueryParams(
             {"response_type": response_type, "response_disposition": response_disposition}
         )
@@ -652,13 +686,13 @@ class ComposedApp:
         add_stat_var: bool = False,
         age_head: timedelta | None = None,
     ) -> None:
-        """Move the dataset's data, then age its head so the next refresh sees the move.
+        """Move the dataset's data, which moves its source's refresh date, then age its head so
+        the next refresh sees the move.
 
         `add_year` gives `recipients` an observation at that year, for `stat_var` or for every
         member holding observations. `set_value` is `(recipient, year, value)` and replaces an
         observation of `stat_var`, `MEMBER_A` when unstated. `add_stat_var` gives `MEMBER_B`
-        observations. `age_head` defaults to just past the recheck interval, and to just past
-        the maximum age when a value is all that changed, since no probe signal shows that.
+        observations. `age_head` defaults to just past the recheck interval.
         """
         if add_year is not None:
             self.observations.add_year(add_year, recipients=recipients, stat_var=stat_var)
@@ -672,10 +706,7 @@ class ComposedApp:
             )
         if add_stat_var:
             self.observations.add_stat_var()
-        if age_head is None:
-            signal_moved = add_year is not None or add_stat_var
-            age_head = _PAST_RECHECK if signal_moved else _PAST_MAX_AGE
-        self.age_head(age_head)
+        self.age_head(age_head if age_head is not None else _PAST_RECHECK)
 
     def age_head(self, age: timedelta = _PAST_RECHECK) -> None:
         """Set the dataset head's confirmation and materialisation times `age` into the past.
@@ -705,10 +736,11 @@ class ComposedApp:
             if (operation_id, submission_count) in self._operations_run:
                 continue
             self._operations_run.add((operation_id, submission_count))
-            claimed = self.operation_store.claim_lease(
+            claimed = self.operation_store.claim(
                 operation_id,
                 submission_count=submission_count,
                 lease_seconds=_OPERATION_LEASE_SECONDS,
+                final_delivery=False,
             )
             if claimed is None:
                 continue
@@ -717,7 +749,6 @@ class ComposedApp:
                     operation=claimed,
                     deps=self._worker_deps,
                     operation_store=self.operation_store,
-                    lease_seconds=_OPERATION_LEASE_SECONDS,
                 )
             ran.append(operation_id)
         return ran
@@ -866,7 +897,7 @@ def compose(
     recipe_store = LiveRecipeStore(store=version_store)
     version_lister = LiveVersionLister(store=version_store)
     reference_writer = LiveArtifactReferenceWriter(store=version_store)
-    operation_store = LiveOperationStore(store=FakeOperationDatasetStore())
+    operation_store = LiveOperationStore(store=version_store)
     task_client = FakeTaskClient()
     spec_reader = LiveSpecReader(store=spec_store)
     graph = _graph(observations)
@@ -896,7 +927,6 @@ def compose(
                 spec_reader=spec_reader,
                 graph=graph,
                 sdmx=_sdmx_client(observations),
-                revision_reader=SentinelRevisionReader(),
                 artifact_store=artifact_store,
                 version_writer=version_writer,
                 head_writer=head_store,
@@ -933,17 +963,19 @@ def compose(
         task_client=task_client,
         settings=settings,
         _worker_deps=DefinitionDeps(
+            registry=LiveSpecRegistry(store=spec_store),
             spec_reader=spec_reader,
             graph=graph,
             sdmx=_sdmx_client(observations),
-            revision_reader=SentinelRevisionReader(),
             artifact_store=artifact_store,
             materialiser_build="live-refresh-test-build",
             capability_version="dset_live_refresh_test",
             ceiling=1_000_000,
             member_concurrency=4,
             enumerator=MemberEnumerator(),
-            enrichment=EnrichmentLookup(graph),
+            enrichment=EnrichmentLookup(
+                graph, type_kinds=code_index.party_types, parties=code_index.parties
+            ),
             code_index=code_index,
             rate_cache=rate_cache,
             coverage=coverage,

@@ -222,6 +222,8 @@ def _ranked_facet(candidate: RoleBulkCandidate, *, window: RequestedWindow | Non
         obs_count=obs_count,
         earliest_date=earliest_date,
         latest_date=latest_date,
+        # Coverage's years, whatever the facet's cadence, so no evidence that it is annual.
+        dates_coarsened=True,
     )
 
 

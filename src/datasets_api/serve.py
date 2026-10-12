@@ -1,33 +1,48 @@
-"""`serve_definition` runs synchronously inside the calling door's executor.
+"""`serve_definition` runs synchronously on the Datasets surface's work executor, or in the worker.
 Its prewrite half materialises resolved requests and builds a manifest with an empty artifact list.
-Its write half reshapes, stores artifacts, and records the version. The definition options route
-uses only the prewrite half. Every materialising door must reuse this path.
+Its write half stores artifacts, renders the requested rendering, records the version, and
+advances the head. `datasets_api.current.serve_current` calls it for every materialising entry
+point. The options route's answer for an unregistered definition uses the prewrite half alone.
 
 Group members materialise across `member_concurrency` workers. The materialise timing covers
 the full fan-out. The prewrite half records output-profile CPU in a separate `Server-Timing`
 phase.
 
-`serve_definition` streams unsigned frame1 from every frame chunk beside the requested rendering on
-a worker, then joins it before recording the version. Frame1 is written only for results of at most
-`FRAME1_MAX_ROWS` (250,000) rows; a larger version mints without it, and presentation answers
-`missing_rendering`. A failed frame1 write is logged, does not fail the mint, and leaves
-presentation unavailable until a later mint.
+`serve_definition` streams the canonical frame from every frame chunk beside the requested
+rendering on a worker, at every size, and joins it before recording the version. A failed
+canonical frame write fails the serve before the head advances, so a head names a version only
+once its canonical frame, statistics and materialisation row are durable. A later serve of the
+version writes the frame again.
 
-A definition write holds up to two `dataset_store` borrows, one per artifact transaction. At four
-concurrent calls each, mint and definition retrieval can need 16 borrows. Presentation frames and
-components can add eight, and the frame refresh's eight threads one read each. The pool
-defaults to 10 connections and a 30-second borrow timeout.
-The semaphore bounds rematerialisation. The pool bounds borrows. Presentation has a
-separate pool, while its frame and component reads share `dataset_store`. Frame1 and the requested
-rendering overlap. The `store` timing includes both, and frame1 encoding runs inside it. A
-primary-write failure waits for the frame1 worker to finish.
+A serve's store work is a fixed set of transactions, each holding one `dataset_store` borrow at
+a time: the head read its caller makes, a read of the stored version only when that head names
+the result's `content_version`, one write transaction for the version record, every artifact's
+inventory row and link and any collapsed version (`VersionRecordWriter.write_version`), and one
+for the materialisation row and head advance. Artifacts are stored through a `deferred` view
+of the artifact store, whose writes add their inventory rows to an `InventoryBatch` for the
+write transaction and read no inventory for new bytes, so the frame worker opens no
+transaction beside the request thread. The canonical frame and the requested rendering overlap.
+The `store` timing includes both, and frame encoding runs inside it.
 
-If frame1 succeeds before the requested rendering fails, its inventory object lacks a version link,
-so snapshot reads ignore it. A later mint links its digest in `version_artifact`.
+Every run records one `datasets.materialisation` row (`MaterialisationRecord`) after the version
+record commits: the trigger, release, code index, catalogue, coverage and graph generation it ran
+under, its dependency fingerprint, selection and conversion. The head advances in the same
+transaction as that insert, so the head names the run that produced it and carries its
+fingerprint for `current.serve_current`'s freshness check. A worker run's operation claim
+(`ServeDeps.head_fence`) is checked under a row lock in that transaction, and a claim another
+attempt has taken raises `HeadFenceLost` with neither row written. The caller reads the head before
+materialising and passes its `content_version`, or `None`, for compare-and-set, and
+`serve_definition` returns the head it wrote (`ServedDefinition`).
 
-A supplied `signal` advances the head after the version record commits. The caller reads the head
-before materialising and passes its `content_version`, or `None`, for compare-and-set. Mint priming
-and currency checks share `datasets_api.currency.derive_signals`.
+`serve_definition` holds one materialise permit (`ServeDeps.materialise_semaphore`) from before
+its first SDMX request to its last artifact write, since the frame stays alive through citation,
+canonical frame, statistics and rendering. The permits bound the frames alive at once, and so
+peak memory.
+
+`ServeDeps.deadline` bounds every SDMX, graph and metadata read of a serve; a bundle whose
+metadata reads run out of time is linked as incomplete (`incomplete_artifact`). `ServeDeps.work_deadline` bounds a whole
+worker run. The write half checks it before the version record and before each artifact render
+and upload, and raises `WorkDeadlinePassed` once it has passed, so no write starts after it.
 """
 
 from __future__ import annotations
@@ -35,26 +50,35 @@ from __future__ import annotations
 import contextvars
 import logging
 import math
-import threading
-from collections.abc import Iterable, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+import time
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import cast
 
 from artifact_store import ArtifactStore, ArtifactStoreError
+from artifact_store.inventory import InventoryBatch, InventoryEntry
 from code_index.query import CodeIndex
 from dataset_store.clock import utc_now
-from dataset_store.snapshot import SnapshotReader, select_servable_locations
-from datasets_api.admission import bounded_materialise_slot
+from dataset_store.snapshot import (
+    SnapshotReader,
+    StoredArtifactLocation,
+    StoredVersion,
+    VersionState,
+    select_servable_locations,
+)
+from datasets_api.adapter import pinned_provenance_scope
+from datasets_api.admission import MaterialisePermits, bounded_materialise_slot
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.manifest import (
     assemble_manifest,
     coverage_facts_of,
+    definition_version_record,
     healed_citation,
     persisted_manifest,
-    record_definition_version,
     reshape_warning_models,
+    stored_manifest_facts,
 )
 from datasets_api.manifest_models import (
     ArtifactEntryModel,
@@ -65,6 +89,7 @@ from datasets_api.manifest_models import (
 )
 from datasets_api.mint_models import MintOptions
 from datasets_api.origin import (
+    catalogue_build_id,
     refuse_unserved_empty_probe,
     refuse_unserved_selection,
     un_unavailable_warnings,
@@ -72,24 +97,29 @@ from datasets_api.origin import (
 )
 from datasets_api.query_options import encode_query_options
 from datasets_api.render import (
-    FRAME1_MAX_ROWS,
     artifact_rendering_key,
-    cited_source_names,
-    metadata_deadline,
+    complete_rendering,
+    incomplete_rendering,
     render_and_store,
-    render_and_store_frame1,
+    render_and_store_canonical_frame,
     render_and_store_series_statistics,
-    sign_stored_artifact,
+    stored_artifact_entry,
 )
 from datasets_api.timings import phase, record_elapsed
 from datasets_api.version_store import rendering_key
 from datasets_api.versions import (
     ArtifactRecord,
+    HeadFence,
     HeadStore,
-    MemberSignal,
+    MaterialisationRecord,
     NullHeadWriter,
     NullVersionRecordWriter,
+    SubjectHead,
+    Trigger,
+    VersionRecord,
     VersionRecordWriter,
+    VersionWrite,
+    WrittenVersion,
 )
 from dc_sdmx import SdmxClient
 from dfo_platform.config import PublicSiteSettings
@@ -103,8 +133,6 @@ from materialise import (
     materialise_group,
 )
 from materialise.bundle import ReproducingCall
-from materialise.content_version import MintPreimage, recipe_dependency_fingerprint
-from materialise.convert import ConversionRecord
 from materialise.errors import DefaultFacetUndefinedError
 from materialise.graph import GraphReader
 from materialise.provenance_doc import (
@@ -112,7 +140,6 @@ from materialise.provenance_doc import (
     read_source_citations,
 )
 from materialise.rate_tables import RateTableCache
-from materialise.revision import RevisionReader
 from materialise.statistics import SeriesStatisticsSink, compute_series_statistics_table
 from origin_catalogue import current_catalogue, recording_un_blocked_places
 from series_coverage.index import CoverageIndex, Estimate
@@ -127,20 +154,31 @@ once that route exists to serve it. `datasets_api.doors.definition`
 mounts it unconditionally, so this is `True` for every deployment that
 composes `datasets_api.app.datasets_surface`."""
 
-# Logs frame1 store failures with `spec_id` and `content_version`. The requested mint succeeds.
-# Keep the marker stable for alerts. Later mints can restore frame1.
-FRAME1_STORE_FAILED_MARKER = "frame1_store_failed"
+# Logs every canonical frame store failure once, with `spec_id` and `content_version`, whether it
+# fails the serve alone or beside another write's failure. The value is the name the alert matches.
+CANONICAL_FRAME_STORE_FAILED_MARKER = "frame1_store_failed"
 
-# Logs a bundle returned but left unlinked because a graph metadata read failed, with the subject,
-# `content_version` and cited refs. The next render of that version reads again and links on
-# success.
-BUNDLE_NOT_LINKED_MARKER = "bundle_not_linked"
+# Logs an artifact linked as incomplete because a graph metadata read failed, with the subject,
+# `content_version` and cited refs. The next render of that version reads again and links a
+# complete artifact beside it on success.
+BUNDLE_LINKED_INCOMPLETE_MARKER = "bundle_linked_incomplete"
 
 _RAW_FETCH_GUARD_MARGIN = 1.5
 """The 1.5 margin covers rows added between the exact coverage snapshot and live SDMX fetch.
 Coverage is exact for covered StatVars and overestimates `latest` windows or `ContainedIn`-bounded
 roles. Admission runs before fetch. The 50% mid-fetch backstop targets genuine response growth.
 """
+
+
+class WorkDeadlinePassed(RuntimeError):
+    """The run's work deadline passed before a write could start. It is unclassified, so the
+    worker takes its transient path."""
+
+
+def _check_work_deadline(deps: ServeDeps, step: str) -> None:
+    """Raise `WorkDeadlinePassed` when `deps.work_deadline` has passed before `step`."""
+    if deps.work_deadline is not None and time.monotonic() >= deps.work_deadline:
+        raise WorkDeadlinePassed(f"the run's work deadline passed before {step}")
 
 
 def raw_fetch_guard(estimate: Estimate, *, floor: int) -> int:
@@ -171,60 +209,10 @@ def _resolved_stat_var_refs(result: MaterialisationResult) -> tuple[str, ...]:
     return refs_from_resolved_stat_vars(result.trace.resolved_stat_vars)
 
 
-def _groupby_collapse_preimage(result: MaterialisationResult) -> MintPreimage:
-    """Returns the exact preimage used by the base `mint_version` call. Trace facets use a 7-key
-    wire shape. The version preimage uses grammar facets `{axis, ref, basis}`, including the
-    converted-unit basis and ref. `_reshape` reads it only for full collapses."""
-    return result.mint_preimage
-
-
-def _rate_provenance_refresh(
-    records: Iterable[ConversionRecord | None],
-) -> tuple[tuple[str, str | None], ...]:
-    """Returns sorted, deduplicated `(table_provenance_id, table_refresh_date)` pairs.
-    `table_refresh_date` is the `lastDataRefreshDate` each member's tables were admitted under,
-    which `currency.recheck_rate_provenance` compares with the live date. The table digests stay
-    in the content version. Group members share table provenance, so their records collapse to one pair.
-    Returns `()` when no conversion record exists."""
-    pairs: dict[str, str | None] = {}
-    for record in records:
-        if record is not None:
-            pairs[record.table_provenance_id] = record.table_refresh_date
-    return tuple(sorted(pairs.items()))
-
-
-def _recipe_dependency_fingerprint(
-    records: Iterable[ConversionRecord | None],
-) -> tuple[str, str] | None:
-    """Returns the group's `(recipe_id, digest)` fingerprint from its first conversion record.
-    Group members share one recipe. Returns `None` when no conversion record exists."""
-    for record in records:
-        if record is not None:
-            return recipe_dependency_fingerprint(record.recipe_id)
-    return None
-
-
-def _signal_with_rate_provenance(
-    signal: Sequence[MemberSignal], records: Iterable[ConversionRecord | None]
-) -> tuple[MemberSignal, ...]:
-    """Adds rate-provenance refresh and recipe fingerprint fields to each signal from this
-    materialisation's conversion records. It reads `records` into a tuple because both helpers
-    iterate it. Probe-derived signals lack conversion data. This function adds the fields before
-    `HeadWriter.advance_head`."""
-    records = tuple(records)
-    refresh = _rate_provenance_refresh(records)
-    fingerprint = _recipe_dependency_fingerprint(records)
-    return tuple(
-        replace(member, rate_provenance_refresh=refresh, recipe_dependency_fingerprint=fingerprint)
-        for member in signal
-    )
-
-
 @dataclass(frozen=True)
 class ServeDeps:
     sdmx: SdmxClient
     graph: GraphReader
-    revision_reader: RevisionReader
     artifact_store: ArtifactStore
     materialiser_build: str
     capability_version: str
@@ -237,59 +225,66 @@ class ServeDeps:
     # One process-wide rate-table cache shared by materialisations.
     rate_cache: RateTableCache
     version_writer: VersionRecordWriter = field(default_factory=NullVersionRecordWriter)
-    # Reads the version record `version_writer` persists. A write reads it before rendering, so a
-    # re-mint renders its bundle from the stored citation, and again after its record insert finds
-    # the record already there, so the render dates and cites as the stored record does
-    # (`_persisted_body`). `None` reads nothing.
+    # Reads the version record `version_writer` persists, before rendering, when the caller's
+    # head names the result's version, so a re-mint renders its bundle from the stored citation
+    # (`_persisted_state`). `None` reads nothing.
     snapshot_reader: SnapshotReader | None = None
-    # Callers read before materialising and advance after writes when given a signal. The default
-    # writer reads nothing and treats writes as no-ops.
+    # Records each run and advances the head to it. Callers read the head before materialising.
+    # The default writer reads nothing and treats writes as no-ops.
     head_store: HeadStore = field(default_factory=NullHeadWriter)
-    # Bounds rematerialisation across doors sharing the semaphore. Mint and definition share one.
-    # `None` disables the bound.
-    materialise_semaphore: threading.BoundedSemaphore | None = None
-    # Absolute monotonic deadline for queue waits, SDMX fetches, and the citation read before the
-    # write. A bundle's two metadata reads each run until this deadline or
-    # `settings.metadata_read_seconds` from their start, whichever ends later: the documentation
-    # read (at a version's first mint, or the live read that fills a stored citation's empty
-    # fields) and the code label read. `None` means no deadline.
+    # Bounds the frames alive at once across every door sharing the semaphore. A serve holds one
+    # permit for its frame's whole life. `None` disables the bound.
+    materialise_semaphore: MaterialisePermits | None = None
+    # Absolute monotonic deadline for the permit wait, SDMX fetches, and every graph read: the
+    # citation read, the documentation read, and the code label read. `None` means no deadline.
     deadline: float | None = None
+    # Absolute monotonic deadline of a whole worker run, checked before the version record and
+    # before each artifact render and upload. `None` checks nothing.
+    work_deadline: float | None = None
+    # A worker run's operation claim, checked in the head advance's own transaction
+    # (`HeadWriter.advance_head`). `None` fences nothing.
+    head_fence: HeadFence | None = None
     # Supplies queue-wait and pivot-cell caps plus capability limits embedded in manifests. The
-    # The application passes it explicitly. The default serves direct construction.
+    # application passes it explicitly. The default serves direct construction.
     settings: DatasetsBuildSettings = field(default_factory=DatasetsBuildSettings.from_env)
 
 
-def _persisted_body(
-    snapshot_reader: SnapshotReader | None, *, subject_id: str, content_version: str
-) -> Mapping[str, object] | None:
-    """The stored `immutable_body` of the version record, or `None` if absent or unreadable."""
-    if snapshot_reader is None:
+def _persisted_state(
+    snapshot_reader: SnapshotReader | None,
+    *,
+    subject_id: str,
+    content_version: str,
+    head_content_version: str | None,
+) -> VersionState | None:
+    """The stored version and its linked locations when the head names `content_version`, so
+    the version is on record, else `None` with no read.
+
+    A version on record that the head does not name, such as one a concurrent first mint just
+    recorded, is found by the write transaction instead (`VersionRecordWriter.write_version`),
+    and the write half renders again from it.
+    """
+    if snapshot_reader is None or content_version != head_content_version:
         return None
     with phase("snapshot_read"):
-        stored = snapshot_reader.read_version(subject_id, content_version)
-    return stored.immutable_body if stored is not None else None
+        return snapshot_reader.read_version_state(subject_id, content_version)
 
 
-def _render_citation(
-    persisted_body: Mapping[str, object] | None, *, assembled: CitationModel
-) -> CitationModel:
+def _render_citation(persisted: StoredVersion | None, *, assembled: CitationModel) -> CitationModel:
     """The stored record's citation when the version was already on record, else `assembled`.
 
     A re-mint then cites, names and dates its bundle as the first mint did.
     """
-    if persisted_body is None:
+    if persisted is None:
         return assembled
-    return CitationModel.model_validate(persisted_body["citation"])
+    return CitationModel.model_validate(stored_manifest_facts(persisted).citation)
 
 
-def _render_prepared_at(
-    persisted_body: Mapping[str, object] | None, *, assembled: datetime
-) -> datetime:
+def _render_prepared_at(persisted: StoredVersion | None, *, assembled: datetime) -> datetime:
     """The stored record's `prepared_at` when the version was already on record, else
     `assembled`, as `_render_citation` chooses the citation."""
-    if persisted_body is None:
+    if persisted is None:
         return assembled
-    return datetime.fromisoformat(cast(str, persisted_body["prepared_at"]))
+    return stored_manifest_facts(persisted).prepared_at
 
 
 def _prepared_now() -> datetime:
@@ -298,37 +293,28 @@ def _prepared_now() -> datetime:
 
 
 def persisted_response(
-    snapshot_reader: SnapshotReader | None,
     *,
     subject_id: str,
-    content_version: str,
-    body: Mapping[str, object] | None,
+    persisted: StoredVersion,
+    locations: Sequence[StoredArtifactLocation],
     served: Manifest,
     call_warnings: Sequence[WarningModel],
-    artifact_store: ArtifactStore,
     now: datetime,
 ) -> Manifest:
     """What a write returns when its version record already existed: the stored version.
 
-    The response then equals a snapshot read of that version (`persisted_manifest`). `body` is
-    the stored record the write rendered from; when it is `None` the record is read here.
-    `served` returns unchanged only without a `snapshot_reader`.
+    The response then equals a snapshot read of that version (`persisted_manifest`).
+    `persisted` is the stored record and `locations` the locations linked to it, read after
+    this write's links.
 
-    The record stays as stored. The write still links this call's linkable artifacts, each
+    The record stays as stored. The write still links this call's artifacts, each
     under its own `rendering_key`; an existing key keeps its artifact while that one is
     servable, and the response lists whichever the store links (`with_linked_artifacts`).
     """
-    if body is None:
-        body = _persisted_body(
-            snapshot_reader, subject_id=subject_id, content_version=content_version
-        )
-    if body is None:
-        return served
     return with_linked_artifacts(
-        persisted_manifest(body=body, served=served, call_warnings=call_warnings),
+        persisted_manifest(stored=persisted, served=served, call_warnings=call_warnings),
         subject_id=subject_id,
-        snapshot_reader=snapshot_reader,
-        artifact_store=artifact_store,
+        locations=locations,
         now=now,
     )
 
@@ -337,62 +323,57 @@ def with_linked_artifacts(
     manifest: Manifest,
     *,
     subject_id: str,
-    snapshot_reader: SnapshotReader | None,
-    artifact_store: ArtifactStore,
+    locations: Sequence[StoredArtifactLocation],
     now: datetime,
 ) -> Manifest:
-    """`manifest` with each artifact replaced by the one linked under its rendering key, when
-    that one has a servable location (`select_servable_locations`), signed under the name a
-    snapshot read gives it. An artifact whose key has no servable link stays as this call
-    rendered it.
+    """`manifest` with each artifact replaced by the one linked under its rendering key in
+    `locations`, the version's linked locations, when that one is servable
+    (`select_servable_locations`), listed as a snapshot read lists it. An artifact whose key
+    has no servable link stays as this call rendered it. An incomplete artifact
+    (`incomplete_artifact`) gives way to a servable artifact linked under its complete
+    rendering, and otherwise to the one linked under its own.
 
     A linked artifact stays linked while it is servable, so every mint, re-mint and head hit of
     a version lists the same bytes under one key, whatever this call's render read from the
     graph; once it is not, the next linked render replaces it (`version_store`). Every write
     renders from the stored record, so a linked artifact carries the record's `prepared_at` and
-    citation whichever writer linked it. A bundle left unlinked because its graph metadata reads
-    failed stays in the response only while no servable artifact is linked under its key.
-    Without a `snapshot_reader`, `manifest` returns unchanged.
+    citation whichever writer linked it.
     """
-    if snapshot_reader is None or not manifest.artifacts:
+    if not manifest.artifacts:
         return manifest
-    with phase("snapshot_read"):
-        locations = snapshot_reader.read_artifact_locations(subject_id, manifest.content_version)
     servable = {
         location.rendering_key: location
         for location in select_servable_locations(locations, now=now)
     }
     artifacts: list[ArtifactEntryModel] = []
     for artifact in manifest.artifacts:
-        location = servable.get(rendering_key(artifact.rendering))
+        location = servable.get(
+            rendering_key(complete_rendering(artifact.rendering))
+        ) or servable.get(rendering_key(artifact.rendering))
         artifacts.append(
             artifact
             if location is None
-            else sign_stored_artifact(
-                location, manifest=manifest, artifact_store=artifact_store, read_at=now
+            else stored_artifact_entry(
+                location, subject_id=subject_id, content_version=manifest.content_version
             )
         )
     return manifest.model_copy(update={"artifacts": artifacts})
 
 
 def bundle_linked(
-    snapshot_reader: SnapshotReader | None,
+    locations: Sequence[StoredArtifactLocation],
     *,
-    subject_id: str,
-    content_version: str,
     options: MintOptions,
     site: PublicSiteSettings,
     now: datetime,
 ) -> bool:
-    """Whether the version holds a servable artifact linked under the bundle rendering
-    `options` asks for. The response then lists that artifact (`with_linked_artifacts`), so
-    this call's render is discarded and needs no live documentation read. `False` for a bare
-    rendering or without a `snapshot_reader`."""
-    if snapshot_reader is None or not options.bundle:
+    """Whether `locations`, a version's linked locations, hold a servable artifact under the
+    bundle rendering `options` asks for. The response then lists that artifact
+    (`with_linked_artifacts`), so this call's render is discarded and needs no live
+    documentation read. `False` for a bare rendering."""
+    if not options.bundle:
         return False
     key = artifact_rendering_key(options, site=site)
-    with phase("snapshot_read"):
-        locations = snapshot_reader.read_artifact_locations(subject_id, content_version)
     return any(
         location.rendering_key == key for location in select_servable_locations(locations, now=now)
     )
@@ -407,17 +388,15 @@ def bundle_citations(
     documentation_complete: bool,
     graph: GraphReader,
     deadline: float | None,
-    metadata_read_seconds: float,
     coverage_index: CoverageIndex | None,
 ) -> tuple[dict[str, CitationSource], bool]:
     """The sources a render cites by ref, and whether the graph reads behind them answered.
 
-    Only a bundle carries documentation and licences. For a version already on record
-    (`on_record`) whose bundle is not yet linked (`linked`, from `bundle_linked`) they come
-    from `healed_citation`, given at least `metadata_read_seconds` whatever is left of
-    `deadline`. A linked bundle is what the response lists, so the render cites the stored
-    citation as it is. A first mint renders what it just read, and `documentation_complete`
-    says whether those reads answered.
+    Only a bundle carries documentation and licences. For a version already on record (`on_record`)
+    whose bundle is not yet linked (`linked`, from `bundle_linked`) they come from
+    `healed_citation`, read within `deadline`. A linked bundle is what the response lists, so the
+    render cites the stored citation as it is. A first mint renders what it just read, and
+    `documentation_complete` says whether those reads answered.
     """
     sources = citation.sources_by_ref()
     if not options.bundle or linked:
@@ -427,58 +406,39 @@ def bundle_citations(
     healed, complete = healed_citation(
         citation,
         graph=graph,
-        deadline=metadata_deadline(deadline, floor_seconds=metadata_read_seconds),
+        deadline=deadline,
         coverage_index=coverage_index,
     )
     return healed.sources_by_ref(), complete
 
 
-def log_bundle_not_linked(
+def incomplete_artifact(
+    artifact: ArtifactEntryModel,
     *,
     subject_id: str,
     content_version: str,
     refs: Sequence[str],
     documentation_complete: bool,
     labels_complete: bool,
-) -> None:
+) -> ArtifactEntryModel:
+    """`artifact`, rendered with a failed graph metadata read, under its incomplete rendering
+    (`render.incomplete_rendering`), with a `BUNDLE_LINKED_INCOMPLETE_MARKER` warning logged.
+
+    The caller links it under that rendering, so the download link the response lists
+    resolves and the digest can be pinned. No request's rendering key matches it, so the next
+    render of the version reads the graph again and links a complete artifact beside it.
+    """
     logger.warning(
         "%s subject_id=%s content_version=%s refs=%s documentation_read_complete=%s "
         "label_read_complete=%s",
-        BUNDLE_NOT_LINKED_MARKER,
+        BUNDLE_LINKED_INCOMPLETE_MARKER,
         subject_id,
         content_version,
         list(refs),
         documentation_complete,
         labels_complete,
     )
-
-
-def _link_artifacts(
-    *,
-    subject_id: str,
-    content_version: str,
-    artifacts: Iterable[ArtifactEntryModel | ArtifactRecord],
-    version_writer: VersionRecordWriter,
-    trace_id: str | None,
-) -> None:
-    """Links each artifact to a version already on record, one `record_artifact` call each. A
-    key whose linked artifact is still servable keeps it (`version_store`)."""
-    with phase("record"):
-        for artifact in artifacts:
-            version_writer.record_artifact(
-                subject_id=subject_id,
-                content_version=content_version,
-                artifact=(
-                    artifact
-                    if isinstance(artifact, ArtifactRecord)
-                    else ArtifactRecord(
-                        artifact_digest=artifact.artifact_digest,
-                        rendering=artifact.rendering,
-                        media_type=artifact.media_type,
-                    )
-                ),
-                trace_id=trace_id,
-            )
+    return artifact.model_copy(update={"rendering": incomplete_rendering(artifact.rendering)})
 
 
 @dataclass(frozen=True)
@@ -505,9 +465,9 @@ class DefinitionPrewrite:
     entity_columns: tuple[str, ...]
     # Carried into final manifest assembly so both halves use the same stamp.
     coverage_stamp: str | None = None
-    # The version's stored body, read once materialisation fixed its `content_version`. `None`
-    # when the version is not yet on record or no snapshot reader was given.
-    persisted_body: Mapping[str, object] | None = None
+    # The stored version and its linked locations when the caller's head names this call's
+    # `content_version` (`_persisted_state`), else `None`.
+    persisted: VersionState | None = None
     # `False` when a documentation read in `source_citations` failed.
     documentation_complete: bool = True
     # The coverage snapshot materialisation read, for the documentation a bundle render reads.
@@ -524,22 +484,16 @@ def _prewrite_citations(
     *,
     documented: bool,
     deadline: float | None,
-    settings: DatasetsBuildSettings,
     coverage_index: CoverageIndex | None,
 ) -> dict[str, SourceCitation]:
-    """A prewrite's `read_source_citations` over `refs`. A read that takes each source's
-    documentation is a bundle metadata read, so it runs until `deadline` or
-    `settings.metadata_read_seconds` from its start, whichever ends later. A mint that spent its
-    deadline materialising still documents its first bundle."""
+    """A prewrite's `read_source_citations` over `refs`, within `deadline`. A documentation read
+    that fails links the bundle as incomplete (`incomplete_artifact`), so a later render reads
+    again."""
     return read_source_citations(
         graph,
         refs,
         catalogue=current_catalogue(),
-        deadline=(
-            metadata_deadline(deadline, floor_seconds=settings.metadata_read_seconds)
-            if documented
-            else deadline
-        ),
+        deadline=deadline,
         documented=documented,
         coverage_facts_of=coverage_facts_of(coverage_index),
     )
@@ -551,7 +505,6 @@ def prewrite_definition(
     requests: Sequence[MaterialisationRequest],
     sdmx: SdmxClient,
     graph: GraphReader,
-    revision_reader: RevisionReader,
     ceiling: int,
     materialiser_build: str,
     capability_version: str,
@@ -559,24 +512,24 @@ def prewrite_definition(
     code_index: CodeIndex,
     rate_cache: RateTableCache,
     member_concurrency: int,
-    materialise_wait_seconds: float,
     settings: DatasetsBuildSettings,
-    materialise_semaphore: threading.BoundedSemaphore | None = None,
     precomputed_probe: CollectionFacetProbe | None = None,
     deadline: float | None = None,
     coverage_stamp: str | None = None,
     coverage_index: CoverageIndex | None = None,
     progress: RowProgress | None = None,
     snapshot_reader: SnapshotReader | None = None,
+    head_content_version: str | None = None,
     documented: bool = True,
 ) -> DefinitionPrewrite:
     """Materialises one pinned request or the resolved members of a described-arm spec into one
-    frame, version, and trace. It returns before artifact writes. The options route uses its
-    manifest directly.
+    frame, version, and trace. It returns before artifact writes. The options route answers with
+    its manifest.
 
-    The semaphore bounds rematerialisation across shared callers. `None` disables it. A supplied
-    `precomputed_probe` avoids repeating the caller's currency probe. The absolute deadline bounds
-    both semaphore wait and SDMX fetches. `member_concurrency` limits concurrent member fetches.
+    The caller holds a materialise permit across this call and every write of the frame it
+    returns (`serve_definition`). A supplied `precomputed_probe` reuses a facet probe the caller
+    already made. The absolute deadline bounds SDMX fetches and graph reads, the citation read
+    included. `member_concurrency` limits concurrent member fetches.
 
     The same `code_index` builds the manifest and renders output. `coverage_stamp` adds lineage.
     Materialisation determines identity. Role-bearing requests require `coverage_index`. Its absence
@@ -592,446 +545,529 @@ def prewrite_definition(
     (`origin.refuse_unserved_selection`).
 
     The citation read takes each source's documentation only when `documented` and the
-    version is not on record in `snapshot_reader`. A re-mint renders from the stored citation
-    (`bundle_citations`), and the options route passes `documented=False`.
+    version is not on record. `snapshot_reader` is read, in one transaction, only when the
+    caller's head names the result's `content_version` (`head_content_version`). A re-mint
+    renders from the stored citation (`bundle_citations`), and the options route's write-free
+    answer for an unregistered definition passes `documented=False`.
+
+    Every read runs under the identity's pinned provenances
+    (`adapter.pinned_provenance_scope`), so a pinned source is admitted before DFO
+    precedence and the withheld re-reads name no source the pin leaves out.
     """
-    with recording_un_blocked_places() as un_blocked:
-        try:
-            with (
-                bounded_materialise_slot(
-                    materialise_semaphore, wait_seconds=materialise_wait_seconds, deadline=deadline
-                ),
-                phase("materialise"),
-            ):
-                result = materialise_group(
-                    requests,
-                    sdmx=sdmx,
-                    graph=graph,
-                    revision_reader=revision_reader,
-                    ceiling=ceiling,
-                    materialiser_build=materialiser_build,
-                    capability_version=capability_version,
-                    enrichment=enrichment,
-                    member_concurrency=member_concurrency,
-                    rate_cache=rate_cache,
-                    coverage=coverage_index,
-                    precomputed_probe=precomputed_probe,
-                    deadline=deadline,
-                    progress=progress,
+    with pinned_provenance_scope(stored.identity):
+        with recording_un_blocked_places() as un_blocked:
+            try:
+                with phase("materialise"):
+                    result = materialise_group(
+                        requests,
+                        sdmx=sdmx,
+                        graph=graph,
+                        ceiling=ceiling,
+                        materialiser_build=materialiser_build,
+                        capability_version=capability_version,
+                        enrichment=enrichment,
+                        member_concurrency=member_concurrency,
+                        rate_cache=rate_cache,
+                        coverage=coverage_index,
+                        precomputed_probe=precomputed_probe,
+                        deadline=deadline,
+                        progress=progress,
+                    )
+            except DefaultFacetUndefinedError as exc:
+                if exc.request is not None:
+                    refuse_unserved_selection(
+                        un_blocked, exc.request, graph, availability=sdmx, deadline=deadline
+                    )
+                raise
+            if result.probe_empty:
+                refuse_unserved_empty_probe(
+                    un_blocked, requests, graph, availability=sdmx, deadline=deadline
                 )
-        except DefaultFacetUndefinedError as exc:
-            if exc.request is not None:
-                refuse_unserved_selection(
-                    un_blocked, exc.request, graph, availability=sdmx, deadline=deadline
-                )
-            raise
-        if result.probe_empty:
-            refuse_unserved_empty_probe(
-                un_blocked, requests, graph, availability=sdmx, deadline=deadline
+        record_elapsed("profile", result.output_profile_seconds)
+        provenance_refs = provenance_refs_of(result.trace.facets)
+        persisted = _persisted_state(
+            snapshot_reader,
+            subject_id=stored.spec_id,
+            content_version=result.content_version,
+            head_content_version=head_content_version,
+        )
+        with phase("citation"):
+            source_citations = _prewrite_citations(
+                graph,
+                provenance_refs,
+                documented=documented and persisted is None,
+                deadline=deadline,
+                coverage_index=coverage_index,
             )
-    record_elapsed("profile", result.output_profile_seconds)
-    provenance_refs = provenance_refs_of(result.trace.facets)
-    persisted_body = _persisted_body(
-        snapshot_reader, subject_id=stored.spec_id, content_version=result.content_version
-    )
-    with phase("citation"):
-        source_citations = _prewrite_citations(
-            graph,
-            provenance_refs,
-            documented=documented and persisted_body is None,
-            deadline=deadline,
+        # `refuse_unserved_empty_probe` already made the withheld re-read an empty probe gets.
+        withheld = (
+            ()
+            if result.probe_empty
+            else withheld_warnings(
+                graph,
+                [(request, result.coverage) for request in requests],
+                default_scope=result.default_scope,
+                deadline=deadline,
+            )
+        )
+        origin_warnings = withheld + un_unavailable_warnings(un_blocked)
+        spec_dict: dict[str, object] = {
+            "schema_version": stored.schema_version,
+            "spec_id": stored.spec_id,
+            "identity": stored.identity,
+        }
+        manifest = assemble_manifest(
+            stored=stored,
+            materialisation=result,
+            artifacts=[],
+            provenance_refs=provenance_refs,
+            source_citations=source_citations,
+            prepared_at=_prepared_now(),
+            capability_version=capability_version,
+            materialiser_build=materialiser_build,
+            code_index=code_index,
             settings=settings,
+            extra_warnings=origin_warnings,
+            coverage_stamp=coverage_stamp,
+        )
+        return DefinitionPrewrite(
+            stored=stored,
+            result=result,
+            manifest=manifest,
+            source_citations=source_citations,
+            origin_warnings=origin_warnings,
+            provenance_refs=provenance_refs,
+            spec_dict=spec_dict,
+            entity_columns=requests[0].declared_roles,
+            coverage_stamp=coverage_stamp,
+            persisted=persisted,
+            documentation_complete=_documentation_complete(source_citations),
             coverage_index=coverage_index,
         )
-    # `refuse_unserved_empty_probe` already made the withheld re-read an empty probe gets.
-    withheld = (
-        ()
-        if result.probe_empty
-        else withheld_warnings(
-            graph,
-            [(request, result.coverage) for request in requests],
-            default_scope=result.default_scope,
-            deadline=deadline,
-        )
-    )
-    origin_warnings = withheld + un_unavailable_warnings(un_blocked)
-    spec_dict: dict[str, object] = {
-        "schema_version": stored.schema_version,
-        "spec_id": stored.spec_id,
-        "identity": stored.identity,
-    }
-    manifest = assemble_manifest(
-        stored=stored,
-        materialisation=result,
-        artifacts=[],
-        provenance_refs=provenance_refs,
-        source_citations=source_citations,
-        prepared_at=_prepared_now(),
-        capability_version=capability_version,
-        materialiser_build=materialiser_build,
-        code_index=code_index,
-        settings=settings,
-        extra_warnings=origin_warnings,
-        coverage_stamp=coverage_stamp,
-    )
-    return DefinitionPrewrite(
-        stored=stored,
-        result=result,
-        manifest=manifest,
-        source_citations=source_citations,
-        origin_warnings=origin_warnings,
-        provenance_refs=provenance_refs,
-        spec_dict=spec_dict,
-        entity_columns=requests[0].declared_roles,
-        coverage_stamp=coverage_stamp,
-        persisted_body=persisted_body,
-        documentation_complete=_documentation_complete(source_citations),
-        coverage_index=coverage_index,
-    )
+
+
+@dataclass(frozen=True)
+class ServedDefinition:
+    """A serve's response and the head its run advanced to, `None` when a concurrent writer
+    advanced it first."""
+
+    manifest: Manifest
+    head: SubjectHead | None
 
 
 def serve_definition(
     *,
     stored: StoredDefinition,
     requests: Sequence[MaterialisationRequest],
-    options: MintOptions,
+    options: MintOptions | None,
     deps: ServeDeps,
+    trigger: Trigger,
     trace_id: str | None = None,
-    signal: Sequence[MemberSignal] | None = None,
-    expected_content_version: str | None = None,
+    expected_head: SubjectHead | None = None,
     precomputed_probe: CollectionFacetProbe | None = None,
     ceiling: int | None = None,
     coverage_stamp: str | None = None,
     coverage_index: CoverageIndex | None = None,
+    coverage_current: Callable[[], bool] | None = None,
     progress: RowProgress | None = None,
-) -> Manifest:
-    """Materialises with `prewrite_definition`, then writes artifacts and the version record.
-    A supplied `signal` advances the head after commit. The caller reads the head and passes its
-    version for compare-and-set. `precomputed_probe` and `progress` are forwarded.
+) -> ServedDefinition:
+    """Materialises with `prewrite_definition`, then writes artifacts and the version record,
+    and records the run as a materialisation under `trigger`, advancing the head in the same
+    transaction as that record. The caller reads the head and passes it as `expected_head`
+    (`None` for no head). The head advances only while it names the run `expected_head` names,
+    and the prewrite reads the stored version only when that head names the result.
+    `precomputed_probe` and `progress` are forwarded. `options` `None` records the version, its
+    canonical frame and statistics, renders nothing, and returns the prewrite manifest,
+    with no artifacts.
 
     `ceiling` overrides the raw-fetch guard. `None` uses `deps.ceiling`. `coverage_stamp` adds
     manifest lineage, while `coverage_index` feeds materialisation.
+
+    One materialise permit is held from before materialisation to after the last artifact write,
+    waiting up to the earlier of `settings.materialise_wait_seconds` and `deps.deadline`. A full
+    semaphore raises retryable `MintBackpressure` (503). `coverage_current` is
+    `bounded_materialise_slot`'s: a `coverage_index` a reload replaced during the wait raises
+    `StaleCoverageSnapshot` before anything is fetched. The prewrite and its frame are bound
+    only in the function the slot calls, so they are freed before the permit is released.
     """
-    prewrite = prewrite_definition(
-        stored=stored,
-        requests=requests,
-        sdmx=deps.sdmx,
-        graph=deps.graph,
-        revision_reader=deps.revision_reader,
-        ceiling=ceiling if ceiling is not None else deps.ceiling,
-        materialiser_build=deps.materialiser_build,
-        capability_version=deps.capability_version,
-        enrichment=deps.enrichment,
-        code_index=deps.code_index,
-        rate_cache=deps.rate_cache,
-        member_concurrency=deps.member_concurrency,
-        materialise_wait_seconds=deps.settings.materialise_wait_seconds,
-        settings=deps.settings,
-        materialise_semaphore=deps.materialise_semaphore,
-        precomputed_probe=precomputed_probe,
+
+    def _materialise_and_record() -> ServedDefinition:
+        prewrite = prewrite_definition(
+            stored=stored,
+            requests=requests,
+            sdmx=deps.sdmx,
+            graph=deps.graph,
+            ceiling=ceiling if ceiling is not None else deps.ceiling,
+            materialiser_build=deps.materialiser_build,
+            capability_version=deps.capability_version,
+            enrichment=deps.enrichment,
+            code_index=deps.code_index,
+            rate_cache=deps.rate_cache,
+            member_concurrency=deps.member_concurrency,
+            settings=deps.settings,
+            precomputed_probe=precomputed_probe,
+            deadline=deps.deadline,
+            coverage_stamp=coverage_stamp,
+            coverage_index=coverage_index,
+            progress=progress,
+            snapshot_reader=deps.snapshot_reader,
+            head_content_version=(
+                expected_head.content_version if expected_head is not None else None
+            ),
+        )
+        manifest = _write_definition_artifacts(
+            prewrite=prewrite, options=options, deps=deps, trace_id=trace_id
+        )
+        head = _record_run(
+            prewrite,
+            deps=deps,
+            trigger=trigger,
+            trace_id=trace_id,
+            expected_materialisation_id=(
+                expected_head.materialisation_id if expected_head is not None else None
+            ),
+        )
+        return ServedDefinition(manifest=manifest, head=head)
+
+    with bounded_materialise_slot(
+        deps.materialise_semaphore,
+        wait_seconds=deps.settings.materialise_wait_seconds,
         deadline=deps.deadline,
-        coverage_stamp=coverage_stamp,
-        coverage_index=coverage_index,
-        progress=progress,
-        snapshot_reader=deps.snapshot_reader,
+        coverage_current=coverage_current,
+    ):
+        return _materialise_and_record()
+
+
+def _base_record(
+    prewrite: DefinitionPrewrite,
+    *,
+    persisted: VersionState | None,
+    artifacts: Sequence[ArtifactRecord],
+) -> VersionRecord:
+    """The version record of `prewrite`'s materialisation, linking `artifacts`. It takes the
+    stored body when the version is on record (`persisted`), else this call's."""
+    record = definition_version_record(
+        manifest=prewrite.manifest,
+        stored=prewrite.stored,
+        materialisation=prewrite.result,
+        artifacts=[],
+        record_only_artifacts=artifacts,
     )
-    return _write_definition_artifacts(
-        prewrite=prewrite,
-        options=options,
-        deps=deps,
-        trace_id=trace_id,
-        signal=signal,
-        expected_content_version=expected_content_version,
-    )
+    if persisted is None:
+        return record
+    return replace(record, facts=persisted.version.facts)
+
+
+def _frame_result(
+    frame_future: Future[ArtifactRecord], prewrite: DefinitionPrewrite
+) -> ArtifactRecord:
+    """The stored canonical frame, joined from its worker. An `ArtifactStoreError` from its
+    write is logged as `CANONICAL_FRAME_STORE_FAILED_MARKER` before it propagates."""
+    try:
+        return frame_future.result()
+    except ArtifactStoreError:
+        logger.error(
+            "%s spec_id=%s content_version=%s",
+            CANONICAL_FRAME_STORE_FAILED_MARKER,
+            prewrite.stored.spec_id,
+            prewrite.result.content_version,
+            exc_info=True,
+        )
+        raise
+
+
+def _failed_frame_result(
+    frame_future: Future[ArtifactRecord], prewrite: DefinitionPrewrite
+) -> ArtifactRecord | None:
+    """The stored canonical frame, joined from its worker while a primary failure propagates,
+    or `None` when its write failed too. Every frame failure is logged (`_frame_result` logs a
+    store failure), so the primary one is raised."""
+    try:
+        return _frame_result(frame_future, prewrite)
+    except ArtifactStoreError:
+        return None
+    except Exception:
+        logger.exception(
+            "canonical frame write also raised while the primary write failed "
+            "spec_id=%s content_version=%s",
+            prewrite.stored.spec_id,
+            prewrite.result.content_version,
+        )
+    return None
 
 
 def _write_definition_artifacts(
     *,
     prewrite: DefinitionPrewrite,
-    options: MintOptions,
+    options: MintOptions | None,
     deps: ServeDeps,
     trace_id: str | None,
-    signal: Sequence[MemberSignal] | None = None,
-    expected_content_version: str | None = None,
 ) -> Manifest:
-    """Writes the version record, links its series statistics, then renders frame1 and the
-    requested rendering, links them, and builds a fresh manifest. It keeps the wire warning
-    order as materialisation, reshape, citation, then revision/facet defaults. Manifest assembly
-    builds its citation from `prewrite.source_citations` and makes no graph read. A supplied
-    signal advances the head only after the version record commits.
+    """Stores the canonical frame, the series statistics and the requested rendering, then writes
+    the version record, every artifact's inventory row and link, and any collapsed version in one
+    transaction (`VersionRecordWriter.write_version`), and builds the response from what that
+    transaction read back. Artifacts are stored through a `deferred` view of the artifact store,
+    so no artifact write opens a transaction, and the frame worker runs beside the statistics
+    and the requested rendering. The wire warning order is materialisation, reshape,
+    citation, then facet defaults. Manifest assembly builds its citation from
+    `prewrite.source_citations` and makes no graph read.
 
-    A version not yet on record is recorded with no artifacts and the `prewrite` manifest before
-    anything renders. When a concurrent first mint wins that insert, its stored body is read
-    back, and the render, statistics and response carry its `prepared_at` and citation. The
-    statistics and frame1 depend on no option, so they are linked before the requested
-    rendering can fail, and a version on record always lists its statistics. A
-    multi-contributor collapse is recorded after the render with its artifacts, dated and cited
-    from the base record."""
+    The render dates and cites as the stored record when the prewrite found the version on
+    record, else as this call's manifest. When a concurrent first mint recorded the version in
+    between, the transaction links only the canonical frame and statistics, and the requested
+    rendering renders again from the stored record and links in a second transaction, so every
+    linked artifact dates and cites as its record. When the requested rendering raises and the
+    canonical frame is stored, the version is recorded with its canonical frame and statistics
+    before the failure propagates. A version is recorded only with its canonical frame and
+    statistics. A failed canonical frame write records nothing, logs
+    `CANONICAL_FRAME_STORE_FAILED_MARKER` and leaves the head where it was. `options` `None`
+    renders nothing and returns `prewrite.manifest`."""
+    _check_work_deadline(deps, "rendering the canonical frame and the series statistics")
     stored = prewrite.stored
     result = prewrite.result
-    source_citations = prewrite.source_citations
-    provenance_refs = prewrite.provenance_refs
-    spec_dict = prewrite.spec_dict
-    entity_columns = prewrite.entity_columns
-    persisted_body = prewrite.persisted_body
-    # Record before render. A version not yet on record is written with no artifacts, and when a
-    # concurrent first mint wins the insert its stored body is read back, so every artifact below
-    # renders from the record's `prepared_at` and citation and is linked after.
-    created = False
-    if persisted_body is None:
-        created = record_definition_version(
-            manifest=prewrite.manifest,
-            stored=stored,
-            materialisation=result,
-            artifacts=[],
-            version_writer=deps.version_writer,
-            trace_id=trace_id,
-        )
-        if not created:
-            persisted_body = _persisted_body(
-                deps.snapshot_reader,
-                subject_id=stored.spec_id,
-                content_version=result.content_version,
-            )
-    render_citation = _render_citation(persisted_body, assembled=prewrite.manifest.citation)
-    render_prepared_at = _render_prepared_at(
-        persisted_body, assembled=prewrite.manifest.prepared_at
-    )
+    batch = InventoryBatch()
+    artifact_store = deps.artifact_store.deferred(batch)
     # Copy the caller's timing and trace context before submission. Workers use separate contexts.
-    frame1_context = contextvars.copy_context()
-    # The caller releases its store connection before joining. The frame1 worker overlaps the
-    # statistics and the requested rendering, and each may borrow a connection concurrently.
-    # Frame1 is skipped above its row ceiling. The version is always minted.
-    write_frame1 = result.coverage.rows <= FRAME1_MAX_ROWS
-    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="datasets-frame1") as frame1_pool:
-        frame1_future = (
-            frame1_pool.submit(
-                frame1_context.run,
-                render_and_store_frame1,
-                frame_chunks=result.frame_chunks(),
-                subject_id=stored.spec_id,
-                content_version=result.content_version,
-                artifact_store=deps.artifact_store,
-            )
-            if write_frame1
-            else None
+    frame_context = contextvars.copy_context()
+    statistics_artifact: ArtifactEntryModel | None = None
+    rendered: _RenderPass | None = None
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="datasets-frame") as frame_pool:
+        frame_future = frame_pool.submit(
+            frame_context.run,
+            render_and_store_canonical_frame,
+            frame_chunks=result.frame_chunks(),
+            subject_id=stored.spec_id,
+            content_version=result.content_version,
+            artifact_store=artifact_store,
         )
         try:
-            # The statistics, like frame1, depend on no option, so they are linked before the
-            # requested rendering, which can refuse or fail.
             statistics_artifact = render_and_store_series_statistics(
                 data=result.series_statistics.data,
                 subject_id=stored.spec_id,
                 content_version=result.content_version,
-                source_names=cited_source_names(provenance_refs, render_citation.sources_by_ref()),
-                prepared_at=render_prepared_at,
-                artifact_store=deps.artifact_store,
+                artifact_store=artifact_store,
             )
-            _link_artifacts(
-                subject_id=stored.spec_id,
-                content_version=result.content_version,
-                artifacts=[statistics_artifact],
-                version_writer=deps.version_writer,
-                trace_id=trace_id,
-            )
-            citations, documentation_complete = bundle_citations(
-                render_citation,
-                options=options,
-                on_record=persisted_body is not None,
-                linked=persisted_body is not None
-                and bundle_linked(
-                    deps.snapshot_reader,
-                    subject_id=stored.spec_id,
-                    content_version=result.content_version,
+            if options is not None:
+                rendered = _render_pass(
+                    prewrite,
                     options=options,
-                    site=deps.settings.site,
-                    now=utc_now(),
-                ),
-                documentation_complete=prewrite.documentation_complete,
-                graph=deps.graph,
-                deadline=deps.deadline,
-                metadata_read_seconds=deps.settings.metadata_read_seconds,
-                coverage_index=prewrite.coverage_index,
-            )
-            rendered = render_and_store(
-                frame_chunks=result.frame_chunks(),
-                options=options,
-                spec=spec_dict,
-                provenance_refs=provenance_refs,
-                citations=citations,
-                reproducing_call=(
-                    ReproducingCall(
-                        path=f"/api/datasets/{stored.spec_id}",
-                        options=encode_query_options(options),
-                    )
-                    if DEFINITION_ROUTE_LIVE
-                    else None
-                ),
-                content_version=result.content_version,
-                prepared_at=render_prepared_at,
-                site=deps.settings.site,
-                artifact_store=deps.artifact_store,
-                entity_columns=entity_columns,
-                enrichment=deps.enrichment,
-                pivot_max_output_cells=deps.settings.pivot_max_output_cells,
-                code_index=deps.code_index,
-                resolved_stat_var_refs=_resolved_stat_var_refs(result),
-                groupby_preimage=_groupby_collapse_preimage(result),
-                output_profile=result.output_profile,
-                deadline=deps.deadline,
-                metadata_read_seconds=deps.settings.metadata_read_seconds,
-            )
-            artifact, reshape_warnings, collapse = (
-                rendered.artifact,
-                rendered.warnings,
-                rendered.collapse,
-            )
+                    deps=deps,
+                    artifact_store=artifact_store,
+                    persisted=prewrite.persisted,
+                    statistics_artifact=statistics_artifact,
+                )
         except BaseException:
-            # Executor shutdown joins the worker but discards its exception. Retrieve the result
-            # and link a stored frame1, which depends on no option, so a failed rendering leaves
-            # it on record. Log `ArtifactStoreError` as best-effort and every other worker or
-            # link failure, and preserve the primary failure.
-            if frame1_future is not None:
+            frame_record = _failed_frame_result(
+                cast("Future[ArtifactRecord]", frame_future), prewrite
+            )
+            if statistics_artifact is not None and frame_record is not None:
                 try:
-                    _link_artifacts(
-                        subject_id=stored.spec_id,
-                        content_version=result.content_version,
-                        artifacts=[cast(ArtifactRecord, frame1_future.result())],
-                        version_writer=deps.version_writer,
-                        trace_id=trace_id,
-                    )
-                except ArtifactStoreError:
-                    logger.error(
-                        "%s spec_id=%s content_version=%s",
-                        FRAME1_STORE_FAILED_MARKER,
-                        stored.spec_id,
-                        result.content_version,
-                        exc_info=True,
-                    )
+                    _check_work_deadline(deps, "recording the version")
+                    with phase("record"):
+                        deps.version_writer.write_version(
+                            VersionWrite(
+                                record=_base_record(
+                                    prewrite,
+                                    persisted=prewrite.persisted,
+                                    artifacts=_option_free(statistics_artifact, frame_record),
+                                ),
+                                inventory=batch.entries,
+                            ),
+                            trace_id=trace_id,
+                        )
                 except Exception:
                     logger.exception(
-                        "frame1 write or link also raised while the primary write failed "
+                        "recording the version also raised while the primary write failed "
                         "spec_id=%s content_version=%s",
                         stored.spec_id,
                         result.content_version,
                     )
             raise
-        if frame1_future is not None:
-            try:
-                # `Context.run` hides the worker's return type from static analysis.
-                frame1_record = cast(ArtifactRecord, frame1_future.result())
-            except ArtifactStoreError:
-                logger.error(
-                    "%s spec_id=%s content_version=%s",
-                    FRAME1_STORE_FAILED_MARKER,
-                    stored.spec_id,
-                    result.content_version,
-                    exc_info=True,
-                )
-            else:
-                _link_artifacts(
-                    subject_id=stored.spec_id,
-                    content_version=result.content_version,
-                    artifacts=[frame1_record],
-                    version_writer=deps.version_writer,
-                    trace_id=trace_id,
-                )
-    # A render whose graph metadata reads failed is returned but never linked, so the next
-    # render of this version reads again.
-    linked = documentation_complete and rendered.labels_complete
-    if not linked:
-        log_bundle_not_linked(
+        # A failed frame write raises here, before the version is recorded or the head advances.
+        # `Context.run` hides the worker's return type from static analysis.
+        frame_record = _frame_result(cast("Future[ArtifactRecord]", frame_future), prewrite)
+    assert statistics_artifact is not None
+    option_free = _option_free(statistics_artifact, frame_record)
+    _check_work_deadline(deps, "recording the version")
+    if rendered is None:
+        with phase("record"):
+            deps.version_writer.write_version(
+                VersionWrite(
+                    record=_base_record(
+                        prewrite, persisted=prewrite.persisted, artifacts=option_free
+                    ),
+                    inventory=batch.entries,
+                ),
+                trace_id=trace_id,
+            )
+        return prewrite.manifest
+    assert options is not None
+    with phase("record"):
+        written = deps.version_writer.write_version(
+            rendered.write(option_free, inventory=batch.entries), trace_id=trace_id
+        )
+    if not written.rendered:
+        # A concurrent first mint recorded the version first. Render again from its record.
+        rebatch = InventoryBatch()
+        rendered = _render_pass(
+            prewrite,
+            options=options,
+            deps=deps,
+            artifact_store=deps.artifact_store.deferred(rebatch),
+            persisted=written.state,
+            statistics_artifact=statistics_artifact,
+        )
+        _check_work_deadline(deps, "recording the rendering")
+        with phase("record"):
+            written = deps.version_writer.write_version(
+                rendered.write((), inventory=rebatch.entries), trace_id=trace_id
+            )
+    return rendered.response(written, now=utc_now())
+
+
+def _option_free(
+    statistics_artifact: ArtifactEntryModel, frame_record: ArtifactRecord
+) -> tuple[ArtifactRecord, ...]:
+    """The artifacts every write links, whoever recorded the version. They are the series statistics
+    and the canonical frame."""
+    return (_artifact_record(statistics_artifact), frame_record)
+
+
+def _artifact_record(artifact: ArtifactEntryModel) -> ArtifactRecord:
+    return ArtifactRecord(
+        artifact_digest=artifact.artifact_digest,
+        rendering=artifact.rendering,
+        media_type=artifact.media_type,
+    )
+
+
+@dataclass(frozen=True)
+class _RenderPass:
+    """The requested rendering of a version, rendered from one body (`persisted`, else the
+    prewrite manifest), with the manifest it answers and what linking it writes."""
+
+    prewrite: DefinitionPrewrite
+    persisted: VersionState | None
+    manifest: Manifest
+    call_warnings: tuple[WarningModel, ...]
+    # Linked to the base version: the rendering, unless it is a multi-contributor collapse.
+    links: tuple[ArtifactRecord, ...]
+    # A multi-contributor collapse's own version, recorded with its artifacts.
+    collapsed: VersionRecord | None
+
+    def write(
+        self, option_free: Sequence[ArtifactRecord], *, inventory: Sequence[InventoryEntry]
+    ) -> VersionWrite:
+        return VersionWrite(
+            record=_base_record(self.prewrite, persisted=self.persisted, artifacts=option_free),
+            inventory=tuple(inventory),
+            rendered=self.links,
+            collapsed=self.collapsed,
+        )
+
+    def response(self, written: WrittenVersion, *, now: datetime) -> Manifest:
+        """The manifest this call answers. It is the call's own, with the store's links, when it
+        recorded the served version, else the stored version (`persisted_response`)."""
+        subject_id = self.prewrite.stored.spec_id
+        locations = written.state.locations
+        if written.created:
+            return with_linked_artifacts(
+                self.manifest, subject_id=subject_id, locations=locations, now=now
+            )
+        return persisted_response(
+            subject_id=subject_id,
+            persisted=written.state.version,
+            locations=locations,
+            served=self.manifest,
+            call_warnings=self.call_warnings,
+            now=now,
+        )
+
+
+def _render_pass(
+    prewrite: DefinitionPrewrite,
+    *,
+    options: MintOptions,
+    deps: ServeDeps,
+    artifact_store: ArtifactStore,
+    persisted: VersionState | None,
+    statistics_artifact: ArtifactEntryModel,
+) -> _RenderPass:
+    """Render and store the rendering `options` asks for from `persisted`'s facts when the
+    version is on record, else from the prewrite manifest, and assemble the manifest it
+    answers. A render whose graph metadata reads failed is linked as incomplete
+    (`incomplete_artifact`), so the next render of this version reads again."""
+    stored = prewrite.stored
+    result = prewrite.result
+    persisted_version = persisted.version if persisted is not None else None
+    render_citation = _render_citation(persisted_version, assembled=prewrite.manifest.citation)
+    render_prepared_at = _render_prepared_at(
+        persisted_version, assembled=prewrite.manifest.prepared_at
+    )
+    citations, documentation_complete = bundle_citations(
+        render_citation,
+        options=options,
+        on_record=persisted is not None,
+        linked=persisted is not None
+        and bundle_linked(
+            persisted.locations, options=options, site=deps.settings.site, now=utc_now()
+        ),
+        documentation_complete=prewrite.documentation_complete,
+        graph=deps.graph,
+        deadline=deps.deadline,
+        coverage_index=prewrite.coverage_index,
+    )
+    _check_work_deadline(deps, "rendering the requested rendering")
+    rendered = render_and_store(
+        frame_chunks=result.frame_chunks(),
+        options=options,
+        spec=prewrite.spec_dict,
+        provenance_refs=prewrite.provenance_refs,
+        citations=citations,
+        reproducing_call=(
+            ReproducingCall(
+                path=f"/api/datasets/{stored.spec_id}",
+                options=encode_query_options(options),
+            )
+            if DEFINITION_ROUTE_LIVE
+            else None
+        ),
+        content_version=result.content_version,
+        prepared_at=render_prepared_at,
+        site=deps.settings.site,
+        artifact_store=artifact_store,
+        entity_columns=prewrite.entity_columns,
+        enrichment=deps.enrichment,
+        pivot_max_output_cells=deps.settings.pivot_max_output_cells,
+        code_index=deps.code_index,
+        resolved_stat_var_refs=_resolved_stat_var_refs(result),
+        output_profile=result.output_profile,
+        deadline=deps.deadline,
+    )
+    artifact, reshape_warnings, collapse = rendered.artifact, rendered.warnings, rendered.collapse
+    if not (documentation_complete and rendered.labels_complete):
+        artifact = incomplete_artifact(
+            artifact,
             subject_id=stored.spec_id,
             content_version=(
-                collapse.content_version
-                if collapse is not None and collapse.content_version is not None
-                else result.content_version
+                collapse.content_version if collapse is not None else result.content_version
             ),
-            refs=provenance_refs,
+            refs=prewrite.provenance_refs,
             documentation_complete=documentation_complete,
             labels_complete=rendered.labels_complete,
         )
-    linked_artifacts = [artifact] if linked else []
     call_warnings = prewrite.origin_warnings + reshape_warning_models(reshape_warnings)
     # Multi-contributor collapses have a distinct version. Record the base version separately so a
     # plain GET can still resolve it. A sole-contributor collapse shares the base version. The head
     # stays on the base materialisation, and definition retrieval derives the collapsed version on a
     # head hit.
-    if collapse is not None and collapse.content_version not in (None, result.content_version):
-        collapsed_statistics_sink = SeriesStatisticsSink()
-        collapsed_statistics_sink.write(compute_series_statistics_table(collapse.frame))
-        collapsed_result = replace(
-            result,
-            content_version=collapse.content_version,
-            coverage=replace(result.coverage, rows=len(collapse.frame.rows)),
-            series_statistics=collapsed_statistics_sink.finish(),
-            output_profile=compute_output_profile(
-                collapse.frame, role_columns=collapse.role_columns, enrichment=deps.enrichment
-            ),
-        )
-        collapsed_frame1_record: ArtifactRecord | None = None
-        if collapsed_result.coverage.rows <= FRAME1_MAX_ROWS:
-            try:
-                collapsed_frame1_record = render_and_store_frame1(
-                    frame_chunks=(collapse.frame,),
-                    subject_id=stored.spec_id,
-                    content_version=collapse.content_version,
-                    artifact_store=deps.artifact_store,
-                )
-            except ArtifactStoreError:
-                logger.error(
-                    "%s spec_id=%s content_version=%s",
-                    FRAME1_STORE_FAILED_MARKER,
-                    stored.spec_id,
-                    collapse.content_version,
-                    exc_info=True,
-                )
-        collapsed_statistics_artifact = render_and_store_series_statistics(
-            data=collapsed_result.series_statistics.data,
-            subject_id=stored.spec_id,
-            content_version=collapsed_result.content_version,
-            source_names=cited_source_names(provenance_refs, render_citation.sources_by_ref()),
-            prepared_at=render_prepared_at,
-            artifact_store=deps.artifact_store,
-        )
-        # The collapsed identity cites and dates as its base record does, and so does every
-        # concurrent writer of it, so its record is written with its artifacts in one call.
-        # `collapsed_head_manifest` does the same.
-        manifest = assemble_manifest(
-            stored=stored,
-            materialisation=collapsed_result,
-            artifacts=[artifact, collapsed_statistics_artifact],
-            provenance_refs=provenance_refs,
-            source_citations=source_citations,
-            prepared_at=render_prepared_at,
-            capability_version=deps.capability_version,
-            materialiser_build=deps.materialiser_build,
-            code_index=deps.code_index,
-            settings=deps.settings,
-            extra_warnings=call_warnings,
-            coverage_stamp=prewrite.coverage_stamp,
-        ).model_copy(update={"citation": render_citation})
-        response_content_version = collapse.content_version
-        response_created = record_definition_version(
-            manifest=manifest,
-            stored=stored,
-            materialisation=collapsed_result,
-            artifacts=[*linked_artifacts, collapsed_statistics_artifact],
-            record_only_artifacts=(
-                [collapsed_frame1_record] if collapsed_frame1_record is not None else []
-            ),
-            version_writer=deps.version_writer,
-            trace_id=trace_id,
-            base_content_version=result.content_version,
-        )
-        response_body = None
-    else:
+    if collapse is None or collapse.content_version == result.content_version:
         manifest = assemble_manifest(
             stored=stored,
             materialisation=result,
             artifacts=[artifact, statistics_artifact],
-            provenance_refs=provenance_refs,
-            source_citations=source_citations,
+            provenance_refs=prewrite.provenance_refs,
+            source_citations=prewrite.source_citations,
             prepared_at=render_prepared_at,
             capability_version=deps.capability_version,
             materialiser_build=deps.materialiser_build,
@@ -1040,53 +1076,125 @@ def _write_definition_artifacts(
             extra_warnings=call_warnings,
             coverage_stamp=prewrite.coverage_stamp,
         )
-        _link_artifacts(
-            subject_id=stored.spec_id,
-            content_version=result.content_version,
-            artifacts=linked_artifacts,
-            version_writer=deps.version_writer,
-            trace_id=trace_id,
-        )
-        response_content_version = result.content_version
-        response_created = created
-        response_body = persisted_body
-    # A concurrent first mint that lost the record insert links its own rendering, possibly before
-    # this call does, so even a created version lists what the store links.
-    if response_created:
-        manifest = with_linked_artifacts(
-            manifest,
-            subject_id=stored.spec_id,
-            snapshot_reader=deps.snapshot_reader,
-            artifact_store=deps.artifact_store,
-            now=utc_now(),
-        )
-    else:
-        manifest = persisted_response(
-            deps.snapshot_reader,
-            subject_id=stored.spec_id,
-            content_version=response_content_version,
-            body=response_body,
-            served=manifest,
+        return _RenderPass(
+            prewrite=prewrite,
+            persisted=persisted,
+            manifest=manifest,
             call_warnings=call_warnings,
-            artifact_store=deps.artifact_store,
-            now=utc_now(),
+            links=(_artifact_record(artifact),),
+            collapsed=None,
         )
-    if signal is not None:
-        with phase("head_advance"):
-            written = deps.head_store.advance_head(
-                subject_id=stored.spec_id,
-                content_version=result.content_version,
-                signal=_signal_with_rate_provenance(
-                    signal, result.member_conversion_records.values()
-                ),
-                expected_content_version=expected_content_version,
-            )
-        if written is None:
-            logger.debug(
-                "head advance lost the race spec_id=%s expected_content_version=%s "
-                "content_version=%s",
-                stored.spec_id,
-                expected_content_version,
-                result.content_version,
-            )
-    return manifest
+    collapsed_statistics_sink = SeriesStatisticsSink()
+    collapsed_statistics_sink.write(compute_series_statistics_table(collapse.frame))
+    collapsed_result = replace(
+        result,
+        frame_sha256=collapse.frame_sha256,
+        content_version=collapse.content_version,
+        coverage=replace(result.coverage, rows=len(collapse.frame.rows)),
+        series_statistics=collapsed_statistics_sink.finish(),
+        output_profile=compute_output_profile(
+            collapse.frame, role_columns=collapse.role_columns, enrichment=deps.enrichment
+        ),
+    )
+    _check_work_deadline(deps, "rendering the collapsed version's canonical frame")
+    collapsed_frame_record = render_and_store_canonical_frame(
+        frame_chunks=(collapse.frame,),
+        subject_id=stored.spec_id,
+        content_version=collapse.content_version,
+        artifact_store=artifact_store,
+    )
+    _check_work_deadline(deps, "rendering the collapsed version's series statistics")
+    collapsed_statistics_artifact = render_and_store_series_statistics(
+        data=collapsed_result.series_statistics.data,
+        subject_id=stored.spec_id,
+        content_version=collapsed_result.content_version,
+        artifact_store=artifact_store,
+    )
+    # The collapsed identity cites and dates as its base record does, and so does every
+    # concurrent writer of it, so its record is written with its artifacts.
+    # `collapsed_head_manifest` does the same.
+    manifest = assemble_manifest(
+        stored=stored,
+        materialisation=collapsed_result,
+        artifacts=[artifact, collapsed_statistics_artifact],
+        provenance_refs=prewrite.provenance_refs,
+        source_citations=prewrite.source_citations,
+        prepared_at=render_prepared_at,
+        capability_version=deps.capability_version,
+        materialiser_build=deps.materialiser_build,
+        code_index=deps.code_index,
+        settings=deps.settings,
+        extra_warnings=call_warnings,
+        coverage_stamp=prewrite.coverage_stamp,
+    ).model_copy(update={"citation": render_citation})
+    return _RenderPass(
+        prewrite=prewrite,
+        persisted=persisted,
+        manifest=manifest,
+        call_warnings=call_warnings,
+        links=(),
+        collapsed=definition_version_record(
+            manifest=manifest,
+            stored=stored,
+            materialisation=collapsed_result,
+            artifacts=[artifact, collapsed_statistics_artifact],
+            record_only_artifacts=[collapsed_frame_record],
+            base_content_version=result.content_version,
+        ),
+    )
+
+
+def _materialisation_record(
+    prewrite: DefinitionPrewrite, *, deps: ServeDeps, trigger: Trigger, trace_id: str | None
+) -> MaterialisationRecord:
+    """The `datasets.materialisation` row of the run `prewrite` holds."""
+    result = prewrite.result
+    trace = result.trace
+    return MaterialisationRecord(
+        subject_id=prewrite.stored.spec_id,
+        content_version=result.content_version,
+        trigger=trigger,
+        materialiser_build=deps.materialiser_build,
+        frame_grammar_version=trace.frame_grammar_version,
+        code_index_stamp=deps.code_index.stamp.content_hash,
+        origin_catalogue_build_id=catalogue_build_id(),
+        coverage_stamp=prewrite.coverage_stamp,
+        graph_generation=trace.graph_revision,
+        dependencies=result.dependencies.as_json(),
+        selection={"facets": list(trace.facets)},
+        conversion={"entries": list(trace.conversion)} if trace.conversion is not None else None,
+        trace_id=trace_id,
+    )
+
+
+def _record_run(
+    prewrite: DefinitionPrewrite,
+    *,
+    deps: ServeDeps,
+    trigger: Trigger,
+    trace_id: str | None,
+    expected_materialisation_id: int | None,
+) -> SubjectHead | None:
+    """Record the run and advance the subject's head to its version by compare-and-set on the
+    observed run in the same transaction, returning the head written. A lost race keeps the run's
+    row, leaves the head the winner wrote, and returns `None`. A worker run's `deps.head_fence`
+    that no longer holds raises `HeadFenceLost` and writes neither."""
+    result = prewrite.result
+    with phase("head_advance"):
+        materialisation = _materialisation_record(
+            prewrite, deps=deps, trigger=trigger, trace_id=trace_id
+        )
+        written = deps.head_store.advance_head(
+            materialisation=materialisation,
+            expected_materialisation_id=expected_materialisation_id,
+            fence=deps.head_fence,
+        )
+    if written is None:
+        logger.debug(
+            "head advance lost the race spec_id=%s expected_materialisation_id=%s "
+            "content_version=%s",
+            materialisation.subject_id,
+            expected_materialisation_id,
+            result.content_version,
+        )
+    return written

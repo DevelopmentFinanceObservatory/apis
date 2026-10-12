@@ -12,7 +12,11 @@ import pytest
 
 from code_index import parse_index
 from code_index.loader import load_index
-from series_coverage.compatibility import index_coverage_differences, read_compatible_pointer
+from series_coverage.compatibility import (
+    index_coverage_differences,
+    read_compatible_pointer,
+    unlisted_parties,
+)
 from series_coverage.loader import load_coverage
 from series_coverage.verify_index import main
 
@@ -38,7 +42,8 @@ def _dataset(provenance: str, *, rank: int = 0) -> dict:
 def _slice_document() -> dict:
     """An index document whose rows are the slice's first variables with the slice's own
     provenances."""
-    provenances = load_coverage(_COVERAGE_SLICE_URI).index.variable_provenances()
+    coverage = load_coverage(_COVERAGE_SLICE_URI).index
+    provenances = coverage.variable_provenances()
     return {
         "stamp": {
             "graph_endpoint": "https://fake.example",
@@ -65,6 +70,10 @@ def _slice_document() -> dict:
                 "provenances": list(provenances[dcid]),
             }
             for dcid in sorted(provenances)[:_ROWS]
+        ],
+        "parties": [
+            {"dcid": party, "kind": "party", "totals": None}
+            for party in sorted(coverage.dataset_parties([_CRS]))
         ],
     }
 
@@ -128,6 +137,80 @@ def test_a_row_carrying_a_provenance_the_build_lacks_fails(
     err = capsys.readouterr().err
     assert f"{dcid}: index ['{_OTHER}'], build ['{_CRS}']" in err
     assert f"declared dataset '{_OTHER}' has no row in the build" in err
+
+
+def test_a_party_the_index_does_not_list_fails_and_is_named(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    document = _slice_document()
+    dropped = document["parties"].pop(0)["dcid"]
+
+    assert _run(tmp_path, document) == 1
+
+    err = capsys.readouterr().err
+    assert "index lacks 1 parties" in err
+    assert dropped in err
+
+
+def test_only_the_parties_of_declared_datasets_need_a_row() -> None:
+    document = _slice_document()
+    document["datasets"] = [_dataset(_OTHER)]
+    for row in document["statvars"]:
+        row["provenances"] = [_OTHER]
+    document["parties"] = []
+    coverage = load_coverage(_COVERAGE_SLICE_URI).index
+
+    assert unlisted_parties(parse_index(document), coverage) == ()
+    assert unlisted_parties(parse_index(_slice_document()), coverage) == ()
+
+
+def test_the_parties_of_a_listed_dataset_need_a_row() -> None:
+    """A listed dataset declares no `datasets` row, yet its parties are counted and served a
+    kind like a declared dataset's, so each needs a `parties` row."""
+    document = _slice_document()
+    document["datasets"] = [_dataset(_OTHER)]
+    for row in document["statvars"]:
+        row["provenances"] = [_OTHER]
+    document["parties"] = []
+    document["listed_statvars"] = [{**_listed_row("Crs_Listed"), "provenances": [_CRS]}]
+    coverage = load_coverage(_COVERAGE_SLICE_URI).index
+
+    assert unlisted_parties(parse_index(document), coverage) == tuple(
+        sorted(coverage.dataset_parties([_CRS]))
+    )
+
+
+_LISTED = "provenance/SomeListedDataset"
+
+
+def _listed_row(dcid: str) -> dict:
+    return {
+        "dcid": dcid,
+        "population_type": "FinancialFlow",
+        "measured_property": "amount",
+        "stat_type": "measuredValue",
+        "measurement_qualifier": "Nominal",
+        "measurement_denominator": None,
+        "observation_properties": ["financingRecipient"],
+        "constraint_properties": {"financialFlowType": "Disbursement"},
+        "provenances": [_LISTED],
+    }
+
+
+def test_a_listed_datasets_variable_the_index_does_not_list_is_named() -> None:
+    """Every variable the build assigns to a listed dataset must be a listed row, so a series
+    the build adds is not left out of the members elected from the index. Variables of other
+    datasets need no listed row."""
+    document = {**_slice_document(), "listed_statvars": [_listed_row("Ids_A")]}
+    index = parse_index(document)
+    provenances = {
+        "Ids_A": (_LISTED,),
+        "Crs_A": (_CRS,),
+    }
+
+    assert index_coverage_differences(index, provenances).unlisted_members == ()
+    differences = index_coverage_differences(index, {**provenances, "Ids_New": (_LISTED, _CRS)})
+    assert differences.unlisted_members == ("Ids_New",)
 
 
 def test_at_most_twenty_differing_variables_are_named(
@@ -204,10 +287,18 @@ def test_record_points_the_index_pointer_at_a_build_that_passes(tmp_path: Path) 
     assert pointer.build_id == "20260927T142252Z-slice"
 
 
-def test_record_leaves_no_pointer_for_a_build_that_differs(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "perturb",
+    [
+        lambda document: document["statvars"][0].update(provenances=[]),
+        lambda document: document["parties"].pop(),
+    ],
+    ids=["provenance", "party"],
+)
+def test_record_leaves_no_pointer_for_a_build_that_differs(tmp_path: Path, perturb) -> None:
     uri = _copied_slice(tmp_path)
     document = _slice_document()
-    document["statvars"][0]["provenances"] = []
+    perturb(document)
     index_path = _hashed_index(tmp_path, document)
 
     assert main([uri, "--index", index_path, "--record"]) == 1

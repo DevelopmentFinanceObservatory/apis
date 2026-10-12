@@ -1519,9 +1519,10 @@ def test_extract_deadline_exceeded_returns_504_on_buffered_path(monkeypatch, sea
 def test_the_buffered_hard_bound_allows_a_resubmit_its_full_read(
     monkeypatch, search_settings, body, status
 ):
-    """The buffered path's hard bound is `request_timeout_s`, and `resubmit_full_read_timeout_s`
-    for a dataset_resubmit, whose member walk may run its full read past the first."""
-    search_settings(request_timeout_s=0.05, resubmit_full_read_timeout_s=5)
+    """The buffered path's hard cap is `request_timeout_s` plus `finalise_grace_s`, and at least
+    `resubmit_full_read_timeout_s` for a dataset_resubmit, whose member walk may run its full
+    read past the first."""
+    search_settings(request_timeout_s=0.05, finalise_grace_s=0.05, resubmit_full_read_timeout_s=5)
     real = app_module.resolve_async
 
     async def _slow_resolve_async(*args, **kwargs):

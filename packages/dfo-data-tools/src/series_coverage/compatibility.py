@@ -3,8 +3,10 @@ that names the newest build that does.
 
 The code index export joins each StatVar's provenances from a coverage build. Dataset election
 reads those provenances, and a mint reads facet provenances from the coverage build the service
-serves, so the two agree only while the build carries the index's provenances.
-`index_coverage_differences` is the one test of that: `python -m series_coverage.verify_index`
+serves, so the two agree only while the build carries the index's provenances. Search and the
+mint elect the members of a listed dataset's family from the index's listed rows alone, so the
+two also agree only while the build assigns that dataset no StatVar the index does not list.
+`index_coverage_differences` is the one test of both: `python -m series_coverage.verify_index`
 runs it at deploy, the coverage job after each publish, and `CoverageService` before it serves
 a build.
 
@@ -23,7 +25,7 @@ no serving revision runs, unless it is that index's own, so the job expires only
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from artifact_publication.uri import (
@@ -33,10 +35,11 @@ from artifact_publication.uri import (
     write_uri_bytes,
 )
 from code_index.query import CodeIndex
+from series_coverage.index import CoverageIndex
 from series_coverage.loader import CoverageArtifactError, LoadedCoverage, format_root
 from series_coverage.schema import COMPATIBLE_PREFIX, SERVING_PREFIX, CoveragePointer
 
-_MAX_VARIABLES_NAMED = 20
+_MAX_NAMED = 20
 _SERVING_INDEX_FILE = "code_index.json"
 
 
@@ -46,22 +49,30 @@ class IndexCoverageDifferences:
 
     `variables` maps each differing StatVar to its index provenances and the build's.
     `datasets_without_rows` lists declared datasets no index row holds in the build.
+    `unlisted_members` lists, sorted, the StatVars the build assigns to a listed dataset (a
+    provenance of `CodeIndex.listed_statvars`) that no listed row holds.
     """
 
     variables: Mapping[str, tuple[tuple[str, ...], tuple[str, ...]]]
     datasets_without_rows: tuple[str, ...]
+    unlisted_members: tuple[str, ...] = ()
 
     def __bool__(self) -> bool:
-        return bool(self.variables or self.datasets_without_rows)
+        return bool(self.variables or self.datasets_without_rows or self.unlisted_members)
 
 
 def index_coverage_differences(
     index: CodeIndex, coverage_provenances: Mapping[str, tuple[str, ...]]
 ) -> IndexCoverageDifferences:
-    """Compare each index row's `provenances` with `coverage_provenances` for its dcid.
+    """Compare each index row's `provenances` with `coverage_provenances` for its dcid, and
+    name the StatVars `coverage_provenances` assigns to a listed dataset that no listed row
+    holds.
 
     A variable the build does not cover reads as `()`. Variables the build covers and the index
-    does not hold are outside the comparison.
+    does not hold are outside the comparison, except on a listed dataset: Search and the mint
+    elect a family holding a listed row from the index's rows alone
+    (`code_index.members.listed_group`), so a series a build adds to such a dataset would be no
+    member of any answer.
     """
     variables: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
     populated: set[str] = set()
@@ -73,17 +84,70 @@ def index_coverage_differences(
     return IndexCoverageDifferences(
         variables=variables,
         datasets_without_rows=tuple(sorted(index.datasets.keys() - populated)),
+        unlisted_members=_unlisted_members(index, coverage_provenances),
+    )
+
+
+def unlisted_parties(index: CodeIndex, coverage: CoverageIndex) -> tuple[str, ...]:
+    """The sorted donors and recipients that `coverage` holds on a facet of a declared dataset
+    (`CodeIndex.datasets`) or a listed one (a provenance of `CodeIndex.listed_statvars`) and
+    `index.parties` does not list.
+
+    The catalogue counts and the served `kind` columns read `CodeIndex.parties`, so a party
+    missing from it is counted as a donor or recipient whatever it totals. This is a deploy check
+    (`python -m series_coverage.verify_index`); a service serves a build with such a party.
+    """
+    datasets = index.datasets.keys() | _listed_datasets(index)
+    return tuple(sorted(coverage.dataset_parties(datasets).keys() - index.parties.keys()))
+
+
+def _listed_datasets(index: CodeIndex) -> set[str]:
+    """The provenances the rows of `CodeIndex.listed_statvars` carry."""
+    return {provenance for row in index.listed_statvars for provenance in row.provenances}
+
+
+def describe_unlisted(dcids: Sequence[str], *, noun: str) -> list[str]:
+    """One line saying the index lacks `dcids`, which `noun` names in the plural, naming at
+    most twenty of them and counting the rest."""
+    if not dcids:
+        return []
+    named = dcids[:_MAX_NAMED]
+    line = f"index lacks {len(dcids)} {noun} -- export them: {', '.join(named)}"
+    if len(dcids) > len(named):
+        line += f" and {len(dcids) - len(named)} more"
+    return [line]
+
+
+def _unlisted_members(
+    index: CodeIndex, coverage_provenances: Mapping[str, tuple[str, ...]]
+) -> tuple[str, ...]:
+    """The sorted StatVars `coverage_provenances` assigns to a listed dataset, one a row of
+    `CodeIndex.listed_statvars` carries, that no listed row holds."""
+    datasets = _listed_datasets(index)
+    held = {row.dcid for row in index.listed_statvars}
+    return tuple(
+        sorted(
+            dcid
+            for dcid, provenances in coverage_provenances.items()
+            if dcid not in held and not datasets.isdisjoint(provenances)
+        )
     )
 
 
 def describe_differences(differences: IndexCoverageDifferences) -> list[str]:
     """One line per declared dataset with no row and per differing variable, naming at most
-    twenty variables in dcid order and counting the rest."""
+    twenty variables in dcid order and counting the rest, and one line naming at most twenty
+    unlisted members."""
     lines = [
         f"declared dataset {provenance!r} has no row in the build"
         for provenance in differences.datasets_without_rows
     ]
-    named = sorted(differences.variables)[:_MAX_VARIABLES_NAMED]
+    lines.extend(
+        describe_unlisted(
+            differences.unlisted_members, noun="listed StatVars (StatVars of a listed dataset)"
+        )
+    )
+    named = sorted(differences.variables)[:_MAX_NAMED]
     for dcid in named:
         in_index, in_build = differences.variables[dcid]
         lines.append(f"{dcid}: index {list(in_index)!r}, build {list(in_build)!r}")
@@ -187,9 +251,11 @@ __all__ = [
     "ServingIndex",
     "compatible_pointer_uri",
     "describe_differences",
+    "describe_unlisted",
     "index_coverage_differences",
     "read_compatible_pointer",
     "read_serving_index",
     "record_if_compatible",
     "record_serving_index",
+    "unlisted_parties",
 ]

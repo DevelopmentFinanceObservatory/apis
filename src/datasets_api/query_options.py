@@ -14,6 +14,7 @@ from typing import cast
 from pydantic import ValidationError
 
 from datasets_api.mint_models import MAX_GROUPBY_LEVEL_DEPTH, MintOptions
+from dfo_platform.problem import Refusal
 from dfo_platform.validation import pointer_segment
 
 # Each closed-namespace query key's equivalent (top-level field, nested
@@ -36,13 +37,15 @@ _NAMESPACE: dict[str, tuple[str, str | None]] = {
 _COMMA_JOINED_NESTED_KEYS: frozenset[str] = frozenset({"groupby.by"})
 
 
-class QueryOptionsInvalid(Exception):
+class QueryOptionsInvalid(Refusal):
     """A dotted-query key outside the closed namespace, a key supplied more
     than once, a value `MintOptions` itself refuses once assembled into
     the equivalent body shape, or an option this deployment's code index
     cannot serve (`datasets_api.render.check_options_supported`). Wire
     mapping: `request_invalid`, 400, `pointer` naming the equivalent body path.
     """
+
+    code = "request_invalid"
 
     def __init__(self, *, pointer: str, detail: str) -> None:
         self.pointer = pointer

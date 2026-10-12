@@ -707,7 +707,12 @@ def test_a_set_named_by_two_texts_binds_its_members_when_either_asks(
 
         assert bound(spec) == {_SUBJECT: members_reading(node)}
         assert spec.spec_id == alone.spec_id
-        assert group(spec) == {"dcid": node, "label": LABEL[node], "entity_type": NODE_TYPE[node]}
+        assert group(spec) == {
+            "dcid": node,
+            "label": LABEL[node],
+            "entity_type": NODE_TYPE[node],
+            "total": None,
+        }
 
 
 @pytest.mark.parametrize(
@@ -741,6 +746,7 @@ def test_a_set_on_a_flow_role_asked_for_its_members_binds_them(
         "dcid": node,
         "label": LABEL[node],
         "entity_type": NODE_TYPE[node],
+        "total": None,
     }
     check_three_doors(doors, AID, asked)
 
@@ -912,7 +918,12 @@ def test_a_role_carries_a_group_only_when_it_binds_that_sets_members(
     assert group(spec) == (
         None
         if carrier is None
-        else {"dcid": carrier, "label": LABEL[carrier], "entity_type": NODE_TYPE[carrier]}
+        else {
+            "dcid": carrier,
+            "label": LABEL[carrier],
+            "entity_type": NODE_TYPE[carrier],
+            "total": None,
+        }
     )
 
 
@@ -930,6 +941,7 @@ def test_a_region_named_in_other_words_carries_the_graphs_label(doors: Doors) ->
         "dcid": AFRICA,
         "label": LABEL[AFRICA],
         "entity_type": NODE_TYPE[AFRICA],
+        "total": None,
     }
 
 
@@ -1227,7 +1239,12 @@ def test_a_resubmit_states_a_kept_group_as_the_graph_does(doors: Doors, node: st
 
     again = check_posted(doors, WDI, identity, posted)
 
-    assert group(again) == {"dcid": node, "label": LABEL[node], "entity_type": NODE_TYPE[node]}
+    assert group(again) == {
+        "dcid": node,
+        "label": LABEL[node],
+        "entity_type": NODE_TYPE[node],
+        "total": None,
+    }
 
 
 # Invariant 6.

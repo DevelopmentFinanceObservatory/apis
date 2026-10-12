@@ -7,9 +7,12 @@ surfaces. The response combines catalogue titles and details with optional metad
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
+from functools import cache
 
-from dfo_spec_kit.registry import Classification, CodeEntry, Lifecycle
+from dfo_spec_kit.registry import REGISTRY, Classification, CodeEntry, Lifecycle
 from pydantic import BaseModel
 
 # code -> (title, default_detail).
@@ -202,3 +205,55 @@ def merge_catalogues(*catalogues: CodeCatalogue) -> dict[str, tuple[str, str]]:
                 raise CodeCollision(code)
             merged[code] = entry
     return merged
+
+
+_registry_endpoint: ContextVar[str | None] = ContextVar("registry_endpoint", default=None)
+
+
+@contextmanager
+def bound_registry_endpoint(endpoint: str | None) -> Iterator[None]:
+    """Bind the code registry endpoint, such as `datasets.mint`, whose statuses
+    `registered_status` reads while the block runs. `None` binds no endpoint."""
+    token = _registry_endpoint.set(endpoint)
+    try:
+        yield
+    finally:
+        _registry_endpoint.reset(token)
+
+
+@cache
+def _problem_statuses(code: str) -> Mapping[str, frozenset[int]]:
+    """The statuses the code registry gives `code` on each endpoint's problem details."""
+    statuses: dict[str, set[int]] = {}
+    for entry in REGISTRY.entries:
+        if entry.code != code:
+            continue
+        for mapping in entry.mappings:
+            if mapping.channel == "problem_details" and mapping.http_status is not None:
+                statuses.setdefault(mapping.endpoint, set()).add(mapping.http_status)
+    return {endpoint: frozenset(found) for endpoint, found in statuses.items()}
+
+
+def registered_status(code: str) -> int:
+    """The HTTP status the code registry gives `code` on the bound endpoint
+    (`bound_registry_endpoint`), or, with no endpoint bound, the one status it gives `code` on
+    every endpoint.
+
+    Raises:
+        LookupError: The registry maps `code` to no status or to more than one on the bound
+            endpoint, or, with none bound, to no status or to more than one across endpoints.
+    """
+    by_endpoint = _problem_statuses(code)
+    endpoint = _registry_endpoint.get()
+    statuses = (
+        by_endpoint.get(endpoint, frozenset())
+        if endpoint is not None
+        else frozenset().union(*by_endpoint.values())
+    )
+    if len(statuses) != 1:
+        raise LookupError(
+            f"the code registry gives {code!r} the statuses {sorted(statuses)}"
+            f" (bound endpoint {endpoint!r})"
+        )
+    (status,) = statuses
+    return status

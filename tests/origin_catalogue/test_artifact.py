@@ -34,6 +34,7 @@ from origin_catalogue.un_mirror import EMPTY_UN_MIRROR
 from tests.origin_catalogue.support import (
     BUILT_AT,
     CENSUS_POVERTY,
+    CRS,
     EUROSTAT_GDP,
     GDP,
     POPULATION,
@@ -92,6 +93,7 @@ def test_manifest_records_counts_overlaps_identity_and_size(tmp_path: Path) -> N
         "scan_places": 5,
         "un_blocked_places": 2,
         "dataset_facts": 3,
+        "source_documentation": 3,
         "superseded_variables": 0,
         "successor_variables": 0,
     }
@@ -332,7 +334,28 @@ def test_dataset_facts_store_each_entry_s_card_facts(tmp_path: Path) -> None:
     assert UN_WHO not in facts
 
 
-def test_provenance_rows_carry_their_dataset_or_null(tmp_path: Path) -> None:
+def test_source_documentation_stores_each_entry_s_documentation_facts(tmp_path: Path) -> None:
+    uri = _uri(tmp_path)
+    publish_sample(uri)
+    documentation = {
+        d["ref"]: d
+        for d in json.loads((_build_dir(tmp_path) / "source_documentation.json").read_text())
+    }
+    assert documentation[CRS] == {
+        "ref": CRS,
+        "provenances": [CRS],
+        "publisher": "OECD",
+        "source_data_url": "https://webfs-dcd.oecd.org/files/dotStat/DSD_CRS/CRS.parquet",
+        "citation": "OECD (2026), Creditor Reporting System",
+        "license_url": "https://www.oecd.org/en/about/terms-conditions.html",
+        "last_update": "2026-10-02",
+        "next_expected_update": "2027-01-02",
+        "documents": {"dataNotes": ["- Figures for the latest year are preliminary.\\n"]},
+    }
+    assert set(documentation) == {CRS, WDI_DATASET, EUROSTAT_GDP}
+
+
+def test_provenance_rows_carry_their_dataset_or_null_and_their_licence(tmp_path: Path) -> None:
     uri = _uri(tmp_path)
     publish_sample(uri)
     rows = {
@@ -344,6 +367,12 @@ def test_provenance_rows_carry_their_dataset_or_null(tmp_path: Path) -> None:
         "label": "World Development Indicators",
     }
     assert rows[UN_WHO]["dataset"] is None
+    assert rows[WDI]["licence"] == {
+        "type": "CreativeCommonsAttributionLicense",
+        "label": "Creative Commons Attribution License",
+        "url": None,
+    }
+    assert rows[UN_WHO]["licence"] == {"type": None, "label": None, "url": None}
 
 
 def test_manifest_records_a_un_carry_forward(tmp_path: Path) -> None:

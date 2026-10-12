@@ -190,7 +190,8 @@ dev:
     echo "Search API (reload) → http://localhost:{{PORT}}/api/search/healthz"
     echo "  graph: {{SEARCH_GRAPH_BASE}}"
     uv run {{SYNC_ARGS}} \
-        uvicorn --factory dfo_apis.app:create_app --reload --host 127.0.0.1 --port {{PORT}}
+        uvicorn --factory dfo_apis.app:create_app --reload --host 127.0.0.1 --port {{PORT}} \
+        --log-config log-config.json
 
 # ── Quality ──────────────────────────────────────────
 
@@ -423,7 +424,8 @@ eval-app PORT:
     fi
     echo "Search API (eval profile) → http://127.0.0.1:{{PORT}}/api/search/healthz"
     uv run {{SYNC_ARGS}} \
-        uvicorn --factory dfo_apis.app:create_app --host 127.0.0.1 --port {{PORT}}
+        uvicorn --factory dfo_apis.app:create_app --host 127.0.0.1 --port {{PORT}} \
+        --log-config log-config.json
 
 # Live; records every extract/bind call for later cell replay (see promptlab/README.md)
 #

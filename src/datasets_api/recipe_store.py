@@ -1,7 +1,7 @@
 """The recipe store keeps a derived frame's recipe and its replay index.
 
 A recipe is the op-spec tree analysis-mcp ran to produce an `ops_`/`ocv_` frame. It lives in
-`datasets.frame_recipe`, keyed by the frame's pair, outside the version body the publish door
+`datasets.frame_recipe`, keyed by the frame's pair, outside the version lineage the publish door
 compares on a republish. A frame published without a recipe gains one from a later write.
 
 `write_recipe` stores a pair's recipe once. A repeat write succeeds when its `normal_form_hash`
@@ -26,9 +26,11 @@ from datetime import datetime
 from typing import Protocol, cast
 
 from dataset_store import DatasetStore, Transaction
+from datasets_api.refusals import classify_datasets_refusal
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.version_store import Clock, utc_now
 from dfo_platform import ProblemSpec
+from dfo_platform.problem import Refusal
 from dfo_platform.store_errors import extract_sqlstate, safe_diagnostics
 
 logger = logging.getLogger(__name__)
@@ -53,7 +55,7 @@ class ReplayedFrame:
     content_version: str
 
 
-class RecipeRefusal(Exception):
+class RecipeRefusal(Refusal):
     """A recipe write this store refuses whatever the retry."""
 
 
@@ -61,6 +63,8 @@ class RecipeFrameNotStored(RecipeRefusal):
     """The pair has no version row, so it cannot hold a recipe. Maps to `snapshot_not_found`
     (404).
     """
+
+    code = "snapshot_not_found"
 
     def __init__(self, *, spec_id: str, content_version: str) -> None:
         self.spec_id = spec_id
@@ -76,10 +80,13 @@ class RecipeDiverges(RecipeRefusal):
     `publish_conflict` (409), with a `constraint_id` naming the field.
     """
 
+    code = "publish_conflict"
+
     def __init__(self, *, spec_id: str, content_version: str, field: str) -> None:
         self.spec_id = spec_id
         self.content_version = content_version
         self.field = field
+        self.constraint_id = _DIVERGENCE_CONSTRAINT_IDS[field]
         super().__init__(
             f"spec_id {spec_id!r} content_version {content_version!r} already holds a recipe "
             f"with a different {field} than this write's own; a frame's pair identifies one "
@@ -90,6 +97,9 @@ class RecipeDiverges(RecipeRefusal):
 
 class ReplayKeyHeld(RecipeRefusal):
     """Another pair holds this replay key. Maps to non-retryable `publish_conflict` (409)."""
+
+    code = "publish_conflict"
+    constraint_id = "replay_key_requires_one_frame"
 
     def __init__(
         self,
@@ -274,41 +284,4 @@ _DIVERGENCE_CONSTRAINT_IDS = {
 
 
 def classify_recipe_store_exception(exc: BaseException) -> ProblemSpec | None:
-    if isinstance(exc, RecipeFrameNotStored):
-        return ProblemSpec(status=404, code="snapshot_not_found", detail=str(exc), retryable=False)
-
-    if isinstance(exc, RecipeDiverges):
-        logger.error(
-            "Datasets recipe store refused a recipe for spec_id %s content_version %s: the "
-            "stored recipe has a different %s",
-            exc.spec_id,
-            exc.content_version,
-            exc.field,
-        )
-        return ProblemSpec(
-            status=409,
-            code="publish_conflict",
-            detail=str(exc),
-            retryable=False,
-            constraint_id=_DIVERGENCE_CONSTRAINT_IDS[exc.field],
-        )
-
-    if isinstance(exc, ReplayKeyHeld):
-        logger.error(
-            "Datasets recipe store refused a recipe for spec_id %s content_version %s: "
-            "replay_key %s is held by spec_id %s content_version %s",
-            exc.spec_id,
-            exc.content_version,
-            exc.replay_key,
-            exc.holder_spec_id,
-            exc.holder_content_version,
-        )
-        return ProblemSpec(
-            status=409,
-            code="publish_conflict",
-            detail=str(exc),
-            retryable=False,
-            constraint_id="replay_key_requires_one_frame",
-        )
-
-    return None
+    return classify_datasets_refusal(exc) if isinstance(exc, RecipeRefusal) else None

@@ -29,7 +29,14 @@ from tests.engine._fake_coverage import (
     patch_coverage,
 )
 from tests.engine._fake_sdmx import FakeSdmxClient
-from tests.engine._harness import materialise_double_from_obs, pair_plan, walk_options
+from tests.engine._harness import (
+    ObsFacetFixture,
+    build_materialise_double,
+    materialise_double_from_obs,
+    pair_plan,
+    walk_options,
+    with_member_arcs,
+)
 from tests.engine.test_role_scope_resubmit_narrowing_e2e import (
     _KEN,
     _NOR,
@@ -45,6 +52,26 @@ from tests.fixtures import FakeGraph
 _LATEST = DateRequest(window=None, latest=True)
 _RESOLVE = {"Kenya": _KEN, "Norway": _NOR}
 _SOURCES = ["source/A", "source/B"]
+
+
+def _materialise_clients(observations: dict):
+    """Build role-bearing materialise doubles for a resubmit preview fixture."""
+    pairs = {
+        (stat_var, role_tuple): [
+            ObsFacetFixture(
+                facet_id=facet.facet_id or "fixture",
+                points=tuple(zip(facet.dates or (), facet.values or (), strict=True)),
+                provenance_id=facet.provenance_id,
+                measurement_method=facet.measurement_method,
+                unit=facet.unit,
+            )
+            for facet in facets
+        ]
+        for stat_var, by_role_tuple in observations.items()
+        for role_tuple, facets in by_role_tuple.items()
+    }
+    graph, sdmx, _requests = build_materialise_double(pairs)
+    return graph, sdmx
 
 
 def _discover_and_resubmit(
@@ -73,22 +100,26 @@ def _discover_and_resubmit(
     )
     assert fresh.status == "definite", fresh
     spec = fresh.specs[0]
+    materialise_graph, materialise_sdmx = _materialise_clients(observations)
+    resubmit_graph = FakeGraph(
+        nodes=_nodes(resolve=_RESOLVE, label_dcids=_SOURCES), detect={}, resolve={}, obs={}
+    )
     region = resolve_spec_resubmit(
         inp=ResubmitIdentityPayload(
             identity=BaseIdentity.model_validate(
                 {**spec.definition.identity.model_dump(mode="python"), "facets": facets}
             ),
         ),
-        graph=FakeGraph(
-            nodes=_nodes(resolve=_RESOLVE, label_dcids=_SOURCES), detect={}, resolve={}, obs={}
-        ),
+        graph=resubmit_graph,
         sdmx=FakeSdmxClient(observations=observations, availability={}),
         coverage=coverage,
         options=walk_options(
-            FakeGraph(
-                nodes=_nodes(resolve=_RESOLVE, label_dcids=_SOURCES), detect={}, resolve={}, obs={}
+            resubmit_graph,
+            EngineOptions(
+                include_observations=True,
+                materialise_graph=with_member_arcs(materialise_graph, resubmit_graph),
+                materialise_sdmx=materialise_sdmx,
             ),
-            EngineOptions(include_observations=True),
         ),
     )
     assert region.status == "definite", region

@@ -10,6 +10,8 @@ from pydantic import (
     model_validator,
 )
 
+from dfo_platform.roles import FlowAccount
+
 from .base import StrictModel
 from .coverage import Coverage, Headline
 from .entity import EntityGroup, ResolvedEntity
@@ -94,6 +96,14 @@ class ResolvedFacet(StrictModel):
             "provenance axis only, alongside ref: the Data Commons the provenance's data comes from"
         ),
     )
+    account: FlowAccount | None = Field(
+        default=None,
+        description=(
+            "provenance axis only, alongside ref: whose account of a flow the provenance "
+            "gives, when ref is a dataset the code index declares; 'provider' when it "
+            "reports flows as their providers record them"
+        ),
+    )
     selection: Literal["per_series"] | None = Field(
         default=None,
         description=(
@@ -115,9 +125,14 @@ class ResolvedFacet(StrictModel):
         if self.label is not None and self.ref is None:
             raise ValueError("label is only meaningful alongside ref")
         if (
-            self.source is not None or self.data_commons is not None or self.currency is not None
+            self.source is not None
+            or self.data_commons is not None
+            or self.currency is not None
+            or self.account is not None
         ) and self.ref is None:
-            raise ValueError("source, data_commons and currency are only meaningful alongside ref")
+            raise ValueError(
+                "source, data_commons, currency and account are only meaningful alongside ref"
+            )
         if (self.ref is not None) == (self.selection is not None):
             raise ValueError("exactly one of ref or selection must be present")
         return self

@@ -2,12 +2,14 @@
 
 A `FamilyQuery` holds what one identity asks of the index: its five-tuple, its
 slot bindings, the role keys it binds entities under, the dataset it names and the
-datasets it excludes. `identity_family_query` reads it from an identity document and is
+provenances it may answer from. `identity_family_query` reads it from an identity document and is
 the one reader of the named dataset. `index_family` matches all five scalar fields,
 filters constraint properties, and keeps the rows `elect_dataset` elects: one role class
 (`statvar_members.elect_role_class`, the election graph enumeration runs) of the one
 dataset elected among those publishing the five-tuple. `antichain_minimal_rows` then
-applies the same antichain reduction used by graph enumeration."""
+applies the same antichain reduction used by graph enumeration. `listed_group` elects the
+graph walk's members of a family holding a listed row (`CodeIndex.listed_statvars`) from the
+index alone."""
 
 from __future__ import annotations
 
@@ -19,13 +21,14 @@ from collections import defaultdict
 from collections.abc import Callable, Hashable, Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import asdict, dataclass, field, replace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 from code_index.query import CodeIndex, IndexFamily, row_five_tuple
 from dfo_platform.roles import declared_role_for
 from statvar_members import (
     AbsentReading,
     FiveTuple,
+    MemberGroup,
     RoleClass,
     RoleClassElection,
     RoleClassFacts,
@@ -35,6 +38,7 @@ from statvar_members import (
     elect_role_class_of,
     electing_role_keys,
     five_tuple_from_identity,
+    group_of_arcs,
     role_class_covers,
     role_class_facts,
     slot_bindings_from_identity,
@@ -45,6 +49,9 @@ if TYPE_CHECKING:
 
 # The facet axis that names an identity's dataset (`named_dataset`).
 _SOURCE_FACET = "provenance"
+
+# The type every exported row's StatVar carries.
+_STATISTICAL_VARIABLE = "StatisticalVariable"
 
 # The role a row with no `observation_properties` declares.
 _SUBJECT_ROLES = ("observationAbout",)
@@ -129,6 +136,8 @@ class _FiveTupleRows:
     """Each five-tuple's rows, in index order."""
     carried: Mapping[tuple[str, FiveTuple], frozenset[str]]
     """The constraint properties each dataset's rows of each five-tuple carry."""
+    datasets: frozenset[str]
+    """The provenances any row records (`_held_datasets`)."""
 
 
 # Per-index cache of `_FiveTupleRows`, keyed by the `CodeIndex` instance's identity. A
@@ -147,6 +156,25 @@ class SourceNotInFamily(Exception):
         super().__init__(f"no matching row is published by {source!r}")
 
 
+class ProvenanceScope(Protocol):
+    """The provenances a question may answer from (`allowed`), and whether it named any
+    (`named`), which lets election serve an opt-in dataset the scope allows."""
+
+    @property
+    def allowed(self) -> frozenset[str]: ...
+
+    @property
+    def named(self) -> bool: ...
+
+
+@dataclass(frozen=True)
+class DatasetScope:
+    """A `ProvenanceScope` a `FamilyQuery` carries."""
+
+    allowed: frozenset[str]
+    named: bool
+
+
 @dataclass(frozen=True)
 class FamilyQuery:
     """What one identity asks of the index: the inputs every election reads."""
@@ -163,9 +191,9 @@ class FamilyQuery:
     """The flow axes the identity asks every member of (its `open_roles`). Every election
     reads them softly beside `role_keys` (`statvar_members.electing_role_keys`), and
     `DatasetFamily.role_keys` holds the ones that joined."""
-    excluded: frozenset[str] = frozenset()
-    """The provenances of the datasets the query excludes. An unnamed query elects among
-    the others."""
+    scope: DatasetScope | None = None
+    """The provenances the query may answer from, or `None` for every one. An unnamed query
+    elects among its publishers in scope (`eligible_among`)."""
 
     @property
     def bound(self) -> frozenset[str]:
@@ -173,18 +201,25 @@ class FamilyQuery:
         return frozenset(prop for prop, binding in self.slots.items() if binding != ("unbound",))
 
 
-def named_dataset(facets: Mapping[str, Mapping[str, object]]) -> str | None:
+def named_dataset(index: CodeIndex, facets: Mapping[str, Mapping[str, object]]) -> str | None:
     """Returns the provenance of the dataset an identity's `facets` name, or `None`.
 
     The provenance facet names a dataset when it binds one distinct ref, as a `value` or
-    as a `set` of one. The spec kit hashes the two spellings to one `spec_id`, so both
-    name the same dataset. A set of two or more distinct refs names no dataset: the
-    family is then the one the unnamed election serves (`eligible_datasets`), and the
-    facet restricts the observations served, as it does for any identity."""
-    binding = facets.get(_SOURCE_FACET, {})
-    ref = binding.get("ref")
-    refs = {ref} if isinstance(ref, str) else set(cast("Sequence[str]", binding.get("refs", ())))
-    return next(iter(refs)) if len(refs) == 1 else None
+    as a `set` of one, that `index` holds rows of (`_held_datasets`). The spec kit hashes
+    the two spellings to one `spec_id`, so both name the same dataset. A set of two or
+    more distinct refs names no dataset: the family is then the one the unnamed election
+    serves among those refs (`identity_family_query`, `eligible_datasets`). A ref only
+    listed rows record (`CodeIndex.listed_statvars`), as IDS is, or one the index does not
+    hold at all, names no dataset either: the pin scopes the reads alone, and members
+    resolve as for an identity that pins nothing."""
+    refs = frozenset(pinned_refs(facets))
+    return next(iter(refs)) if len(refs) == 1 and refs <= _held_datasets(index) else None
+
+
+def _held_datasets(index: CodeIndex) -> frozenset[str]:
+    """Returns the provenances `index`'s rows (`CodeIndex.statvars`) record: the datasets
+    whose families it holds, declared (`CodeIndex.datasets`) or not."""
+    return _five_tuple_rows(index).datasets
 
 
 def identity_family_query(index: CodeIndex, identity: Mapping[str, object]) -> FamilyQuery:
@@ -193,20 +228,36 @@ def identity_family_query(index: CodeIndex, identity: Mapping[str, object]) -> F
     The five-tuple comes from `shape`, the bindings from `slots` widened to their
     expansion in `index` (`CodeIndex.expansion`), the role keys from the keys of `entities`,
     the open role keys from `open_roles`, and the dataset from
-    `facets` (`named_dataset`). The Datasets mint and Search both read an identity through
-    this function, so they elect over the same inputs."""
+    `facets` (`named_dataset`). A provenance facet binding two or more refs scopes the
+    election to those of them `index` holds rows of (`_held_datasets`), as a named scope,
+    so the mint elects among the datasets a set pin names. A set naming none of them
+    scopes nothing. The Datasets mint and Search both read an identity through this function, so they
+    elect over the same inputs."""
+    facets = cast("Mapping[str, Mapping[str, object]]", identity.get("facets", {}))
+    refs = frozenset(pinned_refs(facets))
+    datasets = refs & _held_datasets(index)
     return FamilyQuery(
         five_tuple=five_tuple_from_identity(cast("Mapping[str, object]", identity["shape"])),
         slots=slot_bindings_from_identity(
             cast("Sequence[Mapping[str, object]]", identity.get("slots", ())),
             widen=index.expansion,
         ),
-        source=named_dataset(
-            cast("Mapping[str, Mapping[str, object]]", identity.get("facets", {}))
-        ),
+        source=named_dataset(index, facets),
         role_keys=frozenset(cast("Mapping[str, object]", identity.get("entities", {}))),
         open_role_keys=frozenset(cast("Sequence[str]", identity.get("open_roles") or ())),
+        scope=DatasetScope(allowed=datasets, named=True) if len(refs) > 1 and datasets else None,
     )
+
+
+def pinned_refs(facets: Mapping[str, Mapping[str, object]]) -> tuple[str, ...]:
+    """The distinct refs an identity's provenance facet binds, as a value or a set, in
+    posted order. Every reader of a provenance pin (the Datasets mint, Search resubmit and
+    the options door) reads it here."""
+    binding = facets.get(_SOURCE_FACET, {})
+    ref = binding.get("ref")
+    if isinstance(ref, str):
+        return (ref,)
+    return tuple(dict.fromkeys(cast("Sequence[str]", binding.get("refs", ()))))
 
 
 @dataclass(frozen=True)
@@ -467,8 +518,7 @@ def elect_dataset(
 
     `rows` already match `query`. A query that names a dataset (`FamilyQuery.source`)
     elects it. Otherwise the candidates are the datasets publishing the query's family
-    (`publishers`) that are not `opt_in`, or its `opt_in` publishers when it has no other,
-    less those in `FamilyQuery.excluded`. `opt_in` decides which
+    (`publishers`) that `eligible_among` keeps under `FamilyQuery.scope`. `opt_in` decides which
     shapes a question may answer from, so an identity on a five-tuple only `opt_in`
     datasets publish still elects one. A caller that holds the candidates passes them in
     rank order as `among` (`family_among`), and the election runs among those alone.
@@ -595,6 +645,7 @@ def _five_tuple_rows(index: CodeIndex) -> _FiveTupleRows:
         cached = _FiveTupleRows(
             rows={five_tuple: tuple(found) for five_tuple, found in rows.items()},
             carried={pair: frozenset(props) for pair, props in carried.items()},
+            datasets=frozenset(dataset for dataset, _ in carried),
         )
         _five_tuple_rows_cache[key] = cached
         weakref.finalize(index, _five_tuple_rows_cache.pop, key, None)
@@ -781,32 +832,38 @@ def _slot_options(
 
 def eligible_datasets(index: CodeIndex, query: FamilyQuery) -> tuple[str, ...]:
     """Returns the datasets `elect_dataset` elects among, in rank order: the named one,
-    else the non-`opt_in` publishers of the query's family (`publishers`), or its `opt_in`
-    ones when it has no other, less the excluded: the filter `eligible_among` applies to
-    the publishers of the family the query's slot keys select. Search's shape candidacy
-    and its pre-bind readers hold a shape's own tables and apply the same filter to them
-    (`eligible_among`), so they and every door's election keep one rule."""
-    return eligible_among(
-        index, publishers(index, query), source=query.source, excluded=query.excluded
-    )
+    else the publishers of the query's family (`publishers`) that `eligible_among` keeps
+    under the query's scope. Search's shape candidacy and its pre-bind readers hold a
+    shape's own tables and apply the same filter to them (`eligible_among`), so they and
+    every door's election keep one rule."""
+    if query.source is not None:
+        return (query.source,)
+    return eligible_among(index, publishers(index, query), scope=query.scope)
 
 
 def eligible_among(
-    index: CodeIndex,
-    datasets: Sequence[str],
-    *,
-    source: str | None,
-    excluded: AbstractSet[str] = frozenset(),
+    index: CodeIndex, datasets: Sequence[str], *, scope: ProvenanceScope | None
 ) -> tuple[str, ...]:
-    """Returns the datasets of `datasets` a query that names `source`, or names none, and
-    excludes `excluded` elects among, in the order given: `source` when it names one,
-    whether or not `datasets` holds it; else those that are not `opt_in`, or the `opt_in`
-    ones when `datasets` holds no other, less the excluded. A caller that holds a family's
-    datasets filters them here without selecting the family again."""
-    if source is not None:
-        return (source,)
-    default = tuple(dataset for dataset in datasets if not is_opt_in(index, dataset))
-    return tuple(dataset for dataset in default or datasets if dataset not in excluded)
+    """Returns the datasets of `datasets` a question under `scope` elects among, in the
+    order given.
+
+    With no scope: those that are not `opt_in`, or the `opt_in` ones when `datasets` holds
+    no other. Under a scope, the pool is `datasets` in `scope.allowed`: its datasets that
+    are not `opt_in`, else the whole pool when the scope names a source or when `datasets`
+    holds no dataset that is not `opt_in`, else none. So excluding a table never opens an
+    opt-in table on a family another table publishes, and an opt-in-only family stays
+    answerable under an exclusion that leaves it a publisher. A caller that holds a
+    family's datasets filters them here without selecting the family again."""
+    if scope is None:
+        default = tuple(dataset for dataset in datasets if not is_opt_in(index, dataset))
+        return default or tuple(datasets)
+    pool = tuple(dataset for dataset in datasets if dataset in scope.allowed)
+    default = tuple(dataset for dataset in pool if not is_opt_in(index, dataset))
+    if default:
+        return default
+    if scope.named or all(is_opt_in(index, dataset) for dataset in datasets):
+        return pool
+    return ()
 
 
 def is_opt_in(index: CodeIndex, dataset: str) -> bool:
@@ -1128,7 +1185,11 @@ def family_query_digest(query: FamilyQuery) -> bytes:
             "source": query.source,
             "role_keys": sorted(query.role_keys),
             "open_role_keys": sorted(query.open_role_keys),
-            "excluded": sorted(query.excluded),
+            "scope": (
+                None
+                if query.scope is None
+                else {"allowed": sorted(query.scope.allowed), "named": query.scope.named}
+            ),
         },
         separators=(",", ":"),
     )
@@ -1162,6 +1223,63 @@ def absent_member_reads_zero(index: CodeIndex, dataset: str | None) -> bool:
     declares, read unknown. The mint's sum and Search's `Slot.summable` both read absence
     through this function."""
     return dataset is not None and index.absent_observation(dataset) == "zero"
+
+
+def listed_group(index: CodeIndex, query: FamilyQuery, *, member_cap: int) -> MemberGroup | None:
+    """Returns the group the graph walk resolves for `query`, elected from the index alone,
+    when that group holds a listed row (`CodeIndex.listed_statvars`), else `None`, which
+    leaves the query to the walk.
+
+    The export reads every StatVar of each five-tuple a listed row has and refuses unless
+    each is an index row or a listed row (`_verify_listed_five_tuples` in
+    `scripts/export_code_index.py`), so those rows are the walk's candidates.
+    `statvar_members.group_of_arcs` runs the walk's admission and election over them, so
+    Search and the Datasets mint elect the walk's members without its reads, which take
+    about 50 s for an IDS family on the dev graph. Raises what the walk raises for its
+    members: `MemberEnumerationTooLarge`, `MemberRoleDisagreement` and
+    `DegenerateObservationProperties`."""
+    listed = index.listed_by_five_tuple.get(query.five_tuple)
+    if not listed:
+        return None
+    keys = query.slots.keys()
+    # The walk (`statvar_members`) rejects a StatVar declaring a property the query has no
+    # slot for; dropping those here saves building their arcs (about 12,000 CRS rows).
+    candidates = [
+        row
+        for row in (*_five_tuple_rows(index).rows.get(query.five_tuple, ()), *listed)
+        if row.constraint_properties.keys() <= keys
+    ]
+    group = group_of_arcs(
+        query.five_tuple,
+        {row.dcid: _row_arcs(row) for row in candidates},
+        slots=query.slots,
+        readings=absent_readings(index),
+        member_cap=member_cap,
+        role_keys=query.role_keys,
+        open_role_keys=query.open_role_keys,
+    )
+    if frozenset(row.dcid for row in listed).isdisjoint(group.family):
+        return None
+    return group
+
+
+def _row_arcs(row: StatVarRow) -> dict[str, tuple[str, ...]]:
+    """The out-arcs a forward read of `row`'s StatVar returns, by graph property."""
+    return {
+        "typeOf": (_STATISTICAL_VARIABLE,),
+        "populationType": _arc(row.population_type),
+        "measuredProperty": _arc(row.measured_property),
+        "statType": _arc(row.stat_type),
+        "measurementQualifier": _arc(row.measurement_qualifier),
+        "measurementDenominator": _arc(row.measurement_denominator),
+        "observationProperties": row.observation_properties,
+        "constraintProperties": tuple(row.constraint_properties),
+        **{prop: (value,) for prop, value in row.constraint_properties.items()},
+    }
+
+
+def _arc(value: str | None) -> tuple[str, ...]:
+    return () if value is None else (value,)
 
 
 def antichain_minimal_rows(index: CodeIndex, rows: Sequence[StatVarRow]) -> tuple[StatVarRow, ...]:
@@ -1205,9 +1323,11 @@ __all__ = [
     "invariant_bindings",
     "is_opt_in",
     "key_sets_cover",
+    "listed_group",
     "named_dataset",
     "offers_slot",
     "option_families",
+    "pinned_refs",
     "publishers",
     "query_family",
     "shared_pins",

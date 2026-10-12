@@ -6,8 +6,10 @@ name: Eval gate
 # anything the eval reads. The run job is a matrix of EVAL_SHARDS shards on
 # parallel runners. Each shard builds an environment in each tree, stages the
 # deployed coverage and origin catalogue builds (scripts/stage_eval_data.py,
-# read as the eval reader service account), serves both trees with the eval
-# profile on two ports, and runs scripts/eval_paired.py --shard K/N over the
+# read as the eval reader service account), migrates one Postgres database per
+# tree with that tree's dataset_store migrations, serves both trees with the
+# eval profile and the Datasets surface on two ports, and runs
+# scripts/eval_paired.py --shard K/N over the
 # eligible cases in corpus/ whose id hashes to K, with at most
 # EVAL_CONCURRENCY posts in flight per app. Each in-flight request holds one of
 # the 6 workers in a 2-core runner's default thread pool while the engine
@@ -205,6 +207,20 @@ jobs:
       fail-fast: false
       matrix:
         shard: ${{ fromJSON(needs.changes.outputs.shards) }}
+    # The Datasets store both apps read, one database per tree, as in
+    # migrations.yml. The checks read the members door
+    # (POST /api/datasets/{id}/members), which the Datasets surface serves.
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: dataset_store_migrator
+          POSTGRES_PASSWORD: ci-throwaway
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U dataset_store_migrator"
+          --health-interval=5s --health-timeout=5s --health-retries=10
     steps:
       - uses: actions/checkout@v7
         with:
@@ -300,6 +316,26 @@ jobs:
           SEARCH_LLM_MEMO_MAX_BYTES: "0"
           COVERAGE_INDEX_CHECK: "off"
           SHARD: ${{ matrix.shard.index }}
+          # The Datasets surface, for its members door. Each app reads its own
+          # database (DATASET_STORE_DATABASE, set per app below) as the runtime
+          # role over plain TCP. The graph and SDMX roots are the graph service's
+          # API, as in sdmx-live.yml. The eval reads only the members door, which
+          # writes nothing, so the buckets, the worker and the task queue name
+          # nothing that exists, and a write or enqueue fails.
+          DFO_DATASETS_SURFACE: "1"
+          DFO_PUBLIC_SITE_URL: https://eval-gate.invalid
+          DATASET_STORE_HOST: localhost
+          DATASET_STORE_PORT: "5432"
+          DATASET_STORE_RUNTIME_DB_USER: runtime-placeholder@ci.dev
+          DATASET_STORE_RUNTIME_DB_PASSWORD: ci-throwaway
+          DATASETS_GRAPH_BASE_URL: ${{ vars.SEARCH_GRAPH_BASE }}/core/api
+          DATASETS_SDMX_BASE_URL: ${{ vars.SEARCH_GRAPH_BASE }}/core/api
+          DATASETS_GRAPH_TOKEN: ${{ secrets.SEARCH_GRAPH_TOKEN }}
+          DATASETS_ARTIFACT_BUCKET_WORKING: eval-gate-no-writes
+          DATASETS_ARTIFACT_BUCKET_PINNED: eval-gate-no-writes
+          DFO_WORKER_URL: http://127.0.0.1:9
+          DFO_WORKER_INVOKER_SERVICE_ACCOUNT: eval-gate-no-tasks@invalid.iam.gserviceaccount.com
+          DFO_TASKS_QUEUE: projects/eval-gate-no-tasks/locations/none/queues/none
         run: |
           set -euo pipefail
           out="$RUNNER_TEMP/eval-gate"
@@ -320,19 +356,52 @@ jobs:
           # COVERAGE_ARTIFACT_URI and ORIGIN_CATALOGUE_URI, for both apps and the driver.
           while IFS="=" read -r name uri; do export "$name=$uri"; done <<< "$staged"
 
-          RESOLVEKIT_CACHE_DIR="$HEAD_RESOLVEKIT_DIR" uv run uvicorn --factory \
+          # One database per tree, migrated by that tree's own migrations. The
+          # service container has neither database nor the runtime and worker
+          # roles, which migrations 0001 and 0012 grant to.
+          pg() { PGPASSWORD=ci-throwaway psql -h localhost -U dataset_store_migrator \
+            -d postgres -v ON_ERROR_STOP=1 -q -c "$1"; }
+          pg "CREATE ROLE \"$DATASET_STORE_RUNTIME_DB_USER\" LOGIN PASSWORD '$DATASET_STORE_RUNTIME_DB_PASSWORD';"
+          pg "CREATE ROLE \"worker-placeholder@ci.dev\" LOGIN;"
+          pg "CREATE DATABASE datasets_head;"
+          pg "CREATE DATABASE datasets_base;"
+          migrate() {
+            DATASET_STORE_DATABASE="$1" \
+              DATASET_STORE_MIGRATOR_DB_USER=dataset_store_migrator \
+              DATASET_STORE_MIGRATOR_DB_PASSWORD=ci-throwaway \
+              DATASET_STORE_WORKER_DB_USER=worker-placeholder@ci.dev \
+              uv run python -m dataset_store.migrate up
+          }
+          # Head's migrations are the PR's, so their failure fails the run. A
+          # base that does not migrate is infrastructure.
+          if ! migrate datasets_head; then
+            echo "::error::The head tree's dataset_store migrations did not apply."
+            exit 1
+          fi
+          if ! (cd "$BASE_DIR" && migrate datasets_base); then
+            echo "::error::The base tree's dataset_store migrations did not apply."
+            echo 3 > "$out/code"
+            exit 0
+          fi
+
+          DATASET_STORE_DATABASE=datasets_head RESOLVEKIT_CACHE_DIR="$HEAD_RESOLVEKIT_DIR" \
+            uv run uvicorn --factory \
             dfo_apis.app:create_app --host 127.0.0.1 --port "$HEAD_PORT" \
             > "$out/head-app.log" 2>&1 &
           head_pid=$!
-          (cd "$BASE_DIR" && RESOLVEKIT_CACHE_DIR="$BASE_RESOLVEKIT_DIR" exec uv run uvicorn \
+          (cd "$BASE_DIR" && DATASET_STORE_DATABASE=datasets_base \
+            RESOLVEKIT_CACHE_DIR="$BASE_RESOLVEKIT_DIR" exec uv run uvicorn \
             --factory dfo_apis.app:create_app --host 127.0.0.1 --port "$BASE_PORT") \
             > "$out/base-app.log" 2>&1 &
           base_pid=$!
           trap 'kill "$head_pid" "$base_pid" 2>/dev/null || true' EXIT
 
+          # Both surfaces must serve: a Datasets surface that did not mount
+          # would leave every members read a 404.
           wait_for_app() {
             for _ in $(seq 1 120); do
-              if curl -fsS -o /dev/null "http://127.0.0.1:$1/api/search/schema"; then
+              if curl -fsS -o /dev/null "http://127.0.0.1:$1/api/search/schema" &&
+                curl -fsS -o /dev/null "http://127.0.0.1:$1/api/datasets/healthz"; then
                 return 0
               fi
               if ! kill -0 "$2" 2>/dev/null; then
@@ -346,11 +415,11 @@ jobs:
           # A head that does not serve is the PR's fault and fails the run. A
           # base that does not serve is infrastructure.
           if ! wait_for_app "$HEAD_PORT" "$head_pid" "$out/head-app.log"; then
-            echo "::error::The head app did not serve /api/search/schema."
+            echo "::error::The head app did not serve /api/search/schema and /api/datasets/healthz."
             exit 1
           fi
           if ! wait_for_app "$BASE_PORT" "$base_pid" "$out/base-app.log"; then
-            echo "::error::The base app did not serve /api/search/schema."
+            echo "::error::The base app did not serve /api/search/schema and /api/datasets/healthz."
             echo 3 > "$out/code"
             exit 0
           fi

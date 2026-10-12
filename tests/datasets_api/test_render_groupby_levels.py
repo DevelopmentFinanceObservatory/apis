@@ -14,7 +14,7 @@ from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.types import StatVarRow
 from datasets_api.mint_models import GroupbyOptions, MintOptions
 from datasets_api.render import ReshapeResult, _reshape
-from materialise.content_version import MintPreimage, mint_version
+from materialise.content_version import mint_version
 from materialise.enrichment import EnrichmentLookup
 from materialise.frame_build import build_frame
 from materialise.reshape import Table
@@ -133,12 +133,6 @@ _TABLE = Table(
     ),
 )
 _SUBJECT_ID = "spec_991000"
-_PREIMAGE = MintPreimage(
-    graph_revision="rev-1",
-    source_revisions=({"source": "OECD_CRS", "revision": "2026-09-01"},),
-    facets=({"axis": "provenance", "ref": "p1", "basis": "bound"},),
-    conversion=None,
-)
 
 
 def _options(levels: dict[str, int] | None) -> MintOptions:
@@ -154,12 +148,11 @@ def _reshape_with(
         table,
         options=options,
         entity_columns=_ENTITY_COLUMNS,
-        enrichment=EnrichmentLookup(FakeMintGraphReader()),
+        enrichment=EnrichmentLookup(FakeMintGraphReader(), type_kinds={}, parties={}),
         code_index=_INDEX,
         resolved_stat_var_refs=(),
         provenance_refs=("p1",),
         subject_id=_SUBJECT_ID,
-        groupby_preimage=_PREIMAGE,
         frame_chunks=iter((table,)) if chunked else None,
         pivot_max_output_cells=5_000_000,
     )
@@ -244,13 +237,7 @@ def test_each_level_mints_its_own_content_version_apart_from_the_separate_frame(
         role_keys=_ENTITY_COLUMNS,
         rows=[dict(zip(_TABLE.columns, row, strict=True)) for row in _TABLE.rows],
     )
-    separate_version = mint_version(
-        separate,
-        graph_revision=_PREIMAGE.graph_revision,
-        source_revisions=_PREIMAGE.source_revisions,
-        facets=_PREIMAGE.facets,
-        conversion=_PREIMAGE.conversion,
-    )
+    separate_version = mint_version(separate)
 
     versions = set()
     for levels in (None, {"crsPurpose": 0}, {"crsPurpose": 1}):

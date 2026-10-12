@@ -36,6 +36,7 @@ from search.models import (
     EntityGroup,
     Operation,
     ParsedEntity,
+    ParsedInput,
     ParsedPart,
     ResolveOptions,
     ResolveRequest,
@@ -168,15 +169,20 @@ def _gdp_entry(entity_dcid: str, variable_text: str) -> ResubmitIdentityEntry:
     )
 
 
-def _identity_entry_from_spec(spec, variable_text: str) -> ResubmitIdentityEntry:
+def _identity_entry_from_spec(
+    spec, variable_text: str, *, separate: bool = False
+) -> ResubmitIdentityEntry:
     """Build an identity entry from a resolved or candidate spec."""
     return ResubmitIdentityEntry(
         variable_text=variable_text,
         identity=spec.definition.identity,
+        separate=separate,
     )
 
 
-def _candidates_entry_from_part(part, *, candidates, variable_text: str) -> ResubmitCandidatesEntry:
+def _candidates_entry_from_part(
+    part, *, candidates, variable_text: str, separate: bool = False
+) -> ResubmitCandidatesEntry:
     return ResubmitCandidatesEntry(
         variable_text=variable_text,
         ordering=part.candidates.ordering,
@@ -187,6 +193,7 @@ def _candidates_entry_from_part(part, *, candidates, variable_text: str) -> Resu
             )
             for spec in candidates
         ],
+        separate=separate,
     )
 
 
@@ -536,6 +543,7 @@ def test_candidates_entry_resolves_candidates():
         birth_rate_part,
         candidates=birth_rate_part.candidates.specs,
         variable_text="birth rate",
+        separate=True,
     )
     result = offline_resolve(
         ResolveRequest(input=DatasetResubmitInput(entries=[entry])),
@@ -543,6 +551,25 @@ def test_candidates_entry_resolves_candidates():
     assert result.status == "candidates"
     assert result.parts[0].status == "candidates"
     assert len(result.parts[0].candidates.specs) == 2
+    assert result.parts[0].separate is True
+    assert result.parts[0].model_dump(mode="json")["separate"] is True
+
+    repeated_part = result.parts[0]
+    repeated = offline_resolve(
+        ResolveRequest(
+            input=DatasetResubmitInput(
+                entries=[
+                    _candidates_entry_from_part(
+                        repeated_part,
+                        candidates=repeated_part.candidates.specs,
+                        variable_text=repeated_part.variable_text,
+                        separate=repeated_part.separate,
+                    )
+                ]
+            )
+        )
+    )
+    assert repeated.parts[0].separate is True
 
 
 def test_candidates_entry_round_trips_a_raw_text_part_without_collapsing():
@@ -607,13 +634,18 @@ def test_collapsed_candidates_entry_carries_the_warning_on_the_wire():
 
 def test_placeholder_entry_no_data_restates_stub_with_warning_and_reason():
     entry = ResubmitPlaceholderEntry(
-        variable_text="unemployment rate", status="no_data", reason="no_observations"
+        variable_text="unemployment rate",
+        status="no_data",
+        reason="no_observations",
+        separate=True,
     )
     result = offline_resolve(ResolveRequest(input=DatasetResubmitInput(entries=[entry])))
     assert result.status == "no_data"
     part = result.parts[0]
     assert part.status == "no_data"
     assert part.no_data.reason == "no_observations"
+    assert part.separate is True
+    assert part.model_dump(mode="json")["separate"] is True
     warning = next(w for w in part.warnings if w.code == "part_restated")
     assert warning.severity == "info"
     assert "unemployment rate" in warning.message
@@ -622,13 +654,18 @@ def test_placeholder_entry_no_data_restates_stub_with_warning_and_reason():
 
 def test_placeholder_entry_unsupported_restates_stub_with_warning_and_code():
     entry = ResubmitPlaceholderEntry(
-        variable_text="GDP in PPP dollars", status="unsupported", code="unit_request_unsupported"
+        variable_text="GDP in PPP dollars",
+        status="unsupported",
+        code="unit_request_unsupported",
+        separate=True,
     )
     result = offline_resolve(ResolveRequest(input=DatasetResubmitInput(entries=[entry])))
     assert result.status == "unsupported"
     part = result.parts[0]
     assert part.status == "unsupported"
     assert part.unsupported.code == "unit_request_unsupported"
+    assert part.separate is True
+    assert part.model_dump(mode="json")["separate"] is True
     warning = next(w for w in part.warnings if w.code == "part_restated")
     assert warning.severity == "info"
     assert "GDP in PPP dollars" in warning.message
@@ -1932,7 +1969,10 @@ def test_build_candidates_region_one_survivor_collapses_to_definite():
     survivor_spec = _spec_with_sv(birth_rate_part, _CRUDE_BIRTH_RATE)
     other_spec = _spec_with_sv(birth_rate_part, _FERTILITY_RATE)
     entry = _candidates_entry_from_part(
-        birth_rate_part, candidates=[survivor_spec, other_spec], variable_text="birth rate"
+        birth_rate_part,
+        candidates=[survivor_spec, other_spec],
+        variable_text="birth rate",
+        separate=True,
     )
     promoted = [
         RegionResult(
@@ -1959,6 +1999,7 @@ def test_build_candidates_region_one_survivor_collapses_to_definite():
     assert region.spec is survivor_spec
     assert region.variable_text == "birth rate"
     assert region.earliest_index == 2
+    assert region.separate is True
     assert region.timing_by_step == {"recall": 8}
     warning = next(w for w in region.warnings if w.code == "candidates_collapsed_definite")
     assert warning.message == (
@@ -1979,7 +2020,10 @@ def test_build_candidates_region_zero_survivors_collapses_to_no_data():
     spec_a = _spec_with_sv(birth_rate_part, _CRUDE_BIRTH_RATE)
     spec_b = _spec_with_sv(birth_rate_part, _FERTILITY_RATE)
     entry = _candidates_entry_from_part(
-        birth_rate_part, candidates=[spec_a, spec_b], variable_text="birth rate"
+        birth_rate_part,
+        candidates=[spec_a, spec_b],
+        variable_text="birth rate",
+        separate=True,
     )
     promoted = [
         RegionResult(
@@ -2009,8 +2053,55 @@ def test_build_candidates_region_zero_survivors_collapses_to_no_data():
     assert region.no_data_reason == "no_observations"
     assert region.specs == ()
     assert region.unsupported is None
+    assert region.separate is True
     warning = next(w for w in region.warnings if w.code == "candidates_collapsed_no_data")
     assert warning.message == (
         "2 candidates were posted; none resolves, so the part is reported as no_data "
         "and not as the posted candidate set."
     )
+
+
+@pytest.mark.unrecorded_requests
+def test_identity_resubmit_round_trips_comparison_without_folding():
+    """A parsed comparison stays separate through identity-only resubmits."""
+    initial = offline_resolve(
+        ResolveRequest(
+            input=ParsedInput(
+                parts=[
+                    ParsedPart(
+                        variable_text="fertility rate",
+                        entities=[ParsedEntity(text="Kenya")],
+                    ),
+                    ParsedPart(
+                        variable_text="fertility rate",
+                        entities=[ParsedEntity(text="Nigeria")],
+                        separate=True,
+                    ),
+                ]
+            )
+        )
+    )
+    assert [part.separate for part in initial.parts] == [False, True]
+
+    def resubmit(parts):
+        return offline_resolve(
+            ResolveRequest(
+                input=DatasetResubmitInput(
+                    entries=[
+                        _identity_entry_from_spec(
+                            part.spec, part.variable_text, separate=part.separate
+                        )
+                        for part in parts
+                    ]
+                )
+            )
+        )
+
+    first = resubmit(initial.parts)
+    second = resubmit(first.parts)
+    for result in (first, second):
+        assert [part.separate for part in result.parts] == [False, True]
+        assert result.parts[0].spec.spec_id != result.parts[1].spec.spec_id
+        assert not any(
+            warning.code == "binding_folded" for part in result.parts for warning in part.warnings
+        )

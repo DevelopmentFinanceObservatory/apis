@@ -1,36 +1,36 @@
 ---
-description: Turn a plain-English question into a DFO dataset and read it as Parquet, first with curl and then in Python.
+description: Build a Parquet dataset from a plain-English development-finance question.
 ---
 
-# Quickstart
+# Build a dataset from a question
 
-Ask how much official development assistance Germany disbursed to Nigeria for basic health care. You'll turn the answer into a dataset and read it as Parquet. The result is a 30-row table covering 1995 to 2024.
+Turn a question about German ODA disbursements to Nigeria into a downloadable Parquet dataset.
 
-You'll learn to:
+## What you will build
 
-- resolve a question into a spec with the Search API
-- mint a dataset from that spec with the Datasets API
-- download the dataset bundle and read its Parquet file
-- run the whole flow from Python
+The result is a ZIP archive containing a Parquet data file, citation metadata, and a data package description.
 
-You need `curl`, `jq` and `unzip` for the first three steps, and [uv](https://docs.astral.sh/uv/) for the last. It takes about ten minutes.
+## What you will learn
 
-## Set the base URL
+- How to check how the Search API interpreted a question.
+- How to create a dataset from the resulting spec.
+- How to download a Parquet bundle.
 
-Set the base URL once for all calls.
+## What you need
+
+You need `curl`, `jq`, and `unzip`. The Python version also needs [uv](https://docs.astral.sh/uv/). Set the API base URL once.
 
 ```bash
 export DFO_API=https://dfo-dev-apis-zms5lj4zhq-nn.a.run.app
 ```
 
-!!! note
-    This is the development deployment of the DFO APIs. It takes calls without a key. <!-- TODO: replace with the public base URL and access instructions once the API access policy exists. -->
+The development deployment accepts requests without an API key.
 
 ## Step 1: resolve the question
 
-The Search API reads your question and returns a spec: the DFO's exact reading of what you asked, with a `spec_id` that names it. Nothing is downloaded yet.
+Send a question with explicit donor and recipient roles. The confirmation sentence is the first check on the resulting data.
 
-You should see:
+An example response contains these selected fields. The date range depends on the available observations.
 
 ```json
 {
@@ -41,106 +41,101 @@ You should see:
 }
 ```
 
-Run this to get it:
-
 ```bash
-curl -s -X POST "$DFO_API/api/search/resolve" \
+curl -fsS -X POST "$DFO_API/api/search/resolve" \
   -H "Content-Type: application/json" \
-  -d '{"input": {"kind": "raw_text", "query": "German aid disbursements to Nigeria for basic health care"}}' \
+  -d '{"input":{"kind":"raw_text","query":"ODA disbursements from Germany to Nigeria for basic health care"}}' \
   > resolve.json
 
-jq '{kind} + (.parts[0] | {status, spec_id: .spec.spec_id, sentence: .spec.resolved.rendered_sentence})' resolve.json
+jq 'if .kind == "resolution" then
+      {kind} + (.parts[0] | {
+        status,
+        spec_id: .spec.spec_id,
+        sentence: .spec.resolved.rendered_sentence
+      })
+    else
+      {kind, reason, scope}
+    end' resolve.json
 ```
 
-`resolution` means the question asked for data, so the answer carries `parts`. A question about what the DFO holds answers `catalogue`, and an off-topic one `declined`, and neither carries `parts`; [Resolve a question](resolve-a-question.md) shows how to branch on `kind`. `definite` means the DFO found one reading of the question. The sentence is that reading in words, so check it says what you meant. Here it matched "basic health care" to CRS purpose code 12220 and read "aid" as official development assistance.
+The command prints selected fields from a resolution answer. Check `kind` before reading `parts`.
 
-## Step 2: mint a dataset
+## Step 2: create the dataset
 
-Mint the spec into stored files. Send its `spec_id` and the `definition` returned beside it by the Search API, then request Parquet.
+Create a Parquet bundle from the `spec_id` and definition returned by Search. A successful synchronous response is a manifest with a `content_version`, coverage, and artifacts. A background response has an `operation` object.
 
-You should see:
-
-```json
-{
-  "content_version": "cv_e7f6ed9ddc5ca69902f92a8866f93ef7",
-  "rows": 30,
-  "artifacts": [
-    {
-      "rendering": {
-        "format": "parquet",
-        "bundle": true,
-        "rendition": "v2-…"
-      },
-      "media_type": "application/zip",
-      "bytes": 11590
-    },
-    {
-      "rendering": {
-        "statistics": "series"
-      },
-      "media_type": "application/vnd.apache.parquet",
-      "bytes": 5978
-    }
-  ]
+```bash
+jq -e '.kind == "resolution" and .parts[0].status == "definite"' resolve.json > /dev/null || {
+  echo "Search did not return a definite interpretation"
+  exit 1
 }
-```
 
-Build and send the mint request from `resolve.json`.
+jq '{
+  schema_version: 1,
+  input: {
+    kind: "spec_id",
+    spec_id: .parts[0].spec.spec_id,
+    definition: .parts[0].spec.definition
+  },
+  options: {format: "parquet"}
+}' resolve.json > mint.json
 
-```bash
-jq '{schema_version: 1,
-     input: {kind: "spec_id", spec_id: .parts[0].spec.spec_id, definition: .parts[0].spec.definition},
-     options: {format: "parquet"}}' resolve.json > mint.json
-
-curl -s -X POST "$DFO_API/api/datasets" \
+if ! curl -fsS -X POST "$DFO_API/api/datasets" \
   -H "Content-Type: application/json" \
-  -d @mint.json > manifest.json
+  -d @mint.json > response.json; then
+  echo "Dataset request failed" >&2
+  exit 1
+fi
 
-jq '{content_version, rows: .coverage.rows, artifacts: [.artifacts[] | {rendering, media_type, bytes}]}' manifest.json
+if jq -e '.operation' response.json > /dev/null; then
+  poll_url="$(jq -r '.operation.poll' response.json)"
+  wait_seconds="$(jq -r '.operation.retry_after_ms / 1000' response.json)"
+  while true; do
+    sleep "$wait_seconds"
+    if ! curl -fsS "$DFO_API$poll_url" > operation.json; then
+      echo "Dataset operation failed" >&2
+      exit 1
+    fi
+    if [ "$(jq -r '.operation.status' operation.json)" = "done" ]; then
+      jq '.manifest' operation.json > manifest.json
+      break
+    fi
+  done
+else
+  cp response.json manifest.json
+fi
+
+jq '{
+  content_version,
+  coverage,
+  artifacts: [.artifacts[] | {rendering, media_type, url}]
+}' manifest.json
 ```
 
-The response is a manifest. `content_version` names this exact result, so the pair `spec_774d…` and `cv_e7f6…` names these 30 rows. The first artifact is the bundle: a zip holding your Parquet file with a README, the codes behind every code column, the sources and their licences, and the citation. The second is a one-row-per-series summary, which you won't need here.
+The command prints selected fields from the manifest. The poll URL is saved from the initial response because a completed operation no longer includes it. A failed poll stops the command before it reads the response as a completed operation.
 
-## Step 3: download the Parquet file
+`content_version` identifies the stored result. Keep it with the `spec_id` when you need to retrieve that same version later.
 
-Each artifact carries a signed `url` that expires after 15 minutes. Select the first bundle whose `rendering` has `bundle` true and the `format` you asked for, then download and unzip it. `-OJ` saves the file under the name the download carries.
+## Step 3: download the Parquet bundle
+
+Select the requested bundle by its rendering and download it. Each artifact's `url` is a download link relative to the API host that never expires. It answers `302` with a storage URL signed for five minutes, which `-L` follows.
 
 ```bash
-curl -s -OJ "$(jq -r 'first(.artifacts[] | select(.rendering.bundle == true and .rendering.format == "parquet")) | .url' manifest.json)"
-unzip dfo_*_parquet_*.zip
+bundle_url="$(jq -r 'first(.artifacts[] | select(.rendering.format == "parquet" and .rendering.bundle == true)) | .url' manifest.json)"
+curl -fsSL "$DFO_API$bundle_url" -o bundle.zip
+data_path="$(unzip -p bundle.zip datapackage.json | jq -r '.resources[] | select(.format == "parquet") | .path')"
+unzip bundle.zip "$data_path" README.md SOURCES.md CITATION.cff datapackage.json
 ```
 
-You should see:
+The bundle contains `README.md`, `SOURCES.md`, `CITATION.cff`, and `datapackage.json`. It includes `data/codes.csv` when the data contains codes. Read `datapackage.json` to find the data resource path.
 
-```text
-Archive:  dfo_oecd-creditor-reporting-system_2026-09-28_parquet_e7f6ed.zip
- extracting: data/oecd-creditor-reporting-system.parquet
- extracting: CITATION.cff
- extracting: README.md
- extracting: SOURCES.md
- extracting: data/codes.csv
- extracting: datapackage.json
-```
+The selected resource contains the observations. `README.md` explains the data and its columns. `SOURCES.md` records the data sources, licences, and processing steps. `CITATION.cff` and `datapackage.json` provide citation and machine-readable metadata.
 
-The zip is named `dfo_<sources>_<date first prepared>_<format>_<version>.zip`. The version is the first six characters of the `content_version` after `cv_`.
+## Use Python instead
 
-`data/oecd-creditor-reporting-system.parquet` is the dataset. `README.md` is the place to start. It says what the data is, explains every column, and shows how to cite it and how to get it again. `data/codes.csv` gives the plain name of each code, such as `country/DEU` for Germany. `SOURCES.md` names each source, its licence and each step the DFO applied. `CITATION.cff` is the citation in a format reference managers read, and `datapackage.json` describes every column for software.
+Use this script instead of the curl commands when you want to run the full flow in Python. Save it as `quickstart.py`.
 
-## Step 4: do the same in Python
-
-The script below runs steps 1 to 3 with `httpx` and loads the Parquet file into pandas. There is no DFO client package, so plain HTTP calls are the way in.
-
-You should see:
-
-```text
-spec_774d6c001a6250aa67ca676ab067895e cv_e7f6ed9ddc5ca69902f92a8866f93ef7 (30, 13)
-   time_period financingProvider financingRecipient      value         unit
-27        2007       country/DEU        country/NGA  1330990.0  CurrencyUSD
-28        2008       country/DEU        country/NGA   112400.0  CurrencyUSD
-29        2009       country/DEU        country/NGA   224200.0  CurrencyUSD
-```
-
-Save the script as `quickstart.py`.
+It prints the confirmation sentence, then the first five rows of the Parquet table.
 
 ```python title="quickstart.py"
 import io
@@ -153,62 +148,80 @@ import httpx
 import pandas as pd
 
 DFO_API = os.environ["DFO_API"]
-client = httpx.Client(base_url=DFO_API, timeout=120)
+question = "ODA disbursements from Germany to Nigeria for basic health care"
 
-# 1. Resolve the question into a spec.
-question = "German aid disbursements to Nigeria for basic health care"
-resolved = client.post("/api/search/resolve", json={"input": {"kind": "raw_text", "query": question}})
-answer = resolved.raise_for_status().json()
-if answer["kind"] != "resolution":  # a catalogue or declined answer carries no parts
-    raise SystemExit(f"not a data question: {answer['kind']}")
-spec = answer["parts"][0]["spec"]
+with httpx.Client(base_url=DFO_API, timeout=120) as client:
+    response = client.post(
+        "/api/search/resolve",
+        json={"input": {"kind": "raw_text", "query": question}},
+    )
+    response.raise_for_status()
+    answer = response.json()
+    if answer["kind"] != "resolution":
+        raise RuntimeError(f"Search returned {answer['kind']}: {answer}")
+    part = answer["parts"][0]
+    if part["status"] != "definite":
+        raise RuntimeError(f"Search returned {part['status']}: {part}")
 
-# 2. Mint a dataset from the spec.
-body = client.post(
-    "/api/datasets",
-    json={
-        "schema_version": 1,
-        "input": {"kind": "spec_id", "spec_id": spec["spec_id"], "definition": spec["definition"]},
-        "options": {"format": "parquet"},
-    },
-).raise_for_status().json()
-if "operation" in body:  # over the sync budget: 202 Accepted, poll until done
-    poll = body["operation"]["poll"]
-    body = client.get(poll).raise_for_status().json()
-    while body["operation"]["status"] != "done":
-        time.sleep(2)
-        body = client.get(poll).raise_for_status().json()
-    body = body["manifest"]
-manifest = body
+    spec = part["spec"]
+    response = client.post(
+        "/api/datasets",
+        json={
+            "schema_version": 1,
+            "input": {
+                "kind": "spec_id",
+                "spec_id": spec["spec_id"],
+                "definition": spec["definition"],
+            },
+            "options": {"format": "parquet"},
+        },
+    )
+    response.raise_for_status()
+    result = response.json()
 
-# 3. Download the bundle and read its Parquet file.
-bundle = next(a for a in manifest["artifacts"] if a["rendering"].get("bundle") is True and a["rendering"]["format"] == "parquet")
-archive = zipfile.ZipFile(io.BytesIO(httpx.get(bundle["url"]).raise_for_status().content))
-data_path = json.loads(archive.read("datapackage.json"))["resources"][0]["path"]
-df = pd.read_parquet(io.BytesIO(archive.read(data_path)))
+    if "operation" in result:
+        poll_url = result["operation"]["poll"]
+        wait_seconds = result["operation"].get("retry_after_ms", 1500) / 1000
+        while True:
+            time.sleep(wait_seconds)
+            response = client.get(poll_url)
+            response.raise_for_status()
+            result = response.json()
+            if result["operation"]["status"] == "done":
+                manifest = result["manifest"]
+                break
+    else:
+        manifest = result
 
-print(spec["spec_id"], manifest["content_version"], df.shape)
-print(df[["time_period", "financingProvider", "financingRecipient", "value", "unit"]].tail(3))
+    bundle = next(
+        artifact
+        for artifact in manifest["artifacts"]
+        if artifact["rendering"].get("format") == "parquet"
+        and artifact["rendering"].get("bundle") is True
+    )
+    response = client.get(bundle["url"], follow_redirects=True)
+    response.raise_for_status()
+
+archive = zipfile.ZipFile(io.BytesIO(response.content))
+package = json.loads(archive.read("datapackage.json"))
+data_path = next(resource["path"] for resource in package["resources"] if resource["format"] == "parquet")
+data = pd.read_parquet(io.BytesIO(archive.read(data_path)))
+print(spec["resolved"]["rendered_sentence"])
+print(data.head())
 ```
 
-Run it:
+Run the script.
 
 ```bash
 uv run --with httpx --with pandas --with pyarrow python quickstart.py
 ```
 
-You get the same `spec_id` and `content_version` as the curl steps. Minting the same spec again returns the stored version.
-
-This request fits the synchronous budget and returns at once. The `if "operation" in body` block polls larger requests, which return `202 Accepted` with an operation. The Get a dataset page shows how to poll it.
+The script prints the confirmation sentence followed by the first five rows of the Parquet table.
 
 ## What you learned
 
-- You resolved a question into a spec with `POST /api/search/resolve`.
-- You minted a dataset from the spec with `POST /api/datasets`.
-- You picked the bundle from the manifest's artifacts and read its Parquet file.
-- You ran the same flow from Python.
+You resolved a question, checked its interpretation, created a Parquet bundle, and read the downloaded data. You can use either the curl path or the Python path to do it.
 
 ## Next
 
-- [Get a dataset](get-a-dataset.md) covers minting with CSV and Excel, background requests, fetching a snapshot again, and source selection when several sources report the same series.
-- Versions, snapshots and citations, on the DFO docs hub, explains why a `spec_id` and a `content_version` are separate names and which one to cite. <!-- TODO: link to the hub page "Versions, snapshots and citations" when it is public. -->
+[How the APIs fit together](concepts.md) explains specs, versions, StatVars, series, rows, and source selection. [Get a dataset](get-a-dataset.md) covers CSV, Excel, background operations, snapshots, and retention.

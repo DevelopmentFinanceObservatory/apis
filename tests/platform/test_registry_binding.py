@@ -30,6 +30,8 @@ import search.engine.codes as search_codes
 import search.observations as search_observations
 import skills_api.codes as skills_codes
 from datasets_api.app import classify_datasets_exception
+from datasets_api.config import DatasetsBuildSettings
+from datasets_api.deps import DepsCell
 from datasets_api.doors.meta import build_meta_door
 from datasets_api.doors.publish import build_publish_door
 from dfo_platform.doors import DoorContribution
@@ -187,8 +189,12 @@ def test_shared_observations_warnings_name_every_resolve_door():
 # -- see this module's own docstring for why only these two, and why every
 # other Datasets endpoint (and every other contract) stays out.
 _ENDPOINT_DOOR_EXEMPLARS: dict[str, DoorContribution] = {
-    "datasets.publish": build_publish_door(),
-    "datasets.operations": build_meta_door(),
+    "datasets.publish": build_publish_door(
+        deps=DepsCell(), settings=DatasetsBuildSettings.from_env()
+    ),
+    "datasets.operations": build_meta_door(
+        deps=DepsCell(), settings=DatasetsBuildSettings.from_env()
+    ),
 }
 
 
@@ -222,7 +228,7 @@ def _registered_status_codes(endpoint: str) -> frozenset[tuple[str, int]]:
 
 
 def _assert_endpoint_bijection(*, endpoint: str, contribution: DoorContribution) -> None:
-    served = _served_status_codes(contribution)
+    served = frozenset(_served_status_codes(contribution))
     registered = _registered_status_codes(endpoint)
     unregistered = sorted(served - registered)
     unserved = sorted(registered - served)

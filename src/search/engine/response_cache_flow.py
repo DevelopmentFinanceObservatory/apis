@@ -52,6 +52,7 @@ from search.models import (
     ResolveRequest,
     ResolveResponse,
     ResubmitIdentityPayload,
+    SourceMention,
 )
 from series_coverage.shared import CoverageSnapshot
 
@@ -206,6 +207,7 @@ class CacheScope:
                 options=request.response_options,
                 max_candidates=max_candidates,
                 seam_default=seam_default,
+                qualifier_coverage=config.settings().qualifier_coverage,
                 build_commit=build_commit,
                 model=model,
                 seed=seed,
@@ -310,14 +312,17 @@ class CacheScope:
         operations: Sequence[tuple[Operation, ...]],
         query: str,
         entity_roles: Mapping[str, Sequence[DoorRole]],
+        sources: Sequence[tuple[SourceMention, ...]],
         query_text: str | None,
+        separate: Sequence[bool] = (),
         llm_usage: dict[str, int] | None = None,
     ) -> ResolveResponse | None:
         """Look up layer 2 by effective extraction and raw-text signals.
 
-        `entity_roles`, `query_text`, and the parallel `variable_qualifiers` and
-        `operations` are required to build a complete key. This lookup never waits on a
-        layer-1 lease. The first miss owns the layer-2 lease (`_acquire`).
+        `entity_roles`, `query_text`, and the parallel `variable_qualifiers`, `operations`
+        and `sources` are required to build a complete key. `separate` runs parallel to
+        `variables` and marks each one the raw query compares with another. This lookup
+        never waits on a layer-1 lease. The first miss owns the layer-2 lease (`_acquire`).
 
         Hits record the leader's health verdict. `store()` can then cache the
         request's literal query at layer 1 using that verdict; layer-2 hits
@@ -336,6 +341,7 @@ class CacheScope:
             dropped_qualifiers=dropped_qualifiers,
             variable_qualifiers=variable_qualifiers,
             operations=operations,
+            sources=sources,
             role_contradictions=signals.role_contradictions,
             query_text_qualifier_matches=signals.query_text_qualifier_matches,
             query_text_qualifier_ties=signals.query_text_qualifier_ties,
@@ -345,6 +351,7 @@ class CacheScope:
             declared_default_trigger_words=signals.declared_default_trigger_words,
             declared_default_slots_named=signals.declared_default_slots_named,
             scope=self._scope,
+            separate=separate,
         )
         self._layer2_key = key
         value, self._layer2_lease = await self._acquire(key)

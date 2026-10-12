@@ -7,10 +7,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
+import time
+import types
 from datetime import date
 from typing import get_args
 from unittest.mock import patch
 
+from search.engine import enrichment
 from search.engine.app import create_app
 from search.engine.codes import WARNING_CODES
 from search.engine.core import resolve_events
@@ -252,34 +256,47 @@ def test_deadline_synthesized_event_is_emitted_through_the_real_pipeline(
 ):
     """Through the real pipeline, a timed-out observation fetch emits one
     `ObservationsEvent` before `done`.
+
+    The resolve stages run on the real clock under the default deadline, so the
+    leg always commits its definite Spec. The trailing-enrichment clock reads one
+    request timeout ahead, so the observation fetch, held until the stream ends,
+    is past the request deadline when the stream first checks it.
     """
+    released = threading.Event()
 
-    def _hanging_build_observations(*args, **kwargs):
-        import time
-
-        time.sleep(3)  # pragma: no cover -- longer than the patched deadline below
+    def _held_build_observations(*args, **kwargs):
+        released.wait(timeout=30)
         raise AssertionError("should have been cancelled by the request deadline")
 
     monkeypatch.setattr(
         "search.engine.region.observations.dispatch._build_observations",
-        _hanging_build_observations,
+        _held_build_observations,
     )
-    search_settings(request_timeout_s=1.0)
+    timeout_s = search_settings().request_timeout_s
+    monkeypatch.setattr(
+        enrichment,
+        "time",
+        types.SimpleNamespace(monotonic=lambda: time.monotonic() + timeout_s),
+    )
 
     async def _body():
-        return [
-            ev
-            async for ev in resolve_events(
-                ResolveRequest(
-                    input=RawTextInput(query="total population India"),
-                    response_options=ResolveOptions(include_observations=True),
-                ),
-                graph=FakeGraph(),
-                llm=FakeLLM(),
-                sdmx=FakeSdmxClient(),
-                stream_slot_options=True,
-            )
-        ]
+        try:
+            return [
+                ev
+                async for ev in resolve_events(
+                    ResolveRequest(
+                        input=RawTextInput(query="total population India"),
+                        response_options=ResolveOptions(include_observations=True),
+                    ),
+                    graph=FakeGraph(),
+                    llm=FakeLLM(),
+                    sdmx=FakeSdmxClient(),
+                    stream_slot_options=True,
+                )
+            ]
+        finally:
+            # Free the worker thread before `asyncio.run` waits for its executor.
+            released.set()
 
     with patch("search.engine.extract.date") as mock_date:
         mock_date.today.return_value = PINNED_DATE

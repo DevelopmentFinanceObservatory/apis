@@ -1,9 +1,9 @@
-"""Pins a content-version token for a fixed frame and lineage without conversion.
+"""Pins a content-version token for a fixed frame.
 
 The test runs against whatever `dfo-spec-kit-frame-grammar` revision `pyproject.toml` pins.
-It does not prove the conversion-recipe identity rules leave unconverted frames unchanged;
-`dfo-spec-kit`'s vector suite does. A pin bump that moves the digest is an identity rotation
-to trace, not a literal to update.
+The token hashes the canonical frame alone, so it moves only when the frame's bytes or the
+grammar's preimage family change. A pin bump that moves the digest is an identity rotation to
+trace, not a literal to update.
 """
 
 from __future__ import annotations
@@ -26,14 +26,4 @@ _FRAME = build_frame(
 
 
 def test_mint_version_digest_is_stable():
-    """Pins the digest for graph revision `graph-rev-2024-01`, source
-    `OECD_DAC_CRS` revision `rev-7`, and bound provenance `OECD_DAC2A`.
-    """
-    token = mint_version(
-        _FRAME,
-        graph_revision="graph-rev-2024-01",
-        source_revisions=[{"source": "OECD_DAC_CRS", "revision": "rev-7"}],
-        facets=[{"axis": "provenance", "ref": "OECD_DAC2A", "basis": "bound"}],
-    )
-
-    assert token == "cv_ea9dc1d4c4be9cf2ad62a810aa2f4db7"
+    assert mint_version(_FRAME) == "cv_2256683cb97b65989938bf1d3724279b"

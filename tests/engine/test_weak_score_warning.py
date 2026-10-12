@@ -42,6 +42,14 @@ _NODES: dict = {
             "statType": {"nodes": [{"dcid": "measuredValue"}]},
         },
     },
+    "country/KEN": {
+        "label": "Kenya",
+        "type": "Country",
+        "arcs": {
+            "typeOf": {"nodes": [{"dcid": "Country"}]},
+            "name": {"nodes": [{"value": "Kenya"}]},
+        },
+    },
 }
 
 _RESOLVE: dict = {"Kenya": "country/KEN"}

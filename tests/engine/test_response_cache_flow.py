@@ -95,6 +95,7 @@ async def _assert_inactive_noop(scope: CacheScope, base: ResolveResponse) -> Non
             operations=[],
             query="q",
             entity_roles={},
+            sources=[],
             query_text=None,
         )
         is None
@@ -151,6 +152,7 @@ async def _test_layer2_hit_for_a_reworded_query_with_the_same_extraction(base: R
         "variable_qualifiers": [()],
         "operations": [()],
         "entity_roles": {},
+        "sources": [()],
         "query_text": None,
     }
 
@@ -182,6 +184,7 @@ async def _test_layer2_hit_does_not_reset_the_shared_entrys_ttl(base: ResolveRes
         "variable_qualifiers": [()],
         "operations": [()],
         "entity_roles": {},
+        "sources": [()],
         "query_text": None,
     }
 
@@ -223,6 +226,7 @@ def _population_india_extraction() -> dict:
         "variable_qualifiers": [()],
         "operations": [()],
         "entity_roles": {},
+        "sources": [()],
         "query_text": None,
     }
 
@@ -599,6 +603,7 @@ async def _test_outcome_is_hit_layer2_after_a_layer2_hit(base: ResolveResponse):
         "variable_qualifiers": [()],
         "operations": [()],
         "entity_roles": {},
+        "sources": [()],
         "query_text": None,
     }
     query_1 = "total population india"

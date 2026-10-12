@@ -5,11 +5,11 @@ This module has no graph or file-I/O imports.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, get_args
 
-from dfo_platform.roles import FlowAccount
+from dfo_platform.roles import FlowAccount, RoleAxis
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,6 +234,64 @@ class DatasetDeclaration:
     account: FlowAccount
     rank: int
     invariants: Mapping[str, str] = field(default_factory=dict)
+
+
+PartyKind = Literal["party", "total", "residual"]
+"""What one party of a flow is beside the other parties on its side.
+
+A `party` holds figures of its own: a country, a territory, an organisation. A `total`
+holds other parties' figures: DAC2A publishes "Africa, Total" (`DACAfrica`) and DAC1 the
+G7 (`GroupOfSeven`) beside the countries they hold, so a sum across a flow role that
+counts a total counts its members twice. A `residual` holds figures no other party does
+("Africa, unallocated by country", `DACAfricaUnallocated`), so it adds to the parties.
+"""
+
+PARTY_KINDS: frozenset[str] = frozenset(get_args(PartyKind))
+
+
+def party_kind(
+    types: Iterable[str], type_kinds: Mapping[str, PartyKind | None]
+) -> PartyKind | None:
+    """The kind of a party whose graph types are `types`, by the declared `type_kinds`.
+
+    A type declared `None` says nothing on its own: `Place` sits beside `Country` on
+    India, and `ProvisionalNode` beside `Organization` on IDA. The party takes the one kind
+    its other types share. `None` when a type is undeclared, when no type carries a kind,
+    or when two types carry different kinds, so a reader that needs the kind refuses rather
+    than guesses.
+    """
+    kinds: set[PartyKind] = set()
+    for type_ in types:
+        if type_ not in type_kinds:
+            return None
+        if (kind := type_kinds[type_]) is not None:
+            kinds.add(kind)
+    return kinds.pop() if len(kinds) == 1 else None
+
+
+@dataclass(frozen=True, slots=True)
+class PartyRow:
+    """One party a declared dataset publishes, as donor or recipient, and its kind.
+
+    `totals` is the group a total holds, as search names the group: a graph place
+    (`africa`, `Caribbean`) or a resolver group (`groups/G7`). A total holds every member
+    of its group plus `residuals`, the residuals it counts beside them ("Africa, unallocated
+    by country"), sorted. `totals` is `None` and `residuals` empty for a party or a residual,
+    and for a total no group matches (`DACAllRecipients`, or "lower middle-income
+    countries", whose DAC members differ from the World Bank list). `label` is the party's
+    graph name ("Africa, unallocated by country (DAC)"), `None` when the graph gives it none.
+    `datasets` are the provenances of the declared and listed datasets that publish the
+    party, and `axes` the flow axes they publish it on (`origin` as a donor, `destination` as a
+    recipient), each sorted.
+    """
+
+    dcid: str
+    kind: PartyKind
+    totals: str | None = None
+    residuals: tuple[str, ...] = ()
+    label: str | None = None
+    datasets: tuple[str, ...] = ()
+    axes: tuple[RoleAxis, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

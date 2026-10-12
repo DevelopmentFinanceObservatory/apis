@@ -22,7 +22,9 @@ holding no data there.
 
 Every facet it returns has passed admission: a facet whose provenance the
 request's catalogue does not admit is dropped, and where a DFO facet is
-present for a variable and place the others are dropped too. Facet reads to
+present for a variable and place the others are dropped too. A catalogue under
+a source scope (`Catalogue.scope`) drops every provenance outside it first, so
+DFO precedence runs among the provenances the request allows. Facet reads to
 our mixer send the catalogue's admitted hostnames as `filter.domains`, which
 only shrinks the response. Admission decides what serves. With the UN
 origin off, UN dcids read as absent and go to neither backend.
@@ -680,7 +682,9 @@ class OriginGraphClient:
         (each backend's read separately). UN variables read the UN deployment, and read
         nothing with the UN origin off. A UN variable of a series the registry excludes is
         admitted under no provenance, so every provenance holding data for it is named. A UN
-        variable the catalogue's UN tables do not hold is not read."""
+        variable the catalogue's UN tables do not hold is not read. Under a source scope
+        (`Catalogue.scope`) a provenance outside it is not named, since the request left it
+        out and it withholds nothing."""
         catalogue = current_catalogue()
         if not entities:
             return {}
@@ -708,6 +712,7 @@ class OriginGraphClient:
             else None,
         )
         facets = {**(from_ours or {}), **(from_un or {})}
+        scope = catalogue.scope
         withheld: dict[str, tuple[str, ...]] = {}
         for entity in dict.fromkeys(entities):
             held: dict[str, None] = {}
@@ -716,6 +721,7 @@ class OriginGraphClient:
                     provenance_id
                     for facet in facets.get(variable, {}).get(entity, [])
                     if (provenance_id := facet.provenance_id) is not None
+                    and (scope is None or provenance_id in scope)
                 ]
                 if variable in excluded or not catalogue.admit_series(provenances).admitted:
                     held.update(dict.fromkeys(provenances))
@@ -749,18 +755,20 @@ class OriginGraphClient:
         places the table lists for it, when base Data Commons also holds it,
         and reads every other place live, since the table lists only base
         data. Both live reads select admitted facets, so a place whose only
-        data a non-admitted provenance holds does not count. A UN variable
-        reads from the UN. Reads run cheapest first and stop once every
-        entity has data. `max_bytes` caps each read.
+        data a non-admitted provenance holds does not count. Under a source
+        scope (`Catalogue.scope`) every place is read live, since the variable
+        table does not say which provenance holds a variable where. A UN
+        variable reads from the UN. Reads run cheapest first and stop once
+        every entity has data. `max_bytes` caps each read.
         """
         catalogue = current_catalogue()
         if not variable_dcids or not entity_dcids:
             return []
         dfo, base, un = self._by_origin(catalogue, variable_dcids)
         wanted = list(dict.fromkeys(entity_dcids))
-        live = [entity for entity in wanted if not catalogue.is_scan_place(entity)]
+        live = [entity for entity in wanted if not _reads_scan_tables(catalogue, entity)]
         present = set(wanted).intersection(
-            place for variable in (*base, *dfo) for place in catalogue.base_places(variable) or ()
+            place for variable in (*base, *dfo) for place in _scan_places(catalogue, variable)
         )
 
         def missing(entities: list[str]) -> list[str]:
@@ -798,9 +806,9 @@ class OriginGraphClient:
         dfo, base, un = self._by_origin(catalogue, variable_dcids)
         present: dict[str, set[str]] = {variable: set() for variable in variable_dcids}
         for variable in (*base, *dfo):
-            present[variable].update(catalogue.base_places(variable) or ())
+            present[variable].update(_scan_places(catalogue, variable))
         wanted = list(dict.fromkeys(entity_dcids))
-        live = [entity for entity in wanted if not catalogue.is_scan_place(entity)]
+        live = [entity for entity in wanted if not _reads_scan_tables(catalogue, entity)]
         reads: list[Mapping[str, Sequence[str]]] = []
         if dfo:
             reads.append(
@@ -1077,6 +1085,18 @@ class OriginGraphClient:
         return dfo, base, un
 
 
+def _reads_scan_tables(catalogue: Catalogue, place: str) -> bool:
+    """Whether presence at `place` comes from the variable table. It knows no provenance,
+    so a catalogue under a source scope reads every place live."""
+    return catalogue.scope is None and catalogue.is_scan_place(place)
+
+
+def _scan_places(catalogue: Catalogue, variable: str) -> tuple[str, ...]:
+    """The scan places the variable table holds `variable` at, none under a source scope
+    (`_reads_scan_tables`)."""
+    return (catalogue.base_places(variable) or ()) if catalogue.scope is None else ()
+
+
 def admit_facets(catalogue: Catalogue, facets: Sequence[Facet]) -> list[Facet]:
     """The facets of one variable at one place that `catalogue` admits, with
     DFO precedence, in input order. A facet with no provenance is dropped."""
@@ -1117,6 +1137,7 @@ class GraphClientOptions(TypedDict, total=False):
     type_cache_size: int
     arcs_cache_size: int
     obs_properties_cache_size: int
+    observation_properties_flight_timeout_s: float
     obs_cache_size: int
     single_value_cache_enabled: bool
     read_error_cls: ReadErrorFactory

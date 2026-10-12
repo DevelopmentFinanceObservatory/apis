@@ -127,6 +127,41 @@ def test_admit_series_with_no_facets_admits_nothing() -> None:
 
 
 @pytest.mark.parametrize(
+    ("allowed", "admission"),
+    [
+        # Excluding the DFO table lets the base provenance serve where DFO holds data.
+        (
+            {WDI, UN_WHO, _NOT_ADMITTED},
+            SeriesAdmission(admitted=(WDI, UN_WHO), withheld=(_NOT_ADMITTED,)),
+        ),
+        # Out-of-scope provenances are neither admitted nor withheld.
+        ({CRS}, SeriesAdmission(admitted=(CRS,), withheld=())),
+        # A scope does not lift a registry exclusion.
+        ({_NOT_ADMITTED}, SeriesAdmission(admitted=(), withheld=(_NOT_ADMITTED,))),
+        (set(), SeriesAdmission(admitted=(), withheld=())),
+    ],
+)
+def test_admit_series_filters_by_scope_before_admission_and_dfo_precedence(
+    allowed: set[str], admission: SeriesAdmission
+) -> None:
+    scoped = _snapshot(un_system_enabled=True).scoped(frozenset(allowed))
+    assert scoped.admit_series([WDI, CRS, UN_WHO, _NOT_ADMITTED]) == admission
+
+
+def test_scoped_keeps_the_build_and_narrows_an_existing_scope() -> None:
+    snapshot = _snapshot()
+    scoped = snapshot.scoped(frozenset({WDI, CRS})).scoped(frozenset({CRS, EUROSTAT_GDP}))
+    assert snapshot.scope is None
+    assert scoped.scope == frozenset({CRS})
+    assert (scoped.build_id, scoped.mixer_domains, scoped.tables) == (
+        snapshot.build_id,
+        snapshot.mixer_domains,
+        snapshot.tables,
+    )
+    assert scoped.provenance_rows() == snapshot.provenance_rows()
+
+
+@pytest.mark.parametrize(
     ("dcid", "off", "on"),
     [
         (CRS_VARIABLE, DFO, DFO),
@@ -279,6 +314,7 @@ def test_is_stale_after_fourteen_days() -> None:
         ({"provenances": {UN_WHO: provenance_row(UN_WHO, UN_SYSTEM)}}, "segment"),
         ({"provenances": {"x": provenance_row(WDI, BASE)}}, "is keyed as"),
         ({"dataset_facts": {}}, "dataset facts miss 3"),
+        ({"source_documentation": {}}, "source documentation miss 3"),
         (
             {"dataset_facts": {**sample_tables().dataset_facts, UN_WHO: CardFacts()}},
             "hold 1 unknown",
@@ -340,6 +376,7 @@ def test_tables_refuse_broken_invariants(change: dict, message: str) -> None:
         "scan_places": sample_tables().scan_places,
         "scan_levels": {},
         "dataset_facts": sample_tables().dataset_facts,
+        "source_documentation": sample_tables().source_documentation,
     }
     fields.update(change)
     with pytest.raises(CatalogueTableError, match=message):

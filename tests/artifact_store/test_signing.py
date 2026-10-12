@@ -24,15 +24,30 @@ _SA_EMAIL = "runtime-sa@dev-fin-observatory.iam.gserviceaccount.com"
 
 
 class _FakeCredentials:
-    """Provide the token and service-account email used by IAM signing."""
+    """Provide the token and service-account email used by IAM signing.
+
+    The token is absent until the first refresh. Setting `expired` makes the credential invalid
+    until the next refresh, as `google.auth.credentials.Credentials.valid` reports.
+    """
 
     def __init__(self) -> None:
         self.service_account_email = _SA_EMAIL
-        self.token = "fake-access-token"
-        self.refreshed = False
+        self.token: str | None = None
+        self.expired = False
+        self.refresh_count = 0
+
+    @property
+    def refreshed(self) -> bool:
+        return self.refresh_count > 0
+
+    @property
+    def valid(self) -> bool:
+        return self.token is not None and not self.expired
 
     def refresh(self, request) -> None:
-        self.refreshed = True
+        self.refresh_count += 1
+        self.token = f"fake-access-token-{self.refresh_count}"
+        self.expired = False
 
 
 @pytest.fixture
@@ -59,6 +74,7 @@ def test_signed_url_is_v4_single_object_and_carries_the_expected_params(gcs_clie
         client=gcs_client,
         bucket="dev-fin-observatory-datasets-working",
         object_name="sha256:deadbeef",
+        digest="sha256:deadbeef",
         ttl=timedelta(minutes=5),
         response_type="text/csv",
         response_disposition='attachment; filename="deadbeef.csv"',
@@ -81,6 +97,7 @@ def test_signed_url_carries_response_type_and_disposition_in_the_signed_query_st
         client=gcs_client,
         bucket="dev-fin-observatory-datasets-working",
         object_name="sha256:deadbeef",
+        digest="sha256:deadbeef",
         ttl=timedelta(minutes=5),
         response_type="text/csv",
         response_disposition='attachment; filename="deadbeef.csv"',
@@ -96,6 +113,7 @@ def test_ttl_at_the_ceiling_is_accepted(gcs_client, stub_signing):
         client=gcs_client,
         bucket="dev-fin-observatory-datasets-working",
         object_name="sha256:atceiling",
+        digest="sha256:atceiling",
         ttl=SIGNED_URL_TTL_CEILING,
         response_type="text/csv",
         response_disposition='attachment; filename="atceiling.csv"',
@@ -115,6 +133,7 @@ def test_ttl_past_the_ceiling_is_refused_before_any_credential_work(gcs_client, 
             client=gcs_client,
             bucket="dev-fin-observatory-datasets-working",
             object_name="sha256:toolong",
+            digest="sha256:toolong",
             ttl=SIGNED_URL_TTL_CEILING + timedelta(seconds=1),
             response_type="text/csv",
             response_disposition='attachment; filename="toolong.csv"',
@@ -128,6 +147,7 @@ def test_non_positive_ttl_is_refused(gcs_client, ttl):
             client=gcs_client,
             bucket="dev-fin-observatory-datasets-working",
             object_name="sha256:zero",
+            digest="sha256:zero",
             ttl=ttl,
             response_type="text/csv",
             response_disposition='attachment; filename="zero.csv"',
@@ -147,6 +167,7 @@ def test_ttl_below_one_second_is_refused_before_any_credential_work(gcs_client, 
             client=gcs_client,
             bucket="dev-fin-observatory-datasets-working",
             object_name="sha256:subsecond",
+            digest="sha256:subsecond",
             ttl=timedelta(milliseconds=999),
             response_type="text/csv",
             response_disposition='attachment; filename="subsecond.csv"',
@@ -158,6 +179,7 @@ def test_ttl_at_exactly_the_floor_is_accepted(gcs_client, stub_signing):
         client=gcs_client,
         bucket="dev-fin-observatory-datasets-working",
         object_name="sha256:atfloor",
+        digest="sha256:atfloor",
         ttl=SIGNED_URL_TTL_FLOOR,
         response_type="text/csv",
         response_disposition='attachment; filename="atfloor.csv"',
@@ -180,6 +202,7 @@ def test_signing_failure_is_wrapped_without_chaining_the_driver_exception(
             client=gcs_client,
             bucket="dev-fin-observatory-datasets-working",
             object_name="sha256:deadbeef",
+            digest="sha256:deadbeef",
             ttl=timedelta(minutes=5),
             response_type="text/csv",
             response_disposition='attachment; filename="deadbeef.csv"',
@@ -206,6 +229,7 @@ def test_signing_failure_carries_the_failing_class_name_and_status_code(
             client=gcs_client,
             bucket="dev-fin-observatory-datasets-working",
             object_name="sha256:deadbeef",
+            digest="sha256:deadbeef",
             ttl=timedelta(minutes=5),
             response_type="text/csv",
             response_disposition='attachment; filename="deadbeef.csv"',
@@ -231,6 +255,7 @@ def test_signing_failure_with_no_status_code_still_carries_the_class_name(
             client=gcs_client,
             bucket="dev-fin-observatory-datasets-working",
             object_name="sha256:deadbeef",
+            digest="sha256:deadbeef",
             ttl=timedelta(minutes=5),
             response_type="text/csv",
             response_disposition='attachment; filename="deadbeef.csv"',
@@ -239,3 +264,41 @@ def test_signing_failure_with_no_status_code_still_carries_the_class_name(
     assert excinfo.value.error_class_name == "RuntimeError"
     assert excinfo.value.status_code is None
     assert "programming defect" not in str(excinfo.value)
+
+
+def test_signings_in_one_process_discover_adc_once_and_refresh_only_on_expiry(
+    gcs_client, monkeypatch
+):
+    monkeypatch.setattr(
+        _signing,
+        "_sign_message",
+        lambda *args, **kwargs: base64.b64encode(b"fake-signature-bytes").decode("ascii"),
+    )
+    credentials = _FakeCredentials()
+    discoveries: list[None] = []
+
+    def _default():
+        discoveries.append(None)
+        return credentials, "dev-fin-observatory"
+
+    monkeypatch.setattr(google.auth, "default", _default)
+
+    def _sign() -> None:
+        sign_get_url(
+            client=gcs_client,
+            bucket="dev-fin-observatory-datasets-working",
+            object_name="sha256:deadbeef",
+            digest="sha256:deadbeef",
+            ttl=timedelta(minutes=5),
+            response_type="text/csv",
+            response_disposition='attachment; filename="deadbeef.csv"',
+        )
+
+    for _ in range(5):
+        _sign()
+    assert (len(discoveries), credentials.refresh_count) == (1, 1)
+
+    credentials.expired = True
+    for _ in range(3):
+        _sign()
+    assert (len(discoveries), credentials.refresh_count) == (1, 2)

@@ -29,6 +29,7 @@ from origin_catalogue import (
 )
 from origin_catalogue import job as catalogue_job
 from origin_catalogue.artifact import load_catalogue, read_un_mirror
+from origin_catalogue.catalogue import Licence, SourceDocumentation
 from origin_catalogue.enumerate import EnumerationError
 from origin_catalogue.graph import UN_BASE_URL
 from origin_catalogue.registry import parse_registry
@@ -206,16 +207,22 @@ def mixer() -> FakeGraph:
                     part_of=CRS_DATASET,
                 ),
                 "licenseType": ("CreativeCommonsAttributionLicense",),
+                "license": ("https://www.oecd.org/en/about/terms-conditions.html",),
+                "licenseAttribution": ("OECD (2026), Creditor Reporting System",),
+                "lastDataRefreshDate": ("2026-10-02",),
                 "sourceReleaseFrequency": ("P1Y",),
                 "earliestObservationDate": ("1973",),
                 "latestObservationDate": ("2024-12-31",),
                 "description": ("Aid activity data.",),
+                "dataNotes": ("- Figures for the latest year are preliminary.\\n",),
             },
             CRS_DATASET: {
                 "typeOf": ("Dataset",),
                 "name": ("OECD Creditor Reporting System",),
                 "url": ("https://www.oecd.org/crs",),
+                "isPartOf": (OECD,),
             },
+            OECD: {"typeOf": ("Source",), "name": ("OECD",)},
             IDS: _provenance("https://datacatalog.worldbank.org/0038015", source=WORLD_BANK),
             "CreativeCommonsAttributionLicense": {
                 "typeOf": ("LicenseTypeEnum",),
@@ -415,6 +422,27 @@ def test_run_publishes_a_build_the_loader_accepts(tmp_path, capsys):
             source_url="https://www.oecd.org/crs",
         ),
         IDS: CardFacts(source_url="https://datacatalog.worldbank.org/0038015"),
+    }
+    assert rows[CRS].licence == Licence(
+        type="CreativeCommonsAttributionLicense",
+        label="Creative Commons Attribution License",
+        url="https://www.oecd.org/en/about/terms-conditions.html",
+    )
+    assert rows[WDI].licence == Licence()
+    assert rows[WHO].licence == Licence()
+    assert snapshot.tables.source_documentation == {
+        WDI_DATASET: SourceDocumentation(provenances=(WDI,)),
+        OECD_MAIN: SourceDocumentation(provenances=(OECD_MAIN,)),
+        CRS_DATASET: SourceDocumentation(
+            provenances=(CRS,),
+            publisher="OECD",
+            citation="OECD (2026), Creditor Reporting System",
+            license_url="https://www.oecd.org/en/about/terms-conditions.html",
+            last_update="2026-10-02",
+            documents={"dataNotes": ("- Figures for the latest year are preliminary.\\n",)},
+        ),
+        # The graph holds no node for IDS's Source, so it names no publisher.
+        IDS: SourceDocumentation(provenances=(IDS,)),
     }
     assert snapshot.tables.dfo_variables == {CRS_VARIABLE, IDS_VARIABLE}
     assert snapshot.manifest.overlaps == (IDS_VARIABLE,)
@@ -1699,8 +1727,10 @@ def test_provenances_naming_no_licence_cost_no_licence_read():
     )
 
     assert stage.dataset_facts[CRS_DATASET].license_type is None
-    # The provenance read and the parent read are the only node reads.
-    assert [method for method, _ in graph.calls].count("node_arcs_many") == 2
+    # The provenance, parent and documentation reads are the only node reads.
+    node_reads = [dcids for method, dcids in graph.calls if method == "node_arcs_many"]
+    assert len(node_reads) == 3
+    assert not any("CreativeCommonsAttributionLicense" in dcids for dcids in node_reads)
 
 
 def test_iso_week_uses_the_iso_year():

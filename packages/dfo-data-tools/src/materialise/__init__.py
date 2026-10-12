@@ -24,6 +24,7 @@ from materialise.facets import (
     facet_axis_value,
     probe_collection_candidates,
     probe_collection_facets,
+    role_bearing_facet_candidates,
     role_bearing_facets,
 )
 from materialise.graph import GraphReader
@@ -49,7 +50,6 @@ from materialise.profile import (
 )
 from materialise.progress import MaterialisationCancelled, RowProgress
 from materialise.reshape import ColumnUnknownError, ParsedColumns, parse_column_tokens
-from materialise.revision import RevisionReader, RevisionSnapshot, SourceRevision
 from materialise.trace import ManifestTrace, ResolvedStatVar
 from materialise.window import Coverage, RequestedWindow
 
@@ -85,10 +85,7 @@ __all__ = [
     "PreviewResult",
     "RequestedWindow",
     "ResolvedStatVar",
-    "RevisionReader",
-    "RevisionSnapshot",
     "RowProgress",
-    "SourceRevision",
     "UpstreamResponseError",
     "UpstreamVersionChangedError",
     "compute_output_profile",
@@ -102,5 +99,6 @@ __all__ = [
     "prepare_materialise_preview",
     "probe_collection_candidates",
     "probe_collection_facets",
+    "role_bearing_facet_candidates",
     "role_bearing_facets",
 ]

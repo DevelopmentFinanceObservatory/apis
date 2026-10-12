@@ -1182,6 +1182,7 @@ def _record_compatibility(base_uri: str, *, stamp: str, build_id: str, index: Co
         differing_variables=len(differences.variables),
         datasets_without_rows=list(differences.datasets_without_rows),
         variables=sorted(differences.variables)[:20],
+        unlisted_members=list(differences.unlisted_members[:20]),
     )
 
 

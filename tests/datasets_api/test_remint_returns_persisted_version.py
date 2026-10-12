@@ -17,19 +17,15 @@ import pytest
 
 from artifact_store import ArtifactWriteError, LiveArtifactInventory, Tier
 from dataset_store.snapshot import WORKING_TIER_RETENTION, LiveSnapshotReader
-from datasets_api import serve
+from datasets_api import current, serve
 from datasets_api.config import DatasetsBuildSettings
-from datasets_api.doors import definition as definition_door
 from datasets_api.manifest_models import WarningModel
-from datasets_api.mint_models import MintOptions
-from datasets_api.render import RENDITION_KEY, artifact_rendering
-from datasets_api.revision import SentinelRevisionReader
+from datasets_api.render import RENDITION_KEY
 from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
-from datasets_api.versions import ArtifactRecord, VersionRecord
+from datasets_api.versions import VersionRecord, VersionWrite, WrittenVersion
 from datasets_api.warnings import DATASETS_WARNING_CATALOGUE
 from dc_sdmx import SdmxClient
 from dfo_platform.config import PublicSiteSettings
-from materialise.formats import FRAME1_MEDIA_TYPE
 from origin_catalogue.service import get_catalogue_service
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
@@ -162,7 +158,6 @@ def _client(
         spec_reader=LiveSpecReader(store=dataset_store),
         graph=graph,
         sdmx=sdmx,
-        revision_reader=SentinelRevisionReader(),
         artifact_store=artifact_store,
         version_writer=version_writer or LiveVersionRecordWriter(store=version_store),
         snapshot_reader=snapshot_reader or LiveSnapshotReader(store=version_store),
@@ -208,8 +203,16 @@ _STORED_FIELDS = (
 )
 
 
+# How one call was served, which `serve_current` stamps onto the stored trace.
+_SERVING_STAMP = ("served_from", "confirmed_at")
+
+
 def _stored_fields(manifest: dict) -> dict:
-    return {field: manifest.get(field) for field in _STORED_FIELDS}
+    fields = {field: manifest.get(field) for field in _STORED_FIELDS}
+    fields["trace"] = {
+        key: value for key, value in fields["trace"].items() if key not in _SERVING_STAMP
+    }
+    return fields
 
 
 def _remint_after_a_rename(*, version_store, stat_vars: list[str]) -> tuple[dict, dict, object]:
@@ -455,45 +458,38 @@ def test_a_collapse_minted_over_a_renamed_base_cites_the_base_s_stored_citation(
     assert collapsed["prepared_at"] == _prepared(0)
 
 
-class _LosingVersionWriter:
-    """Stands in for the loser of a concurrent first write: every insert
-    finds the row already there (`record_version` returns `False`), and
-    nothing is written."""
+class _RaceObservingWriter:
+    """A `VersionRecordWriter` over `delegate` that keeps what each `write_version` stored.
 
-    def record_version(self, record, *, trace_id: str | None = None) -> bool:
-        return False
+    Clients here write no head, so a call never reads the stored version before rendering; a
+    version a concurrent mint recorded first is found by the write transaction, which links
+    only the option-free artifacts (`rendered` false), and the call renders again from the
+    stored record.
+    """
 
-    def record_artifact(self, **_kwargs) -> bool:
-        return False
-
-
-class _WinnerLandsAfterFirstRead:
-    """A `SnapshotReader` whose first `read_version` of `subject_id`, or of any subject when it
-    is `None`, finds nothing (the pre-render read, before the concurrent winner committed) and
-    whose later ones find the winner's record. Every other read delegates."""
-
-    def __init__(self, delegate: LiveSnapshotReader, *, subject_id: str | None = None) -> None:
+    def __init__(self, delegate: LiveVersionRecordWriter) -> None:
         self._delegate = delegate
-        self._subject_id = subject_id
-        self.version_reads = 0
+        self.written: list[WrittenVersion] = []
 
-    def read_version(self, subject_id: str, content_version: str):
-        if self._subject_id in (None, subject_id):
-            self.version_reads += 1
-            if self.version_reads == 1:
-                return None
-        return self._delegate.read_version(subject_id, content_version)
+    def record_version(self, record: VersionRecord, *, trace_id: str | None = None) -> bool:
+        return self._delegate.record_version(record, trace_id=trace_id)
 
-    def read_artifact_locations(self, subject_id: str, content_version: str):
-        return self._delegate.read_artifact_locations(subject_id, content_version)
+    def record_artifact(self, **kwargs) -> None:
+        self._delegate.record_artifact(**kwargs)
 
-    def read_revocation(self, subject_id: str, content_version: str):
-        return self._delegate.read_revocation(subject_id, content_version)
+    def write_version(self, write: VersionWrite, *, trace_id: str | None = None) -> WrittenVersion:
+        written = self._delegate.write_version(write, trace_id=trace_id)
+        self.written.append(written)
+        return written
+
+
+# A write that found the winner's record, then the write of the render from it.
+_LOST_THEN_RENDERED = [False, True]
 
 
 def test_a_write_that_loses_a_concurrent_insert_returns_the_winner_s_record(version_store):
-    """A concurrent insert wins between the pre-render read and write; the response uses its
-    stored record.
+    """A concurrent first mint recorded the version before this call's write; the response
+    uses its stored record.
     """
     stat_vars = ["dcid:RemintRace"]
     arcs = _arcs(stat_vars)
@@ -502,20 +498,19 @@ def test_a_write_that_loses_a_concurrent_insert_returns_the_winner_s_record(vers
     assert won.status_code == 200, won.text
     arcs[_DATASET] = {"typeOf": ("Dataset",), "name": (_RENAMED,)}
 
-    reader = _WinnerLandsAfterFirstRead(LiveSnapshotReader(store=version_store))
+    writer = _RaceObservingWriter(LiveVersionRecordWriter(store=version_store))
     loser, _ = _client(
         version_store=version_store,
         stat_vars=stat_vars,
         arcs=arcs,
         artifact_store=artifact_store,
-        version_writer=_LosingVersionWriter(),
-        snapshot_reader=reader,
+        version_writer=writer,
     )
 
     lost = loser.post("/api/datasets", json=_bundled(stat_vars))
 
     assert lost.status_code == 200, lost.text
-    assert reader.version_reads == 2
+    assert [written.rendered for written in writer.written] == _LOST_THEN_RENDERED
     assert lost.json()["content_version"] == won.json()["content_version"]
     assert [source["label"] for source in lost.json()["citation"]["sources"]] == [_FIRST_NAME]
     assert _stored_fields(lost.json()) == _stored_fields(won.json())
@@ -524,24 +519,26 @@ def test_a_write_that_loses_a_concurrent_insert_returns_the_winner_s_record(vers
 def test_a_write_that_loses_a_concurrent_first_mint_returns_the_winner_s_bundle(
     version_store, clock
 ):
-    """The losing call rendered under its own `prepared_at`, so its bytes differ from the
-    winner's; it lists the bundle the winner linked, dated as the stored record is."""
+    """The losing call first rendered under its own `prepared_at`, so its bytes differ from the
+    winner's; it renders again from the stored record and lists the bundle the winner linked,
+    dated as the stored record is."""
     stat_vars = ["dcid:RemintRaceBundle"]
     arcs = _arcs(stat_vars)
     winner, artifact_store = _client(version_store=version_store, stat_vars=stat_vars, arcs=arcs)
     won = winner.post("/api/datasets", json=_bundled(stat_vars)).json()
+    writer = _RaceObservingWriter(LiveVersionRecordWriter(store=version_store))
     loser, _ = _client(
         version_store=version_store,
         stat_vars=stat_vars,
         arcs=arcs,
         artifact_store=artifact_store,
-        version_writer=_LosingVersionWriter(),
-        snapshot_reader=_WinnerLandsAfterFirstRead(LiveSnapshotReader(store=version_store)),
+        version_writer=writer,
     )
 
     lost = loser.post("/api/datasets", json=_bundled(stat_vars))
 
     assert lost.status_code == 200, lost.text
+    assert [written.rendered for written in writer.written] == _LOST_THEN_RENDERED
     assert lost.json()["prepared_at"] == won["prepared_at"] == _prepared(0)
     assert lost.json()["artifacts"][0]["artifact_digest"] == won["artifacts"][0]["artifact_digest"]
     assert _bundle_created(artifact_store, lost.json()) == _prepared(0)
@@ -550,23 +547,24 @@ def test_a_write_that_loses_a_concurrent_first_mint_returns_the_winner_s_bundle(
 def test_a_collapse_whose_base_a_concurrent_mint_wrote_first_takes_the_base_s_prepared_at(
     version_store, clock
 ):
-    """The base lands between this call's pre-render read and its base write. The base write
-    loses and reads the base back before rendering, so the collapsed record, its response, its
-    linked bundle and its next mint all carry the base's stored `prepared_at`."""
+    """The base is on record before this call's write, which renders the collapse under its own
+    `prepared_at`. The write finds the base, records nothing rendered, and the call renders the
+    collapse again from the stored base, so the collapsed record, its response, its linked
+    bundle and its next mint all carry the base's stored `prepared_at`."""
     graph = groupby_fixture._graph()
     spec_store = FakeDatasetStore()
     artifact_store = _InventoryRecordingArtifactStore(
         inventory=LiveArtifactInventory(store=version_store)
     )
 
-    def client(snapshot_reader=None):
+    def client(version_writer=None):
         return definition_door_client(
             graph=graph,
             store=spec_store,
             sdmx_transport=groupby_fixture._sdmx_transport(),
             version_store=version_store,
             artifact_store=artifact_store,
-            snapshot_reader=snapshot_reader,
+            version_writer=version_writer,
             code_index=groupby_fixture._code_index(),
             coverage=groupby_fixture._coverage_service(),
         )
@@ -576,16 +574,16 @@ def test_a_collapse_whose_base_a_concurrent_mint_wrote_first_takes_the_base_s_pr
     base = groupby_fixture._mint(
         client(), spec_id=spec_id, sidecar=sidecar, options={"bundle": False}
     )
-    reader = _WinnerLandsAfterFirstRead(LiveSnapshotReader(store=version_store))
+    writer = _RaceObservingWriter(LiveVersionRecordWriter(store=version_store))
 
     collapsed = groupby_fixture._mint(
-        client(reader), spec_id=spec_id, sidecar=sidecar, options=groupby_options
+        client(writer), spec_id=spec_id, sidecar=sidecar, options=groupby_options
     )
     again = groupby_fixture._mint(
         client(), spec_id=spec_id, sidecar=sidecar, options=groupby_options
     )
 
-    assert reader.version_reads >= 1  # The pre-render read missed the winner.
+    assert [written.rendered for written in writer.written] == _LOST_THEN_RENDERED
     assert collapsed["content_version"] != base["content_version"]
     assert base["prepared_at"] == _prepared(0)
     assert collapsed["prepared_at"] == _prepared(0)
@@ -606,76 +604,14 @@ def test_a_collapse_whose_base_a_concurrent_mint_wrote_first_takes_the_base_s_pr
 def test_a_bundle_minted_by_the_loser_of_a_first_mint_is_dated_as_the_winner_s_record(
     version_store, clock, stat_vars: list[str]
 ):
-    """The winner mints without a bundle, so it links no bundle. The loser renders a bundle
-    after losing the version insert and links it. That bundle, the response and a snapshot
-    read all carry the winner's stored `prepared_at`."""
+    """The winner mints without a bundle, so it links no bundle. The loser's write finds the
+    winner's record, and the loser renders its bundle again from it and links it. That
+    bundle, the response and a snapshot read all carry the winner's stored `prepared_at`."""
     arcs = _arcs(stat_vars)
     winner, artifact_store = _client(version_store=version_store, stat_vars=stat_vars, arcs=arcs)
     won = winner.post("/api/datasets", json=_mint_body(statvars=stat_vars)).json()
-    reader = _WinnerLandsAfterFirstRead(LiveSnapshotReader(store=version_store))
+    writer = _RaceObservingWriter(LiveVersionRecordWriter(store=version_store))
     loser, _ = _client(
-        version_store=version_store,
-        stat_vars=stat_vars,
-        arcs=arcs,
-        artifact_store=artifact_store,
-        snapshot_reader=reader,
-    )
-
-    lost = loser.post("/api/datasets", json=_bundled(stat_vars)).json()
-    snapshot = _snapshot(loser, lost)
-
-    assert reader.version_reads >= 1  # The pre-render read missed the winner.
-    assert lost["content_version"] == won["content_version"]
-    assert won["prepared_at"] == lost["prepared_at"] == snapshot["prepared_at"] == _prepared(0)
-    assert _bundle_created(artifact_store, lost) == _prepared(0)
-    (linked,) = _bundle_entries(snapshot)
-    assert _digests(_bundle_entries(lost)) == [linked["artifact_digest"]]
-
-
-class _LinksBeforeTheWrite:
-    """A `VersionRecordWriter` over `delegate` that, once a version record with no artifacts
-    has committed, links `rival` under it, as a concurrent first mint that lost the insert and
-    rendered from the stored record would before this call links its own."""
-
-    def __init__(self, delegate: LiveVersionRecordWriter, *, rival: ArtifactRecord) -> None:
-        self._delegate = delegate
-        self._rival = rival
-
-    def record_version(self, record: VersionRecord, *, trace_id: str | None = None) -> bool:
-        created = self._delegate.record_version(record, trace_id=trace_id)
-        if created and not record.artifacts:
-            self._delegate.record_artifact(
-                subject_id=record.subject_id,
-                content_version=record.content_version,
-                artifact=self._rival,
-            )
-        return created
-
-    def record_artifact(self, **kwargs) -> None:
-        self._delegate.record_artifact(**kwargs)
-
-
-def test_a_first_mint_lists_the_bundle_a_concurrent_loser_linked_before_it(version_store):
-    """A first mint creates the version record, and a concurrent mint that lost the insert links
-    its bundle before this call links its own. The response lists the linked bundle, as a
-    snapshot read does."""
-    stat_vars = ["dcid:RaceLinkedFirst"]
-    arcs = _arcs(stat_vars)
-    artifact_store = _InventoryRecordingArtifactStore(
-        inventory=LiveArtifactInventory(store=version_store)
-    )
-    rival = artifact_store.put(b"the concurrent mint's bundle", tier=Tier.working)
-    writer = _LinksBeforeTheWrite(
-        LiveVersionRecordWriter(store=version_store),
-        rival=ArtifactRecord(
-            artifact_digest=rival.digest,
-            rendering=artifact_rendering(
-                MintOptions.model_validate({"bundle": True}), site=DatasetsBuildSettings().site
-            ),
-            media_type="application/zip",
-        ),
-    )
-    client, _ = _client(
         version_store=version_store,
         stat_vars=stat_vars,
         arcs=arcs,
@@ -683,10 +619,15 @@ def test_a_first_mint_lists_the_bundle_a_concurrent_loser_linked_before_it(versi
         version_writer=writer,
     )
 
-    minted = client.post("/api/datasets", json=_bundled(stat_vars)).json()
+    lost = loser.post("/api/datasets", json=_bundled(stat_vars)).json()
+    snapshot = _snapshot(loser, lost)
 
-    assert _digests(_bundle_entries(minted)) == [rival.digest]
-    assert _digests(_bundle_entries(_snapshot(client, minted))) == [rival.digest]
+    assert [written.rendered for written in writer.written] == _LOST_THEN_RENDERED
+    assert lost["content_version"] == won["content_version"]
+    assert won["prepared_at"] == lost["prepared_at"] == snapshot["prepared_at"] == _prepared(0)
+    assert _bundle_created(artifact_store, lost) == _prepared(0)
+    (linked,) = _bundle_entries(snapshot)
+    assert _digests(_bundle_entries(lost)) == [linked["artifact_digest"]]
 
 
 @pytest.mark.parametrize(
@@ -700,8 +641,8 @@ def test_a_rendering_that_fails_after_the_record_leaves_the_version_with_its_sta
     version_store, monkeypatch: pytest.MonkeyPatch, stat_vars, render_name, subject_kind
 ):
     """The record is written before the requested rendering, so a rendering that fails leaves a
-    version on record. Its series statistics and frame1 were linked first, so a snapshot read
-    lists the statistics and the store holds frame1."""
+    version on record. Its series statistics and canonical frame were linked first, so a
+    snapshot read lists the statistics and the store holds the canonical frame."""
     client, _ = _client(version_store=version_store, stat_vars=stat_vars, arcs=_arcs(stat_vars))
 
     def failing_render(**_kwargs):
@@ -718,10 +659,10 @@ def test_a_rendering_that_fails_after_the_record_leaves_the_version_with_its_sta
             "WHERE subject_kind = %s",
             (subject_kind,),
         )
-        media_types = {
-            link["media_type"]
-            for link in tx.fetch_all("SELECT media_type FROM datasets.version_artifact", ())
-        }
+        renderings = [
+            link["rendering"]
+            for link in tx.fetch_all("SELECT rendering FROM datasets.version_artifact", ())
+        ]
     snapshot = client.get(f"/api/datasets/{row['subject_id']}/{row['content_version']}")
     assert snapshot.status_code == 200, snapshot.text
     statistics = [
@@ -730,7 +671,7 @@ def test_a_rendering_that_fails_after_the_record_leaves_the_version_with_its_sta
         if artifact["rendering"].get("statistics") == "series"
     ]
     assert len(statistics) == len(stat_vars)
-    assert FRAME1_MEDIA_TYPE in media_types
+    assert {"format": "frame"} in renderings
 
 
 def _digests(artifacts: list[dict]) -> list[str]:
@@ -967,7 +908,7 @@ def test_a_head_hit_under_the_same_settings_serves_the_linked_bundle(
     def _no_render(**_kwargs):
         raise AssertionError("a head hit on a linked bundle rendered it again")
 
-    monkeypatch.setattr(definition_door, "render_and_store", _no_render)
+    monkeypatch.setattr(current, "render_and_store", _no_render)
     got = client.get(f"/api/datasets/{minted['definition']['spec_id']}?bundle=true")
 
     assert got.status_code == 200, got.text

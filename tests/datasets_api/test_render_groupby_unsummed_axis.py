@@ -102,7 +102,7 @@ def _sum(members: tuple[tuple[str, float], ...]):
         ),
         options=MintOptions(groupby=GroupbyOptions(by=["time_period"], op="sum")),
         entity_columns=_ENTITY_COLUMNS,
-        enrichment=EnrichmentLookup(FakeMintGraphReader()),
+        enrichment=EnrichmentLookup(FakeMintGraphReader(), type_kinds={}, parties={}),
         code_index=_INDEX,
         resolved_stat_var_refs=tuple(f"dcid:{stat_var}" for stat_var, _value in members),
         provenance_refs=(_PROVENANCE,),

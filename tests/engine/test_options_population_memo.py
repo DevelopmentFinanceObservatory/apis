@@ -69,10 +69,20 @@ def _graph_calls(graph: FakeMemberArcReader) -> int:
 
 
 class _CountingReader:
-    """Counts `node_subjects` calls and can block the first call for single-flight tests."""
+    """Counts `node_subjects` calls and can block the first call for single-flight tests.
 
-    def __init__(self, inner: FakeMemberArcReader, *, block_first: bool = False) -> None:
+    With `generation`, the reader reports that provider's stamp, as a production reader does,
+    so a flip changes the member enumerator's flight key along with the memo's."""
+
+    def __init__(
+        self,
+        inner: FakeMemberArcReader,
+        *,
+        block_first: bool = False,
+        generation: FakeGeneration | None = None,
+    ) -> None:
         self._inner = inner
+        self._generation = generation
         self.node_subjects_calls = 0
         self.started = threading.Event()
         self.release = threading.Event()
@@ -89,6 +99,8 @@ class _CountingReader:
         return self._inner.node_arcs_many(*args, **kwargs)
 
     def generation_stamp(self) -> GenerationStamp:
+        if self._generation is not None:
+            return self._generation.stamp()
         return self._inner.generation_stamp()
 
 
@@ -474,16 +486,17 @@ def test_a_post_flip_caller_never_joins_a_pre_flip_in_flight_derivation():
     generation = FakeGeneration(token="gen-a")
     memo = OptionsPopulationMemo(enabled=True, max_entries=10, generation=generation)
     identity = _identity()
-    owner_reader = _CountingReader(kenya_reader(), block_first=True)
+    owner_reader = _CountingReader(kenya_reader(), block_first=True, generation=generation)
 
     owner_thread = threading.Thread(target=lambda: memo.get_or_derive(identity, owner_reader))
     owner_thread.start()
     assert owner_reader.started.wait(timeout=5), "owner never reached the fake reader"
 
     generation.advance("gen-b")
-    follower_reader = kenya_reader()
+    follower_reader = _CountingReader(kenya_reader(), generation=generation)
     # join_inflight=False, so this caller must not park behind the pre-flip
-    # owner at all. Its own (post-flip) key has no owner of its own yet.
+    # owner at all. Its own (post-flip) key has no owner of its own yet, and its
+    # reader's post-flip stamp keeps it off the owner's member enumerator flight.
     result = memo.get_or_derive(identity, follower_reader, join_inflight=False)
     assert result.stat_var_dcids == ("LifeExpectancy_Person",)
 

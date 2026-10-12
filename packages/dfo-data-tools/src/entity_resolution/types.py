@@ -52,11 +52,13 @@ class Group:
     Callers choose between `entity` and `members` based on role admission. Display text uses the
     query wording, so this type has no separate `name` field. `names_members` is true when the
     text resolved through a query alias that declares it names the group's members
-    ("EU countries")."""
+    ("EU countries"). `dcid` is the group's own id as a dcid (`regions.identity_to_dcid`),
+    whether or not the graph holds a node for it (`groups/G7`)."""
 
     members: tuple[Entity, ...]
     entity: Entity | None
     names_members: bool = False
+    dcid: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

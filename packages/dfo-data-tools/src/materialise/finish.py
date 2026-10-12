@@ -1,13 +1,14 @@
-"""Builds versions, warnings, statistics, profiles, and traces after generation returns its
-revision snapshot. `_finish_member` handles single members and `_finish_group` handles combined
-materialisations. Previews reuse member minting and warnings without a trace."""
+"""Builds versions, warnings, statistics, profiles, and traces after generation returns.
+`_finish_member` handles single members and `_finish_group` handles combined materialisations.
+Previews reuse member warnings without a trace."""
 
 from __future__ import annotations
 
 import time
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
+
+from dfo_frame_grammar import FRAME_GRAMMAR_VERSION, frame_sha256
 
 from dc_sdmx import ContainedIn, EntityFilter
 
@@ -15,21 +16,12 @@ from dc_sdmx import ContainedIn, EntityFilter
 # `_finish_member` runs, after `pipeline` has loaded.
 from materialise import pipeline
 from materialise.codes import MATERIALISE_CODE_CATALOGUE, MaterialisationWarning
-from materialise.content_version import (
-    FRAME_GRAMMAR_VERSION,
-    ConversionPreimage,
-    MintPreimage,
-    mint_version,
-    mint_version_from_digest,
-    native_unit_source_revision,
-    recipe_body_source_revision,
-    source_revision_preimage,
-)
+from materialise.content_version import mint_version_from_digest
 from materialise.convert import ConversionRecord
+from materialise.dependencies import Dependencies
 from materialise.enrichment import EnrichmentLookup
 from materialise.errors import MaterialisationUsageError
-from materialise.facets import FacetSelection, binds_no_place
-from materialise.frame_build import Frame
+from materialise.facets import binds_no_place
 
 # `_build_warnings` checks outcome classes at runtime. `generation` imports only the
 # `MaterialisationRequest` annotation under `TYPE_CHECKING`, so these imports create no cycle.
@@ -40,7 +32,6 @@ from materialise.generation import (
     _PreviewOutcome,
 )
 from materialise.profile import compute_output_profile, compute_output_profile_from_chunks
-from materialise.revision import RevisionSnapshot
 from materialise.statistics import SeriesStatisticsSink, compute_series_statistics_table
 from materialise.trace import ManifestTrace, ResolvedStatVar
 from materialise.window import coverage_below_scope, unserved_entities
@@ -61,8 +52,16 @@ def _capped_distinct_examples[ExampleT: (str, tuple[str, str])](
     return distinct[:_MAX_TRACE_EXAMPLES], len(distinct) > _MAX_TRACE_EXAMPLES
 
 
+# A conversion's recipe id, rate-table version, and deflator-table version.
+type _ConversionTables = tuple[str, str, str | None]
+
+
+def _conversion_tables(record: ConversionRecord) -> _ConversionTables:
+    return (record.recipe_id, record.exchange_rate_table_version, record.deflator_table_version)
+
+
 def _conversion_trace_entry(
-    tables: ConversionPreimage, members: Sequence[tuple[str, ConversionRecord]]
+    tables: _ConversionTables, members: Sequence[tuple[str, ConversionRecord]]
 ) -> dict[str, object]:
     """Builds one `ManifestTrace.conversion` entry for the members converted under one recipe
     and table-version pair. `members` lists each distinct (bare StatVar ref,
@@ -72,12 +71,10 @@ def _conversion_trace_entry(
     deduplicated, sorted, and capped at `_MAX_TRACE_EXAMPLES`, with `truncated` reflecting
     distinct examples, not row counts. `deflator_table_version` is omitted when no deflator
     table joined. Fallback pairs are JSON lists."""
-    entry: dict[str, object] = {
-        "recipe": tables.recipe_id,
-        "rate_table_version": tables.exchange_rate_table_version,
-    }
-    if tables.deflator_table_version is not None:
-        entry["deflator_table_version"] = tables.deflator_table_version
+    recipe_id, rate_table_version, deflator_table_version = tables
+    entry: dict[str, object] = {"recipe": recipe_id, "rate_table_version": rate_table_version}
+    if deflator_table_version is not None:
+        entry["deflator_table_version"] = deflator_table_version
     entry["members"] = [
         {"stat_var": stat_var, "native_unit": native_unit}
         for stat_var, native_unit in sorted(
@@ -113,100 +110,29 @@ def _conversion_trace(
     converted. Entries sort by recipe then table versions, and members by StatVar, so the
     trace is the same whatever order members arrive in. A group mixing recipes or table
     versions gets one entry for each."""
-    by_tables: dict[ConversionPreimage, list[tuple[str, ConversionRecord]]] = {}
+    by_tables: dict[_ConversionTables, list[tuple[str, ConversionRecord]]] = {}
     for stat_var, record in sorted(converted, key=lambda pair: pair[0]):
-        tables = ConversionPreimage.from_conversion_record(record)
-        assert tables is not None  # a record always projects to a preimage
-        by_tables.setdefault(tables, []).append((stat_var, record))
+        by_tables.setdefault(_conversion_tables(record), []).append((stat_var, record))
     if not by_tables:
         return None
     return tuple(
         _conversion_trace_entry(tables, by_tables[tables])
         for tables in sorted(
             by_tables,
-            key=lambda t: (
-                t.recipe_id,
-                t.exchange_rate_table_version,
-                t.deflator_table_version is not None,
-                t.deflator_table_version or "",
-            ),
+            key=lambda t: (t[0], t[1], t[2] is not None, t[2] or ""),
         )
     )
 
 
-def _recipe_body_revisions(conversion: ConversionPreimage) -> tuple[dict[str, object], ...]:
-    """The converted frame's `recipe_body/<recipe>` revision as a zero- or one-entry tuple, for
-    its trace's `source_revisions`. The token hashes this revision, so the trace must carry it
-    for a client to recompute the token through the grammar alone."""
-    entry = recipe_body_source_revision(conversion)
-    return () if entry is None else (entry,)
-
-
-@dataclass(frozen=True)
-class _MemberVersionMint:
-    """One member's version and preimage inputs. Trace fields reuse these same computed
-    revisions and facets, including a converted member's native-unit revision."""
-
-    content_version: str
-    graph_revision: str
-    source_revisions: tuple[dict[str, object], ...]
-    facets: tuple[dict[str, object], ...]
-    """The grammar-shaped preimage facets `content_version` was actually
-    minted from (`FacetSelection.as_grammar_facet`'s own closed
-    `{axis, ref, basis}` shape) -- distinct from `ManifestTrace.facets`
-    (`as_trace_entry`'s own wider, 7-key wire shape). `_finish_member`
-    carries this onto `pipeline.MaterialisationResult.mint_preimage`.
-    """
-
-
-def _mint_member_content_version(
-    request: MaterialisationRequest,
-    selections: Mapping[str, FacetSelection],
-    conversion_record: ConversionRecord | None,
-    frame: Frame,
-    *,
-    revision_snapshot: RevisionSnapshot,
-) -> _MemberVersionMint:
-    """Mints the version and preimage shared by member and preview results. The preview
-    supplies its full survivor frame. A member supplies its delivered frame.
-
-    Converted members add the native-unit and recipe-body revisions, so the trace holds every
-    revision the token hashes. Axes with `ref=None` stay in the trace but are omitted from the
-    grammar preimage, which rejects null refs. The frame hash distinguishes different content."""
-    normalised = revision_snapshot.normalised()
-    source_revisions: tuple[dict[str, object], ...] = tuple(
-        source_revision_preimage(source=sr.source, revision=sr.revision)
-        for sr in normalised.source_revisions
-    )
-    conversion = ConversionPreimage.from_conversion_record(conversion_record)
-    if conversion is not None:
-        native_unit = selections["unit"].ref
-        assert native_unit is not None  # a converted member always resolves a native unit
-        source_revisions = (
-            *source_revisions,
-            native_unit_source_revision(
-                stat_var=_bare_stat_var_ref(request.stat_var), native_unit=native_unit
-            ),
-            *_recipe_body_revisions(conversion),
-        )
-    facets = tuple(
-        selection.as_grammar_facet()
-        for selection in selections.values()
-        if selection.ref is not None
-    )
-
-    content_version = mint_version(
-        frame,
-        graph_revision=normalised.graph_revision,
-        source_revisions=source_revisions,
-        facets=facets,
-        conversion=conversion,
-    )
-    return _MemberVersionMint(
-        content_version=content_version,
-        graph_revision=normalised.graph_revision,
-        source_revisions=source_revisions,
-        facets=facets,
+def _source_revisions(dependencies: Dependencies) -> tuple[dict[str, object], ...]:
+    """The trace's `source_revisions`: each dispatched provenance and rate-table provenance
+    the run read, with the refresh token its dependency fingerprint records, sorted by source.
+    A source whose refresh token the run could not read is left out."""
+    tokens = dict(dependencies.sources) | dict(dependencies.conversion_sources)
+    return tuple(
+        {"source": source, "revision": token}
+        for source, token in sorted(tokens.items())
+        if token is not None
     )
 
 
@@ -214,24 +140,17 @@ def _finish_member(
     request: MaterialisationRequest,
     outcome: _MemberOutcome,
     *,
-    revision_snapshot: RevisionSnapshot,
     materialiser_build: str,
     capability_version: str,
     enrichment: EnrichmentLookup,
+    dependencies: Dependencies,
+    graph_revision: str | None,
 ) -> pipeline.MaterialisationResult:
-    """After generation returns the revision snapshot, builds the version, warnings,
-    per-series statistics, output profile, and trace. `output_profile_seconds` records the
+    """After generation returns, builds the version, warnings, per-series statistics, output
+    profile, and trace. `output_profile_seconds` records the
     profile computation time."""
-    mint = _mint_member_content_version(
-        request,
-        outcome.selections,
-        outcome.conversion_record,
-        outcome.frame,
-        revision_snapshot=revision_snapshot,
-    )
-    content_version = mint.content_version
-    normalised_graph_revision = mint.graph_revision
-    source_revisions = mint.source_revisions
+    frame_digest = frame_sha256(outcome.frame)
+    content_version = mint_version_from_digest(frame_digest)
     # Statistics derive from the frame but do not enter its content-version preimage.
     statistics_sink = SeriesStatisticsSink()
     statistics_sink.write(compute_series_statistics_table(outcome.frame))
@@ -246,8 +165,8 @@ def _finish_member(
         applied_window=(
             outcome.applied_window.as_trace_entry() if outcome.applied_window is not None else None
         ),
-        graph_revision=normalised_graph_revision,
-        source_revisions=source_revisions,
+        graph_revision=graph_revision,
+        source_revisions=_source_revisions(dependencies),
         resolved_stat_vars=(
             ResolvedStatVar(
                 ref=request.stat_var,
@@ -265,12 +184,12 @@ def _finish_member(
         frame_grammar_version=FRAME_GRAMMAR_VERSION,
         materialiser_build=materialiser_build,
         capability_version=capability_version,
-        mint_facets=mint.facets,
         family=request.family,
     )
 
     return pipeline.MaterialisationResult(
         frame_chunks=lambda: iter((outcome.frame,)),
+        frame_sha256=frame_digest,
         content_version=content_version,
         trace=trace,
         coverage=outcome.coverage,
@@ -279,12 +198,7 @@ def _finish_member(
         output_profile=output_profile,
         conversion_record=outcome.conversion_record,
         member_conversion_records={request.stat_var: outcome.conversion_record},
-        mint_preimage=MintPreimage(
-            graph_revision=normalised_graph_revision,
-            source_revisions=source_revisions,
-            facets=mint.facets,
-            conversion=ConversionPreimage.from_conversion_record(outcome.conversion_record),
-        ),
+        dependencies=dependencies,
         output_profile_seconds=output_profile_seconds,
         default_scope=outcome.default_scope.places,
         series_conversions=outcome.series_conversions,
@@ -322,96 +236,26 @@ def _sorted_converted_members(
     return converted
 
 
-@dataclass(frozen=True)
-class _GroupVersionMint:
-    """A group's version and preimage inputs.
-
-    `converted` holds the converted members sorted by StatVar and `representative` the
-    first of their records, or `None` when no member converted."""
-
-    content_version: str
-    graph_revision: str
-    source_revisions: tuple[dict[str, object], ...]
-    facets: tuple[dict[str, object], ...]
-    converted: list[tuple[str, ConversionRecord]]
-    representative: ConversionRecord | None
-    conversion: ConversionPreimage | None
-
-
-def _mint_group_content_version(
-    outcome: _GroupOutcome, *, revision_snapshot: RevisionSnapshot
-) -> _GroupVersionMint:
-    """Mints a group's version from `outcome.frame_sha256`, computed during the group's
-    single fetch, avoiding another row read for hashing."""
-    normalised = revision_snapshot.normalised()
-    source_revisions = tuple(
-        source_revision_preimage(source=sr.source, revision=sr.revision)
-        for sr in normalised.source_revisions
-    )
-    facets = tuple(
-        selection.as_grammar_facet()
-        for selection in outcome.selections.values()
-        if selection.ref is not None
-    )
-
-    converted = _sorted_converted_members(outcome.member_conversion_records)
-    representative = converted[0][1] if converted else None
-    representative_preimage = ConversionPreimage.from_conversion_record(representative)
-    # One native-unit source revision per converted member, sorted by stat_var
-    # (`_sorted_converted_members`' own order), mirroring `_finish_member`'s single
-    # entry. Each member's native unit is `ConversionRecord.native_unit_ref`, the facet
-    # unit `_finish_member` reads from `selections["unit"]`. `native_currency` is the
-    # rate key and can name a twin (`CurrencyUSD` for a `USDollar` facet).
-    source_revisions = source_revisions + tuple(
-        native_unit_source_revision(
-            stat_var=_bare_stat_var_ref(stat_var), native_unit=record.native_unit_ref
-        )
-        for stat_var, record in converted
-    )
-    if representative_preimage is not None:
-        source_revisions += _recipe_body_revisions(representative_preimage)
-
-    content_version = mint_version_from_digest(
-        outcome.frame_sha256,
-        graph_revision=normalised.graph_revision,
-        source_revisions=source_revisions,
-        facets=facets,
-        conversion=representative_preimage,
-    )
-    return _GroupVersionMint(
-        content_version=content_version,
-        graph_revision=normalised.graph_revision,
-        source_revisions=source_revisions,
-        facets=facets,
-        converted=converted,
-        representative=representative,
-        conversion=representative_preimage,
-    )
-
-
 def _finish_group(
     requests: Sequence[MaterialisationRequest],
     outcome: _GroupOutcome,
     *,
-    revision_snapshot: RevisionSnapshot,
     materialiser_build: str,
     capability_version: str,
     enrichment: EnrichmentLookup,
+    dependencies: Dependencies,
+    graph_revision: str | None,
 ) -> pipeline.MaterialisationResult:
-    """Runs after the revision snapshot is known. Mints through `_mint_group_content_version`.
-    The group's single fetch builds per-series statistics. The output profile consumes chunks
-    one at a time.
+    """Runs after generation returns. Mints from `outcome.frame_sha256`, computed
+    during the group's single fetch, so hashing rereads no rows. The group's single fetch builds
+    per-series statistics. The output profile consumes chunks one at a time.
 
     Sorts `resolved_stat_vars` by StatVar and looks up counts by StatVar, so zero-row members
     remain in the trace regardless of request order. The output profile uses the shared role
     columns, which the pipeline validates before this call. `output_profile_seconds` records
     profile computation time."""
-    mint = _mint_group_content_version(outcome, revision_snapshot=revision_snapshot)
-    content_version = mint.content_version
-    source_revisions = mint.source_revisions
-    facets = mint.facets
-    converted = mint.converted
-    representative_preimage = mint.conversion
+    content_version = mint_version_from_digest(outcome.frame_sha256)
+    converted = _sorted_converted_members(outcome.member_conversion_records)
     series_statistics = outcome.series_statistics
     profile_start = time.perf_counter()
     output_profile = compute_output_profile_from_chunks(
@@ -434,8 +278,8 @@ def _finish_group(
         applied_window=(
             outcome.applied_window.as_trace_entry() if outcome.applied_window is not None else None
         ),
-        graph_revision=mint.graph_revision,
-        source_revisions=source_revisions,
+        graph_revision=graph_revision,
+        source_revisions=_source_revisions(dependencies),
         resolved_stat_vars=resolved_stat_vars,
         facets=tuple(selection.as_trace_entry() for selection in outcome.selections.values()),
         normalisations=(),
@@ -443,13 +287,13 @@ def _finish_group(
         frame_grammar_version=FRAME_GRAMMAR_VERSION,
         materialiser_build=materialiser_build,
         capability_version=capability_version,
-        mint_facets=facets,
         # Every request of a group is a member of one definition and carries its family.
         family=requests[0].family,
     )
 
     return pipeline.MaterialisationResult(
         frame_chunks=outcome.frame_chunks,
+        frame_sha256=outcome.frame_sha256,
         content_version=content_version,
         trace=trace,
         coverage=outcome.coverage,
@@ -458,12 +302,7 @@ def _finish_group(
         output_profile=output_profile,
         conversion_record=None,
         member_conversion_records=outcome.member_conversion_records,
-        mint_preimage=MintPreimage(
-            graph_revision=mint.graph_revision,
-            source_revisions=source_revisions,
-            facets=facets,
-            conversion=representative_preimage,
-        ),
+        dependencies=dependencies,
         output_profile_seconds=output_profile_seconds,
         default_scope=outcome.default_scope.places,
         series_conversions=outcome.series_conversions,
@@ -476,9 +315,12 @@ def _build_warnings(
 ) -> tuple[MaterialisationWarning, ...]:
     """Adds `empty_result` for zero rows, which suppresses `coverage_below_scope`. Its message
     says the request's places hold no observations when the facet probe returned no candidate
-    (`_empty_result_warning`). `coverage_below_scope` covers window clamps and unserved bound entities, naming up to five entities, and a request
-    binding no place that was served the countries with data in place of every place. One
-    `coverage_below_scope` states every cause that applies.
+    (`_empty_result_warning`). `coverage_below_scope` covers window clamps and unserved bound
+    entities, naming up to five entities, a request binding no place that was served the
+    countries with data in place of every place, and a group member that served nothing
+    because it holds no facet at the group's one cadence, or under a range window none with a
+    point in it (`_GroupOutcome.off_cadence_members`). One `coverage_below_scope` states every
+    cause that applies.
     `deflator_projected` applies when any conversion record has `projected_count > 0`, and
     `currency_unmapped_omitted` when any record omitted an entity's rows; an omitted entity
     the request bound counts as reported there, so `coverage_below_scope` does not name it.
@@ -522,11 +364,23 @@ def _build_warnings(
         if entity not in omitted
     ]
     countries_fallback = row_count > 0 and not outcome.default_scope.every_place
-    if countries_fallback or coverage_below_scope(
-        outcome.coverage, applied_window=outcome.applied_window, unserved=unserved
+    off_cadence = (
+        outcome.off_cadence_members if isinstance(outcome, _GroupOutcome) and row_count else ()
+    )
+    if (
+        countries_fallback
+        or off_cadence
+        or coverage_below_scope(
+            outcome.coverage, applied_window=outcome.applied_window, unserved=unserved
+        )
     ):
         warnings.append(
-            _coverage_below_scope_warning(unserved, countries_fallback=countries_fallback)
+            _coverage_below_scope_warning(
+                unserved,
+                countries_fallback=countries_fallback,
+                off_cadence=off_cadence,
+                range_window=request.window is not None and request.window.kind == "range",
+            )
         )
 
     if any(record.projected_count > 0 for record in converted_records):
@@ -575,26 +429,42 @@ _MAX_UNSERVED_NAMED = 5
 
 
 def _coverage_below_scope_warning(
-    unserved: Sequence[str], *, countries_fallback: bool
+    unserved: Sequence[str],
+    *,
+    countries_fallback: bool,
+    off_cadence: Sequence[str] = (),
+    range_window: bool = False,
 ) -> MaterialisationWarning:
-    """Adds up to five unserved dcids to the catalogue detail, then, with `countries_fallback`,
-    that a request binding no place was served the countries with data because the full list
-    of places with data was too large or unavailable (`place_scope.DefaultPlaceScope`). Without
-    either the detail stands for a pure window clamp. Names appear as raw dcids."""
+    """Adds up to five unserved dcids to the catalogue detail, then up to five group members
+    in `off_cadence` that served nothing because they hold no facet at the group's
+    observation period, or with `range_window` none with a point in the requested years,
+    then, with `countries_fallback`, that a request binding no place was
+    served the countries with data because the full list of places with data was too large
+    or unavailable (`place_scope.DefaultPlaceScope`). Without any the detail stands for a pure
+    window clamp. Names appear as raw dcids."""
     _title, detail = MATERIALISE_CODE_CATALOGUE["coverage_below_scope"]
     message = detail
     if unserved:
-        named = ", ".join(unserved[:_MAX_UNSERVED_NAMED])
-        remaining = len(unserved) - _MAX_UNSERVED_NAMED
-        if remaining > 0:
-            named = f"{named} and {remaining} more"
-        message = f"{message} No observations were served for {named}."
+        message = f"{message} No observations were served for {_capped_names(unserved)}."
+    if off_cadence:
+        message = (
+            f"{message} No observations were served for {_capped_names(off_cadence)}, "
+            "which hold none at the observation period the other members serve"
+            f"{' in the requested years' if range_window else ''}."
+        )
     if countries_fallback:
         message = (
             f"{message} No place was named, so the answer covers the countries with data, "
             "because the full list of places with data was too large or unavailable."
         )
     return {"code": "coverage_below_scope", "severity": "warn", "message": message}
+
+
+def _capped_names(names: Sequence[str]) -> str:
+    """The first five of `names`, comma-joined, with a count of the rest."""
+    named = ", ".join(names[:_MAX_UNSERVED_NAMED])
+    remaining = len(names) - _MAX_UNSERVED_NAMED
+    return f"{named} and {remaining} more" if remaining > 0 else named
 
 
 class _ProjectedConversion(Protocol):

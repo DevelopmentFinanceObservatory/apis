@@ -19,14 +19,17 @@ class _GraphDefaults(BaseSettings):
 
     model_config = SettingsConfigDict(env_prefix="GRAPH_")
 
-    # Shared by all DCP reads. A same-sized semaphore refuses work when every slot is busy.
+    # Worker count of the DCP-read executor all DCP reads share. Reads past it queue.
     node_pool_size: int = Field(default=4, ge=1)
 
-    # Bounds the client's wait, not the lifetime of an underlying worker thread.
+    # Bounds the client's wait, queue time included. A running worker thread outlives it.
     resolve_timeout_seconds: int = Field(default=30, ge=1)
 
     # Bounds the client's wait for one `node_arcs_many` call.
     node_timeout_seconds: int = Field(default=10, ge=1)
+
+    # Most source documents the documentation route keeps in its cache at once.
+    provenance_doc_cache_size: int = Field(default=512, ge=1)
 
 
 try:
@@ -37,6 +40,10 @@ except ValidationError as exc:
 GRAPH_NODE_POOL_SIZE: int = _defaults.node_pool_size
 GRAPH_RESOLVE_TIMEOUT_SECONDS: int = _defaults.resolve_timeout_seconds
 GRAPH_NODE_TIMEOUT_SECONDS: int = _defaults.node_timeout_seconds
+GRAPH_PROVENANCE_DOC_CACHE_SIZE: int = _defaults.provenance_doc_cache_size
+
+# A DCP read that waits longer than this for a worker logs at WARNING (`log_queue_wait`).
+DCP_QUEUE_WAIT_WARN_SECONDS: float = 1.0
 
 
 class GraphSettings(BaseSettings):

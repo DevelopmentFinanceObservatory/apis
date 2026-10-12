@@ -69,8 +69,7 @@ def _fully_populated_artifacts() -> list[manifest_models.ArtifactEntryModel]:
             media_type="text/csv",
             created_at="2026-01-01T00:00:00+00:00",
             tier="working",
-            url="fake://artifact/working/sha256:aaa",
-            url_expires_at="2026-01-01T00:05:00+00:00",
+            url="/api/datasets/spec_a/cv1/files/sha256:aaa",
         )
     ]
 

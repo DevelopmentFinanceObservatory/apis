@@ -115,9 +115,8 @@ class TestMintDoorLivenessMatchesWhatActuallyDispatches:
         )
         assert caps.decode_code_systems == ["crsPurpose", "futureCodeSystem"]
 
-    def test_revision_and_default_facet_policy_liveness_are_false(self):
+    def test_default_facet_policy_liveness_is_false(self):
         document = _capabilities()
-        assert document.revision_provenance_live is False
         assert document.default_facet_policies_live is False
 
     def test_default_facet_policy_names_the_deployment_policy_even_though_no_graph_declared_one_is_live(

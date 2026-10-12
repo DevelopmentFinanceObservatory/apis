@@ -28,7 +28,6 @@ from search.engine.retrieval.facts import (
     read_name,
 )
 from search.engine.shape import STANDARD_SHAPE_LABEL, shape_draft_from
-from search.models import Warning
 from statvar_members import five_tuple_arcs_match, five_tuple_reverse_filters
 
 
@@ -91,9 +90,9 @@ def _phase_build_shape(state: _PromoteState) -> RegionResult | None:
     the mint's walk does not settle stays as elected, under a warning."""
     t0 = now_ms()
     try:
-        # All warnings for this phase accumulate here, including any returned with no_data.
-        warnings: list[Warning] = []
-        state.warnings = warnings
+        # This phase's warnings join those earlier phases raised, and a no_data return
+        # carries them all.
+        warnings = state.warnings
 
         # Use the first resolved member as representative; build shape facts from the full
         # resolved set. This draft is needed before place expansion to identify role shapes.

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
-import time
 from pathlib import Path
 
 import pytest
@@ -17,7 +17,7 @@ from materialise.graph import GraphDeadlineExceededError, GraphReadError, parse_
 from origin_catalogue import BASE, DFO
 from tests.origin_catalogue.fake_catalogue import provenance_row, restrictive_catalogue
 
-from .conftest import FakeGraphNodeReader, make_client
+from .conftest import FakeGraphNodeReader, make_client, send_past_a_full_pool
 
 _FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -895,9 +895,9 @@ class TestNodesBatch:
         assert resp.json()["code"] == "request_invalid"
         assert graph.calls["node_arcs_many"] == 0
 
-    def test_a_batch_holds_one_pool_slot(self):
-        """A blocked batch of seven dcids holds one of two slots, so a node read alongside it
-        is admitted."""
+    def test_a_batch_holds_one_pool_worker(self):
+        """A blocked batch of seven dcids holds one of two workers, so a node read alongside it
+        runs without waiting for the batch."""
         delegate = FakeGraphNodeReader(nodes=_BATCH_NODES)
         graph = _BlockingGraphNodeReader(delegate, block_batches_only=True)
         client = make_client(graph=graph, node_pool_size=2)
@@ -930,11 +930,13 @@ class _BlockingGraphNodeReader:
         self._block_batches_only = block_batches_only
         self.entered = threading.Event()
         self.release = threading.Event()
+        self.entries = 0
         self.calls = delegate.calls
 
     def node_arcs_many(self, dcids, *, properties, deadline=None):
         if self._block_batches_only and len(dcids) == 1:
             return self._delegate.node_arcs_many(dcids, properties=properties, deadline=deadline)
+        self.entries += 1
         self.entered.set()
         self.release.wait(timeout=5.0)
         return self._delegate.node_arcs_many(dcids, properties=properties, deadline=deadline)
@@ -948,61 +950,46 @@ class _BlockingGraphNodeReader:
         return self._delegate.node_names_many(dcids)
 
 
-def test_semaphore_full_refuses_503_service_unavailable():
+def test_a_read_past_the_pool_size_queues_and_succeeds(caplog: pytest.LogCaptureFixture):
     delegate = FakeGraphNodeReader(nodes={"country/KEN": {"typeOf": ("Country",)}})
     graph = _BlockingGraphNodeReader(delegate)
     client = make_client(graph=graph, node_pool_size=1)
 
-    with client:
-        first_response: list = []
-        first_thread = threading.Thread(
-            target=lambda: first_response.append(client.get("/api/graph/node/country/KEN"))
+    with client, caplog.at_level(logging.WARNING, logger="dfo_platform.executor"):
+        responses = send_past_a_full_pool(
+            client,
+            lambda: client.get("/api/graph/node/country/KEN"),
+            entered=graph.entered,
+            release=graph.release,
         )
-        first_thread.start()
-        assert graph.entered.wait(timeout=5.0), "first request never reached the blocking read"
 
-        second_response = client.get("/api/graph/node/country/KEN")
-
-        assert second_response.status_code == 503, second_response.text
-        second_problem = second_response.json()
-        assert second_problem["code"] == "service_unavailable"
-        assert second_problem["retryable"] is True
-
-        graph.release.set()
-        first_thread.join(timeout=5.0)
-        assert first_response, "first request never returned"
-        assert first_response[0].status_code == 200, first_response[0].text
+    assert [response.status_code for response in responses] == [200, 200], [
+        response.text for response in responses
+    ]
+    assert any("graph-dcp saturated" in record.message for record in caplog.records)
 
 
-def test_worker_outliving_the_door_timeout_still_releases_its_slot(monkeypatch):
-    """A timeout returns 504 while the worker holds its slot. Its completion
-    callback releases the slot after the worker returns.
-    """
-    monkeypatch.setattr(node_door, "GRAPH_NODE_TIMEOUT_SECONDS", 0.05)
+def test_a_read_queued_past_its_deadline_times_out_and_never_runs(monkeypatch):
+    """A read that times out while queued behind a worker that outlived its own door timeout
+    returns 504 and never reaches the reader. The next read runs once that worker returns."""
+    monkeypatch.setattr(node_door, "GRAPH_NODE_TIMEOUT_SECONDS", 0.2)
     delegate = FakeGraphNodeReader(nodes={"country/KEN": {"typeOf": ("Country",)}})
     graph = _BlockingGraphNodeReader(delegate)
     client = make_client(graph=graph, node_pool_size=1)
 
     with client:
-        timed_out_response = client.get("/api/graph/node/country/KEN")
-        assert timed_out_response.status_code == 504, timed_out_response.text
-        assert graph.entered.wait(timeout=5.0), "worker never started"
-
-        # The timed-out worker holds the slot, so the second request gets 503.
-        still_full_response = client.get("/api/graph/node/country/KEN")
-        assert still_full_response.status_code == 503, still_full_response.text
-
-        # The completion callback runs on the executor thread. Poll for slot release.
+        running = client.get("/api/graph/node/country/KEN")
+        assert graph.entered.wait(timeout=5.0), "the first read never started"
+        queued = client.get("/api/graph/node/country/KEN")
         graph.release.set()
-        deadline = time.monotonic() + 5.0
-        recovered_response = still_full_response
-        while time.monotonic() < deadline:
-            recovered_response = client.get("/api/graph/node/country/KEN")
-            if recovered_response.status_code != 503:
-                break
-            time.sleep(0.02)
+        recovered = client.get("/api/graph/node/country/KEN")
 
-        assert recovered_response.status_code == 200, recovered_response.text
+    assert running.status_code == 504, running.text
+    assert queued.status_code == 504, queued.text
+    assert queued.json()["code"] == "timeout"
+    assert queued.json()["retryable"] is True
+    assert recovered.status_code == 200, recovered.text
+    assert graph.entries == 2
 
 
 class TestGraphReadErrorClassification:

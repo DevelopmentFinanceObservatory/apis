@@ -5,6 +5,8 @@ Refused merges keep both specs.
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 
 from search.engine.bind import _UniversalBindOutput
@@ -171,6 +173,35 @@ def test_same_shape_collapse():
     assert BINDING_FOLDED not in first_codes
     second_codes = [w.code for w in second.warnings]
     assert BINDING_FOLDED in second_codes
+
+
+@pytest.mark.parametrize("separate_index", [0, 1])
+def test_a_separate_part_never_folds_and_the_others_fold_as_before(separate_index: int):
+    """Of three same-shape definite parts, the one marked separate keeps its own spec and
+    carries no binding_folded, in query order. The other two fold onto one set spec."""
+    regions = [
+        dataclasses.replace(
+            _rr(
+                f"var {i}",
+                "definite",
+                _spec(_PERSON_SHAPE, f"Val{i}", sv_dcid="sv"),
+                earliest_index=i,
+            ),
+            separate=i == separate_index,
+        )
+        for i in range(3)
+    ]
+    response = _combine(regions)
+
+    assert [p.variable_text for p in response.parts] == ["var 0", "var 1", "var 2"]
+    separate = response.parts[separate_index]
+    folded = [p for i, p in enumerate(response.parts) if i != separate_index]
+    assert separate.spec.resolved.slots[0].binding.kind == "value"
+    assert BINDING_FOLDED not in [w.code for w in separate.warnings]
+    assert folded[0].spec.spec_id == folded[1].spec.spec_id != separate.spec.spec_id
+    assert folded[0].spec.resolved.slots[0].binding.kind == "set"
+    assert BINDING_FOLDED not in [w.code for w in folded[0].warnings]
+    assert BINDING_FOLDED in [w.code for w in folded[1].warnings]
 
 
 def test_same_shape_collapse_remaps_spec_scoped_warning_to_merged_spec_id():

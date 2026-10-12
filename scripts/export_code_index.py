@@ -7,6 +7,13 @@ non-spine reads. This graph repeats reverse-arc pages, so truncated reads split 
 observed `populationType`, to depth 6. A second read of each exported five-tuple refuses the export when the graph holds a
 StatVar the index would decide that is not an exported row.
 
+A dataset whose StatVars declare no code system, World Bank IDS, cannot be enumerated that way.
+Its StatVars come from the coverage build into a separate `listed_statvars` block, which no
+family, measure axis or shape reads; Search and the mint elect members from it in place of a
+graph walk (`code_index.members.listed_group`). An unsplit read of each five-tuple a listed row
+has refuses the export when the graph holds a StatVar there that is neither an exported nor a
+listed row.
+
 Pass 1 reads each StatVar's type, shape, and declared constraints. Pass 2 reads their values.
 Export requires held, resolved targets with `typeOf` and one value per single-value field. Nodes
 typed only `ProvisionalNode` and non-StatisticalVariables raise. Constraint and observation
@@ -20,6 +27,15 @@ The published series coverage build supplies each StatVar's provenances: `covera
 variable to its facet ids and `facets.json` maps a facet id to its provenance. The stamp records
 the build id and the number of StatVars the build holds no series for. A declared dataset with no
 StatVar row aborts the export.
+
+The same build names every donor and recipient of a declared or listed dataset. Each party's graph
+types give it a kind (party, total or residual) under the authored `PARTY_TYPE_KINDS`, except a
+party the authored `PARTY_KIND_OVERRIDES` names. Its graph name is its label, and its row lists the
+datasets that publish it and the flow axes they publish it on. The authored `TOTAL_GROUPS` names the group each total holds and the
+residuals it counts beside the group's members. A party with an undeclared type, or whose types
+give no single kind, aborts the export, as does a `TOTAL_GROUPS` or `PARTY_KIND_OVERRIDES` row
+naming a party no declared or listed dataset publishes (a `TOTAL_GROUPS` row also needs that party to be a
+total, and each residual it names to be a published residual).
 
 Requires `SEARCH_GRAPH_BASE` and `COVERAGE_ARTIFACT_URI`, with read access to the coverage bucket
 for a `gs://` URI. Sorted JSON is stable. `content_hash` covers data blocks and excludes the stamp.
@@ -41,21 +57,25 @@ import re
 import sys
 from collections import Counter, defaultdict
 from collections.abc import Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
 from code_index.loader import IndexFormatError, parse_index, parse_measure_axes
 from code_index.members import key_sets_cover
+from code_index.tokens import Token, TokenLookup, singular, tokenize
 from code_index.types import (
     DatasetDeclaration,
     DeclaredDefault,
     MeasureAxis,
     MeasurePartitionLabel,
+    PartyKind,
     invalid_when_named_entry,
     label_for_pairs,
+    party_kind,
 )
 from dc_graph import GraphClient
+from dfo_platform.roles import RoleAxis
 from materialise.graph import (
     UNRESOLVED_NODE,
     GraphNotAdvancingError,
@@ -69,15 +89,16 @@ _DEFAULT_OUT = (
 
 # Truncated code-system enumeration aborts. Partition reads use truncation as a split signal.
 _DEFAULT_MAX_RESULTS = 5000
+# Subjects one unsplit read of a listed row's five-tuple may return
+# (`_verify_listed_five_tuples`). The dev graph's `FinancialFlow` amount five-tuple holds about
+# 14,000 StatVars, CRS, DAC and IDS together, and reads whole in about 45 s.
+_UNSPLIT_MAX_RESULTS = 40_000
 # Twenty-dcid `/v2/node` requests avoid mixer paging loops. GraphClient reads chunks concurrently.
 _ARC_CHUNK_SIZE = 20
 # Six levels cover every partition axis and bound recursive splitting.
 _MAX_PARTITION_DEPTH = 6
 
 _LABEL_SUFFIX_RE = re.compile(r"\s*\((?:CRS|DAC)\s[^()]*\)\s*$")
-# The query-word pattern of `search.engine.qualifier_match._WORD_RE`. The export cannot import
-# the engine, which needs a graph configuration at import.
-_QUERY_WORD_RE = re.compile(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)*")
 
 _CODE_ARC_PROPERTIES = (
     "classificationCode",
@@ -138,6 +159,11 @@ _IMPUTED_MULTILATERAL_SECTORS = "provenance/ONEImputedMultilateralSectors"
 _DAC1 = "provenance/OECDDAC1"
 _DAC2A = "provenance/OECDDAC2A"
 _DAC2B = "provenance/OECDDAC2B"
+_IDS = "provenance/WorldBankInternationalDebtStatistics"
+
+# Datasets whose StatVars declare no code system, so no code read reaches them. The export lists
+# their StatVars from the coverage build into `listed_statvars` (`listed_dcids`).
+LISTED_DATASETS: tuple[str, ...] = (_IDS,)
 
 # Exported declarations set CRS behaviour.
 # `crsTypeOfFlow` is flat, with nine root codes.
@@ -335,17 +361,162 @@ DATASETS: tuple[DatasetDeclaration, ...] = (
 )
 
 
+# The kind each graph type gives a party of a declared dataset (`code_index.types.party_kind`).
+# Every type a donor or recipient of a declared or listed dataset carries is named here; the export refuses
+# a party with a type this table does not name, or whose types give it no single kind. A type
+# mapped to `None` names no kind of its own and sits beside a type that does: `Place` beside
+# `Country` (India), `ProvisionalNode` beside `Organization` (IDA), `LendingEntityEnum` beside
+# `Organization` (EUROFIMA), the administrative types beside `Country` (Hong Kong, Mayotte). IDS
+# publishes World Bank regions ("Sub-Saharan Africa, excluding high income") and lending groups
+# ("IDA total") as debtors beside the countries they hold, and its unidentified creditors
+# ("bondholders", "multiple lenders") as creditors that hold no other creditor's figures.
+PARTY_TYPE_KINDS: Mapping[str, PartyKind | None] = {
+    "Country": "party",
+    "Organization": "party",
+    "DACGroup": "total",
+    "Grouping": "total",
+    "UNCountryDevelopmentGroup": "total",
+    "WorldBankIncomeGroup": "total",
+    "WorldBankLendingGroup": "total",
+    "WorldBankRegion": "total",
+    "DACRecipientUnallocatedByCountry": "residual",
+    "DACUnspecifiedParty": "residual",
+    "IDSUnidentifiedCreditor": "residual",
+    "AdministrativeArea": None,
+    "AdministrativeArea1": None,
+    "AdministrativeArea2": None,
+    "City": None,
+    "LendingEntityEnum": None,
+    "Place": None,
+    "ProvisionalNode": None,
+    "SpecialAdministrativeRegion": None,
+}
+
+
+@dataclass(frozen=True)
+class KindOverride:
+    """The kind one party takes in place of its graph types' kind, and why."""
+
+    kind: PartyKind
+    reason: str
+
+
+# The parties whose kind differs from what their graph types give. An organisation is typed
+# `Organization` and so reads as a `party`, yet DAC2A and DAC2B publish a group of organisations
+# beside its members, so a sum across donors counts the members twice. A row stands when, in every
+# year the group reports (1960 to 2024), its gross and net disbursements equal the sum of its
+# members' within one dollar per member: DAC2A's ODA (aid type 206) and DAC2B's total (aid type
+# 972), at DACAllRecipients and, wherever the group reports there, at Bangladesh, Ethiopia, India
+# and Kenya. A search over every subset of the other donors' gross disbursements at
+# DACAllRecipients, for each of the 122 organisation donors of the two datasets, finds a sum for
+# these four and for the IMF only. The IMF equals its Concessional Trust Funds from 1986 (DAC2A)
+# and its Resilience and Sustainability Trust (DAC2B), but reports alone in 1977 to 1985, so no sum
+# covers every year and it holds no row. Neither trust fund holds a row either: in DAC2A and DAC2B
+# each equals the IMF in every year and series it reports, but the CRS publishes both and never the
+# IMF, and a kind holds in every dataset, so a `total` would drop the IMF's CRS figures from a sum.
+PARTY_KIND_OVERRIDES: Mapping[str, KindOverride] = {
+    "AfricanDevelopmentBankGroup": KindOverride(
+        "total", "AfricanDevelopmentBank plus AfricanDevelopmentFund"
+    ),
+    "InterAmericanDevelopmentBankGroup": KindOverride(
+        "total", "InterAmericanDevelopmentBank plus IDBInvest"
+    ),
+    "PostcodeLotteryGroup": KindOverride(
+        "total", "the Dutch, German, Norwegian, People's and Swedish postcode lotteries"
+    ),
+    "WorldBankGroup": KindOverride(
+        "total",
+        "InternationalDevelopmentAssociation, InternationalBankForReconstructionAndDevelopment "
+        "and InternationalFinanceCorporation",
+    ),
+}
+
+
+@dataclass(frozen=True)
+class TotalGroup:
+    """The group one total holds, as search names the group, and the residuals the total
+    counts beside the group's members, sorted."""
+
+    group: str
+    residuals: tuple[str, ...] = ()
+
+
+def _unallocated(*regions: str) -> tuple[str, ...]:
+    """The DAC residuals "<region>, unallocated by country" of `regions`, sorted."""
+    return tuple(sorted(f"DAC{region}Unallocated" for region in regions))
+
+
+# The group each total holds, as search names the group: a graph place, or a resolver group's
+# dcid (`entity_resolution.regions.identity_to_dcid`), and the residuals it counts beside the
+# group's members. The graph links no total to its group, so this table is reviewed by hand. A
+# row stands when, in every year from 2000 to 2023, the total equals the sum of the group's
+# members plus its residuals: France's DAC2A ODA disbursements for the recipient totals, DAC1 ODA
+# by donor for the donor ones. A continent's residuals include those of its subregions ("South of
+# Sahara, unallocated by country" within Africa). Totals that fail the test hold no group: DAC's
+# Asia and Europe place Georgia, Armenia and Türkiye differently from the graph, and its Eastern,
+# Middle and Western Africa, North and South of Sahara, South America, lower and upper middle
+# income, small island states and DAC countries totals differ from the sums over the graph's or
+# the resolver's members.
+TOTAL_GROUPS: Mapping[str, TotalGroup] = {
+    "DACAfrica": TotalGroup(
+        "africa",
+        _unallocated(
+            "Africa",
+            "EasternAfrica",
+            "MiddleAfrica",
+            "NorthOfSahara",
+            "SouthOfSahara",
+            "SouthernAfrica",
+            "WesternAfrica",
+        ),
+    ),
+    "DACAmerica": TotalGroup(
+        "undata-geo/G00134000",
+        _unallocated(
+            "America", "Caribbean", "CaribbeanAndCentralAmerica", "CentralAmerica", "SouthAmerica"
+        ),
+    ),
+    "DACCaribbean": TotalGroup("Caribbean", _unallocated("Caribbean")),
+    "DACCentralAmerica": TotalGroup("CentralAmerica", _unallocated("CentralAmerica")),
+    "DACMelanesia": TotalGroup("Melanesia", _unallocated("Melanesia")),
+    "DACMicronesia": TotalGroup("Micronesia", _unallocated("Micronesia")),
+    "DACNonDACCountries": TotalGroup("groups/OECD.NonDAC"),
+    "DACOceania": TotalGroup(
+        "oceania", _unallocated("Melanesia", "Micronesia", "Oceania", "Polynesia")
+    ),
+    "DACPolynesia": TotalGroup("Polynesia", _unallocated("Polynesia")),
+    "DACSouthernAfrica": TotalGroup("SouthernAfrica", _unallocated("SouthernAfrica")),
+    "GroupOfSeven": TotalGroup("groups/G7"),
+    "UNLandlockedDevelopingCountries": TotalGroup("groups/UN.LLDC"),
+    "UNLeastDevelopedCountries": TotalGroup("groups/UN.LDC"),
+    "WorldBankHighIncome": TotalGroup("groups/WB.IncomeGroup.High"),
+    "WorldBankLowIncome": TotalGroup("groups/WB.IncomeGroup.Low"),
+}
+
+
+@dataclass(frozen=True)
+class PartyPublication:
+    """The datasets that publish one party, by provenance, and the flow axes they publish it
+    on: `origin` as a donor, `destination` as a recipient."""
+
+    datasets: frozenset[str]
+    axes: frozenset[RoleAxis]
+
+
 @dataclass(frozen=True)
 class CoverageJoin:
-    """What the export takes from one series coverage build: its build id and each covered
-    variable's sorted provenances."""
+    """What the export takes from one series coverage build: its build id, each covered
+    variable's sorted provenances, and the donors and recipients of the declared and listed
+    datasets."""
 
     build_id: str
     provenances: Mapping[str, tuple[str, ...]]
+    parties: Mapping[str, PartyPublication] = field(default_factory=dict)
 
 
-def load_coverage_join(base_uri: str) -> CoverageJoin:
-    """Load the published coverage build under `base_uri` and read its variable provenances.
+def load_coverage_join(base_uri: str, *, datasets: Collection[str]) -> CoverageJoin:
+    """Load the published coverage build under `base_uri` and read its variable provenances and
+    the parties on the facets of the `datasets` provenances.
 
     `series_coverage` needs the `coverage` extra, which the graph-only callers of this module
     run without, so the import stays inside this function.
@@ -353,9 +524,108 @@ def load_coverage_join(base_uri: str) -> CoverageJoin:
     from series_coverage.loader import load_coverage
 
     loaded = load_coverage(base_uri)
+    publishers: dict[str, set[str]] = defaultdict(set)
+    axes: dict[str, set[RoleAxis]] = defaultdict(set)
+    for dataset in datasets:
+        for party, published_on in loaded.index.dataset_parties({dataset}).items():
+            publishers[party].add(dataset)
+            axes[party].update(published_on)
     return CoverageJoin(
-        build_id=loaded.manifest.build_id, provenances=loaded.index.variable_provenances()
+        build_id=loaded.manifest.build_id,
+        provenances=loaded.index.variable_provenances(),
+        parties={
+            party: PartyPublication(datasets=frozenset(found), axes=frozenset(axes[party]))
+            for party, found in publishers.items()
+        },
     )
+
+
+def _kind_from_types(
+    dcid: str, types: Collection[str], type_kinds: Mapping[str, PartyKind | None]
+) -> PartyKind:
+    """The kind `types` give the party `dcid` under `type_kinds`, or `SystemExit` naming why they
+    give none."""
+    if not types:
+        raise SystemExit(f"party {dcid!r} has no typeOf arc -- its kind cannot be declared")
+    undeclared = sorted(set(types) - type_kinds.keys())
+    if undeclared:
+        raise SystemExit(
+            f"party {dcid!r} carries type(s) {undeclared!r} that PARTY_TYPE_KINDS does not "
+            "declare -- add each with the kind it gives a party"
+        )
+    kind = party_kind(types, type_kinds)
+    if kind is None:
+        raise SystemExit(
+            f"party {dcid!r}'s types {sorted(types)!r} give it no single kind under "
+            "PARTY_TYPE_KINDS"
+        )
+    return kind
+
+
+def export_parties(
+    reader: GraphReader,
+    parties: Mapping[str, PartyPublication],
+    *,
+    type_kinds: Mapping[str, PartyKind | None],
+    kind_overrides: Mapping[str, KindOverride],
+    total_groups: Mapping[str, TotalGroup],
+) -> list[dict]:
+    """Each party's kind, label, the datasets that publish it and the flow axes they publish it
+    on (`parties`, each sorted), and the group and residuals a total holds, sorted by dcid.
+
+    A party in `kind_overrides` takes its override's kind; any other takes the kind its graph
+    types give under `type_kinds`. Its label is its graph name, `None` when the graph gives it
+    none.
+
+    Raises `SystemExit` for a `kind_overrides` row naming a party not in `parties`, a party the
+    graph holds no node or type for, a party carrying a type `type_kinds` does not name, a party
+    whose types give it no single kind, a `total_groups` row naming a party that is not a total
+    of `parties`, and a `total_groups` residual that is not a residual of `parties`.
+    """
+    published = frozenset(parties)
+    unpublished = sorted(kind_overrides.keys() - published)
+    if unpublished:
+        raise SystemExit(
+            f"PARTY_KIND_OVERRIDES names {unpublished!r}, which no declared or listed dataset publishes"
+        )
+    arcs = _fetch_arcs_many(reader, sorted(published), properties=("typeOf", "name"))
+    rows = []
+    for dcid in sorted(published):
+        party_arcs = arcs.get(dcid) or {}
+        if (override := kind_overrides.get(dcid)) is not None:
+            kind = override.kind
+        else:
+            kind = _kind_from_types(dcid, party_arcs.get("typeOf", ()), type_kinds)
+        total = total_groups.get(dcid)
+        rows.append(
+            {
+                "dcid": dcid,
+                "kind": kind,
+                "label": _first_or_none(party_arcs.get("name", ())),
+                "totals": None if total is None else total.group,
+                "residuals": [] if total is None else sorted(total.residuals),
+                "datasets": sorted(parties[dcid].datasets),
+                "axes": sorted(parties[dcid].axes),
+            }
+        )
+    kinds = {row["dcid"]: row["kind"] for row in rows}
+    stale = sorted(dcid for dcid in total_groups if kinds.get(dcid) != "total")
+    if stale:
+        raise SystemExit(
+            f"TOTAL_GROUPS names {stale!r}, which no declared or listed dataset publishes as a total"
+        )
+    not_residuals = sorted(
+        residual
+        for total in total_groups.values()
+        for residual in total.residuals
+        if kinds.get(residual) != "residual"
+    )
+    if not_residuals:
+        raise SystemExit(
+            f"TOTAL_GROUPS counts {not_residuals!r} as residuals, which no declared or listed dataset "
+            "publishes as a residual"
+        )
+    return rows
 
 
 # Axis order controls partition election.
@@ -461,6 +731,9 @@ _DECLARED_MEASURE_VALUES: Mapping[str, tuple[str, ...]] = {
 # "Imputed" names DAC2a's imputed multilateral line when the query holds no longer label of it
 # ("imputed aid from Norway"), so DAC1's donor totals, which read nothing, do not cover it.
 _CODE_SYNONYMS: Mapping[str, tuple[str, ...]] = {
+    # DFO convention: "reproductive health" means the whole sector 130 (population policies and
+    # reproductive health), broader than 13020 "reproductive health care".
+    "CRSPurposeCode130": ("reproductive health",),
     "CRSTypeOfFlow10": ("development assistance",),
     "CRSTypeOfFlow21": ("other official flows",),
     "DAC1AidType1820": ("refugee costs in donor countries",),
@@ -476,7 +749,9 @@ _MEASURE_WORD_SYNONYMS_KEPT: frozenset[str] = frozenset(
     {
         "social safety net",
         "recoveries on bilateral oda grants and negative commitments",
+        "recoveries on bilateral oda grants / negative commitments",
         "recoveries on multilateral oda grants and capital subscriptions and negative commitments",
+        "recoveries on multilateral oda grants and capital subscriptions / negative commitments",
     }
 )
 
@@ -1058,10 +1333,11 @@ def _apply_concept_groups(
 type _MeasureNames = frozenset[tuple[str, str]]
 
 
-def _measure_texts(measure_values: Sequence[dict]) -> dict[str, _MeasureNames]:
-    """Every matchable measure-value label and synonym, casefolded, to the `(axis, dcid)`
-    pairs it reads. A text names its value's whole reading: the canonical dcid and every
-    alias dcid filed under it (`same_reading_as`), as the matcher files them."""
+def _measure_texts(measure_values: Sequence[dict]) -> TokenLookup[_MeasureNames]:
+    """Every matchable measure-value label and synonym, found as the matcher finds it
+    (`code_index.tokens`), to the `(axis, dcid)` pairs it reads. A text names its value's
+    whole reading: the canonical dcid and every alias dcid filed under it
+    (`same_reading_as`), as the matcher files them."""
     reading: dict[tuple[str, str], set[str]] = defaultdict(set)
     for row in measure_values:
         reading[(row["axis"], row["same_reading_as"] or row["dcid"])].add(row["dcid"])
@@ -1074,34 +1350,42 @@ def _measure_texts(measure_values: Sequence[dict]) -> dict[str, _MeasureNames]:
             texts[text.strip().casefold()].update(
                 (row["axis"], dcid) for dcid in reading[canonical]
             )
-    return {text: frozenset(names) for text, names in texts.items()}
+    return TokenLookup((text, frozenset(names)) for text, names in texts.items())
+
+
+def _measure_names(
+    span: Sequence[Token] | None, measure_texts: TokenLookup[_MeasureNames]
+) -> _MeasureNames:
+    """The `(axis, dcid)` pairs every measure text matching `span` reads."""
+    if span is None:
+        return frozenset()
+    return frozenset(pair for names in measure_texts.get(span) for pair in names)
 
 
 def _measure_runs(
-    text: str, measure_texts: Mapping[str, _MeasureNames]
+    text: str, measure_texts: TokenLookup[_MeasureNames]
 ) -> list[tuple[int, int, _MeasureNames]]:
     """The runs of `text`'s words a query holding `text` would lose to it, as `(start, end,
     names)` word ranges, left to right and longest first at each start.
 
-    The matcher (`search.engine.qualifier_match`) reads a query as `_QUERY_WORD_RE` words, and
-    keys a span by its words joined by one space and casefolded, exact or less one trailing
-    "s". `text` matches a span only when it is that join of its own words; one holding other
-    punctuation ("ODA: Total Net") matches no query and takes nothing. A matching `text`
-    claims its every word, so it takes each run of its words that is a measure text. A `text`
-    that is itself a measure text ("PPP") shares its span with the measure value, which keeps
-    both readings (`match_qualifier_readings`), and takes nothing.
+    The matcher (`search.engine.qualifier_match`) reads a query as `code_index.tokens` words
+    and separators, and a query holding `text` matches it whatever separators `text` holds
+    ("ODA: Total Net"). A matching `text` claims its every word, so it takes each run of its
+    words that a measure text matches, exact or less one trailing "s". A `text` that is
+    itself a measure text ("PPP") shares its span with the measure value, which keeps both
+    readings (`match_qualifier_readings`), and takes nothing.
     """
-    words = [word.casefold() for word in _QUERY_WORD_RE.findall(text)]
-    joined = " ".join(words)
-    if joined != text.strip().casefold() or joined in measure_texts:
+    tokens = tokenize(text)
+    word_at = [position for position, token in enumerate(tokens) if token.kind == "word"]
+    if not word_at or _measure_names(tokens, measure_texts):
         return []
     runs: list[tuple[int, int, _MeasureNames]] = []
     start = 0
-    while start < len(words):
-        for end in range(len(words), start, -1):
-            span = " ".join(words[start:end])
-            names = measure_texts.get(span) or (
-                measure_texts.get(span[:-1]) if span.endswith("s") else None
+    while start < len(word_at):
+        for end in range(len(word_at), start, -1):
+            span = tokens[word_at[start] : word_at[end - 1] + 1]
+            names = _measure_names(span, measure_texts) or _measure_names(
+                singular(span), measure_texts
             )
             if names:
                 runs.append((start, end, names))
@@ -1171,7 +1455,7 @@ def _strip_measure_words(
             if not stripped or text.strip().casefold() in _MEASURE_WORD_SYNONYMS_KEPT:
                 kept.append(text)
                 continue
-            words = _QUERY_WORD_RE.findall(text)
+            words = [token.text for token in tokenize(text) if token.kind == "word"]
             remainders.append(
                 " ".join(
                     word
@@ -1671,7 +1955,8 @@ def _verify_five_tuple_completeness(
     constraint property of some exported row of its five-tuple (`index_covers_slot_keys` in
     `code_index.members`, which this check shares through `key_sets_cover`), so such a StatVar
     must be an exported row. One the index would not decide, such as an IDS debt series with
-    no CRS keys, passes because the graph walk resolves it.
+    no CRS keys, passes: it is a listed row (`_verify_listed_five_tuples`) or the graph walk
+    resolves it.
 
     A decided StatVar carries every code system of the exported row it covers. Each five-tuple
     gets one reverse read per minimal set of code systems its rows declare
@@ -1741,6 +2026,66 @@ def _verify_five_tuple_completeness(
             f"{len(missing)} StatVar(s) on an exported five-tuple carry the constraint "
             f"properties of an exported row but are not exported rows: {named!r}{more} -- the "
             "index would decide their family without them"
+        )
+
+
+def listed_dcids(
+    provenances: Mapping[str, Collection[str]], datasets: Collection[str]
+) -> tuple[str, ...]:
+    """Return the sorted StatVars `provenances` assigns to any of `datasets`.
+
+    `provenances` maps a StatVar to the datasets publishing it: a coverage build's
+    (`CoverageJoin.provenances`), or the committed index's listed rows for the drift test. A
+    dataset of `datasets` with no StatVar raises `SystemExit`, since the export could not list
+    its rows."""
+    found = {dcid: set(datasets).intersection(sets) for dcid, sets in provenances.items()}
+    empty = sorted(set(datasets).difference(*found.values()))
+    if empty:
+        raise SystemExit(
+            f"listed dataset(s) {empty!r} hold no StatVar in the coverage build -- the export "
+            "cannot list their rows"
+        )
+    return tuple(sorted(dcid for dcid, datasets_of in found.items() if datasets_of))
+
+
+def _verify_listed_five_tuples(
+    reader: GraphReader,
+    statvars: Sequence[dict],
+    listed: Sequence[dict],
+    *,
+    max_results: int = _UNSPLIT_MAX_RESULTS,
+    max_depth: int = _MAX_PARTITION_DEPTH,
+) -> None:
+    """Refuse an export when a five-tuple a listed row has holds a StatVar that is neither an
+    exported nor a listed row, or when a listed StatVar is also an exported row.
+
+    Search and the mint elect a family that holds a listed row from the index's rows of its
+    five-tuple, in place of a graph walk over it (`code_index.members.listed_group`), so those
+    rows must be every StatVar of the five-tuple. Listed rows declare no code system to split
+    on, so each five-tuple gets one unsplit read of up to `max_results` subjects, and a read
+    still truncated refuses."""
+    exported = {row["dcid"] for row in statvars}
+    both = sorted(exported.intersection(row["dcid"] for row in listed))
+    if both:
+        raise SystemExit(
+            f"{len(both)} listed StatVar(s) are also exported rows: "
+            f"{both[:_MISSING_STATVAR_NAME_CAP]!r}"
+        )
+    known = exported.union(row["dcid"] for row in listed)
+    unknown: set[str] = set()
+    for five_tuple in sorted({_row_five_tuple(row) for row in listed}, key=repr):
+        unknown |= (
+            _read_five_tuple_subjects(
+                reader, five_tuple, (), max_results=max_results, max_depth=max_depth
+            )
+            - known
+        )
+    if unknown:
+        named = sorted(unknown)[:_MISSING_STATVAR_NAME_CAP]
+        more = f" and {len(unknown) - len(named)} more" if len(unknown) > len(named) else ""
+        raise SystemExit(
+            f"{len(unknown)} StatVar(s) on a listed row's five-tuple are neither exported nor "
+            f"listed rows: {named!r}{more} -- members elected from the index would miss them"
         )
 
 
@@ -2171,12 +2516,18 @@ def export_graph_blocks(
     measure_partition_labels: Sequence[MeasurePartitionLabel] = _MEASURE_PARTITION_LABELS,
     measure_nouns: Sequence[MeasurePartitionLabel] = _MEASURE_NOUNS,
     datasets: Sequence[DatasetDeclaration] = DATASETS,
+    party_type_kinds: Mapping[str, PartyKind | None] = PARTY_TYPE_KINDS,
+    listed: Collection[str] = (),
 ) -> dict:
     """Build every document block the graph and the authored config determine, sorted.
 
+    `listed` names the StatVars of the datasets no code system enumerates (`listed_dcids`),
+    read into `listed_statvars` and checked by `_verify_listed_five_tuples`.
+
     StatVar rows carry no `provenances` and the result has no stamp, so it does not load as an
     index. `export_index` completes it from a coverage build. The drift test compares it with the
-    committed export, which needs graph credentials alone.
+    committed export, listing the same StatVars the committed index lists, so it needs graph
+    credentials alone.
     """
     declarations = []
     codes = []
@@ -2205,6 +2556,8 @@ def export_graph_blocks(
             for dataset in datasets
         ),
     )
+    listed_statvars = export_statvars(reader, sorted(listed)) if listed else []
+    _verify_listed_five_tuples(reader, statvars, listed_statvars)
     _verify_measure_partition_labels(statvars, measure_axes, measure_partition_labels)
     _verify_measure_nouns(statvars, measure_nouns)
     _verify_measure_label_named_values(statvars, codes, measure_axes, measure_partition_labels)
@@ -2218,12 +2571,16 @@ def export_graph_blocks(
         ),
         "codes": codes,
         "statvars": statvars,
+        "listed_statvars": listed_statvars,
         "measure_axes": [_measure_axis_to_dict(axis) for axis in measure_axes],
         "measure_values": measure_values,
         "measure_partition_labels": [
             _measure_partition_label_to_dict(label) for label in measure_partition_labels
         ],
         "measure_nouns": [_measure_partition_label_to_dict(noun) for noun in measure_nouns],
+        "party_types": [
+            {"type": type_, "kind": kind} for type_, kind in sorted(party_type_kinds.items())
+        ],
     }
 
 
@@ -2257,9 +2614,15 @@ def export_index(
     measure_partition_labels: Sequence[MeasurePartitionLabel] = _MEASURE_PARTITION_LABELS,
     measure_nouns: Sequence[MeasurePartitionLabel] = _MEASURE_NOUNS,
     datasets: Sequence[DatasetDeclaration] = DATASETS,
+    party_type_kinds: Mapping[str, PartyKind | None] = PARTY_TYPE_KINDS,
+    party_kind_overrides: Mapping[str, KindOverride] = PARTY_KIND_OVERRIDES,
+    total_groups: Mapping[str, TotalGroup] = TOTAL_GROUPS,
+    listed_datasets: Collection[str] = (),
 ) -> dict:
-    """Build the index document: the graph blocks, each row's provenances from `coverage`, and
-    the stamp.
+    """Build the index document: the graph blocks, with the StatVars `coverage` assigns to
+    `listed_datasets` as listed rows (`listed_dcids`), each row's provenances from `coverage`,
+    every party of `coverage` with its kind and group (`export_parties`), and the stamp.
+    `main` lists `LISTED_DATASETS`.
 
     Tests can pass smaller config tables for fixture graphs. Empty `measure_axes` yields an empty
     `measure_values` list. The finished document must load: a document `parse_index` refuses,
@@ -2273,9 +2636,19 @@ def export_index(
         measure_partition_labels=measure_partition_labels,
         measure_nouns=measure_nouns,
         datasets=datasets,
+        party_type_kinds=party_type_kinds,
+        listed=listed_dcids(coverage.provenances, listed_datasets),
     )
     statvars_without_coverage = _join_provenances(blocks["statvars"], coverage)
+    _join_provenances(blocks["listed_statvars"], coverage)
     _verify_complete_systems(blocks["statvars"], code_systems)
+    blocks["parties"] = export_parties(
+        reader,
+        coverage.parties,
+        type_kinds=party_type_kinds,
+        kind_overrides=party_kind_overrides,
+        total_groups=total_groups,
+    )
 
     stamp = {
         "graph_endpoint": graph_endpoint,
@@ -2312,11 +2685,18 @@ def main() -> None:
     args = parser.parse_args()
 
     base = _graph_base_url()
-    coverage = load_coverage_join(_coverage_artifact_uri())
+    coverage = load_coverage_join(
+        _coverage_artifact_uri(),
+        datasets={dataset.provenance for dataset in DATASETS} | set(LISTED_DATASETS),
+    )
     reader = export_reader(f"{base}/core/api", os.environ.get("SEARCH_GRAPH_TOKEN"))
     try:
         document = export_index(
-            reader, graph_endpoint=base, now=datetime.now(UTC), coverage=coverage
+            reader,
+            graph_endpoint=base,
+            now=datetime.now(UTC),
+            coverage=coverage,
+            listed_datasets=LISTED_DATASETS,
         )
     finally:
         reader.close()
@@ -2324,7 +2704,8 @@ def main() -> None:
     stamp = document["stamp"]
     print(
         f"wrote {sum(stamp['code_counts'].values())} code rows, "
-        f"{len(document['statvars'])} StatVar rows "
+        f"{len(document['statvars'])} StatVar rows, "
+        f"{len(document['listed_statvars'])} listed StatVar rows "
         f"({stamp['statvars_without_coverage']} not in coverage build "
         f"{stamp['coverage_build']}), and "
         f"{len(document['measure_values'])} measure values to {args.out}",

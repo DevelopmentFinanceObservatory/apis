@@ -13,14 +13,15 @@ order, by dcid with Earth last.
 The rule, per StatVar:
 
 1. A StatVar whose scope is settled under the graph client's generation stamp
-   (`GenerationStamp.key`) and the backends its reads take (each reader's `source_key`) takes
-   it from the process-wide memo with no read.
+   (`GenerationStamp.key`), the backends its reads take (each reader's `source_key`) and the
+   request's source scope (`Catalogue.scope`) takes it from the process-wide memo with no read.
 2. Otherwise its unfiltered availability read runs on the module's settle pool
    (`AVAILABILITY_WORKERS` threads), single-flight per stamp key, backends and StatVar, for at
    most `SETTLE_SECONDS` from when it holds its GET slot, capped at `MAX_EVERY_PLACE` values
    and `MAX_EVERY_PLACE_BYTES`, and for at most `SETTLE_DEADLINE_SECONDS` from its submission,
    slot waits included. The request waits for it for `EVERY_PLACE_SECONDS`. The read
-   settles whether or not the request still waits, and its outcome is memoised when it is
+   settles whether or not the request still waits, detached from the starting request's
+   bound deadline (`submit_detached`), and its outcome is memoised when it is
    definite: a list within the caps, a value or byte cap, or an HTTP 5xx other than 502, 503
    and 504. A gateway status or a read past either time bound is not memoised.
 3. A list is checked against the graph: one batched `typeOf` read (`node_arcs_many`) over the
@@ -72,6 +73,7 @@ countries fallback counts admitted facets only.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import logging
 import sys
 import threading
@@ -86,10 +88,11 @@ from cachetools import TLRUCache
 
 from dc_graph import GraphDeadlineExceededError, GraphReadError
 from dc_sdmx import EntityFilter, SdmxCapExceededError, SdmxClientError
-from dfo_platform.executor import submit_with_context
+from dfo_platform.request_deadline import submit_detached
 from graph_generation import GenerationStamp
 from graph_generation.stamp import ttu_from_stamp_key
 from materialise.errors import MaterialisationUsageError
+from origin_catalogue.context import current_source_scope
 from origin_catalogue.graph import is_un_dcid
 
 logger = logging.getLogger(__name__)
@@ -353,12 +356,23 @@ type _Outcome = _Listed | _Fallback
 class _MemoKey(NamedTuple):
     """A memo and flight key. `stamp` leads, as `ttu_from_stamp_key` reads it first.
     `availability` is the `source_key` of the StatVar's availability reader and `graph` the
-    graph client's, so readers of different backends never share an entry."""
+    graph client's, so readers of different backends never share an entry. `scope` is the
+    digest of the bound catalogue's source scope (`Catalogue.scope`, `_scope_digest`), since
+    the countries fallback counts only the facets it admits."""
 
     stamp: str
     availability: str
     graph: str
     stat_var: str
+    scope: str | None
+
+
+def _scope_digest(scope: frozenset[str] | None) -> str | None:
+    """A fixed-size key for `scope`, so a memo entry's key stays small however many
+    provenances the scope allows while the memo's budget counts places alone."""
+    if scope is None:
+        return None
+    return hashlib.sha256("\n".join(sorted(scope)).encode()).hexdigest()
 
 
 type _Memoised = DefaultPlaceScope | _Listed | _Fallback
@@ -424,8 +438,9 @@ def read_default_presence(
         raise PlaceScopeDeadlineError(missing)
     stamp_key = graph.generation_stamp().key
     graph_source = graph.source_key()
+    source_scope = _scope_digest(current_source_scope())
     keys = {
-        sv: _MemoKey(stamp_key, reader.source_key(), graph_source, sv)
+        sv: _MemoKey(stamp_key, reader.source_key(), graph_source, sv, source_scope)
         for sv, reader in readers.items()
     }
     cold_read = set(known.cold_read) if known is not None else set()
@@ -568,7 +583,7 @@ def _submit(key: _MemoKey, reader: AvailabilityReader, flight: Future[_Outcome])
     it runs, as a pool shutdown cancels queued tasks, cancels the flight."""
     deadline = time.monotonic() + SETTLE_DEADLINE_SECONDS
     try:
-        task = submit_with_context(_pool, _settle, key, reader, flight, deadline=deadline)
+        task = submit_detached(_pool, _settle, key, reader, flight, deadline=deadline)
     except BaseException as exc:
         _end_flight(key, flight)
         with contextlib.suppress(InvalidStateError):

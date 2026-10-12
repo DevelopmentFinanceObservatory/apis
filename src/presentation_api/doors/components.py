@@ -87,6 +87,7 @@ from presentation_store import (
 )
 from presentation_store import close_shared_pool as close_presentation_pool
 from presentation_store import shared_pool as presentation_shared_pool
+from spec_registry.errors import SpecRegistryStoreError, SpecRegistryUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -235,6 +236,15 @@ def classify_components_exception(exc: BaseException) -> ProblemSpec | None:
             status=503,
             code="service_unavailable",
             detail="a presentation store call failed; retry",
+            retryable=retryable_for("service_unavailable"),
+        )
+    if isinstance(exc, (SpecRegistryUnavailable, SpecRegistryStoreError)):
+        # A frame load reads the registry to scope its revocation check, and fails closed.
+        logger.error("Spec registry read scoping a frame load's revocation check failed: %s", exc)
+        return ProblemSpec(
+            status=503,
+            code="service_unavailable",
+            detail="the spec registry could not scope a frame's revocation check; retry",
             retryable=retryable_for("service_unavailable"),
         )
     if isinstance(exc, DatasetsStoreUnavailable):
@@ -488,6 +498,8 @@ def build_components_door(
             GeneratedIdCollision,
             PresentationStoreUnavailable,
             DatasetsStoreUnavailable,
+            SpecRegistryUnavailable,
+            SpecRegistryStoreError,
             *COMPONENT_DATA_EXCEPTION_TYPES,
             *RENDER_EXCEPTION_TYPES,
             # The surface classifies validation errors, but this door declares the type raised by
@@ -534,6 +546,8 @@ def build_components_door(
             PresentationStoreUnavailable("exemplar", sqlstate="42601"),
             DatasetsStoreUnavailable("exemplar"),
             DatasetsStoreUnavailable("exemplar", sqlstate="23503"),
+            SpecRegistryUnavailable(),
+            SpecRegistryStoreError("exemplar"),
             RequestValidationError(
                 [{"loc": ("body", "intent"), "msg": "Field required", "type": "missing"}],
                 body={},

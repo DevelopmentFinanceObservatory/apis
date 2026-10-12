@@ -48,6 +48,7 @@ from ._graph_doubles import FakeMintGraphReader
 from ._member_bounds import mint_bounds
 
 _DAC1_PROVENANCE = "provenance/OECDDAC1"
+_IDS_PROVENANCE = "provenance/WorldBankInternationalDebtStatistics"
 
 _SPEC_ID = "spec_test"
 
@@ -325,6 +326,41 @@ def test_non_indexed_five_tuple_still_walks():
     assert {shape.stat_var for shape in shapes} == {"dcid:Person"}
 
 
+def test_a_listed_family_resolves_the_walks_members_without_reading_the_graph():
+    """A family the index lists outside its code systems (`CodeIndex.listed_statvars`) holds
+    the walk's candidates, so the mint resolves the walk's members and family from it with no
+    graph read."""
+    identity = _gender_family_identity()
+    walked = resolve_definition_members(
+        identity,
+        spec_id=_SPEC_ID,
+        graph=_person_family_graph(),
+        enumerator=MemberEnumerator(),
+        code_index=_empty_code_index(),
+        bounds=mint_bounds(),
+    )
+    listed_index = CodeIndex(
+        stamp=_STAMP,
+        declarations=(),
+        codes=(),
+        statvars=(),
+        listed_statvars=_person_family_index().statvars,
+    )
+    graph = FakeMintGraphReader(arcs={})
+
+    listed = resolve_definition_members(
+        identity,
+        spec_id=_SPEC_ID,
+        graph=graph,
+        enumerator=MemberEnumerator(),
+        code_index=listed_index,
+        bounds=mint_bounds(),
+    )
+
+    assert sum(graph.calls.values()) == 0
+    assert listed == walked
+
+
 # ---------------------------------------------------------------------------
 # Index-backed resolution marks the resulting requests as index-sourced.
 # ---------------------------------------------------------------------------
@@ -584,7 +620,7 @@ def test_a_provenance_that_publishes_no_member_refuses_facet_not_available(
     with pytest.raises(FacetNotAvailableError) as refusal:
         _education_aid_members(identity, code_index)
 
-    assert refusal.value.pointer == "/facets/provenance"
+    assert refusal.value.facet_pointer == "/facets/provenance"
     assert named in str(refusal.value)
     assert publisher in str(refusal.value)
 
@@ -615,7 +651,71 @@ def test_a_scope_naming_another_datasets_provenance_refuses():
             scope=Scope.model_validate({"facets": {"provenance": {"ref": IMPUTED_PROVENANCE}}}),
             **resolve,
         )
-    assert refusal.value.pointer == "/facets/provenance"
+    assert refusal.value.facet_pointer == "/facets/provenance"
+
+
+def _debt_service_identity(**facets: object) -> dict:
+    """Debt service to Ghana: a five-tuple CRS, DAC1, DAC2A and DAC2B publish under slot
+    keys of their own and IDS publishes through rows the index lists
+    (`CodeIndex.listed_statvars`) without declaring IDS a dataset."""
+    return {
+        "identity_version": "spec1",
+        "shape": {
+            "kind": "statvar_schema",
+            "population_type": "FinancialFlow",
+            "measured_property": "amount",
+            "stat_type": "measuredValue",
+            "measurement_qualifier": "Nominal",
+        },
+        "slots": [
+            {
+                "property": "financialFlowType",
+                "binding": {"state": "value", "ref": "ServicingPayment"},
+            },
+            *(
+                {"property": prop, "binding": {"state": "unbound"}}
+                for prop in (
+                    "financingResource",
+                    "guaranteeStatus",
+                    "idsConcessionality",
+                    "idsCreditorType",
+                    "idsDebtorType",
+                    "includesIMFCredit",
+                    "maturityBand",
+                )
+            ),
+        ],
+        "entities": {"destination": ["country/GHA"]},
+        "requested_window": {"kind": "all"},
+        **({"facets": facets} if facets else {}),
+    }
+
+
+def test_a_pin_on_a_listed_provenance_resolves_the_unpinned_members():
+    """A provenance the index does not declare as a dataset names no dataset: the pin
+    scopes the reads alone, so members resolve as for the identity that pins nothing,
+    though declared datasets publish the five-tuple."""
+    code_index = load_index(default_index_path())
+    assert _IDS_PROVENANCE not in code_index.datasets
+    graph = FakeMintGraphReader(arcs={})
+    resolve = {
+        "spec_id": _SPEC_ID,
+        "graph": graph,
+        "enumerator": MemberEnumerator(),
+        "code_index": code_index,
+        "bounds": mint_bounds(),
+    }
+
+    unpinned = resolve_definition_members(_debt_service_identity(), **resolve)
+    pinned = resolve_definition_members(
+        _debt_service_identity(provenance={"state": "value", "ref": _IDS_PROVENANCE}), **resolve
+    )
+
+    assert pinned == unpinned
+    assert {shape.stat_var for shape in pinned.shapes} == {
+        "dcid:Amount_FinancialFlow_ServicingPayment_Nominal"
+    }
+    assert sum(graph.calls.values()) == 0
 
 
 def _source_facet(shape: StatVarShape, code_index: CodeIndex) -> Facet:
@@ -644,7 +744,7 @@ def _selected_provenance(
         requests,
         [[_source_facet(shape, code_index)] for shape in shapes],
         graph=FakeMintGraphReader(arcs={}),
-    )
+    ).selections
     return selections["provenance"].ref
 
 
@@ -707,7 +807,9 @@ def test_a_member_held_by_another_dataset_alone_does_not_refuse_the_plain_family
     candidates = [[_source_facet(shape, code_index)] for shape in shapes]
     candidates[0] = [imputed_only]
 
-    selections = select_group_facets(requests, candidates, graph=FakeMintGraphReader(arcs={}))
+    selections = select_group_facets(
+        requests, candidates, graph=FakeMintGraphReader(arcs={})
+    ).selections
 
     assert selections["provenance"].ref == CRS_PROVENANCE
 

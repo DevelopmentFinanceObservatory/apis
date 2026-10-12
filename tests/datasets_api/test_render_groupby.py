@@ -147,7 +147,7 @@ _SUBJECT_ID = "spec_990700"
 
 
 def _enrichment() -> EnrichmentLookup:
-    return EnrichmentLookup(FakeMintGraphReader())
+    return EnrichmentLookup(FakeMintGraphReader(), type_kinds={}, parties={})
 
 
 def test_naming_one_axis_to_keep_collapses_the_other_into_a_frame_keeping_its_column():

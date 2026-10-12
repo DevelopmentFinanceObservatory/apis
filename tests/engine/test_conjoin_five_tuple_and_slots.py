@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import pytest
 
+from search.engine.region import RegionResult
 from search.engine.same_shape import collapse_same_shape, five_tuple_key
 from search.engine.spec_build import build_spec
 from search.models import (
     BindingSet,
+    BindingValue,
     CoverageBare,
     EntityOptions,
+    ResolvedQualifier,
     SlotKey,
     SlotOption,
     SlotOptions,
@@ -371,6 +374,100 @@ def test_collapse_same_shape_states_its_set_in_identity_order(asked: tuple[str, 
     assert [ref_dcid(v.ref) for v in binding.values] == ["Alpha", "Beta"]
     (identity_slot,) = [s for s in spec.definition.identity.slots if s.binding.state == "set"]
     assert identity_slot.binding.refs == ["Alpha", "Beta"]
+
+
+_HIV = "CRSPurposeCode13040"
+_POPULATION = "CRSPurposeCode130"
+_HEALTH = "CRSPurposeCode120"
+
+
+def _purpose_region(code: str, index: int, *qualifiers: ResolvedQualifier) -> RegionResult:
+    """A definite region binding one CRS purpose code, with its qualifier records."""
+    spec = build_spec(
+        open_roles=(),
+        measure_elected_properties=frozenset(),
+        shape=_ECON_SHAPE,
+        slots=[_cv_slot("crsPurpose", code)],
+        stat_vars=[
+            StatVar(
+                ref=_gr("sv"),
+                shape_id=_ECON_SHAPE.shape_id,
+                slot_values=[],
+                constraint_properties=[],
+            )
+        ],
+        entities=[],
+        coverage=CoverageBare(has_data=True),
+        query_qualifiers=list(qualifiers),
+    )
+    return _region(spec, f"part {index}", earliest_index=index)
+
+
+def _record(text: str, code: str, *, union: tuple[str, ...] = ()) -> ResolvedQualifier:
+    return ResolvedQualifier(
+        text=text,
+        named=[_gr(code)],
+        slot="crsPurpose",
+        disposition="bound",
+        operation="union" if union else None,
+        selected=[_gr(dcid) for dcid in union],
+    )
+
+
+@pytest.mark.parametrize(
+    ("codes", "union", "expected"),
+    [
+        # A union one part recorded selected both, so its broader code stands alone.
+        ((_POPULATION, _HIV), (_HIV, _POPULATION), [_POPULATION]),
+        # Two parts extraction split ("HIV/AIDS and reproductive health"), neither with a
+        # union of its own. The fold is the union, and 130 holds 13040.
+        ((_POPULATION, _HIV), (), [_POPULATION]),
+        ((_HIV, _POPULATION), (), [_POPULATION]),
+        # Codes that do not nest stay a set whatever union was recorded.
+        ((_HEALTH, _HIV), (_HEALTH, _HIV), [_HIV, _HEALTH]),
+        ((_HEALTH, _HIV), (), [_HIV, _HEALTH]),
+    ],
+    ids=[
+        "union-selected-both",
+        "split-parts",
+        "split-parts-narrower-first",
+        "no-nesting",
+        "no-nesting-split",
+    ],
+)
+def test_collapse_same_shape_drops_a_merged_value_nested_under_another(
+    codes: tuple[str, str], union: tuple[str, ...], expected: list[str]
+):
+    """The fold reads its members as a union. A merged code that descends from another
+    merged code drops, and one code left binds a value."""
+    first, second = codes
+    r_a = _purpose_region(first, 0, _record("first", first, union=union))
+    r_b = _purpose_region(second, 1, _record("second", second))
+
+    (merged,), residual = collapse_same_shape([r_a, r_b])
+
+    assert residual == []
+    binding = merged.spec.resolved.slots[0].binding
+    if len(expected) == 1:
+        assert isinstance(binding, BindingValue)
+        assert ref_dcid(binding.value.ref) == expected[0]
+    else:
+        assert isinstance(binding, BindingSet)
+        assert sorted(ref_dcid(v.ref) for v in binding.values) == sorted(expected)
+
+
+def test_collapse_same_shape_keeps_every_union_record_of_one_text():
+    """Two members' records of one text survive the fold when one recorded a union and the
+    other did not, whichever member comes first."""
+    plain = _record("HIV/AIDS", _HIV)
+    joined = _record("HIV/AIDS", _HIV, union=(_HIV, _POPULATION))
+    r_a = _purpose_region(_HIV, 0, plain)
+    r_b = _purpose_region(_POPULATION, 1, joined, _record("HIV/AIDS", _HIV))
+
+    (merged,), _ = collapse_same_shape([r_a, r_b])
+
+    assert merged.spec.resolved.trace.query_qualifiers == [plain, joined]
+    assert isinstance(merged.spec.resolved.slots[0].binding, BindingValue)
 
 
 def test_collapse_same_shape_dedupe_same_value():

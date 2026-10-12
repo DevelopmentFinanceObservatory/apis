@@ -5,9 +5,14 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import AbstractContextManager
 
+from code_index.members import pinned_refs
+from code_index.shared import get_index
 from dfo_platform.executor import submit_with_context
+from dfo_platform.roles import role_key_axis
 from materialise import facet_axis_value
+from origin_catalogue import scoped_reads
 from search.engine.axis import classify_axis
 from search.engine.clients.graph import EngineGraphClient, SubjectsCoverage
 from search.engine.config import settings
@@ -132,14 +137,22 @@ def _requested_window_from_identity(window: IdentityWindow) -> RequestedWindow |
 def _source_dcids_from_facets_provenance(
     facets: dict[str, IdentityFacetBinding] | None,
 ) -> list[str]:
-    """Return the posted `facets.provenance` refs, the one source of a resubmit's
-    provenance pin; `[]` when provenance is unbound."""
+    """Return the posted `facets.provenance` refs (`code_index.members.pinned_refs`), the
+    one source of a resubmit's provenance pin; `[]` when provenance is unbound."""
     binding = (facets or {}).get("provenance")
-    if isinstance(binding, IdentityBindingValue):
-        return [binding.ref] if binding.ref else []
-    if isinstance(binding, IdentityBindingSet):
-        return list(dict.fromkeys(binding.refs))
-    return []
+    if binding is None:
+        return []
+    return list(pinned_refs({"provenance": binding.model_dump(mode="json")}))
+
+
+def pinned_provenance_scope(
+    facets: dict[str, IdentityFacetBinding] | None,
+) -> AbstractContextManager[object]:
+    """Bind the request's catalogue narrowed to the posted `facets.provenance` refs
+    (`origin_catalogue.scoped_reads`), so a pinned source is admitted before DFO precedence
+    and a base pin serves at a place where a DFO table also holds data. Binds nothing when
+    provenance is unbound."""
+    return scoped_reads(frozenset(_source_dcids_from_facets_provenance(facets)) or None)
 
 
 def _accounting_slots_with_translated_provenance(
@@ -172,7 +185,9 @@ def _facet_filter_from_bindings(
 ) -> Mapping[str, FacetAxisFilter] | None:
     """Build the request's facet filter from the posted source, method, and unit bindings.
 
-    Provenance uses `source_dcids`; a `provenance` key in `identity.facets` is ignored. Each
+    Provenance uses `source_dcids`; a `provenance` key in `identity.facets` is ignored. The
+    resubmit already reads under `pinned_provenance_scope`, so the provenance filter keeps
+    what admission kept. Each
     other axis tests its value through `_facet_binding_admits`, the one matching rule every
     filtered election applies, so a null ref admits the facets that declare no value on the
     axis. Elected units are supplied when per-StatVar narrowing replaces the unit axis, which
@@ -355,56 +370,87 @@ def _graph_members(
 def resubmit_named_groups(
     inp: ResubmitIdentityPayload, *, graph: EngineGraphClient, deadline: float | None
 ) -> tuple[NamedGroup, ...]:
-    """The groups posted beside the identity that the graph confirms.
+    """The groups posted beside the identity that the graph or the code index confirms.
 
-    A group is kept only when it posts a dcid and the graph's members of that node
-    (`_graph_members`) are the identity's entities on the role. It takes the graph's type
-    and label for the node, as a first answer does (`place_roles.request_named_groups`). The
-    posted type is ignored, and the posted label stands only where the graph gives none. A group
-    posting no dcid drops, since nothing ties its label to the role's entities, and so does
-    a group on a role the identity binds no entity on. The posted dcids' types and labels
-    are read side by side, one batch each, and their members after the types. Each dropped
-    group is logged at info with the reason. A `GraphInfraError` on any of the reads drops
-    the groups it covers, logged at warning and noted as a lost read
-    (`degraded_reads.note_degraded_read`), and the role's entities still bind.
+    A group whose role binds the one party the code index declares the total of the posted
+    dcid's group (`_bound_total`) is read as that total, whether or not it posts `total`, so
+    a client that posts back only a group's label and dcid gets the group it was served. A
+    posted `total` that is not the one so bound drops the group. Any other group is read as
+    its members, and is kept only when it posts a dcid and the graph's members of that node
+    (`_graph_members`) are the identity's entities on the role. A kept group with a dcid
+    takes the graph's type and label for the node, as a first answer does
+    (`place_roles.request_named_groups`). The posted type is ignored, and the posted label
+    stands only where the graph gives none, or for a total's group that posts no dcid, as a
+    resolver group does ("G7"), whose total ties it to the role. Any other group posting no
+    dcid drops, since nothing ties its label to the role's entities, and so does a group on a
+    role the identity binds no entity on. The posted dcids' types and labels are read side
+    by side, one batch each, and their members after the types. Each dropped group is logged
+    at info with the reason. A `GraphInfraError` on any of the reads drops the groups it
+    covers, logged at warning and noted as a lost read (`degraded_reads.note_degraded_read`),
+    and the role's entities still bind.
     """
-    kept: list[tuple[str, EntityGroup, frozenset[str]]] = []
+    kept: list[tuple[str, EntityGroup, frozenset[str], str | None]] = []
+    named: list[NamedGroup] = []
     entities = inp.identity.entities
     for role, group in (inp.entity_groups or {}).items():
-        if group.dcid is None:
-            logger.info(
-                "resubmit dropped group %r on role %s: it names no graph node", group.label, role
-            )
-            continue
         if role not in entities:
             logger.info(
                 "resubmit dropped group %s on role %s: the identity binds no entity there",
-                group.dcid,
+                group.dcid or repr(group.label),
                 role,
             )
             continue
-        kept.append((group.dcid, group, frozenset(entities[role])))
+        role_entities = frozenset(entities[role])
+        total = _bound_total(group, role, role_entities)
+        if group.total is not None and total is None:
+            logger.info(
+                "resubmit dropped group %r on role %s: the code index does not tie its total "
+                "%s to the group on the role's flow axis, or the role binds more than it",
+                group.label,
+                role,
+                group.total,
+            )
+            continue
+        if group.dcid is None:
+            if total is not None:
+                named.append(
+                    NamedGroup(
+                        label=group.label, dcid=None, member_dcids=role_entities, total=total
+                    )
+                )
+            else:
+                logger.info(
+                    "resubmit dropped group %r on role %s: it names no graph node",
+                    group.label,
+                    role,
+                )
+            continue
+        kept.append((group.dcid, group, role_entities, total))
     if not kept:
-        return ()
-    dcids = sorted({dcid for dcid, _, _ in kept})
+        return tuple(named)
+    dcids = sorted({dcid for dcid, _, _, _ in kept})
+    member_dcids = sorted({dcid for dcid, _, _, total in kept if total is None})
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="group-labels") as pool:
         labels_read = submit_with_context(pool, graph.node_labels_batch, dcids)
         try:
             types = graph.node_types_batch(dcids)
-            graph_members = _graph_members(dcids, types, graph=graph, deadline=deadline)
+            graph_members = (
+                _graph_members(member_dcids, types, graph=graph, deadline=deadline)
+                if member_dcids
+                else {}
+            )
         except GraphInfraError as exc:
             logger.warning("resubmit dropped groups %s: members read failed: %s", dcids, exc)
             note_degraded_read("named group members")
-            return ()
+            return tuple(named)
         try:
             labels = labels_read.result()
         except GraphInfraError as exc:
             logger.warning("resubmit dropped groups %s: labels read failed: %s", dcids, exc)
             note_degraded_read("named group labels")
-            return ()
-    named: list[NamedGroup] = []
-    for dcid, group, members in kept:
-        held = graph_members[dcid]
+            return tuple(named)
+    for dcid, group, members, total in kept:
+        held = members if total is not None else graph_members[dcid]
         if held == members:
             named.append(
                 NamedGroup(
@@ -412,6 +458,7 @@ def resubmit_named_groups(
                     dcid=dcid,
                     member_dcids=members,
                     entity_type=types.get(dcid),
+                    total=total,
                 )
             )
             continue
@@ -424,3 +471,20 @@ def resubmit_named_groups(
             len(members),
         )
     return tuple(named)
+
+
+def _bound_total(group: EntityGroup, role: str, role_entities: frozenset[str]) -> str | None:
+    """The one party `role` binds when the code index declares it the total
+    (`PartyRow.totals`) of the group the posted `group.dcid` names, or of any group when it
+    posts none, published on `role`'s flow axis (`PartyRow.axes`), and `group` posts that
+    party as its `total` or no total. `None` otherwise, so a subject role, which names no
+    flow axis, binds no total."""
+    if len(role_entities) != 1:
+        return None
+    (party,) = role_entities
+    row = get_index().parties.get(party)
+    if row is None or row.totals is None or group.dcid not in (None, row.totals):
+        return None
+    if role_key_axis(role) not in row.axes:
+        return None
+    return party if group.total in (None, party) else None

@@ -121,7 +121,7 @@ def test_a_mint_serves_the_facet_covering_the_most_places_in_its_window(
         probe.candidates,
         graph=graph,
         breadth=probe.breadth_in(requested),
-    )
+    ).selections
     elected = selections["provenance"].dispatch_facet_id
     assert covered.get(elected, 0) == max(covered.values(), default=0)
     # Every axis is resolved from that one facet.
@@ -170,7 +170,7 @@ def test_a_unit_request_ranks_its_currency_candidates_by_the_places_they_cover(
         probe.candidates,
         graph=graph,
         breadth=probe.breadth_in(requested),
-    )
+    ).selections
 
     assert selections["unit"].ref == "CurrencyUSD"
     elected = selections["unit"].dispatch_facet_id
@@ -243,7 +243,7 @@ def test_a_role_bearing_mint_counts_and_elects_by_role_pairs(
     assert direct.breadth_in(requested) == covered
     selections = _select_member_facets(
         request, probe.candidates, graph=FakeGraphReader(), breadth=probe.breadth_in(requested)
-    )
+    ).selections
     elected = selections["provenance"].dispatch_facet_id
     assert covered.get(elected, 0) == max(covered.values(), default=0)
 
@@ -285,7 +285,9 @@ def test_a_group_ranks_its_shared_facets_by_the_places_they_cover_across_its_mem
     assert breadth == {"fLong": 2, "fMid": 3}
     selections = select_group_facets(
         requests, [probe.candidates for probe in probes], graph=graph, breadth=breadth
-    )
+    ).selections
     assert selections["provenance"].dispatch_facet_id == "fMid"
-    without = select_group_facets(requests, [probe.candidates for probe in probes], graph=graph)
+    without = select_group_facets(
+        requests, [probe.candidates for probe in probes], graph=graph
+    ).selections
     assert without["provenance"].dispatch_facet_id == "fLong"

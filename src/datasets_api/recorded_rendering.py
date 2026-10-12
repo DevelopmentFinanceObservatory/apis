@@ -2,8 +2,11 @@
 
 A version record states only the raw version a groupby collapse came from
 (`base_content_version`). The groupby itself is in the `rendering` of the requested-format file
-linked under the version. The frame1 file's rendering is the same for every frame and the
-statistics file's for every version, so neither records it.
+linked under the version. The stored frame's rendering (canonical frame or frame1) is the same
+for every frame and the statistics file's for every version, so neither records it. A file
+linked as incomplete
+(`render.incomplete_rendering`) holds the same rows as its complete rendering, so it records
+the groupby and counts as a requested-format file.
 
 The frame refresh (`datasets_api.doors.refresh`) and the versions list
 (`datasets_api.doors.recipe`) both resolve a version's groupby here.
@@ -17,7 +20,11 @@ from contextlib import suppress
 from pydantic import ValidationError
 
 from datasets_api.mint_models import GroupbyOptions
-from datasets_api.render import is_frame1_rendering, is_statistics_rendering
+from datasets_api.render import (
+    is_canonical_frame_rendering,
+    is_frame1_rendering,
+    is_statistics_rendering,
+)
 
 _GROUPBY_KEY = "groupby"
 
@@ -42,9 +49,10 @@ def recorded_groupby(renderings: Iterable[Mapping[str, object]]) -> GroupbyOptio
 
 def records_plain_file(renderings: Iterable[Mapping[str, object]]) -> bool:
     """Whether one of `renderings` is a requested-format file with no groupby: any file other
-    than the frame1 and statistics files."""
+    than the stored frame and statistics files."""
     return any(
         _GROUPBY_KEY not in rendering
+        and not is_canonical_frame_rendering(rendering)
         and not is_frame1_rendering(rendering)
         and not is_statistics_rendering(rendering)
         for rendering in renderings

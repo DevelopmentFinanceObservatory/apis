@@ -6,10 +6,13 @@ corpus. The smaller test index lacks synonyms needed by the grant cases.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from code_index.query import CodeIndex
 from code_index.shared import get_index, get_measure_index
+from code_index.tokens import tokenize, word_tokens
 from code_index.types import (
     CodeRow,
     CodeSystemDeclaration,
@@ -23,12 +26,14 @@ from search.engine.qualifier_match import (
     QualifierMatch,
     QualifierTie,
     VocabularyReading,
+    _all_normalized_text_ranges,
     _all_system_markers,
     _max_phrase_words,
     match_qualifier_readings,
     match_qualifier_ties,
     match_qualifiers,
     match_unsupported_qualifier_phrases,
+    qualifier_occurrences,
     read_by_vocabulary,
 )
 from tests.engine._index_slots import crs_vocabulary, read_text
@@ -204,7 +209,7 @@ def test_label_present_in_two_real_code_systems_stays_unmatched():
     # "budget support" is a real collision: registered as the label on both
     # CRSCooperationModalityA and CRSPurposeCode510, two systems one CRS shape declares. A
     # wrong guess here is worse than none -- left to the binder.
-    rows = _REAL_INDEX.codes_by_normalized_text("budget support")
+    rows = _REAL_INDEX.codes_by_tokens(tokenize("budget support"))
     assert len([row for row in rows if row.code_system in _CRS]) == 2
     by_system = _by_system(_matches("ODA grants for budget support"))
     assert "crsPurpose" not in by_system
@@ -216,7 +221,7 @@ def test_ta_acronym_present_in_two_real_code_systems_stays_unmatched():
     # CRSCooperationModalityD02 -- proof that the ambiguity call alone,
     # with no acronym notion layered on top, correctly refuses even a
     # clean acronym when it collides.
-    assert len(_REAL_INDEX.codes_by_normalized_text("TA")) == 2
+    assert len(_REAL_INDEX.codes_by_tokens(tokenize("TA"))) == 2
     by_system = _by_system(_matches("financed through TA"))
     assert "crsCooperationModality" not in by_system
 
@@ -329,12 +334,89 @@ def test_span_does_not_bridge_a_comma():
     assert _matches("the loan was standard, grants are separate") == ()
 
 
-def test_span_still_forms_across_ordinary_whitespace():
-    # Whitespace preserves adjacency between phrase words.
-    by_system = _by_system(_matches("ODA   standard   grants   for   health"))
-    finance = by_system["crsTypeOfFinance"]
-    assert finance.code_dcid == "CRSTypeOfFinance110"
-    assert finance.matched_text == "standard grants"
+@pytest.mark.parametrize(
+    ("needle", "haystack", "ranges"),
+    [
+        ("aid", "Straße AID", [(7, 10)]),
+        # "ß" folds to two characters, and the range covers the one it came from.
+        ("strasse aid", "STRAßE aid", [(0, 10)]),
+        ("health", "health and HEALTH", [(0, 6), (11, 17)]),
+    ],
+)
+def test_text_ranges_are_offsets_in_the_haystack_itself(needle, haystack, ranges):
+    assert _all_normalized_text_ranges(needle, haystack) == ranges
+
+
+@pytest.mark.parametrize(
+    ("query", "dcid", "reads_code"),
+    [
+        (
+            "ODA for population policy, programme, and reproductive health",
+            "CRSPurposeCode130",
+            True,
+        ),
+        # 14050's synonym "Waste management/disposal" holds "/", the query ",". No code reads
+        # "waste management" or "disposal" alone, so only the separator rule decides.
+        ("ODA for waste management/disposal", "CRSPurposeCode14050", True),
+        ("ODA for waste management, disposal", "CRSPurposeCode14050", False),
+        # Whitespace is no token, so a run of spaces keeps the words of a label adjacent.
+        (
+            "ODA   for   population   policy,   programme,   and   reproductive   health",
+            "CRSPurposeCode130",
+            True,
+        ),
+    ],
+)
+def test_occurrences_read_the_separators_the_scan_reads(query: str, dcid: str, reads_code: bool):
+    # The response cache keys on these records, so they follow the scan's separator rule.
+    records = qualifier_occurrences(query, _REAL_INDEX, get_measure_index())
+    found = any(
+        isinstance(rows := r.get("rows"), list) and ["crsPurpose", dcid] in rows for r in records
+    )
+    assert found is reads_code
+    assert any(m.code_dcid == dcid for m in _matches(query)) is reads_code
+
+
+def test_span_does_not_bridge_a_separator_its_label_lacks():
+    # The label's gap holds "/", the query's ",".
+    dcids = {m.code_dcid for m in _matches("ODA for waste management, disposal")}
+    assert "CRSPurposeCode14050" not in dcids
+
+
+@pytest.mark.parametrize(
+    ("query", "dcid", "matched_text"),
+    [
+        # Whitespace preserves adjacency between phrase words.
+        ("ODA   standard   grants   for   health", "CRSTypeOfFinance110", "standard   grants"),
+        # A label's separators read the same separators in the query, or none.
+        (
+            "gross disbursements for population policy, programme, and reproductive health",
+            "CRSPurposeCode130",
+            "population policy, programme, and reproductive health",
+        ),
+        (
+            "population policy programme and reproductive health ODA",
+            "CRSPurposeCode130",
+            "population policy programme and reproductive health",
+        ),
+        (
+            "ODA for STD control including HIV/AIDS in Kenya",
+            "CRSPurposeCode13040",
+            "STD control including HIV/AIDS",
+        ),
+        ("ODA for waste management/disposal", "CRSPurposeCode14050", "waste management/disposal"),
+    ],
+)
+def test_a_span_reads_the_separators_its_label_holds(query: str, dcid: str, matched_text: str):
+    (match,) = [m for m in _matches(query) if m.code_dcid == dcid]
+    assert match.matched_text == matched_text
+    # A variable's match carries its offsets in the text read.
+    assert match.start is not None
+    assert query[match.start : match.end] == matched_text
+    # Offsets take no part in a match's equality.
+    assert match == replace(match, start=None, end=None)
+    # A match of other text carries no offsets.
+    assert all(m.start is None and m.end is None for m in match_qualifiers(query, _REAL_INDEX))
 
 
 # ---------------------------------------------------------------------------
@@ -415,7 +497,7 @@ def test_ambiguous_short_word_does_not_fall_back_from_a_longer_candidate():
         ),
     )
     # The bare word alone is genuinely ambiguous (two rows).
-    assert len(index.codes_by_normalized_text("cash")) == 2
+    assert len(index.codes_by_tokens(tokenize("cash"))) == 2
     assert match_qualifiers("financed by cash alone", index) == ()
     # The longer phrase is registered nowhere verbatim, so it falls to the
     # plural allowance ("cash transfer" plus a trailing "s") and resolves
@@ -904,6 +986,23 @@ def test_unmatchable_measure_row_does_not_widen_the_matched_span_width():
     assert _max_phrase_words(code_index, matchable_measure_index) == 5
 
 
+def test_a_matching_call_tokenises_the_code_labels_once_per_index(monkeypatch):
+    # Every matching call builds a lexicon; tokenising each code label on each call cost
+    # several milliseconds a call on the committed index, four or more calls a request.
+    match_qualifiers("health ODA", _REAL_INDEX)
+    labels = {text for row in _REAL_INDEX.codes for text in (row.label, *row.synonyms)}
+    tokenised: list[str] = []
+
+    def counting_word_tokens(text: str):
+        tokenised.append(text)
+        return word_tokens(text)
+
+    monkeypatch.setattr("search.engine.qualifier_match.word_tokens", counting_word_tokens)
+    match_qualifiers("health ODA", _REAL_INDEX)
+
+    assert not [text for text in tokenised if text in labels]
+
+
 def test_grant_equivalent_recognized_amount_not_against_the_real_index():
     grant_equivalent_matches = match_qualifiers(
         "grant equivalent", _REAL_INDEX, get_measure_index()
@@ -1032,15 +1131,16 @@ def test_each_vocabulary_reads_the_query_in_its_own_systems(query, vocabulary, m
     [
         ("net ODA to Kenya", _DAC1, ["Net", "DAC1AidType1010"]),
         ("gross national income of Ghana", _DAC1, []),
-        ("gross national income of Ghana", _CRS, ["CRSTypeOfFinance1"]),
+        ("gross national income of Ghana", _CRS, []),
         ("PPP", _DAC1, []),
     ],
 )
 def test_a_measure_value_keeps_its_reading_in_every_system(query, vocabulary, matches):
-    """A vocabulary drops another system's code rows, not the cover their labels give a
-    measure word. "gross" inside "gross national income", a CRS type of finance, is no
-    netting basis on a DAC1 shape, and "PPP", a CRS purpose and a price basis, stays a
-    two-reading span there (`match_qualifier_readings`)."""
+    """A vocabulary drops another system's code rows and the codes no shape can bind, but
+    keeps the cover their labels give a measure word. "gross" inside "gross national
+    income", a CRS type of finance no CRS row holds, is no netting basis on a DAC1 or a CRS
+    shape, and "PPP", a CRS purpose and a price basis, stays a two-reading span there
+    (`match_qualifier_readings`)."""
     reading = read_text(
         query, _REAL_INDEX, get_measure_index(), vocabularies=[vocabulary]
     ).by_vocabulary[vocabulary]

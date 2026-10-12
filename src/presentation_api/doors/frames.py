@@ -43,6 +43,7 @@ from presentation_api.path_params import (
 )
 from presentation_api.refusals import binding_invalid_spec, frame_unavailable_spec
 from presentation_store import frame_reads_bounded_by
+from spec_registry.errors import SpecRegistryStoreError, SpecRegistryUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,15 @@ def classify_frames_exception(exc: BaseException) -> ProblemSpec | None:
             status=503,
             code="service_unavailable",
             detail="the frames door is at its concurrent-read capacity right now; retry",
+            retryable=retryable_for("service_unavailable"),
+        )
+    if isinstance(exc, (SpecRegistryUnavailable, SpecRegistryStoreError)):
+        # A frame load reads the registry to scope its revocation check, and fails closed.
+        logger.error("Spec registry read scoping a frame load's revocation check failed: %s", exc)
+        return ProblemSpec(
+            status=503,
+            code="service_unavailable",
+            detail="the spec registry could not scope a frame's revocation check; retry",
             retryable=retryable_for("service_unavailable"),
         )
     if isinstance(exc, DatasetsStoreUnavailable):
@@ -193,6 +203,8 @@ def build_frames_door(
             FrameUnavailable,
             FramesBackpressure,
             DatasetsStoreUnavailable,
+            SpecRegistryUnavailable,
+            SpecRegistryStoreError,
         ),
         exception_exemplars=(
             PathParamInvalid(name="spec_id", value="exemplar"),
@@ -207,6 +219,8 @@ def build_frames_door(
             FramesBackpressure(),
             DatasetsStoreUnavailable("exemplar"),
             DatasetsStoreUnavailable("exemplar", sqlstate="23503"),
+            SpecRegistryUnavailable(),
+            SpecRegistryStoreError("exemplar"),
         ),
         lifespan=lifespan,
     )

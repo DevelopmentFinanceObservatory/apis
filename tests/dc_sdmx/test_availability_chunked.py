@@ -18,6 +18,7 @@ import pytest
 from dc_sdmx.client import SdmxClient
 from dc_sdmx.errors import SdmxCapExceededError, SdmxHttpError
 from dc_sdmx.results import parse_availability_json
+from dfo_platform.timings import PhaseTimings, collecting
 
 _BASE_URL = "https://datacommons.one.org/core/api"
 _CONTENT_TYPE = "application/json"
@@ -125,6 +126,23 @@ def test_three_chunk_union_equals_a_single_requests_result(keyed_concurrent_tran
     # Under concurrency, union order is chunk-plan order regardless of
     # which worker's request arrived first.
     assert result.components["financingProvider"] == ("p1", "p2", "p3", "p4")
+
+
+def test_every_chunk_request_counts_on_the_callers_timings(keyed_concurrent_transport):
+    """Chunk reads run on the client's own threads, which carry the caller's timings, so the
+    call's `sdmx_requests` count holds every request sent."""
+    bodies = {
+        variable: _body({"financingProvider": ["p1"]}) for variable in (_VAR_A, _VAR_B, _VAR_C)
+    }
+    transport = keyed_concurrent_transport(bodies, content_type=_CONTENT_TYPE)
+    client = _client(transport, url_budget_bytes=_BUDGET_ONE_PER_CHUNK)
+    timings = PhaseTimings()
+
+    with collecting(timings):
+        client.availability(variables=[_VAR_A, _VAR_B, _VAR_C], component="financingProvider")
+
+    assert len(transport.requests) == 3
+    assert "sdmx_requests=3" in timings.as_log_field().split()
 
 
 def test_chunked_union_merges_every_component_the_response_carries(keyed_concurrent_transport):

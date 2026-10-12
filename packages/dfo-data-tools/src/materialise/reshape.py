@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from dfo_platform.codes import CodeCatalogue
-from dfo_platform.problem import Alternative
+from dfo_platform.problem import Alternative, ProblemIssue
 from materialise.codes import MaterialisationWarning
 from materialise.errors import MaterialisationError, MaterialisationUsageError
 
@@ -33,9 +33,15 @@ _MEASUREMENT_METHOD_COLUMN = "measurementMethod"
 _PROVENANCE_COLUMN = "provenance"
 _FACET_IDENTITY_COLUMNS: tuple[str, ...] = (_MEASUREMENT_METHOD_COLUMN, _PROVENANCE_COLUMN)
 
-SUPPORTED_ENRICHMENTS: frozenset[str] = frozenset({"iso2", "iso3", "label", "type"})
+SUPPORTED_ENRICHMENTS: frozenset[str] = frozenset({"iso2", "iso3", "kind", "label", "type"})
 """The closed enrichment field vocabulary this engine can fill. Capabilities
 publishing reads this constant directly rather than duplicating it."""
+
+TABLE_WIDE_ENRICHMENTS: frozenset[str] = frozenset({"kind"})
+"""The enrichment fields a bare token requests for every entity column of the
+table. A sum across any party role needs each party's kind, so a caller asks
+for it without knowing which roles the table carries. Every other field
+needs its entity-column prefix."""
 
 _MAX_NAMED_DUPLICATE_KEYS = 10
 """Cap on how many duplicate pivot keys a `pivot_not_unique` message names,
@@ -112,6 +118,13 @@ def classify_columns(columns: Sequence[str]) -> ColumnClassification:
     )
 
 
+# The Datasets mint `options` keys that request each reshape step. A refusal points at the key
+# whose value it refuses.
+_GROUPBY_POINTER = "/options/groupby"
+_COLUMNS_POINTER = "/options/columns"
+_PIVOT_POINTER = "/options/pivot"
+
+
 class RollupNotSummableError(MaterialisationError):
     """422, code="rollup_not_summable". Raised by `groupby_sum` when `axis`
     fails one of its preconditions. `axis` names the column; `precondition`
@@ -121,8 +134,16 @@ class RollupNotSummableError(MaterialisationError):
     both.
     """
 
+    code = "rollup_not_summable"
+    status = 422
+
     def __init__(self, *args: object, axis: str, precondition: str) -> None:
-        super().__init__(*args, code="rollup_not_summable", status=422)
+        # The structured issue lets clients branch on the axis without parsing the detail.
+        super().__init__(
+            *args,
+            pointer=_GROUPBY_POINTER,
+            issues=(ProblemIssue(pointer=_GROUPBY_POINTER, axis=axis),),
+        )
         self.axis = axis
         self.precondition = precondition
 
@@ -134,8 +155,16 @@ class ColumnNotDroppableError(MaterialisationError):
     such column, in `table.columns` order.
     """
 
+    code = "column_not_droppable"
+    status = 422
+
     def __init__(self, *args: object, columns: tuple[str, ...]) -> None:
-        super().__init__(*args, code="column_not_droppable", status=422)
+        super().__init__(
+            *args,
+            issues=tuple(
+                ProblemIssue(pointer=_COLUMNS_POINTER, member=column) for column in columns
+            ),
+        )
         self.columns = columns
 
 
@@ -153,11 +182,13 @@ class ColumnUnknownError(MaterialisationError):
     `MaterialisationError.alternatives`, which this class leaves unshadowed.
     """
 
+    code = "column_unknown"
+    status = 422
+
     def __init__(self, *args: object, column: str, alternatives: tuple[str, ...] = ()) -> None:
         super().__init__(
             *args,
-            code="column_unknown",
-            status=422,
+            pointer=_COLUMNS_POINTER,
             alternatives=[Alternative(ref=token, label=token) for token in alternatives] or None,
         )
         self.column = column
@@ -181,6 +212,9 @@ class PivotNotUniqueError(MaterialisationError):
     stringification collision.
     """
 
+    code = "pivot_not_unique"
+    status = 422
+
     def __init__(
         self,
         *args: object,
@@ -188,7 +222,14 @@ class PivotNotUniqueError(MaterialisationError):
         truncated: bool,
         varying: tuple[tuple[str, int], ...] = (),
     ) -> None:
-        super().__init__(*args, code="pivot_not_unique", status=422)
+        # One issue per duplicate key, then one per column varying inside the key groups.
+        super().__init__(
+            *args,
+            issues=(
+                *(ProblemIssue(pointer=_PIVOT_POINTER, member=str(key)) for key in duplicate_keys),
+                *(ProblemIssue(pointer=_PIVOT_POINTER, axis=column) for column, _ in varying),
+            ),
+        )
         self.duplicate_keys = duplicate_keys
         self.truncated = truncated
         self.varying = varying
@@ -204,8 +245,11 @@ class PivotOverColumnCapError(MaterialisationError):
     `formats.excel_limit`.
     """
 
+    code = "pivot_over_column_cap"
+    status = 422
+
     def __init__(self, *args: object, count: int, cap: int) -> None:
-        super().__init__(*args, code="pivot_over_column_cap", status=422)
+        super().__init__(*args, pointer=_PIVOT_POINTER)
         self.count = count
         self.cap = cap
 
@@ -222,8 +266,11 @@ class PivotOverCellCapError(MaterialisationError):
     (this module never imports `datasets_api.config` to learn it).
     """
 
+    code = "pivot_over_cell_cap"
+    status = 422
+
     def __init__(self, *args: object, count: int, cap: int) -> None:
-        super().__init__(*args, code="pivot_over_cell_cap", status=422)
+        super().__init__(*args, pointer=_PIVOT_POINTER)
         self.count = count
         self.cap = cap
 
@@ -244,13 +291,22 @@ class PivotNotHomogeneousError(MaterialisationError):
     mirrors `PivotNotUniqueError`'s own offender/truncation shape.
     """
 
+    code = "pivot_not_homogeneous"
+    status = 422
+
     def __init__(
         self,
         *args: object,
         offenders: tuple[tuple[str, object, tuple[object, ...]], ...],
         truncated: bool,
     ) -> None:
-        super().__init__(*args, code="pivot_not_homogeneous", status=422)
+        super().__init__(
+            *args,
+            issues=tuple(
+                ProblemIssue(pointer=_PIVOT_POINTER, member=f"{column}={index_value!r}")
+                for column, index_value, _values in offenders
+            ),
+        )
         self.offenders = offenders
         self.truncated = truncated
 
@@ -1531,6 +1587,22 @@ class PivotChunksOutcome:
     )
 
 
+def known_pivot_cap_violation(
+    known: PivotFacts | None, *, column_cap: int, cell_cap: int
+) -> PivotOverColumnCapError | PivotOverCellCapError | None:
+    """The cap refusal `fold_pivot_chunks` returns before its scan for the facts `known`.
+
+    `None` when there are no facts, when they report duplicate keys or a group that is not
+    homogeneous (those refusals outrank the caps and need the scan), or when the pivot fits
+    both caps.
+    """
+    if known is None or known.duplicate_keys or not known.homogeneous:
+        return None
+    return _pivot_cap_violation(
+        width=known.width, cells=known.cells, column_cap=column_cap, cell_cap=cell_cap
+    )
+
+
 def fold_pivot_chunks(
     chunks: Iterator[TableLike],
     *,
@@ -1569,12 +1641,9 @@ def fold_pivot_chunks(
         if name not in table_columns:
             raise ColumnUnknownError(f"column {name!r} is not present on this table", column=name)
 
-    if known is not None and not known.duplicate_keys and known.homogeneous:
-        cap_violation = _pivot_cap_violation(
-            width=known.width, cells=known.cells, column_cap=column_cap, cell_cap=cell_cap
-        )
-        if cap_violation is not None:
-            return PivotChunksOutcome(table=None, violation=cap_violation)
+    known_violation = known_pivot_cap_violation(known, column_cap=column_cap, cell_cap=cell_cap)
+    if known_violation is not None:
+        return PivotChunksOutcome(table=None, violation=known_violation)
 
     index_pos = table_columns.index(index)
     columns_pos = table_columns.index(columns)
@@ -1855,7 +1924,10 @@ def parse_column_tokens(
 ) -> ParsedColumns:
     """Split tokens into selected columns and enrichment requests. Exact
     table-column matches take priority; other tokens match an entity-column
-    prefix plus a supported field, since names can contain underscores.
+    prefix plus a supported field, since names can contain underscores. A bare
+    field in `TABLE_WIDE_ENRICHMENTS` (`kind`) requests that field for every
+    entity column of the table, and a qualified token the bare one already
+    covers adds nothing.
     Unknown tokens raise `ColumnUnknownError` with all qualified alternatives,
     independent of field enablement. Preserve token order; callers reject
     duplicates.
@@ -1869,6 +1941,14 @@ def parse_column_tokens(
             select.append(token)
             continue
 
+        if token in supported_fields and token in TABLE_WIDE_ENRICHMENTS:
+            enrichments.extend(
+                (entity_column, token)
+                for entity_column in entity_columns
+                if (entity_column, token) not in enrichments
+            )
+            continue
+
         matched_request: tuple[str, str] | None = None
         for entity_column in entity_columns:
             prefix = f"{entity_column}_"
@@ -1879,7 +1959,8 @@ def parse_column_tokens(
                 matched_request = (entity_column, field_name)
                 break
         if matched_request is not None:
-            enrichments.append(matched_request)
+            if matched_request not in enrichments:
+                enrichments.append(matched_request)
             continue
 
         if alternatives is None:

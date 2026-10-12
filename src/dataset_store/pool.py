@@ -1,9 +1,20 @@
 """Lazy, bounded DB-API pool with connection checks for Cloud Run freeze/thaw.
 
 The dataset pool is shared across surfaces. The separate presentation pool
-is lazy. Their defaults are 10 and 2. Postgres allows 50 connections, about
-5 reserved and 15 per tenant across 3 tenants. A dataset pool of 10 nears
-that allocation before counting other pools or instances.
+is lazy. Their defaults are 10 and 2, so an apis instance holds at most 12
+connections. A Datasets request holds one connection at a time, so the pool
+bounds the store transactions an instance runs at once.
+
+Every service sharing the Postgres instance sizes against one budget:
+
+    sum(pool x max instances) + reserve <= max_connections
+
+With dfo-infra's caps (`infra/stacks/apis`, `infra/stacks/website`,
+`infra/stacks/ai`) and the pool sizes its `infra/stacks/platform` comment
+records, that is 12 x 5 (apis) + 10 x 4 (datasets worker) + 5 x 5 (website)
++ 10 x 2 (ai) + 10 (migrations and built-in users) = 155, against
+`max_connections` 200 in dev and 300 in prod. Raising an instance cap or a
+pool size raises the left side, and `max_connections` moves with it.
 
 Borrowing waits 30 seconds by default, then raises `PoolTimeoutError`, which doors answer as a
 retryable 503. Connections idle over 300 seconds

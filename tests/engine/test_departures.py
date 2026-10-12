@@ -359,6 +359,61 @@ def test_group_read_as_members_asks_in_the_request_s_words(role, binding_ref, en
     ] == [("group_read_as_members", binding_ref, asked, "European Union", "ContinentalUnion")]
 
 
+_AFRICA_GROUP = EntityGroup(dcid="africa", label="Africa", entity_type="Continent")
+
+
+def _served_from(spec: Spec, provenance: str) -> Spec:
+    facets = {"provenance": ResolvedFacet(basis="fallback", ref=provenance, label=provenance)}
+    return spec.model_copy(update={"resolved": spec.resolved.model_copy(update={"facets": facets})})
+
+
+@pytest.mark.parametrize(
+    ("role", "provenance", "excluded"),
+    [
+        pytest.param(
+            "destination",
+            "provenance/OECDCreditorReportingSystem",
+            (
+                "Africa, unallocated by country (DAC)",
+                "Eastern Africa, unallocated by country (DAC)",
+                "Middle Africa, unallocated by country (DAC)",
+                "North of Sahara, unallocated by country (DAC)",
+                "South of Sahara, unallocated by country (DAC)",
+                "Southern Africa, unallocated by country (DAC)",
+                "Western Africa, unallocated by country (DAC)",
+            ),
+            id="a-flow-dataset-publishing-the-residuals",
+        ),
+        pytest.param("destination", "provenance/WorldBankIDS", (), id="a-dataset-publishing-none"),
+        # "aid from African countries to Kenya": DAC publishes the residuals as recipients.
+        pytest.param(
+            "origin", "provenance/OECDCreditorReportingSystem", (), id="a-role-publishing-none"
+        ),
+        pytest.param(
+            "observationAbout",
+            "provenance/OECDCreditorReportingSystem",
+            (),
+            id="a-subject-role",
+        ),
+    ],
+)
+def test_a_group_read_as_members_names_the_residuals_its_total_counts(role, provenance, excluded):
+    """Africa read as its members leaves out the regional amounts DAC's Africa total counts,
+    and names those the served dataset publishes on the role the group fills."""
+    spec = _served_from(_spec(groups={role: _AFRICA_GROUP}), provenance)
+
+    (fact,) = spec_departure_facts(spec, operations=())
+
+    assert (fact.code, fact.excluded) == ("group_read_as_members", excluded)
+
+
+def test_a_group_read_as_its_total_departs_nothing():
+    group = _AFRICA_GROUP.model_copy(update={"total": "DACAfrica"})
+    spec = _served_from(_spec(groups={"destination": group}), "provenance/OECDDAC2A")
+
+    assert spec_departure_facts(spec, operations=()) == []
+
+
 def test_entity_unavailable_names_each_role_s_unserved_entities_on_its_token():
     """Unserved entities group by the token naming their role, in entity order; one with
     no label is named by its dcid. A served entity is not named."""

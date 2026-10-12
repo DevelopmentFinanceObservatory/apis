@@ -9,10 +9,9 @@ import httpx
 from code_index.query import CodeIndex
 from code_index.shared import get_index
 from code_index.types import CodeSystemDeclaration, IndexStamp
-from datasets_api.revision import SentinelRevisionReader
 from dc_sdmx import SdmxClient
 from materialise.graph import Facet
-from series_coverage.schema import FacetMetadata, RoleNames
+from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
 from spec_registry.identity import recompute_identity
 from spec_registry.reader import LiveSpecReader
@@ -108,9 +107,9 @@ def _fixture_code_index(*, code_system: str = "syntheticAxis") -> CodeIndex:
 def _coverage_service(*, stat_vars: tuple[str, ...] = (_STAT_VAR,)) -> FakeCoverageService:
     """Builds one `_RECIPIENT` coverage facet per StatVar, matching the 2020 CSV fixtures."""
     index = build_coverage_index(
-        [(stat_var, "facet1", "country/USA", _RECIPIENT, [2020]) for stat_var in stat_vars],
+        [(stat_var, "facet1", ABSENT_ENTITY, _RECIPIENT, [2020]) for stat_var in stat_vars],
         role_names={
-            stat_var: RoleNames(donor="provider", recipient="recipient") for stat_var in stat_vars
+            stat_var: RoleNames(donor=None, recipient="recipient") for stat_var in stat_vars
         },
         facet_metadata={
             "facet1": FacetMetadata(
@@ -137,7 +136,6 @@ def _client(*, code_index: CodeIndex, store: FakeDatasetStore | None = None):
                 )
             ),
         ),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),
@@ -333,7 +331,6 @@ def _described_client(
         spec_reader=LiveSpecReader(store=store),
         graph=_described_two_member_graph(),
         sdmx=SdmxClient(base_url=_BASE_URL, transport=_described_transport([])),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),

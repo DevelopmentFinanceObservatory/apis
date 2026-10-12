@@ -5,25 +5,18 @@ rows and requests, so tests patch each door's imported `within_sync_budget` dire
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import httpx
 import pytest
 
+from datasets_api import current as current_module
 from datasets_api import kinds
 from datasets_api.config import DatasetsBuildSettings
-from datasets_api.doors import definition as definition_door_module
 from datasets_api.mint_models import MintOptions
-from datasets_api.operation_store import (
-    MAX_REDISPATCHES,
-    REDISPATCH_GRACE_SECONDS,
-    LiveOperationStore,
-    compute_operation_id,
-    never_claimed_stale_after_seconds,
-)
+from datasets_api.operation_store import LiveOperationStore, compute_operation_id
 from datasets_api.operations.submit import OperationSubmitted, submit_over_budget
 from datasets_api.operations.task_client import FakeTaskClient
-from datasets_api.revision import SentinelRevisionReader
 from dc_sdmx import SdmxClient
 from materialise.errors import OverCeilingError
 from origin_catalogue.service import get_catalogue_service
@@ -65,13 +58,12 @@ def _sdmx_transport(requests: list[httpx.Request]):
 
 
 def _force_mint_over_budget(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Patches each mint kind's imported `within_sync_budget` binding."""
-    for module in (kinds.statvar_set, kinds.spec_id):
-        monkeypatch.setattr(module, "within_sync_budget", lambda estimate, **_: False)
+    """Patches the mint's imported `within_sync_budget` binding (`kinds.spec_id.serve_mint`)."""
+    monkeypatch.setattr(kinds.spec_id, "within_sync_budget", lambda estimate, **_: False)
 
 
 def _force_definition_over_budget(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(definition_door_module, "within_sync_budget", lambda estimate, **_: False)
+    monkeypatch.setattr(current_module, "within_sync_budget", lambda estimate, **_: False)
 
 
 def _operation_store() -> LiveOperationStore:
@@ -86,7 +78,6 @@ def _client(*, operation_store, task_client, store: FakeDatasetStore | None = No
         spec_reader=LiveSpecReader(store=store),
         graph=_graph(),
         sdmx=sdmx,
-        revision_reader=SentinelRevisionReader(),
         artifact_store=FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),
@@ -172,8 +163,14 @@ def test_a_submit_under_a_new_catalogue_build_starts_a_new_operation(
     client = _client(operation_store=operation_store, task_client=task_client)
     first = client.post("/api/datasets", json=_HAPPY_PATH_BODY)
     first_id = first.json()["operation"]["operation_id"]
-    operation_store.claim_lease(first_id, submission_count=0, lease_seconds=60)
-    operation_store.complete(first_id, attempt=1, subject_id="spec_done", content_version="cv_1")
+    operation_store.claim(first_id, submission_count=0, lease_seconds=60, final_delivery=False)
+    operation_store.complete(
+        first_id,
+        attempt=1,
+        subject_id="spec_done",
+        content_version="cv_1",
+        confirmed_at=datetime(2026, 1, 1, tzinfo=UTC),
+    )
     rebuilt = FakeCatalogue(build_id="20261006T000000Z-ef567890")
     monkeypatch.setattr(get_catalogue_service(), "snapshot", lambda: rebuilt)
 
@@ -199,7 +196,9 @@ def test_repeat_submit_after_claim_does_not_enqueue_again(monkeypatch: pytest.Mo
 
     first = client.post("/api/datasets", json=_HAPPY_PATH_BODY)
     operation_id = first.json()["operation"]["operation_id"]
-    claimed = operation_store.claim_lease(operation_id, submission_count=0, lease_seconds=1_700)
+    claimed = operation_store.claim(
+        operation_id, submission_count=0, lease_seconds=1_500, final_delivery=False
+    )
     assert claimed is not None and claimed.state == "running"
 
     second = client.post("/api/datasets", json=_HAPPY_PATH_BODY)
@@ -228,7 +227,6 @@ def test_over_budget_definition_retrieval_returns_202(monkeypatch: pytest.Monkey
         spec_reader=LiveSpecReader(store=store),
         graph=_graph(),
         sdmx=SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport([])),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),
@@ -283,7 +281,7 @@ def _submit(
     return excinfo.value
 
 
-def test_a_successful_enqueue_confirms_the_dispatch() -> None:
+def test_a_successful_enqueue_records_the_dispatch() -> None:
     operation_store = _operation_store()
     task_client = FakeTaskClient()
 
@@ -296,13 +294,13 @@ def test_a_successful_enqueue_confirms_the_dispatch() -> None:
 
     stored = operation_store.get(submitted.operation.id)
     assert stored is not None
-    assert stored.dispatch_count == 1
-    assert stored.dispatch_confirmed == 1
+    assert stored.dispatched_at is not None
     assert task_client.enqueued == [(stored.id, 0)]
 
 
 def test_enqueue_failure_leaves_the_operation_pending_and_answers_202() -> None:
-    """An enqueue error leaves the row pending and unconfirmed because the task may exist."""
+    """An enqueue error leaves the row pending with no recorded dispatch, for the poll's
+    enqueue recovery."""
     operation_store = _operation_store()
     task_client = _RaisingTaskClient()
 
@@ -318,8 +316,7 @@ def test_enqueue_failure_leaves_the_operation_pending_and_answers_202() -> None:
     stored = operation_store.get(submitted.operation.id)
     assert stored is not None
     assert stored.state == "pending"
-    assert stored.dispatch_count == 1
-    assert stored.dispatch_confirmed == 0
+    assert stored.dispatched_at is None
 
 
 class _ClaimedMeanwhileTaskClient:
@@ -329,8 +326,8 @@ class _ClaimedMeanwhileTaskClient:
         self._operation_store = operation_store
 
     def enqueue(self, *, operation_id: str, submission_count: int) -> None:
-        claimed = self._operation_store.claim_lease(
-            operation_id, submission_count=submission_count, lease_seconds=60
+        claimed = self._operation_store.claim(
+            operation_id, submission_count=submission_count, lease_seconds=60, final_delivery=False
         )
         assert claimed is not None
         raise TimeoutError("create_task deadline exceeded")
@@ -352,45 +349,8 @@ def test_enqueue_failure_never_fails_an_operation_a_worker_is_running() -> None:
     assert stored.refusal_code is None
 
 
-def test_resubmit_redispatches_an_unconfirmed_enqueue_only_after_the_grace() -> None:
-    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
-    operation_store = LiveOperationStore(
-        store=FakeOperationDatasetStore(), now=lambda: now_box["t"]
-    )
-    options = MintOptions()
-    _submit(
-        operation_store=operation_store,
-        task_client=_RaisingTaskClient(),
-        options=options,
-        stamp="cov_stamp_1",
-    )
-
-    # Inside the grace the first create may still be in flight.
-    task_client = FakeTaskClient()
-    _submit(
-        operation_store=operation_store,
-        task_client=task_client,
-        options=options,
-        stamp="cov_stamp_1",
-    )
-    assert task_client.enqueued == []
-
-    now_box["t"] = now_box["t"] + timedelta(seconds=REDISPATCH_GRACE_SECONDS + 1)
-    submitted = _submit(
-        operation_store=operation_store,
-        task_client=task_client,
-        options=options,
-        stamp="cov_stamp_1",
-    )
-    assert task_client.enqueued == [(submitted.operation.id, 0)]
-    stored = operation_store.get(submitted.operation.id)
-    assert stored is not None
-    assert stored.dispatch_count == 2
-    assert stored.dispatch_confirmed == 2
-
-
 def test_resubmit_of_a_never_dispatched_pending_row_enqueues_it() -> None:
-    """A pending row with `dispatch_count = 0` receives its first task on resubmit."""
+    """A pending row with no recorded dispatch gets its task, under the same name, on resubmit."""
     operation_store = _operation_store()
     options = MintOptions()
     estimate = Estimate(rows=10, requests=1)
@@ -425,7 +385,7 @@ def test_resubmit_after_a_retryable_failure_resets_the_row_and_enqueues_under_a_
         operation_store=operation_store, task_client=FakeTaskClient(), options=options, stamp=stamp
     )
     operation_id = first.operation.id
-    operation_store.claim_lease(operation_id, submission_count=0, lease_seconds=60)
+    operation_store.claim(operation_id, submission_count=0, lease_seconds=60, final_delivery=False)
     operation_store.fail(operation_id, attempt=1, refusal_code="internal_error", retryable=True)
 
     task_client = FakeTaskClient()
@@ -455,7 +415,7 @@ def test_resubmit_of_a_deterministically_failed_operation_stays_failed() -> None
         origin_catalogue_build_id="fake-catalogue",
         estimate=estimate,
     )
-    operation_store.claim_lease(operation.id, submission_count=0, lease_seconds=60)
+    operation_store.claim(operation.id, submission_count=0, lease_seconds=60, final_delivery=False)
     operation_store.fail(operation.id, attempt=1, refusal_code="excel_limit", retryable=False)
 
     task_client = FakeTaskClient()
@@ -501,7 +461,7 @@ def test_a_failure_recorded_for_one_member_set_is_not_returned_to_another() -> N
     """A definition's resolved members are part of its operation id."""
     operation_store = _operation_store()
     unseeded = _submit_members(operation_store, members=["dcid:sv_b", "dcid:sv_c"])
-    operation_store.claim_lease(unseeded.id, submission_count=0, lease_seconds=60)
+    operation_store.claim(unseeded.id, submission_count=0, lease_seconds=60, final_delivery=False)
     operation_store.fail(unseeded.id, attempt=1, refusal_code="over_ceiling", retryable=False)
 
     seeded = _submit_members(operation_store, members=["dcid:sv_root"])
@@ -522,10 +482,9 @@ def test_the_same_members_share_one_operation_in_any_order_or_form() -> None:
     assert first.request_identity["member_dcids"] == ["sv_a", "sv_b"]
 
 
-def _operation_id(*, subject_id: str, stamp: str, options: MintOptions) -> str:
+def _operation_id(*, subject_id: str, options: MintOptions) -> str:
     return compute_operation_id(
         request_identity={"subject_id": subject_id, "member_dcids": _MEMBER_DCIDS},
-        coverage_stamp=stamp,
         origin_catalogue_build_id="fake-catalogue",
         options=options.model_dump(mode="json"),
     )
@@ -558,7 +517,7 @@ def test_over_row_ceiling_refuses_before_any_operation_or_enqueue() -> None:
     assert excinfo.value.ceiling_kind == "operation_rows"
     assert excinfo.value.count == _SETTINGS.async_max_rows + 1
     assert excinfo.value.cap == _SETTINGS.async_max_rows
-    operation_id = _operation_id(subject_id="spec_async_rows", stamp=stamp, options=options)
+    operation_id = _operation_id(subject_id="spec_async_rows", options=options)
     assert operation_store.get(operation_id) is None
     assert task_client.enqueued == []
 
@@ -615,7 +574,7 @@ def test_over_request_ceiling_refuses_before_any_operation_or_enqueue() -> None:
     assert excinfo.value.ceiling_kind == "operation_requests"
     assert excinfo.value.count == _SETTINGS.async_max_requests + 1
     assert excinfo.value.cap == _SETTINGS.async_max_requests
-    operation_id = _operation_id(subject_id="spec_async_requests", stamp=stamp, options=options)
+    operation_id = _operation_id(subject_id="spec_async_requests", options=options)
     assert operation_store.get(operation_id) is None
     assert task_client.enqueued == []
 
@@ -666,35 +625,3 @@ def test_over_row_ceiling_takes_priority_over_request_ceiling_reporting() -> Non
             members=_MEMBERS,
         )
     assert excinfo.value.ceiling_kind == "operation_rows"
-
-
-def test_a_resubmit_after_every_dispatch_was_lost_starts_a_new_submission() -> None:
-    """After all dispatches expire, a resubmit starts a new submission and task name."""
-    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
-    operation_store = LiveOperationStore(
-        store=FakeOperationDatasetStore(), now=lambda: now_box["t"]
-    )
-    options = MintOptions()
-    raising = _RaisingTaskClient()
-    for _ in range(MAX_REDISPATCHES + 1):
-        _submit(
-            operation_store=operation_store, task_client=raising, options=options, stamp="cov_1"
-        )
-        now_box["t"] = now_box["t"] + timedelta(seconds=REDISPATCH_GRACE_SECONDS + 1)
-    assert raising.calls == MAX_REDISPATCHES + 1
-    now_box["t"] = now_box["t"] + timedelta(
-        seconds=never_claimed_stale_after_seconds(
-            backlog_max=_SETTINGS.operation_backlog_max,
-            dispatch_concurrency=_SETTINGS.operation_dispatch_concurrency,
-            max_retry_duration_seconds=_SETTINGS.operation_max_retry_duration_seconds,
-        )
-    )
-
-    task_client = FakeTaskClient()
-    submitted = _submit(
-        operation_store=operation_store, task_client=task_client, options=options, stamp="cov_1"
-    )
-
-    assert submitted.operation.state == "pending"
-    assert submitted.operation.submission_count == 1
-    assert task_client.enqueued == [(submitted.operation.id, 1)]

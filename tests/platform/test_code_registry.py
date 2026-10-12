@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import get_args
+
 import pytest
 from dfo_spec_kit.registry import REGISTRY
 from fastapi import FastAPI
@@ -10,6 +12,7 @@ from fastapi.testclient import TestClient
 from dfo_apis.app import all_surfaces
 from dfo_platform.app import create_app
 from dfo_platform.codes import PLATFORM_CODE_CATALOGUE, CodeCollision, merge_catalogues
+from search.models import NoDataReason
 
 
 def test_merge_disjoint_catalogues():
@@ -117,6 +120,11 @@ def test_no_merged_catalogue_code_is_absent_from_the_registry():
     """Every merged platform and surface code has a packaged registry entry."""
     missing = {code for code in _merged_catalogue() if code not in REGISTRY}
     assert missing == set()
+
+
+def test_every_no_data_reason_is_a_registry_code():
+    """A part's `no_data.reason` is a registry code, resolvable at /codes/{code}."""
+    assert {reason for reason in get_args(NoDataReason) if reason not in REGISTRY} == set()
 
 
 @pytest.mark.parametrize("code", sorted(REGISTRY.codes))

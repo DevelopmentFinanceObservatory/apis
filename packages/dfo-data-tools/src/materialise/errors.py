@@ -5,10 +5,10 @@ infrastructure errors pass through. `UpstreamResponseError` marks inconsistent d
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
-from dfo_platform.problem import Alternative, ProblemIssue
+from dfo_platform.problem import Alternative, ProblemIssue, Refusal
 
 if TYPE_CHECKING:
     from materialise.pipeline import MaterialisationRequest
@@ -17,38 +17,46 @@ MaterialisationIssue = ProblemIssue
 """Shared pydantic type for one aggregated refusal issue. Fields use attribute access."""
 
 
-class MaterialisationError(Exception):
-    """Base for deterministic refusals rendered as typed HTTP problems. Raise a named
-    subclass so the code and status match the refusal."""
+class MaterialisationError(Refusal):
+    """Base for deterministic refusals rendered as typed HTTP problems. Each named subclass sets
+    `code` and `status`, and `retryable` where a retry can succeed. `status` serves surfaces
+    that render the refusal themselves. The Datasets surface reads the code registry's status
+    for the endpoint the route serves (`dfo_platform.codes.registered_status`).
+
+    `pointer` names a location in the body a caller posted, as the reshape refusals' `/options`
+    paths do. `facet_pointer` locates a facet refusal in the materialisation request
+    (`/facets/<axis>`), outside any posted body. Aggregation copies it into an issue, and it
+    never becomes the refusal's own pointer."""
+
+    status: int
 
     def __init__(
         self,
         *args: object,
-        code: str,
-        status: int,
         pointer: str | None = None,
+        facet_pointer: str | None = None,
         alternatives: list[Alternative] | None = None,
         # Aggregated axis refusals carry one `issues` entry per unbound or unavailable axis.
         issues: tuple[MaterialisationIssue, ...] | None = None,
         detail: str | None = None,
-        retryable: bool = False,
     ) -> None:
         super().__init__(*args)
-        self.code = code
-        self.status = status
         self.pointer = pointer
+        self.facet_pointer = facet_pointer
         self.alternatives = alternatives
         self.issues = issues
         self.detail = detail
-        self.retryable = retryable
 
 
 class CollectionProbeCeilingExceededError(MaterialisationError):
     """422 `collection_probe_ceiling`. Raised before any facet probe when a request group's sum of
     distinct StatVars x entities across subject-only scope groups exceeds the pair cap."""
 
+    code = "collection_probe_ceiling"
+    status = 422
+
     def __init__(self, *args: object) -> None:
-        super().__init__(*args, code="collection_probe_ceiling", status=422)
+        super().__init__(*args)
 
 
 class DefaultFacetUndefinedError(MaterialisationError):
@@ -57,16 +65,17 @@ class DefaultFacetUndefinedError(MaterialisationError):
     Aggregated member errors give this refusal priority over `facet_not_available`. `request`
     names the member whose selection failed, where one member's selection raised it."""
 
+    code = "default_facet_undefined"
+    status = 422
+
     def __init__(
         self,
         *args: object,
-        pointer: str | None = None,
+        facet_pointer: str | None = None,
         issues: tuple[MaterialisationIssue, ...] | None = None,
         request: MaterialisationRequest | None = None,
     ) -> None:
-        super().__init__(
-            *args, code="default_facet_undefined", status=422, pointer=pointer, issues=issues
-        )
+        super().__init__(*args, facet_pointer=facet_pointer, issues=issues)
         self.request = request
 
 
@@ -74,19 +83,20 @@ class FacetNotAvailableError(MaterialisationError):
     """422 `facet_not_available`. Raised when a bound ref or declared default has no
     observations, or when member errors contain no `default_facet_undefined`."""
 
+    code = "facet_not_available"
+    status = 422
+
     def __init__(
         self,
         *args: object,
-        pointer: str | None = None,
+        facet_pointer: str | None = None,
         alternatives: list[Alternative] | None = None,
         alternatives_truncated: bool = False,
         issues: tuple[MaterialisationIssue, ...] | None = None,
     ) -> None:
         super().__init__(
             *args,
-            code="facet_not_available",
-            status=422,
-            pointer=pointer,
+            facet_pointer=facet_pointer,
             alternatives=alternatives,
             issues=issues,
         )
@@ -105,6 +115,9 @@ class OverCeilingError(MaterialisationError):
     For truncated reverse-arc reads, `count` is returned candidates and `cap` is the read
     window, with `count <= cap`."""
 
+    code = "over_ceiling"
+    status = 422
+
     def __init__(
         self,
         *args: object,
@@ -113,7 +126,7 @@ class OverCeilingError(MaterialisationError):
         count: int | None = None,
         cap: int | None = None,
     ) -> None:
-        super().__init__(*args, code="over_ceiling", status=422, detail=detail)
+        super().__init__(*args, detail=detail)
         self.ceiling_kind = ceiling_kind
         self.count = count
         self.cap = cap
@@ -124,6 +137,9 @@ class MembersNotHeldError(MaterialisationError):
     incompatible shapes and a graph probe finds some of them have no node. `stat_vars` holds
     that chunk's absent bare dcids, sorted. StatVars in other chunks are not probed."""
 
+    code = "members_not_held"
+    status = 500
+
     def __init__(self, *, stat_vars: Sequence[str]) -> None:
         self.stat_vars = tuple(sorted(stat_vars))
         detail = (
@@ -131,7 +147,8 @@ class MembersNotHeldError(MaterialisationError):
             f"knowledge graph: {list(self.stat_vars)!r}. Other StatVars this definition "
             "names may also be absent."
         )
-        super().__init__(detail, code="members_not_held", status=500, detail=detail)
+        issues = tuple(ProblemIssue(member=stat_var) for stat_var in self.stat_vars)
+        super().__init__(detail, detail=detail, issues=issues)
 
 
 class DatasetDisagreementError(MaterialisationError):
@@ -141,22 +158,48 @@ class DatasetDisagreementError(MaterialisationError):
     differs from the elected one. The code index and the series coverage it was joined from
     have drifted apart. `dataset` is the elected provenance and `stat_var` the member."""
 
+    code = "internal_error"
+    status = 500
+
     def __init__(self, detail: str, *, dataset: str, stat_var: str) -> None:
         self.dataset = dataset
         self.stat_var = stat_var
-        super().__init__(detail, code="internal_error", status=500, detail=detail)
+        super().__init__(detail, detail=detail, issues=(ProblemIssue(member=stat_var),))
+
+
+class MixedGrainError(MaterialisationError):
+    """500 `internal_error`. Raised when the rows a materialisation serves hold periods of
+    more than one grain, as `2019` beside `2019-01`, which no frame binds
+    (`assembler.frame_view`). The election dispatches one cadence
+    (`facets.dispatch_cadence`), so a facet stating no observation period dated its rows at
+    two grains. `grains` maps each grain to its earliest period, and `stat_vars` names the
+    request's members."""
+
+    code = "internal_error"
+    status = 500
+
+    def __init__(self, grains: Mapping[str, str], *, stat_vars: Sequence[str]) -> None:
+        self.grains = dict(grains)
+        self.stat_vars = tuple(stat_vars)
+        detail = (
+            f"the rows served for {list(self.stat_vars)!r} mix {' and '.join(self.grains)} "
+            f"periods, first {', '.join(repr(period) for period in self.grains.values())}; "
+            "a frame holds periods at one grain"
+        )
+        super().__init__(detail, detail=detail)
 
 
 class UpstreamVersionChangedError(MaterialisationError):
     """503 `upstream_version_changed`, retryable. Raised when two generations disagree."""
 
+    code = "upstream_version_changed"
+    status = 503
+    retryable = True
+
     def __init__(self, detail: str) -> None:
         super().__init__(
             detail,
-            code="upstream_version_changed",
-            status=503,
             detail=detail,
-            retryable=True,
         )
 
 

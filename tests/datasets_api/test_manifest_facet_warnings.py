@@ -6,10 +6,9 @@ from __future__ import annotations
 
 import httpx
 
-from datasets_api.revision import SentinelRevisionReader
 from dc_sdmx import SdmxClient
 from materialise.graph import Facet
-from series_coverage.schema import FacetMetadata, RoleNames
+from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
@@ -126,13 +125,12 @@ def _coverage_years(obs_count: int) -> list[int]:
 def _coverage_service(facets_by_stat_var: dict[str, list[Facet]]) -> FakeCoverageService:
     """Builds coverage rows and facet metadata from each StatVar's facets."""
     rows = [
-        (stat_var, facet.facet_id, "country/USA", "country/KEN", _coverage_years(facet.obs_count))
+        (stat_var, facet.facet_id, ABSENT_ENTITY, "country/KEN", _coverage_years(facet.obs_count))
         for stat_var, facets in facets_by_stat_var.items()
         for facet in facets
     ]
     role_names = {
-        stat_var: RoleNames(donor="provider", recipient="recipient")
-        for stat_var in facets_by_stat_var
+        stat_var: RoleNames(donor=None, recipient="recipient") for stat_var in facets_by_stat_var
     }
     facet_metadata = {
         facet.facet_id: FacetMetadata(
@@ -155,7 +153,6 @@ def _client(*, graph: FakeMintGraphReader, csv_by_stat_var: dict[str, str], cove
         spec_reader=LiveSpecReader(store=store),
         graph=graph,
         sdmx=sdmx,
-        revision_reader=SentinelRevisionReader(),
         artifact_store=FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),

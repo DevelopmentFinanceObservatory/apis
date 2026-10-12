@@ -1,6 +1,8 @@
 """Run `LiveOperationStore` SQL against a shared in-memory SQLite database.
 
-One store lock serialises transactions. Foreign keys are not enforced. `before_backlog_lock` runs
+One store lock serialises transactions. Foreign keys are not enforced. The lease-end expression
+`claimed_at + make_interval(secs => lease_seconds)` runs as a registered `lease_end`
+function, since SQLite has no interval arithmetic. `before_backlog_lock` runs
 at the advisory-lock boundary, after the unlocked read, for deterministic race setup.
 """
 
@@ -12,7 +14,7 @@ import sqlite3
 import threading
 from collections.abc import Callable, Generator, Mapping, Sequence
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 
 _OPERATION_SCHEMA = """
 CREATE TABLE datasets.operation (
@@ -28,20 +30,22 @@ CREATE TABLE datasets.operation (
     content_version TEXT,
     refusal_code TEXT,
     attempt_count INTEGER NOT NULL DEFAULT 0,
-    lease_until TEXT,
+    claimed_at TEXT,
+    lease_seconds INTEGER,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     submission_count INTEGER NOT NULL DEFAULT 0,
     retryable INTEGER,
-    dispatch_count INTEGER NOT NULL DEFAULT 0,
     dispatched_at TEXT,
-    dispatch_confirmed INTEGER NOT NULL DEFAULT 0,
-    execution_coverage_stamp TEXT,
     submitted_at TEXT NOT NULL,
     origin_catalogue_build_id TEXT,
-    refusal TEXT
+    refusal TEXT,
+    final_delivery INTEGER,
+    confirmed_at TEXT
 );
 """
+
+_LEASE_END_SQL = "claimed_at + make_interval(secs => lease_seconds)"
 
 _QUOTED_LITERAL_OR_PERCENT = re.compile(r"('(?:[^']|'')*')|%(.)")
 
@@ -58,7 +62,17 @@ def _to_sqlite_paramstyle(sql: str) -> str:
             return "%"
         raise ValueError("Only %s and %% are supported in the query.")
 
+    sql = sql.replace(_LEASE_END_SQL, "lease_end(claimed_at, lease_seconds)")
+    # The store lock serialises transactions, so SQLite needs no row lock.
+    sql = sql.replace(" FOR SHARE", "")
     return _QUOTED_LITERAL_OR_PERCENT.sub(_sub, sql)
+
+
+def _lease_end(claimed_at: str | None, lease_seconds: int | None) -> str | None:
+    if claimed_at is None or lease_seconds is None:
+        return None
+    end = datetime.fromisoformat(claimed_at) + timedelta(seconds=lease_seconds)
+    return end.isoformat()
 
 
 def _sqlite_param(value: object) -> object:
@@ -71,9 +85,9 @@ def _sqlite_param(value: object) -> object:
 
 _JSON_COLUMNS = frozenset({"request_identity", "options", "refusal"})
 _TIMESTAMP_COLUMNS = frozenset(
-    {"lease_until", "created_at", "updated_at", "dispatched_at", "submitted_at"}
+    {"claimed_at", "created_at", "updated_at", "dispatched_at", "submitted_at", "confirmed_at"}
 )
-_BOOL_COLUMNS = frozenset({"retryable"})
+_BOOL_COLUMNS = frozenset({"retryable", "final_delivery"})
 
 
 def _decode_row(row: sqlite3.Row) -> dict[str, object]:
@@ -85,7 +99,7 @@ def _decode_row(row: sqlite3.Row) -> dict[str, object]:
         elif isinstance(value, str) and key in _TIMESTAMP_COLUMNS:
             value = datetime.fromisoformat(value)
         elif isinstance(value, int) and key in _BOOL_COLUMNS:
-            # SQLite stores booleans as 1/0. Keep NULL where retryability is unset.
+            # SQLite stores booleans as 1/0. Keep NULL where the column is unset.
             value = bool(value)
         decoded[key] = value
     return decoded
@@ -126,6 +140,7 @@ class FakeOperationDatasetStore:
     def __init__(self) -> None:
         self._conn = sqlite3.connect(":memory:", check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._conn.create_function("lease_end", 2, _lease_end, deterministic=True)
         self._conn.execute("ATTACH DATABASE ':memory:' AS datasets")
         self._conn.executescript(_OPERATION_SCHEMA)
         self._lock = threading.Lock()

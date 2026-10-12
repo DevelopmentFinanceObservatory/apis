@@ -22,16 +22,21 @@ from search.engine.assemble import (
 )
 from search.engine.departures import surviving_facts
 from search.engine.envelope import make_diagnostics, make_query_echo, make_response, now_ms
-from search.engine.same_shape import FacetOptionsReader, collapse_same_shape, five_tuple_key
+from search.engine.region.source_choice import scope_records
+from search.engine.same_shape import FacetOptionsReader, collapse_same_shape, fold_key
 from search.engine.unit.conversion import conversion_unavailable_warning
 from search.models import (
     AmbiguousEntityCandidate,
     AmbiguousEntityGroup,
+    AmbiguousSourceCandidate,
+    AmbiguousSourceGroup,
     ParsedInput,
     Resolution,
+    ResolvedQualifier,
     Timing,
     Warning,
 )
+from search.render.no_data import ScopeSources
 from skills_index import SkillsIndex
 
 if TYPE_CHECKING:
@@ -88,13 +93,14 @@ def _group_definite_regions(
 ) -> tuple[dict[int, RegionResult], set[int]]:
     """Map each definite part to its representative and mark folded indices.
 
-    Group by ``five_tuple_key``. A residual group keeps each original result, warning, and task.
-    Merged members use the earliest region's representative, and
-    later members are marked folded.
+    Group by ``fold_key``, as ``collapse_same_shape`` does, so a region compared with the
+    others (``RegionResult.separate``) is its own group and carries no fold. A residual
+    group keeps each original result, warning, and task. Merged members use the earliest
+    region's representative, and later members are marked folded.
     """
     groups: dict[tuple, list[RegionResult]] = {}
     for r in definite:
-        groups.setdefault(five_tuple_key(r.spec), []).append(r)
+        groups.setdefault(fold_key(r), []).append(r)
 
     representative_by_index: dict[int, RegionResult] = {}
     folded_indices: set[int] = set()
@@ -167,16 +173,70 @@ def _ambiguous_entity_groups(region: RegionResult) -> list[AmbiguousEntityGroup]
     ]
 
 
-def _data_query(region: RegionResult) -> ParsedInput | None:
-    """Return the part's parsed form for an `entity_ambiguous` outcome.
+def _ambiguous_source_groups(region: RegionResult) -> list[AmbiguousSourceGroup]:
+    """Each ambiguous source wording of a `source_ambiguous` region with its candidates,
+    in the wire shape."""
+    return [
+        AmbiguousSourceGroup(
+            text=group.text,
+            candidates=[
+                AmbiguousSourceCandidate(ref=c.ref, label=c.label, kind=c.kind)
+                for c in group.candidates
+            ],
+        )
+        for group in region.ambiguous_sources
+    ]
 
-    It is the region's parsed form with every entity the region resolved to one node
-    pinned to its dcid, and each ambiguous wording left unpinned for the client to pin
-    the user's pick. A leg that cannot name a direction withholds its restatement and
-    still carries this form. `None` for every other reason, and when the region has no
-    parsed form.
+
+def _unbound_terms(
+    region: RegionResult,
+) -> tuple[list[ResolvedQualifier] | None, list[ResolvedQualifier] | None, ScopeSources | None]:
+    """The category terms, the unbound sources and the source scope a no-data `region`
+    names.
+
+    A region read under a source scope (`RegionResult.source_scope`) names the sources the
+    scope names, else those it leaves out (`source_choice.scope_records`). A
+    `qualifier_not_bound` outcome lists them, then the region's other unbound sources, each
+    set of references once, beside its category terms. A region with no scope names its unbound sources
+    among its terms."""
+    terms = list(region.unbound_qualifiers)
+    scope = region.source_scope
+    if scope is None:
+        return [*terms, *region.unbound_sources] or None, None, None
+    named = scope_records(scope)
+    naming = (
+        ScopeSources(
+            polarity="include" if scope.named else "exclude",
+            labels=tuple(record.text for record in named),
+        )
+        if named
+        else None
+    )
+    if region.no_data_reason != "qualifier_not_bound":
+        return terms or None, None, naming
+    sources: dict[tuple[str, ...], ResolvedQualifier] = {}
+    for record in (*named, *region.unbound_sources):
+        sources.setdefault(tuple(ref.dcid for ref in record.named), record)
+    return terms or None, list(sources.values()) or None, naming
+
+
+def _data_query(region: RegionResult) -> ParsedInput | None:
+    """Return the part's parsed form for an `entity_ambiguous` or `source_ambiguous`
+    outcome.
+
+    On `entity_ambiguous` it is the region's parsed form with every entity the region
+    resolved to one node pinned to its dcid, and each ambiguous wording left unpinned for
+    the client to pin the user's pick. A leg that cannot name a direction withholds its
+    restatement and still carries this form. On `source_ambiguous` it is the parsed form
+    as it stands: its source mentions already carry the references they resolved to, and
+    each ambiguous wording none. `None` for every other reason, and when the region has
+    no parsed form.
     """
-    if region.no_data_reason != "entity_ambiguous" or region.parsed_form is None:
+    if region.parsed_form is None:
+        return None
+    if region.no_data_reason == "source_ambiguous":
+        return ParsedInput(parts=[region.parsed_form])
+    if region.no_data_reason != "entity_ambiguous":
         return None
     part = region.parsed_form
     pinned = [
@@ -235,6 +295,7 @@ def _build_part(
             representative.spec,
             variable_text=variable_text,
             warnings=warnings,
+            separate=region.separate,
             timing_ms=timing_ms,
             restatement=region.restatement,
             operations=region.operations,
@@ -248,6 +309,7 @@ def _build_part(
             list(region.specs),
             variable_text=variable_text,
             warnings=list(region.warnings),
+            separate=region.separate,
             timing_ms=timing_ms,
             max_candidates=max_candidates,
             include_observations=include_observations,
@@ -284,6 +346,7 @@ def _build_part(
             region.unsupported.definition,
             variable_text=variable_text,
             warnings=list(region.warnings),
+            separate=region.separate,
             timing_ms=timing_ms,
             restatement=region.restatement,
             operations=region.operations,
@@ -296,10 +359,16 @@ def _build_part(
         "here is an assembly bug, not a case to default around"
     )
     entity_terms, ambiguous_candidates = _no_data_entity_terms(region)
+    if region.no_data_reason == "source_ambiguous":
+        ambiguous_candidates = [
+            c.label for group in region.ambiguous_sources for c in group.candidates
+        ] or None
+    qualifier_terms, unbound_sources, scope = _unbound_terms(region)
     return build_no_data_part(
         cast("NoDataReason", region.no_data_reason),
         variable_text=variable_text,
         warnings=list(region.warnings),
+        separate=region.separate,
         timing_ms=timing_ms,
         nearest_real=list(region.nearest_real) if region.nearest_real else None,
         flagged_match=region.flagged_match[0] if region.flagged_match else None,
@@ -315,7 +384,11 @@ def _build_part(
             entity.text: entity.role for entity in region.ambiguous_entities if entity.role
         },
         data_query=_data_query(region),
-        qualifier_terms=list(region.unbound_qualifiers) or None,
+        source_terms=list(region.source_terms) or None,
+        ambiguous_sources=_ambiguous_source_groups(region),
+        qualifier_terms=qualifier_terms,
+        unbound_sources=unbound_sources,
+        scope=scope,
         unit_alternatives=list(region.unit_alternatives) or None,
         restatement=region.restatement,
         operations=region.operations,

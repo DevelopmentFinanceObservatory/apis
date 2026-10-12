@@ -13,9 +13,8 @@ import httpx
 import pyarrow.parquet as pq
 import pytest
 
-from datasets_api.revision import SentinelRevisionReader
 from dc_sdmx import SdmxClient
-from series_coverage.schema import FacetMetadata, RoleNames
+from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
 from spec_registry.identity import recompute_identity
 from spec_registry.reader import LiveSpecReader
@@ -106,8 +105,8 @@ def _sdmx(*, native_unit: str = "CurrencyUSD", eur_rate: float = 0.9) -> SdmxCli
 def _coverage_service(*, native_unit: str = "CurrencyUSD") -> FakeCoverageService:
     """Builds one 2015 coverage facet for `_STAT_VAR` and `native_unit`."""
     index = build_coverage_index(
-        [(_STAT_VAR, "facet1", "country/USA", _RECIPIENT, [2015])],
-        role_names={_STAT_VAR: RoleNames(donor="provider", recipient="recipient")},
+        [(_STAT_VAR, "facet1", ABSENT_ENTITY, _RECIPIENT, [2015])],
+        role_names={_STAT_VAR: RoleNames(donor=None, recipient="recipient")},
         facet_metadata={
             "facet1": FacetMetadata(
                 provenance_id=_MEMBER_PROVENANCE,
@@ -133,7 +132,6 @@ def _client(
         spec_reader=LiveSpecReader(store=store),
         graph=graph if graph is not None else _graph(),
         sdmx=sdmx if sdmx is not None else _sdmx(),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=artifact_store if artifact_store is not None else FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),

@@ -4,9 +4,11 @@ Each binding member needs a facet for every StatVar, pooling observations only
 across entities within that StatVar. The window depends on the candidate source:
 `facet_refusal` reads entity-keyed facets unwindowed, so a facet with
 `obs_count > 0` counts even when its observations fall outside the requested window,
-while a discovered role scope's role index and the bound role path's coverage facets
-hold only rows within the request's window. `no_observations` precedes
-`facet_not_available` in refusal order.
+while a discovered role scope's role index uses its request-window rows. Bound role
+candidate coverage validates provenance against its lifetime rows and method or unit
+against the requested-window rows. A bound role-bearing provenance pin is checked
+before a scoped `no_observations` result; other no-data gates precede
+`facet_not_available`.
 
 `candidate_facet_refusal` reads the identity facets, `facets.provenance` included.
 Provenance uses `region.facets._facet_source_dcid`.
@@ -398,17 +400,27 @@ def _failing_axes(
     facets_by_sv: Mapping[str, list[Facet]],
     relevant: Mapping[str, IdentityFacetBinding],
     *,
+    provenance_facets_by_sv: Mapping[str, list[Facet]] | None = None,
     elected_units: Mapping[str, frozenset[str]] | None,
     deadline: float | None,
 ) -> _FailingAxes:
-    """Check every relevant binding against `facets_by_sv` under the per-StatVar
-    all-or-nothing rule: each ref or set member, or the unit request, needs its own
-    facet on every StatVar, under the other axes' bindings."""
+    """Check every relevant binding under the per-StatVar all-or-nothing rule.
+
+    ``provenance_facets_by_sv`` holds a source pin's lifetime candidates, while
+    ``facets_by_sv`` holds the requested-window candidates for method and unit.
+    Each axis still checks every other binding against a facet from its own
+    view, retaining joint-pin validation.
+    """
     failing = _FailingAxes([], {}, {})
     for axis in get_args(FacetAxis):
         binding = relevant.get(axis)
         if binding is None:
             continue
+        candidates = (
+            provenance_facets_by_sv
+            if axis == "provenance" and provenance_facets_by_sv is not None
+            else facets_by_sv
+        )
         if isinstance(binding, IdentityBindingSet):
             missing = [
                 member
@@ -417,7 +429,7 @@ def _failing_axes(
                     graph,
                     axis,
                     IdentityBindingValue(ref=member),
-                    facets_by_sv,
+                    candidates,
                     relevant,
                     elected_units=elected_units,
                     deadline=deadline,
@@ -431,7 +443,7 @@ def _failing_axes(
                 graph,
                 axis,
                 binding,
-                facets_by_sv,
+                candidates,
                 relevant,
                 elected_units=elected_units,
                 deadline=deadline,
@@ -445,7 +457,7 @@ def _failing_axes(
                 graph,
                 axis,
                 binding.request,
-                facets_by_sv,
+                candidates,
                 relevant,
                 elected_units=elected_units,
                 deadline=deadline,
@@ -460,6 +472,7 @@ def _facet_refusal_from_candidates(
     facets_by_sv: Mapping[str, list[Facet]],
     facets: Mapping[str, IdentityFacetBinding] | None,
     *,
+    provenance_facets_by_sv: Mapping[str, list[Facet]] | None = None,
     elected_units: Mapping[str, frozenset[str]] | None = None,
     deadline: float | None,
 ) -> EngineInputError | None:
@@ -491,11 +504,18 @@ def _facet_refusal_from_candidates(
         )
 
     all_facets = [f for sv_facets in facets_by_sv.values() for f in sv_facets]
-    if not all_facets:
+    lifetime_by_sv = facets_by_sv if provenance_facets_by_sv is None else provenance_facets_by_sv
+    provenance_facets = [f for sv_facets in lifetime_by_sv.values() for f in sv_facets]
+    if not provenance_facets:
         return None
 
     failing = _failing_axes(
-        graph, facets_by_sv, relevant, elected_units=elected_units, deadline=deadline
+        graph,
+        facets_by_sv,
+        relevant,
+        provenance_facets_by_sv=provenance_facets_by_sv,
+        elected_units=elected_units,
+        deadline=deadline,
     )
     if not failing.axes:
         return None
@@ -519,7 +539,12 @@ def _facet_refusal_from_candidates(
         code="facet_not_available",
         status=422,
         pointer=f"/input/facets/{pointed_axis}",
-        alternatives=_alternatives(pointed_axis, all_facets, graph) or None,
+        alternatives=_alternatives(
+            pointed_axis,
+            provenance_facets if pointed_axis == "provenance" else all_facets,
+            graph,
+        )
+        or None,
     )
 
 
@@ -528,18 +553,23 @@ def candidate_facet_refusal(
     facets_by_sv: Mapping[str, list[Facet]],
     facets: Mapping[str, IdentityFacetBinding] | None,
     *,
+    provenance_facets_by_sv: Mapping[str, list[Facet]] | None = None,
     elected_units: Mapping[str, frozenset[str]] | None = None,
     deadline: float | None,
 ) -> EngineInputError | None:
     """Validate posted facet bindings against each StatVar's candidate facets.
 
-    Every binding joins one `facet_pins` mapping before the shared all-StatVar check, so
-    provenance A plus unit USD is not admitted merely because A and USD each occur on
-    different candidates.
+    Method and unit use the requested-window candidates. When passed, provenance uses
+    lifetime candidates, while every check still joins the other pin axes on one facet.
     """
     pins = facet_pins(facets)
     return _facet_refusal_from_candidates(
-        graph, facets_by_sv, pins.bindings, elected_units=elected_units, deadline=deadline
+        graph,
+        facets_by_sv,
+        pins.bindings,
+        provenance_facets_by_sv=provenance_facets_by_sv,
+        elected_units=elected_units,
+        deadline=deadline,
     )
 
 

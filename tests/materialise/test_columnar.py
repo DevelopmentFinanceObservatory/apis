@@ -15,8 +15,9 @@ import pytest
 from dc_sdmx import SdmxObservation
 from dc_sdmx.errors import SdmxResponseError
 from materialise import columnar
-from materialise.facets import FacetSelection, PlaceAdmission
+from materialise.facets import CoverageAdmission, FacetSelection, PlaceAdmission
 from materialise.window import AppliedWindow, Coverage, RequestedWindow, _leading_year
+from series_coverage.schema import RoleNames
 
 from . import _row_oracle
 from ._table_support import table_from_cells, table_from_observations
@@ -606,6 +607,41 @@ def test_admission_mask_keeps_a_row_only_where_its_facet_was_admitted_at_its_pla
     assert mask.to_pylist() == [False, True, False]
 
 
+def test_scoped_coverage_admission_keeps_only_its_facets_admitted_role_pairs():
+    """A shared facet id cannot let a source-scoped flow serve another source's pair."""
+    table = table_from_cells(
+        [
+            {"facetId": "f-source-b", "donor": "country/NOR", "recipient": "country/KEN"},
+            {"facetId": "f-source-b", "donor": "country/USA", "recipient": "country/KEN"},
+            {"facetId": "f-source-a", "donor": "country/NOR", "recipient": "country/KEN"},
+        ],
+        roles=("donor", "recipient"),
+    )
+    admission = CoverageAdmission(
+        pairs_by_facet={"f-source-b": frozenset({("country/NOR", "country/KEN")})},
+        role_names=RoleNames(donor="donor", recipient="recipient"),
+    )
+
+    mask = columnar.admission_mask(table, admission=admission)
+
+    assert mask.to_pylist() == [True, False, False]
+
+
+def test_scoped_two_role_coverage_admission_refuses_a_missing_declared_role_column():
+    """A stale two-role admission cannot treat a recipient-only SDMX response as admitted."""
+    table = table_from_cells(
+        [{"facetId": "f-source-b", "recipient": "country/KEN"}],
+        roles=("recipient",),
+    )
+    admission = CoverageAdmission(
+        pairs_by_facet={"f-source-b": frozenset({("country/NOR", "country/KEN")})},
+        role_names=RoleNames(donor="donor", recipient="recipient"),
+    )
+
+    with pytest.raises(SdmxResponseError, match="without donor"):
+        columnar.admission_mask(table, admission=admission)
+
+
 @pytest.mark.parametrize(
     ("missing", "cell"),
     [
@@ -623,3 +659,33 @@ def test_admission_mask_refuses_a_row_it_cannot_check(missing: str, cell: Mappin
 
     with pytest.raises(SdmxResponseError, match=f"1 of 2 SDMX rows carry no {missing}"):
         columnar.admission_mask(table, admission=admission)
+
+
+@pytest.mark.parametrize(
+    ("admission", "expected"),
+    [
+        # Place admission refuses a row naming no facet or no place, so both reach its mask.
+        pytest.param(
+            PlaceAdmission(places_by_facet={"fA": frozenset({"country/KEN"})}),
+            ["2019", "2020", "2021", "2022"],
+            id="place",
+        ),
+        # Coverage admission keeps every row, so a row naming no facet stays and a row
+        # naming another facet, with or without a place, goes.
+        pytest.param(CoverageAdmission(), ["2019", "2020", "2021"], id="coverage"),
+    ],
+)
+def test_dispatched_rows_keeps_a_members_own_facets_and_rows_its_mask_refuses(admission, expected):
+    # A group chunk fetches the union of its members' facet ids, so a facet only another
+    # member dispatched comes back for this member's variable and must not serve.
+    batch = pa.RecordBatch.from_pydict(
+        {
+            "facetId": ["fA", "fQ", None, "fA", "fQ"],
+            "observationAbout": ["country/KEN", "country/KEN", "country/KEN", "country/KEN", None],
+            "TIME_PERIOD": ["2019", "2019-01", "2020", "2021", "2022"],
+        }
+    )
+
+    kept = columnar.dispatched_rows(batch, facet_ids=("fA",), admission=admission)
+
+    assert kept.column("TIME_PERIOD").to_pylist() == expected

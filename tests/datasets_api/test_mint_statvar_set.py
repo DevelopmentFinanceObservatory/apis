@@ -12,10 +12,9 @@ import pydantic
 import pytest
 
 from datasets_api.mint_models import Scope
-from datasets_api.revision import SentinelRevisionReader
 from dc_sdmx import SdmxClient, SdmxQueryError
 from materialise.graph import Facet
-from series_coverage.schema import FacetMetadata, RoleNames
+from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
@@ -111,8 +110,8 @@ _HAPPY_PATH_BODY = {
 def _coverage_service() -> FakeCoverageService:
     """Builds `_STAT_VAR` coverage for the 2015 and 2016 CSV rows."""
     index = build_coverage_index(
-        [(_STAT_VAR, "facet1", "country/USA", "country/KEN", [2015, 2016])],
-        role_names={_STAT_VAR: RoleNames(donor="provider", recipient="recipient")},
+        [(_STAT_VAR, "facet1", ABSENT_ENTITY, "country/KEN", [2015, 2016])],
+        role_names={_STAT_VAR: RoleNames(donor=None, recipient="recipient")},
         facet_metadata={
             "facet1": FacetMetadata(
                 provenance_id="OECD_DAC2A", measurement_method="GrantEquivalent", unit="USD"
@@ -127,7 +126,6 @@ def _client(
     artifact_store,
     sdmx_requests: list[httpx.Request] | None = None,
     sdmx: SdmxClient | None = None,
-    revision_reader=None,
     store: FakeDatasetStore | None = None,
     graph: FakeMintGraphReader | None = None,
     coverage: FakeCoverageService | None = None,
@@ -141,9 +139,6 @@ def _client(
         spec_reader=LiveSpecReader(store=store),
         graph=graph if graph is not None else _graph(),
         sdmx=sdmx,
-        revision_reader=revision_reader
-        if revision_reader is not None
-        else SentinelRevisionReader(),
         artifact_store=artifact_store,
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),
@@ -205,34 +200,15 @@ class TestMilestoneStatVarSetMintServesACorrectCsvFromASignedUrl:
         )
 
 
-class TestRevisionUnavailableWarning:
-    """A sentinel revision reader adds `revision_unavailable`; an injected revision removes it."""
+def test_a_mint_manifest_carries_no_revision_unavailable_warning():
+    """The token hashes the frame alone, so no revision read backs it and no manifest warns
+    that one is missing."""
+    client = _client(artifact_store=FakeArtifactStore())
 
-    def test_manifest_carries_the_warning_while_the_sentinel_is_active(self):
-        client = _client(artifact_store=FakeArtifactStore())
+    resp = client.post("/api/datasets", json=_HAPPY_PATH_BODY)
 
-        resp = client.post("/api/datasets", json=_HAPPY_PATH_BODY)
-
-        assert resp.status_code == 200, resp.text
-        warnings = resp.json()["warnings"]
-        assert any(w["code"] == "revision_unavailable" for w in warnings)
-
-    def test_manifest_omits_the_warning_under_an_injected_live_style_reader(self):
-        from materialise.revision import RevisionSnapshot
-
-        from ._graph_doubles import FakeRevisionReader
-
-        snapshot = RevisionSnapshot(graph_revision="live-rev-2026-08-03", source_revisions=())
-        client = _client(
-            artifact_store=FakeArtifactStore(),
-            revision_reader=FakeRevisionReader([snapshot, snapshot]),
-        )
-
-        resp = client.post("/api/datasets", json=_HAPPY_PATH_BODY)
-
-        assert resp.status_code == 200, resp.text
-        warnings = resp.json()["warnings"]
-        assert not any(w["code"] == "revision_unavailable" for w in warnings)
+    assert resp.status_code == 200, resp.text
+    assert "revision_unavailable" not in {w["code"] for w in resp.json()["warnings"]}
 
 
 class TestFacetTruthTable:
@@ -255,8 +231,8 @@ class TestFacetTruthTable:
         assert {f["basis"] for f in manifest["trace"]["facets"]} == {"deployment_fallback"}
 
     def test_no_scope_at_all_mints_a_role_bearing_stat_var_across_every_recipient(self):
-        # An unbound role means every entity. The fetch filters on every covered donor, the
-        # smaller axis, and leaves recipients open.
+        # An unbound role means every entity. This recipient-only fixture fetches every
+        # covered recipient.
         sdmx_requests: list[httpx.Request] = []
         client = _client(artifact_store=FakeArtifactStore(), sdmx_requests=sdmx_requests)
         body = {
@@ -270,8 +246,8 @@ class TestFacetTruthTable:
         assert resp.status_code == 200, resp.text
         assert resp.json()["definition"]["identity"]["entities"] == {}
         assert resp.json()["coverage"]["rows"] == 2
-        assert [request.url.params["c[provider]"] for request in sdmx_requests] == ["country/USA"]
-        assert all("c[recipient]" not in request.url.params for request in sdmx_requests)
+        assert [request.url.params["c[recipient]"] for request in sdmx_requests] == ["country/KEN"]
+        assert all("c[provider]" not in request.url.params for request in sdmx_requests)
 
     def test_facets_bound_entities_unbound_mints_under_the_bound_facets(self):
         client = _client(artifact_store=FakeArtifactStore())
@@ -412,8 +388,8 @@ class TestFacetTruthTable:
         )
         # Omit provenance to match the probed facet.
         no_provenance_index = build_coverage_index(
-            [(_STAT_VAR, "facet1", "country/USA", "country/KEN", [2015])],
-            role_names={_STAT_VAR: RoleNames(donor="provider", recipient="recipient")},
+            [(_STAT_VAR, "facet1", ABSENT_ENTITY, "country/KEN", [2015])],
+            role_names={_STAT_VAR: RoleNames(donor=None, recipient="recipient")},
             facet_metadata={
                 "facet1": FacetMetadata(measurement_method="GrantEquivalent", unit="USD")
             },

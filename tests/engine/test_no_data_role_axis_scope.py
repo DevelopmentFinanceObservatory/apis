@@ -57,7 +57,6 @@ def _state(*, mat_result: Materialised | NoDataDraft) -> ResolveState:
         include_observations=False,
         stream_observations=False,
         unit_text=None,
-        source_text=None,
         materialise_graph=None,
         materialise_sdmx=None,
         timing={},

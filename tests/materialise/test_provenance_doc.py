@@ -27,7 +27,6 @@ import materialise.provenance_doc as provenance_doc_module
 from materialise.graph import UNRESOLVED_NODE, SubjectPage, parse_arcs
 from materialise.provenance_doc import (
     _DATASET_PROPERTIES,
-    _DOCUMENT_PROPERTIES,
     _NODE_PROPERTIES,
     _PUBLISHER_PROPERTIES,
     _ROLLUP_PROPERTIES,
@@ -45,7 +44,7 @@ from materialise.provenance_doc import (
     read_provenance_doc,
 )
 from origin_catalogue import BASE, UN_SYSTEM, SourceRef
-from origin_catalogue.card_facts import LICENCE_PROPERTIES
+from origin_catalogue.card_facts import DOCUMENT_PROPERTIES, LICENCE_PROPERTIES
 from tests.origin_catalogue.fake_catalogue import provenance_row, restrictive_catalogue
 
 from .conftest import FakeGraphReader
@@ -1174,7 +1173,7 @@ class TestDocuments:
         doc = read_provenance_doc(graph, "dc/d/Dataset1")
 
         requested = {prop for _, properties in graph.node_arcs_many_calls for prop in properties}
-        assert requested.isdisjoint(_DOCUMENT_PROPERTIES)
+        assert requested.isdisjoint(DOCUMENT_PROPERTIES)
         assert doc.transformation_log == ()
         assert doc.version_history == ()
         assert doc.methodology is None

@@ -10,6 +10,7 @@ import httpx
 import pytest
 
 from dc_sdmx import SdmxClient
+from dfo_platform.request_deadline import request_deadline
 
 _BASE_URL = "https://example.test"
 _CONTENT_TYPE = "application/vnd.sdmx.data+csv;version=2.0.0"
@@ -260,3 +261,90 @@ def test_availability_read_seconds_closes_a_blocked_body() -> None:
 
     assert time.monotonic() - started < 0.25
     assert transport.stream.closed.is_set()
+
+
+def _data_read(client: SdmxClient) -> None:
+    client.data(variables=["Count_Person"], entities={"recipient": ["country/KEN"]})
+
+
+def _availability_read(client: SdmxClient) -> None:
+    client.availability(variables=["Count_Person"], component="observationAbout")
+
+
+_UNDEADLINED_READS = pytest.mark.parametrize(
+    ("read", "transport_cls"),
+    [(_data_read, _RecordingTransport), (_availability_read, _AvailabilityRecordingTransport)],
+    ids=["data", "availability"],
+)
+
+
+@_UNDEADLINED_READS
+def test_the_request_deadline_bounds_a_read_without_a_deadline(read, transport_cls) -> None:
+    """Inside a bound request (`dfo_platform.request_deadline`) a read with no deadline of its
+    own times out by the request's, and refuses before dispatch once it has passed."""
+    transport = transport_cls()
+    with request_deadline(time.monotonic() + 5):
+        read(SdmxClient(base_url=_BASE_URL, timeout=90, transport=transport))
+    assert transport.request is not None
+    assert 0 < transport.request.extensions["timeout"]["read"] <= 5
+
+    expired_transport = transport_cls()
+    with (
+        request_deadline(time.monotonic() - 1),
+        pytest.raises(TimeoutError, match="absolute caller deadline"),
+    ):
+        read(SdmxClient(base_url=_BASE_URL, timeout=90, transport=expired_transport))
+    assert expired_transport.request is None
+
+
+@_UNDEADLINED_READS
+def test_outside_a_request_a_read_without_a_deadline_keeps_the_client_timeout(
+    read, transport_cls
+) -> None:
+    transport = transport_cls()
+    read(SdmxClient(base_url=_BASE_URL, timeout=90, transport=transport))
+    assert transport.request is not None
+    assert transport.request.extensions["timeout"]["read"] == 90
+
+
+class _CloseRecordingTransport(_RecordingTransport):
+    def __init__(self) -> None:
+        super().__init__()
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _stream_data_read(client: SdmxClient) -> None:
+    with client.stream_data(variables=["Count_Person"], entities={"recipient": ["country/KEN"]}):
+        pass
+
+
+def _stream_data_batches_read(client: SdmxClient) -> None:
+    with client.stream_data_batches(
+        variables=["Count_Person"], entities={"recipient": ["country/KEN"]}
+    ):
+        pass
+
+
+@pytest.mark.parametrize(
+    "read",
+    [_data_read, _availability_read, _stream_data_read, _stream_data_batches_read],
+    ids=["data", "availability", "stream_data", "stream_data_batches"],
+)
+def test_a_read_refused_at_an_expired_request_deadline_lets_close_close_the_transport(
+    read,
+) -> None:
+    transport = _CloseRecordingTransport()
+    client = SdmxClient(base_url=_BASE_URL, transport=transport)
+    with (
+        request_deadline(time.monotonic() - 1),
+        pytest.raises(TimeoutError, match="absolute caller deadline"),
+    ):
+        read(client)
+
+    client.close()
+
+    assert transport.request is None
+    assert transport.closed

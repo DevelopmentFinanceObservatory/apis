@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Callable, Iterable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 
@@ -44,6 +44,15 @@ def bound_catalogue(catalogue: Catalogue) -> Iterator[Catalogue]:
         _BOUND.reset(token)
 
 
+def scoped_reads(allowed: frozenset[str] | None) -> AbstractContextManager[object]:
+    """Binds the bound catalogue narrowed to the provenances `allowed`
+    (`Catalogue.scoped`) for the body of the `with` block, so every read admits only
+    those, before DFO precedence. Binds nothing when `allowed` is `None`."""
+    if allowed is None:
+        return nullcontext()
+    return bound_catalogue(current_catalogue().scoped(allowed))
+
+
 def current_catalogue() -> Catalogue:
     """The bound catalogue. Raises `CatalogueNotBound` when none is bound."""
     catalogue = _BOUND.get()
@@ -59,6 +68,13 @@ def current_build_id(*, default: Callable[[], str]) -> str:
     """The bound catalogue's build id, or `default()` where none is bound."""
     catalogue = _BOUND.get()
     return default() if catalogue is None else catalogue.build_id
+
+
+def current_source_scope() -> frozenset[str] | None:
+    """The bound catalogue's source scope (`Catalogue.scope`), or `None` where it has none
+    or none is bound."""
+    catalogue = _BOUND.get()
+    return None if catalogue is None else catalogue.scope
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,6 +204,7 @@ __all__ = [
     "bound_catalogue",
     "current_build_id",
     "current_catalogue",
+    "current_source_scope",
     "note_un_blocked_places",
     "note_un_unserved",
     "recording_un_blocked_places",

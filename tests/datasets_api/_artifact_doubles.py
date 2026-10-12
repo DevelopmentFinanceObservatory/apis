@@ -14,9 +14,11 @@ from artifact_store import (
     ArtifactInventory,
     ArtifactNotFoundError,
     ArtifactSink,
+    ArtifactStore,
     StoredArtifact,
     Tier,
 )
+from artifact_store.inventory import InventoryBatch
 
 
 class _BufferedSink(io.BytesIO):
@@ -41,12 +43,14 @@ class _BufferedSink(io.BytesIO):
 class FakeArtifactStore:
     """Store bytes by digest and tier, with fake URLs resolved by `fetch`. `gets` records reads.
 
-    Signed response type and disposition are recorded per tier and digest. No GCS signing occurs.
+    Signed response type and disposition are recorded per tier and digest, and `signings` records
+    each signing call's digest, tier, object name and ttl. No GCS signing occurs.
     """
 
     def __init__(self) -> None:
         self._objects: dict[tuple[str, str], bytes] = {}
         self.signed_headers: dict[tuple[Tier, str], tuple[str, str]] = {}
+        self.signings: list[tuple[str, Tier, str, timedelta]] = []
         self.gets: list[tuple[str, Tier]] = []
 
     def put(self, data: bytes, *, tier: Tier) -> StoredArtifact:
@@ -77,11 +81,13 @@ class FakeArtifactStore:
             raise ArtifactNotFoundError(digest=artifact_digest, tier=tier)
         return self._objects[key]
 
-    def signed_get_url(
+    def signed_location_url(
         self,
         digest: str,
         *,
         tier: Tier,
+        bucket: str,
+        object_name: str,
         ttl: timedelta,
         response_type: str,
         response_disposition: str,
@@ -90,7 +96,8 @@ class FakeArtifactStore:
         if key not in self._objects:
             raise ArtifactNotFoundError(digest=digest, tier=tier)
         self.signed_headers[(tier, digest)] = (response_type, response_disposition)
-        return f"fake://artifact/{tier.value}/{digest}"
+        self.signings.append((digest, tier, object_name, ttl))
+        return f"fake://artifact/{tier.value}/{object_name}"
 
     def copy(self, digest: str, *, from_tier: Tier, to_tier: Tier) -> StoredArtifact:
         source_key = (digest, from_tier.value)
@@ -112,11 +119,22 @@ class FakeArtifactStore:
     def list(self, *, tier: Tier) -> frozenset[str]:
         return frozenset(digest for digest, tier_value in self._objects if tier_value == tier.value)
 
+    def deferred(self, batch: InventoryBatch) -> ArtifactStore:
+        """This store: it records no inventory, so a write owes no row."""
+        return self
+
     def fetch(self, url: str) -> bytes:
+        """The bytes behind a signed fake URL, or behind a manifest's stable download link
+        (`/api/datasets/{id}/{content_version}/files/{digest}`), read from the pinned tier when
+        it holds them and the working tier otherwise."""
         prefix = "fake://artifact/"
-        assert url.startswith(prefix), f"not a fake artifact URL: {url!r}"
-        tier_value, digest = url[len(prefix) :].split("/", 1)
-        return self._objects[(digest, tier_value)]
+        if not url.startswith(prefix):
+            assert "/files/" in url, f"not a fake artifact URL or download link: {url!r}"
+            digest = url.rsplit("/", 1)[1]
+            pinned = self._objects.get((digest, Tier.pinned.value))
+            return pinned if pinned is not None else self._objects[(digest, Tier.working.value)]
+        tier_value, object_name = url[len(prefix) :].split("/", 1)
+        return self._objects[(object_name.split("#", 1)[0], tier_value)]
 
 
 class RecordingArtifactStore:

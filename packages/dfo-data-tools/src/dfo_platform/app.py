@@ -10,14 +10,15 @@ import functools
 import logging
 import threading
 import time
-from collections.abc import AsyncIterator, Callable, Iterator, Sequence
+from collections.abc import AsyncIterator, Callable, Iterator, Mapping, Sequence
+from concurrent.futures import Executor
 from contextlib import (
     AbstractAsyncContextManager,
     AbstractContextManager,
     AsyncExitStack,
     asynccontextmanager,
 )
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from dfo_spec_kit.registry import REGISTRY
@@ -28,7 +29,8 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette.types import ASGIApp
+from starlette.routing import BaseRoute, Match
+from starlette.types import ASGIApp, Scope
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from dfo_platform import codes, refusal
@@ -40,7 +42,7 @@ from dfo_platform.codes import (
     merge_catalogues,
 )
 from dfo_platform.config import executor_max_workers as _default_executor_max_workers
-from dfo_platform.executor import SaturationTrackingExecutor, current_thread_is_pool_owned
+from dfo_platform.executor import SaturationTrackingExecutor, current_thread_is_owned_by
 from dfo_platform.problem import (
     PROBLEM_JSON,
     Envelope,
@@ -50,9 +52,12 @@ from dfo_platform.problem import (
 )
 from dfo_platform.trace import (
     TRACE_ID_HEADER,
+    cloud_trace_id_from_headers,
     get_trace_id,
     new_trace_id,
+    reset_cloud_trace_id,
     reset_trace_id,
+    set_cloud_trace_id,
     set_trace_id,
 )
 from dfo_platform.validation import (
@@ -92,6 +97,12 @@ class Surface:
     before `call_next`. Returning a spec as data avoids the
     `ServerErrorMiddleware` re-raise caused by exceptions in this layer.
 
+    `registry_endpoints` maps a route's path, as the router declares it, to the
+    code registry endpoint it serves, such as `datasets.mint`. Admission checks
+    and exception classification for a request that route matches run with that
+    endpoint bound (`codes.bound_registry_endpoint`), so `registered_status`
+    reads the route's own status for a code.
+
     `request_scope` returns a context manager entered around each request the
     surface serves, after its admission checks and before dependencies run. It
     binds per-request context variables, such as the origin catalogue, which
@@ -114,6 +125,7 @@ class Surface:
     exception_exemplars: tuple[BaseException, ...] = ()
     lifespan: Callable[[FastAPI], AbstractAsyncContextManager[None]] | None = None
     middleware: tuple[Callable[[Request], ProblemSpec | None], ...] = ()
+    registry_endpoints: Mapping[str, str] = field(default_factory=dict)
     request_scope: Callable[[], AbstractContextManager[object]] | None = None
 
 
@@ -226,6 +238,13 @@ def _validate_surfaces(surfaces: Sequence[Surface]) -> None:
                     "another surface's handler or the platform default instead of this "
                     "surface's own."
                 )
+        route_paths = {getattr(route, "path", None) for route in surface.router.routes}
+        unrouted = sorted(set(surface.registry_endpoints) - route_paths)
+        if unrouted:
+            raise SurfaceConfigurationError(
+                f"surface {surface.name!r} names registry endpoints for {unrouted!r}, which "
+                "no route on its router declares, so no request would bind them."
+            )
 
 
 def _matching_surface(path: str, surfaces: Sequence[Surface]) -> Surface | None:
@@ -488,6 +507,9 @@ async def _trace_id_dispatch(
 ) -> Response:
     """Bind one trace ID to the request context and stamp response headers.
 
+    Also binds the Cloud Trace ID parsed from the request's trace headers,
+    which `dfo_platform.cloud_logging` stamps on every log record.
+
     This outermost layer also runs on CORS preflights. Only non-cacheable
     responses receive the request's trace ID. HSTS and build commit stamp
     every response. Server timing is added around `call_next` when the
@@ -500,6 +522,7 @@ async def _trace_id_dispatch(
     trace_id = new_trace_id()
     request.state.trace_id = trace_id
     token = set_trace_id(trace_id)
+    cloud_token = set_cloud_trace_id(cloud_trace_id_from_headers(request.headers))
     start = time.perf_counter()
     try:
         response = await call_next(request)
@@ -518,12 +541,14 @@ async def _trace_id_dispatch(
     finally:
         # The inner task retains its copied trace context after this outer task resets.
         reset_trace_id(token)
+        reset_cloud_trace_id(cloud_token)
 
 
 async def _probe_default_executor(
-    loop: asyncio.AbstractEventLoop, *, timeout: float
+    loop: asyncio.AbstractEventLoop, *, platform_executor: Executor, timeout: float
 ) -> tuple[str, bool]:
-    """Probe the loop's default executor and identify its worker by the platform pool's sentinel.
+    """Probe the loop's default executor and report whether `platform_executor` started
+    the worker that answered.
 
     `timeout` bounds the probe. It raises `asyncio.TimeoutError` on expiry
     and `RuntimeError` if submission fails.
@@ -531,20 +556,28 @@ async def _probe_default_executor(
     return await asyncio.wait_for(
         loop.run_in_executor(
             None,
-            lambda: (threading.current_thread().name, current_thread_is_pool_owned()),
+            lambda: (
+                threading.current_thread().name,
+                current_thread_is_owned_by(platform_executor),
+            ),
         ),
         timeout=timeout,
     )
 
 
-async def _assert_default_executor_is_ours(loop: asyncio.AbstractEventLoop) -> None:
+async def _assert_default_executor_is_ours(
+    loop: asyncio.AbstractEventLoop, *, platform_executor: Executor
+) -> None:
     """Fail startup if the executor probe times out, fails, or finds a foreign worker.
 
-    The identity sentinel verifies pool ownership. This check covers the
-    serving event loop. Loops created in other threads have separate pools.
+    Each worker records the executor that started it, and the check compares that
+    owner with `platform_executor` by identity. It covers the serving event loop.
+    Loops created in other threads have separate pools.
     """
     try:
-        observed, owned = await _probe_default_executor(loop, timeout=_OWNERSHIP_PROBE_TIMEOUT_S)
+        observed, owned = await _probe_default_executor(
+            loop, platform_executor=platform_executor, timeout=_OWNERSHIP_PROBE_TIMEOUT_S
+        )
     except TimeoutError as exc:
         raise SurfaceConfigurationError(
             f"executor ownership could not be verified within "
@@ -576,11 +609,15 @@ async def _assert_default_executor_is_ours(loop: asyncio.AbstractEventLoop) -> N
         )
 
 
-async def _log_default_executor_ownership_at_shutdown(loop: asyncio.AbstractEventLoop) -> None:
+async def _log_default_executor_ownership_at_shutdown(
+    loop: asyncio.AbstractEventLoop, *, platform_executor: Executor
+) -> None:
     """Log shutdown probe failures. Teardown continues so the platform executor can close."""
     try:
         observed, owned = await _probe_default_executor(
-            loop, timeout=_SHUTDOWN_OWNERSHIP_PROBE_TIMEOUT_S
+            loop,
+            platform_executor=platform_executor,
+            timeout=_SHUTDOWN_OWNERSHIP_PROBE_TIMEOUT_S,
         )
     except TimeoutError:
         logger.warning(
@@ -667,11 +704,11 @@ async def _lifespan(
                 for surface in surfaces:
                     if surface.lifespan is not None:
                         await stack.enter_async_context(surface.lifespan(_app))
-                await _assert_default_executor_is_ours(loop)
+                await _assert_default_executor_is_ours(loop, platform_executor=executor)
                 yield
         finally:
             # Probe after surface teardown so the check cannot delay resource cleanup.
-            await _log_default_executor_ownership_at_shutdown(loop)
+            await _log_default_executor_ownership_at_shutdown(loop, platform_executor=executor)
     finally:
         try:
             if shadow_installed:
@@ -714,6 +751,15 @@ def _envelope_for(request: Request, ctx: _AppContext) -> Envelope:
     return ctx.surface_envelopes[surface.name]
 
 
+def _registry_endpoint(surface: Surface, scope: Scope) -> str | None:
+    """The code registry endpoint of the first surface route that fully matches `scope`, as
+    the router would pick it, or `None` when that route names none."""
+    for route in surface.router.routes:
+        if isinstance(route, BaseRoute) and route.matches(scope)[0] == Match.FULL:
+            return surface.registry_endpoints.get(getattr(route, "path", ""))
+    return None
+
+
 async def _admission_dispatch(
     request: Request, call_next: RequestResponseEndpoint, *, ctx: _AppContext
 ) -> Response:
@@ -726,8 +772,10 @@ async def _admission_dispatch(
     """
     surface = _matching_surface(request.url.path, ctx.surfaces)
     if surface is not None:
+        endpoint = _registry_endpoint(surface, request.scope) if surface.middleware else None
         for check in surface.middleware:
-            spec = check(request)
+            with codes.bound_registry_endpoint(endpoint):
+                spec = check(request)
             if spec is not None:
                 response = _envelope_for(request, ctx).render(spec)
                 trace_id = getattr(request.state, "trace_id", None)
@@ -755,7 +803,8 @@ def _classify_and_envelope(
     envelope = _envelope_for(request, ctx)
     if surface is not None:
         try:
-            spec = surface.classify(exc)
+            with codes.bound_registry_endpoint(_registry_endpoint(surface, request.scope)):
+                spec = surface.classify(exc)
         except Exception:
             logger.exception(
                 "surface %r's classify() raised while classifying %s; "

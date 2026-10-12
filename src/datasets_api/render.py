@@ -14,9 +14,10 @@ column, each entity, `measurementMethod` and `provenance` gets a `_label` name c
 `stat_var` one when no axis decodes), `unit` splits into `unit`, `unit_label`, `currency`,
 `price_basis` and `base_year`, enrichments sit beside their entity, the order is fixed whatever
 order `columns` names, and `status` is left out. Names are cited source labels, else graph
-names read per chunk within the metadata deadline (`_LongLayout`). A missing name, a failed or
+names read per chunk within the render's deadline (`_LongLayout`). A missing name, a failed or
 late read, or an axis label two codes share leaves the cell empty and adds
-`enrichment_unavailable`. A failed read also leaves the artifact unlinked. `measurementMethod_label`
+`enrichment_unavailable`. A failed read also links the artifact as incomplete
+(`incomplete_rendering`). `measurementMethod_label`
 holds only a name that differs from the method's dcid and raises no warning. A selection keeps every
 decoded column unless it names some, and `status` and `<role>_label` tokens are accepted and
 ignored. Requests, pivot output, frames and collapse frames keep the grammar names, and so
@@ -26,9 +27,13 @@ written as reshaped, with no projection and no name read.
 `groupby` and `pivot` read across chunks. Other reshapes stream rows to the writer. A recognised but
 disabled enrichment token raises `capability_unavailable`. Unknown tokens raise `column_unknown`.
 
-A mint of at most `FRAME1_MAX_ROWS` rows also streams canonical frame1 to the store for
-presentation. Frame1 is an unsigned internal rendering on the version record. Series statistics
-are stored separately from the requested rendering.
+Every mint also streams the version's canonical frame to the store
+(`render_and_store_canonical_frame`), an unsigned internal rendering on the version record that
+Presentation, the observations door and every later rendering of the version read
+(`servable_frame_location`). Every writer reads its input in 8,192-row slices cut the same way
+from any chunking (`_reslice_chunks`), so a rendering made from the stored frame has the bytes of
+one made from the fresh frame. Series statistics are stored separately from the requested
+rendering.
 """
 
 from __future__ import annotations
@@ -37,19 +42,22 @@ import hashlib
 import itertools
 import json
 import logging
+import re
 import sys
-import time
 import zipfile
 from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from typing import IO, cast
 from urllib.parse import urlencode
 
+import pyarrow as pa
+from dfo_frame_grammar import frame_sha256
+from pydantic import ValidationError
+
 from artifact_store import (
     ArtifactRecordConflictError,
-    ArtifactSigningError,
     ArtifactStore,
     StoredArtifact,
     Tier,
@@ -59,15 +67,16 @@ from code_index.members import absent_member_reads_zero
 from code_index.query import CodeIndex
 from code_index.shared import get_measure_index
 from code_index.types import level_axes, summable_axes
-from dataset_store.snapshot import StoredArtifactLocation
+from dataset_store.snapshot import StoredArtifactLocation, select_servable_locations
 from datasets_api.adapter import pinned_member_ref, shape_measurement_qualifier
 from datasets_api.artifact_delivery import (
-    artifact_content_disposition,
+    FRAME_FILE_KIND,
+    STATISTICS_FILE_KIND,
+    artifact_download_path,
     artifact_file_name,
 )
 from datasets_api.capabilities import ENABLED_ENRICHMENTS
-from datasets_api.codes_materialise import CapabilityUnavailable, RenderedArtifactSigningFailed
-from datasets_api.config import SIGNED_URL_ADVERTISED_TTL, SIGNED_URL_TTL
+from datasets_api.codes_materialise import CapabilityUnavailable
 from datasets_api.decode import build_decode_plan
 from datasets_api.groupby import (
     collapse_axes,
@@ -84,7 +93,12 @@ from datasets_api.groupby import (
     unsummed_axes,
     yields_grammar_frame,
 )
-from datasets_api.manifest_models import ArtifactEntryModel, CitationSource, Manifest
+from datasets_api.manifest_models import (
+    ArtifactEntryModel,
+    CitationModel,
+    CitationSource,
+    Manifest,
+)
 from datasets_api.mint_models import MintOptions
 from datasets_api.query_options import QueryOptionsInvalid
 from datasets_api.timings import phase
@@ -119,18 +133,20 @@ from materialise.bundle_columns import (
 from materialise.bundle_naming import heading, member_slugs, sources_slug
 from materialise.bundle_sources import source_provenance
 from materialise.codes import MaterialisationWarning
-from materialise.content_version import MintPreimage, mint_version
+from materialise.content_version import mint_version_from_digest
 from materialise.enrichment import EnrichmentLookup
 from materialise.formats import (
     FORMAT_COLUMN_CAPS,
+    FRAME1_MEDIA_TYPE,
     Frame,
     Rendering,
     Table,
     WrittenArtifact,
+    canonical_frame_rows,
     table_schema_for,
+    write_canonical_frame,
     write_csv,
     write_excel,
-    write_frame1,
     write_parquet,
 )
 from materialise.frame_build import build_frame, unit_cell_for_rebuild
@@ -162,6 +178,7 @@ from materialise.reshape import (
     enrichment_unavailable_warning,
     fold_groupby_sum_chunks,
     fold_pivot_chunks,
+    known_pivot_cap_violation,
     parse_column_tokens,
     select_columns,
 )
@@ -226,14 +243,17 @@ def _stat_vars_summed_warning(
 class GroupbyCollapseRendering:
     """The canonical frame from a collapse, with `stat_var` restored on every row and each kept
     code axis as a string grain column. `role_columns` names the frame's roles, each kept code
-    axis's column included. It is independent of selected columns, pivot, and format. An absent
-    mint preimage yields `None` for `content_version`.
+    axis's column included. It is independent of selected columns, pivot, and format.
+    `frame_sha256` is the hash of `frame`. `content_version` is the version `frame` is: minted
+    from that hash alone, or the base version's own token when `frame` is the base frame
+    (`render_and_store`).
     `contributing_member_count` counts distinct StatVars with rows. Callers use it to warn about
     sums."""
 
     frame: Frame
     role_columns: tuple[str, ...]
-    content_version: str | None
+    frame_sha256: str
+    content_version: str
     stat_var_ref: str
     contributing_member_count: int
 
@@ -316,32 +336,48 @@ chunk can otherwise trigger a `to_pylist()` rebuild about 12 times larger than w
 
 
 def _reslice_chunks(chunks: Iterable[Table]) -> Iterator[Table]:
-    """Uses zero-copy slices for Arrow frames and tuple slices for other tables. Empty chunks pass
-    through because an empty materialisation can yield one. `_reshape_stream` applies the 8,192-row
-    bound before each streaming path."""
+    """Cuts Arrow frames into `_RESHAPE_CHUNK_ROWS`-row tuple tables counted from the first row,
+    joining the tables of short chunks, and other tables into tuple slices. A writer types its
+    columns from its first chunk, so the cut keeps a rendering's bytes independent of how the
+    materialiser chunked the frame. An empty frame yields one empty table, since an empty
+    materialisation can yield one. `_reshape_stream` applies the bound before each streaming
+    path.
+
+    The readers downstream (decode, enrichment, groupby and the long layout) each read `rows`,
+    and each `Frame.rows` access rebuilds the rows as Python objects, so every slice is converted
+    here once (`canonical_frame_rows`)."""
+    columns: tuple[str, ...] | None = None
+    pending: list[pa.Table] = []
+    pending_rows = 0
+    yielded = False
     for chunk in chunks:
         if isinstance(chunk, Frame):
-            whole = chunk.table
-            if whole.num_rows == 0:
-                yield chunk
-                continue
-            for start in range(0, whole.num_rows, _RESHAPE_CHUNK_ROWS):
-                yield cast(
-                    Table,
-                    Frame(columns=chunk.columns, table=whole.slice(start, _RESHAPE_CHUNK_ROWS)),
-                )
-        else:
-            rows = chunk.rows
-            if not rows:
-                yield chunk
-                continue
-            for start in range(0, len(rows), _RESHAPE_CHUNK_ROWS):
-                yield cast(
-                    Table,
-                    ReshapeTable(
-                        columns=chunk.columns, rows=rows[start : start + _RESHAPE_CHUNK_ROWS]
-                    ),
-                )
+            columns = chunk.columns
+            pending.append(chunk.table)
+            pending_rows += chunk.table.num_rows
+            while pending_rows >= _RESHAPE_CHUNK_ROWS:
+                buffered = pa.concat_tables(pending)
+                yield _frame_rows(columns, buffered.slice(0, _RESHAPE_CHUNK_ROWS))
+                yielded = True
+                pending = [buffered.slice(_RESHAPE_CHUNK_ROWS)]
+                pending_rows -= _RESHAPE_CHUNK_ROWS
+            continue
+        rows = chunk.rows
+        if not rows:
+            yield chunk
+            continue
+        for start in range(0, len(rows), _RESHAPE_CHUNK_ROWS):
+            yield cast(
+                Table,
+                ReshapeTable(columns=chunk.columns, rows=rows[start : start + _RESHAPE_CHUNK_ROWS]),
+            )
+    if columns is not None and (pending_rows or not yielded):
+        yield _frame_rows(columns, pa.concat_tables(pending))
+
+
+def _frame_rows(columns: tuple[str, ...], table: pa.Table) -> Table:
+    """The canonical frame `table` as a tuple table of the rows `Frame.rows` gives."""
+    return cast(Table, ReshapeTable(columns=columns, rows=tuple(canonical_frame_rows(table))))
 
 
 def _stream_first_axis_collapse(
@@ -416,7 +452,6 @@ def _reshape_groupby_collapse(
     entity_columns: Sequence[str],
     subject_id: str | None,
     subject_label: str | None,
-    groupby_preimage: MintPreimage | None,
     frame_chunks: Iterable[Table] | None,
     warnings: list[MaterialisationWarning],
 ) -> tuple[Table, DecodePlan | None, GroupbyCollapseRendering | None]:
@@ -581,21 +616,12 @@ def _reshape_groupby_collapse(
     role_columns = (*entity_columns, *(f"{_STAT_VAR_COLUMN}_{axis}" for axis in kept))
     collapsed_frame = build_frame(role_keys=role_columns, rows=rows_as_dicts)
     current = cast(Table, collapsed_frame)
-    new_content_version = (
-        mint_version(
-            collapsed_frame,
-            graph_revision=groupby_preimage.graph_revision,
-            source_revisions=groupby_preimage.source_revisions,
-            facets=groupby_preimage.facets,
-            conversion=groupby_preimage.conversion,
-        )
-        if groupby_preimage is not None
-        else None
-    )
+    collapsed_frame_sha256 = frame_sha256(collapsed_frame)
     collapse_info = GroupbyCollapseRendering(
         frame=collapsed_frame,
         role_columns=role_columns,
-        content_version=new_content_version,
+        frame_sha256=collapsed_frame_sha256,
+        content_version=mint_version_from_digest(collapsed_frame_sha256),
         stat_var_ref=stat_var_ref,
         contributing_member_count=len(contributors),
     )
@@ -612,7 +638,6 @@ def _reshape_groupby(
     provenance_refs: Sequence[str],
     subject_id: str | None,
     subject_label: str | None,
-    groupby_preimage: MintPreimage | None,
     frame_chunks: Iterable[Table] | None,
 ) -> _GroupbyOutcome:
     """Applies `groupby` when options and `code_index` are set. Otherwise inputs pass through.
@@ -635,9 +660,8 @@ def _reshape_groupby(
     kept code axis is a role column. Multiple contributors add a
     `stat_vars_summed` warning labelled `subject_label`. A grammar frame requires `subject_id`
     unless it is a sole contributor's full collapse.
-    With `groupby_preimage`, the frame gets a version from its own content, base revision, facets,
-    source revisions, and conversion. A sole-contributor full collapse leaves the frame unchanged
-    and so shares the base version. An absent preimage yields `None`.
+    The frame gets a version from its own content. A sole-contributor full collapse leaves the
+    frame unchanged and so shares the base version.
 
     Raises `RollupNotSummableError` when a family has multiple contributors and no summable axis,
     or `ValueError` when a grammar frame lacks `subject_id`.
@@ -691,7 +715,6 @@ def _reshape_groupby(
             entity_columns=entity_columns,
             subject_id=subject_id,
             subject_label=subject_label,
-            groupby_preimage=groupby_preimage,
             frame_chunks=frame_chunks,
             warnings=warnings,
         )
@@ -869,7 +892,6 @@ def _reshape(
     provenance_refs: Sequence[str],
     subject_id: str | None = None,
     subject_label: str | None = None,
-    groupby_preimage: MintPreimage | None = None,
     frame_chunks: Iterable[Table] | None = None,
 ) -> ReshapeResult:
     """Applies decode, groupby, selection, enrichment, and pivot before rendering. Inert transforms
@@ -878,9 +900,9 @@ def _reshape(
     A supplied `code_index` enables decode-plan construction even when no decode option is set.
     `None` skips decoding.
     `resolved_stat_var_refs` supplies zero-row members to groupby population checks, and
-    `provenance_refs` govern its source-wide missing-as-zero rule. `subject_id` and
-    `groupby_preimage` are used only for the collapse frame's identity, and `subject_label` only for the
-    `stat_vars_summed` warning's family label. `frame_chunks` streams the first
+    `provenance_refs` govern its source-wide missing-as-zero rule. `subject_id` is used only for
+    the collapse frame's `stat_var`, and `subject_label` only for the `stat_vars_summed`
+    warning's family label. `frame_chunks` streams the first
     collapse axis. `None` processes `table` in memory.
 
     Raises `ColumnUnknownError` for unknown columns, `CapabilityUnavailable` for disabled
@@ -901,7 +923,6 @@ def _reshape(
         provenance_refs=provenance_refs,
         subject_id=subject_id,
         subject_label=subject_label,
-        groupby_preimage=groupby_preimage,
         frame_chunks=frame_chunks,
     )
     return _reshape_select_pivot_enrich(
@@ -943,58 +964,116 @@ def cited_source_names(
     return _source_names(_sources(provenance_refs, citations))
 
 
-def stored_artifact_file_name(location: StoredArtifactLocation, *, manifest: Manifest) -> str:
-    """Name a linked artifact from its sources' cited names, `prepared_at` and version, as the
-    mint names it.
+def stored_artifact_file_name(
+    location: StoredArtifactLocation,
+    *,
+    citation: CitationModel,
+    prepared_at: datetime,
+    content_version: str,
+) -> str:
+    """Name a linked artifact from its version's cited source names, `prepared_at` and
+    `content_version`, as the mint names it.
 
     A definition's sources are its citation's. A ref the citation lacks stands as its name.
     """
-    refs = [source.ref for source in manifest.citation.sources]
+    refs = [source.ref for source in citation.sources]
     return artifact_file_name(
-        source_names=cited_source_names(refs, manifest.citation.sources_by_ref()),
-        prepared_at=manifest.prepared_at,
-        content_version=manifest.content_version,
+        source_names=cited_source_names(refs, citation.sources_by_ref()),
+        prepared_at=prepared_at,
+        content_version=content_version,
         media_type=location.media_type,
         rendering=location.rendering,
-        statistics=is_statistics_rendering(location.rendering),
+        kind=_file_kind(location.rendering),
+        shape=_file_shape(location.rendering),
     )
 
 
-def sign_stored_artifact(
-    location: StoredArtifactLocation,
-    *,
-    manifest: Manifest,
-    artifact_store: ArtifactStore,
-    read_at: datetime,
+def linked_under(manifest: Manifest, subject_id: str) -> Manifest:
+    """`manifest` with every artifact's download link naming `subject_id`, the id the request
+    named. A click on the link then checks the revocations the request honoured: a request
+    naming the served id honours revocations under it, and a request naming a posted id
+    honours those under the posted and the served id (`doors.snapshot.read_under_served_id`).
+    """
+    return manifest.model_copy(
+        update={
+            "artifacts": [
+                artifact.model_copy(
+                    update={
+                        "url": artifact_download_path(
+                            subject_id=subject_id,
+                            content_version=manifest.content_version,
+                            artifact_digest=artifact.artifact_digest,
+                        )
+                    }
+                )
+                for artifact in manifest.artifacts
+            ]
+        }
+    )
+
+
+def _file_kind(rendering: Mapping[str, object]) -> str | None:
+    """The file-name kind of a linked artifact: the statistics file's or the canonical frame's,
+    else `None` for a requested rendering."""
+    if is_statistics_rendering(rendering):
+        return STATISTICS_FILE_KIND
+    if is_canonical_frame_rendering(rendering):
+        return FRAME_FILE_KIND
+    return None
+
+
+# A text value names its field in a file name only when it is a short lowercase word.
+_SHAPE_WORD = re.compile(r"[a-z][a-z0-9]{0,15}")
+
+
+def _file_shape(rendering: Mapping[str, object]) -> str | None:
+    """The file-name shape token of a requested rendering, `None` for the default long table
+    and for a file with a `_file_kind`.
+
+    The shaping fields are the rendering without the keys every requested rendering carries
+    whatever its shape (`format`, `bundle`, a bundle's `RENDITION_KEY` and a bare file's
+    `LAYOUT_KEY = DATA_LAYOUT_VERSION`), so the default table keeps its name. The token names
+    each field in key order, by its value when that is a short lowercase word (`frame`, `incomplete`) and by its
+    key otherwise (`columns`, `groupby`, `pivot`), then the first six hex characters of the
+    fields' `rendering_key`, so two renderings that differ in any field, such as two pivots on
+    other axes, take two names: `pivot-1a2b3c`, `frame-4d5e6f`."""
+    if _file_kind(rendering) is not None:
+        return None
+    shaping = {
+        key: value
+        for key, value in rendering.items()
+        if key not in ("format", "bundle", RENDITION_KEY)
+        and not (key == LAYOUT_KEY and value == DATA_LAYOUT_VERSION)
+    }
+    if not shaping:
+        return None
+    words = [
+        value if isinstance(value, str) and _SHAPE_WORD.fullmatch(value) else key
+        for key, value in sorted(shaping.items())
+    ]
+    return "-".join([*words, rendering_key(shaping)[:6]])
+
+
+def stored_artifact_entry(
+    location: StoredArtifactLocation, *, subject_id: str, content_version: str
 ) -> ArtifactEntryModel:
-    """The manifest entry of one linked artifact location, signed under its
-    `stored_artifact_file_name`. Raises `RenderedArtifactSigningFailed` when signing fails."""
-    url = _signed_url(
-        location.artifact_digest,
-        tier=Tier(location.tier),
-        media_type=location.media_type,
-        file_name=stored_artifact_file_name(location, manifest=manifest),
-        artifact_store=artifact_store,
-    )
+    """The manifest entry of one linked artifact location, carrying its stable download link.
+    Building it signs nothing."""
     return ArtifactEntryModel(
         artifact_digest=location.artifact_digest,
         rendering=dict(location.rendering),
         bytes=location.size_bytes,
         media_type=location.media_type,
-        # First-sighting time, as a snapshot read lists it.
+        # The manifest uses first-sighting time. Retention uses this tier's `stored_at`, and
+        # pinning does not reset creation time.
         created_at=location.created_at.isoformat(),
         tier=location.tier,
-        url=url,
-        url_expires_at=(read_at + SIGNED_URL_ADVERTISED_TTL).isoformat(),
+        url=artifact_download_path(
+            subject_id=subject_id,
+            content_version=content_version,
+            artifact_digest=location.artifact_digest,
+        ),
     )
-
-
-def metadata_deadline(deadline: float | None, *, floor_seconds: float) -> float | None:
-    """The absolute monotonic deadline of one graph metadata read starting now: `deadline`, or
-    `floor_seconds` from now when that is later. `None` stays unbounded."""
-    if deadline is None:
-        return None
-    return max(deadline, time.monotonic() + floor_seconds)
 
 
 def _data_paths(
@@ -1169,8 +1248,6 @@ def _store_artifact(
     rendering: Mapping[str, object],
     subject_id: str,
     content_version: str,
-    source_names: Sequence[str],
-    prepared_at: datetime,
     artifact_store: ArtifactStore,
 ) -> ArtifactEntryModel:
     with phase("store"):
@@ -1188,49 +1265,7 @@ def _store_artifact(
         rendering=rendering,
         subject_id=subject_id,
         content_version=content_version,
-        source_names=source_names,
-        prepared_at=prepared_at,
-        artifact_store=artifact_store,
     )
-
-
-def _signed_url(
-    digest: str, *, tier: Tier, media_type: str, file_name: str, artifact_store: ArtifactStore
-) -> str:
-    """A signed download URL for stored bytes, naming the download `file_name`. Raises
-    `RenderedArtifactSigningFailed` when signing fails."""
-    signing_failed = False
-    signing_bucket: str | None = None
-    signing_object_name: str | None = None
-    signing_digest: str | None = None
-    signing_error_class_name: str | None = None
-    signing_status_code: int | None = None
-    try:
-        with phase("sign"):
-            url = artifact_store.signed_get_url(
-                digest,
-                tier=tier,
-                ttl=SIGNED_URL_TTL,
-                response_type=media_type,
-                response_disposition=artifact_content_disposition(file_name),
-            )
-    except ArtifactSigningError as exc:
-        # Read safe fields here. Raise after the handler exits so `__context__` stays unset.
-        signing_bucket = exc.bucket
-        signing_object_name = exc.object_name
-        signing_digest = exc.digest
-        signing_error_class_name = exc.error_class_name
-        signing_status_code = exc.status_code
-        signing_failed = True
-    if signing_failed:
-        raise RenderedArtifactSigningFailed(
-            bucket=cast(str, signing_bucket),
-            object_name=cast(str, signing_object_name),
-            digest=cast(str, signing_digest),
-            error_class_name=signing_error_class_name,
-            status_code=signing_status_code,
-        )
-    return url
 
 
 def _commit_stored(
@@ -1240,39 +1275,22 @@ def _commit_stored(
     rendering: Mapping[str, object],
     subject_id: str,
     content_version: str,
-    source_names: Sequence[str],
-    prepared_at: datetime,
-    artifact_store: ArtifactStore,
 ) -> ArtifactEntryModel:
-    """Signs a committed `put` or `open_put` result and builds its `ArtifactEntryModel`. Streaming
-    writes pass the committed sink result directly, avoiding a whole-artifact buffer. The signed
-    URL names the download from `source_names` and `prepared_at`
-    (`artifact_delivery.artifact_file_name`)."""
-    file_name = artifact_file_name(
-        source_names=source_names,
-        prepared_at=prepared_at,
-        content_version=content_version,
-        media_type=media_type,
-        rendering=rendering,
-        statistics=is_statistics_rendering(rendering),
-    )
-    url = _signed_url(
-        stored.digest,
-        tier=Tier.working,
-        media_type=media_type,
-        file_name=file_name,
-        artifact_store=artifact_store,
-    )
-    now = datetime.now(UTC)
+    """Builds the `ArtifactEntryModel` of a committed `put` or `open_put` result, carrying its
+    stable download link. Streaming writes pass the committed sink result directly, avoiding a
+    whole-artifact buffer."""
     return ArtifactEntryModel(
         artifact_digest=stored.digest,
         rendering=dict(rendering),
         bytes=stored.size_bytes,
         media_type=media_type,
-        created_at=now.isoformat(),
+        created_at=datetime.now(UTC).isoformat(),
         tier="working",
-        url=url,
-        url_expires_at=(now + SIGNED_URL_ADVERTISED_TTL).isoformat(),
+        url=artifact_download_path(
+            subject_id=subject_id,
+            content_version=content_version,
+            artifact_digest=stored.digest,
+        ),
     )
 
 
@@ -1351,8 +1369,7 @@ class _NameReads:
     """Where a render's names come from, shared by the data file and the bundle's codes table.
     `known` names a cell value outright: a cited source's label, a summed family's label. Every
     other value is named by its graph `name`, read through `enrichment` by `lookup` against one
-    absolute `deadline`: the render's `deadline` or `metadata_read_seconds` from the render's
-    start, whichever ends later. After one read fails, `lookup` refuses without reading, so a
+    absolute `deadline`, the render's. After one read fails, `lookup` refuses without reading, so a
     graph outage costs the render at most one read's wait."""
 
     enrichment: EnrichmentLookup
@@ -1368,7 +1385,6 @@ class _NameReads:
         citations: Mapping[str, CitationSource],
         family: tuple[str, str] | None,
         deadline: float | None,
-        metadata_read_seconds: float,
     ) -> _NameReads:
         known = {ref: cited.label for ref, cited in citations.items()}
         if family is not None:
@@ -1376,7 +1392,7 @@ class _NameReads:
         return cls(
             enrichment=enrichment,
             known=known,
-            deadline=metadata_deadline(deadline, floor_seconds=metadata_read_seconds),
+            deadline=deadline,
         )
 
     def lookup(self, nodes: Sequence[str]) -> Mapping[str, Mapping[str, str]]:
@@ -1586,6 +1602,32 @@ def _stored_pivot_facts(
     )
 
 
+def refuse_pivot_over_stored_caps(
+    options: MintOptions, *, output_profile: OutputProfile | None, pivot_max_output_cells: int
+) -> None:
+    """Raise the column-cap or cell-cap refusal that a bare pivot of the frame `output_profile`
+    describes raises before its scan (`fold_pivot_chunks` with the stored facts).
+
+    The caller applies this only where no refusal outranks the caps before the fold: a pivot
+    with no `groupby` (whose collapse decision needs the frame) and no `columns` (whose parse
+    refuses first).
+    """
+    assert options.pivot is not None, "refuse_pivot_over_stored_caps requires options.pivot"
+    plan = PivotPlan(
+        index=options.pivot.index,
+        columns=options.pivot.columns,
+        column_cap=_column_cap(options.format),
+        cell_cap=pivot_max_output_cells,
+    )
+    violation = known_pivot_cap_violation(
+        _stored_pivot_facts(output_profile, plan),
+        column_cap=plan.column_cap,
+        cell_cap=plan.cell_cap,
+    )
+    if violation is not None:
+        raise violation
+
+
 def _stream_bare_pivot(
     frame_chunks: Iterable[Table],
     *,
@@ -1597,7 +1639,6 @@ def _stream_bare_pivot(
     resolved_stat_var_refs: Sequence[str],
     provenance_refs: Sequence[str],
     subject_id: str,
-    groupby_preimage: MintPreimage | None,
     output_profile: OutputProfile | None = None,
 ) -> ReshapeResult:
     """Folds pivot output from chunked rows in one pass. Decode and selection run per chunk, and
@@ -1808,7 +1849,7 @@ class _StreamedRender:
     reads accumulated table and warnings and may raise a deferred `no_summable_axis` refusal.
     Callers run it inside `open_put` so that refusal aborts the artifact. `names_complete`,
     read after the writer drains, is `False` when a long output's name read failed
-    (`_LongLayout`), so the caller leaves the artifact unlinked."""
+    (`_LongLayout`), so the caller links the artifact as incomplete."""
 
     chunks_for_writer: Iterable[Table]
     collapse: GroupbyCollapseRendering | None
@@ -1894,7 +1935,6 @@ def _reshape_stream(
     provenance_refs: Sequence[str],
     subject_id: str,
     subject_label: str | None,
-    groupby_preimage: MintPreimage | None,
     shape_qualifier: str | None,
     name_reads: _NameReads,
     output_profile: OutputProfile | None = None,
@@ -1960,7 +2000,6 @@ def _reshape_stream(
             provenance_refs=provenance_refs,
             subject_id=subject_id,
             subject_label=subject_label,
-            groupby_preimage=groupby_preimage,
             frame_chunks=rest_of_frame_chunks,
         )
         if options.pivot is not None:
@@ -2000,7 +2039,6 @@ def _reshape_stream(
             resolved_stat_var_refs=resolved_stat_var_refs,
             provenance_refs=provenance_refs,
             subject_id=subject_id,
-            groupby_preimage=groupby_preimage,
             output_profile=output_profile,
         )
         return _StreamedRender(
@@ -2091,10 +2129,11 @@ def _reshape_stream(
 @dataclass(frozen=True)
 class RenderedDefinition:
     """The `render_and_store` result. `collapse` is set for a groupby collapse to a frame.
-    `datasets_api.serve` uses it to write the collapsed version's frame1 and version record.
+    `datasets_api.serve` uses it to write the collapsed version's canonical frame and version
+    record.
     `labels_complete` is `False` when a bundle's code label read
     (`BundleCodes.label_read_complete`) or a long output's name read failed, and the caller
-    then leaves the artifact unlinked."""
+    then links the artifact as incomplete (`incomplete_rendering`)."""
 
     artifact: ArtifactEntryModel
     warnings: tuple[MaterialisationWarning, ...]
@@ -2119,10 +2158,9 @@ def render_and_store(
     pivot_max_output_cells: int,
     code_index: CodeIndex | None = None,
     resolved_stat_var_refs: Sequence[str],
-    groupby_preimage: MintPreimage | None = None,
     output_profile: OutputProfile | None = None,
     deadline: float | None = None,
-    metadata_read_seconds: float = 0.0,
+    base_frame_sha256: str | None = None,
 ) -> RenderedDefinition:
     """Renders one definition to a stored artifact and returns its reshape warnings. It consumes
     `frame_chunks` once in order.
@@ -2133,10 +2171,9 @@ def render_and_store(
     is the version's first-mint instant. Its data file is `data/<sources slug>.<format>`, its
     columns are documented and its codes listed from the rows the writer streams, and the codes
     are named by one batched graph read through `enrichment`. Every graph name read of the
-    render shares one deadline, `deadline` or `metadata_read_seconds` from the render's start,
-    whichever ends later, and none follows a failed one (`_NameReads`). A fresh render of one
-    version therefore matches the artifact linked for it while the graph's documentation and
-    code names are unchanged. `site` supplies the origin of every link.
+    render shares `deadline`, and a failed read stops the rest (`_NameReads`). A fresh render of one
+    version therefore matches the artifact linked for it while the sources' documentation and
+    the graph's code names are unchanged. `site` supplies the origin of every link.
 
     Decode, selection, and enrichment stream one chunk at a time. Enrichment warnings merge into
     one count per column. Groupby folds across chunks. Pivot folds to bounded output. No-op groupby
@@ -2144,8 +2181,15 @@ def render_and_store(
     the coverage estimate.
 
     `code_index` controls decoding. `resolved_stat_var_refs` and `provenance_refs` support groupby
-    population and source checks. `groupby_preimage` can mint a collapse frame's version. Its artifact
-    uses that version when present and `content_version` otherwise. `serve` writes version records.
+    population and source checks. A collapse frame mints its own version, which its artifact
+    uses; every other artifact uses `content_version`. `serve` writes version records.
+
+    A collapse frame that is the base frame is the base version, so its collapse carries
+    `content_version`. The frames are compared by hash. `base_frame_sha256` is the hash of
+    the frame `frame_chunks` holds (`stored_frame_sha256`), given when that frame is read back
+    from the store, whose version may carry a token of an earlier frame grammar. Without it
+    `content_version` is the token minted from `frame_chunks`, which equals the collapse's
+    exactly when the frames are equal.
     A collapse frame's `stat_vars_summed` warning labels the family with
     `code_index.labels.family_label` over `spec`'s identity.
     """
@@ -2170,7 +2214,6 @@ def render_and_store(
             else None
         ),
         deadline=deadline,
-        metadata_read_seconds=metadata_read_seconds,
     )
     with phase("render"):
         rendering = Rendering()
@@ -2185,7 +2228,6 @@ def render_and_store(
             provenance_refs=provenance_refs,
             subject_id=subject_id,
             subject_label=subject_label,
-            groupby_preimage=groupby_preimage,
             shape_qualifier=(
                 shape_measurement_qualifier(cast("Mapping[str, object]", identity))
                 if isinstance(identity, Mapping)
@@ -2196,10 +2238,10 @@ def render_and_store(
         )
         chunks_for_writer = streamed.chunks_for_writer
         collapse = streamed.collapse
+        if collapse is not None and collapse.frame_sha256 == base_frame_sha256:
+            collapse = replace(collapse, content_version=content_version)
         effective_content_version = (
-            collapse.content_version
-            if collapse is not None and collapse.content_version is not None
-            else content_version
+            collapse.content_version if collapse is not None else content_version
         )
 
     sources = _sources(provenance_refs, citations)
@@ -2302,9 +2344,6 @@ def render_and_store(
         rendering=artifact_rendering(options, site=site),
         subject_id=subject_id,
         content_version=effective_content_version,
-        source_names=_source_names(sources),
-        prepared_at=prepared_at,
-        artifact_store=artifact_store,
     )
     return RenderedDefinition(
         artifact=artifact, warnings=warnings, collapse=collapse, labels_complete=labels_complete
@@ -2323,6 +2362,14 @@ RENDITION_KEY = "rendition"
 LAYOUT_KEY = "layout"
 """The bare rendering's data layout (`DATA_LAYOUT_VERSION`). A bundle has none, since its
 rendition token covers the layout of the data file inside it."""
+
+METADATA_KEY = "metadata"
+"""Marks the rendering of an artifact a graph metadata read failed for
+(`incomplete_rendering`). No other rendering carries it."""
+
+METADATA_INCOMPLETE = "incomplete"
+"""The `METADATA_KEY` value of an artifact rendered without its sources' documentation or
+without graph names, because the read failed."""
 
 DATA_LAYOUT_VERSION = 2
 """The column layout of a bare data file. Bump it with any change to a bare file's columns or
@@ -2369,6 +2416,27 @@ def artifact_rendering(options: MintOptions, *, site: PublicSiteSettings) -> dic
     return rendering
 
 
+def incomplete_rendering(rendering: Mapping[str, object]) -> dict[str, object]:
+    """The `rendering` an artifact is stored and linked under when a graph metadata read of
+    its render failed: `rendering` plus `METADATA_KEY`.
+
+    Its rendering key differs from `rendering`'s, so the artifact is linked and downloadable
+    while no request's key matches it (`artifact_rendering_key`), and the next render of
+    `rendering` reads the graph again and links its artifact beside this one.
+    """
+    return {**rendering, METADATA_KEY: METADATA_INCOMPLETE}
+
+
+def is_incomplete_rendering(rendering: Mapping[str, object]) -> bool:
+    """Whether `rendering` is one `incomplete_rendering` made."""
+    return rendering.get(METADATA_KEY) == METADATA_INCOMPLETE
+
+
+def complete_rendering(rendering: Mapping[str, object]) -> dict[str, object]:
+    """`rendering` without `METADATA_KEY`: the rendering a request for the artifact matches."""
+    return {key: value for key, value in rendering.items() if key != METADATA_KEY}
+
+
 def artifact_rendering_key(options: MintOptions, *, site: PublicSiteSettings) -> str:
     """The rendering key an artifact rendered under `options` is stored and linked under: the
     hash (`version_store.rendering_key`) of `artifact_rendering(options, site=site)`. The
@@ -2377,14 +2445,94 @@ def artifact_rendering_key(options: MintOptions, *, site: PublicSiteSettings) ->
     return rendering_key(artifact_rendering(options, site=site))
 
 
+def rendering_options(
+    rendering: Mapping[str, object], *, site: PublicSiteSettings
+) -> MintOptions | None:
+    """The `MintOptions` this build renders `rendering` under, or `None` when no options do.
+
+    `rendering` round-trips through `artifact_rendering`, so `None` covers the stored frame
+    (canonical or frame1) and statistics renderings, a bundle of a superseded rendition, a
+    bare file in an old layout and an incomplete rendering (`incomplete_rendering`), whose
+    `METADATA_KEY` no options produce. The options of an incomplete rendering's complete
+    form (`complete_rendering`) render the artifact its request named.
+    """
+    fields = dict(rendering)
+    fields.pop(RENDITION_KEY, None)
+    if fields.get(LAYOUT_KEY) == DATA_LAYOUT_VERSION:
+        del fields[LAYOUT_KEY]
+    try:
+        options = MintOptions.model_validate(fields)
+    except ValidationError:
+        return None
+    return options if artifact_rendering(options, site=site) == dict(rendering) else None
+
+
+CANONICAL_FRAME_RENDERING: Mapping[str, object] = {"format": "frame"}
+"""Fixed rendering key for the canonical frame, independent of request options. Mints with
+different options therefore reuse the same `version_artifact` row for one frame's bytes."""
+
 _FRAME1_RENDERING: Mapping[str, object] = {"format": "frame1"}
-"""Fixed rendering key for frame1, independent of request options. Mints with different options
-therefore reuse the same `version_artifact` row for byte-identical frame1 data."""
+"""The rendering of the frame1 document a version stored before canonical frames holds."""
+
+
+def is_canonical_frame_rendering(rendering: Mapping[str, object]) -> bool:
+    """Matches the canonical frame rendering, which every version's canonical frame carries."""
+    return dict(rendering) == CANONICAL_FRAME_RENDERING
 
 
 def is_frame1_rendering(rendering: Mapping[str, object]) -> bool:
-    """Matches the frame1 rendering, which every version's canonical frame file carries."""
+    """Matches the frame1 rendering of a version's stored frame1 document."""
     return dict(rendering) == _FRAME1_RENDERING
+
+
+def stored_frame_location(
+    locations: Sequence[StoredArtifactLocation],
+) -> StoredArtifactLocation | None:
+    """The version's stored frame among `locations`: its canonical frame, else its frame1
+    document, else `None`. Read the bytes with `materialise.formats.read_stored_frame` and the
+    location's media type."""
+    canonical = next(
+        (location for location in locations if is_canonical_frame_rendering(location.rendering)),
+        None,
+    )
+    if canonical is not None:
+        return canonical
+    return next(
+        (location for location in locations if location.media_type == FRAME1_MEDIA_TYPE), None
+    )
+
+
+def stored_frame_sha256(
+    location: StoredArtifactLocation,
+    table: Table,
+    *,
+    recorded: str | None,
+    locations: Sequence[StoredArtifactLocation] = (),
+) -> str:
+    """The frame hash (`dfo_frame_grammar.frame_sha256`) of the stored frame at `location`,
+    which `table` holds as `materialise.formats.read_stored_frame` read it: `recorded`, the
+    hash on the version's record (`StoredVersion.frame_sha256`), when the record holds one.
+    Otherwise a frame1 document is the frame's canonical bytes, so the digest of one at
+    `location` or among `locations`, the version's links the caller holds, is that hash.
+    A canonical frame with neither is hashed."""
+    if recorded is not None:
+        return recorded
+    frame1 = next(
+        (linked for linked in (location, *locations) if linked.media_type == FRAME1_MEDIA_TYPE),
+        None,
+    )
+    if frame1 is not None:
+        return frame1.artifact_digest.removeprefix("sha256:")
+    return frame_sha256(cast(Frame, table))
+
+
+def servable_frame_location(
+    locations: Sequence[StoredArtifactLocation], *, now: datetime
+) -> StoredArtifactLocation | None:
+    """The servable location of the version's stored frame (`stored_frame_location`).
+    Servability follows `select_servable_locations`, so a pinned location wins over a working
+    one."""
+    return stored_frame_location(select_servable_locations(locations, now=now))
 
 
 STATISTICS_MEDIA_TYPE = "application/vnd.apache.parquet"
@@ -2412,11 +2560,9 @@ def render_and_store_series_statistics(
     data: bytes,
     subject_id: str,
     content_version: str,
-    source_names: Sequence[str],
-    prepared_at: datetime,
     artifact_store: ArtifactStore,
 ) -> ArtifactEntryModel:
-    """Stores each materialisation's `series-statistics/1` Parquet as a listable, signed artifact,
+    """Stores each materialisation's `series-statistics/1` Parquet as a listable artifact,
     independent of the requested format. Manifests list it when `series_count` is set."""
     return _store_artifact(
         data=data,
@@ -2424,41 +2570,26 @@ def render_and_store_series_statistics(
         rendering=_STATISTICS_RENDERING,
         subject_id=subject_id,
         content_version=content_version,
-        source_names=source_names,
-        prepared_at=prepared_at,
         artifact_store=artifact_store,
     )
 
 
-FRAME1_MAX_ROWS = 250_000
-"""Most rows a frame1 rendering holds. A mint writes frame1 only at or under it, and the publish
-door admits no frame above it (`PUBLISH_MAX_ROWS`). A larger version still mints, and
-presentation answers `missing_rendering` for it.
-
-The mint streams frame1 into the store: its Python heap peak is about 32 MiB at both 130,000 and
-250,000 rows. The bound's cost falls on presentation, where `LiveFrameStore.load` fetches the
-whole document and JSON-decodes every row. Measured on CRS-shaped frames, a root mint's frame1
-(two declared roles) is 240 bytes a row, and a published frame with two declared roles and four
-`stat_var_*` columns is 363 bytes a row. One load of the wider frame adds 178 MiB of peak RSS at
-130,000 rows and 420 MiB at 250,000 rows (120 and 298 MiB for the root shape), and the frame
-cache then keeps about 233 MiB of the 250,000-row frame resident."""
-
-
-def render_and_store_frame1(
+def render_and_store_canonical_frame(
     *,
     frame_chunks: Iterable[Frame],
     subject_id: str,
     content_version: str,
     artifact_store: ArtifactStore,
 ) -> ArtifactRecord:
-    """Streams the canonical frame1 bytes of `frame_chunks` into the store as an unsigned
-    artifact, without holding the whole document. Presentation reads it from the version record
-    by media type. Encoding runs inside the shared `store` phase, so when it runs beside the
-    requested write that phase sums both threads' time."""
+    """Streams the canonical frame of `frame_chunks` into the store as an unsigned artifact,
+    holding at most one row group (`materialise.formats.write_canonical_frame`), whatever the
+    frame's size. Readers find it on the version record by `CANONICAL_FRAME_RENDERING`. Encoding
+    runs inside the shared `store` phase, so when it runs beside the requested write that phase
+    sums both threads' time."""
     with phase("store"):
         try:
             with artifact_store.open_put(tier=Tier.working) as sink:
-                written = write_frame1(frame_chunks, sink=sink)
+                written = write_canonical_frame(frame_chunks, sink=sink)
             stored = sink.result()
         except ArtifactRecordConflictError as exc:
             exc.subject_id = subject_id
@@ -2466,6 +2597,6 @@ def render_and_store_frame1(
             raise
     return ArtifactRecord(
         artifact_digest=stored.digest,
-        rendering=dict(_FRAME1_RENDERING),
+        rendering=dict(CANONICAL_FRAME_RENDERING),
         media_type=written.media_type,
     )

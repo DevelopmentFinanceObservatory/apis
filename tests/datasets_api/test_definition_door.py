@@ -6,24 +6,22 @@ from __future__ import annotations
 
 import io
 import json
-import logging
 import zipfile
+from collections.abc import Callable
 from urllib.parse import urlsplit
 
 import httpx
 import pyarrow.parquet as pq
 import pytest
 
-import datasets_api.app as app_module
-from artifact_store import ArtifactSigningError
+import datasets_api.doors.definition as definition_module
 from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api.config import DatasetsBuildSettings
-from datasets_api.revision import SentinelRevisionReader
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from dc_sdmx import SdmxClient
 from materialise.graph import Facet
 from series_coverage.index import CoverageIndex
-from series_coverage.schema import CoverageManifest, FacetMetadata, RoleNames
+from series_coverage.schema import ABSENT_ENTITY, CoverageManifest, FacetMetadata, RoleNames
 from series_coverage.shared import CoverageSnapshot
 from spec_registry import LiveSpecRegistry
 from spec_registry.identity import recompute_identity
@@ -96,9 +94,10 @@ def _graph() -> FakeMintGraphReader:
 def _coverage_service(
     *,
     stat_vars: tuple[str, ...] = (_STAT_VAR,),
-    donor_role: str = "provider",
-    donor: str = "country/USA",
+    donor_role: str | None = None,
+    donor: str | None = None,
     recipient: str = _RECIPIENT,
+    recipient_role: str = "recipient",
     facet_id: str = "facet1",
     provenance: str = "OECD_DAC2A",
     measurement_method: str = "GrantEquivalent",
@@ -106,10 +105,13 @@ def _coverage_service(
     years: tuple[int, ...] = (2020,),
 ) -> FakeCoverageService:
     """Builds a coverage facet per StatVar, matching the fixture's metadata and year range."""
+    coverage_donor = "country/USA" if donor is None and donor_role is not None else donor
+    coverage_donor = ABSENT_ENTITY if coverage_donor is None else coverage_donor
     index = build_coverage_index(
-        [(stat_var, facet_id, donor, recipient, list(years)) for stat_var in stat_vars],
+        [(stat_var, facet_id, coverage_donor, recipient, list(years)) for stat_var in stat_vars],
         role_names={
-            stat_var: RoleNames(donor=donor_role, recipient="recipient") for stat_var in stat_vars
+            stat_var: RoleNames(donor=donor_role, recipient=recipient_role)
+            for stat_var in stat_vars
         },
         facet_metadata={
             facet_id: FacetMetadata(
@@ -132,6 +134,13 @@ class _MutableCoverageService:
 
     def replace(self, index: CoverageIndex) -> None:
         self._index = index
+
+    def serves(self, snapshot: CoverageSnapshot) -> bool:
+        return snapshot.index is self._index
+
+    def register_load_guard(self, guard: object) -> Callable[[], None]:
+        """This fake never loads a build, so no guard is ever entered."""
+        return lambda: None
 
     def snapshot(self) -> CoverageSnapshot:
         return CoverageSnapshot(
@@ -240,7 +249,6 @@ def _client(
             base_url=_BASE_URL,
             transport=sdmx_transport if sdmx_transport is not None else _sdmx_transport(),
         ),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=artifact_store if artifact_store is not None else FakeArtifactStore(),
         version_writer=version_writer,
         head_writer=head_writer,
@@ -264,12 +272,15 @@ def _mint_one_spec(client) -> str:
 
 
 class _RaisingVersionRecordWriter:
-    """Raises `DatasetsStoreUnavailable` for both version and artifact writes."""
+    """Raises `DatasetsStoreUnavailable` for every version and artifact write."""
 
     def record_version(self, record, *, trace_id: str | None = None) -> None:
         raise DatasetsStoreUnavailable("exemplar diagnostics")
 
     def record_artifact(self, *, subject_id, content_version, artifact, trace_id=None) -> None:
+        raise DatasetsStoreUnavailable("exemplar diagnostics")
+
+    def write_version(self, write, *, trace_id: str | None = None) -> None:
         raise DatasetsStoreUnavailable("exemplar diagnostics")
 
 
@@ -289,72 +300,6 @@ def test_retrieval_wire_maps_a_version_writer_store_failure_to_retryable_503():
     body = resp.json()
     assert body["code"] == "service_unavailable"
     assert body["retryable"] is True
-
-
-class _SigningFailureArtifactStore(FakeArtifactStore):
-    """Stores artifacts normally and raises `ArtifactSigningError` when signing a URL."""
-
-    def signed_get_url(
-        self, digest: str, *, tier, ttl, response_type: str, response_disposition: str
-    ):
-        raise ArtifactSigningError(bucket="fake-bucket", object_name=digest, digest=digest)
-
-
-def test_retrieval_signing_failure_classifies_through_this_door_not_a_bare_500(
-    caplog: pytest.LogCaptureFixture,
-):
-    """A signing failure during retrieval must map to retryable 503 `service_unavailable`,
-    without reaching the platform's unclassified 500 path."""
-    store = FakeDatasetStore()
-    graph = _graph()
-    minting_client = _client(graph=graph, store=store)
-    spec_id = _mint_one_spec(minting_client)
-    retrieving_client = _client(
-        graph=graph, store=store, artifact_store=_SigningFailureArtifactStore()
-    )
-
-    with caplog.at_level(logging.WARNING):
-        resp = retrieving_client.get(f"/api/datasets/{spec_id}")
-
-    assert resp.status_code == 503, resp.text
-    body = resp.json()
-    assert body["code"] == "service_unavailable"
-    assert body["retryable"] is True
-    assert not any(
-        "absent from its own declared exception_types" in r.getMessage() for r in caplog.records
-    )
-
-
-class _MalformedCredentialArtifactStore(FakeArtifactStore):
-    """Raises `ArtifactSigningError` with `error_class_name="MalformedError"` and no status."""
-
-    def signed_get_url(
-        self, digest: str, *, tier, ttl, response_type: str, response_disposition: str
-    ):
-        raise ArtifactSigningError(
-            bucket="fake-bucket",
-            object_name=digest,
-            digest=digest,
-            error_class_name="MalformedError",
-            status_code=None,
-        )
-
-
-def test_retrieval_malformed_credential_class_name_alone_classifies_internal_error_through_this_door():
-    store = FakeDatasetStore()
-    graph = _graph()
-    minting_client = _client(graph=graph, store=store)
-    spec_id = _mint_one_spec(minting_client)
-    retrieving_client = _client(
-        graph=graph, store=store, artifact_store=_MalformedCredentialArtifactStore()
-    )
-
-    resp = retrieving_client.get(f"/api/datasets/{spec_id}")
-
-    assert resp.status_code == 500, resp.text
-    body = resp.json()
-    assert body["code"] == "internal_error"
-    assert body["retryable"] is False
 
 
 def test_retrieval_re_materialises_a_minted_spec():
@@ -517,13 +462,28 @@ def test_facet_drift_refuses_facet_not_available_without_body_pointers():
     provenance has no candidate.
     """
     graph = _graph()
+    graph._arcs[_STAT_VAR] = {
+        "typeOf": ("StatisticalVariable",),
+        "observationProperties": ("provider", "recipient"),
+        "measuredProperty": ("amount",),
+    }
+    two_role_header = _CSV_HEADER.replace(
+        "variableMeasured,recipient,unit", "variableMeasured,provider,recipient,unit"
+    )
+    two_role_body = (
+        two_role_header + f"dataflow,DC:DF_OBS(1.0.0),I,{_STAT_VAR},country/USA,{_RECIPIENT},USD,"
+        "GrantEquivalent,NotApplicable,OECD_DAC2A,2015,1000,,facet1\r\n"
+    )
     transport = _MutableSdmxTransport()
-    coverage = _MutableCoverageService(_coverage_service().current())
+    transport.body = two_role_body
+    coverage = _MutableCoverageService(_coverage_service(donor_role="provider").current())
     client = _client(graph=graph, sdmx_transport=httpx.MockTransport(transport), coverage=coverage)
     spec_id = _mint_one_spec(client)
 
-    transport.body = _CSV_HEADER
-    coverage.replace(_coverage_service(facet_id="facet2", provenance="WB_IDS").current())
+    transport.body = two_role_header
+    coverage.replace(
+        _coverage_service(donor_role="provider", facet_id="facet2", provenance="WB_IDS").current()
+    )
 
     resp = client.get(f"/api/datasets/{spec_id}")
 
@@ -756,10 +716,10 @@ def test_registered_pinned_identity_with_no_bound_entities_retrieves_every_cover
     assert manifest["definition"]["spec_id"] == spec_id
     assert manifest["definition"]["identity"]["entities"] == {}
     assert manifest["coverage"]["rows"] == 1
-    # The fetch covers every series coverage holds. It names its one donor and no recipient filter.
+    # The fetch covers every series coverage holds and names its recipient axis.
     (fetch,) = fetches
-    assert fetch.url.params["c[provider]"] == "country/USA"
-    assert "c[recipient]" not in fetch.url.params
+    assert fetch.url.params["c[recipient]"] == _RECIPIENT
+    assert "c[provider]" not in fetch.url.params
 
 
 def _described_two_member_identity() -> dict:
@@ -821,7 +781,7 @@ def test_options_refuses_an_estimate_over_the_inline_ceiling_before_any_fetch(
     """Coverage prices the unbound role-bearing identity at two rows. With the inline ceiling
     at one row, `/options` refuses `over_ceiling` from the estimate and sends no SDMX request,
     whether it reads a registered spec or admits a posted definition."""
-    monkeypatch.setattr(app_module, "_MATERIALISE_RAW_FETCH_GUARD_ROWS", 1)
+    monkeypatch.setattr(definition_module, "MATERIALISE_RAW_FETCH_GUARD_ROWS", 1)
     sent: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1038,8 +998,8 @@ def test_registered_described_arm_group_with_no_bound_entities_retrieves_both_me
     # Every fetch covers every series coverage holds, and between them they name both members.
     assert fetches
     for fetch in fetches:
-        assert fetch.url.params["c[provider]"] == "country/USA"
-        assert "c[recipient]" not in fetch.url.params
+        assert fetch.url.params["c[recipient]"] == _RECIPIENT
+        assert "c[provider]" not in fetch.url.params
     assert {
         stat_var
         for fetch in fetches

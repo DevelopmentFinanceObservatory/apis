@@ -2,8 +2,10 @@
 
 Warnings appear in 200 manifests. The refusal registry handles errors. The capability
 version hashes this catalogue, so wording and severity changes affect it.
-This package reserves `enrichment_unavailable`, `deflator_projected`,
-`currency_unmapped_omitted` and `deflator_missing_omitted` without raising them here.
+This package reserves `enrichment_unavailable`, `deflator_projected`, `currency_unmapped_omitted`
+and `deflator_missing_omitted` without raising them here. Only the stored manifests of versions
+minted before `content_version` hashed the frame alone carry `revision_unavailable`, and a snapshot
+read replays them.
 
 `facet_default_selected` is built from the completed materialisation trace.
 The `materialise` package keeps its warning catalogue independent, except that

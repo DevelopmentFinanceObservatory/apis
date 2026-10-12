@@ -7,7 +7,7 @@ five-tuple pins. The election implies both, so an imputed part's identity leaves
 unbound. The recall sample of a scripted question holds one member of each, so an unnamed
 part's bind menu offers both. A question names no dataset, so a part answers the CRS
 unless bind elects the imputed shape, which names its table; the tests of a named dataset
-name it at the part's seam, `ResolveState.named_dataset`. The recorded tests replay the
+name it at the part's seam, `ResolveState.scope`. The recorded tests replay the
 extraction and bind responses in `tests/fixtures/llm_responses.json`, and their recall
 holds the CRS member alone, as the dev graph's recall for "education aid" and "aid" does;
 the other tests script the model.
@@ -18,7 +18,7 @@ from __future__ import annotations
 import dataclasses
 import sys
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 import pytest
 
@@ -28,11 +28,8 @@ from code_index.query import CodeIndex, row_five_tuple
 from code_index.shared import get_index
 from code_index.types import DatasetDeclaration
 from datasets_api.adapter import resolve_definition_members
-from search.engine.bind import (
-    EXCLUDED_SOURCE_PREFIX,
-    SlotBindingDraft,
-    _UniversalBindOutput,
-)
+from origin_catalogue import DFO, Catalogue, ProvenanceRow, SourceRef
+from search.engine.bind import SlotBindingDraft, _UniversalBindOutput
 from search.engine.extract import ExtractedEntity, Extraction
 from search.engine.region import pipeline as pipeline_module
 from search.engine.region.phase_rank_bind import _phase_prune_and_rank
@@ -48,6 +45,7 @@ from search.models import (
     ParsedPart,
     ResolveRequest,
     ResolveResponse,
+    SourceMention,
     Spec,
 )
 from search.models.response import Part
@@ -69,7 +67,9 @@ from tests.datasets_api._member_bounds import mint_bounds
 from tests.engine._fake_coverage import patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import make_request, offline_resolve
+from tests.engine._source_scopes import part_scope
 from tests.fixtures import FakeGraph, FakeLLM
+from tests.origin_catalogue.fake_catalogue import FakeCatalogue
 
 _KEN = "country/KEN"
 _FRA = "country/FRA"
@@ -96,8 +96,8 @@ _COMMITMENTS_MEMBER = next(
     and CRS_PROVENANCE in row.provenances
 )
 _CRS_LABEL = "OECD Creditor Reporting System (CRS)"
-# A test-only table that the second-table tests declare beside the CRS on the aid five-tuple,
-# so the bind menu offers the source slot there (`_with_second_table`).
+# A test-only table that the second-table tests declare beside the CRS on the aid five-tuple
+# (`_with_second_table`), so the family has two publishers.
 _SECOND = "provenance/TestDacTable2a"
 _SECOND_LABEL = "DAC Table 2a"
 _IMPUTED_LABEL = "ONE Imputed Multilateral Sectors"
@@ -432,6 +432,45 @@ def _use_second_table(monkeypatch: pytest.MonkeyPatch, *, opt_in: bool) -> None:
     )
 
 
+def _catalogue_row(provenance: str, name: str, publisher: str) -> ProvenanceRow:
+    return ProvenanceRow(
+        id=provenance,
+        data_commons=DFO,
+        source=SourceRef(ref=f"dc/s/{publisher}", label=publisher),
+        name=name,
+        url="https://example.org",
+    )
+
+
+@pytest.fixture
+def source_catalogue(bind_catalogue: Callable[[Catalogue], None]) -> None:
+    """Bind an origin catalogue listing the CRS, the second table and the imputed table
+    under their declared names, so a part's source words resolve to them."""
+    rows = (
+        _catalogue_row(CRS_PROVENANCE, _CRS_LABEL, "OECD"),
+        _catalogue_row(_SECOND, _SECOND_LABEL, "OECD"),
+        _catalogue_row(IMPUTED_PROVENANCE, _IMPUTED_LABEL, "ONE"),
+    )
+    bind_catalogue(FakeCatalogue(provenances={row.id: row for row in rows}))
+
+
+def _naming(text: str) -> SourceMention:
+    return SourceMention(text=text)
+
+
+def _excluding(text: str) -> SourceMention:
+    return SourceMention(text=text, polarity="exclude")
+
+
+def _query(variable: str, sources: tuple[SourceMention, ...]) -> str:
+    """A question on `variable` to Kenya whose words carry each of `sources`."""
+    words = [
+        f"excluding {source.text}" if source.polarity == "exclude" else f"from {source.text}"
+        for source in sources
+    ]
+    return " ".join([f"{variable} to Kenya", *words])
+
+
 def _unapplied(response: ResolveResponse) -> list[str]:
     """The phrases the answer reports as not applied: each part's `query_qualifier_dropped`
     warning and `measure_not_applied` departure."""
@@ -450,64 +489,29 @@ def _unapplied(response: ResolveResponse) -> list[str]:
     return [*warned, *departed]
 
 
-def _without_source_slot(prompt: str) -> str:
-    """`prompt` less the SOURCE SLOT rules block and each shape's source slot lines: the
-    `axis=source` line and its taxonomy and labels lines."""
-    kept: list[str] = []
-    lines = iter(prompt.splitlines(keepends=True))
-    for line in lines:
-        if line.startswith("SOURCE SLOT ("):
-            for rule in lines:
-                if not rule.strip():
-                    break
-            continue
-        if line.lstrip().startswith("axis=source,"):
-            next(lines)
-            next(lines)
-            continue
-        kept.append(line)
-    return "".join(kept)
-
-
-@pytest.mark.parametrize("shared", [False, True], ids=["packaged", "second-table"])
-def test_the_source_slot_appears_only_on_a_family_two_tables_publish(
-    monkeypatch: pytest.MonkeyPatch, shared: bool
+def test_a_second_table_on_the_family_leaves_the_bind_prompt_as_it_was(
+    monkeypatch: pytest.MonkeyPatch,
 ):
-    """On the packaged index the CRS aid family has one table, and DAC1 shares its
-    five-tuple as a family of its own, so its bind prompt offers no slot. With a second
-    table the prompt offers the slot, the question names no table, and the part answers
-    the CRS under its plain identity."""
-    if shared:
-        _use_second_table(monkeypatch, opt_in=False)
+    """The bind menu offers no source: a second table publishing the CRS aid family leaves
+    the prompt of a question naming no table as it was, and the part answers the CRS under
+    its plain identity."""
+    _response, plain = _resolve("total aid to Kenya", "aid")
+    _use_second_table(monkeypatch, opt_in=False)
 
-    response, llm = _resolve("total aid to Kenya", "aid")
+    response, shared = _resolve("total aid to Kenya", "aid")
 
-    prompt = llm.bind_prompts["aid"]
-    assert ("SOURCE SLOT" in prompt) is shared
-    assert ("axis=source" in prompt) is shared
+    assert shared.bind_prompts["aid"] == plain.bind_prompts["aid"]
+    assert "axis=source" not in shared.bind_prompts["aid"]
     (spec,) = _specs(response)
     assert "source" not in _bound(spec)
     assert spec.spec_id == _spec_id(_plain_aid_identity())
 
 
-def test_the_source_slot_adds_only_its_rules_and_its_slot_to_the_bind_prompt(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """With a second table on the family, the bind prompt adds only the slot's rules and
-    the shape's source slot to the packaged prompt of the same question."""
-    _response, plain = _resolve("total aid to Kenya", "aid")
-    _use_second_table(monkeypatch, opt_in=False)
-    _response, slotted = _resolve("total aid to Kenya", "aid")
-
-    assert slotted.bind_prompts["aid"] != plain.bind_prompts["aid"]
-    assert _without_source_slot(slotted.bind_prompts["aid"]) == plain.bind_prompts["aid"]
-
-
 @pytest.mark.parametrize("opt_in", [False, True], ids=["default", "opt-in"])
 def test_a_question_naming_the_second_table_answers_from_it(
-    monkeypatch: pytest.MonkeyPatch, opt_in: bool
+    monkeypatch: pytest.MonkeyPatch, source_catalogue: None, opt_in: bool
 ):
-    """The source slot names the second table, opt-in or not, so the part mints the
+    """The question's words name the second table, opt-in or not, so the part mints the
     identity of every aid to Kenya naming that table: the plain aid identity with its
     provenance facet bound to the table, in canonical form."""
     _use_second_table(monkeypatch, opt_in=opt_in)
@@ -525,11 +529,11 @@ def test_a_question_naming_the_second_table_answers_from_it(
 
 @pytest.mark.parametrize("opt_in", [False, True], ids=["default", "opt-in"])
 def test_a_question_excluding_the_crs_answers_from_the_other_table_or_refuses(
-    monkeypatch: pytest.MonkeyPatch, opt_in: bool
+    monkeypatch: pytest.MonkeyPatch, source_catalogue: None, opt_in: bool
 ):
     """Excluding the CRS leaves the second table when it serves by default, and the identity
     names it. An opt-in second table answers only a part that names it, so excluding the
-    CRS leaves no table and the part refuses, naming the CRS."""
+    CRS leaves no table and the part refuses, naming the CRS and the opt-in table."""
     _use_second_table(monkeypatch, opt_in=opt_in)
 
     response, _llm = _resolve("aid to Kenya excluding the CRS", "aid")
@@ -538,8 +542,10 @@ def test_a_question_excluding_the_crs_answers_from_the_other_table_or_refuses(
     if opt_in:
         assert isinstance(part, NoDataPart)
         assert part.no_data.reason == "qualifier_not_bound"
-        (unbound,) = part.no_data.unbound_qualifiers
-        assert [(ref.dcid, ref.label) for ref in unbound.named] == [(CRS_PROVENANCE, _CRS_LABEL)]
+        assert [
+            [(ref.dcid, ref.label) for ref in unbound.named]
+            for unbound in part.no_data.unbound_qualifiers
+        ] == [[(CRS_PROVENANCE, _CRS_LABEL)], [(_SECOND, _SECOND_LABEL)]]
     else:
         assert _unapplied(response) == []
         (spec,) = _specs(response)
@@ -547,64 +553,120 @@ def test_a_question_excluding_the_crs_answers_from_the_other_table_or_refuses(
         assert _sources(spec) == [_SECOND]
 
 
+_DAC2A = "provenance/OECDDAC2A"
+# DAC2a's official development assistance member of the nominal aid five-tuple, a family
+# the CRS does not publish.
+_DAC2A_MEMBER = next(
+    row.dcid
+    for row in get_index().statvars
+    if row.provenances == (_DAC2A,)
+    and row.population_type == "FinancialFlow"
+    and row.measured_property == "amount"
+    and row.measurement_denominator is None
+    and row.constraint_properties.get("dac2aAidType") == "DAC2aAidType206"
+)
+
+
+def test_a_question_excluding_the_crs_answers_from_dac2a_in_its_menu(
+    monkeypatch: pytest.MonkeyPatch, bind_catalogue: Callable[[Catalogue], None]
+):
+    """ "ODA to Kenya excluding the CRS" recalls DAC2a beside the CRS, so the exclusion
+    chooses DAC2a from the unscoped menu and the part answers from it."""
+    bind_catalogue(
+        FakeCatalogue(
+            provenances={
+                row.id: row
+                for row in (
+                    _catalogue_row(CRS_PROVENANCE, _CRS_LABEL, "OECD"),
+                    _catalogue_row(_DAC2A, "DAC2A", "OECD"),
+                )
+            }
+        )
+    )
+    patch_coverage(
+        monkeypatch,
+        [(_DAC2A_MEMBER, "dac2a", _FRA, _KEN, [2019, 2020, 2021])],
+        role_names={
+            _DAC2A_MEMBER: RoleNames(donor="financingProvider", recipient="financingRecipient")
+        },
+        facet_metadata={"dac2a": FacetMetadata(provenance_id=_DAC2A, unit="USD")},
+    )
+    sources = (_excluding("CRS"),)
+
+    response = _resolve_scripted(
+        _query("ODA", sources),
+        _ScriptedLLM("ODA"),
+        graph=_graph("ODA", members=(_DAC2A_MEMBER, _CRS_MEMBER)),
+    )
+
+    (spec,) = _specs(response)
+    assert _sources(spec) == [_DAC2A]
+
+
+def test_an_included_table_that_serves_nothing_of_the_answer_warns(source_catalogue: None):
+    """A part naming the CRS and the imputed table whose recall reaches only the CRS answers
+    from the CRS and warns `query_qualifier_dropped` that the imputed table served
+    nothing, quoting its words; the CRS, which served, raises no warning."""
+    sources = (_naming("CRS"), _naming(_IMPUTED_LABEL))
+
+    response = _resolve_scripted(
+        _query(_E, sources),
+        _ScriptedLLM(_E),
+        graph=_graph(_E, members=(_CRS_MEMBER,)),
+    )
+
+    (spec,) = _specs(response)
+    assert _sources(spec) == [CRS_PROVENANCE]
+    (warned,) = _unapplied(response)
+    assert f'"{_IMPUTED_LABEL}"' in warned
+
+
 # ---------------------------------------------------------------------------
 # A scripted model
 # ---------------------------------------------------------------------------
 
 
-_NAMED_PHRASE = f"according to {_SECOND_LABEL}"
 _OTHER_PHRASE = "in fragile states"
 
 
-@pytest.mark.parametrize(
-    ("source_phrase", "unapplied"),
-    [
-        (_NAMED_PHRASE, [_OTHER_PHRASE]),
-        (f"per {_SECOND_LABEL}", [_NAMED_PHRASE, _OTHER_PHRASE]),
-    ],
-    ids=["one-of-two-consumed", "echo-not-dropped"],
-)
-def test_only_the_dropped_phrase_the_source_slot_consumed_counts_as_applied(
-    monkeypatch: pytest.MonkeyPatch, source_phrase: str, unapplied: list[str]
+def test_a_source_the_query_names_is_no_dropped_phrase(
+    monkeypatch: pytest.MonkeyPatch, source_catalogue: None
 ):
-    """The source slot names the second table and echoes the dropped phrase it consumed.
-    That phrase raises no warning and no departure; the other dropped phrase still does. An
-    echo that is not one of the dropped phrases verbatim applies none."""
+    """The query names the second table beside a phrase the extraction drops. The part
+    answers from the table, and only the dropped phrase raises a warning or a departure."""
     _use_second_table(monkeypatch, opt_in=False)
-    named = SlotBindingDraft(axis="source", property_dcid=None, kind="value", value_dcids=[_SECOND])
-    llm = _ScriptedLLM(
-        "aid",
-        dropped=(_NAMED_PHRASE, _OTHER_PHRASE),
-        drafted=(named,),
-        source_phrase=source_phrase,
-    )
+    llm = _ScriptedLLM("aid", dropped=(_OTHER_PHRASE,))
 
-    response = _resolve_scripted("aid to Kenya", llm, graph=_graph("aid", members=(_CRS_MEMBER,)))
+    response = _resolve_scripted(
+        f"aid to Kenya from {_SECOND_LABEL} {_OTHER_PHRASE}",
+        llm,
+        graph=_graph("aid", members=(_CRS_MEMBER,)),
+    )
 
     (spec,) = _specs(response)
     assert _bound(spec)["source"] == _SECOND
     reported = _unapplied(response)
-    assert {
-        phrase for phrase in (_NAMED_PHRASE, _OTHER_PHRASE) if any(phrase in r for r in reported)
-    } == set(unapplied)
+    assert reported
+    assert all(_OTHER_PHRASE in phrase for phrase in reported)
 
 
 class _ScriptedLLM:
-    """Extract the given variables to Kenya, and elect the first shape with every slot open
-    but those `drafted` binds, nominating the shapes `also_plausible` indexes beside it.
-    Each bind prompt is kept in call order."""
+    """Extract the given variables to Kenya, and elect the first
+    shape with every slot open but those `drafted` binds, nominating the shapes
+    `also_plausible` indexes beside it, or ask `ask` and elect none. Each bind prompt is
+    kept in call order."""
 
     def __init__(
         self,
         *variables: str,
         dropped: tuple[str, ...] = (),
         drafted: tuple[SlotBindingDraft, ...] = (),
-        source_phrase: str | None = None,
         also_plausible: list[int] | None = None,
+        ask: str | None = None,
     ) -> None:
         self._variables = list(variables)
+        self._ask = ask
         self._also_plausible = also_plausible
-        self._source_phrase = source_phrase
         self._dropped = list(dropped)
         self._drafted = list(drafted)
         self.bind_prompts: list[str] = []
@@ -624,14 +686,11 @@ class _ScriptedLLM:
                 dropped_qualifiers=self._dropped,
             ), None
         self.bind_prompts.append(prompt)
-        slot = (
-            {"source_phrase": self._source_phrase} if "source_phrase" in schema.model_fields else {}
-        )
         return schema(
             chosen_shape_index=0,
             bindings=self._drafted,
             also_plausible=self._also_plausible,
-            **slot,
+            ask=self._ask,
         ), None
 
 
@@ -660,10 +719,10 @@ _PHASES = pipeline_module._PHASES
 
 def _name_dataset(monkeypatch: pytest.MonkeyPatch, provenance: str) -> None:
     """Name `provenance` as every part's dataset, at the seam shape candidacy reads
-    (`ResolveState.named_dataset`). A later call replaces the dataset an earlier one named."""
+    (`ResolveState.scope`). A later call replaces the dataset an earlier one named."""
 
     async def named(state: ResolveState):
-        state.named_dataset = provenance
+        state.scope = part_scope(provenance)
         return await _phase_prune_and_rank(state)
 
     monkeypatch.setattr(
@@ -840,71 +899,114 @@ def test_a_plain_question_binding_codes_no_crs_row_holds_together_is_not_resolve
     assert part.no_data.unbound_qualifiers == []
 
 
-def _drafted_source(value: str) -> tuple[SlotBindingDraft, ...]:
-    return (SlotBindingDraft(axis="source", property_dcid=None, kind="value", value_dcids=[value]),)
+def test_raw_text_words_that_name_no_source_scope_nothing(source_catalogue: None):
+    """Raw-text source words that match no admitted name are no source mention: the part
+    answers unscoped and restates no source."""
+    response = _resolve_scripted(
+        "aid to Kenya from XYZ statistics", _ScriptedLLM("aid"), graph=_graph("aid")
+    )
+
+    (part,) = response.parts
+    assert not isinstance(part, NoDataPart) or part.no_data.reason != "source_not_resolved"
+    assert part.restatement is not None and part.restatement.sources == []
+
+
+def test_raw_text_source_words_qualify_only_the_variable_they_attach_to(
+    source_catalogue: None,
+):
+    """A source the query names after one variable reaches that variable's part alone: the
+    first part restates the CRS with its ref, and the second restates no source."""
+    response = _resolve_scripted(
+        f"aid from the CRS and {_E} to Kenya", _ScriptedLLM("aid", _E), graph=_graph("aid", _E)
+    )
+
+    first, second = response.parts
+    assert first.variable_text == "aid"
+    assert first.restatement is not None
+    assert first.restatement.sources == [SourceMention(text="CRS", ref=CRS_PROVENANCE)]
+    assert second.variable_text == _E
+    assert second.restatement is not None and second.restatement.sources == []
+
+
+def test_raw_text_source_words_that_leave_a_part_no_source_refuse_that_part_alone(
+    source_catalogue: None,
+):
+    """The query asks for aid from the OECD and for a second variable from the CRS but not
+    from the OECD, whose tables hold the CRS. The second part's words leave it nothing to
+    answer from, so it answers `qualifier_not_bound` naming the CRS, which it named, and
+    runs no bind, while the first part answers from the OECD's tables."""
+    llm = _ScriptedLLM("aid", _E)
+
+    response = _resolve_scripted(
+        f"aid to Kenya from the OECD and {_E} to Kenya, not from the OECD but from the CRS",
+        llm,
+        graph=_graph("aid", _E),
+    )
+
+    first, second = response.parts
+    assert not isinstance(first, NoDataPart)
+    assert isinstance(second, NoDataPart)
+    assert second.no_data.reason == "qualifier_not_bound"
+    assert [
+        [ref.dcid for ref in unbound.named] for unbound in second.no_data.unbound_qualifiers
+    ] == [[CRS_PROVENANCE]]
+    assert llm.calls["Extraction"] == 1
+    assert len(llm.bind_prompts) == 1
 
 
 # The UN System Data Commons' official development assistance series, derived from the CRS.
 _UN_ODA = "undata/sdg/SERIES-DC_ODA_TOTL"
 
 
-def test_a_source_slot_refusal_stands_though_the_un_system_has_a_candidate(
-    monkeypatch: pytest.MonkeyPatch,
+def test_an_exclusion_refusal_stands_though_the_un_system_has_a_candidate(
+    monkeypatch: pytest.MonkeyPatch, source_catalogue: None
 ):
     """The UN System Data Commons recalls an aid series with data at Kenya. Excluding the
     CRS beside an opt-in second table leaves the part no table, so it refuses naming the
-    CRS, and the UN series, which publishes none of the declared tables, does not answer in
-    its place."""
+    CRS and the opt-in table, and the UN series, which the scope allows no provenance of,
+    does not answer in its place."""
     _use_second_table(monkeypatch, opt_in=True)
     graph = _graph("aid", members=(_CRS_MEMBER,), un_members=(_UN_ODA,))
-    excluding = _drafted_source(f"{EXCLUDED_SOURCE_PREFIX}{CRS_PROVENANCE}")
+    excluding = (_excluding("CRS"),)
 
-    response = _resolve_scripted(
-        "aid to Kenya", _ScriptedLLM("aid", drafted=excluding), graph=graph
-    )
+    response = _resolve_scripted(_query("aid", excluding), _ScriptedLLM("aid"), graph=graph)
 
     (part,) = response.parts
     assert isinstance(part, NoDataPart)
     assert part.no_data.reason == "qualifier_not_bound"
-    (unbound,) = part.no_data.unbound_qualifiers
-    assert [ref.dcid for ref in unbound.named] == [CRS_PROVENANCE]
+    assert [[ref.dcid for ref in unbound.named] for unbound in part.no_data.unbound_qualifiers] == [
+        [CRS_PROVENANCE],
+        [_SECOND],
+    ]
 
 
 # Each row: a raw-text question whose identity binds a table it did not name in a typed
-# field, the variable, the recall members, the source slot the model binds, the second
+# field, the variable, the recall members, the sources its words name, the second
 # table's declaration (`None` leaves the packaged index), and the table the identity binds.
 _TABLE_ROWS = [
-    pytest.param("aid", (_CRS_MEMBER,), _drafted_source(_SECOND), False, _SECOND, id="slot-names"),
-    pytest.param(
-        "aid",
-        (_CRS_MEMBER,),
-        _drafted_source(f"{EXCLUDED_SOURCE_PREFIX}{CRS_PROVENANCE}"),
-        False,
-        _SECOND,
-        id="slot-excludes",
-    ),
+    pytest.param("aid", (_CRS_MEMBER,), (_naming(_SECOND_LABEL),), False, _SECOND, id="names"),
+    pytest.param("aid", (_CRS_MEMBER,), (_excluding("CRS"),), False, _SECOND, id="excludes"),
     pytest.param(_E, (_IMPUTED_MEMBER, _CRS_MEMBER), (), None, IMPUTED_PROVENANCE, id="measure"),
 ]
 
 
-@pytest.mark.parametrize(("variable", "members", "drafted", "opt_in", "table"), _TABLE_ROWS)
+@pytest.mark.parametrize(("variable", "members", "sources", "opt_in", "table"), _TABLE_ROWS)
 def test_a_parsed_part_naming_a_table_mints_the_raw_text_answer_from_it(
     monkeypatch: pytest.MonkeyPatch,
+    source_catalogue: None,
     variable: str,
     members: tuple[str, ...],
-    drafted: tuple[SlotBindingDraft, ...],
+    sources: tuple[SourceMention, ...],
     opt_in: bool | None,
     table: str,
 ):
-    """A parsed part posting the table as `provenance` enters the seam as the named
-    dataset, and mints the spec_id of the raw-text question whose source slot or elected
-    measure chose that table."""
+    """A parsed part posting the table as `provenance` mints the spec_id of the raw-text
+    question whose source words or elected measure chose that table: the identity binds
+    the provenance that served."""
     if opt_in is not None:
         _use_second_table(monkeypatch, opt_in=opt_in)
     graph = _graph(variable, members=members)
-    raw = _resolve_scripted(
-        f"{variable} to Kenya", _ScriptedLLM(variable, drafted=drafted), graph=graph
-    )
+    raw = _resolve_scripted(_query(variable, sources), _ScriptedLLM(variable), graph=graph)
     part = ParsedPart(
         variable_text=variable, entities=[{"text": "Kenya", "role_text": "to"}], provenance=table
     )
@@ -919,6 +1021,14 @@ def test_a_parsed_part_naming_a_table_mints_the_raw_text_answer_from_it(
     (parsed_spec,) = _specs(parsed)
     assert _bound(parsed_spec)["source"] == table
     assert parsed_spec.spec_id == raw_spec.spec_id
+
+
+def _restated_table(restatement: ParsedPart) -> str | None:
+    """The table a restatement names: the ref of its one included source mention, else
+    `None`."""
+    refs = [mention.ref for mention in restatement.sources if mention.polarity == "include"]
+    assert len(refs) <= 1
+    return refs[0] if refs else None
 
 
 def _hold_series_only_away_from_kenya(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -943,31 +1053,33 @@ def _hold_series_only_away_from_kenya(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.parametrize("has_data", [True, False], ids=["answered", "no-data"])
-@pytest.mark.parametrize(("variable", "members", "drafted", "opt_in", "table"), _TABLE_ROWS)
+@pytest.mark.parametrize(("variable", "members", "sources", "opt_in", "table"), _TABLE_ROWS)
 def test_a_restated_part_names_the_table_its_identity_binds(
     monkeypatch: pytest.MonkeyPatch,
+    source_catalogue: None,
     variable: str,
     members: tuple[str, ...],
-    drafted: tuple[SlotBindingDraft, ...],
+    sources: tuple[SourceMention, ...],
     opt_in: bool | None,
     table: str,
     has_data: bool,
 ):
-    """The restatement of a part whose identity binds a table names it as `provenance`, so
-    posting the restatement back answers from the same table under the same spec_id, and
-    so does posting the parsed answer's own restatement. A part with no observation keeps
-    the elected identity as its flagged match and restates the table the same way."""
+    """The restatement of a part carries its source words with the refs they resolved to,
+    and a part naming none the table its identity binds, so posting the restatement back
+    answers from the same table under the same spec_id, and so does posting the parsed
+    answer's own restatement. A part with no observation keeps the elected identity as its
+    flagged match and restates the same way. An exclusion restates the excluded table, and
+    names no table."""
     if opt_in is not None:
         _use_second_table(monkeypatch, opt_in=opt_in)
     if not has_data:
         _hold_series_only_away_from_kenya(monkeypatch)
     graph = _graph(variable, members=members)
-    raw = _resolve_scripted(
-        f"{variable} to Kenya", _ScriptedLLM(variable, drafted=drafted), graph=graph
-    )
+    raw = _resolve_scripted(_query(variable, sources), _ScriptedLLM(variable), graph=graph)
     (raw_part,) = raw.parts
     assert raw_part.restatement is not None
-    assert raw_part.restatement.provenance == table
+    excludes = any(source.polarity == "exclude" for source in sources)
+    assert _restated_table(raw_part.restatement) == (None if excludes else table)
 
     reposted = _resolve_parsed(raw_part.restatement, _ScriptedLLM(), graph=graph)
 
@@ -977,32 +1089,37 @@ def test_a_restated_part_names_the_table_its_identity_binds(
 
 
 @pytest.mark.parametrize(
-    ("drafted", "table"),
-    [((), None), (_drafted_source(_SECOND), _SECOND)],
-    ids=["slot-unbound", "slot-names"],
+    ("sources", "table"),
+    [((), None), ((SourceMention(text=_SECOND_LABEL),), _SECOND)],
+    ids=["no-source", "words-name"],
 )
-def test_a_parsed_part_naming_no_table_restates_the_table_its_identity_binds(
-    monkeypatch: pytest.MonkeyPatch, drafted: tuple[SlotBindingDraft, ...], table: str | None
+def test_a_parsed_part_restates_the_table_its_words_name(
+    monkeypatch: pytest.MonkeyPatch,
+    source_catalogue: None,
+    sources: tuple[SourceMention, ...],
+    table: str | None,
 ):
-    """A parsed part posted without `provenance` restates the table its source slot chose,
-    and none when the slot stays unbound and the plain CRS identity binds no source."""
+    """A parsed part naming a table by its words restates the mention with the table's
+    ref, and a part naming none restates none when the plain CRS identity binds no
+    source."""
     _use_second_table(monkeypatch, opt_in=False)
-    part = ParsedPart(variable_text="aid", entities=[{"text": "Kenya", "role_text": "to"}])
-
-    response = _resolve_parsed(
-        part, _ScriptedLLM(drafted=drafted), graph=_graph("aid", members=(_CRS_MEMBER,))
+    part = ParsedPart(
+        variable_text="aid", entities=[{"text": "Kenya", "role_text": "to"}], sources=list(sources)
     )
+
+    response = _resolve_parsed(part, _ScriptedLLM(), graph=_graph("aid", members=(_CRS_MEMBER,)))
 
     (answered,) = response.parts
     assert _bound(answered.spec).get("source") == table
     assert answered.restatement is not None
-    assert answered.restatement.provenance == table
+    assert _restated_table(answered.restatement) == table
 
 
 _DEU = "country/DEU"
 _FROM_FRANCE = ({"text": "France", "role_text": "from"},)
-_EXCLUDING_CRS = _drafted_source(f"{EXCLUDED_SOURCE_PREFIX}{CRS_PROVENANCE}")
-_EXCLUDING_SECOND = _drafted_source(f"{EXCLUDED_SOURCE_PREFIX}{_SECOND}")
+_EXCLUDING_CRS = (SourceMention(text="CRS", polarity="exclude"),)
+_EXCLUDING_SECOND = (SourceMention(text=_SECOND_LABEL, polarity="exclude"),)
+_NAMING_SECOND = (SourceMention(text=_SECOND_LABEL),)
 
 
 def _hold_france_series_only_under(monkeypatch: pytest.MonkeyPatch, facet: str | None) -> None:
@@ -1028,26 +1145,26 @@ def _hold_france_series_only_under(monkeypatch: pytest.MonkeyPatch, facet: str |
     )
 
 
-# Each row: a parsed part naming no table whose run settles on one and finds no observation
-# under it, with no flagged match to carry the identity. The variable, the recall members,
-# the entities, the open roles, the source slot the model binds, the second table's
-# declaration (`None` leaves the packaged index), the one table holding a series from
-# France, and the table the restatement names.
+# Each row: a parsed part whose run settles on a table and finds no observation under it,
+# with no flagged match to carry the identity. The variable, the recall members, the
+# entities, the open roles, the part's source mentions, the second table's declaration
+# (`None` leaves the packaged index), the one table holding a series from France, and the
+# table the restatement names.
 _NO_DATA_ROWS = [
     pytest.param(
         _E, (_IMPUTED_MEMBER, _CRS_MEMBER), _FROM_FRANCE, None, (), None, "crs",
         IMPUTED_PROVENANCE, id="measure",
     ),
     pytest.param(
-        "aid", (_CRS_MEMBER,), _FROM_FRANCE, None, _drafted_source(_SECOND), False, "crs",
-        _SECOND, id="slot-names",
+        "aid", (_CRS_MEMBER,), _FROM_FRANCE, None, _NAMING_SECOND, False, "crs",
+        _SECOND, id="words-name",
     ),
     pytest.param(
         "aid", (_CRS_MEMBER,), _FROM_FRANCE, None, _EXCLUDING_CRS, False, "crs",
-        _SECOND, id="slot-excludes",
+        None, id="words-exclude",
     ),
     pytest.param(
-        "aid", (_CRS_MEMBER,), None, ["recipient"], _drafted_source(_SECOND), False, "crs",
+        "aid", (_CRS_MEMBER,), None, ["recipient"], _NAMING_SECOND, False, "crs",
         _SECOND, id="open-recipient-no-place",
     ),
     pytest.param(
@@ -1058,26 +1175,26 @@ _NO_DATA_ROWS = [
 
 
 @pytest.mark.parametrize(
-    ("variable", "members", "entities", "open_roles", "drafted", "opt_in", "series", "table"),
+    ("variable", "members", "entities", "open_roles", "sources", "opt_in", "series", "table"),
     _NO_DATA_ROWS,
 )
 def test_a_no_data_part_without_a_flagged_match_restates_the_table_its_run_settled(
     monkeypatch: pytest.MonkeyPatch,
+    source_catalogue: None,
     variable: str,
     members: tuple[str, ...],
     entities: tuple[dict, ...] | None,
     open_roles: list[str] | None,
-    drafted: tuple[SlotBindingDraft, ...],
+    sources: tuple[SourceMention, ...],
     opt_in: bool | None,
     series: str | None,
     table: str | None,
 ):
     """A part that finds no observation and holds no flagged match restates the table its
-    run settled on: the one its elected measure names, the one its source slot names, or
-    the one its exclusion leaves serving. Posting the restatement back, to a model that
-    binds no source slot and recalls the members in reverse, refuses the same way, though
-    another table holds a series the part could answer from. An exclusion that leaves the
-    election where it was restates no table."""
+    run settled on: the one its elected measure names, or the one its words name. A part
+    whose words exclude a table restates the exclusion and names no table. Posting the
+    restatement back, to a model that recalls the members in reverse, refuses the same
+    way, though another table holds a series the part could answer from."""
     if opt_in is not None:
         _use_second_table(monkeypatch, opt_in=opt_in)
     _hold_france_series_only_under(monkeypatch, series)
@@ -1087,14 +1204,15 @@ def test_a_no_data_part_without_a_flagged_match_restates_the_table_its_run_settl
         variable_text=variable,
         entities=list(entities) if entities is not None else None,
         open_roles=open_roles,
+        sources=list(sources),
     )
 
-    (refused,) = _resolve_parsed(part, _ScriptedLLM(drafted=drafted), graph=graph).parts
+    (refused,) = _resolve_parsed(part, _ScriptedLLM(), graph=graph).parts
 
     assert isinstance(refused, NoDataPart)
     assert refused.no_data.flagged_match is None
     assert refused.restatement is not None
-    assert refused.restatement.provenance == table
+    assert _restated_table(refused.restatement) == table
 
     reversed_graph = _graph(variable, members=tuple(reversed(members)))
     reversed_graph._resolve["France"] = _FRA
@@ -1253,23 +1371,92 @@ def test_each_pinned_slot_offers_the_menu_around_its_pin(monkeypatch: pytest.Mon
     assert "DAC2aAidType206" in {option.dcid for option in aid_types}
 
 
-def test_a_code_no_shape_of_the_named_dataset_declares_refuses_before_any_bind_call(
+@pytest.mark.parametrize("mode", ["log", "refuse"])
+@pytest.mark.parametrize(
+    ("provenance", "variable", "text", "named", "near"),
+    [
+        (
+            IMPUTED_PROVENANCE,
+            "grants",
+            "grants",
+            {"CRSTypeOfFinance100", "CRSTypeOfFinance110"},
+            {},
+        ),
+        (
+            CRS_PROVENANCE,
+            "population ODA",
+            "population",
+            {"CRSTypeOfFinance4"},
+            {"crsTypeOfFlow": "CRSTypeOfFlow10"},
+        ),
+        (
+            CRS_PROVENANCE,
+            "multilateral ODA",
+            "multilateral ODA",
+            {"DAC1AidType2000"},
+            {"crsTypeOfFlow": "CRSTypeOfFlow10"},
+        ),
+    ],
+    ids=["grants-on-imputed", "population-on-crs", "multilateral-on-crs"],
+)
+def test_a_term_the_named_dataset_cannot_apply_refuses_with_the_near_match(
     monkeypatch: pytest.MonkeyPatch,
+    source_catalogue: None,
+    search_settings,
+    mode,
+    provenance,
+    variable,
+    text,
+    named,
+    near,
 ):
-    """ "grants" names types of finance, which no imputed row carries, so the part refuses
-    the term at candidacy, before any role check or bind call (#1059)."""
-    _name_dataset(monkeypatch, IMPUTED_PROVENANCE)
-    llm = _ScriptedLLM("grants")
+    """A term no row of the named dataset holds goes through bind. Once the part's bindings
+    are final, the term is an unbound record with evidence "unavailable", and the part
+    refuses `qualifier_not_bound` with the elected answer as its near match, in either
+    coverage mode, naming the dataset after the term. "grants" names types of finance no
+    imputed row carries. "population" names `CRSTypeOfFinance4`, which no index row
+    holds. "multilateral ODA" names DAC1 aid type 2000, of which the CRS reading holds only
+    "ODA". The near match is the CRS ODA answer."""
+    search_settings(qualifier_coverage=mode)
+    _name_dataset(monkeypatch, provenance)
 
-    response = _resolve_scripted("grants to Kenya", llm, "grants")
+    response = _resolve_scripted(f"{variable} to Kenya", _ScriptedLLM(variable), variable)
 
     (part,) = response.parts
     assert isinstance(part, NoDataPart)
     assert part.no_data.reason == "qualifier_not_bound"
-    (unbound,) = part.no_data.unbound_qualifiers
-    assert (unbound.text, unbound.disposition) == ("grants", "unbound")
-    assert {ref.dcid for ref in unbound.named} == {"CRSTypeOfFinance100", "CRSTypeOfFinance110"}
-    assert llm.calls["_UniversalBindOutput"] == 0
+    term, source = part.no_data.unbound_qualifiers
+    assert (term.text, term.disposition, term.evidence) == (text, "unbound", "unavailable")
+    assert {ref.dcid for ref in term.named} == named
+    assert [ref.dcid for ref in source.named] == [provenance]
+    assert _bound(_held_spec(part)).items() >= near.items()
+
+
+@pytest.mark.parametrize("named", [True, False], ids=["named", "unnamed"])
+def test_a_bind_call_electing_no_shape_refuses_a_term_no_offered_shape_holds(
+    monkeypatch: pytest.MonkeyPatch, source_catalogue: None, named
+):
+    """With no elected shape there are no final bindings to read "grants" on, so a part
+    naming the imputed table, none of whose rows carries a type of finance, refuses the
+    term `qualifier_not_bound` and names the table after it. A part naming no source
+    refuses `variable_not_resolved`."""
+    if named:
+        _name_dataset(monkeypatch, IMPUTED_PROVENANCE)
+
+    response = _resolve_scripted(
+        "grants to Kenya", _ScriptedLLM("grants", ask="which grants?"), "grants"
+    )
+
+    (part,) = response.parts
+    assert isinstance(part, NoDataPart)
+    if not named:
+        assert part.no_data.reason == "variable_not_resolved"
+        return
+    assert part.no_data.reason == "qualifier_not_bound"
+    term, source = part.no_data.unbound_qualifiers
+    assert (term.text, term.evidence) == ("grants", "unavailable")
+    assert {ref.dcid for ref in term.named} == {"CRSTypeOfFinance100", "CRSTypeOfFinance110"}
+    assert [ref.dcid for ref in source.named] == [IMPUTED_PROVENANCE]
 
 
 _BUDGET_SUPPORT_MEMBER = next(
@@ -1365,7 +1552,9 @@ def test_an_open_dac2b_flow_type_reads_the_net_total_at_its_one_basis(
 
 
 @pytest.mark.parametrize("provenance", [CRS_PROVENANCE, IMPUTED_PROVENANCE], ids=["crs", "imputed"])
-def test_a_part_leaving_the_recipient_open_states_the_family_the_mint_resolves(provenance: str):
+def test_a_part_leaving_the_recipient_open_states_the_family_the_mint_resolves(
+    provenance: str, source_catalogue: None
+):
     """ "Aid from France" asks every recipient, and its role-class election keeps the
     members that are no breakdown of another: one of the imputed table's 255, and every
     CRS member. The shape states the family the mint resolves for its identity, as the

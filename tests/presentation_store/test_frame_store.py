@@ -12,8 +12,10 @@ from collections.abc import Callable, Generator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta, timezone
+from typing import cast
 
 import pytest
+from dfo_frame_grammar import Frame, canonical_frame_bytes
 
 from artifact_store.errors import (
     ArtifactIntegrityError,
@@ -30,20 +32,29 @@ from assembler.testing import (
     malaria_ethiopia_frame_ref,
     malaria_ethiopia_rows,
 )
+from code_index.members import canonical_identity
 from code_index.query import CodeIndex
+from code_index.shared import get_index
 from code_index.types import CodeRow, IndexStamp
 from dataset_store.snapshot import (
+    ArtifactNotFound,
+    FrameLineage,
+    ManifestFacts,
     Revocation,
     SnapshotRevoked,
     StoredArtifactLocation,
     StoredVersion,
+    VersionFacts,
+    VersionState,
 )
-from datasets_api.codes_snapshot import ArtifactNotFound
+from datasets_api.manifest import version_document
 from datasets_api.recipe_store import RecipeRecord
 from datasets_api.reference_store import ReferenceWrite
 from materialise import provenance_doc
+from materialise.formats import CANONICAL_FRAME_MEDIA_TYPE
 from materialise.graph import GraphReadError
 from materialise.provenance_doc import SourceDocumentNotFound
+from presentation_store import frame_store
 from presentation_store.composed_stat_vars import COMPOSED_STAT_VAR_UNREADABLE_MARKER
 from presentation_store.frame_store import (
     FRAME1_MEDIA_TYPE,
@@ -52,8 +63,15 @@ from presentation_store.frame_store import (
     _CachedFrame,
     frame_reads_bounded_by,
 )
-from spec_registry.errors import IdentityQuarantined, SpecRegistryUnavailable
+from spec_registry import recompute_identity
+from spec_registry.errors import (
+    IdentityQuarantined,
+    SpecRegistryStoreError,
+    SpecRegistryUnavailable,
+)
 from spec_registry.reader import StoredDefinition
+from tests.code_index.aid_identity import IMPUTED_PROVENANCE, imputed_education_aid_identity
+from tests.materialise._canonical_frame import canonical_frame_parquet
 
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -81,6 +99,29 @@ class _FakeSnapshotReader:
     def read_revocation(self, subject_id: str, content_version: str) -> Revocation | None:
         self.calls.append("read_revocation")
         return self.revocations.get((subject_id, content_version))
+
+    def read_version_state(
+        self, subject_id: str, content_version: str, *, revoked_under: Sequence[str] = ()
+    ) -> VersionState | None:
+        self.calls.append("read_version_state")
+        version = self.versions.get((subject_id, content_version))
+        if version is None:
+            return None
+        revocation = next(
+            (
+                revoked
+                for cv in (content_version, version.base_content_version)
+                if cv is not None
+                for subject in dict.fromkeys((subject_id, *revoked_under))
+                if (revoked := self.revocations.get((subject, cv))) is not None
+            ),
+            None,
+        )
+        return VersionState(
+            version=version,
+            revocation=revocation,
+            locations=list(self.locations.get((subject_id, content_version), [])),
+        )
 
 
 class _BufferedSink(io.BytesIO):
@@ -151,11 +192,13 @@ class _FakeArtifactStore:
             raise ArtifactNotFoundError(digest=artifact_digest, tier=tier)
         return self.objects[key]
 
-    def signed_get_url(
+    def signed_location_url(
         self,
         digest: str,
         *,
         tier: Tier,
+        bucket: str,
+        object_name: str,
         ttl: timedelta,
         response_type: str,
         response_disposition: str,
@@ -291,6 +334,7 @@ class _FakeReferenceWriter:
         content_version: str,
         reference_kind: str,
         now: datetime,
+        revoked_under: Sequence[str] = (),
     ) -> datetime:
         self.calls.append(
             {
@@ -299,7 +343,9 @@ class _FakeReferenceWriter:
                 "now": now,
             }
         )
-        if (subject_id, content_version) in self.revoked:
+        if any(
+            (subject, content_version) in self.revoked for subject in (subject_id, *revoked_under)
+        ):
             raise SnapshotRevoked(id=subject_id, content_version=content_version, reason="test")
         if (subject_id, content_version) in self.unlinked:
             raise ArtifactNotFound(
@@ -323,6 +369,7 @@ class _FakeReferenceWriter:
         content_version: str,
         reference_kind: str,
         now: datetime,
+        revoked_under: Sequence[str] = (),
     ) -> ReferenceWrite:
         key = (principal, artifact_digest, subject_id, content_version, reference_kind)
         changed = key not in self.records
@@ -333,6 +380,7 @@ class _FakeReferenceWriter:
             content_version=content_version,
             reference_kind=reference_kind,
             now=now,
+            revoked_under=revoked_under,
         )
         return ReferenceWrite(created_at=created_at, changed=changed)
 
@@ -414,11 +462,12 @@ def _location(
     stored_at: datetime = _NOW,
     created_at: datetime = _NOW,
     rendering_key: str = "frame1",
+    rendering: dict[str, object] | None = None,
 ) -> StoredArtifactLocation:
     return StoredArtifactLocation(
         artifact_digest=digest,
         rendering_key=rendering_key,
-        rendering={},
+        rendering=rendering if rendering is not None else {},
         media_type=media_type,
         size_bytes=0,
         created_at=created_at,
@@ -429,13 +478,27 @@ def _location(
     )
 
 
+def _facts(frame_ref: FrameRef) -> VersionFacts:
+    """A published frame's lineage, or a dataset version's facts with no cited source."""
+    if frame_ref.spec_id.startswith("ops_"):
+        return FrameLineage(input_content_versions=[])
+    return ManifestFacts(
+        prepared_at=datetime(2026, 1, 1, tzinfo=UTC),
+        definition={"schema_version": 1, "spec_id": frame_ref.spec_id, "identity": {}},
+        coverage={"rows": 0, "dimensions": []},
+        citation={"text": "", "sources": []},
+        trace={},
+        warnings=[],
+    )
+
+
 def _version(frame_ref: FrameRef) -> StoredVersion:
     return StoredVersion(
         subject_id=frame_ref.spec_id,
         subject_kind="spec",
         content_version=frame_ref.content_version,
         schema_version=1,
-        immutable_body={"content_version": frame_ref.content_version, "coverage": {}},
+        facts=_facts(frame_ref),
     )
 
 
@@ -446,10 +509,7 @@ def _collapsed_version(frame_ref: FrameRef, *, base_content_version: str) -> Sto
         subject_kind="spec",
         content_version=frame_ref.content_version,
         schema_version=1,
-        immutable_body={
-            "content_version": frame_ref.content_version,
-            "coverage": {},
-        },
+        facts=_facts(frame_ref),
         base_content_version=base_content_version,
     )
 
@@ -515,6 +575,110 @@ def _ops_happy_path_fixture() -> tuple[_FakeSnapshotReader, _FakeArtifactStore, 
 # -- load(): happy path + cache -------------------------------------------
 
 
+def test_load_reads_a_version_s_canonical_frame_ahead_of_its_frame1_document():
+    """The canonical frame loads as the parsed frame1 document of its frame, and a frame1
+    document beside it is never read."""
+    frame_ref = malaria_ethiopia_frame_ref()
+    frame = Frame.build(role_keys=("recipient",), rows=malaria_ethiopia_rows())
+    artifacts = _FakeArtifactStore()
+    canonical = artifacts.seed(tier=Tier.working, data=canonical_frame_parquet((frame,)))
+    frame1 = artifacts.seed(tier=Tier.working, data=b"never read")
+    snapshots = _FakeSnapshotReader(
+        versions={(frame_ref.spec_id, frame_ref.content_version): _version(frame_ref)},
+        locations={
+            (frame_ref.spec_id, frame_ref.content_version): [
+                _location(digest=frame1, tier=Tier.working.value),
+                _location(
+                    digest=canonical,
+                    tier=Tier.working.value,
+                    media_type=CANONICAL_FRAME_MEDIA_TYPE,
+                    rendering_key="frame",
+                    rendering={"format": "frame"},
+                ),
+            ]
+        },
+    )
+
+    resolved = _store(snapshots=snapshots, artifacts=artifacts).load(frame_ref=frame_ref)
+
+    assert resolved.frame == json.loads(canonical_frame_bytes(frame))
+    assert [call for call in artifacts.calls if call[0] == "get"] == [
+        ("get", Tier.working, canonical)
+    ]
+
+
+def _canonical_frame_fixture() -> tuple[_FakeSnapshotReader, _FakeArtifactStore, FrameRef, Frame]:
+    """A version whose only stored frame is the canonical frame of the malaria rows."""
+    frame_ref = malaria_ethiopia_frame_ref()
+    frame = Frame.build(role_keys=("recipient",), rows=malaria_ethiopia_rows())
+    artifacts = _FakeArtifactStore()
+    canonical = artifacts.seed(tier=Tier.working, data=canonical_frame_parquet((frame,)))
+    snapshots = _FakeSnapshotReader(
+        versions={(frame_ref.spec_id, frame_ref.content_version): _version(frame_ref)},
+        locations={
+            (frame_ref.spec_id, frame_ref.content_version): [
+                _location(
+                    digest=canonical,
+                    tier=Tier.working.value,
+                    media_type=CANONICAL_FRAME_MEDIA_TYPE,
+                    rendering_key="frame",
+                    rendering={"format": "frame"},
+                )
+            ]
+        },
+    )
+    return snapshots, artifacts, frame_ref, frame
+
+
+def test_load_refuses_a_canonical_frame_over_the_row_bound_from_its_footer(monkeypatch):
+    """A canonical frame with more rows than `frame_max_rows` refuses `missing_rendering` on
+    its Parquet footer's row count, and its rows are never decoded."""
+    snapshots, artifacts, frame_ref, frame = _canonical_frame_fixture()
+
+    def never_decoded(*_args, **_kwargs):
+        raise AssertionError("an oversized frame's rows were decoded")
+
+    monkeypatch.setattr(frame_store, "read_canonical_frame_table", never_decoded)
+    store = _store(
+        snapshots=snapshots, artifacts=artifacts, frame_max_rows=frame.table.num_rows - 1
+    )
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        store.load(frame_ref=frame_ref)
+
+    assert excinfo.value.reason == "missing_rendering"
+
+
+def test_load_refuses_a_canonical_frame_over_the_row_bound_before_fetching_it():
+    """A version whose facts record more rows than `frame_max_rows` refuses
+    `missing_rendering` on the stored count, and the artifact store is never asked for the
+    frame."""
+    snapshots, artifacts, frame_ref, frame = _canonical_frame_fixture()
+    key = (frame_ref.spec_id, frame_ref.content_version)
+    version = snapshots.versions[key]
+    facts = cast(ManifestFacts, version.facts)
+    snapshots.versions[key] = replace(
+        version,
+        facts=replace(facts, coverage={**facts.coverage, "rows": frame.table.num_rows}),
+    )
+    store = _store(
+        snapshots=snapshots, artifacts=artifacts, frame_max_rows=frame.table.num_rows - 1
+    )
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        store.load(frame_ref=frame_ref)
+
+    assert excinfo.value.reason == "missing_rendering"
+    assert [call for call in artifacts.calls if call[0] == "get"] == []
+
+
+def test_load_decodes_a_canonical_frame_at_the_row_bound():
+    snapshots, artifacts, frame_ref, frame = _canonical_frame_fixture()
+    store = _store(snapshots=snapshots, artifacts=artifacts, frame_max_rows=frame.table.num_rows)
+
+    assert store.load(frame_ref=frame_ref).frame == json.loads(canonical_frame_bytes(frame))
+
+
 def test_load_resolves_a_frame_with_view_manifest_and_labels():
     snapshots, artifacts, frame_ref, _digest = _happy_path_fixture()
     graph = _FakeGraphReader(
@@ -531,7 +695,7 @@ def test_load_resolves_a_frame_with_view_manifest_and_labels():
     assert resolved.frame_ref == frame_ref
     assert resolved.frame["frame_version"] == "frame1"
     assert resolved.structural_view.series_count == 1
-    assert resolved.manifest == {"content_version": frame_ref.content_version, "coverage": {}}
+    assert resolved.manifest == version_document(_version(frame_ref))
     assert resolved.labels["dcid:MalariaGrantDisbursements"] == "Malaria Grant Disbursements"
     assert resolved.labels["country/ETH"] == "Ethiopia"
     assert resolved.labels["src_oecd_dac"] == "OECD DAC"
@@ -917,7 +1081,7 @@ def _composed_stat_var_store(
     *, composed_stat_vars: object, raise_for: frozenset[str] = frozenset()
 ) -> tuple[LiveFrameStore, FrameRef, _FakeGraphReader]:
     """A store over one frame whose rows sit under `dcid:ops_quotient`, in a unit counted in
-    `dcid:ops_sum`, with `composed_stat_vars` in its version body."""
+    `dcid:ops_sum`, with `composed_stat_vars` stored on its version."""
     frame_ref = malaria_ethiopia_frame_ref()
     unit = {"numerator": "USDollar", "denominator": {"stat_var": "dcid:ops_sum"}}
     doc = {
@@ -928,7 +1092,8 @@ def _composed_stat_var_store(
     artifacts = _FakeArtifactStore()
     digest = artifacts.seed(tier=Tier.working, data=json.dumps(doc).encode("utf-8"))
     version = dataclasses.replace(
-        _version(frame_ref), immutable_body={"composed_stat_vars": composed_stat_vars}
+        _version(frame_ref),
+        facts=FrameLineage(input_content_versions=[], composed_stat_vars=composed_stat_vars),
     )
     snapshots = _FakeSnapshotReader(
         versions={(frame_ref.spec_id, frame_ref.content_version): version},
@@ -1113,18 +1278,35 @@ def _family_ref_rows(*, family_spec_id: str) -> tuple[dict[str, object], ...]:
 
 @dataclass
 class _FakeSpecReader:
-    """Record batched definition reads and optionally raise for quarantined IDs or an
-    unavailable registry."""
+    """Record batched definition reads, the label read, and optionally raise for quarantined
+    IDs or an unavailable registry. `served` holds the served ids bound to a posted id, newest
+    first. `unavailable` fails the batched read, and `definition_error` is raised by the single
+    reads, the served-id read the revocation scope makes among them."""
 
     definitions: dict[str, StoredDefinition] = field(default_factory=dict)
+    served: dict[str, tuple[str, ...]] = field(default_factory=dict)
     quarantined: frozenset[str] = frozenset()
     unavailable: bool = False
+    definition_error: Exception | None = None
     calls: list[tuple[str, ...]] = field(default_factory=list)
 
     def read_definition(
         self, spec_id: str, *, schema_version: int | None = None
     ) -> StoredDefinition | None:
-        return self.read_definitions((spec_id,)).get(spec_id)
+        if self.definition_error is not None:
+            raise self.definition_error
+        if spec_id in self.quarantined:
+            raise IdentityQuarantined(subject_id=spec_id, id_kind="spec")
+        return self.definitions.get(spec_id)
+
+    def read_served_spec_ids(self, spec_id: str) -> tuple[str, ...] | None:
+        if self.definition_error is not None:
+            raise self.definition_error
+        served = self.served.get(spec_id, ())
+        hit = self.quarantined.intersection((spec_id, *served))
+        if hit:
+            raise IdentityQuarantined(subject_id=sorted(hit)[0], id_kind="spec")
+        return served if spec_id in self.definitions else None
 
     def read_definitions(self, spec_ids) -> dict[str, StoredDefinition]:
         spec_ids = tuple(spec_ids)
@@ -1484,7 +1666,7 @@ def test_load_cites_the_distinct_upstream_provenances_of_a_published_ops_frame()
     resolved = store.load(frame_ref=frame_ref)
 
     assert resolved.manifest == {
-        **_version(frame_ref).immutable_body,
+        **version_document(_version(frame_ref)),
         "citation": _OECD_CITATION,
     }
 
@@ -1564,7 +1746,7 @@ def _thin_spec_fixture() -> tuple[_FakeSnapshotReader, _FakeArtifactStore, Frame
     )
     version = _version(frame_ref)
     snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)] = replace(
-        version, immutable_body={**version.immutable_body, "citation": thin}
+        version, facts=replace(version.facts, citation=thin)
     )
     return snapshots, artifacts, frame_ref, thin
 
@@ -1590,7 +1772,7 @@ def test_load_fills_a_root_frame_s_empty_citation_fields_from_the_graph():
     assert second.manifest["citation"] == _HEALED_THIN_CITATION
     assert graph.calls == reads_after_first_load
     stored = snapshots.versions[(frame_ref.spec_id, frame_ref.content_version)]
-    assert stored.immutable_body["citation"] == thin
+    assert stored.facts.citation == thin
 
 
 def test_load_keeps_a_root_frame_s_stored_citation_when_the_read_fails_and_reads_it_next_load():
@@ -1753,7 +1935,7 @@ def test_load_refuses_an_unpublished_ops_prefixed_spec_id_as_ops_unsupported():
 
     assert excinfo.value.reason == "ops_unsupported"
     assert "not published" in excinfo.value.detail
-    assert snapshots.calls == ["read_version"]
+    assert snapshots.calls == ["read_version_state"]
     assert artifacts.calls == []
 
 
@@ -1885,17 +2067,29 @@ def test_load_refuses_a_published_ops_frame_aged_out_of_the_working_tier():
     assert excinfo.value.reason == "expired"
 
 
-def test_load_refuses_when_no_rendering_carries_the_frame1_media_type():
+@pytest.mark.parametrize(
+    ("media_type", "rendering"),
+    [
+        ("text/csv", {"format": "csv"}),
+        (CANONICAL_FRAME_MEDIA_TYPE, {"format": "parquet", "bundle": False, "layout": "frame"}),
+    ],
+    ids=["csv", "requested-parquet"],
+)
+def test_load_refuses_a_version_holding_no_stored_frame(
+    media_type: str, rendering: dict[str, object]
+):
+    """A requested Parquet file shares the canonical frame's media type and is no frame."""
     frame_ref = malaria_ethiopia_frame_ref()
     snapshots = _FakeSnapshotReader(
         versions={(frame_ref.spec_id, frame_ref.content_version): _version(frame_ref)},
         locations={
             (frame_ref.spec_id, frame_ref.content_version): [
                 _location(
-                    digest="sha256:csv-only",
+                    digest="sha256:requested-only",
                     tier=Tier.working.value,
-                    media_type="text/csv",
-                    rendering_key="csv",
+                    media_type=media_type,
+                    rendering_key="requested",
+                    rendering=rendering,
                 )
             ]
         },
@@ -2445,3 +2639,143 @@ def test_release_pin_leaves_the_pinned_copy_in_place():
     store.release_pin(frame_ref=frame_ref, component_id="cmp_test")
 
     assert (Tier.pinned, digest) in artifacts.objects
+
+
+def _posted_frame_fixture():
+    """A frame recorded under a posted, non-canonical id and under its served id, with a spec
+    reader registering the posted definition and binding the served id to it. Returns the
+    snapshots, artifacts, the frame ref naming the posted id, the served id and the spec
+    reader."""
+    identity = imputed_education_aid_identity(source=IMPUTED_PROVENANCE)
+    for slot in identity["slots"]:
+        if slot["property"] in ("crsTypeOfFlow", "dac2aAidType"):
+            slot["binding"] = {"state": "unbound"}
+    posted = recompute_identity(identity)
+    served_id = recompute_identity(canonical_identity(get_index(), posted.identity)).spec_id
+    posted_id = posted.spec_id
+    assert served_id != posted_id
+    spec_reader = _FakeSpecReader(
+        definitions={
+            posted_id: StoredDefinition(
+                spec_id=posted_id,
+                schema_version=1,
+                identity=posted.identity,
+                identity_bytes=b"",
+                identity_digest="",
+            )
+        },
+        served={posted_id: (served_id,)},
+    )
+    frame_ref = FrameRef(spec_id=posted_id, content_version="cv_" + "e" * 32)
+    artifacts = _FakeArtifactStore()
+    digest = artifacts.seed(tier=Tier.working, data=_frame_bytes())
+    snapshots = _FakeSnapshotReader(
+        versions={
+            (subject_id, frame_ref.content_version): replace(
+                _version(frame_ref), subject_id=subject_id
+            )
+            for subject_id in (served_id, posted_id)
+        },
+        locations={
+            (subject_id, frame_ref.content_version): [
+                _location(digest=digest, tier=Tier.working.value)
+            ]
+            for subject_id in (served_id, posted_id)
+        },
+    )
+    return snapshots, artifacts, frame_ref, served_id, spec_reader
+
+
+def _load_or_pin(store: LiveFrameStore, call: str, frame_ref: FrameRef) -> object:
+    if call == "load":
+        return store.load(frame_ref=frame_ref)
+    return store.pin(frame_ref=frame_ref, component_id="cmp_test")
+
+
+@pytest.mark.parametrize("revoked_under", ["served", "posted", None])
+def test_a_frame_ref_naming_a_posted_id_honours_a_revocation_under_its_served_id(revoked_under):
+    """A frame ref naming a posted id honours revocations under the posted and the served id,
+    as a Datasets request naming it does, so a takedown under the served id stops a frame
+    recorded under the posted id."""
+    snapshots, artifacts, frame_ref, served_id, spec_reader = _posted_frame_fixture()
+    if revoked_under is not None:
+        subject_id = served_id if revoked_under == "served" else frame_ref.spec_id
+        snapshots.revocations[(subject_id, frame_ref.content_version)] = Revocation(
+            reason="takedown", revoked_at=_NOW
+        )
+    store = _store(snapshots=snapshots, artifacts=artifacts, spec_reader=spec_reader)
+
+    if revoked_under is None:
+        assert store.load(frame_ref=frame_ref) is not None
+        return
+    with pytest.raises(FrameUnavailable) as excinfo:
+        store.load(frame_ref=frame_ref)
+    assert excinfo.value.reason == "revoked"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        SpecRegistryUnavailable("spec registry pool borrow timed out"),
+        SpecRegistryStoreError("spec registry read failed"),
+    ],
+    ids=["unavailable", "store-error"],
+)
+@pytest.mark.parametrize("call", ["load", "pin"])
+def test_a_frame_read_refuses_when_the_registry_cannot_scope_its_revocation_check(call, error):
+    """The served id comes from the registry. A registry that cannot answer fails the load and
+    the pin rather than check revocation under the ref's own id alone."""
+    snapshots, artifacts, frame_ref, _served_id, spec_reader = _posted_frame_fixture()
+    spec_reader.definition_error = error
+    references = _FakeReferenceWriter()
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        spec_reader=spec_reader,
+        reference_writer=references,
+    )
+
+    with pytest.raises(type(error)):
+        _load_or_pin(store, call, frame_ref)
+    assert references.records == {}
+
+
+@pytest.mark.parametrize("quarantined", ["posted", "served"])
+@pytest.mark.parametrize("call", ["load", "pin"])
+def test_a_frame_ref_naming_a_quarantined_id_is_unavailable(call, quarantined):
+    """A frame ref naming a quarantined id, or a posted id bound to a quarantined served id,
+    refuses `quarantined` rather than load or pin."""
+    snapshots, artifacts, frame_ref, served_id, spec_reader = _posted_frame_fixture()
+    spec_reader.quarantined = frozenset(
+        {frame_ref.spec_id if quarantined == "posted" else served_id}
+    )
+    references = _FakeReferenceWriter()
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        spec_reader=spec_reader,
+        reference_writer=references,
+    )
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        _load_or_pin(store, call, frame_ref)
+    assert excinfo.value.reason == "quarantined"
+    assert references.records == {}
+
+
+def test_a_pin_of_a_posted_frame_rechecks_a_served_id_revocation_at_the_write():
+    """A revocation under the served id that lands after the read refuses the pin's reference
+    write, as the Datasets pin does."""
+    snapshots, artifacts, frame_ref, served_id, spec_reader = _posted_frame_fixture()
+    references = _FakeReferenceWriter(revoked={(served_id, frame_ref.content_version)})
+    store = _store(
+        snapshots=snapshots,
+        artifacts=artifacts,
+        spec_reader=spec_reader,
+        reference_writer=references,
+    )
+
+    with pytest.raises(FrameUnavailable) as excinfo:
+        store.pin(frame_ref=frame_ref, component_id="cmp_test")
+    assert excinfo.value.reason == "revoked"
+    assert references.records == {}

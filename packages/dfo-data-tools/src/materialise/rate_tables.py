@@ -105,8 +105,11 @@ class RateTableInvalidError(MaterialisationError):
     this code.
     """
 
+    code = "capability_unavailable"
+    status = 501
+
     def __init__(self, detail: str) -> None:
-        super().__init__(detail, code="capability_unavailable", status=501, detail=detail)
+        super().__init__(detail, detail=detail)
 
 
 @dataclass(frozen=True)

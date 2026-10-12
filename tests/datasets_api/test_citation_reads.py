@@ -11,11 +11,9 @@ from io import BytesIO
 import pytest
 
 from datasets_api import manifest, serve
-from datasets_api.revision import SentinelRevisionReader
 from dc_sdmx import SdmxClient
 from materialise.graph import GraphReadError
 from materialise.provenance_doc import (
-    _CITATION_LICENCE_PROPERTIES,
     _CITATION_LINKED_PROPERTIES,
     _CITATION_NODE_PROPERTIES,
     _NODE_PROPERTIES,
@@ -98,11 +96,7 @@ def _graph_for(
     return graph_type(arcs=arcs, facets=facets, labels={_RECIPIENT: "Kenya"})
 
 
-_CITATION_PROPERTIES = {
-    _CITATION_NODE_PROPERTIES,
-    _CITATION_LICENCE_PROPERTIES,
-    _CITATION_LINKED_PROPERTIES,
-}
+_CITATION_PROPERTIES = {_CITATION_NODE_PROPERTIES, _CITATION_LINKED_PROPERTIES}
 
 
 def _citation_reads(graph: _RecordingGraphReader) -> list[tuple[str, ...]]:
@@ -141,7 +135,6 @@ def _client(*, graph, sdmx, stat_vars: list[str], artifact_store: FakeArtifactSt
         spec_reader=LiveSpecReader(store=store),
         graph=graph,
         sdmx=sdmx,
-        revision_reader=SentinelRevisionReader(),
         artifact_store=artifact_store,
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),
@@ -221,7 +214,7 @@ def test_a_failed_documentation_read_mints_with_the_citation_and_no_documentatio
         ("materialise.provenance_doc", logging.WARNING, GraphReadError),
         ("datasets_api.serve", logging.WARNING, None),
     ]
-    assert caplog.records[1].getMessage().startswith(serve.BUNDLE_NOT_LINKED_MARKER)
+    assert caplog.records[1].getMessage().startswith(serve.BUNDLE_LINKED_INCOMPLETE_MARKER)
 
 
 def test_a_mint_documents_its_sources_from_the_mint_s_coverage_snapshot(

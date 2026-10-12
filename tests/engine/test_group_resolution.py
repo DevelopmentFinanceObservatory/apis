@@ -337,6 +337,50 @@ class TestGroupRoleBearingExpansion:
         ]
         assert asked == ["Testland Union"]
 
+    @pytest.mark.parametrize(
+        ("published", "origins", "total"),
+        [
+            pytest.param(True, ["GroupOfSeven"], "GroupOfSeven", id="the-dataset-publishes-it"),
+            pytest.param(False, ["country/T1", "country/T2"], None, id="the-dataset-does-not"),
+        ],
+    )
+    def test_a_group_binds_the_total_its_dataset_publishes(
+        self, monkeypatch, published, origins, total
+    ):
+        """The code index declares GroupOfSeven the total of the resolver's G7
+        (`CodeIndex.totals_by_group`). Where the elected series publishes it as a donor, the
+        origin binds that one row and keeps the G7 as its group, naming the total, with no
+        `group_read_as_members` departure. Otherwise the origin binds the members."""
+        rows = [
+            (_GDP_SV, "f1", "country/T1", "country/KEN", [2020]),
+            (_GDP_SV, "f1", "country/T2", "country/KEN", [2020]),
+        ]
+        if published:
+            rows.append((_GDP_SV, "f1", "GroupOfSeven", "country/KEN", [2020]))
+        index = patch_coverage(monkeypatch, rows, role_names={_GDP_SV: _FINANCING_ROLE_NAMES})
+        result = _run(
+            entities=["G7", "Kenya"],
+            pre_resolved={
+                "G7": Group(members=self._MEMBERS, entity=None, dcid="groups/G7"),
+                "Kenya": Resolved(entity=_country("country/KEN", "Kenya")),
+            },
+            entity_roles={
+                "G7": [DoorRole(axis="origin", span="from")],
+                "Kenya": [DoorRole(axis="destination", span="to")],
+            },
+            graph=self._graph(),
+            sdmx=FakeSdmxClient(observations={}),
+            llm=_FixedBindLLM(),
+            coverage=FakeCoverageService(index).snapshot(),
+        )
+
+        assert result.status == "definite", result
+        (spec,) = result.specs
+        assert sorted(e.ref for e in spec.resolved.entities if e.role == "origin") == origins
+        assert spec.resolved.entity_groups == {"origin": EntityGroup(label="G7", total=total)}
+        codes = [fact.code for fact in spec_departure_facts(spec, operations=())]
+        assert ("group_read_as_members" in codes) is (total is None)
+
     def test_a_region_on_a_role_that_admits_only_its_members_binds_them(self, monkeypatch):
         """The recipient role admits countries and refuses a continent. The series holds
         rows to the continent's node and to one member, and the Spec binds the members."""

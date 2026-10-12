@@ -118,7 +118,6 @@
   why: Imputed multilateral ODA from Norway in 2010 names no sector, so DAC2a's imputed multilateral line answers it; a single year it does not hold serves the held years with a window note.
   reuse: panel/mls-020
   tags: {theme: aid, entity: country, direction: origin_only, unit: default, time: year, operation: none, breakdown: none, door: raw_text, phrasing: technical, probe: [missing_data]}
-  known_failure: {issue: 1156, checks: [disposition]}
   expect:
     definite:
       measure: {family: dac2a.imputed_multilateral}
@@ -130,7 +129,6 @@
   why: Constant 2022 dollars typed in raw text reach the unit binder as a USD constant-price request.
   reuse: panel/mls-022
   tags: {theme: aid, entity: country, direction: origin_only, unit: base_year, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical}
-  known_failure: {issue: 1156, checks: [request]}
   expect:
     definite:
       measure: {family: mls.imputed}
@@ -212,7 +210,9 @@
   why: A donor's multilateral ODA reaching a recipient is what the imputed table measures, so bind elects its measure.
   reuse: panel/mls-032
   tags: {theme: aid, entity: two_roles, direction: both, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical, overlap: [crs]}
-  known_failure: {issue: 1164, checks: [measure, provenance]}
+  # "multilateral" without "imputed" refuses qualifier_not_bound on the CRS answer instead of
+  # answering from the imputed table; issue 1164 tracks the measure and provenance checks.
+  known_failure: {issue: 1156, checks: [disposition, measure, provenance]}
   expect:
     definite:
       measure: {family: mls.imputed}
@@ -245,7 +245,6 @@
   why: Resolves to mls.imputed for country/NOR as origin.
   reuse: panel/mls-036
   tags: {theme: health, entity: country, direction: origin_only, unit: default, time: none, operation: none, breakdown: sector, door: raw_text, phrasing: technical}
-  known_failure: {issue: 1156, checks: [disposition]}
   expect:
     definite:
       measure: {family: mls.imputed, bound: {crsPurpose: CRSPurposeCode120}}
@@ -256,7 +255,6 @@
   why: Comparing imputed multilateral ODA from France and Germany names no sector, so DAC2a's imputed multilateral line answers both donors.
   reuse: panel/mls-013
   tags: {theme: aid, entity: two_countries, direction: origin_only, unit: default, time: none, operation: compare, breakdown: none, door: raw_text, phrasing: casual}
-  known_failure: {issue: 1156, checks: [disposition]}
   expect:
     definite:
       measure: {family: dac2a.imputed_multilateral}

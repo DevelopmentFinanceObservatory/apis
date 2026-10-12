@@ -4,6 +4,7 @@ Schema and capability checks cover document validity, stable ids, model agreemen
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 
 import jsonschema
@@ -12,7 +13,7 @@ from fastapi.responses import JSONResponse
 
 from artifact_store import Tier
 from code_index.shared import get_index
-from dataset_store.snapshot import StoredArtifactLocation
+from dataset_store.snapshot import Revocation, StoredArtifactLocation
 from datasets_api.capabilities import build_capabilities
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.meta import (
@@ -22,14 +23,9 @@ from datasets_api.doors.meta import (
     build_meta_door,
 )
 from datasets_api.mint_models import GroupbyOptions, MintOptions
-from datasets_api.operation_store import (
-    MAX_REDISPATCHES,
-    REDISPATCH_GRACE_SECONDS,
-    LiveOperationStore,
-    Operation,
-    lease_stale_after_seconds,
-    never_claimed_stale_after_seconds,
-)
+from datasets_api.operation_store import LiveOperationStore, Operation
+from datasets_api.operations.dispatch import ENQUEUE_RECOVERY_SECONDS
+from datasets_api.operations.lease import LEASE_SECONDS
 from datasets_api.operations.task_client import FakeTaskClient
 from datasets_api.render import artifact_rendering
 from datasets_api.schema import (
@@ -48,29 +44,18 @@ from dfo_platform.build import build_commit
 from dfo_platform.config import PublicSiteSettings
 from dfo_platform.problem import Cause
 from series_coverage.index import Estimate
-from spec_registry import LiveSpecRegistry
+from spec_registry import IdentityQuarantined, LiveSpecRegistry
 
 from ._app_factories import make_client
 from ._artifact_doubles import FakeArtifactStore
+from ._deps_doubles import fake_deps_cell
 from ._operation_store import FakeOperationDatasetStore
 from ._snapshot_doubles import FakeSnapshotReader, FakeSpecReader, _store_and_locate, _version
 from .conftest import FakeDatasetStore
 from .test_pin_door import FakeArtifactReferenceWriter
 
+_CONFIRMED_AT = datetime(2026, 1, 1, tzinfo=UTC)
 _OP_NOW = datetime(2026, 6, 1, tzinfo=UTC)
-# The same safe-default settings `LiveOperationStore(store=..., now=...)`
-# below resolves for itself (no `settings=`/`backlog_max=`/
-# `dispatch_concurrency=` passed), so these thresholds match what it
-# actually computes.
-_DEFAULT_SETTINGS = DatasetsBuildSettings()
-_STALE_AFTER_SECONDS = lease_stale_after_seconds(
-    max_retry_duration_seconds=_DEFAULT_SETTINGS.operation_max_retry_duration_seconds
-)
-_NEVER_CLAIMED_STALE_AFTER_SECONDS = never_claimed_stale_after_seconds(
-    backlog_max=_DEFAULT_SETTINGS.operation_backlog_max,
-    dispatch_concurrency=_DEFAULT_SETTINGS.operation_dispatch_concurrency,
-    max_retry_duration_seconds=_DEFAULT_SETTINGS.operation_max_retry_duration_seconds,
-)
 _DEFAULT_ESTIMATE = Estimate(rows=1_000_000, requests=40)
 # `bundle` defaults to true, so a plain parquet mint is a bundle.
 _PARQUET_BUNDLE = MintOptions(format="parquet")
@@ -85,21 +70,21 @@ class _FixedOperationStore:
     def create_or_get(self, **kwargs):
         raise NotImplementedError
 
-    def claim_dispatch(self, id: str):
+    def mark_dispatched(self, id: str, *, submission_count: int):
         return None
 
-    def confirm_dispatch(self, id: str, *, submission_count: int, dispatch_count: int) -> None:
+    def claim(self, id: str, *, submission_count: int, lease_seconds: int, final_delivery: bool):
         return None
 
-    def claim_lease(self, id: str, *, submission_count: int, lease_seconds: float):
+    def progress(self, id: str, *, attempt: int, rows_written: int):
         return None
 
-    def progress(
-        self, id: str, *, attempt: int, rows_written: int, lease_seconds: float | None = None
+    def record_estimate(self, id: str, *, attempt: int, estimate: Estimate):
+        return None
+
+    def complete(
+        self, id: str, *, attempt: int, subject_id: str, content_version: str, confirmed_at
     ):
-        return None
-
-    def complete(self, id: str, *, attempt: int, subject_id: str, content_version: str):
         return None
 
     def fail(self, id: str, *, attempt: int, refusal_code: str, retryable: bool, refusal=None):
@@ -108,7 +93,7 @@ class _FixedOperationStore:
     def release(self, id: str, *, attempt: int):
         return None
 
-    def expire_if_dead(self, id: str):
+    def abandon(self, id: str, *, attempt: int):
         return None
 
     def fail_unservable_done(self, id: str, *, attempt: int):
@@ -131,6 +116,7 @@ def _operation(
     refusal: ProblemSpec | None = None,
     created_at: datetime = _OP_NOW,
     options: MintOptions = _PARQUET_BUNDLE,
+    confirmed_at: datetime | None = None,
 ) -> Operation:
     return Operation(
         id=id,
@@ -144,18 +130,17 @@ def _operation(
         content_version=content_version,
         refusal_code=refusal_code,
         attempt_count=1,
-        lease_until=None,
+        claimed_at=_OP_NOW if state == "running" else None,
+        lease_seconds=1_500 if state == "running" else None,
         created_at=created_at,
         updated_at=_OP_NOW,
         submission_count=0,
         retryable=retryable,
-        dispatch_count=1,
         dispatched_at=created_at,
-        dispatch_confirmed=1,
-        execution_coverage_stamp=None,
         submitted_at=created_at,
         origin_catalogue_build_id="fake-catalogue",
         refusal=refusal,
+        confirmed_at=confirmed_at,
     )
 
 
@@ -461,7 +446,7 @@ def test_failed_operation_poll_with_an_unparseable_stored_refusal_names_the_code
             origin_catalogue_build_id="fake-catalogue",
             estimate=_DEFAULT_ESTIMATE,
         )
-        operation_store.claim_lease(op.id, submission_count=0, lease_seconds=60)
+        operation_store.claim(op.id, submission_count=0, lease_seconds=1_500, final_delivery=False)
         stored = _STORED_REFUSALS["over_ceiling"]
         operation_store.fail(
             op.id, attempt=1, refusal_code="over_ceiling", retryable=False, refusal=stored
@@ -509,7 +494,20 @@ def test_failed_operation_poll_keeps_its_own_detail_when_the_stored_refusal_has_
     assert body["cause"]["code"] == "spec_not_found"
 
 
-def test_done_operation_serves_the_manifest_with_a_freshly_signed_url_without_a_principal() -> None:
+@pytest.mark.parametrize(
+    ("confirmed_at", "currency"),
+    [
+        pytest.param(
+            _CONFIRMED_AT,
+            {"served_from": "materialise", "confirmed_at": "2026-01-01T00:00:00+00:00"},
+            id="confirmed",
+        ),
+        pytest.param(None, {}, id="completed-by-an-image-recording-no-instant"),
+    ],
+)
+def test_done_operation_serves_the_manifest_with_a_freshly_signed_url_without_a_principal(
+    confirmed_at: datetime | None, currency: dict[str, str]
+) -> None:
     artifact_store = FakeArtifactStore()
     location = _stored_rendering(artifact_store, _PARQUET_BUNDLE, data=b"a,b\n1,2\n")
     client = make_client(
@@ -524,7 +522,14 @@ def test_done_operation_serves_the_manifest_with_a_freshly_signed_url_without_a_
         reference_writer=FakeArtifactReferenceWriter(),
         version_writer=NullVersionRecordWriter(),
         operation_store=_FixedOperationStore(
-            {"op_1": _operation(state="done", subject_id="spec_a", content_version="cv1")}
+            {
+                "op_1": _operation(
+                    state="done",
+                    subject_id="spec_a",
+                    content_version="cv1",
+                    confirmed_at=confirmed_at,
+                )
+            }
         ),
     )
 
@@ -533,11 +538,58 @@ def test_done_operation_serves_the_manifest_with_a_freshly_signed_url_without_a_
     assert resp.status_code == 200
     body = resp.json()
     assert body["operation"] == {"operation_id": "op_1", "status": "done"}
+    trace = body["manifest"]["trace"]
+    assert {key: trace[key] for key in ("served_from", "confirmed_at") if key in trace} == currency
     assert body["manifest"]["content_version"] == "cv1"
     assert body["manifest"]["definition"]["spec_id"] == "spec_a"
     assert len(body["manifest"]["artifacts"]) == 1
     assert body["manifest"]["artifacts"][0]["artifact_digest"] == location.artifact_digest
     assert "error" not in body
+
+
+class _QuarantinedSpecReader(FakeSpecReader):
+    def read_definition(self, spec_id: str, *, schema_version: int | None = None):
+        raise IdentityQuarantined(subject_id=spec_id, id_kind="spec")
+
+
+@pytest.mark.parametrize(
+    "failure", ["spec_not_found", "snapshot_not_found", "snapshot_revoked", "identity_quarantined"]
+)
+def test_a_done_operation_whose_manifest_cannot_be_read_answers_internal_error(
+    failure: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Each snapshot failure of a done operation's subject answers the route's
+    `internal_error`, classified by the door without the platform's fallback."""
+    spec_reader = {
+        "spec_not_found": FakeSpecReader(),
+        "identity_quarantined": _QuarantinedSpecReader(),
+    }.get(failure, FakeSpecReader(spec_ids=["spec_a"]))
+    client = make_client(
+        registry=LiveSpecRegistry(store=FakeDatasetStore()),
+        settings=_SITE_SETTINGS,
+        spec_reader=spec_reader,
+        snapshot_reader=FakeSnapshotReader(
+            versions={} if failure == "snapshot_not_found" else {("spec_a", "cv1"): _version()},
+            revocations=(
+                {("spec_a", "cv1"): Revocation(reason=None, revoked_at=_OP_NOW)}
+                if failure == "snapshot_revoked"
+                else {}
+            ),
+        ),
+        artifact_store=FakeArtifactStore(),
+        reference_writer=FakeArtifactReferenceWriter(),
+        version_writer=NullVersionRecordWriter(),
+        operation_store=_FixedOperationStore(
+            {"op_1": _operation(state="done", subject_id="spec_a", content_version="cv1")}
+        ),
+    )
+
+    with caplog.at_level(logging.ERROR):
+        resp = client.get("/api/datasets/operations/op_1")
+
+    assert resp.status_code == 500, resp.text
+    assert resp.json()["code"] == "internal_error"
+    assert not [r for r in caplog.records if r.funcName == "_classify_and_envelope"]
 
 
 # A site other than the test environment's, so a key derived under any other settings misses.
@@ -655,8 +707,13 @@ def test_a_done_operation_whose_rendering_is_gone_fails_retryable_and_a_resubmit
         "estimate": _DEFAULT_ESTIMATE,
     }
     op = operation_store.create_or_get(**submission)
-    assert operation_store.claim_lease(op.id, submission_count=0, lease_seconds=60) is not None
-    assert operation_store.complete(op.id, attempt=1, subject_id="spec_a", content_version="cv1")
+    assert (
+        operation_store.claim(op.id, submission_count=0, lease_seconds=1_500, final_delivery=False)
+        is not None
+    )
+    assert operation_store.complete(
+        op.id, attempt=1, subject_id="spec_a", content_version="cv1", confirmed_at=_CONFIRMED_AT
+    )
     client = make_client(
         registry=LiveSpecRegistry(store=FakeDatasetStore()),
         settings=_SITE_SETTINGS,
@@ -742,7 +799,6 @@ def test_a_poll_that_loses_the_demotion_race_answers_from_the_rows_current_state
             snapshot_reader=FakeSnapshotReader(
                 versions={("spec_a", "cv1"): _version()}, locations={("spec_a", "cv1"): locations}
             ),
-            artifact_store=artifact_store,
             now=lambda: _OP_NOW,
             settings=_SITE_SETTINGS,
         )
@@ -762,173 +818,154 @@ def _stale_operation_store(now_box: dict[str, datetime]) -> LiveOperationStore:
     return LiveOperationStore(store=FakeOperationDatasetStore(), now=lambda: now_box["t"])
 
 
-class TestDeadWorkerDetection:
-    """Tests stale-operation expiry with a fake clock.
-    Claimed rows age from `lease_until`. Pending rows without a lease use `created_at`.
-    """
+def _create(operation_store: LiveOperationStore) -> Operation:
+    return operation_store.create_or_get(
+        request_identity={"input": {"spec_id": "spec_a"}},
+        options={"format": "csv"},
+        coverage_stamp="cov_stamp_1",
+        origin_catalogue_build_id="fake-catalogue",
+        estimate=Estimate(rows=1_000_000, requests=40),
+    )
 
-    def test_persists_failed_for_a_running_operation_whose_lease_expired_past_the_window(
-        self,
-    ) -> None:
+
+def _poll_at(operation_store: LiveOperationStore, operation_id: str, at: datetime):
+    return _resolve_operation(
+        operation_id=operation_id,
+        operation_store=operation_store,
+        task_client=None,
+        spec_reader=None,
+        snapshot_reader=None,
+        now=lambda: at,
+        settings=DatasetsBuildSettings(),
+    )
+
+
+class TestAbandonedRun:
+    """A poll fails a row nothing will finish: a running row whose lease ended with no later
+    delivery due, and any unfinished row past the operation deadline."""
+
+    def test_a_final_delivery_s_row_past_its_lease_fails_retryable_and_persists(self) -> None:
         now_box = {"t": _OP_NOW}
         operation_store = _stale_operation_store(now_box)
-        op = operation_store.create_or_get(
-            request_identity={"input": {"spec_id": "spec_a"}},
-            options={"format": "csv"},
-            coverage_stamp="cov_stamp_1",
-            origin_catalogue_build_id="fake-catalogue",
-            estimate=Estimate(rows=1_000_000, requests=40),
+        op = _create(operation_store)
+        assert operation_store.claim(
+            op.id, submission_count=0, lease_seconds=60, final_delivery=True
         )
-        claimed = operation_store.claim_lease(op.id, submission_count=0, lease_seconds=60)
-        assert claimed is not None and claimed.lease_until is not None
-        # Expiry starts at `lease_until`, the end of the lease.
-        now_box["t"] = claimed.lease_until + timedelta(seconds=_STALE_AFTER_SECONDS + 1)
+        now_box["t"] = _OP_NOW + timedelta(seconds=61)
 
         with pytest.raises(OperationFailed) as excinfo:
-            _resolve_operation(
-                operation_id=op.id,
-                operation_store=operation_store,
-                task_client=None,
-                spec_reader=None,
-                snapshot_reader=None,
-                artifact_store=None,
-                now=lambda: now_box["t"],
-                settings=DatasetsBuildSettings(),
-            )
-        assert excinfo.value.refusal_code == "internal_error"
+            _poll_at(operation_store, op.id, now_box["t"])
 
-        # The poll persists the failure in the operation store.
+        assert (excinfo.value.refusal_code, excinfo.value.retryable) == ("internal_error", True)
         stored = operation_store.get(op.id)
         assert stored is not None
-        assert stored.state == "failed"
-        assert stored.refusal_code == "internal_error"
+        assert (stored.state, stored.refusal_code, stored.retryable) == (
+            "failed",
+            "internal_error",
+            True,
+        )
 
-    def test_reports_running_just_under_the_stale_window_past_lease_expiry(self) -> None:
+    def test_a_running_row_at_its_lease_end_still_reports_running(self) -> None:
         now_box = {"t": _OP_NOW}
         operation_store = _stale_operation_store(now_box)
-        op = operation_store.create_or_get(
-            request_identity={"input": {"spec_id": "spec_a"}},
-            options={"format": "csv"},
-            coverage_stamp="cov_stamp_1",
-            origin_catalogue_build_id="fake-catalogue",
-            estimate=Estimate(rows=1_000_000, requests=40),
+        op = _create(operation_store)
+        assert operation_store.claim(
+            op.id, submission_count=0, lease_seconds=60, final_delivery=False
         )
-        claimed = operation_store.claim_lease(op.id, submission_count=0, lease_seconds=60)
-        assert claimed is not None and claimed.lease_until is not None
-        now_box["t"] = claimed.lease_until + timedelta(seconds=_STALE_AFTER_SECONDS - 1)
+        now_box["t"] = _OP_NOW + timedelta(seconds=60)
 
-        resource = _resolve_operation(
-            operation_id=op.id,
-            operation_store=operation_store,
-            task_client=None,
-            spec_reader=None,
-            snapshot_reader=None,
-            artifact_store=None,
-            now=lambda: now_box["t"],
-            settings=DatasetsBuildSettings(),
-        )
-
-        assert resource.operation.status == "running"
+        assert _poll_at(operation_store, op.id, now_box["t"]).operation.status == "running"
         assert operation_store.get(op.id).state == "running"
 
-    def test_never_claimed_pending_operation_does_not_expire_at_the_claimed_row_threshold(
-        self,
-    ) -> None:
-        """A never-claimed row stays pending past the claimed-row threshold."""
+    def test_a_poll_past_the_lease_leaves_the_row_to_the_delivery_still_due(self) -> None:
+        """The first delivery dies holding its claim. The queue's retry lands 1,680 s after it,
+        past the 1,620 s lease, and a poll between the two leaves the row for it."""
         now_box = {"t": _OP_NOW}
         operation_store = _stale_operation_store(now_box)
-        op = operation_store.create_or_get(
-            request_identity={"input": {"spec_id": "spec_a"}},
-            options={"format": "csv"},
-            coverage_stamp="cov_stamp_1",
-            origin_catalogue_build_id="fake-catalogue",
-            estimate=Estimate(rows=1_000_000, requests=40),
+        op = _create(operation_store)
+        assert operation_store.mark_dispatched(op.id, submission_count=0)
+        claimed = operation_store.claim(
+            op.id, submission_count=0, lease_seconds=LEASE_SECONDS, final_delivery=False
         )
-        now_box["t"] = _OP_NOW + timedelta(seconds=_STALE_AFTER_SECONDS + 1)
-
-        resource = _resolve_operation(
-            operation_id=op.id,
-            operation_store=operation_store,
-            task_client=None,
-            spec_reader=None,
-            snapshot_reader=None,
-            artifact_store=None,
-            now=lambda: now_box["t"],
-            settings=DatasetsBuildSettings(),
-        )
-
-        assert resource.operation.status == "pending"
-        assert operation_store.get(op.id).state == "pending"
-
-    def test_never_claimed_pending_operation_expires_past_its_own_longer_threshold(self) -> None:
-        """A never-claimed pending row expires after its `created_at` threshold."""
-        now_box = {"t": _OP_NOW}
-        operation_store = _stale_operation_store(now_box)
-        op = operation_store.create_or_get(
-            request_identity={"input": {"spec_id": "spec_a"}},
-            options={"format": "csv"},
-            coverage_stamp="cov_stamp_1",
-            origin_catalogue_build_id="fake-catalogue",
-            estimate=Estimate(rows=1_000_000, requests=40),
-        )
-        now_box["t"] = _OP_NOW + timedelta(seconds=_NEVER_CLAIMED_STALE_AFTER_SECONDS + 1)
-
-        with pytest.raises(OperationFailed) as excinfo:
-            _resolve_operation(
-                operation_id=op.id,
-                operation_store=operation_store,
-                task_client=None,
-                spec_reader=None,
-                snapshot_reader=None,
-                artifact_store=None,
-                now=lambda: now_box["t"],
-                settings=DatasetsBuildSettings(),
-            )
-        assert excinfo.value.refusal_code == "internal_error"
-
-        stored = operation_store.get(op.id)
-        assert stored is not None
-        assert stored.state == "failed"
-        assert stored.refusal_code == "internal_error"
-        assert stored.retryable is True
-
-    def test_released_pending_operation_whose_lease_expired_past_the_window_expires(
-        self,
-    ) -> None:
-        """Release sets `lease_until` to now, so the claimed-row expiry rule still applies."""
-        now_box = {"t": _OP_NOW}
-        operation_store = _stale_operation_store(now_box)
-        op = operation_store.create_or_get(
-            request_identity={"input": {"spec_id": "spec_a"}},
-            options={"format": "csv"},
-            coverage_stamp="cov_stamp_1",
-            origin_catalogue_build_id="fake-catalogue",
-            estimate=Estimate(rows=1_000_000, requests=40),
-        )
-        claimed = operation_store.claim_lease(op.id, submission_count=0, lease_seconds=60)
         assert claimed is not None
-        released = operation_store.release(op.id, attempt=1)
-        assert released is not None and released.state == "pending"
-        assert released.lease_until is not None
-        now_box["t"] = released.lease_until + timedelta(seconds=_STALE_AFTER_SECONDS + 1)
 
-        with pytest.raises(OperationFailed) as excinfo:
-            _resolve_operation(
-                operation_id=op.id,
-                operation_store=operation_store,
-                task_client=None,
-                spec_reader=None,
-                snapshot_reader=None,
-                artifact_store=None,
-                now=lambda: now_box["t"],
-                settings=DatasetsBuildSettings(),
+        now_box["t"] = _OP_NOW + timedelta(seconds=LEASE_SECONDS + 1)
+        assert _poll_at(operation_store, op.id, now_box["t"]).operation.status == "running"
+        assert operation_store.get(op.id) == claimed
+
+        now_box["t"] = _OP_NOW + timedelta(seconds=1_680)
+        retried = operation_store.claim(
+            op.id, submission_count=0, lease_seconds=LEASE_SECONDS, final_delivery=False
+        )
+        assert retried is not None
+        assert (retried.state, retried.attempt_count) == ("running", 2)
+
+    @pytest.mark.parametrize(
+        "history", ["never-claimed", "released", "never-dispatched", "claimed-delivery-due"]
+    )
+    @pytest.mark.parametrize("past_deadline", [0, 1])
+    def test_an_unfinished_row_past_the_operation_deadline_fails_retryable(
+        self, history: str, past_deadline: int
+    ) -> None:
+        """The deadline runs from the dispatch, or from the submission when the task create
+        never returned. It ends the wait of a pending row and of a running row whose lease
+        ended with a later delivery due."""
+        now_box = {"t": _OP_NOW}
+        operation_store = _stale_operation_store(now_box)
+        op = _create(operation_store)
+        if history != "never-dispatched":
+            assert operation_store.mark_dispatched(op.id, submission_count=0)
+        if history in ("released", "claimed-delivery-due"):
+            assert operation_store.claim(
+                op.id, submission_count=0, lease_seconds=60, final_delivery=False
             )
-        assert excinfo.value.refusal_code == "internal_error"
+        if history == "released":
+            assert operation_store.release(op.id, attempt=1)
+        waiting = "running" if history == "claimed-delivery-due" else "pending"
+        status = "failed" if past_deadline else waiting
+        deadline = DatasetsBuildSettings().operation_deadline_seconds
+        now_box["t"] = _OP_NOW + timedelta(seconds=deadline + past_deadline)
 
+        if status == waiting:
+            assert _poll_at(operation_store, op.id, now_box["t"]).operation.status == waiting
+        else:
+            with pytest.raises(OperationFailed) as excinfo:
+                _poll_at(operation_store, op.id, now_box["t"])
+            assert (excinfo.value.refusal_code, excinfo.value.retryable) == (
+                "internal_error",
+                True,
+            )
         stored = operation_store.get(op.id)
-        assert stored is not None
-        assert stored.state == "failed"
-        assert stored.refusal_code == "internal_error"
+        assert stored is not None and stored.state == status
+
+    @pytest.mark.parametrize(("idle", "status"), [(0, "running"), (1, "failed")])
+    def test_a_running_row_with_no_claim_time_ends_its_lease_when_its_heartbeat_stops(
+        self, idle: int, status: str
+    ) -> None:
+        """An image that renewed its lease through `updated_at` and recorded no delivery
+        claimed the row, so the row is abandoned once `updated_at` is `LEASE_SECONDS` old."""
+        now_box = {"t": _OP_NOW}
+        fake = FakeOperationDatasetStore()
+        operation_store = LiveOperationStore(store=fake, now=lambda: now_box["t"])
+        op = _create(operation_store)
+        assert operation_store.claim(
+            op.id, submission_count=0, lease_seconds=60, final_delivery=False
+        )
+        with fake.transaction() as tx:
+            tx.execute(
+                "UPDATE datasets.operation SET claimed_at = NULL, lease_seconds = NULL, "
+                "final_delivery = NULL WHERE id = %s",
+                (op.id,),
+            )
+        now_box["t"] = _OP_NOW + timedelta(seconds=LEASE_SECONDS + idle)
+
+        if status == "running":
+            assert _poll_at(operation_store, op.id, now_box["t"]).operation.status == "running"
+        else:
+            with pytest.raises(OperationFailed):
+                _poll_at(operation_store, op.id, now_box["t"])
+        stored = operation_store.get(op.id)
+        assert stored is not None and stored.state == status
 
 
 def test_capabilities_says_the_operation_envelope_is_active() -> None:
@@ -1048,7 +1085,7 @@ def test_schema_document_not_built_when_the_route_is_gated_off(monkeypatch) -> N
     )
     monkeypatch.setattr("datasets_api.doors.meta.SCHEMA_ROUTE_LIVE", False)
 
-    build_meta_door()
+    build_meta_door(deps=fake_deps_cell(), settings=DatasetsBuildSettings.from_env())
 
     assert calls == []
 
@@ -1062,133 +1099,87 @@ class _RaisingTaskClient:
         raise TimeoutError("create_task deadline exceeded")
 
 
-def _poll(operation_store: LiveOperationStore, operation_id: str, task_client) -> OperationResource:
+def _poll(
+    operation_store: LiveOperationStore,
+    operation_id: str,
+    task_client,
+    now_box: dict[str, datetime],
+) -> OperationResource:
     return _resolve_operation(
         operation_id=operation_id,
         operation_store=operation_store,
         task_client=task_client,
         spec_reader=None,
         snapshot_reader=None,
-        artifact_store=None,
-        now=lambda: _OP_NOW,
+        now=lambda: now_box["t"],
         settings=DatasetsBuildSettings(),
     )
 
 
-class TestPollDispatchReconciliation:
-    """Polling dispatches due pending operations through `dispatch_if_due`."""
+class TestPollEnqueueRecovery:
+    """A poll creates the task for an undispatched pending row past the recovery window."""
 
-    def _operation(self, operation_store: LiveOperationStore):
-        return operation_store.create_or_get(
-            request_identity={"input": {"spec_id": "spec_a"}},
-            options={"format": "csv"},
-            coverage_stamp="cov_stamp_1",
-            origin_catalogue_build_id="fake-catalogue",
-            estimate=Estimate(rows=1_000_000, requests=40),
-        )
-
-    def test_a_poll_redispatches_a_lost_enqueue_after_the_grace(self) -> None:
+    def test_a_poll_recovers_an_undispatched_row_only_past_the_window(self) -> None:
         now_box = {"t": _OP_NOW}
         operation_store = _stale_operation_store(now_box)
-        op = self._operation(operation_store)
-        assert operation_store.claim_dispatch(op.id) is not None  # its enqueue was lost
+        op = _create(operation_store)
         task_client = FakeTaskClient()
 
-        inside = _poll(operation_store, op.id, task_client)
-        assert inside.operation.status == "pending"
+        now_box["t"] = _OP_NOW + timedelta(seconds=ENQUEUE_RECOVERY_SECONDS)
+        assert _poll(operation_store, op.id, task_client, now_box).operation.status == "pending"
         assert task_client.enqueued == []
 
-        now_box["t"] = now_box["t"] + timedelta(seconds=REDISPATCH_GRACE_SECONDS + 1)
-        resource = _poll(operation_store, op.id, task_client)
-
-        assert resource.operation.status == "pending"
+        now_box["t"] += timedelta(seconds=1)
+        assert _poll(operation_store, op.id, task_client, now_box).operation.status == "pending"
         assert task_client.enqueued == [(op.id, 0)]
         stored = operation_store.get(op.id)
-        assert stored is not None
-        assert stored.dispatch_count == 2
-        assert stored.dispatch_confirmed == 2
+        assert stored is not None and stored.dispatched_at == now_box["t"]
 
-    def test_a_poll_dispatches_a_row_that_was_never_dispatched(self) -> None:
+    def test_a_poll_never_recreates_a_recorded_dispatch(self) -> None:
         now_box = {"t": _OP_NOW}
         operation_store = _stale_operation_store(now_box)
-        op = self._operation(operation_store)
+        op = _create(operation_store)
+        assert operation_store.mark_dispatched(op.id, submission_count=0) is not None
         task_client = FakeTaskClient()
 
-        _poll(operation_store, op.id, task_client)
+        now_box["t"] += timedelta(hours=2)
+        _poll(operation_store, op.id, task_client, now_box)
 
-        assert task_client.enqueued == [(op.id, 0)]
-
-    def test_a_poll_never_redispatches_a_confirmed_dispatch(self) -> None:
-        now_box = {"t": _OP_NOW}
-        operation_store = _stale_operation_store(now_box)
-        op = self._operation(operation_store)
-        task_client = FakeTaskClient()
-        _poll(operation_store, op.id, task_client)
-        assert task_client.enqueued == [(op.id, 0)]
-
-        now_box["t"] = now_box["t"] + timedelta(hours=2)
-        _poll(operation_store, op.id, task_client)
-
-        assert task_client.enqueued == [(op.id, 0)]
+        assert task_client.enqueued == []
 
     def test_an_enqueue_failure_on_a_poll_still_answers_the_poll(self) -> None:
         now_box = {"t": _OP_NOW}
         operation_store = _stale_operation_store(now_box)
-        op = self._operation(operation_store)
+        op = _create(operation_store)
         task_client = _RaisingTaskClient()
+        now_box["t"] += timedelta(seconds=ENQUEUE_RECOVERY_SECONDS + 1)
 
-        resource = _poll(operation_store, op.id, task_client)
+        resource = _poll(operation_store, op.id, task_client, now_box)
 
         assert task_client.calls == 1
         assert resource.operation.status == "pending"
         stored = operation_store.get(op.id)
-        assert stored is not None
-        assert stored.dispatch_count == 1
-        assert stored.dispatch_confirmed == 0
-
-    def test_a_submission_that_used_every_dispatch_fails_once_its_last_task_is_stale(
-        self,
-    ) -> None:
-        """After the dispatch cap, polls wait for the stale threshold from the last dispatch."""
-        now_box = {"t": _OP_NOW}
-        operation_store = _stale_operation_store(now_box)
-        op = self._operation(operation_store)
-        task_client = _RaisingTaskClient()
-        for _ in range(MAX_REDISPATCHES + 1):
-            _poll(operation_store, op.id, task_client)
-            now_box["t"] = now_box["t"] + timedelta(seconds=REDISPATCH_GRACE_SECONDS + 1)
-        assert task_client.calls == MAX_REDISPATCHES + 1
-        exhausted = operation_store.get(op.id)
-        assert exhausted is not None and exhausted.dispatched_at is not None
-        last_dispatched_at = exhausted.dispatched_at
-
-        now_box["t"] = last_dispatched_at + timedelta(seconds=_NEVER_CLAIMED_STALE_AFTER_SECONDS)
-        resource = _poll(operation_store, op.id, task_client)
-        assert resource.operation.status == "pending"
-        assert task_client.calls == MAX_REDISPATCHES + 1
-
-        now_box["t"] = now_box["t"] + timedelta(seconds=1)
-        with pytest.raises(OperationFailed) as excinfo:
-            _poll(operation_store, op.id, task_client)
-
-        assert excinfo.value.refusal_code == "internal_error"
-        assert task_client.calls == MAX_REDISPATCHES + 1
+        assert stored is not None and stored.dispatched_at is None
 
     def test_a_running_operation_is_never_dispatched_by_a_poll(self) -> None:
         now_box = {"t": _OP_NOW}
         operation_store = _stale_operation_store(now_box)
-        op = self._operation(operation_store)
-        assert operation_store.claim_lease(op.id, submission_count=0, lease_seconds=600)
+        op = _create(operation_store)
+        assert operation_store.claim(
+            op.id, submission_count=0, lease_seconds=600, final_delivery=False
+        )
         task_client = FakeTaskClient()
+        now_box["t"] += timedelta(seconds=ENQUEUE_RECOVERY_SECONDS + 1)
 
-        resource = _poll(operation_store, op.id, task_client)
+        resource = _poll(operation_store, op.id, task_client, now_box)
 
         assert resource.operation.status == "running"
         assert task_client.enqueued == []
 
 
 def test_the_composed_poll_route_reconciles_through_the_surfaces_task_client() -> None:
-    operation_store = LiveOperationStore(store=FakeOperationDatasetStore())
+    # Submitted long before the route's own clock, so the enqueue is overdue.
+    operation_store = LiveOperationStore(store=FakeOperationDatasetStore(), now=lambda: _OP_NOW)
     op = operation_store.create_or_get(
         request_identity={"input": {"spec_id": "spec_a"}},
         options={"format": "csv"},

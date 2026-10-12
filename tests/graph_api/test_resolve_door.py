@@ -15,9 +15,10 @@ import pytest
 from entity_resolution import EntityResolutionError, NotFound, Resolution
 from graph_api.deps import GraphDeps
 from graph_api.doors import resolve as resolve_door
+from graph_api.doors.sources import new_provenance_doc_cache
 from materialise.graph import GraphDeadlineExceededError, GraphReadError
 
-from .conftest import FakeGraphNodeReader, make_client, make_resolver
+from .conftest import FakeGraphNodeReader, make_client, make_resolver, send_past_a_full_pool
 
 
 def test_kenya_resolved_and_confirmed(shared_resolver):
@@ -499,32 +500,42 @@ class TestValidation:
 
 
 class _BlockingGraphNodeReader:
-    """Block `node_arcs_many` until released to test semaphore admission.
-
-    The reader ignores its deadline and waits at most 5 seconds.
-    """
+    """Block `child_places_batch`, the region read the door runs on the DCP-read executor,
+    until the test releases it. Count the reads that reach it."""
 
     def __init__(self, delegate: FakeGraphNodeReader) -> None:
         self._delegate = delegate
         self.entered = threading.Event()
         self.release = threading.Event()
+        self.entries = 0
         self.calls = delegate.calls
 
     def node_arcs_many(self, dcids, *, properties, deadline=None):
-        self.entered.set()
-        self.release.wait(timeout=5.0)
         return self._delegate.node_arcs_many(dcids, properties=properties, deadline=deadline)
 
     def resolve_by_arc(self, names, *, arc, deadline=None):
         return self._delegate.resolve_by_arc(names, arc=arc, deadline=deadline)
 
     def child_places_batch(self, parent_dcids, *, child_type, deadline=None):
+        self.entries += 1
+        self.entered.set()
+        self.release.wait(timeout=5.0)
         return self._delegate.child_places_batch(
             parent_dcids, child_type=child_type, deadline=deadline
         )
 
     def node_names_many(self, dcids, *, deadline=None):
         return self._delegate.node_names_many(dcids, deadline=deadline)
+
+
+def _africa_graph() -> FakeGraphNodeReader:
+    return FakeGraphNodeReader(
+        nodes={
+            "africa": {"typeOf": ("Continent",)},
+            "country/AGO": {"typeOf": ("Country",), "name": ("Angola",)},
+        },
+        contained={("africa", "Country"): ["country/AGO"]},
+    )
 
 
 class _DeadlineBoundedGraphNodeReader:
@@ -568,42 +579,64 @@ class _DeadlineBoundedGraphNodeReader:
         return self._delegate.node_names_many(dcids, deadline=deadline)
 
 
-def test_semaphore_full_refuses_503_service_unavailable(shared_resolver):
-    delegate = FakeGraphNodeReader(nodes={"country/KEN": {"typeOf": ("Country",)}})
-    graph = _BlockingGraphNodeReader(delegate)
+def test_a_read_past_the_pool_size_queues_and_succeeds(
+    shared_resolver, caplog: pytest.LogCaptureFixture
+):
+    graph = _BlockingGraphNodeReader(_africa_graph())
+    client = make_client(
+        graph=graph, resolver=make_resolver(shared_resolver, graph=graph), node_pool_size=1
+    )
+
+    with client, caplog.at_level(logging.WARNING, logger="dfo_platform.executor"):
+        responses = send_past_a_full_pool(
+            client,
+            lambda: client.post("/api/graph/resolve", json={"texts": ["Africa"]}),
+            entered=graph.entered,
+            release=graph.release,
+        )
+
+    assert [response.status_code for response in responses] == [200, 200], [
+        response.text for response in responses
+    ]
+    assert all(
+        response.json()["results"][0]["members"] == [{"dcid": "country/AGO", "name": "Angola"}]
+        for response in responses
+    )
+    assert any("graph-dcp saturated" in record.message for record in caplog.records)
+
+
+def test_a_read_queued_past_its_deadline_times_out_and_never_runs(
+    shared_resolver, monkeypatch: pytest.MonkeyPatch
+):
+    """A region read that times out while queued behind a worker that outlived its own door
+    timeout returns 504 and never reaches the reader. The next read runs once that worker
+    returns."""
+    monkeypatch.setattr(resolve_door, "GRAPH_RESOLVE_TIMEOUT_SECONDS", 0.5)
+    graph = _BlockingGraphNodeReader(_africa_graph())
     client = make_client(
         graph=graph, resolver=make_resolver(shared_resolver, graph=graph), node_pool_size=1
     )
 
     with client:
-        first_response: list = []
-        first_thread = threading.Thread(
-            target=lambda: first_response.append(
-                client.post("/api/graph/resolve", json={"texts": ["Kenya"]})
-            )
-        )
-        first_thread.start()
-        assert graph.entered.wait(timeout=5.0), "first request never reached the blocking read"
-
-        second_response = client.post("/api/graph/resolve", json={"texts": ["Kenya"]})
-
-        assert second_response.status_code == 503, second_response.text
-        second_problem = second_response.json()
-        assert second_problem["code"] == "service_unavailable"
-        assert second_problem["retryable"] is True
-
+        running = client.post("/api/graph/resolve", json={"texts": ["Africa"]})
+        assert graph.entered.wait(timeout=5.0), "the first region read never started"
+        queued = client.post("/api/graph/resolve", json={"texts": ["Africa"]})
         graph.release.set()
-        first_thread.join(timeout=5.0)
-        assert first_response, "first request never returned"
-        assert first_response[0].status_code == 200, first_response[0].text
+        recovered = client.post("/api/graph/resolve", json={"texts": ["Africa"]})
+
+    assert running.status_code == 504, running.text
+    assert queued.status_code == 504, queued.text
+    assert queued.json()["code"] == "timeout"
+    assert queued.json()["retryable"] is True
+    assert recovered.status_code == 200, recovered.text
+    assert graph.entries == 2
 
 
 def test_timed_out_request_returns_the_read_at_its_deadline_and_frees_capacity(
     shared_resolver, monkeypatch: pytest.MonkeyPatch
 ):
-    """A 1-second read deadline returns 504 and frees the sole semaphore slot.
-    A second request must succeed within 0.5 seconds after the read exits.
-    """
+    """A read stalled until its 1-second deadline returns 504, and the next request
+    succeeds."""
     monkeypatch.setattr(resolve_door, "GRAPH_RESOLVE_TIMEOUT_SECONDS", 1.0)
     delegate = FakeGraphNodeReader(nodes={"country/KEN": {"typeOf": ("Country",)}})
     graph = _DeadlineBoundedGraphNodeReader(delegate)
@@ -627,15 +660,7 @@ def test_timed_out_request_returns_the_read_at_its_deadline_and_frees_capacity(
         assert door_deadline - graph.entered_at <= resolve_door.GRAPH_RESOLVE_TIMEOUT_SECONDS
         assert time.monotonic() - started_at < resolve_door.GRAPH_RESOLVE_TIMEOUT_SECONDS + 1.0
 
-        # The 504 can precede the worker's return by a few milliseconds, so
-        # the first retry may get 503. Admission within 0.5 seconds proves
-        # the completion callback freed the slot.
-        freed_by = time.monotonic() + 0.5
-        while True:
-            second = client.post("/api/graph/resolve", json={"texts": ["Kenya"]})
-            if second.status_code != 503 or time.monotonic() > freed_by:
-                break
-            time.sleep(0.01)
+        second = client.post("/api/graph/resolve", json={"texts": ["Kenya"]})
         assert second.status_code == 200, second.text
         assert second.json()["results"] == [
             {
@@ -746,20 +771,21 @@ class _StubNotFoundResolver:
         return [NotFound() for _ in texts]
 
 
-def test_run_resolve_refreshes_the_generation_before_acquiring_the_semaphore():
-    """`_run_resolve` refreshes generation once before acquiring the DCP semaphore."""
+def test_run_resolve_refreshes_the_generation_once():
     calls: list[None] = []
 
     class _SpyGeneration:
         async def refresh_if_stale(self, *, timeout_s: float = 1.0) -> None:
             calls.append(None)
 
+    executor = ThreadPoolExecutor(max_workers=1)
+    generation = _SpyGeneration()
     deps = GraphDeps(
         graph=FakeGraphNodeReader(),
         resolver=_StubNotFoundResolver(),
-        dcp_executor=ThreadPoolExecutor(max_workers=1),
-        dcp_semaphore=threading.BoundedSemaphore(1),
-        generation=_SpyGeneration(),
+        dcp_executor=executor,
+        generation=generation,
+        provenance_docs=new_provenance_doc_cache(executor=executor, generation=generation),
     )
 
     response = asyncio.run(resolve_door._run_resolve(deps, ["Kenya"]))

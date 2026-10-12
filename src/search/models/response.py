@@ -18,7 +18,7 @@ from .departure import Departure, departures_in_precedence_order
 from .envelope import Diagnostics, QueryEcho, Timing, Warning
 from .grammar import GraphRef, SentenceToken
 from .outcomes import CandidateSet, NoData
-from .request import _OPERATIONS_DESCRIPTION, Operation, ParsedPart
+from .request import _OPERATIONS_DESCRIPTION, Operation, ParsedPart, _is_false
 from .spec import Spec
 from .vocab import (
     SCHEMA_VERSION,
@@ -44,6 +44,15 @@ class _PartBase(StrictModel):
             "when the whole posted query was empty or whitespace-only (raw_text "
             "door), which refuses variable_not_resolved before extraction runs and "
             "so has no text to name."
+        ),
+    )
+    separate: bool = Field(
+        default=False,
+        exclude_if=_is_false,
+        description=(
+            "true when this part was asked beside the others to be compared with them. "
+            "A client resubmitting an identity, candidate set, or placeholder posts this "
+            "flag on that entry to preserve the comparison. False, the default, is omitted"
         ),
     )
     warnings: list[Warning] = Field(

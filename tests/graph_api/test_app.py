@@ -64,6 +64,32 @@ def test_request_before_the_lifespan_refuses_503():
         assert body["retryable"] is True
 
 
+@pytest.mark.parametrize(
+    "send",
+    [
+        pytest.param(lambda client: client.get("/api/graph/node/country/MOZ"), id="node"),
+        # No other test resolves this text, so the resolver's first read is its graph
+        # confirmation read, which the resolver submits to the executor itself.
+        pytest.param(
+            lambda client: client.post("/api/graph/resolve", json={"texts": ["Mozambique"]}),
+            id="resolve-confirmation",
+        ),
+    ],
+)
+def test_a_read_after_the_dcp_executor_shuts_down_refuses_retryable_503(send):
+    graph = FakeGraphNodeReader(nodes={"country/MOZ": {"typeOf": ("Country",)}})
+    client = make_client(graph=graph)
+
+    with client:
+        client.app.state.graph_deps.dcp_executor.shutdown()
+        resp = send(client)
+
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["code"] == "service_unavailable"
+    assert resp.json()["retryable"] is True
+    assert sum(graph.calls.values()) == 0
+
+
 def test_lifespan_closes_owned_reader_when_dcp_executor_construction_fails(
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -118,7 +144,7 @@ def test_lifespan_shuts_down_dcp_executor_and_closes_reader_when_resolver_acquis
     def _raising_acquire_shared():
         raise RuntimeError("shared resolver acquisition failed")
 
-    real_executor_cls = app_module.ThreadPoolExecutor
+    real_executor_cls = app_module.DcpReadExecutor
 
     class _SpyThreadPoolExecutor(real_executor_cls):
         def __init__(self, *args: object, **kwargs: object) -> None:
@@ -132,7 +158,7 @@ def test_lifespan_shuts_down_dcp_executor_and_closes_reader_when_resolver_acquis
 
     monkeypatch.setattr(app_module, "build_graph_client", _SpyGraphClient)
     monkeypatch.setattr(app_module, "acquire_shared", _raising_acquire_shared)
-    monkeypatch.setattr(app_module, "ThreadPoolExecutor", _SpyThreadPoolExecutor)
+    monkeypatch.setattr(app_module, "DcpReadExecutor", _SpyThreadPoolExecutor)
 
     surface = graph_surface()
     app = create_app([surface])
@@ -249,7 +275,8 @@ def test_lifespan_builds_the_real_shared_resolver_covering_both_packs(
 def test_lifespan_passes_the_shared_generation_provider_to_the_entity_resolver_and_registers_it(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """The lifespan registers the resolver cache with its shared generation provider."""
+    """The lifespan registers the resolver cache and the source document cache with its shared
+    generation provider."""
     for var in _GRAPH_ENV_VARS:
         monkeypatch.delenv(var, raising=False)
     for var in _GENERATION_ENV_VARS:
@@ -290,7 +317,10 @@ def test_lifespan_passes_the_shared_generation_provider_to_the_entity_resolver_a
         assert len(captured_resolvers) == 1
         resolver = captured_resolvers[0]
         assert resolver._generation is sentinel_generation
-        assert sentinel_generation.registered_names() == ("graph_api.entity_resolver",)
+        assert sentinel_generation.registered_names() == (
+            "graph_api.entity_resolver",
+            "graph_api.provenance_docs",
+        )
 
     # `graph` is injected here, so there is no real DCP base URL to
     # cross-check the generation source's own service urls against.

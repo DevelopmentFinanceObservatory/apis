@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import csv
 import io
-import json
 from collections.abc import Iterator
 from dataclasses import dataclass
 
@@ -18,13 +17,16 @@ from assembler.catalogue import CatalogueRelease
 from assembler.fakes import FakeReleaseRegistry, FakeRevisionStore
 from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api.codes import DATASETS_CODE_CATALOGUE
+from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.publish import build_publish_door
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from datasets_api.version_store import LiveVersionRecordWriter
 from dfo_platform.app import Surface, create_app
+from materialise.formats import canonical_frame_document, read_canonical_frame_table
 from presentation_api.app import presentation_surface
 from presentation_store.frame_store import LiveFrameStore
 from tests.artifact_store.conftest import FakeGCSClient
+from tests.datasets_api._deps_doubles import fake_deps_cell
 from tests.datasets_api._version_record_store import FakeVersionRecordDatasetStore
 from tests.presentation_store.test_frame_store import _FakeGraphReader, _FakeReferenceWriter
 
@@ -69,9 +71,12 @@ def deployment(release: CatalogueRelease) -> Iterator[_Deployment]:
     )
     snapshot_reader = LiveSnapshotReader(store=store)
     publish_door = build_publish_door(
-        artifact_store=artifact_store,
-        snapshot_reader=snapshot_reader,
-        version_writer=LiveVersionRecordWriter(store=store),
+        deps=fake_deps_cell(
+            artifact_store=artifact_store,
+            snapshot_reader=snapshot_reader,
+            version_writer=LiveVersionRecordWriter(store=store),
+        ),
+        settings=DatasetsBuildSettings.from_env(),
         allowed_principals=frozenset({_PRINCIPAL}),
     )
     datasets = Surface(
@@ -119,9 +124,11 @@ def test_a_published_composed_unit_frame_resolves_to_cards_naming_both_sides(
         "/api/datasets/frames/publish", json=_PUBLISH_BODY, headers={"x-dfo-principal": _PRINCIPAL}
     )
     assert published.status_code == 200, published.text
-    document = json.loads(
-        deployment.artifact_store.get(
-            artifact_digest=published.json()["published"]["artifact_digest"], tier=Tier.working
+    document = canonical_frame_document(
+        read_canonical_frame_table(
+            deployment.artifact_store.get(
+                artifact_digest=published.json()["published"]["artifact_digest"], tier=Tier.working
+            )
         )
     )
     unit_index = document["columns"].index("unit")

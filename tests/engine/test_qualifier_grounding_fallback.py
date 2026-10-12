@@ -24,6 +24,15 @@ from tests.fixtures import FakeGraph
 
 _KEN = "country/KEN"
 _VARIABLE = "education widgets"
+
+
+@pytest.fixture(autouse=True)
+def _log_coverage(search_settings):
+    """The word "widgets" beside education is one no coverage reader covers, so the log mode
+    keeps these grounding cases answering."""
+    search_settings(qualifier_coverage="log")
+
+
 _AMOUNT = "Amount_Widget"
 _COUNT = "Count_Widget"
 _HEALTH = "CRSPurposeCode12110"

@@ -24,14 +24,13 @@ from ._group_support import (
     _OTHER_ENTITY,
     _ROLE,
     _SHARED_FACET,
-    _SNAPSHOT,
     _STAT_VAR_A,
     _STAT_VAR_B,
     _STAT_VAR_C,
     _csv_row,
     _request,
 )
-from .conftest import FakeGraphReader, FakeRevisionReader
+from .conftest import FakeGraphReader
 
 
 def _coverage_for(entries: list[tuple[str, str, str]]) -> CoverageIndex:
@@ -107,8 +106,7 @@ def test_member_concurrency_dispatches_every_group_member_at_once_barrier_proof(
         ],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         member_concurrency=len(members),
@@ -191,8 +189,7 @@ def test_group_dcid_order_first_member_error_wins_over_a_wall_clock_faster_sibli
             requests,
             sdmx=sdmx,
             graph=graph,
-            enrichment=EnrichmentLookup(graph),
-            revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
             materialiser_build="build-123",
             capability_version="cap-v1",
             member_concurrency=2,
@@ -274,8 +271,7 @@ def test_group_member_concurrency_one_reproduces_serial_behaviour_exactly():
             requests,
             sdmx=sdmx,
             graph=graph,
-            enrichment=EnrichmentLookup(graph),
-            revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
             ceiling=ceiling,
             materialiser_build="build-123",
             capability_version="cap-v1",
