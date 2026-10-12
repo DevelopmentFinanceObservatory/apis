@@ -69,6 +69,9 @@ _CRS_COMMITMENT_SV = (
     "Amount_FinancialObligation_Commitment_CRSTypeOfFlow10_CRSTypeOfFinance110_"
     "CRSPurposeCode11110_Nominal"
 )
+# The DAC1 commitments total recall adds beside CRS commitments
+# (`clients.graph.with_rival_families`).
+_DAC1_COMMITMENT_SV = "Amount_FinancialObligation_Commitment_DAC1AidType1010_Nominal"
 _SECTORS_SV = (
     "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_"
     "CRSPurposeCode11220_Nominal"
@@ -191,6 +194,7 @@ _NODES = {
     _CRS_GRANT_EQUIVALENT_SV: _index_row_node(_CRS_GRANT_EQUIVALENT_SV),
     _SECTORS_SV: _index_row_node(_SECTORS_SV),
     _CRS_COMMITMENT_SV: _index_row_node(_CRS_COMMITMENT_SV),
+    _DAC1_COMMITMENT_SV: _index_row_node(_DAC1_COMMITMENT_SV),
     _PROVIDER_ROW.dcid: _index_row_node(_PROVIDER_ROW),
     _RECIPIENT_ROW.dcid: _index_row_node(_RECIPIENT_ROW),
     _FRA: {"label": "France", "type": "Country"},
@@ -525,7 +529,10 @@ def test_two_open_axes_keep_the_index_shape_declaring_the_destination(
             for recalled in ((rival, _DAC1_SV), (_DAC1_SV, rival))
         ),
         # CRS commitments, another five-tuple, read "ODA" as DAC1 does, so DAC1's donor
-        # totals displace them; "commitments" reads only on the commitments table.
+        # totals displace them; "commitments" reads only on the commitments five-tuple, where
+        # recall adds DAC1's commitments total and the CRS commitments by recipient leave for it.
+        # DAC1's disbursements then collapse into its commitments, the measure the query names
+        # (`collapse_measure_families`).
         pytest.param(
             "ODA from Japan",
             ["Japan"],
@@ -539,8 +546,18 @@ def test_two_open_axes_keep_the_index_shape_declaring_the_destination(
             ["Japan"],
             "ODA commitments",
             (_CRS_COMMITMENT_SV, _DAC1_SV),
-            [(_CRS_COMMITMENT_SV,), (_DAC1_SV,)],
+            [(_DAC1_COMMITMENT_SV,)],
             id="commitments-measure-word",
+        ),
+        # Recall adds DAC1's commitments total for the CRS commitments, which leave for it.
+        # The query did not recall it, so the CRS flows of another five-tuple stay.
+        pytest.param(
+            "aid from France",
+            ["France"],
+            "aid",
+            (_CRS_SV, _CRS_COMMITMENT_SV),
+            [(_CRS_SV,), (_DAC1_COMMITMENT_SV,)],
+            id="rival-displaces-its-own-five-tuple-only",
         ),
         # "Attributed to donors" names the attributed-amount measure, which the imputed table
         # holds and DAC1's disbursements do not, so the imputed table stays.

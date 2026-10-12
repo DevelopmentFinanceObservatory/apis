@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 import dfo_platform.app as platform_app
 from dfo_platform.app import Surface, SurfaceConfigurationError, create_app
+from dfo_platform.executor import SaturationTrackingExecutor
 
 
 def _thread_name_surface(prefix: str) -> Surface:
@@ -375,15 +376,25 @@ class TestExecutorRestoration:
 
 
 class TestOwnershipIsIdentityNotName:
-    """An initializer-stamped thread-local sentinel identifies the executor."""
+    """Each worker records the executor that started it, and the probe compares owners."""
 
-    def test_replacement_executor_sharing_the_dfo_io_prefix_family_is_rejected(self, monkeypatch):
+    @pytest.mark.parametrize(
+        ("executor_type", "thread_name_prefix"),
+        [
+            (ThreadPoolExecutor, "dfo-io-other"),
+            # Another surface's own tracking pool, such as Graph's `graph-dcp`.
+            (SaturationTrackingExecutor, "graph-dcp"),
+        ],
+    )
+    def test_replacement_executor_that_is_not_the_platform_pool_is_rejected(
+        self, monkeypatch, executor_type, thread_name_prefix
+    ):
         _install_no_shadow_loop(monkeypatch)
 
         @asynccontextmanager
         async def bad_lifespan(_app: FastAPI) -> AsyncIterator[None]:
             asyncio.get_running_loop().set_default_executor(
-                ThreadPoolExecutor(max_workers=1, thread_name_prefix="dfo-io-other")
+                executor_type(max_workers=1, thread_name_prefix=thread_name_prefix)
             )
             yield  # pragma: no cover -- the line above always raises first
 
@@ -403,8 +414,7 @@ class TestOwnershipIsIdentityNotName:
         ):
             pass  # startup should raise before reaching here
 
-        # The thread-local ownership sentinel rejects this matching name prefix.
-        assert "dfo-io-other" in str(exc_info.value)
+        assert thread_name_prefix in str(exc_info.value)
 
 
 class TestShutdownHijackIsLoggedNotRaised:

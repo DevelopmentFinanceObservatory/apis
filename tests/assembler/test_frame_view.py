@@ -121,6 +121,36 @@ def test_a_span_beside_any_other_period_refuses_binding_invalid(periods):
     assert excinfo.value.pointer == "/frame_ref"
 
 
+@pytest.mark.parametrize(
+    "periods",
+    [
+        # #347: Kenya's ILO rate, an annual facet's points beside a quarterly one's.
+        ["2019", "2019-01", "2022", "2022-10"],
+        # Both ends annual: the month point inside would bind to no year and drop silently.
+        ["2019", "2020-01", "2022"],
+        ["2020-01", "2020-01-15"],
+    ],
+)
+def test_points_of_different_grains_refuse_binding_invalid(periods):
+    doc = build_frame_doc(role_keys=("recipient",), rows=_rows(periods=periods))
+    with pytest.raises(BindingInvalid) as excinfo:
+        compute_structural_view(frame=doc)
+    assert excinfo.value.pointer == "/frame_ref"
+    assert "mixes" in excinfo.value.detail
+
+
+def test_a_mixed_grain_refusal_names_each_grains_first_period():
+    doc = build_frame_doc(
+        role_keys=("recipient",), rows=_rows(periods=["2019", "2019-01", "2022", "2022-10"])
+    )
+    with pytest.raises(BindingInvalid) as excinfo:
+        compute_structural_view(frame=doc)
+    assert excinfo.value.detail == (
+        "this frame mixes year and month periods, first '2019', '2019-01'; a frame binds "
+        "periods at one grain"
+    )
+
+
 def test_coverage_and_series_count():
     doc = build_frame_doc(role_keys=("recipient",), rows=_rows(periods=["2015", "2018", "2024"]))
     view = compute_structural_view(frame=doc)

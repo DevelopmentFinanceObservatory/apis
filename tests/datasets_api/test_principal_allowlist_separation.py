@@ -8,16 +8,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-import pytest
-
 from artifact_store import Tier
-from datasets_api.app import datasets_surface
-from datasets_api.config import DatasetsBuildSettings, DatasetsConfigError
+from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors import pin as pin_door
 from spec_registry import LiveSpecRegistry
 
 from ._app_factories import make_client
 from ._artifact_doubles import FakeArtifactStore
+from ._deps_doubles import fake_deps_cell
 from ._snapshot_doubles import (
     FakeSnapshotReader,
     FakeSpecReader,
@@ -123,13 +121,17 @@ def test_pin_door_env_fallback_reads_its_own_constant() -> None:
         versions={(_SPEC_ID, _CONTENT_VERSION): _version()},
         locations={(_SPEC_ID, _CONTENT_VERSION): [location]},
     )
+    settings = DatasetsBuildSettings(pin_first_party_principal=_PIN_PRINCIPAL)
     door = pin_door.build_pin_door(
-        settings=DatasetsBuildSettings(pin_first_party_principal=_PIN_PRINCIPAL),
-        spec_reader=FakeSpecReader(spec_ids=[_SPEC_ID]),
-        snapshot_reader=reader,
-        artifact_store=store,
-        reference_writer=FakeArtifactReferenceWriter(),
-        now=lambda: _NOW,
+        deps=fake_deps_cell(
+            settings=settings,
+            spec_reader=FakeSpecReader(spec_ids=[_SPEC_ID]),
+            snapshot_reader=reader,
+            artifact_store=store,
+            reference_writer=FakeArtifactReferenceWriter(),
+            now=lambda: _NOW,
+        ),
+        settings=settings,
         allowed_principals=None,
     )
     client = make_client_for_door(door)
@@ -141,21 +143,3 @@ def test_pin_door_env_fallback_reads_its_own_constant() -> None:
     )
 
     assert resp.status_code == 200, resp.text
-
-
-def test_surface_level_all_or_nothing_names_all_three_publish_dependencies() -> None:
-    """Injecting artifact and snapshot stores without a version writer fails composition.
-    The error names all three coupled dependencies.
-    """
-    with pytest.raises(DatasetsConfigError) as excinfo:
-        datasets_surface(
-            spec_reader=FakeSpecReader(spec_ids=[_SPEC_ID]),
-            snapshot_reader=FakeSnapshotReader(),
-            artifact_store=FakeArtifactStore(),
-            reference_writer=FakeArtifactReferenceWriter(),
-        )
-
-    message = str(excinfo.value)
-    assert "artifact_store" in message
-    assert "snapshot_reader" in message
-    assert "version_writer" in message

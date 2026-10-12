@@ -98,6 +98,58 @@ def test_refuses_a_document_missing_a_required_key(tmp_path):
         load_index(broken)
 
 
+@pytest.mark.parametrize(
+    ("party_types", "parties", "error", "message"),
+    [
+        ([{"type": "DACGroup", "kind": "aggregate"}], [], IndexFormatError, "aggregate"),
+        (
+            [{"type": "Country", "kind": "party"}, {"type": "Country", "kind": None}],
+            [],
+            IndexFormatError,
+            "more than once",
+        ),
+        ([], [{"dcid": "X", "kind": "aggregate", "totals": None}], IndexFormatError, "aggregate"),
+        (
+            [],
+            [{"dcid": "X", "kind": "party", "totals": None, "axes": ["recipient"]}],
+            IndexFormatError,
+            "recipient",
+        ),
+        (
+            [],
+            [{"dcid": "country/FRA", "kind": "party", "totals": "europe"}],
+            IndexFormatError,
+            "only a total",
+        ),
+        (
+            [],
+            [
+                {"dcid": "DACAfrica", "kind": "total", "totals": "africa"},
+                {"dcid": "DACAfrica", "kind": "total", "totals": None},
+            ],
+            DuplicateDcid,
+            "DACAfrica",
+        ),
+    ],
+    ids=[
+        "type-kind",
+        "type-twice",
+        "party-kind",
+        "party-axis",
+        "group-on-a-party",
+        "party-twice",
+    ],
+)
+def test_refuses_a_malformed_party_declaration(tmp_path, party_types, parties, error, message):
+    payload = json.loads(FIXTURE_PATH.read_text())
+    payload["party_types"] = party_types
+    payload["parties"] = parties
+    broken = tmp_path / "parties.json"
+    broken.write_text(json.dumps(payload))
+    with pytest.raises(error, match=message):
+        load_index(broken)
+
+
 def test_refuses_a_duplicate_code_dcid(tmp_path):
     payload = json.loads(FIXTURE_PATH.read_text())
     payload["codes"].append(dict(payload["codes"][0]))

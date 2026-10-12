@@ -10,6 +10,8 @@ import asyncio
 import time
 from unittest.mock import patch
 
+import pytest
+
 from entity_resolution import Admission
 from materialise.rate_tables import RateTableCache
 from search.engine.concurrency import scoped_concurrency
@@ -231,7 +233,7 @@ def test_identity_entry_forwards_rate_cache_and_full_read_deadline_to_resolve_sp
         )
     assert captured == [sentinel]
     extension = settings().resubmit_full_read_timeout_s - settings().request_timeout_s
-    assert full_read == [deadline + extension]
+    assert full_read == pytest.approx([deadline + extension], rel=0, abs=1e-9)
 
 
 def test_dataset_resubmit_handle_forwards_rate_cache_to_every_entry_kind():

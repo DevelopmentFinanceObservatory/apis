@@ -966,6 +966,9 @@ class _RelaxationProbeContext:
     defaulted_properties: frozenset[str]
     # The groups the request named, kept because a relaxation keeps their entities.
     named_groups: tuple[NamedGroup, ...]
+    # Whether the part posted source mentions, so a suggestion's identity binds the
+    # provenances that serve it (`spec_build.build_spec`).
+    pin_served_provenance: bool = False
 
 
 @dataclasses.dataclass(slots=True, frozen=True)
@@ -1302,6 +1305,7 @@ def _relaxed_binding_suggestion(
             coverage=mat.coverage,
             plan=mat.read_plan,
             coverage_index=ctx.coverage.index,
+            pin_served_provenance=ctx.pin_served_provenance,
             resolved_sources=source_refs,
             facets=answer_facets(
                 mat.read_plan,
@@ -1375,6 +1379,7 @@ def _suggest_nearest_real(
     n_max: int = 2,
     coverage: CoverageSnapshot,
     unsettled: UnsettledPlace | None = None,
+    pin_served_provenance: bool = False,
 ) -> tuple[list[NearestRealSpec], list[Warning], dict[str, SuggestionRead], DefaultPresence | None]:
     """Relax one value/set binding at a time and return up to `n_max` confirmed suggestions,
     the warnings, what each suggestion is read over by spec id, and the presence the
@@ -1403,7 +1408,8 @@ def _suggest_nearest_real(
     `text_recognized_properties`, `measure_elected_properties`, and `defaulted_properties`
     preserve the original query's slot provenance after relaxation, and `named_groups` the
     groups the request named, which a suggestion states for the roles that still bind
-    exactly their members.
+    exactly their members. With `pin_served_provenance` each suggestion's identity binds
+    the provenances that serve it, as the part's answer would.
     """
     ctx = _RelaxationProbeContext(
         graph=graph,
@@ -1423,6 +1429,7 @@ def _suggest_nearest_real(
         measure_elected_properties=measure_elected_properties,
         defaulted_properties=defaulted_properties,
         named_groups=named_groups,
+        pin_served_provenance=pin_served_provenance,
     )
     suggestions: list[NearestRealSpec] = []
     reads: dict[str, SuggestionRead] = {}

@@ -106,7 +106,7 @@ def test_sidecar_match_reaches_admitted_qualifiers_and_forced_bindings():
     admitted = _admit_qualifier_matches([_FINANCE_SHAPE], read.matches)
     assert {m.code_dcid for m in admitted} == {"CRSTypeOfFinance110"}
 
-    forced = _force_qualifier_bindings([], admitted, _FINANCE_SHAPE)
+    forced = _force_qualifier_bindings([], admitted, _FINANCE_SHAPE, variable="aid to Kenya")
     by_property = {b.property_dcid: b for b in forced}
     assert by_property["crsTypeOfFinance"].kind == "value"
     assert by_property["crsTypeOfFinance"].value_dcids == ["CRSTypeOfFinance110"]
@@ -149,7 +149,6 @@ def _vet_state(
         include_observations=False,
         stream_observations=False,
         unit_text=None,
-        source_text=None,
         materialise_graph=None,
         materialise_sdmx=None,
         timing={},
@@ -293,7 +292,6 @@ def _guard_state(
         include_observations=False,
         stream_observations=False,
         unit_text=None,
-        source_text=None,
         materialise_graph=None,
         materialise_sdmx=None,
         timing={},
@@ -434,7 +432,6 @@ def _run_qualifier_pipeline(
         include_observations=False,
         stream_observations=False,
         unit_text=None,
-        source_text=None,
         materialise_graph=None,
         materialise_sdmx=None,
         timing={},
@@ -465,7 +462,7 @@ def _run_qualifier_pipeline(
     )
 
 
-def test_bare_variable_plus_sidecar_reproduces_the_old_appended_strings_outcome():
+def test_bare_variable_plus_sidecar_reproduces_the_old_appended_strings_outcome(search_settings):
     """The acceptance test for the sidecar-only production shape: the
     bare-variable-plus-sidecar production shape reaches the IDENTICAL
     admission/binding/warning/query-qualifier outcome an appended-string,
@@ -485,6 +482,9 @@ def test_bare_variable_plus_sidecar_reproduces_the_old_appended_strings_outcome(
     producer built (not a hand-authored fixture). Both runs share the SAME
     query and the SAME real extract() call.
     """
+    # The appended string holds "type of finance" beside the code 110, words no coverage
+    # reader covers, so under the refuse mode its records differ from the sidecar's.
+    search_settings(qualifier_coverage="log")
     query = "Gross disbursements type of finance 110 type of flow 10 to Kenya"
     llm = _stub_extract_llm(
         query,
@@ -664,6 +664,7 @@ _KEY_SCOPE = scope_document(
     options=None,
     max_candidates=6,
     seam_default=True,
+    qualifier_coverage="log",
     build_commit="commit-a",
     model="model-a",
     seed=1,
@@ -697,6 +698,7 @@ def _key_for(result: ExtractionResult) -> str:
         dropped_qualifiers=result.extraction.dropped_qualifiers,
         variable_qualifiers=[result.qualifiers.get(variable, ())],
         operations=[()],
+        sources=[()],
         role_contradictions=[],
         query_text_qualifier_matches=[],
         query_text_qualifier_ties=[],

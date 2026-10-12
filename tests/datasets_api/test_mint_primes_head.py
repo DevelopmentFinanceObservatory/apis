@@ -11,12 +11,11 @@ from artifact_store import LiveArtifactInventory
 from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api.adapter import build_identity_document
 from datasets_api.mint_models import Scope
-from datasets_api.revision import SentinelRevisionReader
 from datasets_api.shape import resolve_shape
 from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
 from dc_sdmx import SdmxClient
 from materialise.graph import Facet
-from series_coverage.schema import FacetMetadata, RoleNames
+from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
 from spec_registry.identity import recompute_identity
 from spec_registry.reader import LiveSpecReader
@@ -106,12 +105,12 @@ def _coverage_service() -> FakeCoverageService:
     """Builds one coverage facet per StatVar, matching `_FACET` and its 2020 row."""
     index = build_coverage_index(
         [
-            (_STAT_VAR, "facet1", "country/USA", _RECIPIENT, [2020]),
-            (_STAT_VAR2, "facet1", "country/USA", _RECIPIENT, [2020]),
+            (_STAT_VAR, "facet1", ABSENT_ENTITY, _RECIPIENT, [2020]),
+            (_STAT_VAR2, "facet1", ABSENT_ENTITY, _RECIPIENT, [2020]),
         ],
         role_names={
-            _STAT_VAR: RoleNames(donor="provider", recipient="recipient"),
-            _STAT_VAR2: RoleNames(donor="provider", recipient="recipient"),
+            _STAT_VAR: RoleNames(donor=None, recipient="recipient"),
+            _STAT_VAR2: RoleNames(donor=None, recipient="recipient"),
         },
         facet_metadata={
             "facet1": FacetMetadata(
@@ -133,7 +132,6 @@ def _client(*, graph: FakeMintGraphReader, transport: _CountingTransport):
         spec_reader=LiveSpecReader(store=store),
         graph=graph,
         sdmx=sdmx,
-        revision_reader=SentinelRevisionReader(),
         artifact_store=_InventoryRecordingArtifactStore(
             inventory=LiveArtifactInventory(store=version_store)
         ),

@@ -24,12 +24,10 @@ from artifact_store import (
 )
 from datasets_api.codes_materialise import (
     InvalidRoleRef,
-    RenderedArtifactSigningFailed,
     RoleIncompatible,
     RoleSignatureIncompatible,
 )
 from datasets_api.doors.mint_errors import classify_mint_exception
-from datasets_api.revision import SentinelRevisionReader
 from dc_sdmx import (
     SdmxClient,
     SdmxContainmentFilterError,
@@ -55,7 +53,7 @@ from materialise.reshape import (
     PivotNotHomogeneousError,
     PivotNotUniqueError,
 )
-from series_coverage.schema import FacetMetadata, RoleNames
+from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
 from spec_registry.identity import recompute_identity
 from spec_registry.reader import LiveSpecReader
@@ -145,13 +143,15 @@ def _sdmx_transport():
 
 
 def _coverage_service(
-    *, donor_role: str = "provider", donor: str = "country/USA", unit: str = "USD"
+    *, donor_role: str | None = None, donor: str | None = None, unit: str = "USD"
 ) -> FakeCoverageService:
     """Coverage matching `_FACET` and the 2015 SDMX row.
     Donor arguments support the role-cap test.
     """
+    coverage_donor = "country/USA" if donor is None and donor_role is not None else donor
+    coverage_donor = ABSENT_ENTITY if coverage_donor is None else coverage_donor
     index = build_coverage_index(
-        [(_STAT_VAR, "facet1", donor, "country/KEN", [2015])],
+        [(_STAT_VAR, "facet1", coverage_donor, "country/KEN", [2015])],
         role_names={_STAT_VAR: RoleNames(donor=donor_role, recipient="recipient")},
         facet_metadata={
             "facet1": FacetMetadata(
@@ -171,7 +171,6 @@ def _client(*, graph=None, artifact_store=None, store=None, sdmx=None, coverage=
         sdmx=sdmx
         if sdmx is not None
         else SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport()),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=artifact_store if artifact_store is not None else FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),
@@ -242,46 +241,8 @@ class TestInfraFailuresClassifyAsHonestAndRetryable:
         assert spec.code == "service_unavailable"
         assert spec.retryable is True
 
-    @pytest.mark.parametrize(
-        ("error_class_name", "status_code", "expected_status", "expected_code", "retryable"),
-        [
-            pytest.param(None, None, 503, "service_unavailable", True, id="unattributed"),
-            pytest.param("ServiceUnavailable", 503, 503, "service_unavailable", True, id="503"),
-            pytest.param("TooManyRequests", 429, 503, "service_unavailable", True, id="429"),
-            pytest.param("RefreshError", 403, 500, "internal_error", False, id="refresh-403"),
-            pytest.param(
-                "RefreshError", None, 503, "service_unavailable", True, id="refresh-no-status"
-            ),
-            pytest.param(
-                "MalformedError", None, 500, "internal_error", False, id="malformed-no-status"
-            ),
-        ],
-    )
-    def test_rendered_artifact_signing_failure_classification(
-        self,
-        error_class_name: str | None,
-        status_code: int | None,
-        expected_status: int,
-        expected_code: str,
-        retryable: bool,
-    ):
-        exc = RenderedArtifactSigningFailed(
-            bucket="dev-fin-observatory-datasets-working",
-            object_name="sha256:deadbeef",
-            digest="sha256:deadbeef",
-            error_class_name=error_class_name,
-            status_code=status_code,
-        )
-
-        spec = classify_mint_exception(exc)
-
-        assert spec is not None
-        assert spec.status == expected_status
-        assert spec.code == expected_code
-        assert spec.retryable is retryable
-
     def test_base_artifact_signing_error_maps_to_service_unavailable(self):
-        # Also classify unwrapped signing errors from callers outside the render path.
+        # An unwrapped signing error maps to a retryable outage.
         exc = ArtifactSigningError(
             bucket="dev-fin-observatory-datasets-working",
             object_name="sha256:deadbeef",
@@ -760,7 +721,6 @@ class TestSdmxDeterministicRejectionsAreNotRetryable:
             spec_reader=LiveSpecReader(store=store),
             graph=graph,
             sdmx=sdmx,
-            revision_reader=SentinelRevisionReader(),
             artifact_store=FakeArtifactStore(),
             snapshot_reader=FakeSnapshotReader(),
             reference_writer=FakeArtifactReferenceWriter(),
@@ -848,12 +808,12 @@ def test_a_refusal_on_three_axes_serves_each_issue_with_its_own_code_and_detail(
     aggregate_type, code
 ):
     errors = {
-        "unit": DefaultFacetUndefinedError("unit has no default", pointer="/facets/unit"),
+        "unit": DefaultFacetUndefinedError("unit has no default", facet_pointer="/facets/unit"),
         "provenance": FacetNotAvailableError(
-            "provenance bound to nothing", pointer="/facets/provenance"
+            "provenance bound to nothing", facet_pointer="/facets/provenance"
         ),
         "measurementMethod": FacetNotAvailableError(
-            "method has no observations", pointer="/facets/measurementMethod"
+            "method has no observations", facet_pointer="/facets/measurementMethod"
         ),
     }
     aggregate = aggregate_type(
@@ -957,64 +917,6 @@ def test_artifact_record_conflict_stays_non_retryable_and_logs_a_reconciliation_
         and "sha256:deadbeef" in r.getMessage()
         for r in warnings
     )
-
-
-class _SigningFailureArtifactStore(FakeArtifactStore):
-    """Stores artifacts, then raises a transient signing error."""
-
-    def signed_get_url(
-        self, digest: str, *, tier: Tier, ttl, response_type: str, response_disposition: str
-    ):
-        raise ArtifactSigningError(
-            bucket="dev-fin-observatory-datasets-working", object_name=digest, digest=digest
-        )
-
-
-class _CredentialFailureArtifactStore(FakeArtifactStore):
-    """Stores artifacts, then raises a credential-shaped signing error with status 403."""
-
-    def signed_get_url(
-        self, digest: str, *, tier: Tier, ttl, response_type: str, response_disposition: str
-    ):
-        raise ArtifactSigningError(
-            bucket="dev-fin-observatory-datasets-working",
-            object_name=digest,
-            digest=digest,
-            error_class_name="RefreshError",
-            status_code=403,
-        )
-
-
-def test_signing_failure_maps_to_service_unavailable_through_the_real_door():
-    client = _client(artifact_store=_SigningFailureArtifactStore())
-    body = {
-        "schema_version": 1,
-        "input": {"kind": "statvar_set", "statvars": [_STAT_VAR_REF], "scope": _SCOPE},
-        "options": {"bundle": False},
-    }
-
-    resp = client.post("/api/datasets", json=body)
-
-    assert resp.status_code == 503, resp.text
-    problem = resp.json()
-    assert problem["code"] == "service_unavailable"
-    assert problem["retryable"] is True
-
-
-def test_permission_denied_signing_failure_maps_to_internal_error_through_the_real_door():
-    client = _client(artifact_store=_CredentialFailureArtifactStore())
-    body = {
-        "schema_version": 1,
-        "input": {"kind": "statvar_set", "statvars": [_STAT_VAR_REF], "scope": _SCOPE},
-        "options": {"bundle": False},
-    }
-
-    resp = client.post("/api/datasets", json=body)
-
-    assert resp.status_code == 500, resp.text
-    problem = resp.json()
-    assert problem["code"] == "internal_error"
-    assert problem["retryable"] is False
 
 
 class _ConflictingArtifactStore(FakeArtifactStore):
@@ -1141,10 +1043,10 @@ def test_no_bound_entity_mints_instead_of_refusing_ahead_of_the_facet_axes():
     assert {f["axis"]: f["basis"] for f in manifest["trace"]["facets"]} == dict.fromkeys(
         ("provenance", "measurementMethod", "unit"), "deployment_fallback"
     )
-    # The fetch covers every series coverage holds. It names its one donor and no recipient filter.
+    # The fetch covers every series coverage holds and names its recipient axis.
     (fetch,) = fetches
-    assert fetch.url.params["c[provider]"] == "country/USA"
-    assert "c[recipient]" not in fetch.url.params
+    assert fetch.url.params["c[recipient]"] == "country/KEN"
+    assert "c[provider]" not in fetch.url.params
 
 
 class TestConversionRefusalsMapTo422ThroughTheRealMintDoor:

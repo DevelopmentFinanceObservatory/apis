@@ -9,9 +9,9 @@ import logging
 import threading
 
 import pytest
-from fastapi import FastAPI
 
 from datasets_api import door_executor
+from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors import register as register_door
 from datasets_api.doors.register import RegistryBackpressure, build_register_door
 from datasets_api.models import RegisterRequest
@@ -23,6 +23,7 @@ from spec_registry.registry import IDENTITY_COLLISION_QUARANTINED_MARKER
 
 from ._app_factories import make_client
 from ._artifact_doubles import FakeArtifactStore
+from ._deps_doubles import fake_deps_cell
 from ._executor_doubles import BrokenSubmitExecutor, NeverStartingExecutor
 from ._identity_builders import described_identity, pinned_identity, register_body
 from ._snapshot_doubles import FakeSnapshotReader
@@ -187,7 +188,9 @@ def test_driver_exception_never_leaks_through_the_composed_platform_app(
             json=register_body(definition=wire_definition_for(spec_id=spec_id, identity=identity)),
         )
 
-    assert resp.status_code == 500
+    assert resp.status_code == 503
+    assert resp.json()["code"] == "service_unavailable"
+    assert resp.json()["retryable"] is True
     assert distinctive_driver_text not in resp.text
     assert distinctive_driver_text not in caplog.text
 
@@ -327,7 +330,7 @@ def test_backpressure_refuses_503_retryable_when_executor_is_already_at_capacity
     # startup offline; `_SETTINGS_ENV` supplies its required settings.
     client = make_client(
         registry=LiveSpecRegistry(store=store),
-        pool_size=1,
+        read_max_concurrency=1,
         spec_reader=LiveSpecReader(store=store),
         artifact_store=FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
@@ -341,42 +344,40 @@ def test_backpressure_refuses_503_retryable_when_executor_is_already_at_capacity
 
     first_response: list = []
 
-    # A shared client loop keeps both requests on the same portal.
-    with client:
-        first_thread = threading.Thread(
-            target=lambda: first_response.append(
-                client.post(
-                    "/api/datasets/register",
-                    json=register_body(
-                        definition=wire_definition_for(spec_id=spec_id_a, identity=identity_a)
-                    ),
-                )
-            )
-        )
-        first_thread.start()
-        # The first request holds the sole executor slot and backpressure permit.
-        assert store.entered.wait(timeout=5.0), "first request never reached the blocking store"
-
-        with caplog.at_level(logging.WARNING):
-            resp = client.post(
+    first_thread = threading.Thread(
+        target=lambda: first_response.append(
+            client.post(
                 "/api/datasets/register",
                 json=register_body(
-                    definition=wire_definition_for(spec_id=spec_id_b, identity=identity_b)
+                    definition=wire_definition_for(spec_id=spec_id_a, identity=identity_a)
                 ),
             )
+        )
+    )
+    first_thread.start()
+    # The first request holds the sole executor slot and backpressure permit.
+    assert store.entered.wait(timeout=5.0), "first request never reached the blocking store"
 
-        assert resp.status_code == 503
-        body = resp.json()
-        assert body["code"] == "service_unavailable"
-        assert body["retryable"] is True
-        assert "write capacity gate refused admission" in caplog.text
+    with caplog.at_level(logging.WARNING):
+        resp = client.post(
+            "/api/datasets/register",
+            json=register_body(
+                definition=wire_definition_for(spec_id=spec_id_b, identity=identity_b)
+            ),
+        )
 
-        store.release.set()
-        first_thread.join(timeout=5.0)
-        assert first_response and first_response[0].status_code == 200
+    assert resp.status_code == 503
+    body = resp.json()
+    assert body["code"] == "service_unavailable"
+    assert body["retryable"] is True
+    assert "write capacity gate refused admission" in caplog.text
+
+    store.release.set()
+    first_thread.join(timeout=5.0)
+    assert first_response and first_response[0].status_code == 200
 
 
-def test_registry_work_runs_on_this_surfaces_own_dedicated_executor() -> None:
+def test_registry_work_runs_on_the_surfaces_read_executor() -> None:
     recorded_thread_names: list[str] = []
 
     class _ThreadNameRecordingFakeDatasetStore(FakeDatasetStore):
@@ -395,7 +396,7 @@ def test_registry_work_runs_on_this_surfaces_own_dedicated_executor() -> None:
 
     assert resp.status_code == 200
     assert recorded_thread_names
-    assert all(name.startswith("datasets-registry") for name in recorded_thread_names)
+    assert all(name.startswith("datasets-read") for name in recorded_thread_names)
     assert not any(name.startswith("dfo-io") for name in recorded_thread_names)
 
 
@@ -414,7 +415,14 @@ def _only_endpoint(door):
 def test_cancellation_while_running_keeps_the_permit_held() -> None:
     """Cancelling the await keeps the permit held until the blocking store call finishes."""
     store = BlockingFakeDatasetStore()
-    door = build_register_door(registry=LiveSpecRegistry(store=store), pool_size=1)
+    door = build_register_door(
+        deps=fake_deps_cell(
+            settings=DatasetsBuildSettings.from_env().model_copy(
+                update={"read_max_concurrency": 1}
+            ),
+            registry=LiveSpecRegistry(store=store),
+        )
+    )
     endpoint = _only_endpoint(door)
     identity = pinned_identity(stat_var="cancel_running")
     body = _request_for(spec_id=recompute_identity(identity).spec_id, identity=identity)
@@ -459,8 +467,11 @@ def test_shutdown_cancels_a_queued_call_and_frees_its_permit(
     """
     monkeypatch.setattr(door_executor, "ThreadPoolExecutor", NeverStartingExecutor)
     store = FakeDatasetStore()
-    door = build_register_door(registry=LiveSpecRegistry(store=store), pool_size=1)
-    endpoint = _only_endpoint(door)
+    cell = fake_deps_cell(
+        settings=DatasetsBuildSettings.from_env().model_copy(update={"read_max_concurrency": 1}),
+        registry=LiveSpecRegistry(store=store),
+    )
+    endpoint = _only_endpoint(build_register_door(deps=cell))
     identity = pinned_identity(stat_var="queued_cancel")
     body = _request_for(spec_id=recompute_identity(identity).spec_id, identity=identity)
 
@@ -472,8 +483,7 @@ def test_shutdown_cancels_a_queued_call_and_frees_its_permit(
         with pytest.raises(RegistryBackpressure):
             await endpoint(body)
 
-        async with door.lifespan(FastAPI()):
-            pass
+        cell.get().read_executor.executor.shutdown(wait=False, cancel_futures=True)
 
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -492,7 +502,9 @@ def test_broken_thread_pool_surfaces_as_internal_error_not_backpressure(
     so it needs separate classification from post-shutdown errors.
     """
     monkeypatch.setattr(door_executor, "ThreadPoolExecutor", BrokenSubmitExecutor)
-    client = make_client(registry=LiveSpecRegistry(store=FakeDatasetStore()), pool_size=1)
+    client = make_client(
+        registry=LiveSpecRegistry(store=FakeDatasetStore()), read_max_concurrency=1
+    )
     identity = pinned_identity(stat_var="broken_pool")
     spec_id = recompute_identity(identity).spec_id
 
@@ -510,16 +522,18 @@ def test_broken_thread_pool_surfaces_as_internal_error_not_backpressure(
 
 
 def test_post_shutdown_request_refuses_backpressure_not_500() -> None:
-    """A request after lifespan shutdown maps the executor's `RuntimeError` to retryable 503."""
+    """A request after the read executor shuts down maps its `RuntimeError` to retryable 503."""
     store = FakeDatasetStore()
-    door = build_register_door(registry=LiveSpecRegistry(store=store), pool_size=1)
-    endpoint = _only_endpoint(door)
+    cell = fake_deps_cell(
+        settings=DatasetsBuildSettings.from_env().model_copy(update={"read_max_concurrency": 1}),
+        registry=LiveSpecRegistry(store=store),
+    )
+    endpoint = _only_endpoint(build_register_door(deps=cell))
     identity = pinned_identity(stat_var="post_shutdown")
     body = _request_for(spec_id=recompute_identity(identity).spec_id, identity=identity)
 
     async def scenario() -> None:
-        async with door.lifespan(FastAPI()):
-            pass  # nothing in flight -- shutdown returns immediately
+        cell.get().read_executor.executor.shutdown(wait=False, cancel_futures=True)
 
         with pytest.raises(RegistryBackpressure):
             await endpoint(body)

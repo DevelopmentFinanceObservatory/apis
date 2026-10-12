@@ -22,6 +22,7 @@ from dfo_platform.trace import get_trace_id
 from search.engine.clients.llm import SupportsLLM, for_stage, generate_structured_async
 from search.engine.config import settings
 from search.engine.errors import EngineInputError
+from search.engine.function_words import FUNCTION_WORDS, JOINING_WORDS
 from search.engine.qualifier_match import (
     CodedQualifier,
     QualifierMatch,
@@ -1033,25 +1034,6 @@ def _enforce_kind(extraction: Extraction) -> Extraction:
 
 _WORD_RE = re.compile(r"\w+")
 
-# Words that only join a measure's words ("rate of extreme poverty"). The flow cues
-# "to", "from" and "by" stay out, so restoring a variable's order carries no cue into
-# its text. "and", "or" and "in" stay out too: they join two measures or a measure and
-# its scope ("unemployment rate and youth unemployment").
-_JOINING_WORDS = frozenset(
-    {"a", "an", "the", "of", "who", "which", "that", "is", "are", "was", "were"}
-)
-
-# Words a dropped qualifier can hold without naming anything the extraction left
-# out: the joining words, prepositions, pronouns, auxiliaries and the possessive "s".
-_FUNCTION_WORDS = _JOINING_WORDS | frozenset(
-    {
-        "and", "or", "in", "to", "from", "by", "for", "on", "at", "with", "as", "per",
-        "than", "into", "over", "across", "since", "between", "do", "does", "did", "be",
-        "been", "has", "have", "had", "what", "how", "i", "me", "my", "you", "your", "we",
-        "our", "it", "its", "this", "these", "those", "there", "s",
-    }
-)  # fmt: skip
-
 
 def _words(text: str) -> list[str]:
     """The casefolded words of `text`, in order."""
@@ -1065,7 +1047,7 @@ _SPAN_GAP_RE = re.compile(r"[\s-]+")
 
 def _non_joining_words(text: str) -> list[str]:
     """The casefolded words of `text` other than joining words, in order."""
-    return [word for word in _words(text) if word not in _JOINING_WORDS]
+    return [word for word in _words(text) if word not in JOINING_WORDS]
 
 
 def _query_span_for(query: str, variable: str) -> str | None:
@@ -1092,7 +1074,7 @@ def _query_span_for(query: str, variable: str) -> str | None:
             ):
                 break
             word = tokens[last][0]
-            if word in _JOINING_WORDS:
+            if word in JOINING_WORDS:
                 continue
             seen[word] += 1
             if seen[word] > wanted[word]:
@@ -1340,7 +1322,7 @@ def _positions_inside(phrases: Iterable[tuple[str, ...]], words: Sequence[str]) 
 
 def _non_function_words(text: str) -> list[str]:
     """The casefolded words of `text` other than function words, in order."""
-    return [word for word in _words(text) if word not in _FUNCTION_WORDS]
+    return [word for word in _words(text) if word not in FUNCTION_WORDS]
 
 
 def _words_an_operation_accounts_for(
@@ -1421,7 +1403,7 @@ def _trim_qualifiers_to_what_operations_leave(extraction: Extraction) -> Extract
             match
             for position, (match, word) in enumerate(zip(matches, words, strict=True))
             if not (
-                word in _FUNCTION_WORDS
+                word in FUNCTION_WORDS
                 or position in applied
                 or word in dates
                 or word in accounted

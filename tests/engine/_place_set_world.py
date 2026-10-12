@@ -34,7 +34,6 @@ from typing import Any
 import httpx
 import pytest
 
-from datasets_api.revision import SentinelRevisionReader
 from dc_sdmx import SdmxClient
 from entity_resolution import Admission
 from materialise.graph import Facet as MaterialiseFacet
@@ -778,7 +777,6 @@ class Doors:
             spec_reader=LiveSpecReader(store=store),
             graph=self.mint_graph,
             sdmx=self._materialise_sdmx,
-            revision_reader=SentinelRevisionReader(),
             artifact_store=FakeArtifactStore(),
             snapshot_reader=FakeSnapshotReader(),
             reference_writer=FakeArtifactReferenceWriter(),

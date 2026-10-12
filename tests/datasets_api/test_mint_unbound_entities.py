@@ -15,13 +15,12 @@ import materialise.place_scope as place_scope
 from datasets_api import kinds
 from datasets_api.adapter import build_identity_document
 from datasets_api.mint_models import Scope
-from datasets_api.revision import SentinelRevisionReader
 from datasets_api.shape import resolve_shape
 from dc_graph import GraphReadError
 from dc_sdmx import SdmxClient
 from materialise.graph import Facet
 from materialise.place_scope import DefaultPlaceScope, read_default_presence
-from series_coverage.schema import FacetMetadata, RoleNames
+from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
 from spec_registry.identity import recompute_identity
 from spec_registry.reader import LiveSpecReader
@@ -109,8 +108,8 @@ def _graph(
 def _coverage() -> FakeCoverageService:
     return FakeCoverageService(
         build_coverage_index(
-            [(_AID, "facet1", "country/USA", _KEN, [2015])],
-            role_names={_AID: RoleNames(donor="provider", recipient="recipient")},
+            [(_AID, "facet1", ABSENT_ENTITY, _KEN, [2015])],
+            role_names={_AID: RoleNames(donor=None, recipient="recipient")},
             facet_metadata={
                 "facet1": FacetMetadata(
                     provenance_id="OECD_DAC2A", measurement_method="GrantEquivalent", unit="USD"
@@ -194,10 +193,10 @@ def _filters(recorded: list[httpx.Request]) -> dict[str, dict[str, str]]:
 
 
 # A subject-only member is fetched at every place it holds data at: Kenya, Togo and Earth's
-# total for the population (Uganda holds none), Earth for the worldwide total. Coverage's one
-# donor answers the role-bearing member.
+# total for the population (Uganda holds none), Earth for the worldwide total. The recipient-only
+# role-bearing member is fetched at Kenya.
 _EXPECTED_FILTERS = {
-    _AID: {"c[provider]": "country/USA"},
+    _AID: {"c[recipient]": _KEN},
     _POPULATION: {"c[observationAbout]": f"{_KEN},{_TGO},Earth"},
     _WORLD: {"c[observationAbout]": "Earth"},
 }
@@ -225,7 +224,6 @@ def _client(
             availability=availability,
             availability_status=availability_status,
         ),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),

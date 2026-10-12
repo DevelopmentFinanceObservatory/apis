@@ -14,13 +14,13 @@ from code_index.shared import get_index
 from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.snapshot import build_snapshot_door, read_snapshot_manifest
-from datasets_api.manifest import assemble_manifest, record_definition_version
+from datasets_api.manifest import assemble_manifest, definition_version_record
 from datasets_api.manifest_models import ArtifactEntryModel
 from datasets_api.render import render_and_store_series_statistics
 from datasets_api.version_store import LiveVersionRecordWriter
 from datasets_api.versions import ArtifactRecord
 from materialise import EnrichmentLookup, MaterialisationResult
-from materialise.content_version import MintPreimage
+from materialise.dependencies import Dependencies
 from materialise.formats import FRAME1_MEDIA_TYPE
 from materialise.frame_build import build_frame
 from materialise.profile import compute_output_profile
@@ -30,8 +30,8 @@ from materialise.window import Coverage
 from spec_registry.reader import StoredDefinition
 
 from ._artifact_doubles import FakeArtifactStore
+from ._deps_doubles import fake_deps_cell
 from ._graph_doubles import FakeMintGraphReader
-from ._render_inputs import PREPARED_AT
 from ._snapshot_doubles import (
     _NOW,
     FakeSnapshotReader,
@@ -39,7 +39,9 @@ from ._snapshot_doubles import (
     _store_and_locate,
     _version,
     make_client_for_door,
+    version_body,
 )
+from ._version_facts import facts_from_body
 
 _PREPARED_AT = datetime(2026, 10, 4, 12, 0, tzinfo=UTC)
 
@@ -79,6 +81,7 @@ def _statistics_file(frame):
 def _statistics_fixture_result(frame) -> MaterialisationResult:
     return MaterialisationResult(
         frame_chunks=lambda: iter((frame,)),
+        frame_sha256="0" * 64,
         content_version="cv1",
         trace=ManifestTrace(
             applied_window=None,
@@ -96,11 +99,15 @@ def _statistics_fixture_result(frame) -> MaterialisationResult:
         warnings=(),
         series_statistics=_statistics_file(frame),
         output_profile=compute_output_profile(
-            frame, role_columns=("recipient",), enrichment=EnrichmentLookup(FakeMintGraphReader())
+            frame,
+            role_columns=("recipient",),
+            enrichment=EnrichmentLookup(FakeMintGraphReader(), type_kinds={}, parties={}),
         ),
         conversion_record=None,
         member_conversion_records={"dcid:GrantA": None},
-        mint_preimage=MintPreimage(graph_revision="rev1", source_revisions=(), facets=()),
+        dependencies=Dependencies(
+            members="sha256:fixture", sources=(), conversion_sources=(), recipes=(), window=None
+        ),
     )
 
 
@@ -117,7 +124,6 @@ def test_a_stored_body_without_series_count_validates_and_the_wire_response_omit
         content_version="cv1",
         spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
         snapshot_reader=reader,
-        artifact_store=store,
         now=lambda: _NOW,
         settings=DatasetsBuildSettings(),
     )
@@ -125,10 +131,12 @@ def test_a_stored_body_without_series_count_validates_and_the_wire_response_omit
     assert manifest.series_count is None
 
     door = build_snapshot_door(
-        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
-        snapshot_reader=reader,
-        artifact_store=store,
-        now=lambda: _NOW,
+        deps=fake_deps_cell(
+            spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+            snapshot_reader=reader,
+            artifact_store=store,
+            now=lambda: _NOW,
+        )
     )
     client = make_client_for_door(door)
 
@@ -145,10 +153,9 @@ def test_an_old_records_inline_statistics_key_is_dropped_not_translated():
     reader = FakeSnapshotReader(
         versions={
             ("spec_a", "cv1"): _version(
-                immutable_body={
-                    **_version().immutable_body,
-                    "statistics": [{"stat_var": "dcid:GrantA"}],
-                }
+                facts=facts_from_body(
+                    {**version_body(), "statistics": [{"stat_var": "dcid:GrantA"}]}
+                )
             )
         },
         locations={("spec_a", "cv1"): [location]},
@@ -159,7 +166,6 @@ def test_an_old_records_inline_statistics_key_is_dropped_not_translated():
         content_version="cv1",
         spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
         snapshot_reader=reader,
-        artifact_store=store,
         now=lambda: _NOW,
         settings=DatasetsBuildSettings(),
     )
@@ -173,7 +179,7 @@ def test_a_zero_series_count_is_present_not_omitted_on_the_wire():
     reader = FakeSnapshotReader(
         versions={
             ("spec_a", "cv1"): _version(
-                immutable_body={**_version().immutable_body, "series_count": 0}
+                facts=facts_from_body({**version_body(), "series_count": 0})
             )
         },
         locations={("spec_a", "cv1"): [location]},
@@ -184,7 +190,6 @@ def test_a_zero_series_count_is_present_not_omitted_on_the_wire():
         content_version="cv1",
         spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
         snapshot_reader=reader,
-        artifact_store=store,
         now=lambda: _NOW,
         settings=DatasetsBuildSettings(),
     )
@@ -192,10 +197,12 @@ def test_a_zero_series_count_is_present_not_omitted_on_the_wire():
     assert manifest.series_count == 0
 
     door = build_snapshot_door(
-        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
-        snapshot_reader=reader,
-        artifact_store=store,
-        now=lambda: _NOW,
+        deps=fake_deps_cell(
+            spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+            snapshot_reader=reader,
+            artifact_store=store,
+            now=lambda: _NOW,
+        )
     )
     client = make_client_for_door(door)
 
@@ -225,8 +232,6 @@ def test_minted_series_count_and_statistics_artifact_survive_a_store_and_read_ro
         data=result.series_statistics.data,
         subject_id="spec_a",
         content_version="cv1",
-        source_names=["Fixture source"],
-        prepared_at=PREPARED_AT,
         artifact_store=artifact_store,
     )
     artifacts = [
@@ -238,7 +243,6 @@ def test_minted_series_count_and_statistics_artifact_survive_a_store_and_read_ro
             created_at=_NOW.isoformat(),
             tier="working",
             url="fake://placeholder",
-            url_expires_at=_NOW.isoformat(),
         ),
         statistics_artifact,
     ]
@@ -273,20 +277,23 @@ def test_minted_series_count_and_statistics_artifact_survive_a_store_and_read_ro
         code_index=get_index(),
         settings=DatasetsBuildSettings(),
     )
-    record_definition_version(
-        manifest=minted,
-        stored=stored_definition,
-        materialisation=result,
-        artifacts=artifacts,
-        version_writer=LiveVersionRecordWriter(store=version_store, now=lambda: _NOW),
+    LiveVersionRecordWriter(store=version_store, now=lambda: _NOW).record_version(
+        definition_version_record(
+            manifest=minted,
+            stored=stored_definition,
+            materialisation=result,
+            artifacts=artifacts,
+        )
     )
     assert minted.series_count == 1
 
     door = build_snapshot_door(
-        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
-        snapshot_reader=LiveSnapshotReader(store=version_store),
-        artifact_store=artifact_store,
-        now=lambda: _NOW,
+        deps=fake_deps_cell(
+            spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+            snapshot_reader=LiveSnapshotReader(store=version_store),
+            artifact_store=artifact_store,
+            now=lambda: _NOW,
+        )
     )
     client = make_client_for_door(door)
 
@@ -327,8 +334,6 @@ def test_snapshot_lists_the_data_artifact_before_the_statistics_artifact_regardl
         data=result.series_statistics.data,
         subject_id="spec_a",
         content_version="cv1",
-        source_names=["Fixture source"],
-        prepared_at=PREPARED_AT,
         artifact_store=artifact_store,
     )
     stored = artifact_store.put(
@@ -351,7 +356,6 @@ def test_snapshot_lists_the_data_artifact_before_the_statistics_artifact_regardl
         created_at=_NOW.isoformat(),
         tier="working",
         url="fake://placeholder",
-        url_expires_at=_NOW.isoformat(),
     )
     artifacts = [data_artifact, statistics_artifact]
     with version_store.transaction() as tx:
@@ -385,19 +389,22 @@ def test_snapshot_lists_the_data_artifact_before_the_statistics_artifact_regardl
         code_index=get_index(),
         settings=DatasetsBuildSettings(),
     )
-    record_definition_version(
-        manifest=minted,
-        stored=stored_definition,
-        materialisation=result,
-        artifacts=artifacts,
-        version_writer=LiveVersionRecordWriter(store=version_store, now=lambda: _NOW),
+    LiveVersionRecordWriter(store=version_store, now=lambda: _NOW).record_version(
+        definition_version_record(
+            manifest=minted,
+            stored=stored_definition,
+            materialisation=result,
+            artifacts=artifacts,
+        )
     )
 
     door = build_snapshot_door(
-        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
-        snapshot_reader=LiveSnapshotReader(store=version_store),
-        artifact_store=artifact_store,
-        now=lambda: _NOW,
+        deps=fake_deps_cell(
+            spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+            snapshot_reader=LiveSnapshotReader(store=version_store),
+            artifact_store=artifact_store,
+            now=lambda: _NOW,
+        )
     )
     client = make_client_for_door(door)
 
@@ -448,7 +455,6 @@ def test_a_freshly_minted_definitions_snapshot_lists_only_listable_renderings(ve
             created_at=_NOW.isoformat(),
             tier="working",
             url="fake://placeholder",
-            url_expires_at=_NOW.isoformat(),
         )
     ]
     minted = assemble_manifest(
@@ -463,26 +469,29 @@ def test_a_freshly_minted_definitions_snapshot_lists_only_listable_renderings(ve
         code_index=get_index(),
         settings=DatasetsBuildSettings(),
     )
-    record_definition_version(
-        manifest=minted,
-        stored=stored_definition,
-        materialisation=result,
-        artifacts=artifacts,
-        record_only_artifacts=[
-            ArtifactRecord(
-                artifact_digest=frame1_stored.digest,
-                rendering={"format": "frame1"},
-                media_type=FRAME1_MEDIA_TYPE,
-            )
-        ],
-        version_writer=LiveVersionRecordWriter(store=version_store, now=lambda: _NOW),
+    LiveVersionRecordWriter(store=version_store, now=lambda: _NOW).record_version(
+        definition_version_record(
+            manifest=minted,
+            stored=stored_definition,
+            materialisation=result,
+            artifacts=artifacts,
+            record_only_artifacts=[
+                ArtifactRecord(
+                    artifact_digest=frame1_stored.digest,
+                    rendering={"format": "frame1"},
+                    media_type=FRAME1_MEDIA_TYPE,
+                )
+            ],
+        )
     )
 
     door = build_snapshot_door(
-        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
-        snapshot_reader=LiveSnapshotReader(store=version_store),
-        artifact_store=artifact_store,
-        now=lambda: _NOW,
+        deps=fake_deps_cell(
+            spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+            snapshot_reader=LiveSnapshotReader(store=version_store),
+            artifact_store=artifact_store,
+            now=lambda: _NOW,
+        )
     )
     client = make_client_for_door(door)
 

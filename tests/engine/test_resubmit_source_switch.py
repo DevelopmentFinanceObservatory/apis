@@ -6,6 +6,7 @@ import asyncio
 
 import pytest
 
+from origin_catalogue import current_catalogue
 from search.engine.concurrency import scoped_concurrency
 from search.engine.errors import EngineInputError
 from search.engine.region import resolve_spec_resubmit
@@ -111,6 +112,18 @@ _GDP_TWO_SOURCE_OBS = {
 }
 
 
+class _ScopeRecordingGraph(FakeGraph):
+    """Records the bound catalogue's source scope at each facet read."""
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.scopes: list[frozenset[str] | None] = []
+
+    def observation_facets_batch(self, *args, **kwargs):
+        self.scopes.append(current_catalogue().scope)
+        return super().observation_facets_batch(*args, **kwargs)
+
+
 def _resolve_standard(source_slot: Slot | None, graph: FakeGraph, *, stream: bool = False):
     # The declared activitySource key must be present, even when unbound.
     activity_source_slot = Slot(
@@ -188,6 +201,21 @@ class TestStandardPromoteSourceSwitch:
         unpinned = _resolve_standard(None, graph)
         sources = [s.dcid for s in unpinned.specs[0].resolved.trace.resolved_sources]
         assert sources == [_SOURCE_UNRELATED]
+
+    @pytest.mark.parametrize(
+        ("source_slot", "scope"),
+        [(None, None), (_source_slot_value(_SOURCE_WDI), frozenset({_SOURCE_WDI}))],
+        ids=["unpinned", "pinned"],
+    )
+    def test_a_posted_source_scopes_every_facet_read_to_it(self, source_slot, scope):
+        """The pin is a read scope (`resubmit_request.pinned_provenance_scope`), so admission
+        drops other sources before DFO precedence and a base pin serves at a DFO place."""
+        graph = _ScopeRecordingGraph(obs=_GDP_TWO_SOURCE_OBS)
+
+        _resolve_standard(source_slot, graph)
+
+        assert graph.scopes
+        assert set(graph.scopes) == {scope}
 
     def test_no_source_posted_is_byte_identical_to_before_this_feature(self):
         graph = FakeGraph(obs=_GDP_TWO_SOURCE_OBS)

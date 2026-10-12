@@ -12,6 +12,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, assert_never, get_args
 
+from code_index.shared import get_index
+from dfo_platform.roles import FlowAccount
 from materialise.facets import native_currency_iso
 from search.engine.clients.graph import Facet
 from search.engine.region.equivalent_series import CLUSTER_BY_MEMBER
@@ -21,7 +23,7 @@ from search.engine.retrieval.coverage import (
     answer_headline,
     citable_source_ids,
 )
-from search.engine.retrieval.read_plan import BulkPlan, facets_served
+from search.engine.retrieval.read_plan import facets_served, series_facets
 from search.engine.unit.lexicon import CURRENCY_DISPLAY_NAMES
 from search.models import (
     Coverage,
@@ -123,7 +125,8 @@ def _resolved_facets(
     """Aggregate per-series facets into `Spec.resolved.facets`.
 
     An axis is omitted when no series carries it. A shared ref on every series yields
-    `ref` with the first-seen series' label, source, and Data Commons. Differing refs or a
+    `ref` with the first-seen series' label, source, and Data Commons, and on the provenance
+    axis the account of a declared dataset (`_declared_account`). Differing refs or a
     missing value on any series yield `selection="per_series"` without a ref or label. `bound_axes` supplies each axis's
     basis. Unbound axes use `fallback`. `request_basis` is copied to the unit axis only, and
     a shared unit takes its ISO 4217 code from `currency_of` (`unit.refs.unit_currency`).
@@ -156,6 +159,7 @@ def _resolved_facets(
                 currency=(
                     currency_of(shared.ref) if axis == "unit" and currency_of is not None else None
                 ),
+                account=_declared_account(shared.ref) if axis == "provenance" else None,
                 request_basis=axis_request_basis,
             )
         else:
@@ -163,6 +167,13 @@ def _resolved_facets(
                 basis=basis, selection="per_series", request_basis=axis_request_basis
             )
     return result
+
+
+def _declared_account(ref: str) -> FlowAccount | None:
+    """The flow account of the dataset `ref` when the code index declares it
+    (`DatasetDeclaration.account`), else `None`."""
+    dataset = get_index().datasets.get(ref)
+    return dataset.account if dataset is not None else None
 
 
 def _currency_label(ref: str, labels: Mapping[str, str]) -> str:
@@ -181,25 +192,13 @@ def _requested_unit_ref(unit_request: IdentityUnitRequest) -> str | None:
     return currency_unit_ref(currency)
 
 
-def _plan_series_facets(plan: ReadPlan | None) -> list[_AxisFacetCandidate]:
-    """One facet per series `plan` serves, carrying the provenance, method and unit its
-    preview dispatches: a served series' group, whose facets share all three, or in bulk the
-    elected facet."""
-    if plan is None:
-        return []
-    if isinstance(plan, BulkPlan):
-        best = plan.elected
-        return [best] if best is not None and plan.population > 0 else []
-    return [s.group[0] for s in plan.served]
-
-
 def answer_facet_dcids(plan: ReadPlan | None, unit_request: IdentityUnitRequest | None) -> set[str]:
     """The method and unit refs `answer_facets` labels: those of the facets `plan` serves,
     and with `unit_request` the currency it converts to. Grounding adds them to its one label
     batch, so `answer_facets` makes no request of its own."""
     dcids = {
         ref
-        for facet in _plan_series_facets(plan)
+        for facet in series_facets(plan)
         for ref in (facet.measurement_method, facet.unit)
         if ref is not None
     }
@@ -232,7 +231,7 @@ def answer_facets(
     the ISO 4217 code `currency_of` (`unit.refs.unit_currency`) names for it."""
     converted = _requested_unit_ref(unit_request) if unit_request is not None else None
     maps: list[dict[str, SeriesFacetRef]] = []
-    for facet in _plan_series_facets(plan):
+    for facet in series_facets(plan):
         facet_map = _bulk_candidate_facet_map(facet, labels)
         if unit_request is not None:
             facet_map.pop("unit", None)

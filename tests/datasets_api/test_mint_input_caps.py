@@ -11,7 +11,6 @@ from code_index.shared import get_index
 from datasets_api.capabilities import build_capabilities
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.mint_models import StatVarSetInput
-from datasets_api.revision import SentinelRevisionReader
 from datasets_api.schema import build_schema_document
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
@@ -50,7 +49,6 @@ def _client(*, graph_arcs: dict | None = None) -> object:
         sdmx=SdmxClient(
             base_url="https://datacommons.one.org/core/api", transport=_refusing_transport()
         ),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),

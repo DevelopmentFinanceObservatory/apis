@@ -5,8 +5,10 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Sequence
 
+from materialise.facets import role_bearing_facet_candidates
 from materialise.roles import axis_noun
 from search.engine.bind import SlotBindingDraft
+from search.engine.clients.graph import Facet
 from search.engine.envelope import now_ms
 from search.engine.errors import EngineInputError
 from search.engine.region.grounding import _build_entity, memoised_labels, role_bindings
@@ -27,6 +29,9 @@ from search.engine.region.resubmit_request import (
 )
 from search.engine.region.result import RegionResult
 from search.engine.region.unrealisable import unbind_posted
+from search.engine.retrieval.bound_values import identity_query, shape_member_facts
+from search.engine.retrieval.elected_dataset import elected_datasets, published
+from search.engine.retrieval.read_plan import NoYearsToRead, role_years
 from search.engine.retrieval.retrieve import (
     BoundValuesUnrealisable,
     Materialised,
@@ -34,11 +39,79 @@ from search.engine.retrieval.retrieve import (
     NoDataDraft,
     UnsupportedDraft,
 )
-from search.engine.shape import identity_shape_for
+from search.engine.shape import identity_shape_for, is_role_bearing
 from search.engine.spec_build import build_slot, build_unsupported_definition, pair_slot_drafts
-from search.models import GraphRef, IdentityFacetBinding, Unsupported
+from search.models import GraphRef, IdentityFacetBinding, TimeWindow, Unsupported
 
 type MaterialiseResult = Materialised | NoDataDraft | MaterialisedCandidates | UnsupportedDraft
+
+
+def _raise_candidate_facet_refusal(state: _PromoteState, draft: NoDataDraft) -> None:
+    """Refuse a missing role-bearing facet before returning scoped no-data.
+
+    Source admission can leave the served coverage empty before the normal
+    post-materialisation facet gate runs.  A posted pin must still be judged
+    against globally admitted candidate facets at the same role tuples, so
+    an unavailable pin remains a client-correctable ``facet_not_available``.
+    """
+    if (
+        draft.reason != "no_observations"
+        or not draft.sv_dcids
+        or not is_role_bearing(state.shape_draft)
+    ):
+        return
+    from search.engine.facet_refusals import candidate_facet_refusal
+
+    member_facts, _index_sourced = shape_member_facts(
+        state.shape_draft, identity_query(state.inp.identity)
+    )
+    datasets = elected_datasets(member_facts)
+    try:
+        years = role_years(state.date_request, state.coverage.index.horizon).years
+    except NoYearsToRead:
+        years = None
+        no_years = True
+    else:
+        no_years = False
+    bounds = (years.start_year, years.end_year) if isinstance(years, TimeWindow) else None
+    candidates_by_sv: dict[str, list[Facet]] = {}
+    lifetime_candidates_by_sv: dict[str, list[Facet]] = {}
+    for sv in draft.sv_dcids:
+        lifetime = role_bearing_facet_candidates(
+            stat_var=sv,
+            role_bindings=state.place.roles.resolved_entities,
+            coverage=state.coverage.index,
+        )
+        if lifetime is None:
+            continue
+        lifetime_candidates_by_sv[sv] = published(datasets, sv, lifetime)
+        if no_years:
+            candidates_by_sv[sv] = []
+        elif bounds is None:
+            candidates_by_sv[sv] = lifetime_candidates_by_sv[sv]
+        else:
+            candidates_by_sv[sv] = published(
+                datasets,
+                sv,
+                role_bearing_facet_candidates(
+                    stat_var=sv,
+                    role_bindings=state.place.roles.resolved_entities,
+                    coverage=state.coverage.index,
+                    first_year=bounds[0],
+                    last_year=bounds[1],
+                )
+                or [],
+            )
+    refusal = candidate_facet_refusal(
+        state.graph,
+        candidates_by_sv,
+        state.inp.identity.facets,
+        provenance_facets_by_sv=lifetime_candidates_by_sv,
+        elected_units=state.elected_units,
+        deadline=state.deadline,
+    )
+    if refusal is not None:
+        raise refusal
 
 
 def _graph_labels(state: _PromoteState, dcids: Sequence[str]) -> list[str]:
@@ -199,6 +272,8 @@ def _phase_materialise(state: _PromoteState) -> RegionResult | None:
             detail=outcome.detail,
         )
     if isinstance(outcome, NoDataMaterialise):
+        if isinstance(mat_result, NoDataDraft):
+            _raise_candidate_facet_refusal(state, mat_result)
         # Keep warnings collected before materialisation.
         return RegionResult(
             variable_text=state.variable_text,

@@ -1,7 +1,8 @@
-"""Share one 5-second drain deadline across every door in a surface.
+"""Share one 5-second drain deadline across a surface's executors.
 
-`datasets_surface` exits door lifespans in LIFO order. One shared deadline
-caps all five door drains at 5 seconds. Separate waits can reach 25 seconds.
+The Datasets surface drains its work and read executors one after the other
+(`datasets_api.deps.open_deps`). One shared deadline caps both drains at 5
+seconds together. Presentation's doors use it too.
 """
 
 from __future__ import annotations
@@ -13,7 +14,7 @@ SHUTDOWN_BUDGET_SECONDS = 5.0
 
 
 class ShutdownBudget:
-    """A monotonic deadline shared by every door using this instance.
+    """A monotonic deadline shared by every drain using this instance.
     The first `remaining()` call arms it, when shutdown draining begins.
     """
 

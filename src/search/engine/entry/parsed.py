@@ -1,7 +1,7 @@
 """Resolve pre-parsed inputs with per-part variable, entity, time, unit, and source data.
 
-Parsed inputs bypass extraction. A part names the declared dataset it answers from in the
-typed `provenance` field.
+Parsed inputs bypass extraction. A part names or excludes the sources it answers from in
+`sources`, which `interpret_parts` compiles into each part's source scope.
 """
 
 from __future__ import annotations
@@ -14,7 +14,6 @@ from contextlib import aclosing
 
 from pydantic import ValidationError
 
-from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform.build import build_commit
 from dfo_platform.named import cut
@@ -23,6 +22,7 @@ from entity_resolution import Admission, Entity, EntityResolver, Resolution
 from entity_resolution.types import entity_kind
 from materialise import GraphReader
 from materialise.rate_tables import RateTableCache
+from origin_catalogue import current_catalogue
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
@@ -47,6 +47,7 @@ from search.engine.fanout import (
     _resolve_entities_bounded,
     _run_variables_streaming,
     answered_provenance,
+    restated_sources,
 )
 from search.engine.interpret import PinnedResolved
 from search.engine.options.population_memo import OptionsPopulationMemo
@@ -59,6 +60,12 @@ from search.engine.role_text import (
     ROLE_TEXT_NOT_RECOGNISED,
     DoorRole,
     role_axis_for_text,
+)
+from search.engine.source_scope import (
+    SourceRefusal,
+    SourceScope,
+    compile_part_sources,
+    without_source_words,
 )
 from search.engine.time_bind import parse_time_text, time_window_defaulted_warning
 from search.models import Operation, ParsedInput, ParsedPart, QueryEcho, RoleAxis, Warning
@@ -232,21 +239,26 @@ class PartsInterpretation:
     entity_roles: list[dict[str, list[DoorRole]]]
     member_entities: list[frozenset[str]]
     unit_texts: list[str | None]
-    source_texts: list[str | None]
-    provenances: list[str | None]
     operations: list[tuple[Operation, ...]]
     open_axes: list[frozenset[RoleAxis]]
+    separate: list[bool]
+    source_scopes: list[SourceScope | SourceRefusal | None]
     warnings: list[list[Warning]]
     restatements: list[ParsedPart | None]
 
     def interpreted(self, region: RegionResult, position: int) -> RegionResult:
         """`region`, the fan-out leg of part `position`, carrying that part's warnings
-        after its own, and its restatement naming the dataset the leg's identity binds or
-        its no-data run settled on (`fanout.answered_provenance`)."""
+        after its own, and its restatement carrying the part's source mentions with their
+        resolved references, or for a part naming none the dataset the leg's answer binds
+        (`fanout.restated_sources`)."""
         restatement = self.restatements[position]
         if restatement is not None:
             restatement = restatement.model_copy(
-                update={"provenance": answered_provenance(region, restatement.provenance)}
+                update={
+                    "sources": restated_sources(
+                        self.source_scopes[position], answered_provenance(region)
+                    )
+                }
             )
         return dataclasses.replace(
             region,
@@ -263,10 +275,20 @@ def interpret_parts(
     entries, so identical parts carry the same inputs and warnings on either door.
 
     Only absent time text gets `time_window_defaulted`; unrecognised text gets the
-    parser's own warning. An open role word `_open_axes_for_part` refuses, and an entity
-    text `_member_entities_for_part` refuses, point into its part's entry of
-    `pointer_prefixes`.
+    parser's own warning. An open role word `_open_axes_for_part` refuses, an entity
+    text `_member_entities_for_part` refuses, and a source mention `compile_part_sources`
+    refuses, point into its part's entry of `pointer_prefixes`. Each part's
+    `source_scopes` entry is its compiled sources against the request's catalogue:
+    `None` when it names none, a `SourceRefusal` when its words resolve to no source or
+    to several. A part's variable text leaves out the words of each source its scope
+    resolved (`source_scope.without_source_words`), and its restatement states the rest.
     """
+    source_scopes = [
+        compile_part_sources(p, catalogue=current_catalogue(), pointer_prefix=prefix)
+        if p.sources
+        else None
+        for p, prefix in zip(parts, pointer_prefixes, strict=True)
+    ]
     open_axes = [
         _open_axes_for_part(p, pointer_prefix=prefix)
         for p, prefix in zip(parts, pointer_prefixes, strict=True)
@@ -275,7 +297,13 @@ def interpret_parts(
         _member_entities_for_part(p, pointer_prefix=prefix)
         for p, prefix in zip(parts, pointer_prefixes, strict=True)
     ]
-    variable_texts = [p.variable_text.strip() for p in parts]
+    # Words a mention reads as a source are not the measure's too.
+    variable_texts = [
+        without_source_words(p.variable_text.strip(), scope)
+        if isinstance(scope, SourceScope)
+        else p.variable_text.strip()
+        for p, scope in zip(parts, source_scopes, strict=True)
+    ]
     dates_and_warnings = [_time_for_part(p) for p in parts]
     role_queries_and_warnings = [_role_query_for_part(p) for p in parts]
     return PartsInterpretation(
@@ -287,10 +315,10 @@ def interpret_parts(
         entity_roles=[_entity_roles_for_part(p) for p in parts],
         member_entities=member_entities,
         unit_texts=[p.unit_text for p in parts],
-        source_texts=[p.source_text for p in parts],
-        provenances=[p.provenance for p in parts],
         operations=[tuple(p.operations) for p in parts],
         open_axes=open_axes,
+        separate=[p.separate for p in parts],
+        source_scopes=source_scopes,
         warnings=_per_part_warnings(parts, dates_and_warnings, role_queries_and_warnings),
         restatements=[
             _part_restatement(p, variable_text=v)
@@ -300,7 +328,9 @@ def interpret_parts(
 
 
 def _part_restatement(part: ParsedPart, *, variable_text: str) -> ParsedPart | None:
-    """Rebuild a part from the inputs used by its resolution leg.
+    """Rebuild a part from the inputs used by its resolution leg. Its source mentions are
+    the posted ones, the deprecated fields folded in; `PartsInterpretation.interpreted`
+    restates them with their resolved references once the leg has run.
 
     Use the stripped text sent to resolution. Return `None` when it is empty,
     since a posted whitespace-only part cannot pass `ParsedPart` validation.
@@ -311,10 +341,10 @@ def _part_restatement(part: ParsedPart, *, variable_text: str) -> ParsedPart | N
             entities=part.entities,
             time_text=part.time_text,
             unit_text=part.unit_text,
-            source_text=part.source_text,
-            provenance=part.provenance,
+            sources=part.sources,
             operations=part.operations,
             open_roles=part.open_roles,
+            separate=part.separate,
         )
     except ValidationError:
         return None
@@ -324,8 +354,10 @@ def _dedupe_parts_with_indices(parts: list[ParsedPart]) -> list[tuple[int, Parse
     """Deduplicate identical parts in first-seen order, keeping each posted index.
 
     Equality includes variable text, entities with role text, dcid pins and the members
-    flag, time, unit, source, dataset, operations, and open roles. Parts sharing only variable text remain distinct. Original
-    indices keep refusal pointers aligned with the client's posted `/input/parts/{i}`.
+    flag, time, unit, source mentions (the deprecated `provenance` and `source_text`
+    folded in), operations, open roles, and `separate`. Parts sharing only variable text
+    remain distinct. Original indices keep refusal pointers aligned with the client's
+    posted `/input/parts/{i}`.
     """
     seen: dict[tuple, tuple[int, ParsedPart]] = {}
     for i, part in enumerate(parts):
@@ -334,33 +366,13 @@ def _dedupe_parts_with_indices(parts: list[ParsedPart]) -> list[tuple[int, Parse
             tuple((e.text, e.role_text, e.dcid, e.members) for e in (part.entities or ())),
             part.time_text,
             part.unit_text,
-            part.source_text,
-            part.provenance,
+            tuple((m.text, m.ref, m.polarity) for m in part.sources),
             tuple((o.verb, o.phrase, o.over, o.target_year) for o in part.operations),
             tuple(part.open_roles or ()),
+            part.separate,
         )
         seen.setdefault(key, (i, part))
     return list(seen.values())
-
-
-def confirm_part_datasets(parts: list[ParsedPart], *, pointer_prefixes: Sequence[str]) -> None:
-    """Refuse `request_invalid` when a part's `provenance` is not a declared dataset.
-
-    The refusal points at the posted field. The declared datasets are the code index's, the
-    list the served request schema publishes.
-    """
-    declared = get_index().datasets
-    for prefix, part in zip(pointer_prefixes, parts, strict=True):
-        if part.provenance is not None and part.provenance not in declared:
-            detail = (
-                f"provenance {part.provenance!r} is not a declared dataset; the request schema "
-                "lists the declared datasets"
-            )
-            raise EngineInputError(
-                detail,
-                code="request_invalid",
-                pointer=f"{prefix}/provenance",
-            )
 
 
 async def confirm_part_pins(
@@ -530,10 +542,8 @@ async def handle(
     original_indices = [i for i, _ in parts_with_indices]
     parts = [p for _, p in parts_with_indices]
 
-    # Confirm datasets and pins before fan-out, preserving original indices for refusal
-    # pointers.
+    # Confirm pins before fan-out, preserving original indices for refusal pointers.
     pointer_prefixes = [f"/input/parts/{i}" for i in original_indices]
-    confirm_part_datasets(parts, pointer_prefixes=pointer_prefixes)
     pins = await confirm_part_pins(
         parts, graph=graph, resolver=resolver, pointer_prefixes=pointer_prefixes
     )
@@ -588,10 +598,10 @@ async def handle(
             per_variable_entity_roles=interpretation.entity_roles,
             per_variable_member_entities=interpretation.member_entities,
             per_variable_unit_texts=interpretation.unit_texts,
-            per_variable_source_texts=interpretation.source_texts,
-            per_variable_provenances=interpretation.provenances,
+            per_variable_source_scopes=interpretation.source_scopes,
             per_variable_operations=interpretation.operations,
             per_variable_open_axes=interpretation.open_axes,
+            per_variable_separate=interpretation.separate,
             coverage=params.coverage,
         ):
             yield ev
@@ -673,11 +683,11 @@ async def handle(
         per_variable_entity_roles=interpretation.entity_roles,
         per_variable_member_entities=interpretation.member_entities,
         per_variable_unit_texts=interpretation.unit_texts,
-        per_variable_source_texts=interpretation.source_texts,
-        per_variable_provenances=interpretation.provenances,
+        per_variable_source_scopes=interpretation.source_scopes,
         per_variable_pre_resolved=per_variable_pre_resolved,
         per_variable_operations=interpretation.operations,
         per_variable_open_axes=interpretation.open_axes,
+        per_variable_separate=interpretation.separate,
         coverage=params.coverage,
     ):
         yield ev

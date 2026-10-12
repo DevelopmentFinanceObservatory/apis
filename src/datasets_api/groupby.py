@@ -29,7 +29,7 @@ _STAT_VAR_REF_PREFIX = "dcid:"
 that module's docstring for why the prefix has to be stripped before a
 table ref matches `index.statvars`."""
 
-# Mirrors the fixed frame1 columns in `materialise.reshape`. Keep them local
+# Mirrors the fixed frame columns in `materialise.reshape`. Keep them local
 # to avoid importing the grammar package. `value` stays valid in `by` as the
 # summed column, which appears on every frame.
 _ALWAYS_PRESENT_COLUMNS: frozenset[str] = frozenset(

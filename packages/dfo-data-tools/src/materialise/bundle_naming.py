@@ -6,6 +6,9 @@ date it was first prepared, and a short version tag:
 - zip: `dfo_<slug>_<YYYY-MM-DD>_<format>_<tag>.zip`
 - bare file: `dfo_<slug>_<YYYY-MM-DD>_<tag>.<ext>`
 
+A Datasets rendering that reshapes the default table adds its shape token before the tag, so
+two renderings of one version under one extension take two names.
+
 The tag is `version_tag(content_version)` for a Datasets bundle and `revision_tag(revision)`
 for a card export. Slugs are ASCII, lowercase and hyphenated, cut at a word boundary.
 """
@@ -121,20 +124,35 @@ def revision_tag(revision: int) -> str:
     return f"r{revision}"
 
 
-def zip_file_name(*, slug: str, prepared: date, format: str, tag: str) -> str:
-    """`dfo_<slug>_<YYYY-MM-DD>_<format>_<tag>.zip`, the download name of a bundle."""
-    return f"dfo_{slug}_{prepared.isoformat()}_{format}_{tag}.zip"
+def zip_file_name(
+    *, slug: str, prepared: date, format: str, tag: str, shape: str | None = None
+) -> str:
+    """`dfo_<slug>_<YYYY-MM-DD>_<format>_<tag>.zip`, the download name of a bundle.
+
+    A `shape` names a reshaped rendering after the format:
+    `dfo_<slug>_<YYYY-MM-DD>_<format>_<shape>_<tag>.zip`."""
+    return f"dfo_{slug}_{prepared.isoformat()}_{format}{_part(shape)}_{tag}.zip"
 
 
 def bare_file_name(
-    *, slug: str, prepared: date, tag: str, extension: str, kind: str | None = None
+    *,
+    slug: str,
+    prepared: date,
+    tag: str,
+    extension: str,
+    kind: str | None = None,
+    shape: str | None = None,
 ) -> str:
     """`dfo_<slug>_<YYYY-MM-DD>_<tag>.<extension>`, the download name of a file served alone.
 
     A `kind` names a file that is not the data itself, in the format's place:
-    `dfo_<slug>_<YYYY-MM-DD>_<kind>_<tag>.<extension>`."""
-    kind_part = f"_{kind}" if kind is not None else ""
-    return f"dfo_{slug}_{prepared.isoformat()}{kind_part}_{tag}.{extension}"
+    `dfo_<slug>_<YYYY-MM-DD>_<kind>_<tag>.<extension>`. A `shape` names a reshaped rendering
+    of the data in the same place: `dfo_<slug>_<YYYY-MM-DD>_<shape>_<tag>.<extension>`."""
+    return f"dfo_{slug}_{prepared.isoformat()}{_part(kind)}{_part(shape)}_{tag}.{extension}"
+
+
+def _part(token: str | None) -> str:
+    return f"_{token}" if token is not None else ""
 
 
 def member_slugs(member_source_names: Sequence[Sequence[str]]) -> tuple[str, ...]:

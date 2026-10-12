@@ -9,11 +9,13 @@ from unittest.mock import patch
 import pytest
 from fastapi.testclient import TestClient
 
+import origin_catalogue.service as catalogue_service_module
 import search.engine.app as app_module
 from code_index.shared import get_index
 from code_index.types import DatasetDeclaration
 from materialise.errors import UpstreamVersionChangedError
 from materialise.rate_tables import RateTableInvalidError
+from origin_catalogue import DFO, ProvenanceRow, SourceRef
 from search.engine.config import SEARCH_MAX_PARTS
 from search.engine.unit.base_year import TABLE_PROVENANCES
 from tests.engine._fake_sdmx import FakeSdmxClient
@@ -21,6 +23,11 @@ from tests.engine._harness import PINNED_DATE, materialise_double_from_obs
 from tests.engine._refusal_detail import assert_names_plainly
 from tests.engine._search_app import search_app
 from tests.fixtures import FakeGraph, FakeLLM, _load_json, make_resolver
+from tests.origin_catalogue.fake_catalogue import (
+    FakeCatalogue,
+    fake_catalogue_service,
+    restrictive_catalogue,
+)
 
 _FERTILITY_SV = "FertilityRate_Person_Female"
 _FERTILITY_KEN_KEY = f"{_FERTILITY_SV}|country/KEN"
@@ -313,18 +320,28 @@ class TestPartProvenance:
 
     @pytest.mark.parametrize("provenance", [None, "declared"], ids=["absent", "declared"])
     def test_an_absent_or_declared_provenance_is_accepted(self, provenance: str | None):
+        """A declared dataset the catalogue admits is accepted as a pin, as is no pin."""
         if provenance == "declared":
             provenance = next(iter(get_index().datasets))
-        client = make_client()
-        resp = client.post(
-            "/api/search/resolve",
-            json={
-                "input": {
-                    "kind": "parsed",
-                    "parts": [{"variable_text": "fertility rate", "provenance": provenance}],
-                }
-            },
+        row = ProvenanceRow(
+            id=next(iter(get_index().datasets)),
+            data_commons=DFO,
+            source=SourceRef(ref="dc/s/Declared", label="Declared"),
+            name="Declared",
+            url="https://example.org",
         )
+        service = fake_catalogue_service(FakeCatalogue(provenances={row.id: row}))
+        with catalogue_service_module._singleton.poisoned_for_test(service):
+            client = make_client()
+            resp = client.post(
+                "/api/search/resolve",
+                json={
+                    "input": {
+                        "kind": "parsed",
+                        "parts": [{"variable_text": "fertility rate", "provenance": provenance}],
+                    }
+                },
+            )
         assert resp.status_code == 200
 
     @pytest.mark.parametrize(
@@ -355,14 +372,29 @@ class TestPartProvenance:
                 },
                 "/input/entries/0/part/provenance",
             ),
+            (
+                {
+                    "kind": "parsed",
+                    "parts": [
+                        {
+                            "variable_text": "fertility rate",
+                            "sources": [{"text": "IDS"}, {"ref": "provenance/Unknown"}],
+                        }
+                    ],
+                },
+                "/input/parts/0/sources/1",
+            ),
         ],
-        ids=["parsed", "dataset-resubmit"],
+        ids=["parsed", "dataset-resubmit", "source-mention"],
     )
-    def test_an_undeclared_provenance_refuses_request_invalid_pointing_at_the_field(
+    def test_an_unadmitted_provenance_refuses_request_invalid_pointing_at_the_field(
         self, request_input: dict, pointer: str
     ):
-        client = make_client()
-        resp = client.post("/api/search/resolve", json={"input": request_input})
+        """The catalogue admits no provenance, so the posted one names no admitted source."""
+        service = fake_catalogue_service(restrictive_catalogue())
+        with catalogue_service_module._singleton.poisoned_for_test(service):
+            client = make_client()
+            resp = client.post("/api/search/resolve", json={"input": request_input})
         assert resp.status_code == 400
         body = resp.json()
         assert (body["code"], body["pointer"]) == ("request_invalid", pointer)
@@ -568,10 +600,12 @@ class TestSchemaReflectsPartsShape:
             "entities",
             "time_text",
             "unit_text",
+            "sources",
             "source_text",
             "provenance",
             "operations",
             "open_roles",
+            "separate",
         }
         assert defs["ParsedInput"]["additionalProperties"] is False
         assert defs["ParsedPart"]["additionalProperties"] is False

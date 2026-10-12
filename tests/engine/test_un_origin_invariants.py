@@ -21,7 +21,6 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from datasets_api.revision import SentinelRevisionReader
 from dc_sdmx import SdmxClient
 from origin_catalogue import BASE, UN_SYSTEM, CatalogueSnapshot
 from origin_catalogue.graph import OriginGraphClient, build_graph_client
@@ -250,7 +249,6 @@ def _search(graph: LiveGraphClient) -> Spec:
             sdmx=FakeSdmxClient(observations={}, availability={}),
             llm=llm,
             base_timing={},
-            named_dataset=None,
             coverage=empty_coverage_snapshot(),
             options=EngineOptions(deadline=None),
         )
@@ -282,7 +280,6 @@ def _datasets(graph: OriginGraphClient, catalogue: CatalogueSnapshot) -> TestCli
         spec_reader=LiveSpecReader(store=store),
         graph=graph,
         sdmx=_sdmx_never_called(),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),

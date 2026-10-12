@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import httpx
 
-from datasets_api.revision import SentinelRevisionReader
 from dc_sdmx import SdmxClient
 from materialise.graph import Facet
 from spec_registry import LiveSpecRegistry
@@ -106,7 +105,6 @@ def test_a_single_default_role_statvar_mints_a_200_manifest():
         spec_reader=LiveSpecReader(store=store),
         graph=_graph(),
         sdmx=SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport([])),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),
@@ -118,7 +116,7 @@ def test_a_single_default_role_statvar_mints_a_200_manifest():
     manifest = resp.json()
     assert manifest["definition"]["spec_id"].startswith("spec_")
     assert manifest["content_version"].startswith("cv_")
-    # The response includes the rendered artifact and series statistics, not internal frame1.
+    # The response includes the rendered artifact and series statistics, not the internal frame.
     assert len(manifest["artifacts"]) == 2
     artifact = next(a for a in manifest["artifacts"] if a["rendering"] != {"statistics": "series"})
     assert artifact["artifact_digest"].startswith("sha256:")

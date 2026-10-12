@@ -102,8 +102,6 @@
     ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","axis":"provenance"}],
     ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","axis":"measurementMethod"}],
     ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","axis":"unit"}],
-    ["FakeGraph.node_labels_batch",{"dcids":["EconomicActivity","TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","amount","measuredValue","source/B"]}],
-    ["FakeGraph.node_labels_batch",{"dcids":["source/B"]}],
     ["FakeGraph.node_labels_batch",{"dcids":["source/A"]}]
   ],
   "test_measurement_method_binding_narrows_which_sources_are_cited": [
@@ -182,7 +180,7 @@
     ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","axis":"provenance"}],
     ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","axis":"measurementMethod"}],
     ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","axis":"unit"}],
-    ["FakeGraph.node_labels_batch",{"dcids":["EconomicActivity","TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","amount","measuredValue","source/A"]}],
+    ["FakeGraph.node_labels_batch",{"dcids":["EconomicActivity","TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","amount","measuredValue"]}],
     ["FakeGraph.node_labels_batch",{"dcids":["source/A"]}],
     ["FakeGraph.node_labels_batch",{"dcids":["source/A","source/B"]}]
   ],
@@ -258,8 +256,6 @@
     ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","axis":"provenance"}],
     ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","axis":"measurementMethod"}],
     ["FakeGraph.default_facet_policy",{"stat_var":"dcid:TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","axis":"unit"}],
-    ["FakeGraph.node_labels_batch",{"dcids":["EconomicActivity","TESTFIXTURE/RoleScopeResubmitNarrowingE2E/Flow","amount","measuredValue","source/B"]}],
-    ["FakeGraph.node_labels_batch",{"dcids":["source/B"]}],
     ["FakeGraph.node_labels_batch",{"dcids":["dc/base/CoverageFixture"]}]
   ],
   "test_unit_binding_narrows_which_sources_are_cited": [

@@ -7,8 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from dataset_store.snapshot import SnapshotRevoked
-from datasets_api.codes_snapshot import ArtifactNotFound
+from dataset_store.snapshot import ArtifactNotFound, SnapshotRevoked
 from datasets_api.reference_store import (
     PIN_REFERENCE_KIND,
     LiveArtifactReferenceWriter,
@@ -157,16 +156,29 @@ def test_claim_reference_reports_whether_it_changes_the_row(store):
     assert second.changed is False
 
 
-def test_record_reference_unless_revoked_refuses_and_writes_zero_rows_when_already_revoked(store):
+@pytest.mark.parametrize(
+    "revoked_version", [_CONTENT_VERSION, "cv_base"], ids=["the-version", "its-base-version"]
+)
+def test_record_reference_unless_revoked_refuses_and_writes_zero_rows_when_already_revoked(
+    store, revoked_version
+):
+    """A revocation of the version, or of the base version it collapses from, that lands after
+    the pin door's read refuses the write."""
     with store.transaction() as tx:
+        tx.execute(
+            "INSERT INTO datasets.version_record "
+            "(subject_id, subject_kind, content_version, schema_version, immutable_body, "
+            "recorded_at, base_content_version) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (_SUBJECT_ID, "spec", _CONTENT_VERSION, 1, {}, _FIRST_PIN, "cv_base"),
+        )
         tx.execute(
             "INSERT INTO datasets.version_revocation "
             "(subject_id, content_version, reason, revoked_at) VALUES (%s, %s, %s, %s)",
-            (_SUBJECT_ID, _CONTENT_VERSION, "takedown", _FIRST_PIN),
+            (_SUBJECT_ID, revoked_version, "takedown", _FIRST_PIN),
         )
     writer = LiveArtifactReferenceWriter(store=store)
 
-    with pytest.raises(SnapshotRevoked):
+    with pytest.raises(SnapshotRevoked, match="takedown"):
         writer.record_reference_unless_revoked(
             principal=_PRINCIPAL,
             artifact_digest=_DIGEST,

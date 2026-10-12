@@ -18,6 +18,7 @@ import re
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
+from typing import Literal
 
 import rfc8785
 
@@ -26,6 +27,7 @@ from search.engine.extract import ExtractedDate, ExtractedEntity
 from search.engine.qualifier_match import CodedQualifier, QualifierMatch, recall_text
 from search.engine.region.codes import (
     AVAILABILITY_PROBE_FAILED,
+    MEMBERS_ABSENT_FROM_GRAPH,
     MEMBERSHIP_UNVERIFIED,
     OBSERVATIONS_BULK_FETCH_FAILED,
     OBSERVATIONS_PROBE_FAILED,
@@ -46,6 +48,7 @@ from search.models import (
     ResolveOptions,
     ResolveResponse,
     ResubmitIdentityPayload,
+    SourceMention,
     Warning,
 )
 
@@ -54,13 +57,15 @@ _INTERNAL_WHITESPACE = re.compile(r"\s+")
 # System Data Commons, the member walk that settles a role-bearing answer's members, the
 # role declarations a population re-reads, the conversion catalogue its unit conversion
 # offer reads, and the option-coverage, availability and observation reads that failed or
-# ran past the deadline.
+# ran past the deadline. An elected member the graph read did not return
+# (`members_absent_from_graph`) can be a transient drop, so that answer is not kept either.
 _UNSTORABLE_WARNING_CODES = frozenset(
     {
         "skills_index_unavailable",
         "skills_index_incomplete",
         UN_SYSTEM_UNAVAILABLE,
         MEMBERSHIP_UNVERIFIED,
+        MEMBERS_ABSENT_FROM_GRAPH,
         ROLE_DECLARATION_UNVERIFIED,
         UNIT_CONVERSION_UNAVAILABLE,
         OPTION_COVERAGE_PROBE_FAILED,
@@ -106,6 +111,7 @@ def scope_document(
     options: ResolveOptions | None,
     max_candidates: int,
     seam_default: bool,
+    qualifier_coverage: Literal["log", "refuse"],
     build_commit: str,
     model: str,
     seed: int | None,
@@ -119,11 +125,12 @@ def scope_document(
     """Build shared key material from caller-supplied values.
 
     Includes the schema, defaulted response options, effective candidate cap,
-    place-as-constraint default, build/model/seed fingerprint, day, graph and
-    coverage stamps, the revision of the conversion catalogue the request
+    place-as-constraint default, qualifier coverage mode, build/model/seed fingerprint,
+    day, graph and coverage stamps, the revision of the conversion catalogue the request
     bound (None when it bound none), and the build of the origin catalogue it bound with
-    its UN System setting, which decide what provenances an answer admits. The cap and
-    place default can change answers without changing the build commit. A catalogue
+    its UN System setting, which decide what provenances an answer admits. The cap, the
+    place default and the coverage mode can change answers without changing the build
+    commit. A catalogue
     reload changes the revision or build and not the graph generation. Each stamp is
     captured once and invalidates both layers when it changes. Transport is omitted because a request with trailing
     events uses neither layer, and without them both transports answer the same
@@ -133,6 +140,7 @@ def scope_document(
         "schema_version": schema_version,
         "response_options": _resolved_options(options, max_candidates=max_candidates),
         "seam_default": seam_default,
+        "qualifier_coverage": qualifier_coverage,
         "build_commit": build_commit,
         "model": model,
         "seed": seed,
@@ -200,18 +208,19 @@ def _variable_qualifiers_document(
     }
 
 
-def _operations_document(
-    variables: Sequence[str], operations: Sequence[tuple[Operation, ...]]
+def _per_variable_document(
+    variables: Sequence[str], items: Sequence[Sequence[Operation | SourceMention]]
 ) -> dict[str, list[dict[str, object]]]:
-    """Build each variable's operations for the layer-2 key, in query order.
+    """Build each variable's operations or source mentions for the layer-2 key, in query
+    order.
 
-    Order is kept because each part echoes its operations in that order. Variables
-    without operations are omitted; both input sequences are parallel.
+    Order is kept because each part echoes them in that order. Variables without any are
+    omitted. Both input sequences are parallel.
     """
     return {
-        variable: [operation.model_dump(mode="json") for operation in variable_operations]
-        for variable, variable_operations in zip(variables, operations, strict=True)
-        if variable_operations
+        variable: [item.model_dump(mode="json") for item in variable_items]
+        for variable, variable_items in zip(variables, items, strict=True)
+        if variable_items
     }
 
 
@@ -223,6 +232,7 @@ def layer2_key(
     dropped_qualifiers: Sequence[str],
     variable_qualifiers: Sequence[tuple[CodedQualifier, ...]],
     operations: Sequence[tuple[Operation, ...]],
+    sources: Sequence[tuple[SourceMention, ...]],
     role_contradictions: Sequence[Mapping[str, object]],
     query_text_qualifier_matches: Sequence[Mapping[str, object]],
     query_text_qualifier_ties: Sequence[Mapping[str, object]],
@@ -232,6 +242,7 @@ def layer2_key(
     declared_default_trigger_words: Sequence[Mapping[str, str]],
     declared_default_slots_named: Sequence[str],
     scope: dict,
+    separate: Sequence[bool] = (),
 ) -> str:
     """Key the effective extraction and raw-text signals over the shared scope.
 
@@ -240,7 +251,13 @@ def layer2_key(
     and resolved qualifiers. Its `recall_text` stays in extraction order because
     phrase containment can change the retrieval input, while qualifier records
     are sorted because binding depends on their set. `operations` runs parallel to
-    `variables`: each part echoes its own, and their phrases reach its bind.
+    `variables`: each part echoes its own, and their phrases reach its bind. `sources` runs
+    parallel to `variables` too: the source mentions each part compiles, in query order, as
+    the part echoes them, so "aid to Kenya" and "aid to Kenya excluding the CRS" keep
+    separate entries.
+    `separate` runs parallel to `variables` when given and marks each variable compared
+    with the others, which never folds (`same_shape.fold_key`). The key states the marked
+    positions and adds nothing when none is marked.
 
     The raw-text signals cover role contradictions, query-text qualifier matches,
     ties and two-reading spans, every place a row of any system names a query-text word
@@ -257,7 +274,8 @@ def layer2_key(
         "dates": [date.model_dump(mode="json") for date in dates],
         "dropped_qualifiers": list(dropped_qualifiers),
         "variable_qualifiers": _variable_qualifiers_document(variables, variable_qualifiers),
-        "operations": _operations_document(variables, operations),
+        "operations": _per_variable_document(variables, operations),
+        "sources": _per_variable_document(variables, sources),
         "role_contradictions": list(role_contradictions),
         "query_text_qualifier_matches": list(query_text_qualifier_matches),
         "query_text_qualifier_ties": list(query_text_qualifier_ties),
@@ -267,6 +285,8 @@ def layer2_key(
         "declared_default_trigger_words": [dict(word) for word in declared_default_trigger_words],
         "declared_default_slots_named": list(declared_default_slots_named),
     }
+    if separate_positions := [i for i, marked in enumerate(separate) if marked]:
+        document["separate"] = separate_positions
     return _digest("l2", document)
 
 

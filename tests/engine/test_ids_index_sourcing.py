@@ -6,6 +6,7 @@ walked members, its bind prompt, and its options population."""
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 from pathlib import Path
 from typing import Any, cast
@@ -13,19 +14,25 @@ from typing import Any, cast
 import pytest
 
 from code_index.members import index_covers_slot_keys, index_family
+from code_index.query import CodeIndex
 from code_index.shared import get_index, get_measure_index
+from code_index.types import StatVarRow
 from promptlab.expectations import case_stat_vars
 from search.engine.bind import _build_universal_bind_prompt
 from search.engine.errors import EngineInputError
 from search.engine.options import population as options_population_module
 from search.engine.qualifier_match import QualifierMatch
+from search.engine.region import promote_reread as promote_reread_module
+from search.engine.region import resolve_spec_resubmit
 from search.engine.region.phase_rank_bind import _rank_key
 from search.engine.region.promote_edits import _phase_detect_edits
-from search.engine.region.promote_reread import _phase_reread_arcs
+from search.engine.region.promote_reread import _elected_members, _phase_reread_arcs
 from search.engine.region.promote_shape import _phase_build_shape
 from search.engine.region.promote_state import _PromoteState
 from search.engine.region.promote_survivors import _phase_resolve_survivors
 from search.engine.region.promote_validate import _phase_validate
+from search.engine.region.result import RegionResult
+from search.engine.retrieval import bound_values as bound_values_module
 from search.engine.retrieval.bound_values import (
     ResubmitWalk,
     RoleClassWalks,
@@ -52,9 +59,15 @@ from search.models import (
     SlotKey,
     SlotValue,
 )
-from statvar_members import FiveTuple, MemberGroup
+from series_coverage.schema import RoleNames
+from statvar_members import DEFAULT_MEMBER_CAP, FiveTuple, MemberGroup
 from tests.engine._base_identity import destination_entity, make_base
-from tests.engine._fake_coverage import empty_coverage_snapshot
+from tests.engine._fake_coverage import (
+    FakeCoverageService,
+    build_coverage_index,
+    empty_coverage_snapshot,
+)
+from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import member_walk_reader
 from tests.fixtures import FakeGraph
 from tests.statvar_members.conftest import FakeMemberArcReader
@@ -484,6 +497,7 @@ def _promote_state(graph: FakeGraph, slots: list[Slot]) -> _PromoteState:
     )
 
 
+@pytest.mark.usefixtures("unlisted_index")
 def test_an_ids_identity_with_guarantee_status_unbound_resubmits_over_its_walked_member():
     slots = [_slot("financialFlowType", None), _slot("guaranteeStatus", None)]
     graph = _graph({_IDS_DEBT_SERVICE: _ids_arcs("ServicingPayment")})
@@ -496,13 +510,90 @@ def test_an_ids_identity_with_guarantee_status_unbound_resubmits_over_its_walked
     assert state.measure_elected_properties == frozenset()
 
 
+def _index_listing(*rows: StatVarRow) -> CodeIndex:
+    """The packaged index with `rows` as its only listed rows."""
+    index = copy.copy(get_index())
+    index.listed_statvars = rows
+    index.listed_by_five_tuple = {_FLOW_FIVE_TUPLE: rows} if rows else {}
+    return index
+
+
+def test_an_ids_identity_elects_its_listed_members_without_walking_the_graph(monkeypatch):
+    """A family holding a row the index lists is elected from the index: over a graph that
+    holds no StatVar, where a walk finds nothing, the listed debt-service total is elected."""
+    listed = StatVarRow(
+        dcid=_IDS_DEBT_SERVICE,
+        population_type="FinancialFlow",
+        measured_property="amount",
+        stat_type="measuredValue",
+        measurement_qualifier="Nominal",
+        measurement_denominator=None,
+        observation_properties=("financingRecipient",),
+        constraint_properties={"financialFlowType": "ServicingPayment", "guaranteeStatus": _PPG},
+        provenances=("provenance/WorldBankInternationalDebtStatistics",),
+    )
+    slots = [_slot("financialFlowType", None), _slot("guaranteeStatus", None)]
+    graph = _graph({})
+
+    listing = _index_listing(listed)
+    monkeypatch.setattr(bound_values_module, "get_index", lambda: listing)
+    state = _promote_state(graph, slots)
+    _phase_validate(state)
+    assert _elected_members(state) == [_IDS_DEBT_SERVICE]
+
+    unlisted = _index_listing()
+    monkeypatch.setattr(bound_values_module, "get_index", lambda: unlisted)
+    walked = _promote_state(graph, slots)
+    _phase_validate(walked)
+    assert not isinstance(_elected_members(walked), list)
+
+
+def _resubmit_electing(monkeypatch, members: list[str]) -> RegionResult:
+    """A resubmit of the IDS debt-service identity at Kenya whose election settles
+    `members`, over a graph holding only the debt-service total, which holds data at Kenya."""
+    monkeypatch.setattr(promote_reread_module, "_elected_members", lambda _state: members)
+    graph = _graph({_IDS_DEBT_SERVICE: _ids_arcs("ServicingPayment")})
+    coverage = build_coverage_index(
+        [(_IDS_DEBT_SERVICE, "f", "", _KEN, [2020])],
+        role_names={_IDS_DEBT_SERVICE: RoleNames(donor=None, recipient="financingRecipient")},
+    )
+    _spec_id, identity = _flow_identity(
+        [_slot("financialFlowType", None), _slot("guaranteeStatus", None)]
+    )
+    return resolve_spec_resubmit(
+        inp=ResubmitIdentityPayload(identity=identity),
+        graph=graph,
+        sdmx=FakeSdmxClient(),
+        coverage=FakeCoverageService(coverage).snapshot(),
+    )
+
+
+def test_an_elected_member_the_graph_lacks_drops_under_a_warning_naming_it(monkeypatch):
+    """The code index can list a member the graph no longer holds. The served answer reads
+    the members the graph holds, and its `members_absent_from_graph` warning names the one
+    it left out; with every member held, no warning."""
+    region = _resubmit_electing(monkeypatch, [_IDS_DEBT_SERVICE, _IDS_INTEREST])
+
+    assert region.status == "definite", region.no_data_reason
+    assert region.specs[0].resolved.stat_vars.member_count == 1
+    [warning] = [w for w in region.warnings if w.code == "members_absent_from_graph"]
+    assert _IDS_INTEREST in warning.message
+
+    held = _resubmit_electing(monkeypatch, [_IDS_DEBT_SERVICE])
+    assert held.status == "definite", held.no_data_reason
+    assert not [w for w in held.warnings if w.code == "members_absent_from_graph"]
+
+
 # Options and mint: an IDS identity enumerates from the graph.
 
 
+@pytest.mark.usefixtures("unlisted_index")
 def test_options_enumerates_an_ids_identity_from_the_graph(monkeypatch):
     enumerated: list[FiveTuple] = []
 
     class _RecordingEnumerator:
+        member_cap = DEFAULT_MEMBER_CAP
+
         def enumerate(self, *, five_tuple, **_kwargs):
             enumerated.append(five_tuple)
             return MemberGroup(
@@ -666,6 +757,7 @@ def test_options_sources_a_crs_identity_from_the_index():
     assert _IDS_DISBURSEMENT not in population.stat_var_dcids
 
 
+@pytest.mark.usefixtures("unlisted_index")
 @pytest.mark.parametrize("slots", [_PROBE_SLOTS, _PPG_BOUND_SLOTS], ids=["probe", "ppg-bound"])
 def test_an_ids_identity_whose_graph_holds_no_member_answers_no_matching_slice(slots):
     state = _promote_state(_graph({}), slots)

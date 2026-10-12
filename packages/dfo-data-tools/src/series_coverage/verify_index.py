@@ -5,9 +5,13 @@ The code index export joins each StatVar's provenances from a coverage build. Th
 the build under `COVERAGE_ARTIFACT_URI` and compares, for every StatVar row of the index, the
 build's provenances for that variable with `StatVarRow.provenances`
 (`series_coverage.compatibility.index_coverage_differences`). It also requires every declared
-dataset to hold a row in the build. Any difference prints up to twenty variables and returns a
-non-zero status. Both build ids are printed: the one the index was exported from and the one
-read.
+dataset to hold a row in the build, and every donor and recipient the build holds on a facet of a
+declared or listed dataset to appear in the index's `parties` (`unlisted_parties`), so a party a later
+build adds, a new total among them, is not counted as an ordinary donor or recipient. Every
+variable the build assigns to a listed dataset (World Bank IDS) must be a listed row
+(`IndexCoverageDifferences.unlisted_members`), so a new series of it is not left out of the
+members Search and the mint elect. Any difference prints up to twenty variables or parties and returns a non-zero status. Both build ids
+are printed: the one the index was exported from and the one read.
 
 `--record` also points the index's compatibility pointer at the build when it passes, so a
 service running this index can load that build after a later, incompatible publish. Deploys
@@ -33,8 +37,10 @@ from collections.abc import Sequence
 from code_index.loader import default_index_path, load_index
 from series_coverage.compatibility import (
     describe_differences,
+    describe_unlisted,
     index_coverage_differences,
     record_if_compatible,
+    unlisted_parties,
 )
 from series_coverage.loader import load_coverage
 
@@ -81,12 +87,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"index exported from coverage build {index.stamp.coverage_build!r}, "
         f"read build {loaded.manifest.build_id!r} at {artifact_uri!r}"
     )
+    unlisted = unlisted_parties(index, loaded.index)
     differences = (
         record_if_compatible(artifact_uri, index, loaded)
-        if args.record
+        if args.record and not unlisted
         else index_coverage_differences(index, loaded.index.variable_provenances())
     )
-    if not differences:
+    if not differences and not unlisted:
         recorded = (
             f"; recorded as compatible with index {index.stamp.content_hash!r}"
             if args.record
@@ -94,12 +101,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         print(
             f"series_coverage.verify_index: {len(index.statvars)} StatVar rows carry the "
-            f"build's provenances ({builds}){recorded}"
+            f"build's provenances, {len(index.listed_statvars)} listed rows hold its listed "
+            f"datasets' variables and {len(index.parties)} parties cover its donors and "
+            f"recipients ({builds}){recorded}"
         )
         return 0
 
     print(f"series_coverage.verify_index: the code index differs ({builds})", file=sys.stderr)
-    for line in describe_differences(differences):
+    for line in (
+        *describe_differences(differences),
+        *describe_unlisted(
+            unlisted, noun="parties (donors or recipients of a declared or listed dataset)"
+        ),
+    ):
         print(f"  {line}", file=sys.stderr)
     print(
         "  re-export with scripts/export_code_index.py against the current build",

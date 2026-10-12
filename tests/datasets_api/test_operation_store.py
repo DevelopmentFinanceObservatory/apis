@@ -1,10 +1,9 @@
-"""Tests `LiveOperationStore` against SQLite-backed `FakeOperationDatasetStore` and the real
-`0011_operation.sql` migration.
-"""
+"""Tests `LiveOperationStore` against the SQLite-backed `FakeOperationDatasetStore`."""
 
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from collections.abc import Generator, Sequence
 from contextlib import contextmanager
@@ -15,46 +14,25 @@ import pytest
 
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.operation_store import (
-    MAX_REDISPATCHES,
-    REDISPATCH_GRACE_SECONDS,
     LiveOperationStore,
     OperationBacklogFull,
     classify_operation_store_exception,
     compute_operation_id,
-    lease_stale_after_seconds,
-    never_claimed_stale_after_seconds,
+    delete_terminal_operations,
 )
+from datasets_api.operations.lease import LEASE_SECONDS
+from datasets_api.operations.task_client import DISPATCH_DEADLINE_SECONDS
 from dfo_platform import Alternative, ProblemIssue, ProblemSpec
 from series_coverage.index import Estimate
 
 from ._operation_store import FakeOperationDatasetStore
 
+_CONFIRMED_AT = datetime(2026, 1, 1, tzinfo=UTC)
 _IDENTITY = {"input": {"spec_id": "spec_abc"}}
 _OPTIONS = {"format": "parquet"}
 _STAMP = "cov_stamp_1"
 _BUILD = "20260929T000000Z-abcd1234"
 _ESTIMATE = Estimate(rows=2_500_000, requests=847)
-
-# Default settings used by stores built without explicit limits.
-_DEFAULT_SETTINGS = DatasetsBuildSettings()
-
-
-def _lease_stale_after_seconds() -> float:
-    return lease_stale_after_seconds(
-        max_retry_duration_seconds=_DEFAULT_SETTINGS.operation_max_retry_duration_seconds
-    )
-
-
-def _never_claimed_stale_after_seconds(
-    *,
-    backlog_max: int = _DEFAULT_SETTINGS.operation_backlog_max,
-    dispatch_concurrency: int = _DEFAULT_SETTINGS.operation_dispatch_concurrency,
-) -> float:
-    return never_claimed_stale_after_seconds(
-        backlog_max=backlog_max,
-        dispatch_concurrency=dispatch_concurrency,
-        max_retry_duration_seconds=_DEFAULT_SETTINGS.operation_max_retry_duration_seconds,
-    )
 
 
 class _RecordingTransaction:
@@ -105,39 +83,63 @@ def store():
 def test_compute_operation_id_is_deterministic() -> None:
     id_a = compute_operation_id(
         request_identity=_IDENTITY,
-        coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         options=_OPTIONS,
     )
     id_b = compute_operation_id(
         request_identity=dict(_IDENTITY),
-        coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         options=dict(_OPTIONS),
     )
     assert id_a == id_b
     assert id_a.startswith("op_")
 
-    id_c = compute_operation_id(
+
+def test_a_coverage_build_leaves_the_operation_and_its_completion_in_place(
+    store: LiveOperationStore,
+) -> None:
+    """The coverage stamp stays out of the id, so a resubmission after a coverage build finds
+    the done operation."""
+    first = store.create_or_get(
         request_identity=_IDENTITY,
+        options=_OPTIONS,
+        coverage_stamp=_STAMP,
+        origin_catalogue_build_id=_BUILD,
+        estimate=_ESTIMATE,
+    )
+    assert store.claim(first.id, submission_count=0, lease_seconds=60, final_delivery=False)
+    assert store.complete(
+        first.id,
+        attempt=1,
+        subject_id="spec_abc",
+        content_version="cv_1",
+        confirmed_at=_CONFIRMED_AT,
+    )
+
+    after_build = store.create_or_get(
+        request_identity=_IDENTITY,
+        options=_OPTIONS,
         coverage_stamp="cov_stamp_2",
         origin_catalogue_build_id=_BUILD,
-        options=_OPTIONS,
+        estimate=_ESTIMATE,
     )
-    assert id_c != id_a
+
+    assert (after_build.id, after_build.state, after_build.coverage_stamp) == (
+        first.id,
+        "done",
+        _STAMP,
+    )
 
 
 def test_compute_operation_id_differs_by_rendering() -> None:
     """Different renderings of the same subject and coverage stamp get distinct ids."""
     id_parquet = compute_operation_id(
         request_identity=_IDENTITY,
-        coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         options={"format": "parquet"},
     )
     id_csv = compute_operation_id(
         request_identity=_IDENTITY,
-        coverage_stamp=_STAMP,
         origin_catalogue_build_id=_BUILD,
         options={"format": "csv"},
     )
@@ -150,7 +152,6 @@ def test_compute_operation_id_differs_by_origin_catalogue_build() -> None:
     ids = {
         compute_operation_id(
             request_identity=_IDENTITY,
-            coverage_stamp=_STAMP,
             origin_catalogue_build_id=build,
             options=_OPTIONS,
         )
@@ -170,9 +171,15 @@ def test_a_completed_operation_is_not_reused_under_a_new_catalogue_build(
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
     )
-    claimed = store.claim_lease(first.id, submission_count=0, lease_seconds=60)
+    claimed = store.claim(first.id, submission_count=0, lease_seconds=60, final_delivery=False)
     assert claimed is not None
-    assert store.complete(first.id, attempt=1, subject_id="spec_abc", content_version="cv_1")
+    assert store.complete(
+        first.id,
+        attempt=1,
+        subject_id="spec_abc",
+        content_version="cv_1",
+        confirmed_at=_CONFIRMED_AT,
+    )
 
     rebuilt = store.create_or_get(
         request_identity=_IDENTITY,
@@ -321,8 +328,14 @@ def test_create_or_get_backlog_count_excludes_terminal_operations() -> None:
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
         )
-        store.claim_lease(first.id, submission_count=0, lease_seconds=60)
-        store.complete(first.id, attempt=1, subject_id="spec_a", content_version="cv_1")
+        store.claim(first.id, submission_count=0, lease_seconds=60, final_delivery=False)
+        store.complete(
+            first.id,
+            attempt=1,
+            subject_id="spec_a",
+            content_version="cv_1",
+            confirmed_at=_CONFIRMED_AT,
+        )
 
         second = store.create_or_get(
             request_identity={"input": {"spec_id": "spec_b"}},
@@ -334,6 +347,166 @@ def test_create_or_get_backlog_count_excludes_terminal_operations() -> None:
         assert second.state == "pending"
     finally:
         fake.close()
+
+
+@pytest.mark.parametrize(
+    ("final_delivery", "elapsed", "admitted"),
+    [
+        pytest.param(True, 60, False, id="final-live-lease"),
+        pytest.param(True, 61, True, id="final-lease-ended"),
+        pytest.param(False, 61, False, id="delivery-due-lease-ended"),
+        pytest.param(False, 600, False, id="delivery-due-at-the-deadline"),
+        pytest.param(False, 601, True, id="delivery-due-past-the-deadline"),
+    ],
+)
+def test_create_or_get_backlog_count_excludes_a_run_nothing_will_finish(
+    final_delivery: bool, elapsed: int, admitted: bool
+) -> None:
+    """A run whose lease ended holds its backlog slot while a later delivery is due."""
+    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
+    fake = FakeOperationDatasetStore()
+    try:
+        store = LiveOperationStore(
+            store=fake, now=lambda: now_box["t"], backlog_max=1, deadline_seconds=600
+        )
+        first = store.create_or_get(
+            request_identity={"input": {"spec_id": "spec_a"}},
+            options=_OPTIONS,
+            coverage_stamp=_STAMP,
+            origin_catalogue_build_id=_BUILD,
+            estimate=_ESTIMATE,
+        )
+        assert store.claim(
+            first.id, submission_count=0, lease_seconds=60, final_delivery=final_delivery
+        )
+        now_box["t"] += timedelta(seconds=elapsed)
+
+        def _second():
+            return store.create_or_get(
+                request_identity={"input": {"spec_id": "spec_b"}},
+                options=_OPTIONS,
+                coverage_stamp=_STAMP,
+                origin_catalogue_build_id=_BUILD,
+                estimate=_ESTIMATE,
+            )
+
+        if admitted:
+            assert _second().state == "pending"
+        else:
+            with pytest.raises(OperationBacklogFull):
+                _second()
+    finally:
+        fake.close()
+
+
+def _create(store: LiveOperationStore, spec_id: str):
+    return store.create_or_get(
+        request_identity={"input": {"spec_id": spec_id}},
+        options=_OPTIONS,
+        coverage_stamp=_STAMP,
+        origin_catalogue_build_id=_BUILD,
+        estimate=_ESTIMATE,
+    )
+
+
+@pytest.mark.parametrize("dispatched", [True, False], ids=["dispatched", "never-dispatched"])
+@pytest.mark.parametrize(("elapsed", "abandoned"), [(600, False), (601, True)])
+def test_a_pending_row_past_the_operation_deadline_leaves_the_backlog(
+    elapsed: int, abandoned: bool, dispatched: bool
+) -> None:
+    """An undispatched row is queued from its submission."""
+    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
+    fake = FakeOperationDatasetStore()
+    try:
+        store = LiveOperationStore(
+            store=fake, now=lambda: now_box["t"], backlog_max=1, deadline_seconds=600
+        )
+        first = _create(store, "spec_a")
+        if dispatched:
+            assert store.mark_dispatched(first.id, submission_count=0)
+        now_box["t"] += timedelta(seconds=elapsed)
+
+        if abandoned:
+            assert _create(store, "spec_b").state == "pending"
+        else:
+            with pytest.raises(OperationBacklogFull):
+                _create(store, "spec_b")
+    finally:
+        fake.close()
+
+
+@pytest.mark.parametrize("dispatched", [True, False], ids=["dispatched", "never-dispatched"])
+@pytest.mark.parametrize(("elapsed", "abandoned"), [(600, False), (601, True)])
+def test_a_pending_row_past_the_operation_deadline_resets_on_resubmit(
+    elapsed: int, abandoned: bool, dispatched: bool
+) -> None:
+    """The reset is a new submission, so its task gets a new name."""
+    t0 = datetime(2026, 1, 1, tzinfo=UTC)
+    now_box = {"t": t0}
+    fake = FakeOperationDatasetStore()
+    try:
+        store = LiveOperationStore(store=fake, now=lambda: now_box["t"], deadline_seconds=600)
+        first = _create(store, "spec_a")
+        if dispatched:
+            assert store.mark_dispatched(first.id, submission_count=0)
+        now_box["t"] += timedelta(seconds=elapsed)
+
+        resubmitted = _create(store, "spec_a")
+
+        assert resubmitted.state == "pending"
+        if abandoned:
+            assert (resubmitted.submission_count, resubmitted.submitted_at) == (1, now_box["t"])
+            assert resubmitted.dispatched_at is None
+        else:
+            assert (resubmitted.submission_count, resubmitted.submitted_at) == (0, t0)
+    finally:
+        fake.close()
+
+
+@pytest.mark.parametrize(("idle", "admitted"), [(LEASE_SECONDS, False), (LEASE_SECONDS + 1, True)])
+def test_a_running_row_with_no_claim_time_holds_a_backlog_slot_while_its_heartbeat_is_fresh(
+    idle: int, admitted: bool
+) -> None:
+    """An image that renewed its lease through `updated_at` and recorded no delivery claimed
+    the row."""
+    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
+    fake = FakeOperationDatasetStore()
+    try:
+        store = LiveOperationStore(store=fake, now=lambda: now_box["t"], backlog_max=1)
+        first = _create(store, "spec_a")
+        assert store.claim(first.id, submission_count=0, lease_seconds=60, final_delivery=False)
+        with fake.transaction() as tx:
+            tx.execute(
+                "UPDATE datasets.operation SET claimed_at = NULL, lease_seconds = NULL, "
+                "final_delivery = NULL WHERE id = %s",
+                (first.id,),
+            )
+        now_box["t"] += timedelta(seconds=idle)
+
+        if admitted:
+            assert _create(store, "spec_b").state == "pending"
+        else:
+            with pytest.raises(OperationBacklogFull):
+                _create(store, "spec_b")
+    finally:
+        fake.close()
+
+
+def test_the_operation_deadline_default_lets_every_delivery_wait_out_a_full_backlog_and_run():
+    """The queue's locals in dfo-infra: 3 attempts, a 1,680 s backoff (the lease plus 60 s
+    skew) and 4 concurrent dispatches. A change to the backlog max, the attempts, the lease or
+    the dispatch deadline moves the deadline, so this fails until the default follows."""
+    settings = DatasetsBuildSettings()
+    dispatch_concurrency = 4
+    backoff = LEASE_SECONDS + 60
+    attempts = settings.operation_max_attempts
+    queue_wait = (
+        math.ceil(settings.operation_backlog_max / dispatch_concurrency) * DISPATCH_DEADLINE_SECONDS
+    )
+    deliveries = attempts * (queue_wait + DISPATCH_DEADLINE_SECONDS)
+
+    assert (attempts, backoff, settings.operation_backlog_max) == (3, 1_680, 20)
+    assert settings.operation_deadline_seconds == deliveries + (attempts - 1) * backoff + 240
 
 
 def test_create_or_get_takes_the_advisory_lock_before_counting_on_a_new_row() -> None:
@@ -387,7 +560,7 @@ def test_create_or_get_skips_the_advisory_lock_for_an_existing_operation() -> No
         recording.close()
 
 
-def test_claim_lease_moves_pending_to_running(store: LiveOperationStore) -> None:
+def test_claim_moves_pending_to_running(store: LiveOperationStore) -> None:
     op = store.create_or_get(
         request_identity=_IDENTITY,
         options=_OPTIONS,
@@ -396,15 +569,18 @@ def test_claim_lease_moves_pending_to_running(store: LiveOperationStore) -> None
         estimate=_ESTIMATE,
     )
 
-    claimed = store.claim_lease(op.id, submission_count=0, lease_seconds=60)
+    claimed = store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
 
     assert claimed is not None
     assert claimed.state == "running"
     assert claimed.attempt_count == 1
-    assert claimed.lease_until is not None
+    assert (claimed.claimed_at, claimed.lease_seconds) == (
+        datetime(2026, 1, 1, tzinfo=UTC),
+        60,
+    )
 
 
-def test_claim_lease_refuses_a_live_lease(store: LiveOperationStore) -> None:
+def test_claim_refuses_a_live_lease(store: LiveOperationStore) -> None:
     op = store.create_or_get(
         request_identity=_IDENTITY,
         options=_OPTIONS,
@@ -412,15 +588,16 @@ def test_claim_lease_refuses_a_live_lease(store: LiveOperationStore) -> None:
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
     )
-    store.claim_lease(op.id, submission_count=0, lease_seconds=3600)
+    store.claim(op.id, submission_count=0, lease_seconds=3600, final_delivery=False)
 
-    second_claim = store.claim_lease(op.id, submission_count=0, lease_seconds=3600)
+    second_claim = store.claim(op.id, submission_count=0, lease_seconds=3600, final_delivery=False)
 
     assert second_claim is None
     assert store.get(op.id).attempt_count == 1
 
 
-def test_claim_lease_takes_over_an_expired_lease(store: LiveOperationStore) -> None:
+@pytest.mark.parametrize(("elapsed", "attempt"), [(30, None), (31, 2)])
+def test_claim_takes_over_a_lease_only_once_it_has_ended(elapsed: int, attempt: int | None) -> None:
     now = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
     live_store = LiveOperationStore(store=FakeOperationDatasetStore(), now=lambda: now["t"])
     op = live_store.create_or_get(
@@ -430,16 +607,15 @@ def test_claim_lease_takes_over_an_expired_lease(store: LiveOperationStore) -> N
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
     )
-    live_store.claim_lease(op.id, submission_count=0, lease_seconds=30)
+    live_store.claim(op.id, submission_count=0, lease_seconds=30, final_delivery=False)
 
-    now["t"] = now["t"] + timedelta(seconds=31)
-    retaken = live_store.claim_lease(op.id, submission_count=0, lease_seconds=30)
+    now["t"] = now["t"] + timedelta(seconds=elapsed)
+    retaken = live_store.claim(op.id, submission_count=0, lease_seconds=30, final_delivery=False)
 
-    assert retaken is not None
-    assert retaken.attempt_count == 2
+    assert (retaken.attempt_count if retaken is not None else None) == attempt
 
 
-def test_claim_lease_refuses_a_terminal_operation(store: LiveOperationStore) -> None:
+def test_claim_refuses_a_terminal_operation(store: LiveOperationStore) -> None:
     op = store.create_or_get(
         request_identity=_IDENTITY,
         options=_OPTIONS,
@@ -447,10 +623,16 @@ def test_claim_lease_refuses_a_terminal_operation(store: LiveOperationStore) -> 
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
     )
-    store.claim_lease(op.id, submission_count=0, lease_seconds=60)
-    store.complete(op.id, attempt=1, subject_id="spec_abc", content_version="cv_deadbeef")
+    store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
+    store.complete(
+        op.id,
+        attempt=1,
+        subject_id="spec_abc",
+        content_version="cv_deadbeef",
+        confirmed_at=_CONFIRMED_AT,
+    )
 
-    assert store.claim_lease(op.id, submission_count=0, lease_seconds=60) is None
+    assert store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False) is None
 
 
 def test_progress_only_applies_while_running(store: LiveOperationStore) -> None:
@@ -464,51 +646,11 @@ def test_progress_only_applies_while_running(store: LiveOperationStore) -> None:
 
     assert store.progress(op.id, attempt=1, rows_written=100) is None
 
-    store.claim_lease(op.id, submission_count=0, lease_seconds=60)
+    store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
     progressed = store.progress(op.id, attempt=1, rows_written=1_000_000)
 
     assert progressed is not None
     assert progressed.rows_written == 1_000_000
-
-
-def test_progress_with_lease_seconds_also_renews_the_lease(store: LiveOperationStore) -> None:
-    op = store.create_or_get(
-        request_identity=_IDENTITY,
-        options=_OPTIONS,
-        coverage_stamp=_STAMP,
-        origin_catalogue_build_id=_BUILD,
-        estimate=_ESTIMATE,
-    )
-    claimed = store.claim_lease(op.id, submission_count=0, lease_seconds=60)
-    assert claimed is not None and claimed.lease_until is not None
-    original_lease_until = claimed.lease_until
-
-    renewed = store.progress(op.id, attempt=1, rows_written=500, lease_seconds=120)
-
-    assert renewed is not None
-    assert renewed.rows_written == 500
-    assert renewed.lease_until is not None
-    assert renewed.lease_until > original_lease_until
-
-
-def test_progress_without_lease_seconds_leaves_the_lease_untouched(
-    store: LiveOperationStore,
-) -> None:
-    op = store.create_or_get(
-        request_identity=_IDENTITY,
-        options=_OPTIONS,
-        coverage_stamp=_STAMP,
-        origin_catalogue_build_id=_BUILD,
-        estimate=_ESTIMATE,
-    )
-    claimed = store.claim_lease(op.id, submission_count=0, lease_seconds=60)
-    assert claimed is not None
-    original_lease_until = claimed.lease_until
-
-    progressed = store.progress(op.id, attempt=1, rows_written=500)
-
-    assert progressed is not None
-    assert progressed.lease_until == original_lease_until
 
 
 def test_complete_sets_the_manifest_reference_and_is_running_only(
@@ -523,21 +665,39 @@ def test_complete_sets_the_manifest_reference_and_is_running_only(
     )
 
     assert (
-        store.complete(op.id, attempt=1, subject_id="spec_abc", content_version="cv_deadbeef")
+        store.complete(
+            op.id,
+            attempt=1,
+            subject_id="spec_abc",
+            content_version="cv_deadbeef",
+            confirmed_at=_CONFIRMED_AT,
+        )
         is None
     )
 
-    store.claim_lease(op.id, submission_count=0, lease_seconds=60)
-    done = store.complete(op.id, attempt=1, subject_id="spec_abc", content_version="cv_deadbeef")
+    store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
+    done = store.complete(
+        op.id,
+        attempt=1,
+        subject_id="spec_abc",
+        content_version="cv_deadbeef",
+        confirmed_at=_CONFIRMED_AT,
+    )
 
     assert done is not None
     assert done.state == "done"
     assert done.subject_id == "spec_abc"
     assert done.content_version == "cv_deadbeef"
-    assert done.lease_until is None
+    assert done.confirmed_at == _CONFIRMED_AT
 
     assert (
-        store.complete(op.id, attempt=1, subject_id="spec_abc", content_version="cv_deadbeef")
+        store.complete(
+            op.id,
+            attempt=1,
+            subject_id="spec_abc",
+            content_version="cv_deadbeef",
+            confirmed_at=_CONFIRMED_AT,
+        )
         is None
     )
 
@@ -553,14 +713,13 @@ def test_fail_sets_the_refusal_code_and_is_running_only(store: LiveOperationStor
 
     assert store.fail(op.id, attempt=1, refusal_code="excel_limit", retryable=False) is None
 
-    store.claim_lease(op.id, submission_count=0, lease_seconds=60)
+    store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
     failed = store.fail(op.id, attempt=1, refusal_code="excel_limit", retryable=False)
 
     assert failed is not None
     assert failed.state == "failed"
     assert failed.refusal_code == "excel_limit"
     assert failed.retryable is False
-    assert failed.lease_until is None
 
 
 _REFUSAL = ProblemSpec(
@@ -589,7 +748,7 @@ def test_fail_stores_the_classified_refusal_beside_its_code(store: LiveOperation
         estimate=_ESTIMATE,
     )
     assert op.refusal is None
-    store.claim_lease(op.id, submission_count=0, lease_seconds=60)
+    store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
 
     failed = store.fail(
         op.id, attempt=1, refusal_code="facet_not_available", retryable=False, refusal=_REFUSAL
@@ -622,7 +781,7 @@ def test_an_unparseable_stored_refusal_reads_as_none_and_keeps_the_code(
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
         )
-        store.claim_lease(op.id, submission_count=0, lease_seconds=60)
+        store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
         store.fail(
             op.id, attempt=1, refusal_code="facet_not_available", retryable=False, refusal=_REFUSAL
         )
@@ -653,7 +812,7 @@ def test_fail_without_a_refusal_leaves_the_column_null(store: LiveOperationStore
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
     )
-    store.claim_lease(op.id, submission_count=0, lease_seconds=60)
+    store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
 
     failed = store.fail(op.id, attempt=1, refusal_code="internal_error", retryable=True)
 
@@ -669,7 +828,7 @@ def test_a_retryable_reset_clears_a_stored_refusal(store: LiveOperationStore) ->
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
     )
-    store.claim_lease(op.id, submission_count=0, lease_seconds=60)
+    store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
     store.fail(op.id, attempt=1, refusal_code="upstream_error", retryable=True, refusal=_REFUSAL)
 
     resubmitted = store.create_or_get(
@@ -693,7 +852,7 @@ def test_fail_persists_retryable_true_for_a_transient_failure(store: LiveOperati
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
     )
-    store.claim_lease(op.id, submission_count=0, lease_seconds=60)
+    store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
 
     failed = store.fail(op.id, attempt=1, refusal_code="internal_error", retryable=True)
 
@@ -701,7 +860,7 @@ def test_fail_persists_retryable_true_for_a_transient_failure(store: LiveOperati
     assert failed.retryable is True
 
 
-def test_release_moves_running_back_to_pending_and_sets_the_lease_to_now(
+def test_release_moves_running_back_to_pending_and_clears_the_claim(
     store: LiveOperationStore,
 ) -> None:
     op = store.create_or_get(
@@ -714,22 +873,26 @@ def test_release_moves_running_back_to_pending_and_sets_the_lease_to_now(
 
     assert store.release(op.id, attempt=1) is None
 
-    claimed = store.claim_lease(op.id, submission_count=0, lease_seconds=60)
-    assert claimed is not None and claimed.attempt_count == 1
+    claimed = store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=True)
+    assert claimed is not None
+    assert (claimed.attempt_count, claimed.final_delivery) == (1, True)
 
     released = store.release(op.id, attempt=1)
 
     assert released is not None
-    assert released.state == "pending"
-    # `lease_until=now` marks the row as claimed for dead-worker detection.
-    assert released.lease_until is not None
+    assert (
+        released.state,
+        released.claimed_at,
+        released.lease_seconds,
+        released.final_delivery,
+    ) == ("pending", None, None, None)
     # Release preserves the attempt count.
     assert released.attempt_count == 1
 
-    # `lease_until <= now` makes the released row immediately claimable.
-    reclaimed = store.claim_lease(op.id, submission_count=0, lease_seconds=60)
+    # A released row is immediately claimable.
+    reclaimed = store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
     assert reclaimed is not None
-    assert reclaimed.attempt_count == 2
+    assert (reclaimed.attempt_count, reclaimed.final_delivery) == (2, False)
 
 
 def test_release_is_a_no_op_once_terminal(store: LiveOperationStore) -> None:
@@ -740,107 +903,17 @@ def test_release_is_a_no_op_once_terminal(store: LiveOperationStore) -> None:
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
     )
-    store.claim_lease(op.id, submission_count=0, lease_seconds=60)
-    store.complete(op.id, attempt=1, subject_id="spec_abc", content_version="cv_deadbeef")
+    store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
+    store.complete(
+        op.id,
+        attempt=1,
+        subject_id="spec_abc",
+        content_version="cv_deadbeef",
+        confirmed_at=_CONFIRMED_AT,
+    )
 
     assert store.release(op.id, attempt=1) is None
     assert store.get(op.id).state == "done"
-
-
-def _dead_store(
-    now_box: dict[str, datetime], fake: FakeOperationDatasetStore
-) -> LiveOperationStore:
-    return LiveOperationStore(
-        store=fake, now=lambda: now_box["t"], backlog_max=20, dispatch_concurrency=4
-    )
-
-
-def test_expire_if_dead_fails_a_running_row_whose_lease_is_past_the_stale_window() -> None:
-    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
-    fake = FakeOperationDatasetStore()
-    try:
-        store = _dead_store(now_box, fake)
-        op = store.create_or_get(
-            request_identity=_IDENTITY,
-            options=_OPTIONS,
-            coverage_stamp=_STAMP,
-            origin_catalogue_build_id=_BUILD,
-            estimate=_ESTIMATE,
-        )
-        claimed = store.claim_lease(op.id, submission_count=0, lease_seconds=60)
-        assert claimed is not None and claimed.lease_until is not None
-
-        now_box["t"] = claimed.lease_until + timedelta(seconds=_lease_stale_after_seconds() - 1)
-        assert store.expire_if_dead(op.id) is None
-        assert store.get(op.id).state == "running"
-
-        now_box["t"] = claimed.lease_until + timedelta(seconds=_lease_stale_after_seconds() + 1)
-        expired = store.expire_if_dead(op.id)
-
-        assert expired is not None
-        assert expired.state == "failed"
-        assert expired.refusal_code == "internal_error"
-        assert expired.retryable is True
-        assert expired.lease_until is None
-    finally:
-        fake.close()
-
-
-def test_expire_if_dead_judges_an_undispatched_never_claimed_row_by_its_submission() -> None:
-    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
-    fake = FakeOperationDatasetStore()
-    try:
-        store = _dead_store(now_box, fake)
-        op = store.create_or_get(
-            request_identity=_IDENTITY,
-            options=_OPTIONS,
-            coverage_stamp=_STAMP,
-            origin_catalogue_build_id=_BUILD,
-            estimate=_ESTIMATE,
-        )
-        assert op.submitted_at == op.created_at
-        threshold = _never_claimed_stale_after_seconds()
-
-        # Past the claimed-row window, well short of the never-claimed one.
-        now_box["t"] = op.created_at + timedelta(seconds=_lease_stale_after_seconds() + 1)
-        assert store.expire_if_dead(op.id) is None
-
-        now_box["t"] = op.created_at + timedelta(seconds=threshold + 1)
-        expired = store.expire_if_dead(op.id)
-        assert expired is not None
-        assert expired.state == "failed"
-    finally:
-        fake.close()
-
-
-def test_expire_if_dead_measures_a_never_claimed_row_from_its_last_dispatch() -> None:
-    """The never-claimed window starts at dispatch, allowing queue wait time."""
-    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
-    fake = FakeOperationDatasetStore()
-    try:
-        store = _dead_store(now_box, fake)
-        op = store.create_or_get(
-            request_identity=_IDENTITY,
-            options=_OPTIONS,
-            coverage_stamp=_STAMP,
-            origin_catalogue_build_id=_BUILD,
-            estimate=_ESTIMATE,
-        )
-        threshold = timedelta(seconds=_never_claimed_stale_after_seconds())
-        now_box["t"] = op.submitted_at + timedelta(seconds=600)
-        dispatched = store.claim_dispatch(op.id)
-        assert dispatched is not None and dispatched.dispatched_at is not None
-        store.confirm_dispatch(op.id, submission_count=0, dispatch_count=dispatched.dispatch_count)
-
-        now_box["t"] = op.submitted_at + threshold + timedelta(seconds=1)
-        assert store.expire_if_dead(op.id) is None
-
-        now_box["t"] = dispatched.dispatched_at + threshold + timedelta(seconds=1)
-        expired = store.expire_if_dead(op.id)
-        assert expired is not None
-        assert expired.state == "failed"
-    finally:
-        fake.close()
 
 
 def test_fail_unservable_done_fails_only_a_done_row_at_the_polled_attempt(
@@ -857,11 +930,15 @@ def test_fail_unservable_done_fails_only_a_done_row_at_the_polled_attempt(
     }
     op = store.create_or_get(**submission)
     assert store.fail_unservable_done(op.id, attempt=0) is None
-    assert store.claim_lease(op.id, submission_count=0, lease_seconds=60) is not None
+    assert (
+        store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False) is not None
+    )
     assert store.fail_unservable_done(op.id, attempt=1) is None
     running = store.get(op.id)
     assert running is not None and running.state == "running"
-    assert store.complete(op.id, attempt=1, subject_id="spec_abc", content_version="cv_1")
+    assert store.complete(
+        op.id, attempt=1, subject_id="spec_abc", content_version="cv_1", confirmed_at=_CONFIRMED_AT
+    )
 
     first = store.fail_unservable_done(op.id, attempt=1)
 
@@ -871,9 +948,11 @@ def test_fail_unservable_done_fails_only_a_done_row_at_the_polled_attempt(
     # The resubmit re-runs it under a higher attempt and completes with the same version.
     resubmitted = store.create_or_get(**submission)
     assert (resubmitted.state, resubmitted.submission_count) == ("pending", 1)
-    rerun = store.claim_lease(op.id, submission_count=1, lease_seconds=60)
+    rerun = store.claim(op.id, submission_count=1, lease_seconds=60, final_delivery=False)
     assert rerun is not None and rerun.attempt_count == 2
-    assert store.complete(op.id, attempt=2, subject_id="spec_abc", content_version="cv_1")
+    assert store.complete(
+        op.id, attempt=2, subject_id="spec_abc", content_version="cv_1", confirmed_at=_CONFIRMED_AT
+    )
 
     assert store.fail_unservable_done(op.id, attempt=1) is None
     done = store.get(op.id)
@@ -891,171 +970,6 @@ def test_fail_unservable_done_fails_only_a_done_row_at_the_polled_attempt(
     assert store.fail_unservable_done("op_unknown", attempt=1) is None
 
 
-def test_a_resubmit_of_an_old_operation_survives_polls_and_sweeps_inside_its_new_window() -> None:
-    """A retryable resubmission gets a fresh staleness window from its dispatch."""
-    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
-    fake = FakeOperationDatasetStore()
-    try:
-        store = _dead_store(now_box, fake)
-        threshold = timedelta(seconds=_never_claimed_stale_after_seconds())
-        first = store.create_or_get(
-            request_identity=_IDENTITY,
-            options=_OPTIONS,
-            coverage_stamp=_STAMP,
-            origin_catalogue_build_id=_BUILD,
-            estimate=_ESTIMATE,
-        )
-        assert store.claim_lease(first.id, submission_count=0, lease_seconds=60) is not None
-        assert store.fail(first.id, attempt=1, refusal_code="internal_error", retryable=True)
-
-        now_box["t"] = first.created_at + threshold + timedelta(hours=1)
-        reset = store.create_or_get(
-            request_identity=_IDENTITY,
-            options=_OPTIONS,
-            coverage_stamp=_STAMP,
-            origin_catalogue_build_id=_BUILD,
-            estimate=_ESTIMATE,
-        )
-        assert reset.state == "pending"
-        assert reset.submission_count == 1
-        assert reset.created_at == first.created_at
-        assert reset.submitted_at == now_box["t"]
-        dispatched = store.claim_dispatch(reset.id)
-        assert dispatched is not None and dispatched.dispatched_at is not None
-        store.confirm_dispatch(
-            reset.id, submission_count=1, dispatch_count=dispatched.dispatch_count
-        )
-
-        now_box["t"] = now_box["t"] + timedelta(seconds=2)
-        assert store.expire_if_dead(reset.id) is None
-        store.create_or_get(
-            request_identity={"input": {"spec_id": "spec_other"}},
-            options=_OPTIONS,
-            coverage_stamp=_STAMP,
-            origin_catalogue_build_id=_BUILD,
-            estimate=_ESTIMATE,
-        )
-        pending = store.get(reset.id)
-        assert pending is not None
-        assert pending.state == "pending"
-
-        now_box["t"] = dispatched.dispatched_at + threshold + timedelta(seconds=1)
-        expired = store.expire_if_dead(reset.id)
-        assert expired is not None
-        assert expired.state == "failed"
-    finally:
-        fake.close()
-
-
-def test_expire_if_dead_judges_a_released_row_by_its_lease_not_created_at() -> None:
-    """A released row uses its lease timestamp for expiry, even while pending."""
-    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
-    fake = FakeOperationDatasetStore()
-    try:
-        store = _dead_store(now_box, fake)
-        op = store.create_or_get(
-            request_identity=_IDENTITY,
-            options=_OPTIONS,
-            coverage_stamp=_STAMP,
-            origin_catalogue_build_id=_BUILD,
-            estimate=_ESTIMATE,
-        )
-        store.claim_lease(op.id, submission_count=0, lease_seconds=60)
-        released = store.release(op.id, attempt=1)
-        assert released is not None and released.lease_until is not None
-
-        now_box["t"] = released.lease_until + timedelta(seconds=_lease_stale_after_seconds() + 1)
-        expired = store.expire_if_dead(op.id)
-
-        assert expired is not None
-        assert expired.state == "failed"
-    finally:
-        fake.close()
-
-
-def test_expire_if_dead_refuses_a_freshly_renewed_lease() -> None:
-    """Expiry rechecks the lease after a concurrent heartbeat renews it."""
-    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
-    fake = FakeOperationDatasetStore()
-    try:
-        store = _dead_store(now_box, fake)
-        op = store.create_or_get(
-            request_identity=_IDENTITY,
-            options=_OPTIONS,
-            coverage_stamp=_STAMP,
-            origin_catalogue_build_id=_BUILD,
-            estimate=_ESTIMATE,
-        )
-        claimed = store.claim_lease(op.id, submission_count=0, lease_seconds=60)
-        assert claimed is not None and claimed.lease_until is not None
-        now_box["t"] = claimed.lease_until + timedelta(seconds=_lease_stale_after_seconds() + 1)
-        assert store.get(op.id).lease_until == claimed.lease_until
-
-        renewed = store.progress(op.id, attempt=1, rows_written=10, lease_seconds=60)
-        assert renewed is not None
-
-        assert store.expire_if_dead(op.id) is None
-        assert store.get(op.id).state == "running"
-    finally:
-        fake.close()
-
-
-def test_expire_if_dead_is_a_no_op_once_terminal(store: LiveOperationStore) -> None:
-    op = store.create_or_get(
-        request_identity=_IDENTITY,
-        options=_OPTIONS,
-        coverage_stamp=_STAMP,
-        origin_catalogue_build_id=_BUILD,
-        estimate=_ESTIMATE,
-    )
-    store.claim_lease(op.id, submission_count=0, lease_seconds=60)
-    store.fail(op.id, attempt=1, refusal_code="excel_limit", retryable=False)
-
-    # Preserve the worker's refusal code.
-    assert store.expire_if_dead(op.id) is None
-    assert store.get(op.id).refusal_code == "excel_limit"
-
-
-def test_expire_if_dead_returns_none_for_an_unknown_id(store: LiveOperationStore) -> None:
-    assert store.expire_if_dead("op_does_not_exist") is None
-
-
-def test_sweep_leaves_a_completion_that_landed_after_the_lease_went_stale() -> None:
-    """The sweep preserves completion that lands after the lease goes stale."""
-    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
-    fake = FakeOperationDatasetStore()
-    try:
-        store = _dead_store(now_box, fake)
-        op = store.create_or_get(
-            request_identity=_IDENTITY,
-            options=_OPTIONS,
-            coverage_stamp=_STAMP,
-            origin_catalogue_build_id=_BUILD,
-            estimate=_ESTIMATE,
-        )
-        claimed = store.claim_lease(op.id, submission_count=0, lease_seconds=60)
-        assert claimed is not None and claimed.lease_until is not None
-        now_box["t"] = claimed.lease_until + timedelta(seconds=_lease_stale_after_seconds() + 1)
-
-        done = store.complete(op.id, attempt=1, subject_id="spec_abc", content_version="cv_1")
-        assert done is not None
-
-        store.create_or_get(
-            request_identity={"input": {"spec_id": "spec_other"}},
-            options=_OPTIONS,
-            coverage_stamp=_STAMP,
-            origin_catalogue_build_id=_BUILD,
-            estimate=_ESTIMATE,
-        )
-
-        after = store.get(op.id)
-        assert after is not None
-        assert after.state == "done"
-        assert after.content_version == "cv_1"
-    finally:
-        fake.close()
-
-
 def _reclaimed(now_box: dict[str, datetime], store: LiveOperationStore) -> str:
     """Creates an operation reclaimed for attempt 2 and returns its id."""
     op = store.create_or_get(
@@ -1065,10 +979,10 @@ def _reclaimed(now_box: dict[str, datetime], store: LiveOperationStore) -> str:
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
     )
-    first = store.claim_lease(op.id, submission_count=0, lease_seconds=30)
+    first = store.claim(op.id, submission_count=0, lease_seconds=30, final_delivery=False)
     assert first is not None and first.attempt_count == 1
     now_box["t"] = now_box["t"] + timedelta(seconds=31)
-    second = store.claim_lease(op.id, submission_count=0, lease_seconds=30)
+    second = store.claim(op.id, submission_count=0, lease_seconds=30, final_delivery=False)
     assert second is not None and second.attempt_count == 2
     return op.id
 
@@ -1079,13 +993,13 @@ def test_stale_attempt_progress_is_refused_after_a_reclaim() -> None:
     try:
         store = LiveOperationStore(store=fake, now=lambda: now_box["t"])
         id_ = _reclaimed(now_box, store)
-        lease_before = store.get(id_).lease_until
+        claimed_before = store.get(id_).claimed_at
 
-        assert store.progress(id_, attempt=1, rows_written=99, lease_seconds=3_600) is None
+        assert store.progress(id_, attempt=1, rows_written=99) is None
 
         current = store.get(id_)
         assert current.rows_written == 0
-        assert current.lease_until == lease_before
+        assert current.claimed_at == claimed_before
         assert store.progress(id_, attempt=2, rows_written=5) is not None
     finally:
         fake.close()
@@ -1098,10 +1012,25 @@ def test_stale_attempt_complete_is_refused_after_a_reclaim() -> None:
         store = LiveOperationStore(store=fake, now=lambda: now_box["t"])
         id_ = _reclaimed(now_box, store)
 
-        assert store.complete(id_, attempt=1, subject_id="spec_abc", content_version="cv_1") is None
+        assert (
+            store.complete(
+                id_,
+                attempt=1,
+                subject_id="spec_abc",
+                content_version="cv_1",
+                confirmed_at=_CONFIRMED_AT,
+            )
+            is None
+        )
         assert store.get(id_).state == "running"
 
-        done = store.complete(id_, attempt=2, subject_id="spec_abc", content_version="cv_2")
+        done = store.complete(
+            id_,
+            attempt=2,
+            subject_id="spec_abc",
+            content_version="cv_2",
+            confirmed_at=_CONFIRMED_AT,
+        )
         assert done is not None and done.content_version == "cv_2"
     finally:
         fake.close()
@@ -1135,7 +1064,7 @@ def test_stale_attempt_release_is_refused_after_a_reclaim() -> None:
         fake.close()
 
 
-def test_claim_lease_refuses_a_delivery_from_an_earlier_submission(
+def test_claim_refuses_a_delivery_from_an_earlier_submission(
     store: LiveOperationStore,
 ) -> None:
     op = store.create_or_get(
@@ -1145,7 +1074,7 @@ def test_claim_lease_refuses_a_delivery_from_an_earlier_submission(
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
     )
-    store.claim_lease(op.id, submission_count=0, lease_seconds=60)
+    store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
     store.fail(op.id, attempt=1, refusal_code="internal_error", retryable=True)
     reset = store.create_or_get(
         request_identity=_IDENTITY,
@@ -1156,171 +1085,13 @@ def test_claim_lease_refuses_a_delivery_from_an_earlier_submission(
     )
     assert reset.submission_count == 1
 
-    assert store.claim_lease(op.id, submission_count=0, lease_seconds=60) is None
+    assert store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False) is None
     assert store.get(op.id).state == "pending"
 
-    claimed = store.claim_lease(op.id, submission_count=1, lease_seconds=60)
+    claimed = store.claim(op.id, submission_count=1, lease_seconds=60, final_delivery=False)
     assert claimed is not None
     # Attempt counts remain unique across submissions.
     assert claimed.attempt_count == 2
-
-
-def test_claim_dispatch_is_won_once_per_dispatch(store: LiveOperationStore) -> None:
-    op = store.create_or_get(
-        request_identity=_IDENTITY,
-        options=_OPTIONS,
-        coverage_stamp=_STAMP,
-        origin_catalogue_build_id=_BUILD,
-        estimate=_ESTIMATE,
-    )
-    assert op.dispatch_count == 0
-
-    won = store.claim_dispatch(op.id)
-    assert won is not None
-    assert won.dispatch_count == 1
-    assert won.dispatched_at is not None
-    assert won.dispatch_confirmed == 0
-
-    assert store.claim_dispatch(op.id) is None
-
-
-def test_claim_dispatch_redispatches_an_unconfirmed_dispatch_after_the_grace() -> None:
-    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
-    fake = FakeOperationDatasetStore()
-    try:
-        store = LiveOperationStore(store=fake, now=lambda: now_box["t"])
-        op = store.create_or_get(
-            request_identity=_IDENTITY,
-            options=_OPTIONS,
-            coverage_stamp=_STAMP,
-            origin_catalogue_build_id=_BUILD,
-            estimate=_ESTIMATE,
-        )
-        assert store.claim_dispatch(op.id) is not None
-
-        now_box["t"] = now_box["t"] + timedelta(seconds=REDISPATCH_GRACE_SECONDS - 1)
-        assert store.claim_dispatch(op.id) is None
-
-        now_box["t"] = now_box["t"] + timedelta(seconds=2)
-        again = store.claim_dispatch(op.id)
-        assert again is not None
-        assert again.dispatch_count == 2
-    finally:
-        fake.close()
-
-
-def test_claim_dispatch_never_redispatches_a_confirmed_dispatch() -> None:
-    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
-    fake = FakeOperationDatasetStore()
-    try:
-        store = LiveOperationStore(store=fake, now=lambda: now_box["t"])
-        op = store.create_or_get(
-            request_identity=_IDENTITY,
-            options=_OPTIONS,
-            coverage_stamp=_STAMP,
-            origin_catalogue_build_id=_BUILD,
-            estimate=_ESTIMATE,
-        )
-        won = store.claim_dispatch(op.id)
-        assert won is not None
-        store.confirm_dispatch(op.id, submission_count=0, dispatch_count=won.dispatch_count)
-        assert store.get(op.id).dispatch_confirmed == 1
-
-        # Cloud Tasks may queue a confirmed task for hours under a full backlog.
-        now_box["t"] = now_box["t"] + timedelta(hours=3)
-        assert store.claim_dispatch(op.id) is None
-    finally:
-        fake.close()
-
-
-def test_claim_dispatch_never_redispatches_a_claimed_or_released_row() -> None:
-    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
-    fake = FakeOperationDatasetStore()
-    try:
-        store = LiveOperationStore(store=fake, now=lambda: now_box["t"])
-        op = store.create_or_get(
-            request_identity=_IDENTITY,
-            options=_OPTIONS,
-            coverage_stamp=_STAMP,
-            origin_catalogue_build_id=_BUILD,
-            estimate=_ESTIMATE,
-        )
-        assert store.claim_dispatch(op.id) is not None
-        store.claim_lease(op.id, submission_count=0, lease_seconds=60)
-        now_box["t"] = now_box["t"] + timedelta(seconds=REDISPATCH_GRACE_SECONDS + 1)
-        assert store.claim_dispatch(op.id) is None
-
-        released = store.release(op.id, attempt=1)
-        assert released is not None and released.state == "pending"
-        now_box["t"] = now_box["t"] + timedelta(seconds=REDISPATCH_GRACE_SECONDS + 1)
-        assert store.claim_dispatch(op.id) is None
-    finally:
-        fake.close()
-
-
-def test_claim_dispatch_stops_at_the_redispatch_cap() -> None:
-    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
-    fake = FakeOperationDatasetStore()
-    try:
-        store = LiveOperationStore(store=fake, now=lambda: now_box["t"])
-        op = store.create_or_get(
-            request_identity=_IDENTITY,
-            options=_OPTIONS,
-            coverage_stamp=_STAMP,
-            origin_catalogue_build_id=_BUILD,
-            estimate=_ESTIMATE,
-        )
-        counts = []
-        for _ in range(MAX_REDISPATCHES + 2):
-            won = store.claim_dispatch(op.id)
-            if won is not None:
-                counts.append(won.dispatch_count)
-            now_box["t"] = now_box["t"] + timedelta(seconds=REDISPATCH_GRACE_SECONDS + 1)
-
-        assert counts == list(range(1, MAX_REDISPATCHES + 2))
-    finally:
-        fake.close()
-
-
-def test_reset_starts_a_fresh_dispatch_and_confirm_is_scoped_to_its_submission() -> None:
-    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
-    fake = FakeOperationDatasetStore()
-    try:
-        store = LiveOperationStore(store=fake, now=lambda: now_box["t"])
-        op = store.create_or_get(
-            request_identity=_IDENTITY,
-            options=_OPTIONS,
-            coverage_stamp=_STAMP,
-            origin_catalogue_build_id=_BUILD,
-            estimate=_ESTIMATE,
-        )
-        store.claim_dispatch(op.id)
-        store.confirm_dispatch(op.id, submission_count=0, dispatch_count=1)
-        store.claim_lease(op.id, submission_count=0, lease_seconds=60)
-        store.fail(op.id, attempt=1, refusal_code="internal_error", retryable=True)
-
-        reset = store.create_or_get(
-            request_identity=_IDENTITY,
-            options=_OPTIONS,
-            coverage_stamp=_STAMP,
-            origin_catalogue_build_id=_BUILD,
-            estimate=_ESTIMATE,
-        )
-        assert reset.submission_count == 1
-        assert reset.dispatch_count == 0
-        assert reset.dispatch_confirmed == 0
-        assert reset.dispatched_at is None
-
-        won = store.claim_dispatch(op.id)
-        assert won is not None and won.dispatch_count == 1
-
-        # Ignore a late confirmation from submission 0.
-        store.confirm_dispatch(op.id, submission_count=0, dispatch_count=1)
-        assert store.get(op.id).dispatch_confirmed == 0
-        store.confirm_dispatch(op.id, submission_count=1, dispatch_count=1)
-        assert store.get(op.id).dispatch_confirmed == 1
-    finally:
-        fake.close()
 
 
 def test_get_returns_none_for_an_unknown_id(store: LiveOperationStore) -> None:
@@ -1335,33 +1106,13 @@ def test_get_returns_a_terminal_operation(store: LiveOperationStore) -> None:
         origin_catalogue_build_id=_BUILD,
         estimate=_ESTIMATE,
     )
-    store.claim_lease(op.id, submission_count=0, lease_seconds=60)
+    store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
     store.fail(op.id, attempt=1, refusal_code="excel_limit", retryable=False)
 
     read_back = store.get(op.id)
 
     assert read_back is not None
     assert read_back.state == "failed"
-
-
-def test_never_claimed_stale_after_seconds_matches_the_documented_formula() -> None:
-    """Adds retry time to `ceil(backlog_max / dispatch_concurrency)` dispatch deadlines."""
-    seconds = never_claimed_stale_after_seconds(
-        backlog_max=20,
-        dispatch_concurrency=4,
-        dispatch_deadline_seconds=1_800,
-        max_retry_duration_seconds=3_600,
-    )
-    assert seconds == 5 * 1_800 + 3_600
-
-    # 21 items at concurrency 4 require 6 dispatch rounds.
-    seconds_uneven = never_claimed_stale_after_seconds(
-        backlog_max=21,
-        dispatch_concurrency=4,
-        dispatch_deadline_seconds=1_800,
-        max_retry_duration_seconds=3_600,
-    )
-    assert seconds_uneven == 6 * 1_800 + 3_600
 
 
 def test_create_or_get_returns_a_deterministic_failed_row_unchanged() -> None:
@@ -1375,7 +1126,7 @@ def test_create_or_get_returns_a_deterministic_failed_row_unchanged() -> None:
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
         )
-        store.claim_lease(op.id, submission_count=0, lease_seconds=60)
+        store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
         store.fail(op.id, attempt=1, refusal_code="excel_limit", retryable=False)
 
         resubmitted = store.create_or_get(
@@ -1407,7 +1158,7 @@ def test_create_or_get_resets_a_retryable_failed_row_to_pending() -> None:
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
         )
-        store.claim_lease(op.id, submission_count=0, lease_seconds=60)
+        store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
         store.fail(op.id, attempt=1, refusal_code="internal_error", retryable=True)
 
         resubmitted = store.create_or_get(
@@ -1423,12 +1174,12 @@ def test_create_or_get_resets_a_retryable_failed_row_to_pending() -> None:
         assert resubmitted.refusal_code is None
         assert resubmitted.retryable is None
         assert resubmitted.rows_written == 0
-        assert resubmitted.lease_until is None
+        assert (resubmitted.claimed_at, resubmitted.dispatched_at) == (None, None)
         # `submission_count` changes; the operation's hashed identity stays fixed.
         assert resubmitted.submission_count == 1
         assert resubmitted.estimate == _ESTIMATE
 
-        store.claim_lease(resubmitted.id, submission_count=1, lease_seconds=60)
+        store.claim(resubmitted.id, submission_count=1, lease_seconds=60, final_delivery=False)
         store.fail(resubmitted.id, attempt=2, refusal_code="internal_error", retryable=True)
         twice_resubmitted = store.create_or_get(
             request_identity=_IDENTITY,
@@ -1454,7 +1205,7 @@ def test_create_or_get_reset_of_a_retryable_failed_row_takes_the_backlog_lock() 
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
         )
-        store.claim_lease(op.id, submission_count=0, lease_seconds=60)
+        store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
         store.fail(op.id, attempt=1, refusal_code="internal_error", retryable=True)
         recording.executed.clear()
 
@@ -1492,12 +1243,13 @@ def test_create_or_get_reset_survives_a_concurrent_reset_of_the_same_row() -> No
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
         )
-        store.claim_lease(op.id, submission_count=0, lease_seconds=60)
+        store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
         store.fail(op.id, attempt=1, refusal_code="internal_error", retryable=True)
 
         def _concurrent_reset(conn: sqlite3.Connection) -> None:
             conn.execute(
-                "UPDATE datasets.operation SET state = 'pending', lease_until = NULL, "
+                "UPDATE datasets.operation SET state = 'pending', claimed_at = NULL, "
+                "lease_seconds = NULL, "
                 "refusal_code = NULL, retryable = NULL, rows_written = 0, "
                 "submission_count = submission_count + 1, updated_at = ? "
                 "WHERE id = ? AND state = 'failed' AND retryable",
@@ -1532,7 +1284,6 @@ def test_create_or_get_new_row_survives_a_concurrent_insert_of_the_same_id() -> 
         store = LiveOperationStore(store=fake, now=lambda: now, backlog_max=1)
         id_ = compute_operation_id(
             request_identity=_IDENTITY,
-            coverage_stamp=_STAMP,
             origin_catalogue_build_id=_BUILD,
             options=_OPTIONS,
         )
@@ -1587,7 +1338,7 @@ def test_create_or_get_reset_refuses_at_the_backlog_max() -> None:
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
         )
-        store.claim_lease(op.id, submission_count=0, lease_seconds=60)
+        store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
         store.fail(op.id, attempt=1, refusal_code="internal_error", retryable=True)
 
         # A second pending operation fills the one-slot backlog.
@@ -1611,166 +1362,7 @@ def test_create_or_get_reset_refuses_at_the_backlog_max() -> None:
         fake.close()
 
 
-def test_create_or_get_sweeps_stale_never_claimed_rows_before_counting_the_backlog() -> None:
-    """The pre-count sweep expires 20 stale, never-claimed rows in a committed transaction."""
-    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
-    fake = FakeOperationDatasetStore()
-    try:
-        store = LiveOperationStore(
-            store=fake,
-            now=lambda: now_box["t"],
-            backlog_max=20,
-            dispatch_concurrency=4,
-        )
-        stale_ids = []
-        for i in range(20):
-            op = store.create_or_get(
-                request_identity={"input": {"spec_id": f"spec_stale_{i}"}},
-                options=_OPTIONS,
-                coverage_stamp=_STAMP,
-                origin_catalogue_build_id=_BUILD,
-                estimate=_ESTIMATE,
-            )
-            assert op.state == "pending"
-            assert op.lease_until is None
-            stale_ids.append(op.id)
-
-        with pytest.raises(OperationBacklogFull):
-            store.create_or_get(
-                request_identity={"input": {"spec_id": "spec_new_too_soon"}},
-                options=_OPTIONS,
-                coverage_stamp=_STAMP,
-                origin_catalogue_build_id=_BUILD,
-                estimate=_ESTIMATE,
-            )
-
-        threshold = _never_claimed_stale_after_seconds()
-        now_box["t"] = now_box["t"] + timedelta(seconds=threshold + 1)
-
-        new_op = store.create_or_get(
-            request_identity={"input": {"spec_id": "spec_new"}},
-            options=_OPTIONS,
-            coverage_stamp=_STAMP,
-            origin_catalogue_build_id=_BUILD,
-            estimate=_ESTIMATE,
-        )
-        assert new_op.state == "pending"
-
-        for stale_id in stale_ids:
-            swept = store.get(stale_id)
-            assert swept is not None
-            assert swept.state == "failed"
-            assert swept.refusal_code == "internal_error"
-            assert swept.retryable is True
-    finally:
-        fake.close()
-
-
-def test_create_or_get_sweeps_dead_running_rows_before_counting_the_backlog() -> None:
-    """The pre-count sweep expires 20 stale running rows whose workers exhausted retries."""
-    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
-    fake = FakeOperationDatasetStore()
-    try:
-        store = LiveOperationStore(store=fake, now=lambda: now_box["t"], backlog_max=20)
-        dead_ids = []
-        for i in range(20):
-            op = store.create_or_get(
-                request_identity={"input": {"spec_id": f"spec_dead_running_{i}"}},
-                options=_OPTIONS,
-                coverage_stamp=_STAMP,
-                origin_catalogue_build_id=_BUILD,
-                estimate=_ESTIMATE,
-            )
-            claimed = store.claim_lease(op.id, submission_count=0, lease_seconds=60)
-            assert claimed is not None
-            dead_ids.append(op.id)
-
-        with pytest.raises(OperationBacklogFull):
-            store.create_or_get(
-                request_identity={"input": {"spec_id": "spec_new_too_soon"}},
-                options=_OPTIONS,
-                coverage_stamp=_STAMP,
-                origin_catalogue_build_id=_BUILD,
-                estimate=_ESTIMATE,
-            )
-
-        # Advance past the 60-second leases and the stale window.
-        now_box["t"] = now_box["t"] + timedelta(seconds=_lease_stale_after_seconds() + 61)
-
-        new_op = store.create_or_get(
-            request_identity={"input": {"spec_id": "spec_new"}},
-            options=_OPTIONS,
-            coverage_stamp=_STAMP,
-            origin_catalogue_build_id=_BUILD,
-            estimate=_ESTIMATE,
-        )
-        assert new_op.state == "pending"
-
-        for dead_id in dead_ids:
-            swept = store.get(dead_id)
-            assert swept is not None
-            assert swept.state == "failed"
-            assert swept.refusal_code == "internal_error"
-            assert swept.retryable is True
-    finally:
-        fake.close()
-
-
-def test_create_or_get_dead_row_sweep_commits_even_when_the_backlog_count_still_raises() -> None:
-    """The sweep commits 19 dead rows even when five live rows keep the backlog full."""
-    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
-    fake = FakeOperationDatasetStore()
-    try:
-        setup_store = LiveOperationStore(store=fake, now=lambda: now_box["t"], backlog_max=100)
-
-        dead_ids = []
-        for i in range(19):
-            op = setup_store.create_or_get(
-                request_identity={"input": {"spec_id": f"spec_dead_{i}"}},
-                options=_OPTIONS,
-                coverage_stamp=_STAMP,
-                origin_catalogue_build_id=_BUILD,
-                estimate=_ESTIMATE,
-            )
-            setup_store.claim_lease(op.id, submission_count=0, lease_seconds=60)
-            dead_ids.append(op.id)
-
-        for i in range(5):
-            op = setup_store.create_or_get(
-                request_identity={"input": {"spec_id": f"spec_active_{i}"}},
-                options=_OPTIONS,
-                coverage_stamp=_STAMP,
-                origin_catalogue_build_id=_BUILD,
-                estimate=_ESTIMATE,
-            )
-            setup_store.claim_lease(op.id, submission_count=0, lease_seconds=1_000_000)
-
-        # Pass the stale window for 60-second leases.
-        # Keep the 1,000,000-second leases live.
-        now_box["t"] = now_box["t"] + timedelta(seconds=_lease_stale_after_seconds() + 61)
-
-        # Five live rows fill `backlog_max=5` after the sweep.
-        test_store = LiveOperationStore(store=fake, now=lambda: now_box["t"], backlog_max=5)
-        with pytest.raises(OperationBacklogFull) as excinfo:
-            test_store.create_or_get(
-                request_identity={"input": {"spec_id": "spec_trigger"}},
-                options=_OPTIONS,
-                coverage_stamp=_STAMP,
-                origin_catalogue_build_id=_BUILD,
-                estimate=_ESTIMATE,
-            )
-        assert excinfo.value.in_flight == 5
-
-        # Sweep failures commit before the backlog refusal.
-        for dead_id in dead_ids:
-            swept = test_store.get(dead_id)
-            assert swept is not None
-            assert swept.state == "failed"
-    finally:
-        fake.close()
-
-
-def test_record_execution_writes_the_stamp_and_estimate_for_the_owning_attempt_only() -> None:
+def test_record_estimate_writes_the_estimate_for_the_owning_attempt_only() -> None:
     now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
     fake = FakeOperationDatasetStore()
     try:
@@ -1778,40 +1370,18 @@ def test_record_execution_writes_the_stamp_and_estimate_for_the_owning_attempt_o
         id_ = _reclaimed(now_box, store)
         fresh = Estimate(rows=7, requests=2)
 
-        assert (
-            store.record_execution(id_, attempt=1, coverage_stamp="cov_new", estimate=fresh) is None
-        )
-        assert store.get(id_).execution_coverage_stamp is None
+        assert store.record_estimate(id_, attempt=1, estimate=fresh) is None
+        assert store.get(id_).estimate == _ESTIMATE
 
-        recorded = store.record_execution(id_, attempt=2, coverage_stamp="cov_new", estimate=fresh)
+        recorded = store.record_estimate(id_, attempt=2, estimate=fresh)
         assert recorded is not None
-        assert recorded.execution_coverage_stamp == "cov_new"
         assert recorded.estimate == fresh
         assert recorded.coverage_stamp == _STAMP
     finally:
         fake.close()
 
 
-def _exhaust_dispatches(now_box: dict[str, datetime], store: LiveOperationStore) -> str:
-    """Exhausts every dispatch for a pending operation and returns its id."""
-    op = store.create_or_get(
-        request_identity=_IDENTITY,
-        options=_OPTIONS,
-        coverage_stamp=_STAMP,
-        origin_catalogue_build_id=_BUILD,
-        estimate=_ESTIMATE,
-    )
-    for _ in range(MAX_REDISPATCHES + 1):
-        assert store.claim_dispatch(op.id) is not None
-        now_box["t"] = now_box["t"] + timedelta(seconds=REDISPATCH_GRACE_SECONDS + 1)
-    assert store.claim_dispatch(op.id) is None
-    return op.id
-
-
-def test_expire_if_dead_fails_a_submission_that_used_every_dispatch_once_its_last_is_stale() -> (
-    None
-):
-    """An exhausted submission stays pending through the queue window after its last dispatch."""
+def test_mark_dispatched_records_once_per_submission() -> None:
     now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
     fake = FakeOperationDatasetStore()
     try:
@@ -1823,41 +1393,151 @@ def test_expire_if_dead_fails_a_submission_that_used_every_dispatch_once_its_las
             origin_catalogue_build_id=_BUILD,
             estimate=_ESTIMATE,
         )
-        for _ in range(MAX_REDISPATCHES + 1):
-            assert store.claim_dispatch(op.id) is not None
-            assert store.expire_if_dead(op.id) is None
-            now_box["t"] = now_box["t"] + timedelta(seconds=REDISPATCH_GRACE_SECONDS + 1)
-        assert store.claim_dispatch(op.id) is None
-        exhausted = store.get(op.id)
-        assert exhausted is not None and exhausted.dispatched_at is not None
-        last_dispatched_at = exhausted.dispatched_at
-        threshold = timedelta(seconds=_never_claimed_stale_after_seconds())
+        assert op.dispatched_at is None
 
-        now_box["t"] = last_dispatched_at + threshold
-        assert store.expire_if_dead(op.id) is None
-        pending = store.get(op.id)
-        assert pending is not None
-        assert pending.state == "pending"
+        first = store.mark_dispatched(op.id, submission_count=0)
+        assert first is not None and first.dispatched_at == now_box["t"]
+        now_box["t"] += timedelta(seconds=5)
+        assert store.mark_dispatched(op.id, submission_count=0) is None
+        assert store.get(op.id).dispatched_at == first.dispatched_at
 
-        now_box["t"] = last_dispatched_at + threshold + timedelta(seconds=1)
-        expired = store.expire_if_dead(op.id)
-        assert expired is not None
-        assert expired.state == "failed"
-        assert expired.refusal_code == "internal_error"
-        assert expired.retryable is True
+        assert store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
+        assert store.fail(op.id, attempt=1, refusal_code="internal_error", retryable=True)
+        reset = store.create_or_get(
+            request_identity=_IDENTITY,
+            options=_OPTIONS,
+            coverage_stamp=_STAMP,
+            origin_catalogue_build_id=_BUILD,
+            estimate=_ESTIMATE,
+        )
+        assert (reset.submission_count, reset.dispatched_at) == (1, None)
+        # A late record from submission 0 leaves the new submission undispatched.
+        assert store.mark_dispatched(op.id, submission_count=0) is None
+        assert store.mark_dispatched(op.id, submission_count=1) is not None
     finally:
         fake.close()
 
 
-def test_the_last_dispatch_confirmed_keeps_an_exhausted_submission_alive() -> None:
+@pytest.mark.parametrize(
+    ("final_delivery", "elapsed", "abandoned"),
+    [
+        pytest.param(True, 60, False, id="final-live-lease"),
+        pytest.param(True, 61, True, id="final-lease-ended"),
+        pytest.param(False, 61, False, id="delivery-due-lease-ended"),
+        pytest.param(False, 600, False, id="delivery-due-at-the-deadline"),
+        pytest.param(False, 601, True, id="delivery-due-past-the-deadline"),
+    ],
+)
+def test_abandon_fails_a_running_row_only_once_nothing_will_finish_it(
+    final_delivery: bool, elapsed: int, abandoned: bool
+) -> None:
     now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
     fake = FakeOperationDatasetStore()
     try:
-        store = LiveOperationStore(store=fake, now=lambda: now_box["t"])
-        id_ = _exhaust_dispatches(now_box, store)
-        store.confirm_dispatch(id_, submission_count=0, dispatch_count=MAX_REDISPATCHES + 1)
+        store = LiveOperationStore(store=fake, now=lambda: now_box["t"], deadline_seconds=600)
+        op = store.create_or_get(
+            request_identity=_IDENTITY,
+            options=_OPTIONS,
+            coverage_stamp=_STAMP,
+            origin_catalogue_build_id=_BUILD,
+            estimate=_ESTIMATE,
+        )
+        assert store.abandon(op.id, attempt=0) is None
+        assert store.claim(
+            op.id, submission_count=0, lease_seconds=60, final_delivery=final_delivery
+        )
+        now_box["t"] += timedelta(seconds=elapsed)
 
-        assert store.expire_if_dead(id_) is None
-        assert store.get(id_).state == "pending"
+        # `Operation.abandoned` and the SQL predicate decide alike.
+        read = store.get(op.id)
+        assert read is not None
+        assert read.abandoned(now_box["t"], deadline=timedelta(seconds=600)) is abandoned
+        assert store.abandon(op.id, attempt=0) is None
+        result = store.abandon(op.id, attempt=1)
+
+        if abandoned:
+            assert result is not None
+            assert (result.state, result.refusal_code, result.retryable) == (
+                "failed",
+                "internal_error",
+                True,
+            )
+        else:
+            assert result is None
+            assert store.get(op.id).state == "running"
+    finally:
+        fake.close()
+
+
+@pytest.mark.parametrize("final_delivery", [True, False], ids=["final", "delivery-due"])
+@pytest.mark.parametrize(("elapsed", "reset"), [(60, False), (61, True)])
+def test_create_or_get_resets_a_running_row_only_past_its_lease(
+    elapsed: int, reset: bool, final_delivery: bool
+) -> None:
+    """A resubmit recovers a lease-ended run without waiting for a delivery still due. That
+    row counts in the backlog, and its own reset takes no second slot."""
+    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
+    fake = FakeOperationDatasetStore()
+    try:
+        store = LiveOperationStore(store=fake, now=lambda: now_box["t"], backlog_max=1)
+        submission = {
+            "request_identity": _IDENTITY,
+            "options": _OPTIONS,
+            "coverage_stamp": _STAMP,
+            "origin_catalogue_build_id": _BUILD,
+            "estimate": _ESTIMATE,
+        }
+        op = store.create_or_get(**submission)
+        assert store.claim(
+            op.id, submission_count=0, lease_seconds=60, final_delivery=final_delivery
+        )
+        now_box["t"] += timedelta(seconds=elapsed)
+
+        resubmitted = store.create_or_get(**submission)
+
+        expected = (
+            ("pending", 1, None, None)
+            if reset
+            else ("running", 0, now_box["t"] - timedelta(seconds=elapsed), final_delivery)
+        )
+        assert (
+            resubmitted.state,
+            resubmitted.submission_count,
+            resubmitted.claimed_at,
+            resubmitted.final_delivery,
+        ) == expected
+        assert resubmitted.attempt_count == 1
+    finally:
+        fake.close()
+
+
+def test_delete_terminal_removes_only_done_and_failed_rows_past_the_window() -> None:
+    now = datetime(2026, 3, 1, tzinfo=UTC)
+    window = timedelta(days=30)
+    fake = FakeOperationDatasetStore()
+    try:
+        rows = [
+            (f"op_{state}_{age}", state, now - age)
+            for state in ("pending", "running", "done", "failed")
+            for age in (window - timedelta(seconds=1), window, window + timedelta(seconds=1))
+        ]
+        with fake.transaction() as tx:
+            for id, state, updated_at in rows:
+                tx.execute(
+                    "INSERT INTO datasets.operation (id, request_identity, options, "
+                    "coverage_stamp, state, estimate_rows, estimate_requests, claimed_at, "
+                    "lease_seconds, created_at, updated_at, submitted_at) "
+                    "VALUES (%s, '{}', '{}', %s, %s, 1, 1, %s, 60, %s, %s, %s)",
+                    (id, _STAMP, state, updated_at, updated_at, updated_at, updated_at),
+                )
+        store = LiveOperationStore(store=fake, now=lambda: now)
+
+        assert (
+            delete_terminal_operations(store=fake, older_than=window, now=lambda: now, batch_size=1)
+            == 2
+        )
+        assert {id for id, _, _ in rows if store.get(id) is None} == {
+            f"op_{state}_{window + timedelta(seconds=1)}" for state in ("done", "failed")
+        }
     finally:
         fake.close()

@@ -1,9 +1,8 @@
 """Write the dataset a shape names into the bindings a family is elected from.
 
 Shape candidacy stamps each shape with the dataset it names (`ShapeDraft.named_dataset`,
-`retrieval.bound_values.shape_for_part`): the one its part names through
-`ResolveState.named_dataset` or its source slot (`phase_election._apply_source_slot`),
-else the one opt-in dataset that alone may answer it. The
+`retrieval.bound_values.shape_for_part`): the one dataset the part's source scope
+(`ResolveState.scope`) leaves it, else the one opt-in dataset that alone may answer it. The
 dataset becomes one source-axis value binding (`retrieval.bound_values.source_binding`),
 which `shape_query` reads into the family election and `spec_build.build_slot` binds into
 the source slot. The engine writes that binding here and nowhere else on a first resolve,

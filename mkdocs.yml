@@ -5,7 +5,8 @@ extra:
     path: api
 nav:
   - Quickstart: quickstart.md
-  - Conventions: conventions.md
+  - How the APIs fit together: concepts.md
   - Resolve a question: resolve-a-question.md
   - Get a dataset: get-a-dataset.md
   - Look things up: look-things-up.md
+  - API conventions: conventions.md

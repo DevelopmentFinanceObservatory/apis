@@ -12,10 +12,7 @@ import httpx
 import pytest
 
 from datasets_api.codes_materialise import ExcludedByRegistry, UnSystemUnavailable
-from datasets_api.doors.definition import (
-    DefinitionMaterialiseRefused,
-    classify_definition_exception,
-)
+from datasets_api.doors.definition import classify_definition_exception
 from datasets_api.doors.mint_errors import classify_mint_exception
 from datasets_api.manifest_models import WarningModel
 from datasets_api.origin import (
@@ -918,11 +915,14 @@ def test_the_mint_door_serves_the_un_refusal_as_a_retryable_upstream_error():
 
 
 def test_the_mint_and_definition_doors_serve_the_refusal_as_422():
-    refusal = ExcludedByRegistry(variables=("Count_Person",), provenances=("dc/base/UN_SDG",))
+    def refusal(*, strip_pointer: bool) -> ExcludedByRegistry:
+        exc = ExcludedByRegistry(variables=("Count_Person",), provenances=("dc/base/UN_SDG",))
+        exc.strip_pointer = strip_pointer
+        return exc
 
     for spec in (
-        classify_mint_exception(refusal),
-        classify_definition_exception(DefinitionMaterialiseRefused(wrapped=refusal)),
+        classify_mint_exception(refusal(strip_pointer=False)),
+        classify_definition_exception(refusal(strip_pointer=True)),
     ):
         assert spec is not None
         assert (spec.status, spec.code, spec.retryable) == (422, "excluded_by_registry", False)
@@ -1078,7 +1078,6 @@ def test_the_mint_door_refuses_a_superseded_or_excluded_variable(variable: str, 
             spec_reader=LiveSpecReader(store=store),
             graph=graph,
             sdmx=doors._sdmx_never_called(),
-            revision_reader=doors.SentinelRevisionReader(),
             artifact_store=doors.FakeArtifactStore(),
             snapshot_reader=doors.FakeSnapshotReader(),
             reference_writer=doors.FakeArtifactReferenceWriter(),

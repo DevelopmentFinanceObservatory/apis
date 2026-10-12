@@ -11,12 +11,14 @@ import logging
 from collections.abc import AsyncGenerator, Sequence
 from contextlib import aclosing
 
+from code_index.shared import get_index
 from dc_sdmx import SdmxClient as MaterialiseSdmxClient
 from dfo_platform.build import build_commit
 from dfo_platform.trace import get_trace_id
 from entity_resolution import Admission, EntityResolver, Resolved
 from materialise import GraphReader
 from materialise.rate_tables import RateTableCache
+from origin_catalogue import current_catalogue
 from search.engine.assemble import (
     _surviving_qualifier_warnings,
     build_no_data_part,
@@ -74,6 +76,14 @@ from search.engine.region.place_options import PlaceOptionsPool
 from search.engine.region.result import RegionResult, with_departure_facts, with_entity_words
 from search.engine.response_cache_flow import CacheScope
 from search.engine.role_text import DoorRole, debt_axes
+from search.engine.source_scan import scan_sources, source_phrases
+from search.engine.source_scope import (
+    SourceRefusal,
+    SourceScope,
+    compile_sources,
+    source_dictionary,
+)
+from search.engine.source_spans import read_sources, unclaimed_words
 from search.engine.unit.bind import names_price_basis, names_unit_request
 from search.heading.departure_fact import DepartureFact
 from search.models import (
@@ -84,6 +94,7 @@ from search.models import (
     RawTextInput,
     RoleAxis,
     Scope,
+    SourceMention,
     Warning,
 )
 
@@ -348,7 +359,10 @@ async def _disposition_response(
 class _ExtractionPrep:
     """One query's prepared extraction, shared by events, cache lookup, and fan-out.
 
-    `unique` and `entities` preserve first-seen order. `interpretation_variables`
+    `unique` and `entities` preserve first-seen order. `entities` leaves out an entity
+    every occurrence of whose words a source mention covers
+    (`source_scan.SourceScan.source_entities`), as do
+    `entity_roles`, `entity_words` and `member_entities`. `interpretation_variables`
     adds coded-qualifier sidecars, while resolution and cache keys use bare text.
     `per_variable_operations` runs parallel to `unique`: each variable's operations
     ride on its part, and their phrases reach only that variable's bind, beside
@@ -362,7 +376,12 @@ class _ExtractionPrep:
     asks for something (`_dropped_phrase_fact`), under its warning's key. `entity_words`
     maps each entity name to the query's own words for it (`ExtractedEntity.span`), first
     mention first. `member_entities` are the entity names the query asks for as their
-    members (`ResolveState.member_entities`).
+    members (`ResolveState.member_entities`). `separate` runs parallel to `unique` and
+    marks each variable the raw query compares with another (`source_spans.read_sources`),
+    as `ParsedPart.separate` does. `read_connectives` are the offsets of the comparison
+    words that marked one. `per_variable_sources` runs parallel to `unique` too: the
+    source mentions the query writes for each variable (`source_scan.scan_sources`), and
+    `per_variable_source_scopes` what each compiles to, `None` for a variable with none.
     """
 
     date_request: DateRequest | None
@@ -380,6 +399,10 @@ class _ExtractionPrep:
     qualifier_facts: dict[WarningKey, DepartureFact]
     entity_words: dict[str, str]
     unit_text: str | None
+    separate: list[bool]
+    read_connectives: frozenset[int]
+    per_variable_sources: list[tuple[SourceMention, ...]]
+    per_variable_source_scopes: list[SourceScope | SourceRefusal | None]
 
     def onto(self, region: RegionResult) -> RegionResult:
         """`region` holding what this extraction knows beyond it: the departures raised
@@ -423,8 +446,25 @@ def _prepare_extraction(
     """Prepare deduped extraction fields, qualifiers, and warnings for `handle`."""
     date_request = dates_to_request(extraction.dates)
     unique: list[str] = _dedupe_stripped(extraction.variables)
-    entities: list[str] = list(dict.fromkeys(e.text.strip() for e in extraction.entities))
-    entity_roles = _entity_roles(extraction.entities, query=query, measures=unique)
+
+    # The sources the query names, each attached to the variables it qualifies. An entity
+    # whose every occurrence a source covers is that source, and no entity of the part.
+    catalogue = current_catalogue()
+    scan = scan_sources(
+        query,
+        dictionary=source_dictionary(catalogue),
+        measures=unique,
+        entity_spans=[entity.span or entity.text for entity in extraction.entities],
+        index=get_index(),
+    )
+    per_variable_sources = scan.per_measure
+    extracted_entities = [
+        entity
+        for entity in extraction.entities
+        if (entity.span or entity.text) not in scan.source_entities
+    ]
+    entities: list[str] = list(dict.fromkeys(e.text.strip() for e in extracted_entities))
+    entity_roles = _entity_roles(extracted_entities, query=query, measures=unique)
 
     # Compare distinct model measures with the cap, before emitting a warning.
     clamp_warnings: list[Warning] = []
@@ -466,14 +506,16 @@ def _prepare_extraction(
         recall_text(v, q) for v, q in zip(unique, per_variable_qualifiers, strict=True)
     ]
 
-    unit_text, dropped_qualifier_phrases = _split_unit_phrases(
-        list(
-            dict.fromkeys(
-                qualifier.strip()
-                for qualifier in extraction.dropped_qualifiers
-                if qualifier.strip()
-            )
+    # A dropped phrase that only names a source is applied by its mention and raises no
+    # warning.
+    dropped = list(
+        dict.fromkeys(
+            qualifier.strip() for qualifier in extraction.dropped_qualifiers if qualifier.strip()
         )
+    )
+    naming_sources = source_phrases(dropped, [m for ms in per_variable_sources for m in ms])
+    unit_text, dropped_qualifier_phrases = _split_unit_phrases(
+        [phrase for phrase in dropped if phrase not in naming_sources]
     )
     qualifier_warnings = [
         Warning(
@@ -490,9 +532,25 @@ def _prepare_extraction(
     }
 
     entity_words: dict[str, str] = {}
-    for entity in extraction.entities:
+    for entity in extracted_entities:
         if entity.span and entity.span.strip():
             entity_words.setdefault(entity.text.strip(), entity.span.strip())
+
+    reading = read_sources(query, interpretation_variables)
+
+    # A raw-text mention has no field of its own, so a refusal points at the query, and
+    # mentions that leave a part no source refuse that part alone.
+    per_variable_source_scopes = [
+        compile_sources(
+            list(mentions),
+            catalogue=catalogue,
+            pointers=["/input/query"] * len(mentions),
+            refuse_empty=False,
+        )
+        if mentions
+        else None
+        for mentions in per_variable_sources
+    ]
 
     return _ExtractionPrep(
         date_request=date_request,
@@ -500,7 +558,7 @@ def _prepare_extraction(
         entities=entities,
         entity_roles=entity_roles,
         # One text holds one reading: a mention that asks for the members decides it.
-        member_entities=frozenset(e.text.strip() for e in extraction.entities if e.members),
+        member_entities=frozenset(e.text.strip() for e in extracted_entities if e.members),
         per_variable_qualifiers=per_variable_qualifiers,
         per_variable_operations=per_variable_operations,
         per_variable_date_requests=per_variable_date_requests,
@@ -511,7 +569,36 @@ def _prepare_extraction(
         qualifier_facts=qualifier_facts,
         entity_words=entity_words,
         unit_text=unit_text,
+        separate=list(reading.separate),
+        read_connectives=reading.read_connectives,
+        per_variable_sources=per_variable_sources,
+        per_variable_source_scopes=per_variable_source_scopes,
     )
+
+
+def _log_unclaimed_words(prep: _ExtractionPrep, extraction: Extraction, *, query: str) -> None:
+    """Log, once, the words of `query` that no part, entity, time or unit text claims and
+    that are not function words (`source_spans.unclaimed_words`)."""
+    claimed = [
+        *prep.interpretation_variables,
+        *(
+            operation.phrase
+            for operations in prep.per_variable_operations
+            for operation in operations
+        ),
+        *(
+            text
+            for entity in extraction.entities
+            for text in (entity.text, entity.span, entity.role_span)
+            if text
+        ),
+        *(bound for date in extraction.dates for bound in (date.start, date.end) if bound),
+        *([prep.unit_text] if prep.unit_text else []),
+        *(m.text for mentions in prep.per_variable_sources for m in mentions if m.text),
+    ]
+    words = unclaimed_words(query, claimed=claimed, read_connectives=prep.read_connectives)
+    if words:
+        logger.info("raw_query_coverage unclaimed=%s", ",".join(words))
 
 
 async def _handle_single_variable(
@@ -566,6 +653,7 @@ async def _handle_single_variable(
         per_variable_operations=prep.per_variable_operations,
         per_variable_date_requests=prep.per_variable_date_requests,
         per_variable_unit_texts=[prep.unit_text] * len(prep.unique),
+        per_variable_source_scopes=prep.per_variable_source_scopes,
         unit_text_best_effort=True,
         include_option_coverage=params.include_option_coverage,
         stream_slot_options=params.stream_option_coverage,
@@ -677,7 +765,9 @@ async def _handle_multi_variable(
         per_variable_operations=prep.per_variable_operations,
         per_variable_date_requests=prep.per_variable_date_requests,
         per_variable_unit_texts=[prep.unit_text] * len(prep.unique),
+        per_variable_source_scopes=prep.per_variable_source_scopes,
         unit_text_best_effort=True,
+        per_variable_separate=prep.separate,
         include_option_coverage=params.include_option_coverage,
         stream_slot_options=params.stream_option_coverage,
         include_observations=params.include_observations,
@@ -785,11 +875,12 @@ async def handle(
         expected_results=len(prep.unique),
     )
 
-    # Include entities, roles, dates, qualifiers, operations, and raw-text signals in the
+    # Include entities, roles, dates, qualifiers, operations, sources and raw-text signals in the
     # cache key so semantically distinct queries retain separate entries.
     # `query_text` applies only to N=1, matching the single-variable cache readers.
     # A cache hit returns before binding. Core always supplies `scope`.
     # Direct tests may omit it.
+    cached = None
     if scope is not None:
         cached = await scope.lookup_parsed(
             query=query,
@@ -800,18 +891,21 @@ async def handle(
             variable_qualifiers=prep.per_variable_qualifiers,
             operations=prep.per_variable_operations,
             entity_roles=prep.entity_roles,
+            sources=prep.per_variable_sources,
             query_text=query if len(prep.unique) == 1 else None,
+            separate=prep.separate,
             llm_usage=extract_usage,
         )
-        if cached is not None:
-            for ev in _terminal_events(
-                cached,
-                start_ms=start_ms,
-                llm_usage=extract_usage,
-                timed_out=scope.served_timed_out,
-            ):
-                yield ev
-            return
+    _log_unclaimed_words(prep, extraction, query=query)
+    if scope is not None and cached is not None:
+        for ev in _terminal_events(
+            cached,
+            start_ms=start_ms,
+            llm_usage=extract_usage,
+            timed_out=scope.served_timed_out,
+        ):
+            yield ev
+        return
 
     if len(prep.unique) == 1:
         async with aclosing(

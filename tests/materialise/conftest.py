@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING
 
 from graph_generation import FakeGeneration, GenerationStamp
 from materialise.graph import Facet, FacetDefaultPolicy, SubjectPage
-from materialise.revision import RevisionSnapshot
 
 from ._scope_availability import ScopeAvailability
 
@@ -232,16 +231,3 @@ class FakeGraphReader:
                 )
             )
         return result
-
-
-class FakeRevisionReader:
-    """Return supplied snapshots in order and count reads; extra reads raise `IndexError`."""
-
-    def __init__(self, snapshots: Sequence[RevisionSnapshot]) -> None:
-        self._snapshots = list(snapshots)
-        self.read_count = 0
-
-    def read(self) -> RevisionSnapshot:
-        snapshot = self._snapshots[self.read_count]
-        self.read_count += 1
-        return snapshot

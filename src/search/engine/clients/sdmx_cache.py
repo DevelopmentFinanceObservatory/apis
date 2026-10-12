@@ -5,6 +5,12 @@ Facets per ``(variable, facet_id)`` and keys requests by role entities,
 periods, and row/byte caps. Hits require an unchanged graph generation and
 an unexpired entry. ``availability_values`` and ``subject_observations``
 pass through uncached. This module must not import ``search.eval``.
+
+Misses read on ``_SERIES_FLIGHTS`` under the flight's own deadline,
+``resubmit_full_read_timeout_s + finalise_grace_s`` from when it starts. That
+is the hard cap of a ``dataset_resubmit``, the longest of any request that reads
+through this cache. The caller that starts a read waits for it only until its
+own deadline, so a request near its cap never cuts a value others reuse.
 """
 
 from __future__ import annotations
@@ -13,6 +19,8 @@ import copy
 import time
 from collections.abc import Callable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
+from concurrent.futures import ThreadPoolExecutor
+from typing import Final
 
 import search.engine.config as config  # module-attribute access for runtime-resolved values
 from dc_sdmx import EntityFilter, SdmxObservation
@@ -30,6 +38,15 @@ from search.engine.errors import GraphInfraError
 # Matches the deadline wording in dc_sdmx.client. A waiter whose deadline
 # expires before the fetch raises the same TimeoutError as an uncached read.
 _WAITER_DEADLINE_EXCEEDED_DETAIL = "the SDMX read exceeded its absolute caller deadline"
+
+_SERIES_FLIGHT_WORKERS: Final[int] = 32
+"""Threads that run shared ``role_series`` reads, process-wide, one per read. Upstream
+concurrency is bounded inside the read by the SDMX client's own chunk pool."""
+
+_SERIES_FLIGHTS: Final = ThreadPoolExecutor(
+    max_workers=_SERIES_FLIGHT_WORKERS, thread_name_prefix="sdmx-series"
+)
+"""Runs every cache's ``role_series`` reads. No caller of the cache runs on it."""
 
 # SDMX role filters use set membership, so the sorted, de-duplicated key ignores order.
 _EntitiesKey = tuple[tuple[str, tuple[str, ...]], ...]
@@ -71,6 +88,11 @@ class CachingSdmxClient:
         self._series_cache: SingleFlightCache[_SeriesKey, dict[RoleTuple, list[Facet]]] = (
             SingleFlightCache(
                 maxsize=_maxsize,
+                flight_timeout_s=(
+                    config.settings().resubmit_full_read_timeout_s
+                    + config.settings().finalise_grace_s
+                ),
+                executor=_SERIES_FLIGHTS,
                 generation=generation,
                 clock=clock,
                 timeout_message=_WAITER_DEADLINE_EXCEEDED_DETAIL,
@@ -113,7 +135,9 @@ class CachingSdmxClient:
         Facets are attributed by their ``facet_id``. An unrequested id raises
         ``GraphInfraError``. Sorted facet ids make merges deterministic.
         Empty cells are cached. Shared validation runs before lookup, so invalid
-        parameters raise ``ValueError`` under every cache setting.
+        parameters raise ``ValueError`` under every cache setting. ``deadline``
+        bounds this caller's wait on the shared reads, which continue under their
+        own deadline; disabled, it bounds the read.
         """
         _validate_role_series_params(
             variables=variables,
@@ -141,7 +165,7 @@ class CachingSdmxClient:
         ]
 
         def fetch(
-            missing_keys: list[_SeriesKey],
+            missing_keys: list[_SeriesKey], flight_deadline: float
         ) -> dict[_SeriesKey, dict[RoleTuple, list[Facet]]]:
             # Preserve variable order within each facet's missing cells.
             missing_variables_by_facet: dict[str, list[str]] = {}
@@ -163,7 +187,7 @@ class CachingSdmxClient:
                     time_period=time_period,
                     max_rows=max_rows,
                     max_bytes=max_bytes,
-                    deadline=deadline,
+                    deadline=flight_deadline,
                 )
                 by_variable_facet: dict[tuple[str, str], dict[RoleTuple, list[Facet]]] = {}
                 for variable, role_groups in result.items():

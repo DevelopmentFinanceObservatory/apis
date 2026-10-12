@@ -121,14 +121,14 @@ class CitedDocumentation(BaseModel):
 class CitationSource(BaseModel):
     """One cited source, named through
     `materialise.provenance_doc.read_source_citations`. `label`, `url`,
-    `source` and `data_commons` come from the origin catalogue's provenance
-    table where it lists `ref`, and the licence fields from the graph:
-    `license` is the licence's label, `license_type` its `licenseType` dcid
-    and `license_url` its terms page. `license`, `license_type`,
+    `source`, `data_commons`, the licence fields and `documentation` come
+    from the origin catalogue where it lists `ref`, and from the graph
+    otherwise: `license` is the licence's label, `license_type` its
+    `licenseType` dcid and `license_url` its terms page. `license`, `license_type`,
     `license_url` and `url` are `None` where neither the catalogue nor the graph declares one. `source`
     and `data_commons` are `None` for a ref the catalogue does not list.
     `documentation` is the source's documentation at first mint, `None` when
-    the graph documents nothing for the source or its read failed. A mint
+    nothing documents the source or its graph read failed. A mint
     leaves a stored citation as it is. A bundle render fills every field but
     `ref`, `label` and `processing_level` that is `None` from a live read for
     that render only (`datasets_api.manifest.healed_citation`), and every set
@@ -210,13 +210,22 @@ class WarningModel(BaseModel):
 class ArtifactEntryModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
     artifact_digest: str
-    rendering: dict[str, object]
+    rendering: dict[str, object] = Field(
+        description="the rendering that produced the bytes: the request options of a "
+        'requested file, {"statistics": "series"} for the series statistics, or '
+        '{"format": "frame"} for the version\'s canonical frame, a Parquet file of the frame '
+        "as minted"
+    )
     bytes: int
     media_type: str
     created_at: str
     tier: str
-    url: str
-    url_expires_at: str
+    url: str = Field(
+        description="the artifact's stable download link, "
+        "`/api/datasets/{id}/{content_version}/files/{artifact_digest}`, relative to the API "
+        "host. It never expires: each request checks the version and answers 302 to a signed "
+        "URL valid for five minutes, or refuses snapshot_revoked once the version is taken down"
+    )
 
 
 class ColumnOptionModel(BaseModel):
@@ -346,9 +355,8 @@ class Manifest(BaseModel):
     is already this field's exact wire shape.
 
     `series_count` is the number of distinct series this definition
-    resolves. `None` means a version record minted before this field existed
-    (`datasets_api.manifest.decode_version_body` drops such a record's old inline
-    `statistics` key rather than translating it). The per-series detail itself lives in the
+    resolves. `None` means a version record minted before this field existed, whose old
+    inline `statistics` no fact carries. The per-series detail itself lives in the
     `series-statistics/1` Parquet artifact every door that returns a
     `Manifest` lists in `artifacts` whenever `series_count` is not `None`
     (`datasets_api.render.render_and_store_series_statistics`), never
@@ -385,18 +393,18 @@ class Manifest(BaseModel):
         description=(
             "the series_coverage artifact stamp this request's sync-admission estimate "
             "was computed against, kept as lineage only. content_version is a "
-            "pure function of the frame and does not fold this in; "
-            "revision_provenance_live stays false. Not the same coverage as the 'coverage' "
+            "pure function of the frame and does not fold this in. "
+            "Not the same coverage as the 'coverage' "
             "field above (materialise.window.Coverage's row/dimension/window report)"
         ),
     )
 
 
 class OptionsEnvelope(BaseModel):
-    """`GET /api/datasets/{id}/options`'s response. It is the write-free
-    projection of a materialising door's manifest onto the fields this
-    route's callers need (content_version, coverage, output_options,
-    warnings, trace). Built from the pre-write half of `serve_definition`
+    """`GET /api/datasets/{id}/options`'s response. It is the projection
+    of a materialising door's manifest onto the fields this route's callers
+    need (content_version, coverage, output_options, warnings, trace). A
+    rebuild returns the pre-write manifest of `serve_definition`
     (`datasets_api.serve.prewrite_definition`), which runs no reshape, so
     `warnings` here excludes reshape-level warnings such as
     `enrichment_unavailable`.

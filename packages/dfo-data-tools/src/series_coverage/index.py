@@ -26,6 +26,7 @@ import pyarrow.compute as pc
 from dc_sdmx import DEFAULT_PLANNING_LANES, plan_request_chunks
 from dfo_platform.roles import RoleAxis
 from materialise.roles import axis_for_role
+from origin_catalogue.context import current_catalogue, current_source_scope
 from series_coverage._bits import bit_length64, lowest_set_bit_index64, popcount64
 from series_coverage.coverage_types import (
     BoundRoles,
@@ -119,6 +120,8 @@ def _window_words(
 
 
 _ROLE_COLUMNS: dict[Role, str] = {"donor": DONOR_COLUMN, "recipient": RECIPIENT_COLUMN}
+# The flow axis each party column holds (`series_coverage.schema`).
+_ROLE_AXES: dict[Role, RoleAxis] = {"donor": "origin", "recipient": "destination"}
 
 type SeriesKey = Literal["variable", "facet_id", "donor", "recipient"]
 """A column of a series' key (`_SERIES_KEY_COLUMNS`)."""
@@ -588,6 +591,29 @@ class CoverageIndex:
                 provenances.add(metadata.provenance_id)
         return {variable: tuple(sorted(provenances)) for variable, provenances in found.items()}
 
+    def dataset_parties(self, provenances: Collection[str]) -> dict[str, frozenset[RoleAxis]]:
+        """Every donor and recipient on a row with an observation whose facet carries one of
+        `provenances`, with the flow axes it is published on: `origin` as a donor,
+        `destination` as a recipient.
+
+        A one-role variable's absent role is no party. A provenance with no facet in the build
+        adds none.
+        """
+        facets = {
+            facet_id
+            for facet_id, metadata in self._facet_metadata.items()
+            if metadata.provenance_id in provenances
+        }
+        axes: dict[str, set[RoleAxis]] = {}
+        for role, axis in _ROLE_AXES.items():
+            by_facet = self.grouped(by=(role, "facet_id"))
+            for party, facet_id in zip(
+                _key_values(by_facet[role]), _key_values(by_facet[FACET_COLUMN]), strict=True
+            ):
+                if facet_id in facets and party != ABSENT_ENTITY:
+                    axes.setdefault(party, set()).add(axis)
+        return {party: frozenset(found) for party, found in axes.items()}
+
     def _member_rows(self, *, variables: Sequence[str], bound: BoundRoles) -> pa.Table:
         """The rows of `variables` surviving `bound`, in table order.
 
@@ -601,7 +627,95 @@ class CoverageIndex:
         for role, column in _ROLE_COLUMNS.items():
             if role in bound:
                 rows = rows.filter(_key_is_in(rows[column], bound[role]))
-        return rows
+        return self._admit_scoped_rows(rows)
+
+    def _candidate_member_rows(self, *, variables: Sequence[str], bound: BoundRoles) -> pa.Table:
+        """Rows that can validate a facet choice, independently of request scope.
+
+        A pinned facet may replace the request's current provenance scope, so validating
+        that pin must see every globally admitted provenance at the bound role tuples.
+        This deliberately skips per-series source admission and DFO precedence; those
+        remain a served-read concern in :meth:`_member_rows`.
+        """
+        codes = sorted({self._variable_codes[v] for v in variables if v in self._variable_codes})
+        blocks = [np.arange(*_run(self._variable_code_column, code)) for code in codes]
+        rows = self._table.take(np.concatenate(blocks) if blocks else np.empty(0, dtype=np.int64))
+        for role, column in _ROLE_COLUMNS.items():
+            if role in bound:
+                rows = rows.filter(_key_is_in(rows[column], bound[role]))
+        catalogue = current_catalogue()
+        admitted = [
+            (metadata := self._facet_metadata.get(facet_id)) is not None
+            and (metadata.provenance_id is None or catalogue.is_admitted(metadata.provenance_id))
+            for facet_id in _key_values(rows[FACET_COLUMN])
+        ]
+        return rows.filter(pa.array(admitted, type=pa.bool_()))
+
+    def _admit_scoped_rows(self, rows: pa.Table) -> pa.Table:
+        """Keeps only facets the request's source-scoped catalogue admits per series.
+
+        Coverage rows are role-bearing.  A source is admitted at the grain at
+        which it is served: a complete `(variable, recipient, donor)` series.
+        Applying that rule after role bindings preserves a named request's
+        bound pairs while allowing DFO precedence to withhold a base facet
+        only where the matching DFO facet exists.
+        """
+        if rows.num_rows == 0 or current_source_scope() is None:
+            return rows
+
+        rows = rows.combine_chunks()
+        variables = _key_values(rows[VARIABLE_COLUMN])
+        recipients = _key_values(rows[RECIPIENT_COLUMN])
+        donors = _key_values(rows[DONOR_COLUMN])
+        facet_ids = _key_values(rows[FACET_COLUMN])
+        facets_by_series: dict[tuple[str, str, str], set[str]] = {}
+        for variable, recipient, donor, facet_id in zip(
+            variables, recipients, donors, facet_ids, strict=True
+        ):
+            facets_by_series.setdefault((variable, recipient, donor), set()).add(facet_id)
+
+        catalogue = current_catalogue()
+        admitted_by_series: dict[tuple[str, str, str], frozenset[str]] = {}
+        for series, series_facet_ids in facets_by_series.items():
+            provenances = [
+                metadata.provenance_id
+                for facet_id in series_facet_ids
+                if (metadata := self._facet_metadata.get(facet_id)) is not None
+                and metadata.provenance_id is not None
+            ]
+            admitted_by_series[series] = frozenset(catalogue.admit_series(provenances).admitted)
+        admitted = [
+            (
+                (metadata := self._facet_metadata.get(facet_id)) is not None
+                and metadata.provenance_id in admitted_by_series[(variable, recipient, donor)]
+            )
+            for variable, recipient, donor, facet_id in zip(
+                variables, recipients, donors, facet_ids, strict=True
+            )
+        ]
+        return rows.filter(pa.array(admitted, type=pa.bool_()))
+
+    def admitted_pairs(
+        self, *, variable: str, bound: BoundRoles = _NO_BINDING
+    ) -> Mapping[str, frozenset[tuple[str, str]]] | None:
+        """The source-admitted donor/recipient pairs per facet for one variable.
+
+        ``None`` is the unscoped sentinel.  An empty mapping means a scoped
+        request admitted no coverage rows, which must differ from serving an
+        unscoped response.
+        """
+        if current_source_scope() is None:
+            return None
+        rows = self._member_rows(variables=[variable], bound=bound)
+        admitted: dict[str, set[tuple[str, str]]] = {}
+        for facet_id, donor, recipient in zip(
+            _key_values(rows[FACET_COLUMN]),
+            _key_values(rows[DONOR_COLUMN]),
+            _key_values(rows[RECIPIENT_COLUMN]),
+            strict=True,
+        ):
+            admitted.setdefault(facet_id, set()).add((donor, recipient))
+        return {facet_id: frozenset(pairs) for facet_id, pairs in admitted.items()}
 
     def _served_row_mask(
         self, rows: pa.Table, served: Iterable[tuple[str, str, str | None, str | None]]
@@ -689,6 +803,46 @@ class CoverageIndex:
         """
         filtered = self._filtered(
             variables=variables, bound=bound, first_year=first_year, last_year=last_year
+        )
+        if filtered.num_rows == 0:
+            return []
+        by_variable: dict[str, list[FacetCoverage]] = {}
+        for (variable,), facet in self._facet_coverages(filtered, role_columns=()):
+            by_variable.setdefault(variable, []).append(facet)
+        result: list[VariableCoverage] = []
+        for variable, facets in by_variable.items():
+            facets_sorted = tuple(sorted(facets, key=lambda f: f.facet_id))
+            result.append(
+                VariableCoverage(
+                    variable=variable,
+                    facets=facets_sorted,
+                    n_obs=sum(f.n_obs for f in facets_sorted),
+                    first_year=min(f.first_year for f in facets_sorted),
+                    last_year=max(f.last_year for f in facets_sorted),
+                )
+            )
+        return result
+
+    def filter_facet_candidates(
+        self,
+        *,
+        variables: Sequence[str],
+        bound: BoundRoles = _NO_BINDING,
+        first_year: int | None = None,
+        last_year: int | None = None,
+    ) -> list[VariableCoverage]:
+        """Return globally admitted facet candidates under role and year bounds.
+
+        Unlike :meth:`filter_candidates`, this is for validating a prospective
+        facet pin or listing replacements for one.  It ignores a request's active
+        source scope and per-series DFO precedence, while still excluding unknown,
+        globally unavailable, and disabled-UN provenances.
+        """
+        filtered = _apply_window(
+            self._candidate_member_rows(variables=variables, bound=bound),
+            horizon=self._horizon,
+            first_year=first_year,
+            last_year=last_year,
         )
         if filtered.num_rows == 0:
             return []

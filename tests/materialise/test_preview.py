@@ -22,14 +22,12 @@ from materialise.errors import (
     FacetNotAvailableError,
     MaterialisationUsageError,
     UpstreamResponseError,
-    UpstreamVersionChangedError,
 )
 from materialise.facets import FacetBinding, UnitRequest
 from materialise.graph import Facet
 from materialise.rate_tables import RateTableCache
 from materialise.recipe_bodies import RECIPE_BODIES
 from materialise.recipes import RateCoverageGapError
-from materialise.revision import RevisionSnapshot, SourceRevision
 from materialise.window import RequestedWindow
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import FacetMetadata, RoleNames
@@ -37,7 +35,7 @@ from tests.engine._fake_coverage import build_coverage_index
 
 from ._rate_table_support import RateTableServer, rate_csv, rate_row
 from ._scope_availability import ScopeAvailability
-from .conftest import FakeGraphReader, FakeRevisionReader
+from .conftest import FakeGraphReader
 
 _BASE_URL = "https://datacommons.one.org/core/api"
 _STAT_VAR = "dcid:MalariaGrantDisbursements"
@@ -1009,17 +1007,6 @@ def test_two_facets_with_bare_and_prefixed_variable_collapse_via_the_canonicalis
 # the same version a mint of the same request reports, at any `limit`.
 # ---------------------------------------------------------------------------
 
-_VERSION_SNAPSHOT = RevisionSnapshot(
-    graph_revision="graph-rev-1",
-    source_revisions=(SourceRevision(source="OECD_DAC2A", revision="rev-7"),),
-)
-
-
-def _reader() -> FakeRevisionReader:
-    """One snapshot before and after the generation, so `read_generation`
-    sees no drift."""
-    return FakeRevisionReader([_VERSION_SNAPSHOT, _VERSION_SNAPSHOT])
-
 
 def _single_entity_setup(
     *, rows: int
@@ -1046,10 +1033,9 @@ def _spec_version(
         request,
         sdmx=sdmx,
         graph=graph,
-        revision_reader=_reader(),
         materialiser_build="test-build",
         capability_version="cap-v1",
-        enrichment=EnrichmentLookup(graph),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         coverage=coverage,
     )
     return result.content_version
@@ -1060,7 +1046,7 @@ def test_preview_content_version_equals_the_mint_version_for_the_same_request():
 
     mint_version = _spec_version(sdmx, graph, coverage, request)
     preview = materialise_preview(
-        request, sdmx=sdmx, graph=graph, coverage=coverage, revision_reader=_reader(), limit=10
+        request, sdmx=sdmx, graph=graph, coverage=coverage, with_content_version=True, limit=10
     )
 
     assert preview.content_version is not None
@@ -1074,7 +1060,7 @@ def test_preview_content_version_equals_the_mint_version_when_truncated():
 
     mint_version = _spec_version(sdmx, graph, coverage, request)
     truncated_preview = materialise_preview(
-        request, sdmx=sdmx, graph=graph, coverage=coverage, revision_reader=_reader(), limit=3
+        request, sdmx=sdmx, graph=graph, coverage=coverage, with_content_version=True, limit=3
     )
 
     assert truncated_preview.truncated is True
@@ -1088,10 +1074,10 @@ def test_preview_content_version_holds_across_two_different_limits():
     sdmx, graph, coverage, request = _single_entity_setup(rows=10)
 
     narrow = materialise_preview(
-        request, sdmx=sdmx, graph=graph, coverage=coverage, revision_reader=_reader(), limit=1
+        request, sdmx=sdmx, graph=graph, coverage=coverage, with_content_version=True, limit=1
     )
     wide = materialise_preview(
-        request, sdmx=sdmx, graph=graph, coverage=coverage, revision_reader=_reader(), limit=10
+        request, sdmx=sdmx, graph=graph, coverage=coverage, with_content_version=True, limit=10
     )
 
     assert narrow.content_version == wide.content_version
@@ -1103,7 +1089,7 @@ def test_a_read_past_twenty_times_limit_counts_every_row_and_mints_the_mint_vers
 
     mint_version = _spec_version(sdmx, graph, coverage, request)
     preview = materialise_preview(
-        request, sdmx=sdmx, graph=graph, coverage=coverage, revision_reader=_reader(), limit=1
+        request, sdmx=sdmx, graph=graph, coverage=coverage, with_content_version=True, limit=1
     )
 
     assert preview.total_rows == 25
@@ -1131,38 +1117,9 @@ def test_a_preview_counts_every_survivor_past_its_ceiling():
     assert (preview.total_rows, preview.truncated) == (25, True)
 
 
-def test_preview_without_a_revision_reader_reports_no_content_version():
+def test_preview_without_with_content_version_reports_no_content_version():
     sdmx, graph, coverage, request = _single_entity_setup(rows=2)
 
     preview = materialise_preview(request, sdmx=sdmx, graph=graph, coverage=coverage, limit=10)
 
     assert preview.content_version is None
-
-
-def test_preview_without_a_revision_reader_reads_no_revision():
-    """Without a revision reader, preview performs no revision read."""
-    sdmx, graph, coverage, request = _single_entity_setup(rows=2)
-    reader = FakeRevisionReader([])
-
-    preview = materialise_preview(
-        request, sdmx=sdmx, graph=graph, coverage=coverage, revision_reader=None, limit=10
-    )
-
-    assert preview.content_version is None
-    assert reader.read_count == 0
-
-
-def test_preview_refuses_upstream_change_under_the_same_drift_rule_as_a_mint():
-    sdmx, graph, coverage, request = _single_entity_setup(rows=2)
-    drifting = FakeRevisionReader(
-        [
-            RevisionSnapshot(graph_revision="rev-a", source_revisions=()),
-            RevisionSnapshot(graph_revision="rev-b", source_revisions=()),
-            RevisionSnapshot(graph_revision="rev-c", source_revisions=()),
-        ]
-    )
-
-    with pytest.raises(UpstreamVersionChangedError):
-        materialise_preview(
-            request, sdmx=sdmx, graph=graph, coverage=coverage, revision_reader=drifting, limit=10
-        )

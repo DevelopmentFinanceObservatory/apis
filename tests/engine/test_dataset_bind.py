@@ -13,7 +13,12 @@ import dataclasses
 
 import pytest
 
-from code_index.members import canonical_identity, family_for_five_tuple, invariant_bindings
+from code_index.members import (
+    DatasetScope,
+    canonical_identity,
+    family_for_five_tuple,
+    invariant_bindings,
+)
 from code_index.query import CodeIndex
 from code_index.shared import get_index
 from code_index.types import CodeSystemDeclaration, DatasetDeclaration, IndexStamp, StatVarRow
@@ -21,13 +26,12 @@ from search.engine import bind as bind_module
 from search.engine.bind import (
     SlotBindingDraft,
     _build_universal_bind_prompt,
-    _offered_source_drafts,
-    drafted_source,
 )
 from search.engine.region import candidates as candidates_module
 from search.engine.region import phase_rank_bind as phase_rank_bind_module
+from search.engine.region import source_choice as source_choice_module
 from search.engine.region.named_source import with_named_source, without_dataset_drafts
-from search.engine.region.phase_rank_bind import _dataset_candidates
+from search.engine.region.phase_rank_bind import _dataset_candidates, _out_of_scope_records
 from search.engine.region.place_context import empty_place_context
 from search.engine.retrieval import bound_values as bound_values_module
 from search.engine.retrieval.bound_values import (
@@ -63,9 +67,11 @@ from tests.code_index.aid_identity import (
     education_aid_identity,
     imputed_education_aid_identity,
 )
+from tests.engine import _source_scopes as source_scopes_module
 from tests.engine._builders import materialise_alternates
 from tests.engine._fake_coverage import empty_coverage_snapshot
 from tests.engine._fake_sdmx import FakeSdmxClient
+from tests.engine._source_scopes import part_scope
 from tests.fixtures import FakeGraph
 
 _INDEX = get_index()
@@ -205,7 +211,7 @@ def test_a_part_elects_from_the_shapes_of_the_dataset_it_names(source, kept):
         "commitments": _commitments_shape(),
         "population": _population_shape(),
     }
-    candidates = _dataset_candidates(list(shapes.values()), source, frozenset())
+    candidates = _dataset_candidates(list(shapes.values()), part_scope(source))
 
     # Candidacy stamps the datasets the part may answer from and the one it names, which
     # enter equality.
@@ -264,7 +270,6 @@ def test_an_alternate_shape_is_materialised_under_the_dataset_its_shape_names(mo
             dataclasses.replace(_population_shape(), sv_arc_facts=_aid_shape().sv_arc_facts),
         ],
         None,
-        frozenset(),
     )
 
     materialise_alternates(
@@ -297,9 +302,7 @@ def test_an_alternate_whose_bindings_hold_the_pins_mints_the_canonical_spec_id(m
 
     monkeypatch.setattr(candidates_module, "materialise", _capture)
     (imputed,) = _dataset_candidates(
-        [dataclasses.replace(_imputed_family_shape(), sv_arc_facts=_imputed_arcs())],
-        None,
-        frozenset(),
+        [dataclasses.replace(_imputed_family_shape(), sv_arc_facts=_imputed_arcs())], None
     )
     materialise_alternates(
         [imputed],
@@ -667,7 +670,7 @@ def _narrow_shape() -> ShapeDraft:
 
 def _candidate(source: str | None) -> ShapeDraft:
     derived = _narrow_shape() if source == _NARROW else _publisher_shape()
-    (shape,) = _dataset_candidates([derived], source, frozenset())
+    (shape,) = _dataset_candidates([derived], part_scope(source))
     return shape
 
 
@@ -679,32 +682,81 @@ def _value(prop: str, code: str) -> SlotBindingDraft:
     return SlotBindingDraft(axis="how", property_dcid=prop, kind="value", value_dcids=[code])
 
 
+_BASE = "provenance/Base"
+"""A provenance the code index declares no dataset for, as a base Data Commons source is."""
+
+
+def _scope_excluding(*datasets: str) -> DatasetScope:
+    """The scope of a part that excludes `datasets` and names nothing: every declared
+    dataset and a base provenance, less them."""
+    return DatasetScope(
+        allowed=frozenset({_WIDE, _OTHER, _NARROW, _ONLY, _BASE}) - set(datasets), named=False
+    )
+
+
+def _scope_naming(*provenances: str) -> DatasetScope:
+    return DatasetScope(allowed=frozenset(provenances), named=True)
+
+
 @pytest.mark.parametrize(
-    ("source", "kept", "datasets", "named", "options"),
+    ("scope", "kept", "datasets", "named"),
     [
         (
             None,
             ["shared", "narrow", "own", "unindexed"],
             [(_WIDE, _OTHER), (_NARROW,), (_ONLY,), ()],
             [None, _NARROW, _ONLY, None],
-            [(_WIDE, _OTHER), (), (), ()],
         ),
-        (_WIDE, ["shared"], [(_WIDE,)], [_WIDE], [()]),
-        (_NARROW, ["narrow"], [(_NARROW,)], [_NARROW], [()]),
-        (_ONLY, ["own"], [(_ONLY,)], [_ONLY], [()]),
+        (_scope_naming(_WIDE), ["shared"], [(_WIDE,)], [_WIDE]),
+        (_scope_naming(_NARROW), ["narrow"], [(_NARROW,)], [_NARROW]),
+        (_scope_naming(_ONLY), ["own"], [(_ONLY,)], [_ONLY]),
+        (_scope_naming(_WIDE, _OTHER), ["shared"], [(_WIDE, _OTHER)], [None]),
+        (_scope_naming(_BASE), ["unindexed"], [()], [None]),
+        (
+            _scope_excluding(_WIDE),
+            ["shared", "narrow", "own", "unindexed"],
+            [(_OTHER,), (_NARROW,), (_ONLY,), ()],
+            [None, _NARROW, _ONLY, None],
+        ),
+        (
+            _scope_excluding(_WIDE, _OTHER),
+            ["narrow", "own", "unindexed"],
+            [(_NARROW,), (_ONLY,), ()],
+            [_NARROW, _ONLY, None],
+        ),
+        (
+            _scope_excluding(_NARROW),
+            ["shared", "own", "unindexed"],
+            [(_WIDE, _OTHER), (_ONLY,), ()],
+            [None, _ONLY, None],
+        ),
     ],
-    ids=["unnamed", "named-default", "named-opt-in-on-shared", "named-opt-in-alone"],
+    ids=[
+        "unnamed",
+        "named-default",
+        "named-opt-in-on-shared",
+        "named-opt-in-alone",
+        "named-two-defaults",
+        "named-base",
+        "excluding-a-default",
+        "excluding-every-default",
+        "excluding-the-opt-in",
+    ],
 )
 def test_a_part_keeps_the_shapes_its_datasets_publish_on_a_shared_five_tuple(
-    two_publishers, source, kept, datasets, named, options
+    two_publishers, scope, kept, datasets, named
 ):
     """An unnamed part keeps every recalled shape. On the shared five-tuple, the family of
-    the publishers that are not opt-in answers from them alone, and its source slot offers
-    both; `_NARROW`'s own family, which only the opt-in `_NARROW` publishes, names
-    `_NARROW`, as the five-tuple the opt-in `_ONLY` alone publishes names `_ONLY`. A named
-    part keeps the shapes its dataset publishes, beside others or alone: on the shared
-    five-tuple, the shape of the family its dataset belongs to. It is offered no source
-    slot. Each kept shape carries the datasets the part may answer it from."""
+    the publishers that are not opt-in answers from them alone; `_NARROW`'s own family, which only the opt-in `_NARROW` publishes, names
+    `_NARROW`, as the five-tuple the opt-in `_ONLY` alone publishes names `_ONLY`. A part
+    naming sources keeps the shapes they publish, beside others or alone, and names the one
+    dataset left to a shape. A shape the index does not carry
+    stays only when the scope allows a provenance the index declares no dataset for, since a
+    declared dataset publishes only the index's rows. Excluding a default publisher leaves
+    the other; excluding both drops the shared family's shape, and never opens the opt-in
+    `_NARROW` there, while each opt-in-only family stays, as imputed multilateral aid
+    excluding the CRS answers from the imputed table. Each kept shape carries the datasets
+    the part may answer it from."""
     shapes = [
         _publisher_shape(),
         _narrow_shape(),
@@ -712,42 +764,91 @@ def test_a_part_keeps_the_shapes_its_datasets_publish_on_a_shared_five_tuple(
         dataclasses.replace(_publisher_shape(), shape_id="unindexed", pop_type_dcid="Person"),
     ]
 
-    candidates = _dataset_candidates(shapes, source, frozenset())
+    candidates = _dataset_candidates(shapes, scope)
 
     assert [shape.shape_id for shape in candidates] == kept
     assert [shape.datasets for shape in candidates] == datasets
     assert [shape.named_dataset for shape in candidates] == named
-    assert [shape.source_options for shape in candidates] == options
 
 
 @pytest.mark.parametrize(
-    ("value", "kept", "drafted"),
-    [
-        (_OTHER, True, (_OTHER, frozenset())),
-        (f"excluded:{_WIDE}", True, (None, frozenset({_WIDE}))),
-        (_ONLY, False, (None, frozenset())),
-        (f"excluded:{_ONLY}", False, (None, frozenset())),
-    ],
-    ids=["offered", "offered-excluded", "not-offered", "not-offered-excluded"],
+    ("excluded", "kept"),
+    [(CRS_PROVENANCE, True), (IMPUTED_PROVENANCE, False)],
+    ids=["excluding-crs", "excluding-imputed"],
 )
-def test_a_source_draft_survives_bind_only_as_a_value_its_slot_offers(
-    two_publishers, value, kept, drafted
-):
-    """The model's source draft is kept, as the source binding spells it, only when it binds
-    one value the chosen shape's slot offers; vetting reads the named or excluded table
-    from it. Any other source draft comes back unbound, and a shape offering no slot keeps
-    none."""
-    draft = SlotBindingDraft(
-        axis="source", property_dcid="provenance", kind="value", value_dcids=[value]
+def test_imputed_multilateral_aid_excluding_the_crs_answers_from_the_imputed_table(excluded, kept):
+    """Only the opt-in imputed table publishes the imputed five-tuple, so a part that
+    excludes the CRS and names nothing keeps the imputed shape and names its table, as the
+    question with no exclusion does. Excluding the imputed table drops it."""
+    scope = DatasetScope(allowed=frozenset(get_index().datasets) - {excluded}, named=False)
+    imputed = dataclasses.replace(_imputed_family_shape(), sv_arc_facts=_imputed_arcs())
+
+    candidates = _dataset_candidates([imputed], scope)
+
+    assert [shape.named_dataset for shape in candidates] == ([IMPUTED_PROVENANCE] if kept else [])
+
+
+def test_a_scope_leaving_no_shape_names_its_sources_and_the_opt_in_tables(monkeypatch):
+    """`_WIDE` and the opt-in `_SIDE` publish one family. Excluding `_WIDE` does not open
+    `_SIDE`, so candidacy keeps nothing, and the refusal names the excluded table and the
+    opt-in table a part must name to answer from it."""
+    side = "provenance/Side"
+    index = CodeIndex(
+        stamp=_two_publisher_index().stamp,
+        declarations=(_code_system("basis"), _code_system("sector")),
+        codes=(),
+        statvars=(
+            _publisher_row("wide", {"basis": "G", "sector": "A"}, _WIDE),
+            _publisher_row("side", {"basis": "G", "sector": "B"}, side),
+        ),
+        datasets=(
+            _publisher(_WIDE, rank=0, opt_in=False, invariants={}),
+            _publisher(side, rank=1, opt_in=True, invariants={}),
+        ),
     )
-    purpose = _sector("A")
+    for module in (
+        bound_values_module,
+        phase_rank_bind_module,
+        source_choice_module,
+        source_scopes_module,
+    ):
+        monkeypatch.setattr(module, "get_index", lambda: index)
+    shape = _publisher_shape(datasets=(_WIDE,))
+    scope = part_scope(excluded={_WIDE})
+    assert scope.allowed == {side}
 
-    checked = _offered_source_drafts([purpose, draft], _candidate(None))
+    assert _dataset_candidates([shape], scope) == []
+    records = _out_of_scope_records([shape], scope)
+    assert [record.text for record in records] == [_WIDE, side]
+    assert [[ref.dcid for ref in record.named] for record in records] == [[_WIDE], [side]]
 
-    assert checked[0] == purpose
-    assert (checked[1].kind == "value") is kept
-    assert drafted_source(checked) == drafted
-    assert _offered_source_drafts([draft], _candidate(_WIDE))[0].kind == "unbound"
+
+_IDS = "provenance/WorldBankInternationalDebtStatistics"
+
+
+@pytest.mark.parametrize(
+    ("scope", "kept"),
+    [
+        (DatasetScope(allowed=frozenset({_IDS}), named=True), True),
+        (DatasetScope(allowed=frozenset({CRS_PROVENANCE}), named=True), False),
+        (DatasetScope(allowed=frozenset({CRS_PROVENANCE, "provenance/Base"}), named=False), False),
+        (DatasetScope(allowed=frozenset({_IDS, "provenance/Base"}), named=False), True),
+    ],
+    ids=["named-ids", "named-crs", "excluding-ids", "excluding-crs"],
+)
+def test_a_listed_five_tuple_stays_where_a_listed_row_is_in_scope(scope, kept):
+    """The packaged index lists IDS's debt positions without declaring a dataset for them
+    (`CodeIndex.listed_statvars`). A shape on that five-tuple stays when the scope allows a
+    provenance a listed row carries, whatever else it allows."""
+    position = dataclasses.replace(
+        _aid_shape(),
+        shape_id="position",
+        pop_type_dcid="FinancialPosition",
+        sv_arc_facts=None,
+    )
+    assert any(_IDS in row.provenances for row in get_index().listed_statvars)
+
+    assert bool(_dataset_candidates([position], scope)) is kept
 
 
 @pytest.mark.parametrize(
@@ -782,8 +883,8 @@ def test_a_named_and_an_unnamed_part_on_one_five_tuple_keep_their_own_vocabulari
     family is two shapes, so a mapping keyed on them holds both vocabularies and both pin
     sets."""
     derived = _publisher_shape()
-    unnamed = _dataset_candidates([derived], None, frozenset())[0]
-    named = _dataset_candidates([derived], _WIDE, frozenset())[0]
+    unnamed = _dataset_candidates([derived], None)[0]
+    named = _dataset_candidates([derived], part_scope(_WIDE))[0]
 
     by_shape = {unnamed: unnamed.slot_taxonomy, named: named.slot_taxonomy}
 

@@ -14,7 +14,6 @@ from dc_graph import GraphCapExceededError, GraphDeadlineExceededError
 from materialise import provenance_doc
 from materialise.graph import GraphReadError, parse_arcs
 from materialise.provenance_doc import (
-    _CITATION_LICENCE_PROPERTIES,
     _CITATION_LINKED_PROPERTIES,
     _CITATION_NODE_PROPERTIES,
     _NODE_PROPERTIES,
@@ -25,7 +24,8 @@ from materialise.provenance_doc import (
     read_provenance_doc,
     read_source_citations,
 )
-from origin_catalogue import BASE, DFO, SourceRef
+from origin_catalogue import BASE, DFO, UN_SYSTEM, DatasetRef, SourceRef
+from origin_catalogue.catalogue import Licence, SourceDocumentation
 from tests.origin_catalogue.fake_catalogue import provenance_row, restrictive_catalogue
 
 from .conftest import FakeGraphReader
@@ -365,9 +365,18 @@ class TestReads:
         ]
 
 
+_WDI_LICENCE = Licence(
+    type=_CC_BY,
+    label="Creative Commons Attribution License",
+    url="https://datacatalog.worldbank.org/search/dataset/0037712",
+)
+
+
 class TestCatalogued:
-    def test_a_listed_provenance_takes_all_but_its_licence_from_its_row(self):
-        row = provenance_row(_WDI_PROVENANCE, BASE, source="dc/s/WorldBank")
+    def test_a_listed_provenance_is_cited_from_its_row_with_no_graph_read(self):
+        row = replace(
+            provenance_row(_WDI_PROVENANCE, BASE, source="dc/s/WorldBank"), licence=_WDI_LICENCE
+        )
         graph = _wdi_graph()
 
         citations = read_source_citations(
@@ -386,12 +395,9 @@ class TestCatalogued:
                 licence_url="https://datacatalog.worldbank.org/search/dataset/0037712",
             )
         }
-        assert graph.node_arcs_many_calls == [
-            ((_WDI_PROVENANCE,), _CITATION_LICENCE_PROPERTIES),
-            ((_CC_BY,), _CITATION_LINKED_PROPERTIES),
-        ]
+        assert graph.node_arcs_many_calls == []
 
-    def test_listed_and_unlisted_refs_share_one_node_read(self):
+    def test_only_unlisted_refs_are_read_from_the_graph(self):
         graph = FakeGraphReader(
             arcs={
                 _OECD_CRS: {"typeOf": ("Provenance",), "licenseType": (_OECD_TERMS,)},
@@ -400,18 +406,23 @@ class TestCatalogued:
                 **_LICENCE_NODES,
             }
         )
-        catalogue = restrictive_catalogue(provenances=[provenance_row(_OECD_CRS, DFO)])
+        row = replace(
+            provenance_row(_OECD_CRS, DFO),
+            licence=Licence(type=_OECD_TERMS, label="OECD Terms and Conditions"),
+        )
+        catalogue = restrictive_catalogue(provenances=[row])
 
         citations = read_source_citations(graph, [_OECD_CRS, "dc/base/A"], catalogue=catalogue)
 
+        assert list(citations) == [_OECD_CRS, "dc/base/A"]
         assert citations[_OECD_CRS].data_commons == DFO
         assert citations[_OECD_CRS].licence == "OECD Terms and Conditions"
         assert citations["dc/base/A"].name == "Shared Dataset"
         assert citations["dc/base/A"].source is None
         assert citations["dc/base/A"].data_commons is None
         assert graph.node_arcs_many_calls == [
-            ((_OECD_CRS, "dc/base/A"), _CITATION_NODE_PROPERTIES),
-            (("dc/d/Shared", _OECD_TERMS), _CITATION_LINKED_PROPERTIES),
+            (("dc/base/A",), _CITATION_NODE_PROPERTIES),
+            (("dc/d/Shared",), _CITATION_LINKED_PROPERTIES),
         ]
 
     def test_a_listed_provenance_the_graph_does_not_hold_is_still_cited(self):
@@ -424,6 +435,38 @@ class TestCatalogued:
 
         assert citations["dc/base/NotHeld"].name == row.name
         assert citations["dc/base/NotHeld"].licence is None
+
+    @pytest.mark.parametrize(
+        ("row", "documentation"),
+        [
+            # The entry's documentation covers its typed Provenance children only.
+            (
+                provenance_row(
+                    "dc/base/Untyped",
+                    BASE,
+                    dataset=DatasetRef(ref="dc/d/Shared", label="Shared Dataset"),
+                ),
+                {"dc/d/Shared": SourceDocumentation(provenances=("dc/base/Typed",))},
+            ),
+            (provenance_row("dc/base/Untyped", BASE), None),
+            (provenance_row("undata/p/WHO", UN_SYSTEM, segment="who"), None),
+        ],
+        ids=["outside-its-dataset-s-children", "untyped-orphan", "un-row"],
+    )
+    def test_a_listed_provenance_its_entry_does_not_document_is_cited_without_documentation(
+        self, row, documentation
+    ):
+        graph = FakeGraphReader(arcs={})
+
+        (citation,) = read_source_citations(
+            graph,
+            [row.id],
+            catalogue=restrictive_catalogue(provenances=[row], source_documentation=documentation),
+            documented=True,
+        ).values()
+
+        assert (citation.documentation, citation.documentation_read_failed) == (None, False)
+        assert graph.node_arcs_many_calls == []
 
 
 class _DocumentationFailingGraph(FakeGraphReader):

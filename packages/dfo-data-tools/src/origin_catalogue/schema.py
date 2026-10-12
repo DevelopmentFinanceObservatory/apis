@@ -17,7 +17,7 @@ from typing import Any, Final
 
 from artifact_publication import POINTER_FILE, VERSIONS_PREFIX
 
-CATALOGUE_FORMAT_VERSION: Final[int] = 3
+CATALOGUE_FORMAT_VERSION: Final[int] = 4
 """The on-disk shape: file names, Parquet schemas and manifest fields. Every
 artifact lives under its format's own root, so a change to this number
 starts a new, empty root that the next job run fills, and the loader refuses
@@ -35,6 +35,7 @@ TOPICS_FILE: Final[str] = "topics.parquet"
 SCAN_FILE: Final[str] = "scan.json"
 UN_FILE: Final[str] = "un.json"
 DATASET_FACTS_FILE: Final[str] = "dataset_facts.json"
+SOURCE_DOCUMENTATION_FILE: Final[str] = "source_documentation.json"
 SUPERSEDED_VARIABLES_FILE: Final[str] = "superseded_variables.parquet"
 UN_VARIABLES_FILE: Final[str] = "un_variables.parquet"
 UN_ARCS_FILE: Final[str] = "un_arcs.parquet"
@@ -258,6 +259,7 @@ __all__ = [
     "PROVENANCES_FILE",
     "PROVENANCE_PLACES_FILE",
     "SCAN_FILE",
+    "SOURCE_DOCUMENTATION_FILE",
     "SUPERSEDED_VARIABLES_FILE",
     "TOPICS_FILE",
     "UN_ARCS_FILE",

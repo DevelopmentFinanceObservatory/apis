@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from datasets_api import timings
-from datasets_api.timings import PhaseTimings, collecting, phase, record_elapsed
+from datasets_api.timings import PhaseTimings, collecting, label, phase, record_elapsed
 from dfo_platform import timings as platform_timings
 from dfo_platform.trace import reset_trace_id, set_trace_id
 
@@ -156,6 +156,18 @@ def test_as_log_field_format():
     t.record("materialise", 812.0)
 
     assert t.as_log_field() == "resolve=12.4 materialise=812.0"
+
+
+def test_labels_lead_the_log_field_and_stay_out_of_server_timing():
+    t = PhaseTimings()
+    t.record("resolve", 12.4)
+    with collecting(t):
+        label("trigger", "get")
+        label("served_from", "materialise")
+        label("served_from", "head")
+
+    assert t.as_log_field() == "trigger=get served_from=head resolve=12.4"
+    assert t.server_timing(total_ms=20.0) == "total;dur=20.0, resolve;dur=12.4"
 
 
 def test_as_log_field_empty_when_nothing_recorded():

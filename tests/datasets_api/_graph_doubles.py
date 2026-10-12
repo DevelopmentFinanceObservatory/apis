@@ -9,7 +9,6 @@ from dataclasses import dataclass
 
 from graph_generation import FakeGeneration, GenerationStamp
 from materialise.graph import Facet, FacetDefaultPolicy
-from materialise.revision import RevisionSnapshot
 from statvar_members import CANDIDATE_CAP
 
 
@@ -344,16 +343,3 @@ class BlockingFakeMintGraphReader:
         deadline: float | None = None,
     ) -> dict[str, tuple[str, ...]]:
         return self._delegate.node_names_many(dcids)
-
-
-class FakeRevisionReader:
-    """Returns snapshots in order, one per `read()` call."""
-
-    def __init__(self, snapshots: Sequence[RevisionSnapshot]) -> None:
-        self._snapshots = list(snapshots)
-        self.read_count = 0
-
-    def read(self) -> RevisionSnapshot:
-        snapshot = self._snapshots[self.read_count]
-        self.read_count += 1
-        return snapshot

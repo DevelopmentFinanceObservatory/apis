@@ -72,7 +72,7 @@ _TABLE = Table(
 
 
 def _enrichment() -> EnrichmentLookup:
-    return EnrichmentLookup(FakeMintGraphReader())
+    return EnrichmentLookup(FakeMintGraphReader(), type_kinds={}, parties={})
 
 
 def test_code_index_none_skips_decoding_entirely():

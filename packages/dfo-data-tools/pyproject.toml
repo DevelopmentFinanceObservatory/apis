@@ -78,9 +78,9 @@ coverage = [
 [tool.uv.sources]
 # See the root pyproject.toml's dfo-spec-kit source comment for the
 # pin-consistency invariant this rev must satisfy.
-dfo-spec-kit-frame-grammar = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "a9b8df5234195d5eb023749cf9d745d9f5acd24b", subdirectory = "python/frame-grammar" }
-dfo-spec-kit-components = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "a9b8df5234195d5eb023749cf9d745d9f5acd24b", subdirectory = "python/dfo-spec-kit-components" }
-dfo-spec-kit-provenance-docs = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "a9b8df5234195d5eb023749cf9d745d9f5acd24b", subdirectory = "python/provenance-docs" }
+dfo-spec-kit-frame-grammar = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "0a34033f23d0ee400cbe7131781a6d142eba0508", subdirectory = "python/frame-grammar" }
+dfo-spec-kit-components = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "0a34033f23d0ee400cbe7131781a6d142eba0508", subdirectory = "python/dfo-spec-kit-components" }
+dfo-spec-kit-provenance-docs = { git = "https://github.com/ONEcampaign/dfo-spec-kit.git", rev = "0a34033f23d0ee400cbe7131781a6d142eba0508", subdirectory = "python/provenance-docs" }
 
 [build-system]
 requires = ["uv_build>=0.11,<0.12"]

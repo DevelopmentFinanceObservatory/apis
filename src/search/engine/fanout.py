@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 import time
 from collections.abc import AsyncIterator, Collection, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -32,21 +33,31 @@ from search.engine.errors import (
 )
 from search.engine.events import Event
 from search.engine.extract import DateRequest
+from search.engine.leg_phase import LegPhase, enter_phase, track_leg_phase
 from search.engine.options.population_memo import OptionsPopulationMemo
 from search.engine.qualifier_match import CodedQualifier, recall_text
 from search.engine.region import RegionResult, resolve_variable
 from search.engine.region.place_options import PlaceOptionsPool
-from search.engine.region.result import with_dropped_open_roles, with_runnable_operations
+from search.engine.region.result import (
+    empty_scope_result,
+    source_refusal_result,
+    with_dropped_open_roles,
+    with_runnable_operations,
+)
 from search.engine.region.state import EngineOptions
 from search.engine.role_text import DoorRole, role_text_for_axis
+from search.engine.source_scope import SourceRefusal, SourceScope, without_source_words
 from search.models import (
     IdentityBindingValue,
     Operation,
     ParsedEntity,
     ParsedPart,
     RoleAxis,
+    SourceMention,
 )
 from series_coverage.shared import CoverageSnapshot
+
+logger = logging.getLogger(__name__)
 
 # The directional role axes ParsedPart's role_text-less generic echo cannot
 # express -- derived from RoleAxis itself (currently "origin"/"destination")
@@ -196,22 +207,23 @@ def _leg_parsed_form(
     entities: Sequence[str],
     date_request: DateRequest | None,
     unit_text: str | None,
-    source_text: str | None,
-    provenance: str | None = None,
+    sources: Sequence[SourceMention] = (),
     entity_roles: Mapping[str, list[DoorRole]] | None = None,
     member_entities: Collection[str] = (),
     operations: Sequence[Operation] = (),
     open_axes: Collection[RoleAxis] = (),
+    separate: bool = False,
 ) -> ParsedPart | None:
     """Build the leg's inputs as one parsed part, the form `data_query` pins into.
 
     Each entity appears once per distinct axis the door gave it, with that axis as
     `role_text`, as the parsed door reads a name repeated on opposite axes. An entity
     without an axis appears bare. An entity of `member_entities` states `members`.
-    `provenance` is the dataset the leg answers from, so a
-    reposted part answers from it. The leg's own open roles appear as their axes in
-    `open_roles`, and the axes its operations open ride on the operations. Return
-    `None` when `ParsedPart` bounds reject any input.
+    `sources` are the mentions it echoes (`restated_sources`), so a reposted part answers
+    from the same sources. The leg's own open roles appear as their axes in
+    `open_roles`, and the axes its operations open ride on the operations. A leg
+    compared with the others states `separate`. Return `None` when `ParsedPart` bounds
+    reject any input.
     """
     roles = entity_roles or {}
     try:
@@ -229,10 +241,10 @@ def _leg_parsed_form(
             or None,
             time_text=_date_request_to_time_text(date_request),
             unit_text=unit_text,
-            source_text=source_text,
-            provenance=provenance,
+            sources=list(sources),
             operations=list(operations),
             open_roles=sorted(open_axes) or None,
+            separate=separate,
         )
     except ValidationError:
         return None
@@ -244,13 +256,13 @@ def _leg_restatement(
     entities: Sequence[str],
     date_request: DateRequest | None,
     unit_text: str | None,
-    source_text: str | None,
-    provenance: str | None = None,
+    sources: Sequence[SourceMention] = (),
     directional: bool = False,
     entity_roles: Mapping[str, list[DoorRole]] | None = None,
     member_entities: Collection[str] = (),
     operations: Sequence[Operation] = (),
     open_axes: Collection[RoleAxis] = (),
+    separate: bool = False,
 ) -> ParsedPart | None:
     """Build the parsed-door echo, or `None` when no echo is safe.
 
@@ -274,12 +286,12 @@ def _leg_restatement(
         entities=entities,
         date_request=date_request,
         unit_text=unit_text,
-        source_text=source_text,
-        provenance=provenance,
+        sources=sources,
         entity_roles=roles,
         member_entities=member_entities,
         operations=operations,
         open_axes=open_axes,
+        separate=separate,
     )
 
 
@@ -290,13 +302,13 @@ def _placeholder_no_data(
     entities: Sequence[str] = (),
     date_request: DateRequest | None = None,
     unit_text: str | None = None,
-    source_text: str | None = None,
-    provenance: str | None = None,
+    sources: Sequence[SourceMention] = (),
     role_query: str | None = None,
     entity_roles: Mapping[str, list[DoorRole]] | None = None,
     member_entities: Collection[str] = (),
     operations: tuple[Operation, ...] = (),
     open_axes: Collection[RoleAxis] = (),
+    separate: bool = False,
 ) -> RegionResult:
     """Build a `no_data` result for a leg backfilled after a soft deadline.
 
@@ -309,13 +321,13 @@ def _placeholder_no_data(
         entities=entities,
         date_request=date_request,
         unit_text=unit_text,
-        source_text=source_text,
-        provenance=provenance,
+        sources=sources,
         directional=bool(role_query),
         entity_roles=entity_roles,
         member_entities=member_entities,
         operations=operations,
         open_axes=open_axes,
+        separate=separate,
     )
     return RegionResult(
         variable_text=variable,
@@ -327,29 +339,42 @@ def _placeholder_no_data(
         earliest_index=index,
         restatement=restatement,
         operations=operations,
+        separate=separate,
     )
 
 
-def answered_provenance(region: RegionResult, named: str | None) -> str | None:
-    """The dataset a leg's restatement names: the declared dataset every Spec's identity
-    binds as its source, else the dataset a no-data run settled on
-    (`RegionResult.settled_dataset`), else `named`, the dataset the leg was asked from.
+def answered_provenance(region: RegionResult) -> str | None:
+    """The declared dataset a leg's answer binds: the one every Spec's identity binds as
+    its source, else the one a no-data run settled on (`RegionResult.settled_dataset`),
+    else none.
 
-    A table the bind menu's source slot chose, the one opt-in table electing a shape
-    names, or the table an exclusion leaves serving is bound but was not asked for, so
-    naming it makes a reposted part read that table and no other. A no-data outcome holds
-    no `specs`, and many hold no flagged match, so the region states its table itself. A
-    leg that failed before its run settled on a table restates `named`.
+    The one opt-in table electing a shape names is bound but was not asked for, so naming
+    it makes a reposted part read that table and no other. A no-data outcome holds
+    no `specs`, and many hold no flagged match, so the region states its table itself.
     """
     if not region.specs:
-        return region.settled_dataset or named
+        return region.settled_dataset
     bound: set[str | None] = set()
     for spec in region.specs:
         binding = (spec.definition.identity.facets or {}).get("provenance")
         bound.add(binding.ref if isinstance(binding, IdentityBindingValue) else None)
     if len(bound) == 1 and (source := bound.pop()) in get_index().datasets:
         return source
-    return named
+    return None
+
+
+def restated_sources(
+    scope: SourceScope | SourceRefusal | None,
+    answered: str | None,
+) -> list[SourceMention]:
+    """The source mentions a leg's restatement carries: those its part posted, each with
+    the reference it resolved to (`SourceScope.mentions`, `SourceRefusal.mentions`), else,
+    for a part that names no source, the dataset its answer binds (`answered`, from
+    `answered_provenance`) as one included mention, so posting the restatement mints the
+    same `spec_id`."""
+    if scope is not None:
+        return list(scope.mentions)
+    return [SourceMention(ref=answered)] if answered is not None else []
 
 
 def _bind_phrases(
@@ -409,11 +434,11 @@ async def _stream_one_variable(
     member_entities: frozenset[str] = frozenset(),
     unit_text: str | None = None,
     unit_text_best_effort: bool = False,
-    source_text: str | None = None,
-    provenance: str | None = None,
+    source_scope: SourceScope | SourceRefusal | None = None,
     dropped_qualifier_phrases: list[str] | None = None,
     operations: tuple[Operation, ...] = (),
     open_axes: frozenset[RoleAxis] = frozenset(),
+    separate: bool = False,
     query_text: str | None = None,
     qualifiers: tuple[CodedQualifier, ...] | None = None,
     materialise_graph: GraphReader | None = None,
@@ -422,6 +447,7 @@ async def _stream_one_variable(
     population_memo: OptionsPopulationMemo | None = None,
     place_options_pool: PlaceOptionsPool | None = None,
     coverage: CoverageSnapshot,
+    phase: LegPhase,
 ) -> None:
     """Run one variable leg, queue its events, then send one terminal marker.
 
@@ -429,18 +455,25 @@ async def _stream_one_variable(
     non-infrastructure errors become `no_data`; `EngineInfraError`, a declared-default
     refusal (`DeclaredDefaultUnsupportedError`) and the conversion-table failures in
     `RATE_TABLE_REFUSALS` always fail the response. The qualifier sidecar is appended to the
-    recall/restatement text while `v` stays bare for structured resolution. `provenance`
-    names the dataset the leg answers from. `member_entities` are the entities asked for as
+    recall/restatement text while `v` stays bare for structured resolution. `source_scope`
+    is the leg's compiled source mentions. A scope is what the leg answers under, and its
+    source words leave `v` (`_measure_words`). A refusal, or a scope allowing nothing,
+    makes the leg answer no_data and run no step
+    (`source_refusal_result`, `empty_scope_result`). `member_entities` are the entities asked for as
     their members (`ResolveState.member_entities`), which the restatement states.
-    `entity_roles` also supplies the axes written into the leg's restatement, which names the dataset its identity binds or its
-    no-data run settled on (`answered_provenance`). `operations` ride on the final
+    `entity_roles` also supplies the axes written into the leg's restatement, which carries
+    its source mentions (`restated_sources`). `operations` ride on the final
     region and its restatement, their phrases join `dropped_qualifier_phrases` for this leg's
     bind alone, and the region opens the slots they run over. `open_axes` are the leg's own
     open roles. Together with the flow axes its operations run over they are the axes
     resolution leaves open (`_asked_open_axes`), and the part warns for each of its own that
-    the answer drops (`with_dropped_open_roles`). The final region is appended to `landed` before
-    its terminal marker is queued.
+    the answer drops (`with_dropped_open_roles`). `separate` marks a leg compared with the
+    others (`RegionResult.separate`). The final region is appended to `landed` before
+    its terminal marker is queued. `phase` records the step the leg is in
+    (`search.engine.leg_phase`).
     """
+    track_leg_phase(phase)
+    v = _measure_words(v, source_scope)
     # `v` plus every sidecar CodedQualifier's own phrase, verbatim -- see
     # this function's own qualifiers= comment above for why every
     # user-visible surface below reads this instead of `v`.
@@ -450,6 +483,10 @@ async def _stream_one_variable(
         await queue.put(event)
 
     async def _run() -> RegionResult:
+        if isinstance(source_scope, SourceRefusal):
+            return source_refusal_result(v, source_scope, timing_by_step=base_timing)
+        if source_scope is not None and not source_scope.allowed:
+            return empty_scope_result(v, source_scope, timing_by_step=base_timing)
         return await resolve_variable(
             v,
             entities=entities,
@@ -460,8 +497,7 @@ async def _stream_one_variable(
             member_entities=member_entities,
             unit_text=unit_text,
             unit_text_best_effort=unit_text_best_effort,
-            source_text=source_text,
-            named_dataset=provenance,
+            source_scope=source_scope,
             dropped_qualifier_phrases=_bind_phrases(dropped_qualifier_phrases, operations),
             operations=operations,
             open_axes=_asked_open_axes(open_axes, operations),
@@ -495,6 +531,7 @@ async def _stream_one_variable(
     degraded = False
     try:
         if sem is not None:
+            enter_phase("variable_slot")
             async with sem:
                 region = await _run()
         else:
@@ -516,27 +553,26 @@ async def _stream_one_variable(
             entities=entities,
             date_request=date_request,
             unit_text=unit_text,
-            source_text=source_text,
-            provenance=provenance,
+            sources=restated_sources(source_scope, None),
             role_query=role_query if role_query is not None else query,
             entity_roles=entity_roles,
             member_entities=member_entities,
             operations=operations,
             open_axes=open_axes,
+            separate=separate,
         )
         degraded = True
     else:
         # See RegionResult.restatement -- resolve_variable itself builds no
         # restatement (it has no ParsedPart dependency), so this leg's own
         # echo is attached here, from the exact inputs just passed to _run().
-        answered = answered_provenance(region, provenance)
+        sources = restated_sources(source_scope, answered_provenance(region))
         restatement = _leg_restatement(
             variable_text,
             entities=entities,
             date_request=date_request,
             unit_text=unit_text,
-            source_text=source_text,
-            provenance=answered,
+            sources=sources,
             directional=_success_directional(
                 region,
                 role_query=role_query if role_query is not None else query,
@@ -547,22 +583,24 @@ async def _stream_one_variable(
             member_entities=member_entities,
             operations=operations,
             open_axes=open_axes,
+            separate=separate,
         )
         region = dataclasses.replace(
             region,
             variable_text=variable_text,
+            separate=separate,
             restatement=restatement,
             parsed_form=_leg_parsed_form(
                 variable_text,
                 entities=entities,
                 date_request=date_request,
                 unit_text=unit_text,
-                source_text=source_text,
-                provenance=answered,
+                sources=sources,
                 entity_roles=entity_roles,
                 member_entities=member_entities,
                 operations=operations,
                 open_axes=open_axes,
+                separate=separate,
             ),
         )
         region = with_dropped_open_roles(with_runnable_operations(region, operations), open_axes)
@@ -595,12 +633,12 @@ class _LegOverrides:
     per_variable_member_entities: list[frozenset[str]] | None
     per_variable_unit_texts: list[str | None] | None
     unit_text_best_effort: bool
-    per_variable_source_texts: list[str | None] | None
-    per_variable_provenances: list[str | None] | None
+    per_variable_source_scopes: list[SourceScope | SourceRefusal | None] | None
     per_variable_qualifiers: list[tuple[CodedQualifier, ...]] | None
     per_variable_pre_resolved: list[dict[str, Resolution]] | None
     per_variable_operations: list[tuple[Operation, ...]] | None
     per_variable_open_axes: list[frozenset[RoleAxis]] | None
+    per_variable_separate: list[bool] | None
 
 
 def _leg_entities(overrides: _LegOverrides, i: int) -> list[str]:
@@ -627,18 +665,10 @@ def _leg_unit_text(overrides: _LegOverrides, i: int) -> str | None:
     )
 
 
-def _leg_source_text(overrides: _LegOverrides, i: int) -> str | None:
+def _leg_source_scope(overrides: _LegOverrides, i: int) -> SourceScope | SourceRefusal | None:
     return (
-        overrides.per_variable_source_texts[i]
-        if overrides.per_variable_source_texts is not None
-        else None
-    )
-
-
-def _leg_provenance(overrides: _LegOverrides, i: int) -> str | None:
-    return (
-        overrides.per_variable_provenances[i]
-        if overrides.per_variable_provenances is not None
+        overrides.per_variable_source_scopes[i]
+        if overrides.per_variable_source_scopes is not None
         else None
     )
 
@@ -667,6 +697,12 @@ def _leg_open_axes(overrides: _LegOverrides, i: int) -> frozenset[RoleAxis]:
     )
 
 
+def _leg_separate(overrides: _LegOverrides, i: int) -> bool:
+    return (
+        overrides.per_variable_separate[i] if overrides.per_variable_separate is not None else False
+    )
+
+
 def _leg_pre_resolved(overrides: _LegOverrides, i: int) -> dict[str, Resolution] | None:
     return (
         overrides.per_variable_pre_resolved[i]
@@ -681,7 +717,16 @@ def _leg_variable_text(overrides: _LegOverrides, i: int) -> str:
     soft-deadline backfill, the one `_placeholder_no_data` caller that never
     reaches `_stream_one_variable`'s own composition.
     """
-    return recall_text(overrides.unique[i], _leg_qualifiers(overrides, i))
+    return recall_text(
+        _measure_words(overrides.unique[i], _leg_source_scope(overrides, i)),
+        _leg_qualifiers(overrides, i),
+    )
+
+
+def _measure_words(variable: str, scope: SourceScope | SourceRefusal | None) -> str:
+    """`variable` less the words of the sources its leg's `scope` resolved
+    (`source_scope.without_source_words`), so one span has one reading on every door."""
+    return without_source_words(variable, scope) if isinstance(scope, SourceScope) else variable
 
 
 def _leg_role_query(overrides: _LegOverrides, i: int) -> str:
@@ -733,6 +778,7 @@ def _launch_variable_tasks(
     population_memo: OptionsPopulationMemo | None,
     place_options_pool: PlaceOptionsPool | None,
     coverage: CoverageSnapshot,
+    phases: Sequence[LegPhase],
 ) -> list[asyncio.Task]:
     """Launch one `_stream_one_variable` task per `unique[i]`, applying every
     per-index override `overrides` carries (see `_LegOverrides` and the
@@ -779,12 +825,12 @@ def _launch_variable_tasks(
                 member_entities=_leg_member_entities(overrides, i),
                 unit_text=_leg_unit_text(overrides, i),
                 unit_text_best_effort=overrides.unit_text_best_effort,
-                source_text=_leg_source_text(overrides, i),
-                provenance=_leg_provenance(overrides, i),
+                source_scope=_leg_source_scope(overrides, i),
                 qualifiers=_leg_qualifiers(overrides, i),
                 dropped_qualifier_phrases=dropped_qualifier_phrases,
                 operations=_leg_operations(overrides, i),
                 open_axes=_leg_open_axes(overrides, i),
+                separate=_leg_separate(overrides, i),
                 query_text=query_text,
                 materialise_graph=materialise_graph,
                 materialise_sdmx=materialise_sdmx,
@@ -792,6 +838,7 @@ def _launch_variable_tasks(
                 population_memo=population_memo,
                 place_options_pool=place_options_pool,
                 coverage=coverage,
+                phase=phases[i],
             )
         )
         for i, v in enumerate(unique)
@@ -865,12 +912,12 @@ async def _run_variables_streaming(
     per_variable_member_entities: list[frozenset[str]] | None = None,
     per_variable_unit_texts: list[str | None] | None = None,
     unit_text_best_effort: bool = False,
-    per_variable_source_texts: list[str | None] | None = None,
-    per_variable_provenances: list[str | None] | None = None,
+    per_variable_source_scopes: list[SourceScope | SourceRefusal | None] | None = None,
     per_variable_qualifiers: list[tuple[CodedQualifier, ...]] | None = None,
     per_variable_pre_resolved: list[dict[str, Resolution]] | None = None,
     per_variable_operations: list[tuple[Operation, ...]] | None = None,
     per_variable_open_axes: list[frozenset[RoleAxis]] | None = None,
+    per_variable_separate: list[bool] | None = None,
     dropped_qualifier_phrases: list[str] | None = None,
     query_text: str | None = None,
     materialise_graph: GraphReader | None = None,
@@ -895,10 +942,12 @@ async def _run_variables_streaming(
     qualifier phrases and request-level dependencies are broadcast unchanged.
     `per_variable_operations` gives each leg its own operations, which ride on its
     region and restatement and join its bind's dropped phrases; `None` gives every
-    leg none. `per_variable_provenances` gives each leg the dataset it is asked from;
-    `None` asks every leg from none. `per_variable_open_axes` gives each leg its own open
-    roles, and `None` gives every leg none. `member_entities` are the entities every leg
-    is asked the members of, and `per_variable_member_entities` gives each leg its own.
+    leg none. `per_variable_source_scopes` gives each leg its compiled source mentions;
+    `None` gives every leg none. `per_variable_open_axes` gives each leg its own open
+    roles, and `None` gives every leg none. `per_variable_separate` marks each leg compared
+    with the others (`RegionResult.separate`), and `None` marks none. `member_entities`
+    are the entities every leg is asked the members of, and `per_variable_member_entities`
+    gives each leg its own.
     `query_text` is supplied only for a single-variable request.
     `unit_text_best_effort` marks every leg's unit text as the raw-text door's typed phrase.
     """
@@ -917,12 +966,12 @@ async def _run_variables_streaming(
         per_variable_member_entities=per_variable_member_entities,
         per_variable_unit_texts=per_variable_unit_texts,
         unit_text_best_effort=unit_text_best_effort,
-        per_variable_source_texts=per_variable_source_texts,
-        per_variable_provenances=per_variable_provenances,
+        per_variable_source_scopes=per_variable_source_scopes,
         per_variable_qualifiers=per_variable_qualifiers,
         per_variable_pre_resolved=per_variable_pre_resolved,
         per_variable_operations=per_variable_operations,
         per_variable_open_axes=per_variable_open_axes,
+        per_variable_separate=per_variable_separate,
     )
 
     queue: asyncio.Queue = asyncio.Queue()
@@ -935,6 +984,7 @@ async def _run_variables_streaming(
     # outside core.resolve_events' own scope, rather than silently running
     # this fan-out unbounded.
     sem = bounded_semaphore() if use_semaphore else None
+    phases = [LegPhase() for _ in unique]
     tasks = _launch_variable_tasks(
         unique,
         overrides,
@@ -962,6 +1012,7 @@ async def _run_variables_streaming(
         population_memo=population_memo,
         place_options_pool=place_options_pool,
         coverage=coverage,
+        phases=phases,
     )
 
     progress = _FanOutProgress(results={}, n_pending=len(tasks))
@@ -991,6 +1042,8 @@ async def _run_variables_streaming(
                 ev = _handle_fanout_item(progress, queue.get_nowait())
                 if ev is not None:
                     yield ev
+            if timed_out:
+                _log_unfinished_legs(tasks, phases)
         finally:
             for t in tasks:
                 if not t.done():
@@ -1020,17 +1073,26 @@ async def _run_variables_streaming(
                 entities=_leg_entities(overrides, i),
                 date_request=_leg_date_request(overrides, i),
                 unit_text=_leg_unit_text(overrides, i),
-                source_text=_leg_source_text(overrides, i),
-                provenance=_leg_provenance(overrides, i),
+                sources=restated_sources(_leg_source_scope(overrides, i), None),
                 role_query=_leg_role_query(overrides, i),
                 entity_roles=_leg_entity_roles(overrides, i),
                 member_entities=_leg_member_entities(overrides, i),
                 operations=_leg_operations(overrides, i),
                 open_axes=_leg_open_axes(overrides, i),
+                separate=_leg_separate(overrides, i),
             )
     out.regions = [progress.results[i] for i in range(len(unique))]
     out.timed_out = timed_out
     out.degraded_leg = progress.degraded_leg
+
+
+def _log_unfinished_legs(tasks: Sequence[asyncio.Task], phases: Sequence[LegPhase]) -> None:
+    """Log one line per leg still running when the soft deadline fired, naming its step."""
+    for i, (task, phase) in enumerate(zip(tasks, phases, strict=True)):
+        if not task.done():
+            logger.warning(
+                "soft deadline: leg %d of %d unfinished in phase %s", i, len(tasks), phase.name
+            )
 
 
 async def _resolve_entities_bounded(

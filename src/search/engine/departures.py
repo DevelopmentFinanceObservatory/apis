@@ -37,6 +37,7 @@ from types import MappingProxyType
 from typing import TYPE_CHECKING, Literal
 
 from code_index.shared import get_index
+from dfo_platform.roles import role_key_axis
 from search.heading.departure_fact import DepartureFact, UnservedMembers, ordered_facts
 from search.heading.words import content_words
 from search.models import (
@@ -226,7 +227,10 @@ def spec_departure_facts(
 ) -> list[DepartureFact]:
     """The departures read off `spec` and the `operations` its part carries: operations
     not run, entities the data holds no values for, years outside the served span,
-    modelled values, and groups read as members.
+    modelled values, and groups read as members. On a flow role such a group names the
+    residuals its total counts that the members leave out and the served dataset publishes on
+    that role.
+    A group read as its total departs nothing.
     With no `spec`, only the operations not run.
 
     A forecast to a target year that a `year_unavailable` fact states departs as that
@@ -262,10 +266,36 @@ def spec_departure_facts(
             group=group.label,
             group_size=sum(1 for entity in spec.resolved.entities if entity.role == role),
             group_type=group.entity_type,
+            excluded=_residual_labels(spec, role, group.dcid),
         )
         for role, group in (spec.resolved.entity_groups or {}).items()
+        if group.total is None
     )
     return facts
+
+
+def _residual_labels(spec: Spec, role: str, group: str | None) -> tuple[str, ...]:
+    """The labels of the residuals the total of `group` counts beside its members
+    (`PartyRow.residuals`) that a dataset `spec` serves publishes (`PartyRow.datasets`) on the
+    flow axis of `role` (`PartyRow.axes`), by the code index. Empty on a subject role, which
+    binds no party of a flow, and when no total holds the group."""
+    index = get_index()
+    total = None if group is None else index.totals_by_group.get(group)
+    axis = role_key_axis(role)
+    if total is None or axis is None:
+        return ()
+    provenance = spec.resolved.facets.get("provenance")
+    served = (
+        {provenance.ref}
+        if provenance is not None and provenance.ref is not None
+        else {source.dcid for source in spec.resolved.trace.resolved_sources}
+    )
+    residuals = (index.parties.get(dcid) for dcid in total.residuals)
+    return tuple(
+        party.label or party.dcid
+        for party in residuals
+        if party is not None and axis in party.axes and served.intersection(party.datasets)
+    )
 
 
 def without_request_words(fact: DepartureFact) -> DepartureFact:

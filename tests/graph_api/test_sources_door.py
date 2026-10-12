@@ -5,15 +5,18 @@ from __future__ import annotations
 import json
 import logging
 import threading
-import time
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
 
+from graph_api import app as app_module
+from graph_api import deps as deps_module
+from graph_api.config import DCP_QUEUE_WAIT_WARN_SECONDS
 from graph_api.doors import sources as sources_door
 from graph_api.version import GRAPH_CAPABILITY_VERSION
+from graph_generation import FakeGeneration
 from materialise import provenance_doc
 from materialise.graph import GraphDeadlineExceededError, GraphReadError, SubjectPage, parse_arcs
 from materialise.provenance_doc import (
@@ -30,7 +33,7 @@ from origin_catalogue import BASE, UN_SYSTEM
 from series_coverage.index import ProvenanceShape
 from tests.origin_catalogue.fake_catalogue import provenance_row, restrictive_catalogue
 
-from .conftest import FakeGraphNodeReader, make_client
+from .conftest import FakeGraphNodeReader, make_client, send_past_a_full_pool, wait_until
 
 _FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
@@ -407,10 +410,6 @@ class TestRefusals:
             == "service_unavailable"
         )
         assert (
-            sources_door.classify_sources_exception(sources_door.GraphSourcesPoolExhausted()).code
-            == "service_unavailable"
-        )
-        assert (
             sources_door.classify_sources_exception(
                 GraphReadError("exemplar", upstream_status=404)
             ).code
@@ -435,9 +434,13 @@ class _BlockingGraphNodeReader:
         self._delegate = delegate
         self.entered = threading.Event()
         self.release = threading.Event()
+        # One document read makes several graph calls under one deadline, so distinct
+        # deadlines count the document reads that reached the reader.
+        self.read_deadlines: set[float | None] = set()
         self.calls = delegate.calls
 
     def node_arcs_many(self, dcids, *, properties, deadline=None):
+        self.read_deadlines.add(deadline)
         self.entered.set()
         self.release.wait(timeout=5.0)
         return self._delegate.node_arcs_many(dcids, properties=properties, deadline=deadline)
@@ -456,63 +459,79 @@ class _BlockingGraphNodeReader:
         return self._delegate.node_names_many(dcids)
 
 
-def test_semaphore_full_refuses_503_service_unavailable():
-    delegate = FakeGraphNodeReader(nodes={"provenance/Orphan": {"typeOf": ("Provenance",)}})
-    graph = _BlockingGraphNodeReader(delegate)
-    client = make_client(graph=graph, node_pool_size=1)
+_TWO_ORPHANS = {
+    "provenance/Orphan": {"typeOf": ("Provenance",)},
+    "provenance/OtherOrphan": {"typeOf": ("Provenance",)},
+}
 
-    with client:
-        first_response: list = []
-        first_thread = threading.Thread(
-            target=lambda: first_response.append(
-                client.get("/api/graph/documentation/provenance/Orphan")
-            )
+
+def test_a_read_past_the_pool_size_queues_and_succeeds(caplog: pytest.LogCaptureFixture):
+    graph = _BlockingGraphNodeReader(FakeGraphNodeReader(nodes=_TWO_ORPHANS))
+    client = make_client(graph=graph, node_pool_size=1)
+    # Two sources, since two requests for one source share one read and never queue.
+    paths = iter(
+        [
+            "/api/graph/documentation/provenance/Orphan",
+            "/api/graph/documentation/provenance/OtherOrphan",
+        ]
+    )
+
+    with client, caplog.at_level(logging.WARNING, logger="dfo_platform.executor"):
+        responses = send_past_a_full_pool(
+            client,
+            lambda: client.get(next(paths)),
+            entered=graph.entered,
+            release=graph.release,
         )
-        first_thread.start()
-        assert graph.entered.wait(timeout=5.0), "first request never reached the blocking read"
 
-        second_response = client.get("/api/graph/documentation/provenance/Orphan")
-
-        assert second_response.status_code == 503, second_response.text
-        second_problem = second_response.json()
-        assert second_problem["code"] == "service_unavailable"
-        assert second_problem["retryable"] is True
-
-        graph.release.set()
-        first_thread.join(timeout=5.0)
-        assert first_response, "first request never returned"
-        assert first_response[0].status_code == 200, first_response[0].text
+    assert [response.status_code for response in responses] == [200, 200], [
+        response.text for response in responses
+    ]
+    assert any("graph-dcp saturated" in record.message for record in caplog.records)
 
 
-def test_worker_outliving_the_door_timeout_still_releases_its_slot(monkeypatch):
-    """The door returns 504 while the worker runs; its completion callback
-    releases the semaphore slot when the worker exits.
-    """
-    monkeypatch.setattr(sources_door, "GRAPH_NODE_TIMEOUT_SECONDS", 0.05)
-    delegate = FakeGraphNodeReader(nodes={"provenance/Orphan": {"typeOf": ("Provenance",)}})
-    graph = _BlockingGraphNodeReader(delegate)
+def test_a_read_queued_past_its_deadline_times_out_and_never_runs(monkeypatch):
+    """A read that times out while queued behind a worker that outlived its own door timeout
+    returns 504 and never reaches the reader. The next read runs once that worker returns, and
+    the read that ended past its deadline left nothing cached."""
+    monkeypatch.setattr(sources_door, "GRAPH_NODE_TIMEOUT_SECONDS", 0.2)
+    graph = _BlockingGraphNodeReader(FakeGraphNodeReader(nodes=_TWO_ORPHANS))
     client = make_client(graph=graph, node_pool_size=1)
 
     with client:
-        timed_out_response = client.get("/api/graph/documentation/provenance/Orphan")
-        assert timed_out_response.status_code == 504, timed_out_response.text
-        assert graph.entered.wait(timeout=5.0), "worker never started"
-
-        # The timed-out worker holds the slot, so the next request gets 503.
-        still_full_response = client.get("/api/graph/documentation/provenance/Orphan")
-        assert still_full_response.status_code == 503, still_full_response.text
-
-        # The completion callback runs on the executor thread; poll for slot release.
+        running = client.get("/api/graph/documentation/provenance/Orphan")
+        assert graph.entered.wait(timeout=5.0), "the first read never started"
+        queued = client.get("/api/graph/documentation/provenance/OtherOrphan")
         graph.release.set()
-        deadline = time.monotonic() + 5.0
-        recovered_response = still_full_response
-        while time.monotonic() < deadline:
-            recovered_response = client.get("/api/graph/documentation/provenance/Orphan")
-            if recovered_response.status_code != 503:
-                break
-            time.sleep(0.02)
+        recovered = client.get("/api/graph/documentation/provenance/Orphan")
 
-        assert recovered_response.status_code == 200, recovered_response.text
+    assert running.status_code == 504, running.text
+    assert queued.status_code == 504, queued.text
+    assert queued.json()["code"] == "timeout"
+    assert queued.json()["retryable"] is True
+    assert recovered.status_code == 200, recovered.text
+    assert len(graph.read_deadlines) == 2
+
+
+@pytest.mark.parametrize(("waited_s", "level"), [(0.05, "DEBUG"), (1.5, "WARNING")])
+def test_a_dcp_read_logs_its_queue_wait(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch, waited_s: float, level: str
+):
+    """A wait longer than `DCP_QUEUE_WAIT_WARN_SECONDS` logs at WARNING with the threshold."""
+    clock = iter([100.0, 100.0 + waited_s])
+    monkeypatch.setattr(deps_module, "perf_counter", lambda: next(clock))
+
+    def read() -> str:
+        return "read"
+
+    with caplog.at_level(logging.DEBUG, logger=deps_module.__name__):
+        assert deps_module.log_queue_wait(read)() == "read"
+
+    records = [record for record in caplog.records if record.name == deps_module.__name__]
+    assert [record.levelname for record in records] == [level]
+    args = records[0].args
+    assert args[1] == pytest.approx(waited_s * 1000)
+    assert args[2:] == ((DCP_QUEUE_WAIT_WARN_SECONDS * 1000,) if level == "WARNING" else ())
 
 
 class _RaisingGraphNodeReader:
@@ -550,6 +569,130 @@ def test_graph_deadline_exceeded_end_to_end_maps_to_504_timeout():
     problem = resp.json()
     assert problem["code"] == "timeout"
     assert problem["retryable"] is True
+
+
+class _FailingOnceGraphNodeReader:
+    """Raise `GraphReadError` from the first `node_arcs_many` call, then delegate."""
+
+    def __init__(self, delegate: FakeGraphNodeReader) -> None:
+        self._delegate = delegate
+        self.calls = delegate.calls
+        self._failed = False
+
+    def node_arcs_many(self, dcids, *, properties, deadline=None):
+        if not self._failed:
+            self._failed = True
+            raise GraphReadError("exemplar", upstream_status=503)
+        return self._delegate.node_arcs_many(dcids, properties=properties, deadline=deadline)
+
+    def node_subjects(self, dcid, *, property, filters=None, max_results, deadline=None):
+        return self._delegate.node_subjects(
+            dcid, property=property, filters=filters, max_results=max_results, deadline=deadline
+        )
+
+    def node_names_many(self, dcids, *, deadline: float | None = None):
+        return self._delegate.node_names_many(dcids)
+
+
+_ORPHAN_PATH = "/api/graph/documentation/provenance/Orphan"
+
+
+class TestDocumentCache:
+    """`GraphDeps.provenance_docs` serves repeat and concurrent requests for one source from one
+    graph read per generation and catalogue build."""
+
+    def test_a_repeat_request_makes_no_graph_read(self):
+        graph = FakeGraphNodeReader(nodes={"provenance/Orphan": {"typeOf": ("Provenance",)}})
+
+        with make_client(graph=graph) as client:
+            first = client.get(_ORPHAN_PATH)
+            reads = graph.calls["node_arcs_many"]
+            second = client.get(_ORPHAN_PATH)
+
+        assert first.status_code == second.status_code == 200, (first.text, second.text)
+        assert second.json() == first.json()
+        assert reads > 0
+        assert graph.calls["node_arcs_many"] == reads
+
+    def test_concurrent_requests_for_one_source_share_one_read(self):
+        graph = _BlockingGraphNodeReader(
+            FakeGraphNodeReader(nodes={"provenance/Orphan": {"typeOf": ("Provenance",)}})
+        )
+        client = make_client(graph=graph, node_pool_size=2)
+        responses: list[object] = []
+
+        with client:
+            docs = client.app.state.graph_deps.provenance_docs
+            first = threading.Thread(target=lambda: responses.append(client.get(_ORPHAN_PATH)))
+            first.start()
+            assert graph.entered.wait(timeout=5.0), "the first read never started"
+            second = threading.Thread(target=lambda: responses.append(client.get(_ORPHAN_PATH)))
+            second.start()
+            # The second request has looked the document up once it counts a miss.
+            wait_until(lambda: docs.stats()["misses"] == 2)
+            graph.release.set()
+            first.join(timeout=5.0)
+            second.join(timeout=5.0)
+
+        assert [response.status_code for response in responses] == [200, 200]
+        assert len(graph.read_deadlines) == 1
+
+    def test_a_new_generation_reads_again(self, monkeypatch: pytest.MonkeyPatch):
+        generation = FakeGeneration(token="gen-a")
+        monkeypatch.setattr(app_module, "acquire_shared_generation", lambda **_kwargs: generation)
+        monkeypatch.setattr(app_module, "release_shared_generation", lambda _shared: None)
+        graph = FakeGraphNodeReader(nodes={"provenance/Orphan": {"typeOf": ("Provenance",)}})
+
+        with make_client(graph=graph) as client:
+            assert client.get(_ORPHAN_PATH).status_code == 200
+            reads = graph.calls["node_arcs_many"]
+            assert client.get(_ORPHAN_PATH).status_code == 200
+            assert graph.calls["node_arcs_many"] == reads
+            generation.set_unknown()
+            assert client.get(_ORPHAN_PATH).status_code == 200
+
+        # `set_unknown` changes the stamp without clearing caches, so the key alone reads again.
+        assert graph.calls["node_arcs_many"] == 2 * reads
+
+    def test_a_failed_read_is_read_again_on_the_next_request(self):
+        graph = _FailingOnceGraphNodeReader(
+            FakeGraphNodeReader(nodes={"provenance/Orphan": {"typeOf": ("Provenance",)}})
+        )
+
+        with make_client(graph=graph) as client:
+            failed = client.get(_ORPHAN_PATH)
+            recovered = client.get(_ORPHAN_PATH)
+            reads = graph.calls["node_arcs_many"]
+            repeat = client.get(_ORPHAN_PATH)
+
+        assert failed.status_code == 503, failed.text
+        assert recovered.status_code == repeat.status_code == 200, (recovered.text, repeat.text)
+        assert reads > 0
+        assert graph.calls["node_arcs_many"] == reads
+
+    def test_coverage_facts_follow_the_coverage_index_of_each_response(self):
+        """The cached document carries no coverage facts, so a refreshed index shows on the next
+        response without a graph read."""
+        graph = _two_child_dataset()
+        both = ("dc/base/Child1", "dc/base/Child2")
+        coverage = _SwappingCoverage(
+            _FakeIndex(provenance_currencies={}, provenance_shapes={}),
+            _FakeIndex(
+                provenance_currencies=dict.fromkeys(both, frozenset({"USD"})),
+                provenance_shapes={},
+            ),
+        )
+
+        with make_client(graph=graph, coverage=coverage) as client:
+            before = client.get("/api/graph/documentation/dc/d/Dataset1").json()
+            reads = graph.calls["node_arcs_many"]
+            after = client.get("/api/graph/documentation/dc/d/Dataset1").json()
+
+        assert before["scope_and_units"]["currencies"] == []
+        assert "scope_and_units.currencies" in before["gaps"]
+        assert after["scope_and_units"]["currencies"] == ["USD"]
+        assert "scope_and_units.currencies" not in after["gaps"]
+        assert graph.calls["node_arcs_many"] == reads
 
 
 class TestLiveFixtures:

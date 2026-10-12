@@ -11,12 +11,11 @@ import httpx
 import datasets_api.capabilities as capabilities_module
 from artifact_store import LiveArtifactInventory, StoredArtifact, Tier
 from dataset_store.snapshot import LiveSnapshotReader
-from datasets_api.revision import SentinelRevisionReader
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from datasets_api.version_store import LiveVersionRecordWriter
 from dc_sdmx import SdmxClient
 from materialise.graph import Facet
-from series_coverage.schema import FacetMetadata, RoleNames
+from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
@@ -118,10 +117,10 @@ def _coverage_service() -> FakeCoverageService:
     """Builds 2020 coverage rows for Kenya and Uganda."""
     index = build_coverage_index(
         [
-            (_STAT_VAR, "facet1", "country/USA", "country/KEN", [2020]),
-            (_STAT_VAR, "facet1", "country/USA", "country/UGA", [2020]),
+            (_STAT_VAR, "facet1", ABSENT_ENTITY, "country/KEN", [2020]),
+            (_STAT_VAR, "facet1", ABSENT_ENTITY, "country/UGA", [2020]),
         ],
-        role_names={_STAT_VAR: RoleNames(donor="provider", recipient="recipient")},
+        role_names={_STAT_VAR: RoleNames(donor=None, recipient="recipient")},
         facet_metadata={
             "facet1": FacetMetadata(
                 provenance_id="OECD_DAC2A", measurement_method="GrantEquivalent", unit="USD"
@@ -150,7 +149,6 @@ def _client(
         spec_reader=LiveSpecReader(store=store),
         graph=graph if graph is not None else _graph(),
         sdmx=SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport()),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=artifact_store if artifact_store is not None else FakeArtifactStore(),
         version_writer=version_writer,
         snapshot_reader=snapshot_reader if snapshot_reader is not None else FakeSnapshotReader(),

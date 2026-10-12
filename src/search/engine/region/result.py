@@ -28,6 +28,7 @@ from search.engine.retrieval.bound_values import (
 from search.engine.retrieval.member_facts import MemberFacts
 from search.engine.retrieval.retrieve import MemberPopulation
 from search.engine.shape import ShapeDraft
+from search.engine.source_scope import AmbiguousSource, SourceRefusal, SourceScope
 from search.engine.spec_build import RoleAxisFactInput
 from search.heading.departure_fact import DepartureFact
 from search.models import (
@@ -125,8 +126,8 @@ class RegionResult:
     # Contains one Spec and differs from `nearest_real`.
     flagged_match: tuple[Spec, ...] | None = None
     # The dataset a no-data outcome's run settled on (`ResolveState.settled_dataset`),
-    # which the part's restatement names (`fanout.answered_provenance`). `None` when the
-    # run settled on none, and on every other outcome.
+    # which the restatement of a part that names no source names (`fanout.answered_provenance`).
+    # `None` when the run settled on none, and on every other outcome.
     settled_dataset: str | None = None
     # Failed quality-gate code, independent of which near-match field is populated.
     gate: NoDataGate | None = None
@@ -143,9 +144,24 @@ class RegionResult:
     # index vocabulary. Populated only for `qualifier_not_bound`. Full records
     # live on `flagged_match.resolved.trace.query_qualifiers`.
     unbound_qualifiers: tuple[ResolvedQualifier, ...] = ()
+    # The sources a `qualifier_not_bound` outcome could not bind, each as an unbound record
+    # under its label: the sources the part's scope names or leaves out, or the datasets
+    # that alone publish the elected shape. Kept apart from the category terms in
+    # `unbound_qualifiers` so the sentence names them as sources.
+    unbound_sources: tuple[ResolvedQualifier, ...] = ()
+    # The source scope a no-data outcome was produced under (`ResolveState.scope`), set by
+    # `pipeline.resolve_variable` on every no-data result of a part with source mentions, so
+    # the outcome names the sources that limited it. `None` on every other result.
+    source_scope: SourceScope | None = None
     # Ambiguous query wordings and their candidates, populated only for
     # `entity_ambiguous`.
     ambiguous_entities: tuple[AmbiguousEntity, ...] = ()
+    # The source wordings a `source_not_resolved` or `source_ambiguous` outcome rests on, in
+    # mention order (`source_scope.SourceRefusal.terms`). Empty for every other outcome.
+    source_terms: tuple[str, ...] = ()
+    # Each ambiguous source wording with the sources it could name, populated only for
+    # `source_ambiguous`.
+    ambiguous_sources: tuple[AmbiguousSource, ...] = ()
     # Entity names that resolved to exactly one graph node, with that node's dcid,
     # populated only for `entity_ambiguous`. The part's `data_query` pins them.
     resolved_entity_dcids: Mapping[str, str] = field(default_factory=dict)
@@ -252,6 +268,9 @@ class RegionResult:
     # posted part. `None` when `ParsedPart` bounds reject the inputs, on soft-deadline
     # placeholders, and on resubmit identity, candidate and placeholder regions.
     parsed_form: ParsedPart | None = None
+    # The leg's part is compared with the others (`ParsedPart.separate`), so the fold
+    # (`same_shape.fold_key`) keeps it its own part.
+    separate: bool = False
     # Operations the question asks for over this region's data, echoed onto its
     # part. Like restatement, part assembly reads them from each original region.
     operations: tuple[Operation, ...] = ()
@@ -343,6 +362,40 @@ class RegionResult:
         `degraded`, `alternates_left_out` or `scope_unsettled`. Every door reports such a
         region as a degraded leg (`DoneEvent.degraded_leg`), so no cache stores it."""
         return self.degraded or self.alternates_left_out or self.scope_unsettled
+
+
+def source_refusal_result(
+    variable_text: str, refusal: SourceRefusal, *, timing_by_step: Mapping[str, int]
+) -> RegionResult:
+    """The no-data result of a part whose source words resolved to no source or to several
+    (`source_scope.SourceRefusal`), which runs no step of the pipeline."""
+    return RegionResult(
+        variable_text=variable_text,
+        status="no_data",
+        specs=(),
+        no_data_reason=refusal.reason,
+        warnings=(),
+        timing_by_step=dict(timing_by_step),
+        source_terms=refusal.terms,
+        ambiguous_sources=refusal.ambiguous,
+    )
+
+
+def empty_scope_result(
+    variable_text: str, scope: SourceScope, *, timing_by_step: Mapping[str, int]
+) -> RegionResult:
+    """The no-data result of a part whose source mentions allow no provenance, which runs
+    no step of the pipeline: ``qualifier_not_bound`` under `scope`, so the outcome names
+    the sources the part named, else those it excluded (`conjoin._unbound_terms`)."""
+    return RegionResult(
+        variable_text=variable_text,
+        status="no_data",
+        specs=(),
+        no_data_reason="qualifier_not_bound",
+        warnings=(),
+        timing_by_step=dict(timing_by_step),
+        source_scope=scope,
+    )
 
 
 def answered_roles(shape: ShapeDraft) -> tuple[str, ...]:

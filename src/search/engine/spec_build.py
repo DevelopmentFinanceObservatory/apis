@@ -35,7 +35,12 @@ from search.engine.retrieval.bound_values import (
 from search.engine.retrieval.derive import upstream_source
 from search.engine.retrieval.download import download_facts
 from search.engine.retrieval.member_facts import ArcsMemberFacts, asserted_constraint_properties
-from search.engine.retrieval.read_plan import data_years, served_dates, unserved_entities
+from search.engine.retrieval.read_plan import (
+    data_years,
+    served_dates,
+    served_provenances,
+    unserved_entities,
+)
 from search.engine.shape import (
     ShapeDraft,
     SlotKeyDraft,
@@ -43,6 +48,7 @@ from search.engine.shape import (
     identity_shape_for,
     is_ratio_backed_sv,
 )
+from search.engine.source_scope import source_label
 from search.engine.spec_id import (
     build_identity_projection,
     build_spec_identity,
@@ -149,6 +155,26 @@ def _source_slot_binding(binding_draft: SlotBindingDraft | None) -> BindingValue
     dataset = get_index().datasets.get(dcid)
     ref = GraphRef(dcid=dcid, label=dataset.label if dataset is not None else dcid)
     return BindingValue(value=SlotValue(ref=ref, value_kind="source"))
+
+
+def with_served_provenance(slots: Sequence[Slot], provenances: Sequence[str]) -> list[Slot]:
+    """`slots` with the source slot bound to `provenances`, the provenances an answer's
+    read plan serves (`read_plan.served_provenances`), as a value for one and a set for
+    several. A shape with no source slot gains one."""
+    values = [
+        SlotValue(ref=GraphRef(dcid=dcid, label=source_label(dcid)), value_kind="source")
+        for dcid in provenances
+    ]
+    binding = BindingValue(value=values[0]) if len(values) == 1 else BindingSet(values=values)
+    if any(slot.key.axis == "source" for slot in slots):
+        return [
+            slot.model_copy(update={"binding": binding}) if slot.key.axis == "source" else slot
+            for slot in slots
+        ]
+    return [
+        *slots,
+        Slot(key=SlotKey(axis="source", property=None, label="data source"), binding=binding),
+    ]
 
 
 def build_slot(
@@ -258,7 +284,8 @@ class NamedGroup:
     `label` is the group's name as the request gave it. `dcid` is its own graph node, when
     the graph holds one, and `entity_type` is that node's graph type. `named_alone` are the
     members the request also named on their own, each as the role key it fills and its
-    dcid.
+    dcid. `total` is the party a flow dataset publishes as the group's total
+    (`PlaceSet.total`), which a role can bind in place of the members.
     """
 
     label: str
@@ -266,6 +293,7 @@ class NamedGroup:
     member_dcids: frozenset[str]
     entity_type: str | None = None
     named_alone: frozenset[tuple[str, str]] = frozenset()
+    total: str | None = None
 
 
 def spec_named_groups(spec: Spec) -> tuple[NamedGroup, ...]:
@@ -295,6 +323,7 @@ def spec_named_groups(spec: Spec) -> tuple[NamedGroup, ...]:
             member_dcids=frozenset(entities[role]),
             entity_type=group.entity_type,
             named_alone=frozenset((r, d) for r, d in alone if r == role and d in entities[role]),
+            total=group.total,
         )
         for role, group in (spec.resolved.entity_groups or {}).items()
     )
@@ -330,10 +359,11 @@ def role_entity_groups(
 ) -> dict[str, EntityGroup]:
     """The group each role's entities stand for, keyed by identity role key.
 
-    A role takes a group when its bound dcids are exactly the group's members, so a role
-    whose entities were capped, widened or edited reads as its members instead. Of groups
-    with the same members, one with a node wins over one without, then the first by dcid,
-    then label, whatever order the request named them in.
+    A role takes a group when its bound dcids are exactly the group's members, or exactly
+    the group's total (`NamedGroup.total`), which the group then names
+    (`EntityGroup.total`). A role whose entities were capped, widened or edited reads as its
+    members instead. Of groups with the same members, one with a node wins over one without,
+    then the first by dcid, then label, whatever order the request named them in.
     """
     dcids_by_role: dict[str, set[str]] = {}
     for entity in entities:
@@ -342,13 +372,16 @@ def role_entity_groups(
     result: dict[str, EntityGroup] = {}
     for role, dcids in dcids_by_role.items():
         group = min(
-            (g for g in groups if g.member_dcids == dcids),
+            (g for g in groups if g.member_dcids == dcids or {g.total} == dcids),
             key=lambda g: (g.dcid is None, g.dcid or "", g.label),
             default=None,
         )
         if group is not None:
             result[role] = EntityGroup(
-                dcid=group.dcid, label=group.label, entity_type=group.entity_type
+                dcid=group.dcid,
+                label=group.label,
+                entity_type=group.entity_type,
+                total=group.total if {group.total} == dcids else None,
             )
     return result
 
@@ -992,6 +1025,7 @@ def build_spec(
     named_groups: Iterable[NamedGroup] = (),
     coverage_index: CoverageIndex | None = None,
     measure_served_rows: Callable[[BaseIdentity], ServedRows | None] | None = None,
+    pin_served_provenance: bool = False,
 ) -> Spec:
     """Assemble a Spec with a deterministic spec_id.
 
@@ -1025,6 +1059,12 @@ def build_spec(
         measure_served_rows: Counts the rows a resubmit of each alternative measure would
             serve (`SpecAlternativeMeasure.served_rows`). An alternative counted at none
             is omitted. None leaves the alternatives uncounted.
+        pin_served_provenance: Set for a part that names or excludes a source. The
+            identity's source slot then binds the provenances ``plan`` serves
+            (``with_served_provenance``), so a resubmit or a mint of the ``spec_id`` reads
+            the sources that answered and no other, and the provenance facet of
+            ``facets`` reports basis ``bound``. Without a plan, or with a plan that
+            serves nothing, the slots and facets stay as given.
         stat_vars: The served members. ``ResolvedSpec.members`` holds them all, and
             ``ResolvedSpec.sentence_facts`` what the renderer reads of them. The wire
             states only the date range they serve (``ResolvedStatVars.data_date_range``).
@@ -1048,6 +1088,14 @@ def build_spec(
     _check_provenance_disjoint(
         text_recognized_properties, measure_elected_properties, defaulted_properties
     )
+
+    if pin_served_provenance and (served := served_provenances(plan)):
+        slots = with_served_provenance(slots, served)
+        if facets is not None and (provenance_facet := facets.get("provenance")) is not None:
+            facets = {
+                **facets,
+                "provenance": provenance_facet.model_copy(update={"basis": "bound"}),
+            }
 
     # spec_id and identity derive from one projection through build_spec_identity.
     hashed_entities = identity_entities if identity_entities is not None else entities

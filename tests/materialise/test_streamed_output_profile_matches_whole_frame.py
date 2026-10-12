@@ -23,14 +23,13 @@ from ._group_support import (
     _OTHER_ENTITY,
     _ROLE,
     _SHARED_FACET,
-    _SNAPSHOT,
     _STAT_VAR_A,
     _STAT_VAR_B,
     _STAT_VAR_C,
     _request,
     _sdmx_client_for,
 )
-from .conftest import FakeGraphReader, FakeRevisionReader
+from .conftest import FakeGraphReader
 
 _STAT_VAR_D = "dcid:Stat_D"
 _BARE_D = "Stat_D"
@@ -92,8 +91,7 @@ def _run(monkeypatch, *, target_rows: int | None) -> MaterialisationResult:
         requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=_coverage(),

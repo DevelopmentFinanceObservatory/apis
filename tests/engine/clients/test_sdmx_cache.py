@@ -1194,3 +1194,40 @@ def test_caching_sdmx_client_clear_clears_the_series_cache():
         max_bytes=1000,
     )
     assert len(fake.series_calls) == calls_before + 1, "a cleared cache must re-fetch"
+
+
+def test_a_starter_near_its_deadline_never_cuts_the_shared_read():
+    """The caller that starts a read stops at its own deadline. The read continues under
+    the flight's deadline (a resubmit's hard cap from its start) and serves the next caller."""
+    fake = _fake({"V1": {_RECIPIENT: [_facet(facet_id="f1")]}})
+    release = threading.Event()
+    read_deadlines: list[float | None] = []
+
+    class _SlowClient:
+        def role_series(self, **kwargs):
+            read_deadlines.append(kwargs["deadline"])
+            assert release.wait(timeout=5), "test deadlocked waiting for release"
+            return fake.role_series(**kwargs)
+
+    cache = CachingSdmxClient(_SlowClient(), maxsize=10)
+
+    def ask(deadline: float) -> dict:
+        return cache.role_series(
+            variables=["V1"],
+            entities=_ENTITIES,
+            facet_ids={"f1"},
+            max_rows=1000,
+            max_bytes=1000,
+            deadline=deadline,
+        )
+
+    started_at = time.monotonic()
+    with pytest.raises(TimeoutError):
+        ask(started_at + 0.1)
+    release.set()
+
+    assert ask(time.monotonic() + 5)["V1"]
+    assert len(read_deadlines) == 1, "the next caller must reuse the starter's read"
+    flight_deadline = read_deadlines[0]
+    assert flight_deadline is not None
+    assert flight_deadline - started_at >= 90, "the read must run under the flight's deadline"

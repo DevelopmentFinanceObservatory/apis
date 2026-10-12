@@ -343,6 +343,15 @@
   },
   {
     "has_description": false,
+    "method": "GET",
+    "name": "get_file",
+    "operation_id": "get_file_api_datasets__id___content_version__files__digest__get",
+    "path": "/api/datasets/{id}/{content_version}/files/{digest}",
+    "summary": "Get File",
+    "surface": "datasets"
+  },
+  {
+    "has_description": false,
     "method": "DELETE",
     "name": "refuse_malformed_id",
     "operation_id": null,

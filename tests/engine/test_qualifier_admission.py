@@ -10,6 +10,7 @@ import asyncio
 import dataclasses
 import logging
 import time
+from collections.abc import Sequence
 from typing import cast
 from unittest.mock import patch
 
@@ -17,12 +18,12 @@ import pytest
 
 from code_index.query import CodeIndex
 from code_index.shared import get_index, get_measure_index
-from code_index.types import CodeRow, CodeSystemDeclaration, IndexStamp
+from code_index.types import CodeRow, CodeSystemDeclaration, IndexStamp, MeasureValueRow
 from entity_resolution import Admission, EntityResolver
 from search.engine.bind import (
+    CandidateMenu,
     SlotBindingDraft,
     _build_universal_bind_prompt,
-    _offered_source_drafts,
     _UniversalBindOutput,
 )
 from search.engine.clients.graph import EngineGraphClient
@@ -34,6 +35,8 @@ from search.engine.qualifier_match import (
     QualifierMatch,
     QualifierReadings,
     QualifierTie,
+    bindable_codes,
+    governing_connectives,
     match_qualifier_ties,
     match_qualifiers,
 )
@@ -44,20 +47,27 @@ from search.engine.region.phase_rank_bind import (
     _admit_qualifier_matches,
     _admit_qualifier_matches_against_elected_shape,
     _admit_qualifier_ties,
+    _candidate_menus,
+    _coverage_records,
     _dataset_candidates,
     _filter_admitted_matches,
     _force_qualifier_bindings,
     _log_admitted_qualifiers,
+    _menu_choices,
+    _resolve_query_qualifiers,
     _undeclared_qualifiers,
 )
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.qualifier_readings import match_query_readings
 from search.engine.region.state import ResolveState, shape_vocabulary
-from search.engine.retrieval.bound_values import held_codes
+from search.engine.retrieval.bound_values import held_codes, shape_for_part
 from search.engine.retrieval.derive import derive_shapes
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.heading.departure_fact import DepartureFact
+from search.models import SourceMention
+from search.render.plan import render_sentence
 from series_coverage.schema import RoleNames
+from tests.engine._builders import place_sets
 from tests.engine._fake_coverage import FakeCoverageService, empty_coverage_snapshot, patch_coverage
 from tests.engine._fake_sdmx import FakeSdmxClient
 from tests.engine._harness import door_roles_for_test_query
@@ -68,6 +78,7 @@ from tests.engine._index_slots import (
     query_qualifiers,
     read_text,
 )
+from tests.engine._source_scopes import part_scope
 from tests.engine.test_two_ended_menu import _CRS_SV as _TWO_ENDED_CRS_SV
 from tests.engine.test_two_ended_menu import _DAC2A_ODA_SV as _TWO_ENDED_DAC2A_ODA_SV
 from tests.engine.test_two_ended_menu import _SUBJECT_SV as _TWO_ENDED_SUBJECT_SV
@@ -221,7 +232,6 @@ def test_entities_only_query_admits_only_the_flow_qualifier():
 # ---------------------------------------------------------------------------
 
 _COLLISION_QUERIES = (
-    "total population for top 10 countries",
     "welfare spending trends",
     "insurance coverage by district",
     "nutrition programs in rural areas",
@@ -252,6 +262,61 @@ def test_collision_words_are_never_admitted_against_a_non_crs_shape():
 
 def test_no_capped_shape_at_all_admits_nothing():
     assert _admit("ODA standard grants for health", []) == ()
+
+
+# ---------------------------------------------------------------------------
+# A code no index row holds claims no word in a shape's own reading.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("variable", "everywhere", "own"),
+    [
+        (
+            "population policies and reproductive health ODA",
+            {"population": ["CRSTypeOfFinance4"]},
+            {},
+        ),
+        (
+            "goods donations",
+            {"goods donations": ["CRSCooperationModalityJ", "CRSCooperationModalityJ01"]},
+            {},
+        ),
+        ("gross national income", {"gross national income": ["CRSTypeOfFinance1"]}, {}),
+        ("ODA", {}, {"ODA": ["CRSTypeOfFlow10"]}),
+    ],
+    ids=["population", "goods-donations", "gross-national-income", "held-code"],
+)
+def test_a_code_no_row_holds_claims_no_word_on_a_shape(variable, everywhere, own):
+    """`CRSTypeOfFinance4` ("population"), the in-kind modalities and `CRSTypeOfFinance1`
+    ("gross national income") are codes no index row holds, itself or through a
+    descendant, so a CRS shape's own reading neither matches nor ties them, and
+    "population" is free for a purpose reading. The reading in every code system keeps
+    them, and with them its measure values. "gross" in "gross national income" is no
+    netting basis on any shape. A shape's own reading matches the CRS flow type ODA, which
+    rows hold."""
+    reading = read_text(variable, _REAL_INDEX, get_measure_index(), vocabularies=[_CRS])
+
+    bindable = bindable_codes(_REAL_INDEX)
+    unheld = {
+        span.matched_text: sorted(row.dcid for row in span.rows)
+        for span in reading.everywhere.spans
+        if all(isinstance(row, CodeRow) and row.dcid not in bindable for row in span.rows)
+    }
+    assert unheld == everywhere
+    crs_codes = {
+        span.matched_text: sorted(row.dcid for row in span.rows)
+        for span in reading.by_vocabulary[_CRS].spans
+        if all(isinstance(row, CodeRow) for row in span.rows)
+    }
+    assert {text: crs_codes[text] for text in own} == own
+    assert not set(crs_codes) & set(everywhere)
+    assert not [
+        span
+        for span in reading.by_vocabulary[_CRS].spans
+        if any(isinstance(row, MeasureValueRow) for row in span.rows)
+        and span.matched_text == "gross"
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +352,7 @@ def test_a_part_naming_the_crs_refuses_only_terms_its_own_reading_cannot_hold(va
         meas_denom_dcid=None,
         slot_keys=crs_flow_slot_keys(),
     )
-    candidates = _dataset_candidates([shape], "provenance/OECDCreditorReportingSystem", frozenset())
+    candidates = _dataset_candidates([shape], part_scope("provenance/OECDCreditorReportingSystem"))
 
     undeclared = _undeclared_qualifiers(
         variable,
@@ -299,16 +364,17 @@ def test_a_part_naming_the_crs_refuses_only_terms_its_own_reading_cannot_hold(va
     assert [record.text for record in undeclared] == refused
 
 
-@pytest.mark.parametrize("named_at", ["seam", "source-slot"])
+@pytest.mark.parametrize("named_at", ["ref", "words"])
 @pytest.mark.parametrize(
     ("variable", "refused"),
     [("multilateral ODA to Kenya", ["multilateral ODA"]), ("ODA to Kenya", [])],
 )
-def test_vetting_refuses_a_term_the_elected_crs_shape_reads_in_part(named_at, variable, refused):
-    """A part naming the CRS, at the seam or through the bind model's source slot, refuses
-    `qualifier_not_bound` on a term the elected shape's own reading leaves a word of, after
-    the model binds ODA (`CRSTypeOfFlow10`), a code the CRS holds. Otherwise "multilateral"
-    would only warn and the part answer all CRS ODA to Kenya."""
+def test_a_term_the_elected_crs_shape_reads_in_part_is_unavailable(named_at, variable, refused):
+    """A part naming the CRS, by its ref or by words a raw-text query's extraction carries,
+    records a term the elected shape's own reading leaves a word of as unbound with
+    evidence "unavailable", after the model binds ODA (`CRSTypeOfFlow10`), a code the CRS
+    holds, so the part refuses `qualifier_not_bound` with the ODA answer as its near match.
+    Otherwise "multilateral" would only warn and the part answer all CRS ODA to Kenya."""
     crs = "provenance/OECDCreditorReportingSystem"
     flow_row = next(row for row in _REAL_INDEX.statvars if row.population_type == "FinancialFlow")
     derived = ShapeDraft(
@@ -321,26 +387,22 @@ def test_vetting_refuses_a_term_the_elected_crs_shape_reads_in_part(named_at, va
         meas_denom_dcid=None,
         slot_keys=crs_flow_slot_keys(),
     )
-    seam = named_at == "seam"
-    (shape,) = _dataset_candidates([derived], crs if seam else None, frozenset())
-    if not seam:
-        # No family of the packaged index has a second publisher, so the shape is given
-        # the source slot a second table would offer.
-        shape = dataclasses.replace(shape, source_options=(crs, "provenance/OECDDAC1"))
+    scope = part_scope(crs)
+    assert scope is not None
+    if named_at == "words":
+        scope = dataclasses.replace(scope, mentions=(SourceMention(text="CRS", ref=crs),))
+    (shape,) = _dataset_candidates([derived], scope)
     flow = SlotBindingDraft(
         axis="what", property_dcid="crsTypeOfFlow", kind="value", value_dcids=["CRSTypeOfFlow10"]
-    )
-    source = SlotBindingDraft(
-        axis="source", property_dcid="provenance", kind="value", value_dcids=[crs]
     )
     state = _vet_state(
         variable=variable,
         capped_shapes=[shape],
         chosen_shape_index=0,
-        bindings=[flow] if seam else _offered_source_drafts([flow, source], shape),
+        bindings=[flow],
         admitted_ties=(),
     )
-    state.named_dataset = crs if seam else None
+    state.scope = scope
     reading = read_text(
         variable, _REAL_INDEX, get_measure_index(), vocabularies=[shape_vocabulary(shape)]
     )
@@ -349,15 +411,13 @@ def test_vetting_refuses_a_term_the_elected_crs_shape_reads_in_part(named_at, va
         vocabulary: own.spans for vocabulary, own in reading.by_vocabulary.items()
     }
 
-    result = asyncio.run(_phase_vet_election(state))
+    assert asyncio.run(_phase_vet_election(state)) is None
+    assert state.settled_dataset() == crs
+    state.bindings = list(state.bind_result.bindings)
 
-    if refused:
-        assert result is not None
-        assert result.no_data_reason == "qualifier_not_bound"
-        assert [record.text for record in result.unbound_qualifiers] == refused
-    else:
-        assert result is None
-        assert state.named_dataset == crs
+    unbound = [q for q in _resolve_query_qualifiers(state) if q.disposition != "bound"]
+
+    assert [(q.text, q.evidence) for q in unbound] == [(text, "unavailable") for text in refused]
 
 
 # ---------------------------------------------------------------------------
@@ -530,21 +590,54 @@ def test_attributed_as_a_plain_verb_names_no_measure(
     ]
 
 
-def test_a_tie_the_shapes_rows_hold_no_code_of_warns_as_dropped(monkeypatch):
-    """ "Goods donations" ties two CRS cooperation modalities, and no row of the CRS flow
-    family holds either. Bind is never offered them, and the answer warns that the phrase
-    was not applied."""
-    result, menu = _resolve_two_ended(
-        monkeypatch,
-        "ODA goods donations from France to Kenya",
-        ["France", "Kenya"],
-        variable="ODA goods donations",
-        recalled=((_TWO_ENDED_CRS_SV, 0.9),),
-    )
+@pytest.mark.parametrize("mode", ["log", "refuse"])
+def test_a_term_naming_codes_no_row_holds_follows_the_coverage_mode(
+    monkeypatch, search_settings, caplog, mode
+):
+    """ "Goods donations" names two CRS cooperation modalities, and no index row holds
+    either, so bind is never offered them. The part names no dataset, so the record
+    follows the coverage mode. In refuse mode the part refuses `qualifier_not_bound` on
+    the phrase, with evidence "unavailable", and offers the CRS ODA answer as its near
+    match. In log mode the part answers, warns once that the phrase was not applied, and
+    logs the would-refuse line once."""
+    search_settings(qualifier_coverage=mode)
+    with caplog.at_level(logging.INFO, logger="search.engine.region.phase_election"):
+        result, menu = _resolve_two_ended(
+            monkeypatch,
+            "ODA goods donations from France to Kenya",
+            ["France", "Kenya"],
+            variable="ODA goods donations",
+            recalled=((_TWO_ENDED_CRS_SV, 0.9),),
+        )
 
     assert menu == [(_TWO_ENDED_CRS_SV,)]
+    would_refuse = [
+        r.getMessage()
+        for r in caplog.records
+        if "qualifier_coverage would_refuse" in r.getMessage()
+    ]
     dropped = [w for w in result.warnings if w.code == QUERY_QUALIFIER_DROPPED]
-    assert len(dropped) == 1 and "goods donations" in dropped[0].message
+    if mode == "log":
+        assert result.no_data_reason != "qualifier_not_bound"
+        assert not result.unbound_qualifiers
+        assert len(dropped) == 1 and "goods donations" in dropped[0].message
+        assert would_refuse == [
+            "qualifier_coverage would_refuse phrase=goods donations "
+            "codes=CRSCooperationModalityJ,CRSCooperationModalityJ01"
+        ]
+        return
+    assert result.no_data_reason == "qualifier_not_bound"
+    assert [
+        (q.text, q.evidence, {ref.dcid for ref in q.named}) for q in result.unbound_qualifiers
+    ] == [
+        (
+            "goods donations",
+            "unavailable",
+            {"CRSCooperationModalityJ", "CRSCooperationModalityJ01"},
+        )
+    ]
+    assert result.flagged_match
+    assert would_refuse == []
 
 
 # ---------------------------------------------------------------------------
@@ -584,7 +677,6 @@ def _vet_state(
         include_observations=False,
         stream_observations=False,
         unit_text=None,
-        source_text=None,
         materialise_graph=None,
         materialise_sdmx=None,
         timing={},
@@ -772,7 +864,9 @@ def test_forced_binding_overrides_an_existing_llm_drafted_binding():
         SlotBindingDraft(axis="how", property_dcid="crsPurpose", kind="unbound", value_dcids=[]),
     ]
     matches = _admit("ODA standard grants for health", [_CRS_SHAPE])
-    forced = _force_qualifier_bindings(existing, matches, _CRS_SHAPE)
+    forced = _force_qualifier_bindings(
+        existing, matches, _CRS_SHAPE, variable="ODA standard grants for health"
+    )
     by_property = {b.property_dcid: b for b in forced}
     assert by_property["crsTypeOfFinance"].kind == "value"
     assert by_property["crsTypeOfFinance"].value_dcids == ["CRSTypeOfFinance110"]
@@ -785,14 +879,18 @@ def test_forced_binding_overrides_an_existing_llm_drafted_binding():
 
 def test_forced_binding_added_when_the_llm_drafted_no_binding_at_all():
     matches = _admit("ODA grants for malaria control", [_CRS_SHAPE])
-    forced = _force_qualifier_bindings([], matches, _CRS_SHAPE)
+    forced = _force_qualifier_bindings(
+        [], matches, _CRS_SHAPE, variable="ODA grants for malaria control"
+    )
     by_property = {b.property_dcid: b for b in forced}
     assert by_property["crsPurpose"].value_dcids == ["CRSPurposeCode12262"]
 
 
 def test_private_development_finance_forces_its_flow_value():
     matches = _admit("private development finance to Kenya", [_CRS_SHAPE])
-    forced = _force_qualifier_bindings([], matches, _CRS_SHAPE)
+    forced = _force_qualifier_bindings(
+        [], matches, _CRS_SHAPE, variable="private development finance to Kenya"
+    )
     by_property = {binding.property_dcid: binding for binding in forced}
 
     assert by_property["crsTypeOfFlow"].kind == "value"
@@ -816,18 +914,261 @@ def test_two_nested_matches_on_one_property_force_the_descendant(variable: str):
         "DAC1AidType1820",
     }
 
-    forced = _force_qualifier_bindings([], matches, dac1)
+    forced = _force_qualifier_bindings([], matches, dac1, variable=variable)
 
     assert [b.value_dcids for b in forced if b.property_dcid == "dac1AidType"] == [
         ["DAC1AidType1820"]
     ]
 
 
+def _crs_amount_shape() -> ShapeDraft:
+    """The shape the packaged index derives for nominal CRS financial-flow amounts."""
+    flow_row = next(row for row in _REAL_INDEX.statvars if row.population_type == "FinancialFlow")
+    return ShapeDraft(
+        shape_id="crs-amount",
+        label="crs-amount",
+        pop_type_dcid="FinancialFlow",
+        meas_prop_dcid="amount",
+        stat_type_dcid=flow_row.stat_type,
+        meas_qual_dcid="Nominal",
+        meas_denom_dcid=None,
+        slot_keys=crs_flow_slot_keys(),
+    )
+
+
+_HIV_AND_130 = "HIV/AIDS and population policy, programme, and reproductive health"
+_UNION = ("union", ["CRSPurposeCode13040", "CRSPurposeCode130"])
+_REFINEMENT = ("refinement", ["CRSPurposeCode12262", "CRSPurposeCode120"])
+_UNSUPPORTED = ("no_vocabulary", "unsupported", None)
+_INCLUDING = ("union", ["CRSPurposeCode120", "CRSPurposeCode12262"])
+_AFTER_EXCLUSION = ("refinement", ["CRSPurposeCode120", "CRSPurposeCode12250"])
+
+
+@pytest.mark.parametrize("mode", ["log", "refuse"])
+@pytest.mark.parametrize(
+    ("variable", "purpose", "records", "gated"),
+    [
+        (
+            _HIV_AND_130,
+            ["CRSPurposeCode130"],
+            {
+                "HIV": ("bound", None, _UNION),
+                "AIDS": ("bound", None, _UNION),
+                "population policy, programme, and reproductive health": (
+                    "bound",
+                    None,
+                    _UNION,
+                ),
+            },
+            {},
+        ),
+        (
+            "health and education ODA",
+            ["CRSPurposeCode120", "CRSPurposeCode110"],
+            {
+                "health": ("bound", None, ("union", ["CRSPurposeCode120", "CRSPurposeCode110"])),
+                "education": (
+                    "bound",
+                    None,
+                    ("union", ["CRSPurposeCode120", "CRSPurposeCode110"]),
+                ),
+            },
+            {},
+        ),
+        (
+            "malaria control within health ODA",
+            ["CRSPurposeCode12262"],
+            {
+                "malaria control": ("bound", None, _REFINEMENT),
+                "health": ("bound", None, _REFINEMENT),
+            },
+            {},
+        ),
+        (
+            "health excluding malaria control ODA",
+            ["CRSPurposeCode120"],
+            {
+                "health": ("bound", None, None),
+                "malaria control": ("unbound", None, None),
+            },
+            {"excluding malaria control": _UNSUPPORTED},
+        ),
+        (
+            "health versus malaria control ODA",
+            ["CRSPurposeCode12262"],
+            {
+                "health": (
+                    "bound",
+                    None,
+                    ("refinement", ["CRSPurposeCode120", "CRSPurposeCode12262"]),
+                ),
+                "malaria control": (
+                    "bound",
+                    None,
+                    ("refinement", ["CRSPurposeCode120", "CRSPurposeCode12262"]),
+                ),
+            },
+            {"versus malaria control": _UNSUPPORTED},
+        ),
+        (
+            "compare aid to health and education",
+            None,
+            {
+                "health": ("unbound", None, None),
+                "education": ("unbound", None, None),
+                "compare aid to health": _UNSUPPORTED,
+            },
+            {},
+        ),
+        (
+            "health versus education ODA",
+            None,
+            {
+                "health": ("unbound", None, None),
+                "education": ("unbound", None, None),
+                "versus education": _UNSUPPORTED,
+            },
+            {},
+        ),
+        (
+            "health & education ODA",
+            ["CRSPurposeCode120", "CRSPurposeCode110"],
+            {
+                "health": ("bound", None, ("union", ["CRSPurposeCode120", "CRSPurposeCode110"])),
+                "education": (
+                    "bound",
+                    None,
+                    ("union", ["CRSPurposeCode120", "CRSPurposeCode110"]),
+                ),
+            },
+            {},
+        ),
+        (
+            "health including malaria control ODA",
+            ["CRSPurposeCode120"],
+            {
+                "health": ("bound", None, _INCLUDING),
+                "malaria control": ("bound", None, _INCLUDING),
+            },
+            {},
+        ),
+        (
+            "ODA to Kenya excluding health",
+            None,
+            {"health": ("unbound", None, None)},
+            {"excluding health": _UNSUPPORTED},
+        ),
+        (
+            "health excluding malaria control versus infectious disease control ODA",
+            ["CRSPurposeCode12250"],
+            {
+                "health": ("bound", None, _AFTER_EXCLUSION),
+                "malaria control": ("unbound", None, None),
+                "infectious disease control": ("bound", None, _AFTER_EXCLUSION),
+            },
+            {
+                "excluding malaria control": _UNSUPPORTED,
+                "versus infectious disease control": _UNSUPPORTED,
+            },
+        ),
+    ],
+    ids=[
+        "union",
+        "set",
+        "refinement",
+        "exclusion",
+        "nested-comparison",
+        "compare",
+        "versus",
+        "ampersand",
+        "including",
+        "excluding-the-only-code",
+        "comparison-after-an-exclusion",
+    ],
+)
+@pytest.mark.parametrize("query_text", [False, True], ids=["variable", "with-query-text"])
+def test_two_matches_on_one_code_system_bind_by_the_connective_between_them(
+    search_settings, mode, query_text, variable, purpose, records, gated
+):
+    """Admitted matches on one code system bind by the connective between them. A union
+    connective keeps the ancestor of two codes that nest, so a "HIV" or "AIDS" record is
+    bound through the union once 130 binds, and binds two codes that do not nest as a set.
+    Any other joiner refines to the narrower code. An exclusion binds the code before it
+    and leaves the excluded code's record unbound. An exclusion or comparison phrase is
+    unsupported. A comparison of two codes that do not nest refuses in either coverage
+    mode, since a union binding would sum the two. Every other unsupported phrase refuses
+    only under `refuse`, and under `log` the would-refuse line names the phrase
+    (`_coverage_records`). Codes a comparison sets side by side bind no union, and the
+    model's empty draft leaves them unbound. An exclusion of a system's only code forces
+    nothing on it. A comparison after an exclusion compares the code the exclusion kept.
+    Repeating the variable's codes in the query text changes nothing, because the copies
+    do not combine."""
+    search_settings(qualifier_coverage=mode)
+    shape = _crs_amount_shape()
+    vocabulary = shape_vocabulary(shape)
+    reading = read_text(variable, _REAL_INDEX, get_measure_index(), vocabularies=[vocabulary])
+    query = f"{variable} to Uganda, 2010 to 2024" if query_text else None
+    state = _vet_state(
+        variable=variable,
+        capped_shapes=[shape],
+        chosen_shape_index=0,
+        bindings=[],
+        admitted_ties=(),
+    )
+    state.variable_spans_in_every_system = reading.everywhere.spans
+    state.variable_spans_by_vocabulary = {
+        vocabulary: own.spans for vocabulary, own in reading.by_vocabulary.items()
+    }
+    state.query_text = query
+    state.query_qualifier_matches = query_qualifiers(
+        variable, query_text=query, vocabularies=[vocabulary]
+    ).matches
+
+    _run_vet(state)
+    state.bindings = list(state.bind_result.bindings)
+    qualifiers = _resolve_query_qualifiers(state)
+
+    bound = {b.property_dcid: b for b in state.bindings if b.kind != "unbound"}
+    if purpose is None:
+        assert "crsPurpose" not in bound
+    else:
+        assert bound["crsPurpose"].kind == ("value" if len(purpose) == 1 else "set")
+        assert bound["crsPurpose"].value_dcids == purpose
+    expected = {**records, **(gated if mode == "refuse" else {})}
+
+    def summary(q):
+        if q.evidence == "unsupported":
+            return (q.disposition, q.evidence, q.operation)
+        operation = (q.operation, [ref.dcid for ref in q.selected]) if q.operation else None
+        return (q.disposition, q.evidence, operation)
+
+    assert {q.text: summary(q) for q in qualifiers if q.text != "ODA"} == expected
+    if mode == "log":
+        assert [q.text for q in _coverage_records(state, qualifiers)] == list(gated)
+
+
+@pytest.mark.parametrize(
+    ("variable", "phrases"),
+    [
+        ("health excluding malaria control ODA", ["excluding malaria control"]),
+        ("ODA without the health", ["without the health"]),
+        ("compare aid to health and education", ["compare aid to health"]),
+        ("Kenya versus Uganda health ODA", []),
+        ("ODA compared to 2010", []),
+    ],
+)
+def test_an_exclusion_or_comparison_connective_governs_the_match_after_it(variable, phrases):
+    """A connective governs the first match after it across function words alone. A
+    comparing verb governs it at any distance."""
+    matches = read_text(variable, _REAL_INDEX, vocabularies=[_CRS]).by_vocabulary[_CRS].matches
+    assert [variable[c.start : c.end] for c in governing_connectives(variable, matches)] == phrases
+
+
 def test_no_admitted_matches_leaves_bindings_untouched():
     existing = [
         SlotBindingDraft(axis="how", property_dcid="crsPurpose", kind="unbound", value_dcids=[])
     ]
-    forced = _force_qualifier_bindings(existing, (), _CRS_SHAPE)
+    forced = _force_qualifier_bindings(existing, (), _CRS_SHAPE, variable="health")
     assert forced == existing
 
 
@@ -842,7 +1183,9 @@ def test_net_oda_forces_netting_basis_through_admission_and_forcing():
     assert by_system["nettingBasis"].code_dcid == "Net"
     assert by_system["crsTypeOfFlow"].code_dcid == "CRSTypeOfFlow10"
 
-    forced = _force_qualifier_bindings([], matches, _CRS_SHAPE_WITH_MEASURE)
+    forced = _force_qualifier_bindings(
+        [], matches, _CRS_SHAPE_WITH_MEASURE, variable="net ODA to Kenya"
+    )
     by_property = {b.property_dcid: b for b in forced}
     assert by_property["nettingBasis"].kind == "value"
     assert by_property["nettingBasis"].value_dcids == ["Net"]
@@ -871,7 +1214,9 @@ def test_dropped_phrase_naming_a_measure_is_admitted_and_forced():
     by_system = _by_system(matches)
     assert by_system["nettingBasis"].code_dcid == "Net"
 
-    forced = _force_qualifier_bindings([], matches, _CRS_SHAPE_WITH_MEASURE)
+    forced = _force_qualifier_bindings(
+        [], matches, _CRS_SHAPE_WITH_MEASURE, variable="ODA to Kenya"
+    )
     by_property = {b.property_dcid: b for b in forced}
     assert by_property["nettingBasis"].kind == "value"
     assert by_property["nettingBasis"].value_dcids == ["Net"]
@@ -939,7 +1284,7 @@ def test_query_text_match_is_admitted_and_forced_the_same_way_a_variable_match_i
     by_system = _by_system(matches)
     assert by_system["crsPurpose"].code_dcid == "CRSPurposeCode311"
 
-    forced = _force_qualifier_bindings([], matches, _CRS_SHAPE)
+    forced = _force_qualifier_bindings([], matches, _CRS_SHAPE, variable="agricultural funding")
     by_property = {b.property_dcid: b for b in forced}
     assert by_property["crsPurpose"].kind == "value"
     assert by_property["crsPurpose"].value_dcids == ["CRSPurposeCode311"]
@@ -1051,7 +1396,10 @@ def test_prompt_is_byte_identical_to_the_no_admission_form_when_nothing_is_admit
     with_explicit_empty = _build_universal_bind_prompt(
         "test variable", [_PROMPT_SHAPE], admitted_qualifiers=(), admitted_ties=()
     )
-    assert with_default == with_explicit_empty
+    with_no_menu = _build_universal_bind_prompt(
+        "test variable", [_PROMPT_SHAPE], candidate_menus=[()]
+    )
+    assert with_default == with_explicit_empty == with_no_menu
     assert "FIXED CONTEXT" not in with_default
     assert "QUERY-NAMED ALTERNATIVES" not in with_default
     # This shape carries no score of its own, so no retrieval_score line is
@@ -1150,6 +1498,49 @@ def test_prompt_renders_admitted_matches_as_fixed_context_without_matched_text()
     assert finance_match.matched_text == "standard grants"
     fixed_context = prompt.split("  fixed_context:")[1]
     assert finance_match.matched_text not in fixed_context
+
+
+def test_prompt_lists_a_candidate_menu_under_its_phrase_in_place_of_its_terms():
+    """A candidate menu lists every code it holds under its phrase, past the 20-value
+    taxonomy cap. The term inside the phrase leaves the fixed context on the code system
+    the menu names, and a term outside it stays. The menu's code system gets no labels
+    line."""
+    variable = "global health ODA"
+    matches = _admit(variable, [_CRS_SHAPE])
+    health = next(m for m in matches if m.code_system == "crsPurpose")
+    rows = tuple(
+        row for row in _REAL_INDEX.codes if row.code_system == "crsPurpose" and row.parent
+    )[:24]
+    menu = CandidateMenu(
+        text="global health",
+        start=0,
+        end=health.end or 0,
+        candidates=rows,
+        hits=(rows[0].dcid,),
+    )
+    shape = dataclasses.replace(
+        _CRS_SHAPE,
+        slot_taxonomy={
+            "how:crsPurpose": ["CRSPurposeCode12110", "CRSPurposeCode13010"],
+            "what:crsTypeOfFinance": ["CRSTypeOfFinance110"],
+        },
+        slot_taxonomy_index_sourced=True,
+    )
+    prompt = _build_universal_bind_prompt(
+        variable, [shape], admitted_qualifiers=[matches], candidate_menus=[(menu,)]
+    )
+    assert "CANDIDATE MENUS" in prompt
+    listed = prompt.split('    phrase "global health":\n')[1].split("\n\n")[0].splitlines()
+    assert [line.strip() for line in listed] == [
+        f"property_dcid=crsPurpose, value_dcid={row.dcid} ({row.label})" for row in rows
+    ]
+    fixed = prompt.split("  fixed_context:\n")[1].split("  candidate_menus:")[0]
+    assert "CRSTypeOfFlow10" in fixed
+    assert "crsPurpose" not in fixed
+    finance_slot = prompt.split("property_dcid=crsTypeOfFinance (")[1].split("    axis=")[0]
+    purpose_slot = prompt.split("property_dcid=crsPurpose (")[1].split("    axis=")[0]
+    assert "labels:" in finance_slot
+    assert "labels:" not in purpose_slot
 
 
 def test_prompt_shows_each_shape_only_its_own_reading_of_a_word():
@@ -1578,3 +1969,369 @@ def test_e2e_query_text_only_tie_left_unresolved_refuses(caplog, monkeypatch):
     assert result.no_data_reason == "qualifier_not_bound"
     assert [q.text for q in result.unbound_qualifiers] == ["grants"]
     assert result.unbound_qualifiers[0].disposition == "unbound"
+
+
+_CRS_GROSS_SV = (
+    "Amount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_CRSTypeOfFinance110_"
+    "CRSCooperationModalityA02_CRSPurposeCode11110_Nominal"
+)
+
+
+def _model_choice_state(
+    variable: str, chosen: list[str], others: Sequence[str] = ()
+) -> ResolveState:
+    """Election state for `variable` on the CRS gross disbursements shape, whose bind model
+    chose the purposes `chosen` (none when empty), as a set for several. The part also
+    recalled the shapes of the index rows `others`, which it may elect after the CRS
+    shape."""
+    svs = [_CRS_GROSS_SV, *others]
+    graph = FakeGraph(nodes={sv: _index_row_node(sv) for sv in svs}, obs={}, detect={}, resolve={})
+    shape, *elsewhere = [
+        shape_for_part(derived, None, _REAL_INDEX)
+        for sv in svs
+        for derived in derive_shapes(confirmed_svs=[sv], graph=graph)
+    ]
+    vocabulary = shape_vocabulary(shape)
+    reading = read_text(variable, _REAL_INDEX, get_measure_index(), vocabularies=[vocabulary])
+    bindings = (
+        [
+            SlotBindingDraft(
+                axis="how",
+                property_dcid="crsPurpose",
+                kind="value" if len(chosen) == 1 else "set",
+                value_dcids=chosen,
+            )
+        ]
+        if chosen
+        else []
+    )
+    state = _vet_state(
+        variable=variable,
+        capped_shapes=[shape, *elsewhere],
+        chosen_shape_index=0,
+        bindings=bindings,
+        admitted_ties=(),
+    )
+    state.shapes_found = [shape, *elsewhere]
+    state.variable_spans_in_every_system = reading.everywhere.spans
+    state.variable_spans_by_vocabulary = {
+        vocabulary: own.spans for vocabulary, own in reading.by_vocabulary.items()
+    }
+    state.query_qualifier_matches = {
+        vocabulary: own.matches for vocabulary, own in reading.by_vocabulary.items()
+    }
+    return state
+
+
+_P130_13030 = ("union", ["CRSPurposeCode13030", "CRSPurposeCode130"])
+
+
+@pytest.mark.parametrize("mode", ["log", "refuse"])
+@pytest.mark.parametrize(
+    ("variable", "chosen", "purpose", "records", "gated"),
+    [
+        (
+            "contraceptive services and reproductive health ODA",
+            ["CRSPurposeCode13030"],
+            ["CRSPurposeCode130"],
+            {
+                "contraceptive services": ("bound", "model", _P130_13030),
+                "reproductive health": ("bound", None, _P130_13030),
+            },
+            {},
+        ),
+        (
+            "population policies and reproductive health ODA",
+            ["CRSPurposeCode13010"],
+            ["CRSPurposeCode130"],
+            {
+                "population policies": ("bound", "model", None),
+                "reproductive health": ("bound", None, None),
+            },
+            {},
+        ),
+        (
+            "population policies and reproductive health ODA",
+            [],
+            ["CRSPurposeCode130"],
+            {"reproductive health": ("bound", None, None)},
+            {
+                "population": ("unbound", "unavailable", None),
+                "policies": ("unbound", "uncovered", None),
+            },
+        ),
+        (
+            "contraceptive services ODA",
+            ["CRSPurposeCode13030"],
+            ["CRSPurposeCode13030"],
+            {"contraceptive services": ("bound", "model", None)},
+            {},
+        ),
+        (
+            "infant health ODA",
+            ["CRSPurposeCode120"],
+            ["CRSPurposeCode120"],
+            {"health": ("bound", None, None)},
+            {"infant": ("unbound", "uncovered", None)},
+        ),
+        (
+            "infant health ODA",
+            ["CRSPurposeCode121"],
+            ["CRSPurposeCode120"],
+            {"health": ("bound", None, None)},
+            {"infant": ("unbound", "uncovered", None)},
+        ),
+        (
+            "population ODA",
+            ["CRSPurposeCode100"],
+            ["CRSPurposeCode100"],
+            {},
+            {"population": ("unbound", "unavailable", None)},
+        ),
+        (
+            "population ODA",
+            ["CRSPurposeCode13020"],
+            ["CRSPurposeCode13020"],
+            {"population": ("bound", "model", None)},
+            {},
+        ),
+        (
+            "contraceptive services ODA and population policies ODA",
+            ["CRSPurposeCode130"],
+            ["CRSPurposeCode130"],
+            {},
+            {
+                "population": ("unbound", "unavailable", None),
+                "contraceptive services": ("unbound", "uncovered", None),
+            },
+        ),
+        (
+            "maternal and infant health ODA",
+            ["CRSPurposeCode12240"],
+            ["CRSPurposeCode12240"],
+            {"infant health": ("bound", "model", None)},
+            {"maternal": ("unbound", "uncovered", None)},
+        ),
+        (
+            "girls education ODA",
+            ["CRSPurposeCode15180"],
+            ["CRSPurposeCode110"],
+            {"education": ("bound", None, None)},
+            {"girls": ("unbound", "uncovered", None)},
+        ),
+        (
+            "environment education ODA",
+            ["CRSPurposeCode41081"],
+            ["CRSPurposeCode41081"],
+            {"environment education": ("bound", "model", None)},
+            {},
+        ),
+        (
+            "water education ODA",
+            ["CRSPurposeCode14081"],
+            ["CRSPurposeCode14081"],
+            {"water education": ("bound", "model", None)},
+            {},
+        ),
+        (
+            "hygiene education ODA",
+            ["CRSPurposeCode12261"],
+            ["CRSPurposeCode12261"],
+            {"hygiene education": ("bound", "model", None)},
+            {},
+        ),
+    ],
+    ids=[
+        "chosen-in-a-union",
+        "chosen-reads-as-its-ancestor",
+        "nothing-chosen",
+        "chosen-leaf",
+        "chosen-seed",
+        "chosen-seed-child",
+        "chosen-hit-ancestor",
+        "chosen-hit-descendant",
+        "on-two-menus",
+        "unread-beside-a-chosen-phrase",
+        "chosen-outside-the-terms-code",
+        "chosen-outside-the-terms-code-naming-the-term-environment",
+        "chosen-outside-the-terms-code-naming-the-term-water",
+        "chosen-outside-the-terms-code-naming-the-term-hygiene",
+    ],
+)
+def test_a_code_chosen_from_a_phrases_menu_reads_the_phrase(
+    search_settings, mode, variable, chosen, purpose, records, gated
+):
+    """A code the bind model chooses from a phrase's candidate menu binds. It reads the
+    phrase when it is a lexical hit of the menu or a descendant of one. The phrase then
+    records it with evidence "model", combines with the other terms by the connective
+    between them, and leaves no uncovered word or unavailable term inside it. 13030 chosen
+    for "contraceptive services" unions with 130 into 130. 13010 chosen for "population
+    policies" reads as 130, the hit above it that shares "population" too
+    (`_broadest_reading`). 13020, a child of the hit 130, reads "population". With no
+    choice the terms force as they would with no menu, and "population" and "policies"
+    refuse under `refuse`. The term's own code (120 for "infant health", whose menu's hit
+    is 12240), its child (121) and a hit's ancestor (100 for "population") read nothing
+    and force nothing, so the terms force as with no menu. 121 gives way to the 120
+    "health" names, and 100, which no term contests, stays the model's binding. A code on
+    two phrases' menus (130, an ancestor of 13030 and a hit for "population policies") is
+    no choice. The model's binding stays and reads neither phrase. No term names 130, so
+    its name reads "policies" (`_unnamed_bound_code_words`), and the part refuses on the
+    rest. A chosen phrase is a code span to the words beside it, so "maternal" joined to
+    "infant health" read as 12240 refuses. A choice outside the code of a term inside the
+    phrase reads nothing unless its label or a synonym holds the term's words. 15180
+    chosen for "girls education" leaves "education" its 110 and "girls" unread, while
+    41081 "environmental education and training", 14081 "education and training in water
+    supply and sanitation" and 12261 "health education" read their phrases in place of
+    110."""
+    search_settings(qualifier_coverage=mode)
+    state = _model_choice_state(variable, chosen)
+
+    _run_vet(state)
+    state.bindings = list(state.bind_result.bindings)
+    qualifiers = _resolve_query_qualifiers(state)
+
+    bound = {b.property_dcid: b.value_dcids for b in state.bindings if b.kind != "unbound"}
+    assert bound["crsPurpose"] == purpose
+
+    def summary(q):
+        operation = (q.operation, [ref.dcid for ref in q.selected]) if q.operation else None
+        return (q.disposition, q.evidence, operation)
+
+    expected = {**records, **(gated if mode == "refuse" else {})}
+    assert {q.text: summary(q) for q in qualifiers if q.text != "ODA"} == expected
+
+
+_IMPUTED_SECTORS_SV = (
+    "AttributedAmount_FinancialFlow_Gross_Disbursement_CRSTypeOfFlow10_DAC2aAidType106_"
+    "CRSPurposeCode11220_Nominal"
+)
+_DAC1_MULTILATERAL_SV = "Amount_FinancialFlow_Gross_Disbursement_DAC1AidType2000_Nominal"
+
+
+@pytest.mark.parametrize(
+    ("variable", "others", "menus"),
+    [
+        # The words of a code term that another shape the part recalled binds are read, so
+        # the CRS shape offers no menu for them. "imputed" is DAC2a aid type 106 on the
+        # imputed sectors shape (dataset-imputed-education-and-health-aid-kenya), and
+        # "multilateral ODA" is DAC1 aid type 2000 on the DAC1 multilateral shape
+        # (sb-multilateral-oda-kenya).
+        ("imputed education aid", [_IMPUTED_SECTORS_SV], []),
+        ("multilateral ODA", [_DAC1_MULTILATERAL_SV], []),
+        # With no such shape the words keep their menu. "ODA loans" is DAC2a aid type 218,
+        # and "loans" is offered type of finance 420.
+        ("imputed education aid", [], ["imputed education"]),
+        ("ODA loans for education", [], ["loans"]),
+        ("ODA loans for education", [_IMPUTED_SECTORS_SV], ["loans"]),
+        ("equity investment ODA", [], ["equity investment"]),
+        ("technical cooperation ODA", [], ["technical cooperation"]),
+        # A word naming data itself is read (subj-health-data), and a run reaches past an
+        # amount word to the code span ("water" beside "ODA").
+        ("health data", [], []),
+        ("water spending ODA", [], ["water"]),
+        # "population" is type of finance 4, which binds on no shape, so it keeps its menu.
+        ("population ODA", [], ["population"]),
+        ("contraceptive services ODA", [], ["contraceptive services"]),
+    ],
+)
+def test_a_candidate_menu_is_offered_for_words_no_code_reads(variable, others, menus):
+    """A CRS shape is offered a candidate menu only for a phrase whose words no other
+    recalled shape reads as a code it binds."""
+    state = _model_choice_state(variable, [], others)
+    assert [menu.text for menu in _candidate_menus(state, state.capped_shapes[0])] == menus
+
+
+@pytest.mark.parametrize(
+    ("places", "menus"),
+    [
+        ({}, ["domestic general government health"]),
+        # Two places with no direction take no role on a flow shape (`bind_place_roles`
+        # refuses role_not_resolved), as "African countries" in "how much do African
+        # countries spend on their own health care?" takes none on the CRS flow shape
+        # (health-spending-african-countries).
+        ({"Kenya": "country/KEN", "Ghana": "country/GHA"}, []),
+    ],
+)
+def test_a_shape_the_places_do_not_bind_to_is_offered_no_menu(places, menus):
+    """A CRS shape the query's places do not bind to is offered no candidate menu, so no
+    menu lifts it in the bind model's election over a shape that answers."""
+    state = _model_choice_state("domestic general government health expenditure", [])
+    state.entities = list(places)
+    state.place_sets = place_sets(places)
+    assert [menu.text for menu in _candidate_menus(state, state.capped_shapes[0])] == menus
+
+
+@pytest.mark.parametrize(
+    ("variable", "code_system", "chosen", "read"),
+    [
+        # 420's synonym "loan instrument" shares "loans" as its child 421 "standard loan"
+        # does, so 421 chosen reads as 420 (crs-education-loans-france).
+        ("education loans", "crsTypeOfFinance", "CRSTypeOfFinance421", "CRSTypeOfFinance420"),
+        # "ODA loans" is DAC2a aid type 218, which no shape of the part binds, so "loans"
+        # keeps its menu and 420 chosen reads it.
+        (
+            "ODA loans for education",
+            "crsTypeOfFinance",
+            "CRSTypeOfFinance420",
+            "CRSTypeOfFinance420",
+        ),
+        # 130 shares "population" as its child 13010 does (sb-population-oda).
+        ("population ODA", "crsPurpose", "CRSPurposeCode13010", "CRSPurposeCode130"),
+        # 13030 shares "contraceptive", which none of its ancestors holds.
+        ("contraceptive services ODA", "crsPurpose", "CRSPurposeCode13030", "CRSPurposeCode13030"),
+    ],
+)
+def test_a_chosen_hit_reads_as_its_broadest_ancestor_sharing_its_words(
+    variable, code_system, chosen, read
+):
+    """A code chosen from a phrase's menu reads the phrase as the furthest ancestor among
+    the menu's hits whose label or synonyms share every word of the phrase its own share."""
+    state = _model_choice_state(variable, [])
+    binding = SlotBindingDraft(
+        axis="how", property_dcid=code_system, kind="value", value_dcids=[chosen]
+    )
+    choices = _menu_choices(state, state.capped_shapes[0], [binding], terms=())
+    assert [choice.code_dcid for choice in choices] == [read]
+
+
+class _MenuChoosingLLM:
+    """Elect the shape and bind the purpose the "school governance" menu offers as
+    education policy and administrative management, 11110, which the fixture row holds."""
+
+    async def generate_structured(self, *, prompt, system, schema):
+        assert schema.__name__ == "_UniversalBindOutput"
+        menu = prompt.split('    phrase "school governance":\n')[1].split("\n\n")[0]
+        assert "value_dcid=CRSPurposeCode11110 (" in menu
+        binding = SlotBindingDraft(
+            axis="how",
+            property_dcid="crsPurpose",
+            kind="value",
+            value_dcids=["CRSPurposeCode11110"],
+        )
+        return (
+            _UniversalBindOutput(
+                chosen_shape_index=0, bindings=[binding], also_plausible=[], ask=None
+            ),
+            None,
+        )
+
+
+def test_e2e_a_menu_choice_binds_and_the_confirmation_sentence_names_it(
+    caplog, monkeypatch, search_settings
+):
+    """No code reads "school governance". Its menu offers 11110 through the synonym
+    "education governance", the model chooses it, and the part answers definite with 11110
+    bound and named in its sentence, the phrase recorded with evidence "model"."""
+    search_settings(qualifier_coverage="refuse")
+    result = _run_e2e(
+        caplog, monkeypatch, variable="school governance ODA to Kenya", llm=_MenuChoosingLLM()
+    )
+    assert result.status == "definite"
+    spec = result.specs[0]
+    purpose = next(
+        s for s in spec.resolved.slots if s.key.property and s.key.property.dcid == "crsPurpose"
+    )
+    assert purpose.binding.value.ref.dcid == "CRSPurposeCode11110"
+    assert "education policy and administrative management" in render_sentence(spec)
+    record = next(q for q in spec.resolved.trace.query_qualifiers if q.evidence == "model")
+    assert (record.text, record.disposition) == ("school governance", "bound")

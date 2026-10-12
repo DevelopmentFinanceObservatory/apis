@@ -29,6 +29,15 @@ data is), anywhere otherwise (Eurostat's NUTS 2 regions). The catalogue job
 scans those places as well as every country, Earth and the regional
 aggregates.
 
+An `[[alias]]` entry gives a source's other names, the abbreviations and
+short forms users write that the catalogue's names do not already yield. Its
+`refs` are one or more references, each a provenance, a catalogue Dataset or a
+Source, none written twice. Several refs make a collection that stands for all
+of them (`DAC` for the OECD's DAC tables and its Creditor Reporting System). No
+name is blank or written by two entries, ignoring case and extra whitespace. An
+alias name takes the place of any key the catalogue's own names derive from the
+same words.
+
 The runtime image ships only the wheel, so the file loads through
 `importlib.resources`.
 """
@@ -77,6 +86,8 @@ _Delimiter = Annotated[str, Field(pattern=r"^[^A-Za-z0-9/\s]+$")]
 type ConstraintKey = tuple[str, frozenset[tuple[str, str]]]
 """A variable id read as its series code and its constraint pairs, order ignored."""
 _Label = Annotated[str, Field(min_length=1)]
+_Ref = Annotated[str, Field(pattern=r"^[A-Za-z][A-Za-z0-9_]*(/[A-Za-z0-9_.-]+)+$")]
+_AliasName = Annotated[str, Field(pattern=r"\S")]
 
 
 class RegistryError(ValueError):
@@ -223,13 +234,29 @@ class UnAgency(_Model):
         return self
 
 
+class Alias(_Model):
+    """Other names for the sources `refs` name, each a provenance, a Dataset or a
+    Source. One ref names that source; several name a collection that stands for the
+    union of them, and its label is the first name."""
+
+    refs: tuple[_Ref, ...] = Field(min_length=1)
+    names: tuple[_AliasName, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _refs_are_distinct(self) -> Self:
+        _refuse_duplicates("alias ref", list(self.refs))
+        return self
+
+
 class Registry(_Model):
-    """Every admitted upstream source. Duplicate sources, provenances,
-    segments and exclusions are refused, and a UN supersession names a
+    """Every admitted upstream source and the other names of any source. Duplicate
+    sources, provenances, segments, exclusions, refs within an alias and alias names
+    (ignoring case and extra whitespace) are refused, and a UN supersession names a
     registered agency."""
 
     base: tuple[BaseSource, ...]
     un_system: tuple[UnAgency, ...]
+    alias: tuple[Alias, ...] = ()
 
     @model_validator(mode="after")
     def _no_duplicates(self) -> Self:
@@ -252,6 +279,10 @@ class Registry(_Model):
         _refuse_duplicates(
             "excluded series",
             [exclusion.series for agency in self.un_system for exclusion in agency.exclusions],
+        )
+        _refuse_duplicates(
+            "alias name",
+            [" ".join(name.casefold().split()) for entry in self.alias for name in entry.names],
         )
         return self
 
@@ -322,6 +353,7 @@ def load_registry() -> Registry:
 
 
 __all__ = [
+    "Alias",
     "BaseSource",
     "ConstraintKey",
     "DfoSupersededProvenance",

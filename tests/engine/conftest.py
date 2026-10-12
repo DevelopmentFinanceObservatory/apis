@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import copy
+import sys
 from collections.abc import Callable
 from concurrent.futures import Future
 from datetime import date
@@ -12,6 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
+from code_index import shared as code_index_shared
 from dfo_platform import trace as _trace_mod
 from search.engine.region import related_read
 from tests.engine._request_log import checked_requests
@@ -41,6 +44,20 @@ def _reset_trace_id():
         yield
     finally:
         _trace_mod._current.reset(token)
+
+
+@pytest.fixture
+def unlisted_index(monkeypatch: pytest.MonkeyPatch):
+    """Serve the packaged code index without its listed rows (`CodeIndex.listed_statvars`), so
+    a test's fake graph decides an IDS family through the member walk."""
+    packaged = code_index_shared.get_index
+    index = copy.copy(packaged())
+    index.listed_statvars = ()
+    index.listed_by_five_tuple = {}
+    for module in list(sys.modules.values()):
+        if vars(module).get("get_index") is packaged:
+            monkeypatch.setattr(module, "get_index", lambda: index)
+    return index
 
 
 @pytest.fixture

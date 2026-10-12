@@ -9,7 +9,13 @@ from pathlib import Path
 from artifact_publication.uri import join_uri, read_uri_bytes_and_generation
 from origin_catalogue import BASE, DFO, UN_SYSTEM, CatalogueTables, ScanLevel
 from origin_catalogue.artifact import EncodedBuild, encode_build, publish_build
-from origin_catalogue.catalogue import BaseVariable, CardFacts, DatasetRef
+from origin_catalogue.catalogue import (
+    BaseVariable,
+    CardFacts,
+    DatasetRef,
+    Licence,
+    SourceDocumentation,
+)
 from origin_catalogue.schema import FORMAT_ROOT, UnAgencyCounts
 from origin_catalogue.un_mirror import UnArc, UnMirror, UnVariable
 from tests.origin_catalogue.fake_catalogue import provenance_row
@@ -41,18 +47,31 @@ FIXTURE_BUILD_ID = "sample"
 def sample_tables() -> CatalogueTables:
     """DFO's CRS, two base provenances under two sources (WDI under its
     Dataset) that share a variable at different places, a variable only a non-admitted provenance holds, WHO on the
-    UN, whose front door refuses two places, and the card facts of the three
-    non-UN entries."""
+    UN, whose front door refuses two places, the licences of CRS and WDI, and the
+    card facts and documentation facts of the three non-UN entries."""
     return CatalogueTables(
         provenances={
             row.id: row
             for row in (
-                provenance_row(
-                    CRS, DFO, source="dc/s/OrganisationForEconomicCo-operationAndDevelopmentOecd"
+                replace(
+                    provenance_row(
+                        CRS,
+                        DFO,
+                        source="dc/s/OrganisationForEconomicCo-operationAndDevelopmentOecd",
+                    ),
+                    licence=Licence(
+                        type="OECDTermsAndConditions",
+                        label="OECD Terms and Conditions",
+                        url="https://www.oecd.org/en/about/terms-conditions.html",
+                    ),
                 ),
                 replace(
                     provenance_row(WDI, BASE, source="dc/s/WorldBank"),
                     dataset=DatasetRef(ref=WDI_DATASET, label="World Development Indicators"),
+                    licence=Licence(
+                        type="CreativeCommonsAttributionLicense",
+                        label="Creative Commons Attribution License",
+                    ),
                 ),
                 provenance_row(EUROSTAT_GDP, BASE, source="dc/s/EuropeanUnionEuEurostat"),
                 provenance_row(UN_WHO, UN_SYSTEM, segment="who"),
@@ -90,6 +109,20 @@ def sample_tables() -> CatalogueTables:
                 source_url="https://datacatalog.worldbank.org/dataset/world-development-indicators",
             ),
             EUROSTAT_GDP: CardFacts(),
+        },
+        source_documentation={
+            CRS: SourceDocumentation(
+                provenances=(CRS,),
+                publisher="OECD",
+                source_data_url="https://webfs-dcd.oecd.org/files/dotStat/DSD_CRS/CRS.parquet",
+                citation="OECD (2026), Creditor Reporting System",
+                license_url="https://www.oecd.org/en/about/terms-conditions.html",
+                last_update="2026-10-02",
+                next_expected_update="2027-01-02",
+                documents={"dataNotes": ("- Figures for the latest year are preliminary.\\n",)},
+            ),
+            WDI_DATASET: SourceDocumentation(provenances=(WDI,), publisher="World Bank"),
+            EUROSTAT_GDP: SourceDocumentation(provenances=(EUROSTAT_GDP,)),
         },
         un_blocked_places=frozenset({"country/GRC", "country/ESH"}),
     )

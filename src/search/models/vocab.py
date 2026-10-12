@@ -15,7 +15,8 @@ def _require_schema_version_int(value: object) -> object:
 
 
 # ---------------------------------------------------------------------------
-# Changes to these v1 contract values require a major version bump.
+# After GA, changes to these v1 contract values require a major version bump.
+# Before GA, approved breaking migrations may update v1 (conformance C3/C124).
 # ---------------------------------------------------------------------------
 AnswerKind = Literal["resolution", "catalogue", "declined"]
 StatusLiteral = Literal["definite", "candidates", "no_data", "unsupported"]
@@ -67,11 +68,19 @@ DataCommonsId = Literal["dfo", "base", "un_system"]
 """The Data Commons a provenance's data comes from: the Development Finance
 Observatory's own imports, Data Commons by Google, or the UN System Data
 Commons. Mirrors `origin_catalogue.OriginId`."""
+SourceRefKind = Literal["provenance", "dataset", "source"]
+"""What a source reference names: one provenance, a catalogue Dataset (`dc/d/*`) and the
+provenances that are part of it, or a publishing Source and every provenance it
+publishes."""
+SourcePolarity = Literal["include", "exclude"]
+"""Whether a source mention asks for its source or asks to leave it out."""
 EntityRoleKey = Literal["observationAbout", "origin", "destination"]
 """The role-key vocabulary a resolved entity plays: the subject role, or one
 of the engine's two flow axes. ``origin`` and ``destination`` name axes, never
 a StatVar's declared property; declared labels remain presentation data."""
 NoDataReason = Literal[
+    "source_not_resolved",
+    "source_ambiguous",
     "entity_not_resolved",
     "entity_ambiguous",
     "entity_set_too_large",
@@ -137,6 +146,8 @@ NoDataGate = Literal[
     "only_alternate_has_data",
 ]
 NO_DATA_RESOLUTION_ORDER: tuple[NoDataReason, ...] = (
+    "source_not_resolved",
+    "source_ambiguous",
     "entity_not_resolved",
     "entity_ambiguous",
     "entity_set_too_large",
@@ -154,7 +165,9 @@ NO_DATA_RESOLUTION_ORDER: tuple[NoDataReason, ...] = (
     "no_observations",
     "facet_not_available",
 )
-"""The contract's own no_data resolution order: entity (entity_ambiguous and
+"""The contract's own no_data resolution order: source (a part's source words
+compile before anything else resolves, so an unmatched wording, then an ambiguous
+one, comes first), entity (entity_ambiguous and
 entity_set_too_large and entity_role_not_admitted sit at the entity position,
 right after entity_not_resolved, in that order: the four run by how far the
 entity got, from no identity, to several candidate identities, to one
@@ -176,6 +189,8 @@ enforcement mechanism. Each failure site in the pipeline returns immediately
 actual behaviour if a check is reordered without updating it."""
 _UNRESOLVED_NO_DATA_REASONS: frozenset[NoDataReason] = frozenset(
     {
+        "source_not_resolved",
+        "source_ambiguous",
         "entity_not_resolved",
         "entity_ambiguous",
         "entity_set_too_large",
@@ -189,8 +204,8 @@ _UNRESOLVED_NO_DATA_REASONS: frozenset[NoDataReason] = frozenset(
 (the request could not be read into the graph); every other reason maps to
 "absent" (the read request names a place holding nothing). An explicit set
 rather than a naming-convention check (e.g. a "_not_resolved" suffix), since
-not every reason in this category shares that suffix: entity_ambiguous,
-entity_set_too_large and entity_role_not_admitted do not."""
+not every reason in this category shares that suffix: source_ambiguous,
+entity_ambiguous, entity_set_too_large and entity_role_not_admitted do not."""
 _FLAG_BEARING_NO_DATA_REASONS: frozenset[NoDataReason] = frozenset(
     {"no_observations", "no_matching_slice", "qualifier_not_bound"}
 )

@@ -40,7 +40,7 @@ _RENDERING_FORMATS: tuple[str, ...] = ("csv", "xlsx", "parquet")
 # `SUPPORTED_ENRICHMENTS - ENABLED_ENRICHMENTS` to `capability_unavailable`
 # once `materialise.reshape.parse_column_tokens` has parsed it as an
 # enrichment request against the materialised frame's own entity columns.
-ENABLED_ENRICHMENTS: frozenset[str] = frozenset({"iso2", "iso3", "label", "type"})
+ENABLED_ENRICHMENTS: frozenset[str] = frozenset({"iso2", "iso3", "kind", "label", "type"})
 
 # `groupby` reads summability from the packaged code index, loaded for the process lifetime.
 # This capability is always live because the index is available whenever this module is used.
@@ -101,10 +101,9 @@ class CapabilityCaps(BaseModel):
             "guaranteed servable for exactly this long, since it is bounded by the same "
             "working-tier artifact clock every other mint/definition response is "
             "(dataset_store.snapshot.WORKING_TIER_RETENTION) -- pinning it extends that "
-            "the same way pinning any other snapshot does. A failed operation's own row "
-            "carries no artifact and this deployment runs no janitor against "
-            "datasets.operation, so it in practice stays pollable past this many days; "
-            "this number is the guarantee, not an expiry this deployment enforces"
+            "the same way pinning any other snapshot does. A daily maintenance job deletes "
+            "done and failed operations last updated more than this many days ago, so a "
+            "poll after that answers operation_not_found"
         )
     )
 
@@ -185,7 +184,11 @@ class Capabilities(BaseModel):
     enrichment_fields: list[str] = Field(
         description=(
             "enrichment field names this deployment enables. A live token qualifies one as "
-            "{entity_column}_{field} on the columns option"
+            "{entity_column}_{field} on the columns option. kind is a party's kind (party, "
+            "total, residual) from the code index's declaration for it or, failing that, its "
+            "graph types, and a bare kind token requests it for every entity column the table "
+            "has; a party neither gives a kind gets an empty cell and an enrichment_unavailable "
+            "warning"
         )
     )
     decode_code_systems: list[str] = Field(
@@ -197,9 +200,6 @@ class Capabilities(BaseModel):
             'output (layout: "frame"), groupby.by and the columns option name it '
             "stat_var_{code_system}, the label column"
         )
-    )
-    revision_provenance_live: bool = Field(
-        description="whether graph_revision/source_revisions bind to a real endpoint"
     )
     default_facet_policies_live: bool = Field(
         description=(
@@ -273,7 +273,6 @@ def build_capabilities(
         programmatic_pinning=False,
         enrichment_fields=sorted(ENABLED_ENRICHMENTS),
         decode_code_systems=sorted(code_index_stamp.code_counts),
-        revision_provenance_live=False,
         default_facet_policies_live=False,
         default_facet_policy=DeploymentFacetPolicy(
             policy=DEPLOYMENT_FACET_POLICY, version=DEPLOYMENT_FACET_POLICY_VERSION

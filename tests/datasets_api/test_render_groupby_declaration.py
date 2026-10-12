@@ -129,7 +129,7 @@ _RESOLVED_REFS = ("dcid:SV_health", "dcid:SV_malaria")
 
 
 def _enrichment() -> EnrichmentLookup:
-    return EnrichmentLookup(FakeMintGraphReader())
+    return EnrichmentLookup(FakeMintGraphReader(), type_kinds={}, parties={})
 
 
 def _options() -> MintOptions:

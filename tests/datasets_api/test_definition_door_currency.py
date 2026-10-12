@@ -1,10 +1,13 @@
-"""Currency tests pin when GET routes confirm a stored head or re-materialise it.
-`_FakeHeadStore` lets tests seed and age heads without waiting on the real UTC clock.
+"""Freshness tests pin when GET routes confirm a stored head by its dependency fingerprint or
+re-materialise it. `_FakeHeadStore` lets tests seed and age heads without waiting on the real
+UTC clock.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+import itertools
+import threading
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -12,20 +15,21 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 
-import datasets_api.doors.definition as definition_module
+import datasets_api.current as current_module
+import datasets_api.deps as deps_module
 from artifact_store import ArtifactNotFoundError, LiveArtifactInventory, StoredArtifact, Tier
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.types import StatVarRow
 from dataset_store.snapshot import LiveSnapshotReader
+from datasets_api.render import CANONICAL_FRAME_RENDERING
 from datasets_api.store_errors import DatasetsStoreUnavailable
-from datasets_api.version_store import LiveVersionRecordWriter
-from datasets_api.versions import MemberSignal, SubjectHead
+from datasets_api.version_store import LiveVersionRecordWriter, rendering_key
+from datasets_api.versions import SubjectHead
 from dc_graph import GraphReadError
-from materialise.formats import FRAME1_MEDIA_TYPE
 from materialise.graph import Facet
 from materialise.recipe_bodies import RECIPE_BODIES
 from series_coverage.index import CoverageIndex
-from series_coverage.schema import CoverageManifest, FacetMetadata, RoleNames
+from series_coverage.schema import ABSENT_ENTITY, CoverageManifest, FacetMetadata, RoleNames
 from series_coverage.shared import CoverageSnapshot
 from spec_registry.identity import recompute_identity
 from tests.engine._fake_coverage import build_coverage_index
@@ -37,7 +41,7 @@ from tests.materialise._rate_table_support import (
     recipe_table_bodies,
 )
 
-from ._frame1_doubles import _version_artifact_rows
+from ._frame_doubles import _version_artifact_rows, link_frame1_only
 from ._graph_doubles import FakeMintGraphReader
 from ._identity_builders import pinned_identity, register_body
 from ._version_record_store import FakeVersionRecordDatasetStore
@@ -59,11 +63,17 @@ from .test_definition_door import (
 from .test_definition_door import (
     _client as _base_client,
 )
+from .test_materialise_semaphore import (
+    _CoverageBuilds,
+    _FrameTrackingPermits,
+    _PermitLog,
+    _reload_before_permit,
+)
 from .test_snapshot_lifecycle import _InventoryRecordingArtifactStore
 
 
 class _RenderableArtifactStore(_InventoryRecordingArtifactStore):
-    """Adds frame1 reads and put counting to the inventory-recording store."""
+    """Adds stored frame reads and put counting to the inventory-recording store."""
 
     def __init__(self, *, inventory: LiveArtifactInventory) -> None:
         super().__init__(inventory=inventory)
@@ -126,9 +136,8 @@ _FACET = Facet(
     latest_date="2020",
 )
 
-# A distinct candidate a mutated probe reports in place of `_FACET`.
-# It has a different `obs_count`/`latest_date`, so `_member_signal` derives
-# a different `MemberSignal` from it.
+# A distinct candidate the graph reports in place of `_FACET` once the source refreshes, with a
+# later period.
 _FACET_CHANGED = Facet(
     facet_id="facet1",
     provenance_id="OECD_DAC2A",
@@ -139,15 +148,13 @@ _FACET_CHANGED = Facet(
     latest_date="2021",
 )
 
-_SIGNAL = (MemberSignal("facet1", 1, "2020", "2020"),)
-
 _PAST_INTERVAL = timedelta(minutes=20)  # past 900s (15 min), well inside the 24h max age
 _PAST_MAX_AGE = timedelta(hours=25)  # past the 86400s (24h) default maximum age
 
 
 def _row(*, stat_var_ref: str, obs_value: str, period: str = "2020") -> str:
     """Builds one CSV row with a prefixed StatVar ref and bare `variableMeasured` value.
-    Vary `period` to change the derived signal's latest date."""
+    Vary `period` to change the materialised rows."""
     bare_stat_var = stat_var_ref.removeprefix("dcid:")
     return (
         f"dataflow,DC:DF_OBS(1.0.0),I,{bare_stat_var},{_RECIPIENT},USD,GrantEquivalent,"
@@ -155,16 +162,24 @@ def _row(*, stat_var_ref: str, obs_value: str, period: str = "2020") -> str:
     )
 
 
-def _mutable_graph(facets: dict[tuple[str, str], list[Facet]]) -> FakeMintGraphReader:
-    """Builds a graph over the caller's mutable facet mapping."""
-    return FakeMintGraphReader(
-        arcs={
+def _mutable_graph(
+    facets: dict[tuple[str, str], list[Facet]],
+    arcs: dict[str, dict[str, tuple[str, ...]]] | None = None,
+) -> FakeMintGraphReader:
+    """Builds a graph over the caller's mutable facet mapping and, when given, its mutable
+    `arcs`, which a test writes a provenance's `lastDataRefreshDate` into."""
+    graph_arcs = arcs if arcs is not None else {}
+    graph_arcs.update(
+        {
             _STAT_VAR: {**_ARCS, "name": ("Aid",)},
             _STAT_VAR_B: {**_ARCS, "name": ("Aid B",)},
             # Named so a download's default name columns fill and add no render warning.
             "GrantEquivalent": {"name": ("Grant equivalent",)},
             _RECIPIENT: {"name": ("Kenya",)},
-        },
+        }
+    )
+    return FakeMintGraphReader(
+        arcs=graph_arcs,
         facets=facets,
         labels={"OECD_DAC2A": "OECD DAC2a", _RECIPIENT: "Kenya"},
     )
@@ -185,18 +200,26 @@ class _CoverageFromFacets:
         role_names: dict[str, RoleNames] = {}
         facet_metadata: dict[str, FacetMetadata] = {}
         for (stat_var, recipient), candidates in self._facets.items():
-            role_names[stat_var] = RoleNames(donor="provider", recipient="recipient")
+            role_names[stat_var] = RoleNames(donor=None, recipient="recipient")
             for facet in candidates:
                 obs_count = facet.obs_count if facet.obs_count else 1
                 earliest = int(facet.earliest_date or facet.latest_date)
                 years = list(range(earliest, earliest + obs_count))
-                rows.append((stat_var, facet.facet_id, "country/USA", recipient, years))
+                rows.append((stat_var, facet.facet_id, ABSENT_ENTITY, recipient, years))
                 facet_metadata[facet.facet_id] = FacetMetadata(
                     provenance_id=facet.provenance_id,
                     measurement_method=facet.measurement_method,
                     unit=facet.unit,
                 )
         return build_coverage_index(rows, role_names=role_names, facet_metadata=facet_metadata)
+
+    def serves(self, snapshot: CoverageSnapshot) -> bool:
+        """`current()` builds an index per call, so the stamp identifies the served build."""
+        return snapshot.stamp == self.stamp
+
+    def register_load_guard(self, guard: object) -> Callable[[], None]:
+        """This fake never loads a build, so no guard is ever entered."""
+        return lambda: None
 
     def snapshot(self) -> CoverageSnapshot:
         return CoverageSnapshot(
@@ -240,6 +263,7 @@ class _FakeHeadStore:
 
     def __init__(self) -> None:
         self._heads: dict[str, SubjectHead] = {}
+        self._runs = itertools.count(1)
         self.read_head_calls = 0
         self.advance_head_calls = 0
         self.confirm_head_calls = 0
@@ -251,15 +275,16 @@ class _FakeHeadStore:
     def advance_head(
         self,
         *,
-        subject_id: str,
-        content_version: str,
-        signal,
-        expected_content_version: str | None,
+        materialisation,
+        expected_materialisation_id: int | None,
+        fence=None,
     ) -> SubjectHead | None:
+        subject_id = materialisation.subject_id
+        content_version = materialisation.content_version
         self.advance_head_calls += 1
         existing = self._heads.get(subject_id)
-        stored_content_version = existing.content_version if existing is not None else None
-        if stored_content_version != expected_content_version:
+        stored_run = existing.materialisation_id if existing is not None else None
+        if stored_run != expected_materialisation_id:
             return None
         now = datetime.now(UTC)
         written = SubjectHead(
@@ -267,7 +292,8 @@ class _FakeHeadStore:
             content_version=content_version,
             confirmed_at=now,
             materialised_at=now,
-            signal=tuple(signal),
+            materialisation_id=next(self._runs),
+            dependencies=materialisation.dependencies,
         )
         self._heads[subject_id] = written
         return written
@@ -282,7 +308,8 @@ class _FakeHeadStore:
             content_version=existing.content_version,
             confirmed_at=datetime.now(UTC),
             materialised_at=existing.materialised_at,
-            signal=existing.signal,
+            materialisation_id=existing.materialisation_id,
+            dependencies=existing.dependencies,
         )
         self._heads[subject_id] = written
         return written
@@ -307,7 +334,8 @@ class _FakeHeadStore:
             content_version=existing.content_version,
             confirmed_at=datetime.now(UTC) - age,
             materialised_at=datetime.now(UTC) - resolved_materialised_age,
-            signal=existing.signal,
+            materialisation_id=existing.materialisation_id,
+            dependencies=existing.dependencies,
         )
 
 
@@ -320,10 +348,9 @@ class _RaisingHeadStore:
     def advance_head(
         self,
         *,
-        subject_id: str,
-        content_version: str,
-        signal,
-        expected_content_version: str | None,
+        materialisation,
+        expected_materialisation_id: int | None,
+        fence=None,
     ) -> None:
         raise DatasetsStoreUnavailable("malformed head row")
 
@@ -355,7 +382,10 @@ def _content_fields(body: dict) -> dict:
 
 def test_spec_currency_sequence():
     facets = {(_STAT_VAR, _RECIPIENT): [_FACET]}
-    graph = _mutable_graph(facets)
+    arcs: dict[str, dict[str, tuple[str, ...]]] = {
+        "OECD_DAC2A": {"lastDataRefreshDate": ("2026-01-01",)}
+    }
+    graph = _mutable_graph(facets, arcs)
     body_ref = {"text": _CSV_HEADER + _row(stat_var_ref=_STAT_VAR_REF, obs_value="1000")}
     transport, sdmx_calls = _counting_transport(body_ref)
     head_store = _FakeHeadStore()
@@ -367,13 +397,15 @@ def test_spec_currency_sequence():
     )
     spec_id = _mint_one_spec(client)
 
-    # Minting primes the head, so the first GET serves without probing.
+    # Minting writes the head, so the first GET serves it with no read.
     first = client.get(f"/api/datasets/{spec_id}")
     assert first.status_code == 200, first.text
     first_body = first.json()
     assert first_body["trace"]["served_from"] == "head"
     assert "confirmed_at" in first_body["trace"]
-    assert head_store.head_for(spec_id).signal == _SIGNAL
+    assert head_store.head_for(spec_id).dependencies["sources"] == [
+        {"ref": "OECD_DAC2A", "token": "2026-01-01"}
+    ]
     graph_calls_after_first = dict(graph.calls)
     sdmx_calls_after_first = sdmx_calls.n
 
@@ -388,8 +420,8 @@ def test_spec_currency_sequence():
     assert graph.calls == graph_calls_after_first
     assert sdmx_calls.n == sdmx_calls_after_first
 
-    # An unchanged probe confirms the head without moving `materialised_at`. Coverage supplies
-    # candidates, so the probe makes no graph or SDMX call.
+    # An unchanged fingerprint confirms the head without moving `materialised_at`, at the cost
+    # of one graph read and no SDMX call.
     head_store.age_head(spec_id, age=_PAST_INTERVAL)
     materialised_at_before_third = head_store.head_for(spec_id).materialised_at
     graph_calls_before_third = dict(graph.calls)
@@ -403,14 +435,17 @@ def test_spec_currency_sequence():
     )
     assert head_store.head_for(spec_id).materialised_at == materialised_at_before_third
     assert _content_fields(third_body) == _content_fields(first_body)
+    # Rehydrating the members reads the StatVar's arcs; the fingerprint is one more read.
+    assert graph.calls["node_arcs_many"] == graph_calls_before_third["node_arcs_many"] + 1
     assert (
         graph.calls["observation_facets_batch_many"]
         == graph_calls_before_third["observation_facets_batch_many"]
     )
     assert sdmx_calls.n == sdmx_calls_after_first
 
-    # A changed coverage signal triggers a fetch and advances the head.
+    # A moved source refresh date triggers a fetch and advances the head.
     head_store.age_head(spec_id, age=_PAST_INTERVAL)
+    arcs["OECD_DAC2A"] = {"lastDataRefreshDate": ("2026-02-01",)}
     facets[(_STAT_VAR, _RECIPIENT)] = [_FACET_CHANGED]
     body_ref["text"] = _CSV_HEADER + _row(
         stat_var_ref=_STAT_VAR_REF, obs_value="2000", period="2021"
@@ -425,14 +460,14 @@ def test_spec_currency_sequence():
         graph.calls["observation_facets_batch_many"]
         == graph_calls_before_fourth["observation_facets_batch_many"]
     )
-    # The facet probe reads coverage. Only the real fetch reaches SDMX.
+    # Only the real fetch reaches SDMX.
     assert sdmx_calls.n == sdmx_calls_after_first + 1
     assert head_store.head_for(spec_id).content_version == fourth_body["content_version"]
 
 
-def test_provenance_refresh_date_move_forces_a_rematerialise_despite_an_unchanged_probe():
-    """#439: a change to `lastDataRefreshDate` forces re-materialisation when the facet signal
-    is unchanged."""
+def test_provenance_refresh_date_move_forces_a_rematerialise_despite_unchanged_facets():
+    """#439: a change to `lastDataRefreshDate` forces re-materialisation when the facets are
+    unchanged."""
     facets = {(_STAT_VAR, _RECIPIENT): [_FACET]}
     arcs = {
         _STAT_VAR: _ARCS,
@@ -457,12 +492,12 @@ def test_provenance_refresh_date_move_forces_a_rematerialise_despite_an_unchange
     first = client.get(f"/api/datasets/{spec_id}")
     assert first.status_code == 200, first.text
     assert first.json()["trace"]["served_from"] == "head"
-    assert head_store.head_for(spec_id).signal == (
-        MemberSignal("facet1", 1, "2020", "2020", provenance_last_refresh="2026-01-01"),
-    )
+    assert head_store.head_for(spec_id).dependencies["sources"] == [
+        {"ref": "OECD_DAC2A", "token": "2026-01-01"}
+    ]
     sdmx_calls_after_first = sdmx_calls.n
 
-    # An unchanged refresh date confirms the head. Coverage needs no SDMX call.
+    # An unchanged refresh date confirms the head with no SDMX call.
     head_store.age_head(spec_id, age=_PAST_INTERVAL)
     unaffected = client.get(f"/api/datasets/{spec_id}")
     assert unaffected.status_code == 200, unaffected.text
@@ -475,9 +510,9 @@ def test_provenance_refresh_date_move_forces_a_rematerialise_despite_an_unchange
     changed = client.get(f"/api/datasets/{spec_id}")
     assert changed.status_code == 200, changed.text
     assert changed.json()["trace"]["served_from"] == "materialise"
-    assert head_store.head_for(spec_id).signal == (
-        MemberSignal("facet1", 1, "2020", "2020", provenance_last_refresh="2026-02-01"),
-    )
+    assert head_store.head_for(spec_id).dependencies["sources"] == [
+        {"ref": "OECD_DAC2A", "token": "2026-02-01"}
+    ]
 
 
 _DAC_RECIPE = "ConversionRecipeDAC"
@@ -531,9 +566,9 @@ def _converted_spec_fixture(
 
 
 def test_a_converted_spec_minted_through_the_door_confirms_its_head_until_the_rate_date_moves():
-    """The mint stores the rate table's admitted `lastDataRefreshDate` in the head signal, so a
-    recheck with an unchanged date confirms the head and fetches nothing. A moved date forces
-    re-materialisation."""
+    """The mint stores the rate table's admitted `lastDataRefreshDate` as a conversion source in
+    the head's fingerprint, so a recheck with an unchanged date confirms the head and fetches
+    nothing. A moved date forces re-materialisation."""
     facets = {(_STAT_VAR, _RECIPIENT): [_CURRENCY_FACET]}
     graph, arcs, server = _converted_spec_fixture(facets)
     head_store = _FakeHeadStore()
@@ -561,9 +596,9 @@ def test_a_converted_spec_minted_through_the_door_confirms_its_head_until_the_ra
     assert resp.status_code == 200, resp.text
     spec_id = resp.json()["definition"]["spec_id"]
     minted_version = resp.json()["content_version"]
-    assert head_store.head_for(spec_id).signal[0].rate_provenance_refresh == (
-        (_DAC_TABLE_PROVENANCE, DEFAULT_REFRESH_DATE),
-    )
+    assert head_store.head_for(spec_id).dependencies["conversion_sources"] == [
+        {"ref": _DAC_TABLE_PROVENANCE, "token": DEFAULT_REFRESH_DATE}
+    ]
     requests_after_mint = len(server.requests)
 
     # Past the recheck interval with an unchanged rate date, the head is confirmed: no table
@@ -583,13 +618,14 @@ def test_a_converted_spec_minted_through_the_door_confirms_its_head_until_the_ra
     changed = client.get(f"/api/datasets/{spec_id}")
     assert changed.status_code == 200, changed.text
     assert changed.json()["trace"]["served_from"] == "materialise"
-    assert head_store.head_for(spec_id).signal[0].rate_provenance_refresh == (
-        (_DAC_TABLE_PROVENANCE, "2026-02-01T00:00:00Z"),
-    )
+    assert head_store.head_for(spec_id).dependencies["conversion_sources"] == [
+        {"ref": _DAC_TABLE_PROVENANCE, "token": "2026-02-01T00:00:00Z"}
+    ]
 
 
-def test_stored_head_without_rate_provenance_refresh_keeps_todays_behaviour():
-    """A signal without rate provenance skips rate-date rechecks and serves from head."""
+def test_an_unconverted_head_names_no_conversion_source_and_serves_from_head():
+    """An unconverted run records no conversion source or recipe, so its recheck reads only
+    its data source and serves from head."""
     facets = {(_STAT_VAR, _RECIPIENT): [_FACET]}
     graph = _mutable_graph(facets)
     body_ref = {"text": _CSV_HEADER + _row(stat_var_ref=_STAT_VAR_REF, obs_value="1000")}
@@ -602,10 +638,10 @@ def test_stored_head_without_rate_provenance_refresh_keeps_todays_behaviour():
         coverage=_CoverageFromFacets(facets),
     )
     spec_id = _mint_one_spec(client)
-    assert head_store.head_for(spec_id).signal[0].rate_provenance_refresh == ()
+    dependencies = head_store.head_for(spec_id).dependencies
+    assert (dependencies["conversion_sources"], dependencies["recipes"]) == ([], [])
     sdmx_calls_after_first = sdmx_calls.n
 
-    # The facet probe reaches coverage, not SDMX.
     head_store.age_head(spec_id, age=_PAST_INTERVAL)
     second = client.get(f"/api/datasets/{spec_id}")
     assert second.status_code == 200, second.text
@@ -614,8 +650,8 @@ def test_stored_head_without_rate_provenance_refresh_keeps_todays_behaviour():
 
 
 def test_member_with_no_provenance_refresh_properties_keeps_serving_from_head():
-    """#439: provenances without refresh-date fields leave both signal values `None`, so an
-    unchanged probe can confirm the head."""
+    """#439: a provenance without a refresh date records a `None` token, which equals itself,
+    so the recheck confirms the head."""
     facets = {(_STAT_VAR, _RECIPIENT): [_FACET]}
     graph = _mutable_graph(facets)  # `arcs` carries no "OECD_DAC2A" entry at all.
     body_ref = {"text": _CSV_HEADER + _row(stat_var_ref=_STAT_VAR_REF, obs_value="1000")}
@@ -631,28 +667,19 @@ def test_member_with_no_provenance_refresh_properties_keeps_serving_from_head():
 
     first = client.get(f"/api/datasets/{spec_id}")
     assert first.status_code == 200, first.text
-    assert head_store.head_for(spec_id).signal == (
-        MemberSignal(
-            "facet1",
-            1,
-            "2020",
-            "2020",
-            provenance_last_refresh=None,
-            provenance_next_refresh=None,
-        ),
-    )
+    assert head_store.head_for(spec_id).dependencies["sources"] == [
+        {"ref": "OECD_DAC2A", "token": None}
+    ]
     sdmx_calls_after_first = sdmx_calls.n
 
-    # The facet probe reaches coverage, not SDMX.
     head_store.age_head(spec_id, age=_PAST_INTERVAL)
     second = client.get(f"/api/datasets/{spec_id}")
     assert second.status_code == 200, second.text
     assert second.json()["trace"]["served_from"] == "head"
     assert sdmx_calls.n == sdmx_calls_after_first
-    assert head_store.head_for(spec_id).signal[0].provenance_last_refresh is None
 
 
-def test_spec_past_the_maximum_age_re_materialises_despite_an_unchanged_probe():
+def test_spec_past_the_maximum_age_re_materialises_despite_an_unchanged_fingerprint():
     facets = {(_STAT_VAR, _RECIPIENT): [_FACET]}
     graph = _mutable_graph(facets)
     body_ref = {"text": _CSV_HEADER + _row(stat_var_ref=_STAT_VAR_REF, obs_value="1000")}
@@ -669,7 +696,7 @@ def test_spec_past_the_maximum_age_re_materialises_despite_an_unchanged_probe():
     assert first.status_code == 200, first.text
     sdmx_calls_after_first = sdmx_calls.n
 
-    # The signal matches. The maximum age forces re-materialisation.
+    # The fingerprint matches. The maximum age forces re-materialisation.
     head_store.age_head(spec_id, age=_PAST_MAX_AGE)
     resp = client.get(f"/api/datasets/{spec_id}")
 
@@ -677,7 +704,7 @@ def test_spec_past_the_maximum_age_re_materialises_despite_an_unchanged_probe():
     body = resp.json()
     assert body["trace"]["served_from"] == "materialise"
     assert body["content_version"] == first.json()["content_version"]
-    # The facet probe reads coverage. Only the real fetch reaches SDMX.
+    # Only the real fetch reaches SDMX.
     assert sdmx_calls.n == sdmx_calls_after_first + 1
 
 
@@ -699,7 +726,8 @@ def test_repeated_confirmations_do_not_extend_the_maximum_age():
     assert first.status_code == 200, first.text
     sdmx_calls_after_first = sdmx_calls.n
 
-    # Confirmation is recent, but materialisation is past its age limit and the signal matches.
+    # Confirmation is recent, but materialisation is past its age limit and the fingerprint
+    # matches.
     head_store.age_head(spec_id, age=_PAST_INTERVAL, materialised_age=_PAST_MAX_AGE)
     resp = client.get(f"/api/datasets/{spec_id}")
 
@@ -707,19 +735,19 @@ def test_repeated_confirmations_do_not_extend_the_maximum_age():
     body = resp.json()
     assert body["trace"]["served_from"] == "materialise"
     assert body["content_version"] == first.json()["content_version"]
-    # The facet probe reads coverage. Only the real fetch reaches SDMX.
+    # Only the real fetch reaches SDMX.
     assert sdmx_calls.n == sdmx_calls_after_first + 1
-
-
-# --- The definition GET over a collection: same states, per-member signal ---
 
 
 # --- The options route: same states, no writes ---
 
 
-def test_options_route_currency_never_writes_the_head():
+def test_options_route_currency_confirms_and_advances_the_head_as_a_get_does():
     facets = {(_STAT_VAR, _RECIPIENT): [_FACET]}
-    graph = _mutable_graph(facets)
+    arcs: dict[str, dict[str, tuple[str, ...]]] = {
+        "OECD_DAC2A": {"lastDataRefreshDate": ("2026-01-01",)}
+    }
+    graph = _mutable_graph(facets, arcs)
     body_ref = {"text": _CSV_HEADER + _row(stat_var_ref=_STAT_VAR_REF, obs_value="1000")}
     transport, sdmx_calls = _counting_transport(body_ref)
     head_store = _FakeHeadStore()
@@ -736,13 +764,13 @@ def test_options_route_currency_never_writes_the_head():
     writes_after_definition_get = head_store.advance_head_calls
     sdmx_calls_after_definition_get = sdmx_calls.n
 
-    # Within the interval: serves from head, no probe.
+    # Within the interval: serves from head, no read.
     within = client.get(f"/api/datasets/{spec_id}/options")
     assert within.status_code == 200, within.text
     assert within.json()["trace"]["served_from"] == "head"
     assert head_store.advance_head_calls == writes_after_definition_get
 
-    # `/options` leaves `confirmed_at` unchanged when the probe matches.
+    # `/options` confirms the head when the fingerprint matches, as a GET does.
     head_store.age_head(spec_id, age=_PAST_INTERVAL)
     aged_confirmed_at = head_store.head_for(spec_id).confirmed_at.isoformat()
     graph_calls_before = dict(graph.calls)
@@ -750,18 +778,15 @@ def test_options_route_currency_never_writes_the_head():
     assert past_interval.status_code == 200, past_interval.text
     past_interval_body = past_interval.json()
     assert past_interval_body["trace"]["served_from"] == "head"
-    assert past_interval_body["trace"]["confirmed_at"] == aged_confirmed_at
+    assert past_interval_body["trace"]["confirmed_at"] != aged_confirmed_at
     assert head_store.advance_head_calls == writes_after_definition_get
-    # This role-bearing StatVar's facet candidates come from coverage, an
-    # in-memory table, so the probe reaches neither the graph nor SDMX.
-    assert (
-        graph.calls["observation_facets_batch_many"]
-        == graph_calls_before["observation_facets_batch_many"]
-    )
+    # The comparison reads the source's refresh date once and reaches no SDMX.
+    assert graph.calls["node_arcs_many"] == graph_calls_before["node_arcs_many"] + 1
     assert sdmx_calls.n == sdmx_calls_after_definition_get
 
-    # A changed probe re-materialises without writing a version record or head.
+    # A moved refresh date re-materialises, records the version and advances the head to it.
     head_store.age_head(spec_id, age=_PAST_INTERVAL)
+    arcs["OECD_DAC2A"] = {"lastDataRefreshDate": ("2026-02-01",)}
     facets[(_STAT_VAR, _RECIPIENT)] = [_FACET_CHANGED]
     body_ref["text"] = _CSV_HEADER + _row(
         stat_var_ref=_STAT_VAR_REF, obs_value="2000", period="2021"
@@ -769,43 +794,21 @@ def test_options_route_currency_never_writes_the_head():
     changed = client.get(f"/api/datasets/{spec_id}/options")
     assert changed.status_code == 200, changed.text
     assert changed.json()["trace"]["served_from"] == "materialise"
-    assert head_store.advance_head_calls == writes_after_definition_get
-    # The head retains the mint's content version.
-    assert head_store.head_for(spec_id).content_version == definition_resp.json()["content_version"]
+    assert head_store.advance_head_calls == writes_after_definition_get + 1
+    assert head_store.head_for(spec_id).content_version == changed.json()["content_version"]
+    assert changed.json()["content_version"] != definition_resp.json()["content_version"]
 
 
-class _SigningCountingArtifactStore(_RenderableArtifactStore):
-    """Counts signed URL requests while retaining the frame1 reads required by the definition GET."""
-
-    def __init__(self, *, inventory: LiveArtifactInventory) -> None:
-        super().__init__(inventory=inventory)
-        self.signing_calls = 0
-
-    def signed_get_url(
-        self, digest: str, *, tier, ttl, response_type: str, response_disposition: str
-    ) -> str:
-        self.signing_calls += 1
-        return super().signed_get_url(
-            digest,
-            tier=tier,
-            ttl=ttl,
-            response_type=response_type,
-            response_disposition=response_disposition,
-        )
-
-
-def test_options_head_hit_signs_no_artifacts():
-    """The definition GET signs artifacts. A within-interval `/options` head hit signs none
-    because it reads only the version and revocation state."""
+def test_definition_and_options_head_hits_sign_no_artifacts():
+    """A definition GET lists its artifacts under their download links and a within-interval
+    `/options` head hit reads only the version and revocation state, so neither signs."""
     facets = {(_STAT_VAR, _RECIPIENT): [_FACET]}
     graph = _mutable_graph(facets)
     body_ref = {"text": _CSV_HEADER + _row(stat_var_ref=_STAT_VAR_REF, obs_value="1000")}
     transport, _sdmx_calls = _counting_transport(body_ref)
     head_store = _FakeHeadStore()
     version_store = FakeVersionRecordDatasetStore()
-    artifact_store = _SigningCountingArtifactStore(
-        inventory=LiveArtifactInventory(store=version_store)
-    )
+    artifact_store = _RenderableArtifactStore(inventory=LiveArtifactInventory(store=version_store))
     client = _base_client(
         graph=graph,
         sdmx_transport=transport,
@@ -819,13 +822,12 @@ def test_options_head_hit_signs_no_artifacts():
 
     definition_resp = client.get(f"/api/datasets/{spec_id}")
     assert definition_resp.status_code == 200, definition_resp.text
-    assert artifact_store.signing_calls > 0
-    signing_calls_after_definition_get = artifact_store.signing_calls
+    assert definition_resp.json()["artifacts"]
 
     within = client.get(f"/api/datasets/{spec_id}/options")
     assert within.status_code == 200, within.text
     assert within.json()["trace"]["served_from"] == "head"
-    assert artifact_store.signing_calls == signing_calls_after_definition_get
+    assert artifact_store.signings == []
 
 
 # --- Store failure and route isolation ---
@@ -887,12 +889,14 @@ def test_snapshot_route_is_unaffected_by_currency():
     assert _content_fields(snapshot_body) == _content_fields(definition_resp.json())
 
 
-# --- Rendering on demand from a stored frame1, on a head hit ---
+# --- Rendering on demand from a stored frame, on a head hit ---
 
 
-def test_head_hit_renders_a_missing_rendering_on_demand_and_reuses_it():
-    """A head hit renders a missing Parquet variant from stored frame1 and records it. The
-    next identical GET reuses it without another artifact write."""
+@pytest.mark.parametrize("stored_frame", ["frame1", "canonical"])
+def test_head_hit_renders_a_missing_rendering_on_demand_and_reuses_it(stored_frame: str):
+    """A head hit renders a missing Parquet variant from the stored frame, a canonical frame or
+    a frame1 document alone, and records it. The next identical GET reuses it without another
+    artifact write."""
     facets = {(_STAT_VAR, _RECIPIENT): [_FACET]}
     graph = _mutable_graph(facets)
     body_ref = {"text": _CSV_HEADER + _row(stat_var_ref=_STAT_VAR_REF, obs_value="1000")}
@@ -910,6 +914,13 @@ def test_head_hit_renders_a_missing_rendering_on_demand_and_reuses_it():
         coverage=_CoverageFromFacets(facets),
     )
     spec_id = _mint_one_spec(client)
+    if stored_frame == "frame1":
+        link_frame1_only(
+            version_store,
+            artifact_store,
+            subject_id=spec_id,
+            content_version=head_store.head_for(spec_id).content_version,
+        )
     sdmx_calls_after_mint = sdmx_calls.n
     puts_after_mint = artifact_store.put_calls
 
@@ -930,13 +941,13 @@ def test_head_hit_renders_a_missing_rendering_on_demand_and_reuses_it():
     rows = _version_artifact_rows(
         version_store, subject_id=spec_id, content_version=first_body["content_version"]
     )
-    # Both the newly rendered `format=parquet` rendering and the statistics
-    # Both artifacts use the Parquet media type. `rendering` distinguishes them.
+    # The newly rendered `format=parquet` rendering, the statistics and a canonical frame all
+    # use the Parquet media type. `rendering` distinguishes them.
     parquet_rows = [
         row
         for row in rows
         if row["media_type"] == "application/vnd.apache.parquet"
-        and row["rendering"] != {"statistics": "series"}
+        and row["rendering"] not in ({"statistics": "series"}, CANONICAL_FRAME_RENDERING)
     ]
     assert len(parquet_rows) == 1
 
@@ -957,11 +968,12 @@ def test_head_hit_renders_a_missing_rendering_on_demand_and_reuses_it():
     assert len(rows_after_second) == len(rows)
 
 
-def test_head_hit_reads_and_renders_the_stored_frame1_inside_a_materialise_slot(
+def test_head_hit_reads_and_renders_the_stored_frame_inside_a_materialise_slot(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """The frame1 read and the rendered artifact's write both happen while the request holds
-    a `bounded_materialise_slot`, and the slot is released once the response is built."""
+    """The frame read and the rendered artifact's write both happen on the work executor
+    while the request holds a `bounded_materialise_slot`, and the slot is released once the
+    response is built."""
     facets = {(_STAT_VAR, _RECIPIENT): [_FACET]}
     graph = _mutable_graph(facets)
     body_ref = {"text": _CSV_HEADER + _row(stat_var_ref=_STAT_VAR_REF, obs_value="1000")}
@@ -969,6 +981,7 @@ def test_head_hit_reads_and_renders_the_stored_frame1_inside_a_materialise_slot(
     version_store = FakeVersionRecordDatasetStore()
     slots_held = {"count": 0}
     store_calls_in_slot: list[tuple[str, bool]] = []
+    frame_read_threads: list[str] = []
 
     class _SlotObservingArtifactStore(_RenderableArtifactStore):
         def put(self, data: bytes, *, tier: Tier) -> StoredArtifact:
@@ -977,6 +990,7 @@ def test_head_hit_reads_and_renders_the_stored_frame1_inside_a_materialise_slot(
 
         def get(self, *, artifact_digest: str, tier: Tier) -> bytes:
             store_calls_in_slot.append(("get", slots_held["count"] > 0))
+            frame_read_threads.append(threading.current_thread().name)
             return super().get(artifact_digest=artifact_digest, tier=tier)
 
     client = _base_client(
@@ -992,7 +1006,7 @@ def test_head_hit_reads_and_renders_the_stored_frame1_inside_a_materialise_slot(
     )
     spec_id = _mint_one_spec(client)
     store_calls_in_slot.clear()
-    real_slot = definition_module.bounded_materialise_slot
+    real_slot = current_module.bounded_materialise_slot
 
     @contextmanager
     def counting_slot(semaphore, **kwargs) -> Iterator[None]:
@@ -1003,7 +1017,7 @@ def test_head_hit_reads_and_renders_the_stored_frame1_inside_a_materialise_slot(
             finally:
                 slots_held["count"] -= 1
 
-    monkeypatch.setattr(definition_module, "bounded_materialise_slot", counting_slot)
+    monkeypatch.setattr(current_module, "bounded_materialise_slot", counting_slot)
 
     resp = client.get(f"/api/datasets/{spec_id}?format=parquet&bundle=false")
 
@@ -1013,6 +1027,91 @@ def test_head_hit_reads_and_renders_the_stored_frame1_inside_a_materialise_slot(
     assert ("put", True) in store_calls_in_slot
     assert all(in_slot for _call, in_slot in store_calls_in_slot)
     assert slots_held["count"] == 0
+    assert frame_read_threads
+    assert all(name.startswith("datasets-work") for name in frame_read_threads), frame_read_threads
+
+
+def test_a_head_hit_render_whose_snapshot_a_reload_replaced_renders_on_the_served_build(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A GET took build 1's snapshot and a reload to build 2 completed before the render's
+    permit. The call gives the permit back, starts again on build 2, and reads the stored
+    frame after build 1's index has left memory."""
+    facets = {(_STAT_VAR, _RECIPIENT): [_FACET]}
+    body_ref = {"text": _CSV_HEADER + _row(stat_var_ref=_STAT_VAR_REF, obs_value="1000")}
+    transport, _sdmx_calls = _counting_transport(body_ref)
+    version_store = FakeVersionRecordDatasetStore()
+    log = _PermitLog()
+    coverage = _CoverageBuilds(monkeypatch, make_index=_CoverageFromFacets(facets).current)
+    schedule = _reload_before_permit(monkeypatch, log, coverage)
+    old_index_resident: list[bool] = []
+
+    class _ObservingArtifactStore(_RenderableArtifactStore):
+        def get(self, *, artifact_digest: str, tier: Tier) -> bytes:
+            old_index_resident.append(coverage.resident(1))
+            log.record("frame_read")
+            return super().get(artifact_digest=artifact_digest, tier=tier)
+
+    client = _base_client(
+        graph=_mutable_graph(facets),
+        sdmx_transport=transport,
+        head_writer=_FakeHeadStore(),
+        version_writer=LiveVersionRecordWriter(store=version_store),
+        snapshot_reader=LiveSnapshotReader(store=version_store),
+        artifact_store=_ObservingArtifactStore(
+            inventory=LiveArtifactInventory(store=version_store)
+        ),
+        coverage=coverage.service,
+    )
+    spec_id = _mint_one_spec(client)
+    log.events.clear()
+    schedule(1)
+
+    resp = client.get(f"/api/datasets/{spec_id}?format=parquet&bundle=false")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["trace"]["served_from"] == "head"
+    assert resp.json()["series_coverage_stamp"] == "stamp-build-2"
+    assert old_index_resident and not any(old_index_resident)
+    assert log.kinds() == ["reload", "acquire", "release", "acquire", "frame_read", "release"]
+    assert "coverage_restarts;desc=1" in resp.headers["server-timing"]
+
+
+def test_a_head_hit_render_frees_the_stored_frame_before_its_permit_is_released(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A head renders a missing format from its stored frame. When the render gives its
+    permit back, nothing references the frame's bytes."""
+    facets = {(_STAT_VAR, _RECIPIENT): [_FACET]}
+    body_ref = {"text": _CSV_HEADER + _row(stat_var_ref=_STAT_VAR_REF, obs_value="1000")}
+    transport, _sdmx_calls = _counting_transport(body_ref)
+    version_store = FakeVersionRecordDatasetStore()
+    permits = _FrameTrackingPermits(1)
+    monkeypatch.setattr(deps_module, "MaterialisePermits", lambda _permits: permits)
+    tracking: list[bool] = []
+
+    class _TrackingArtifactStore(_RenderableArtifactStore):
+        def get(self, *, artifact_digest: str, tier: Tier) -> bytes:
+            data = super().get(artifact_digest=artifact_digest, tier=tier)
+            return permits.track(data) if tracking else data
+
+    client = _base_client(
+        graph=_mutable_graph(facets),
+        sdmx_transport=transport,
+        head_writer=_FakeHeadStore(),
+        version_writer=LiveVersionRecordWriter(store=version_store),
+        snapshot_reader=LiveSnapshotReader(store=version_store),
+        artifact_store=_TrackingArtifactStore(inventory=LiveArtifactInventory(store=version_store)),
+        coverage=_CoverageFromFacets(facets),
+    )
+    spec_id = _mint_one_spec(client)
+    tracking.append(True)
+
+    resp = client.get(f"/api/datasets/{spec_id}?format=parquet&bundle=false")
+
+    assert resp.status_code == 200, resp.text
+    assert len(permits.read) == 1
+    assert permits.freed_at_release == [True]
 
 
 def test_head_hit_serves_an_already_stored_rendering_without_rendering_on_demand():
@@ -1047,8 +1146,8 @@ def test_head_hit_serves_an_already_stored_rendering_without_rendering_on_demand
     assert artifact_store.put_calls == puts_after_mint
 
 
-def test_head_hit_with_no_stored_frame1_re_materialises_instead_of_rendering_on_demand():
-    """Without its frame1 artifact, a head hit cannot render a missing format and must
+def test_head_hit_with_no_stored_frame_re_materialises_instead_of_rendering_on_demand():
+    """Without its canonical frame, a head hit cannot render a missing format and must
     re-materialise."""
     facets = {(_STAT_VAR, _RECIPIENT): [_FACET]}
     graph = _mutable_graph(facets)
@@ -1070,8 +1169,8 @@ def test_head_hit_with_no_stored_frame1_re_materialises_instead_of_rendering_on_
     sdmx_calls_after_mint = sdmx_calls.n
     with version_store.transaction() as tx:
         tx.execute(
-            "DELETE FROM datasets.version_artifact WHERE subject_id = %s AND media_type = %s",
-            (spec_id, FRAME1_MEDIA_TYPE),
+            "DELETE FROM datasets.version_artifact WHERE subject_id = %s AND rendering_key = %s",
+            (spec_id, rendering_key(CANONICAL_FRAME_RENDERING)),
         )
 
     resp = client.get(f"/api/datasets/{spec_id}?format=parquet&bundle=false")
@@ -1203,12 +1302,12 @@ def test_head_hit_stored_frame_groupby_refuses_a_zero_row_resolved_member_missin
     assert "Malaria control" in problem["detail"]
 
 
-def test_signing_counts_only_the_matching_rendering_among_several_stored():
+def test_a_head_hit_lists_only_the_matching_rendering_among_several_stored():
     """A head hit narrows to the ONE rendering its own request names
     (`read_snapshot_manifest`'s own `rendering_key` narrowing) plus the
     statistics artifact, always kept independent of that narrowing, so
-    signing reaches exactly those two regardless of how many other
-    renderings the version actually carries stored. Three data renderings
+    it lists exactly those two regardless of how many other
+    renderings the version actually carries stored, and signs none. Three data renderings
     end up stored here: the mint's own `csv, bundle=false` plus two
     rendered on demand by the two GETs preceding the one this test
     measures.
@@ -1219,9 +1318,7 @@ def test_signing_counts_only_the_matching_rendering_among_several_stored():
     transport, _sdmx_calls = _counting_transport(body_ref)
     head_store = _FakeHeadStore()
     version_store = FakeVersionRecordDatasetStore()
-    artifact_store = _SigningCountingArtifactStore(
-        inventory=LiveArtifactInventory(store=version_store)
-    )
+    artifact_store = _RenderableArtifactStore(inventory=LiveArtifactInventory(store=version_store))
     client = _base_client(
         graph=graph,
         sdmx_transport=transport,
@@ -1239,17 +1336,16 @@ def test_signing_counts_only_the_matching_rendering_among_several_stored():
         version_store, subject_id=spec_id, content_version=extra.json()["content_version"]
     )
     # 5 rows: the 3 requested renderings, the mint's own `series-statistics/1`
-    # artifact, and the record-only frame1 row every mint stores regardless
-    # of `options` (`render_and_store_frame1`).
+    # artifact, and the record-only canonical frame row every mint stores regardless
+    # of `options` (`render_and_store_canonical_frame`).
     listable_media_types = {
-        row["media_type"] for row in rows if row["media_type"] != FRAME1_MEDIA_TYPE
+        row["media_type"] for row in rows if row["rendering"] != CANONICAL_FRAME_RENDERING
     }
     assert listable_media_types == {
         "text/csv",
         "application/vnd.apache.parquet",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     }
-    signing_calls_before = artifact_store.signing_calls
 
     resp = client.get(f"/api/datasets/{spec_id}?format=csv&bundle=false")
 
@@ -1258,9 +1354,9 @@ def test_signing_counts_only_the_matching_rendering_among_several_stored():
     assert body["trace"]["served_from"] == "head"
     # The matching csv rendering, plus the statistics artifact -- always
     # included independent of narrowing (`read_snapshot_manifest`'s own
-    # docstring) -- both get signed.
+    # docstring).
     assert len(body["artifacts"]) == 2
-    assert artifact_store.signing_calls == signing_calls_before + 2
+    assert artifact_store.signings == []
 
 
 _UNIT_STAT_VAR = "CurrencyRecheckDisbursements"
@@ -1304,10 +1400,11 @@ def _unit_sdmx_transport(body_ref: dict[str, str]) -> httpx.MockTransport:
     return httpx.MockTransport(handler)
 
 
-def test_head_recheck_declines_on_a_non_currency_native_unit_and_serve_remints_the_422():
-    """When the elected unit changes from native `CurrencyUSD` to plain `USD`, the head
-    recheck declines comparison. Re-materialisation returns 422 `facet_binding_unsupported`
-    without a pointer because the binding belongs to the stored identity."""
+def test_a_rebuild_after_the_native_unit_turns_non_currency_remints_the_422():
+    """When the elected unit changes from native `CurrencyUSD` to plain `USD` with no source
+    date moving, the head serves until its maximum age. The rebuild then returns 422
+    `facet_binding_unsupported` without a pointer because the binding belongs to the stored
+    identity."""
     graph = FakeMintGraphReader(
         arcs=_UNIT_GRAPH_ARCS,
         labels={"OECD_DAC2A": "OECD DAC2a", _RECIPIENT: "Kenya"},
@@ -1347,10 +1444,9 @@ def test_head_recheck_declines_on_a_non_currency_native_unit_and_serve_remints_t
         },
     )
     assert minted.status_code == 200, minted.text
-    assert head_store.head_for(spec_id).signal == (MemberSignal("facet1", 1, "2020", "2020"),)
 
-    # The unit changes to plain `USD`. The recheck declines comparison before the 422 response.
-    head_store.age_head(spec_id, age=_PAST_INTERVAL)
+    # The unit changes to plain `USD`, and the head reaches its maximum age.
+    head_store.age_head(spec_id, age=_PAST_MAX_AGE)
     body_ref["text"] = _unit_row(unit="USD")
     facets[(_UNIT_STAT_VAR, _RECIPIENT)] = [
         replace(facets[(_UNIT_STAT_VAR, _RECIPIENT)][0], unit="USD")
@@ -1430,8 +1526,14 @@ def test_an_empty_probe_writes_nothing_until_its_registry_check_completes():
     assert head_store.head_for(spec_id).content_version == empty["content_version"]
     assert sdmx_calls.n == 0
 
-    # Data arrives. The probe finds a facet, and a new version replaces the empty one.
+    # Data arrives with no source date to show it, so the head serves until its maximum age,
+    # when the rebuild finds a facet and a new version replaces the empty one.
     head_store.age_head(spec_id, age=_PAST_INTERVAL)
+    facets[(stat_var, _RECIPIENT)] = [_FACET]
+    held = client.get(f"/api/datasets/{spec_id}")
+    assert held.status_code == 200, held.text
+    assert held.json()["content_version"] == empty["content_version"]
+    head_store.age_head(spec_id, age=_PAST_MAX_AGE)
     facets[(stat_var, _RECIPIENT)] = [_FACET]
     arrived = client.get(f"/api/datasets/{spec_id}")
     assert arrived.status_code == 200, arrived.text

@@ -39,7 +39,8 @@ from typing import TYPE_CHECKING, Literal
 
 from code_index.shared import get_index, get_measure_index
 from search.currency_codes import ISO_4217_CODES
-from search.engine.extract import _FUNCTION_WORDS, _words
+from search.engine.extract import _words
+from search.engine.function_words import FUNCTION_WORDS
 from search.engine.qualifier_match import (
     QualifierMatch,
     QualifierReadings,
@@ -173,7 +174,7 @@ def _price_basis_words(text: str) -> set[str]:
         if span:
             i += span
             continue
-        if words[i] not in _FUNCTION_WORDS:
+        if words[i] not in FUNCTION_WORDS:
             kept.add(words[i])
         i += 1
     return kept

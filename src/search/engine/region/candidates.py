@@ -45,6 +45,7 @@ from search.engine.retrieval.bound_values import (
     canonical_pin_bindings,
     elected_role_class_shape,
     entity_role_keys,
+    named_scope,
     part_source,
     shape_for_part,
     shape_member_facts,
@@ -62,6 +63,7 @@ from search.engine.retrieval.retrieve import (
 )
 from search.engine.retrieval.standard import FacetBatch, facets_at_own_places
 from search.engine.shape import ShapeDraft, is_role_bearing
+from search.engine.source_scope import SourceScope
 from search.models import ResolvedQualifier, SpecObservations, Warning, omitted_observations
 from series_coverage.shared import CoverageSnapshot
 
@@ -158,19 +160,19 @@ def walk_alternate(
     graph: EngineGraphClient,
     deadline: float | None = None,
     role_class_walks: RoleClassWalks | None = None,
-    excluded: frozenset[str] = frozenset(),
+    scope: SourceScope | None = None,
 ) -> _Alternate | None:
     """Give an alternate the constraint bindings of `rep_sv` and narrow it to the role class
     its entities elect, or return `None` when the mint refuses its identity or no table the
     part may answer the alternate from holds a row for those bindings
-    (`bound_values.PartNotServed`), so an alternate is never served from a table the part
-    excludes or from a table of another family.
+    (`bound_values.PartNotServed`), so an alternate is never served from a table outside
+    the part's source scope or from a table of another family.
 
     The chosen shape alone receives model bindings. An alternate derives constraint bindings
     from its representative StatVar (`alternate_representative`), and names the dataset its
     shape names (`with_named_source`), as the chosen shape does, so its identity is the one
     a question electing it mints. When the shape names none, the alternate names the
-    dataset the part, which excludes the datasets `excluded`, is served from under those
+    dataset the part, under the source scope `scope`, is served from under those
     bindings and its role keys, where its unnamed identity would resolve to another at the
     mint (`part_source`), as the elected shape is named under the model's bindings. Its
     bindings on the invariants
@@ -190,11 +192,11 @@ def walk_alternate(
     """
     bindings = standard_bindings_from_arcs(shape=shape, rep_sv_dcid=rep_sv)
     try:
-        source = part_source(shape, bindings, lambda: role_keys, excluded=excluded)
+        source = part_source(shape, bindings, lambda: role_keys, scope=scope)
     except PartNotServed:
         return None
     if source is not None and shape.named_dataset is None:
-        shape = shape_for_part(shape, source)
+        shape = shape_for_part(shape, named_scope(source))
     bindings = with_named_source(bindings, shape)
     try:
         resolution = elected_role_class_shape(

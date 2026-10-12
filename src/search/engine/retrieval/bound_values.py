@@ -42,7 +42,9 @@ from typing import TYPE_CHECKING, Literal, NamedTuple, cast
 from code_index.labels import PRICE_BASIS_AXIS, is_price_basis
 from code_index.members import (
     DatasetFamily,
+    DatasetScope,
     FamilyQuery,
+    ProvenanceScope,
     SourceNotInFamily,
     absent_member_reads_zero,
     absent_readings,
@@ -61,6 +63,7 @@ from code_index.members import (
     index_family,
     invariant_bindings,
     is_opt_in,
+    listed_group,
     query_family,
     shared_pins,
 )
@@ -804,7 +807,7 @@ MeasureFamilyCacheKey = tuple[
     str | None,
     frozenset[str],
     frozenset[str],
-    frozenset[str],
+    DatasetScope | None,
 ]
 
 
@@ -815,7 +818,7 @@ def measure_family_cache_key(
 
     A measure-axis bound stays out of the row filter, and keys and values are sorted, since
     their input order is irrelevant. The election reads the dataset the query names, its
-    bound and open role keys and the datasets it excludes, so all four enter the key.
+    bound and open role keys and its scope, so all four enter the key.
     """
     axis_names = {axis.axis for axis in axes}
     filtered = tuple(
@@ -833,7 +836,7 @@ def measure_family_cache_key(
         query.source,
         query.role_keys,
         query.open_role_keys,
-        query.excluded,
+        query.scope,
     )
 
 
@@ -1616,10 +1619,10 @@ def part_source(
     bindings: Sequence[SlotBindingDraft],
     role_keys: Callable[[], RoleKeys],
     *,
-    excluded: frozenset[str] = frozenset(),
+    scope: ProvenanceScope | None = None,
 ) -> str | None:
-    """The dataset the identity of a part that excludes `excluded` names for `shape` under
-    `bindings` and the role keys `role_keys` returns, or `None` when it names none.
+    """The dataset the identity of a part under the source scope `scope` names for `shape`
+    under `bindings` and the role keys `role_keys` returns, or `None` when it names none.
 
     The part is served from one of its own tables: the dataset the shape names
     (`ShapeDraft.named_dataset`), else the one elected among the tables a part naming none
@@ -1641,8 +1644,8 @@ def part_source(
 
     A shape the index does not carry (`shape_datasets`) keeps the name it has, and so does
     a part whose membership the index does not decide: the mint walks the graph there and
-    elects no table. A part that names and excludes no table, has at most one table of its
-    own, and whose slot keys select no other table can be served from no other table, so
+    elects no table. A part that excludes no source and has at most one table of its own,
+    and whose slot keys select no other table can be served from no other table, so
     its shape keeps the name it has whatever rows that table holds, and no row is read:
     it names none, or the one opt-in table that alone publishes the shape
     (`shape_for_part`). `role_keys` is
@@ -1650,8 +1653,8 @@ def part_source(
     keys select are several, since the role keys decide nothing among fewer.
 
     Raises `PartNotServed` when another table could serve the part and no table of the
-    part's own holds a row matching the bindings together, whatever a table it excludes or
-    a table of another family holds. The part then has no identity that resolves its own
+    part's own holds a row matching the bindings together, whatever a table outside its
+    scope or a table of another family holds. The part then has no identity that resolves its own
     rows at every door, and the caller refuses it."""
     index = get_index()
     if not shape_datasets(shape, index):
@@ -1660,10 +1663,10 @@ def part_source(
     if not index_decides(index, query):
         return shape.named_dataset
     dataset = shape.named_dataset
-    own = part_datasets(shape, None, index, excluded=excluded)
+    own = part_datasets(shape, scope, index)
     selected = eligible_datasets(index, query)
     if (
-        not excluded
+        (scope is None or scope.named)
         and len(own) <= 1
         and set(selected) <= set(own)
         and (dataset is None or (dataset in own and is_opt_in(index, dataset)))
@@ -1756,9 +1759,13 @@ def shape_query(
     publish. A caller reading only the five-tuple, or a shape bound to no place, passes
     none.
     The query names the dataset a source-axis binding binds to one value (`source_binding`),
-    as an identity names the dataset its provenance facet binds to one ref. The identity
-    minted from the same bindings must bind its source slot from that binding, so that a
-    query built after election equals that identity's `identity_query`.
+    as an identity names the dataset its provenance facet binds to one ref. A query built
+    after election elects the same family and members as the minted identity's
+    `identity_query`, and equals it when the part has no source mention. A part with one
+    binds the identity's source to the provenances that served
+    (`spec_build.with_served_provenance`), so under an exclusion the plain election already
+    honours, the shape names no dataset and this query names none, while the identity's
+    query names the dataset that served.
     """
     slots: dict[str, SlotBinding] = {
         slot.property_dcid: ("unbound",)
@@ -1929,67 +1936,44 @@ def shape_datasets(shape: ShapeDraft, index: CodeIndex | None = None) -> tuple[s
 
 
 def part_datasets(
-    shape: ShapeDraft,
-    source: str | None,
-    index: CodeIndex | None = None,
-    *,
-    excluded: frozenset[str] = frozenset(),
+    shape: ShapeDraft, scope: ProvenanceScope | None, index: CodeIndex | None = None
 ) -> tuple[str, ...]:
-    """The datasets a part that names `source`, or names none, and excludes `excluded` may
-    answer `shape` from, in serving order: the datasets publishing the shape
+    """The datasets a part under the source scope `scope`, `None` for none, may answer
+    `shape` from, in serving order: the datasets publishing the shape
     (`_publishing_datasets`) that `code_index.members.eligible_among` keeps, so the family
-    is never selected again by the shape's slot keys. A part naming a dataset that does
-    not publish the shape may answer it from none. Shape candidacy stamps them on the
+    is not selected again by the shape's slot keys. Shape candidacy stamps them on the
     shape (`ShapeDraft.datasets`)."""
     index = index or get_index()
-    datasets = _publishing_datasets(shape, index)
-    if source is not None and source not in datasets:
-        return ()
-    return eligible_among(index, datasets, source=source, excluded=excluded)
+    return eligible_among(index, _publishing_datasets(shape, index), scope=scope)
+
+
+def named_scope(dataset: str) -> DatasetScope:
+    """The scope of a part that names `dataset` alone."""
+    return DatasetScope(allowed=frozenset({dataset}), named=True)
 
 
 def shape_for_part(
-    shape: ShapeDraft,
-    source: str | None,
-    index: CodeIndex | None = None,
-    *,
-    excluded: frozenset[str] = frozenset(),
+    shape: ShapeDraft, scope: ProvenanceScope | None, index: CodeIndex | None = None
 ) -> ShapeDraft:
-    """`shape` as a part that names `source`, or names none, and excludes `excluded`
-    answers from it: stamped with the datasets the part may answer from (`part_datasets`)
-    and the dataset the shape names (`ShapeDraft.named_dataset`), its index-sourced
-    taxonomy narrowed to those datasets' rows (`five_tuple_member_facts`). The slot keys
-    stay the whole family's. The taxonomy is kept as it is when the part may answer from
-    every dataset publishing the family.
+    """`shape` as a part under the source scope `scope` answers from it: stamped with the
+    datasets the part may answer from (`part_datasets`) and the dataset the shape names
+    (`ShapeDraft.named_dataset`), its index-sourced taxonomy narrowed to those datasets'
+    rows (`five_tuple_member_facts`). The slot keys stay the whole family's. The taxonomy
+    is kept as it is when the part may answer from every dataset publishing the family.
 
-    The shape names `source`, else the one dataset the part may answer it from when that
-    dataset is opt-in: an unnamed part answers from an opt-in dataset only on a family no
-    other dataset publishes (`eligible_datasets`), so electing the shape names the
-    dataset, and its identity is the one a part naming it mints.
-
-    A part that names no dataset is offered a source slot on a family two or more declared
-    datasets it does not exclude publish, opt-in ones included
-    (`ShapeDraft.source_options`): naming is how a part asks for an opt-in table."""
+    The shape names the one dataset the part may answer it from when the scope names a
+    source (`ProvenanceScope.named`) or that dataset is opt-in. An unnamed part answers
+    from an opt-in dataset only on a family no other dataset publishes
+    (`eligible_datasets`), so electing the shape names the dataset, and its identity is
+    the one a part naming it mints."""
     index = index or get_index()
-    datasets = part_datasets(shape, source, index, excluded=excluded)
-    named = source
-    if named is None and len(datasets) == 1 and is_opt_in(index, datasets[0]):
+    datasets = part_datasets(shape, scope, index)
+    named = None
+    if len(datasets) == 1 and (
+        (scope is not None and scope.named) or is_opt_in(index, datasets[0])
+    ):
         (named,) = datasets
-    options = (
-        ()
-        if source is not None
-        else tuple(
-            dataset
-            for dataset in shape_datasets(shape, index)
-            if dataset in index.datasets and dataset not in excluded
-        )
-    )
-    stamped = replace(
-        shape,
-        datasets=datasets,
-        named_dataset=named,
-        source_options=options if len(options) > 1 else (),
-    )
+    stamped = replace(shape, datasets=datasets, named_dataset=named)
     if not shape.slot_taxonomy_index_sourced or datasets == shape_datasets(shape, index):
         return stamped
     member_facts, _index_sourced = five_tuple_member_facts(stamped)
@@ -1997,6 +1981,13 @@ def shape_for_part(
         stamped,
         slot_taxonomy=read_slot_taxonomy(slot_keys=shape.slot_keys, member_facts=member_facts),
     )
+
+
+def shape_listed_rows(shape: ShapeDraft, index: CodeIndex | None = None) -> tuple[StatVarRow, ...]:
+    """The rows the index lists for `shape`'s five-tuple without a declared dataset
+    (`CodeIndex.listed_by_five_tuple`), each with the provenances holding it."""
+    index = index or get_index()
+    return index.listed_by_five_tuple.get(_member_five_tuple(shape_five_tuple(shape)), ())
 
 
 def shape_part_datasets(shape: ShapeDraft, index: CodeIndex) -> tuple[str, ...]:
@@ -2530,7 +2521,9 @@ class RoleClassWalks:
     Search runs the walk the mint runs, through the enumerator the Datasets doors share
     (`statvar_members.shared_enumerator` unless `enumerator` is given), to learn the
     members an identity the code index does not decide resolves to, which recalled
-    members cannot settle. A request asks the same query for its elected shape, on each
+    members cannot settle. A family holding a row the index lists outside its code systems
+    (`code_index.members.listed_group`) is elected from the index, as the mint elects it,
+    and reads no graph. A request asks the same query for its elected shape, on each
     pass, and for alternates, so each distinct query walks once.
 
     A first answer's walk is seeded with its recalled members and bound by
@@ -2623,20 +2616,22 @@ class RoleClassWalks:
         else:
             bound = deadline
         try:
-            group = self._enumerator.enumerate(
-                graph=self._graph,
-                stamp_key=self._graph.generation_stamp().key,
-                five_tuple=query.five_tuple,
-                slots=query.slots,
-                readings=absent_readings(get_index()),
-                extra_candidates=tuple(candidates),
-                role_keys=query.role_keys,
-                open_role_keys=query.open_role_keys,
-                subject_ceiling=None if resubmit is None else resubmit.subject_ceiling,
-                deadline=bound,
-                full_read_deadline=None if resubmit is None else resubmit.full_read_deadline,
-                spec_id=None if resubmit is None else resubmit.spec_id,
-            )
+            group = listed_group(get_index(), query, member_cap=self._enumerator.member_cap)
+            if group is None:
+                group = self._enumerator.enumerate(
+                    graph=self._graph,
+                    stamp_key=self._graph.generation_stamp().key,
+                    five_tuple=query.five_tuple,
+                    slots=query.slots,
+                    readings=absent_readings(get_index()),
+                    extra_candidates=tuple(candidates),
+                    role_keys=query.role_keys,
+                    open_role_keys=query.open_role_keys,
+                    subject_ceiling=None if resubmit is None else resubmit.subject_ceiling,
+                    deadline=bound,
+                    full_read_deadline=None if resubmit is None else resubmit.full_read_deadline,
+                    spec_id=None if resubmit is None else resubmit.spec_id,
+                )
         except MemberRoleDisagreement as exc:
             return RoleSignatureError(str(exc))
         except (

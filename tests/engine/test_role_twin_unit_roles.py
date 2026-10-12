@@ -144,7 +144,6 @@ def _resolve_state(shape: ShapeDraft, unit_request: IdentityUnitRequest) -> Reso
         include_observations=False,
         stream_observations=False,
         unit_text=None,
-        source_text=None,
         materialise_graph=cast(Any, object()),
         materialise_sdmx=cast(Any, object()),
         timing={},

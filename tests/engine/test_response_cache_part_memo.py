@@ -302,6 +302,28 @@ def test_a_hit_folded_with_a_fresh_sibling_equals_an_all_fresh_run(caplog):
     assert (logged["memo_hits"], logged["memo_misses"]) == (1, 1)
 
 
+def test_a_memo_hit_overlays_comparison_without_mutating_the_stored_region():
+    graph = _gender_fold_graph()
+    sdmx = FakeSdmxClient(observations={}, availability={})
+    memo = PartMemo()
+    plain = _gender_entry("Female", "Count_Person_Female", window=None)
+    comparison = plain.model_copy(update={"separate": True})
+
+    def resolve(entry: ResubmitIdentityEntry):
+        return offline_resolve(
+            ResolveRequest(input=DatasetResubmitInput(entries=[entry])),
+            graph=graph,
+            sdmx=sdmx,
+            materialise_graph=member_walk_reader(graph),
+            part_memo=memo,
+        )
+
+    assert resolve(plain).parts[0].separate is False
+    assert resolve(comparison).parts[0].separate is True
+    assert resolve(plain).parts[0].separate is False
+    assert (memo.stats()["hits"], memo.stats()["entries"]) == (2, 1)
+
+
 @pytest.mark.parametrize("grouped_first", [True, False], ids=["group_then_none", "none_then_group"])
 def test_one_identity_posted_with_and_without_a_group_gets_an_answer_for_each(grouped_first):
     """The same identity posted with a graph-confirmed group and with none, through one live

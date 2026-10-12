@@ -99,7 +99,7 @@ alone.
 | write_refused                   | 403            | do_not_retry                                    | implemented |     |
 | request_invalid                 | 400            | headline correct_and_retry; wire `retryable` always false | implemented |     |
 | resource_exhausted               | 400            | do_not_retry                                    | implemented |     |
-| frame_unavailable                | 404 or 503 per cause (see below) | refresh_then_retry (expired, ops_unsupported) / do_not_retry (revoked, missing_rendering, digest_mismatch, unknown) / retry_after_delay (io) | implemented |     |
+| frame_unavailable                | 404 or 503 per cause (see below) | refresh_then_retry (expired, ops_unsupported) / do_not_retry (revoked, missing_rendering, digest_mismatch, quarantined, unknown) / retry_after_delay (io) | implemented |     |
 | release_mismatch                 | 503            | retry_after_delay                               | implemented |     |
 | service_unavailable              | 503            | retry_after_delay                               | implemented |     |
 | timeout                          | 504            | retry_after_delay                               | implemented |     |
@@ -117,6 +117,7 @@ alone.
 | ops_unsupported      | 404  | true      |
 | missing_rendering     | 404  | false     |
 | digest_mismatch       | 404  | false     |
+| quarantined           | 404  | false     |
 | io                  | 503  | true      |
 | unknown              | 404  | false     |
 | any other reason      | 503  | true      |

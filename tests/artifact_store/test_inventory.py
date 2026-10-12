@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from google.api_core.exceptions import ServiceUnavailable
@@ -12,8 +12,15 @@ from artifact_store.errors import (
     ArtifactRecordConflictError,
     ArtifactWriteError,
 )
-from artifact_store.inventory import ArtifactLocation, LiveArtifactInventory
+from artifact_store.inventory import (
+    ArtifactLocation,
+    InventoryBatch,
+    InventoryEntry,
+    LiveArtifactInventory,
+    write_entry,
+)
 from artifact_store.store import LiveArtifactStore, Tier
+from dataset_store.snapshot import WORKING_TIER_RETENTION
 
 from .conftest import FakeArtifactInventoryDatasetStore, FakeGCSClient
 
@@ -153,7 +160,7 @@ def test_store_put_never_calls_record_when_the_write_fails(dataset_store):
 
 
 def test_get_location_returns_the_stored_bucket_and_object_name_once_recorded(dataset_store):
-    inventory = LiveArtifactInventory(store=dataset_store)
+    inventory = LiveArtifactInventory(store=dataset_store, now=lambda: _FIRST_LANDING)
     inventory.record(
         digest="sha256:present",
         tier=Tier.working,
@@ -165,7 +172,10 @@ def test_get_location_returns_the_stored_bucket_and_object_name_once_recorded(da
 
     location = inventory.get_location("sha256:present", tier=Tier.working)
     assert location == ArtifactLocation(
-        bucket="dev-fin-observatory-datasets-working", object_name="sha256:present"
+        bucket="dev-fin-observatory-datasets-working",
+        object_name="sha256:present",
+        stored_at=_FIRST_LANDING,
+        renewal=0,
     )
 
 
@@ -239,8 +249,10 @@ def test_record_raises_on_a_conflicting_bucket_for_the_same_digest_and_tier(data
 
     # A conflict leaves the stored location unchanged.
     location = inventory.get_location("sha256:conflict", tier=Tier.working)
-    assert location == ArtifactLocation(
-        bucket="dev-fin-observatory-datasets-working", object_name="sha256:conflict"
+    assert location is not None
+    assert (location.bucket, location.object_name) == (
+        "dev-fin-observatory-datasets-working",
+        "sha256:conflict",
     )
 
 
@@ -276,6 +288,7 @@ def test_store_put_raises_artifact_inventory_error_when_the_bytes_landed_but_rec
     store = LiveArtifactStore(buckets=_BUCKETS, inventory=inventory, client=client)
 
     def _boom(self, *args, **kwargs):
+        # New bytes land with no location read, so the only transaction is the record.
         raise RuntimeError("driver said something secret")
 
     monkeypatch.setattr(type(dataset_store), "transaction", _boom)
@@ -321,6 +334,8 @@ def test_store_put_records_inventory_only_after_the_write_succeeds(dataset_store
 
 _FIRST_LANDING = datetime(2026, 1, 1, tzinfo=UTC)
 _LATER_LANDING = datetime(2026, 2, 1, tzinfo=UTC)
+# Inside the working tier's 30-day retention from `_FIRST_LANDING`.
+_INSIDE_RETENTION = datetime(2026, 1, 20, tzinfo=UTC)
 
 
 def _stored_at(dataset_store, *, digest: str, tier: Tier) -> datetime:
@@ -404,12 +419,16 @@ def test_store_puts_own_dedup_hit_does_not_extend_the_working_tier_clock(dataset
     # uploaded=False -- the working tier's own retention clock must not move.
     client = FakeGCSClient()
     first_inventory = LiveArtifactInventory(store=dataset_store, now=lambda: _FIRST_LANDING)
-    store_first = LiveArtifactStore(buckets=_BUCKETS, inventory=first_inventory, client=client)
+    store_first = LiveArtifactStore(
+        buckets=_BUCKETS, inventory=first_inventory, client=client, now=lambda: _FIRST_LANDING
+    )
     first = store_first.put(b"repeat mint bytes", tier=Tier.working)
     assert first.deduplicated is False
 
-    later_inventory = LiveArtifactInventory(store=dataset_store, now=lambda: _LATER_LANDING)
-    store_later = LiveArtifactStore(buckets=_BUCKETS, inventory=later_inventory, client=client)
+    later_inventory = LiveArtifactInventory(store=dataset_store, now=lambda: _INSIDE_RETENTION)
+    store_later = LiveArtifactStore(
+        buckets=_BUCKETS, inventory=later_inventory, client=client, now=lambda: _INSIDE_RETENTION
+    )
     second = store_later.put(b"repeat mint bytes", tier=Tier.working)
 
     assert second.deduplicated is True
@@ -443,3 +462,177 @@ def test_a_conflicting_bucket_never_moves_stored_at_even_with_uploaded_true(data
         _stored_at(dataset_store, digest="sha256:conflictclock", tier=Tier.working)
         == _FIRST_LANDING
     )
+
+
+# A working location past retention renews under `<digest>#r<n>`. Fake GCS stamps an upload with
+# the wall clock, so these tests renew at the wall clock and mint a retention window earlier.
+
+_RENEWING = b"renewal bytes"
+
+
+def _renewal_stores(dataset_store, client: FakeGCSClient, inventory_type=LiveArtifactInventory):
+    """A store minting a retention window ago, and one renewing now, sharing GCS and the row."""
+    renewing_at = datetime.now(UTC)
+    minted_at = renewing_at - WORKING_TIER_RETENTION - timedelta(days=1)
+    minting = LiveArtifactStore(
+        buckets=_BUCKETS,
+        inventory=LiveArtifactInventory(store=dataset_store, now=lambda: minted_at),
+        client=client,
+        now=lambda: minted_at,
+    )
+    renewing_inventory = inventory_type(store=dataset_store, now=lambda: renewing_at)
+    renewing = LiveArtifactStore(
+        buckets=_BUCKETS, inventory=renewing_inventory, client=client, now=lambda: renewing_at
+    )
+    return minting, renewing, renewing_inventory, minted_at, renewing_at
+
+
+def _location(dataset_store, digest: str) -> tuple[str, datetime, int]:
+    with dataset_store.transaction() as tx:
+        row = tx.fetch_one(
+            "SELECT object_name, stored_at, renewal FROM datasets.artifact_location "
+            "WHERE artifact_digest = %s AND tier = 'working'",
+            (digest,),
+        )
+    assert row is not None
+    return row["object_name"], row["stored_at"], row["renewal"]
+
+
+def test_renewals_whose_location_move_failed_are_adopted_once_the_inventory_recovers(
+    dataset_store, monkeypatch
+):
+    client = FakeGCSClient()
+    minting, renewing, inventory, _, _ = _renewal_stores(dataset_store, client)
+    digest = minting.put(_RENEWING, tier=Tier.working).digest
+
+    def _outage(**kwargs) -> None:
+        raise ArtifactInventoryError(digest=kwargs["digest"], tier=kwargs["tier"])
+
+    monkeypatch.setattr(inventory, "renew", _outage)
+    for _ in range(3):
+        with pytest.raises(ArtifactInventoryError):
+            renewing.put(_RENEWING, tier=Tier.working)
+    monkeypatch.undo()
+    bucket = client.buckets[_BUCKETS[Tier.working]]
+    uploads_before_recovery = list(bucket.upload_log)
+
+    recovered = renewing.put(_RENEWING, tier=Tier.working)
+
+    assert (recovered.object_name, recovered.deduplicated) == (f"{digest}#r1", True)
+    assert bucket.upload_log == uploads_before_recovery
+    assert _location(dataset_store, digest) == (
+        f"{digest}#r1",
+        bucket.time_created[f"{digest}#r1"],
+        1,
+    )
+
+
+def test_deferred_renewals_whose_batch_was_never_written_are_adopted_at_their_creation_time(
+    dataset_store,
+):
+    client = FakeGCSClient()
+    minting, renewing, _, minted_at, renewing_at = _renewal_stores(dataset_store, client)
+    digest = minting.put(_RENEWING, tier=Tier.working).digest
+    for _ in range(3):
+        renewing.deferred(InventoryBatch()).put(_RENEWING, tier=Tier.working)
+    bucket = client.buckets[_BUCKETS[Tier.working]]
+    uploads_before_recovery = list(bucket.upload_log)
+    created_at = bucket.time_created[f"{digest}#r1"]
+    batch = InventoryBatch()
+
+    recovered = renewing.deferred(batch).put(_RENEWING, tier=Tier.working)
+
+    assert (recovered.object_name, recovered.deduplicated) == (f"{digest}#r1", True)
+    assert bucket.upload_log == uploads_before_recovery
+    assert batch.entries == (
+        InventoryEntry(
+            digest=digest,
+            tier=Tier.working,
+            bucket=_BUCKETS[Tier.working],
+            object_name=f"{digest}#r1",
+            size_bytes=len(_RENEWING),
+            uploaded=False,
+            stored_at=created_at,
+            renewal=1,
+        ),
+    )
+    assert _location(dataset_store, digest) == (digest, minted_at, 0)
+
+    # The caller's transaction may run later than the adoption; the clock starts at creation.
+    with dataset_store.transaction() as tx:
+        write_entry(tx, batch.entries[0], now=renewing_at + timedelta(hours=1))
+
+    assert _location(dataset_store, digest) == (f"{digest}#r1", created_at, 1)
+
+
+def test_a_taken_renewal_name_past_retention_is_skipped_and_the_next_one_adopted(dataset_store):
+    client = FakeGCSClient()
+    minting, renewing, _, minted_at, _ = _renewal_stores(dataset_store, client)
+    digest = minting.put(_RENEWING, tier=Tier.working).digest
+    bucket = client.buckets[_BUCKETS[Tier.working]]
+    adopted_at = datetime.now(UTC) - timedelta(days=1)
+    for name, created in ((f"{digest}#r1", minted_at), (f"{digest}#r2", adopted_at)):
+        bucket.objects[name] = _RENEWING
+        bucket.time_created[name] = created
+
+    renewed = renewing.put(_RENEWING, tier=Tier.working)
+
+    assert (renewed.object_name, renewed.deduplicated) == (f"{digest}#r2", True)
+    assert f"{digest}#r3" not in bucket.objects
+    assert _location(dataset_store, digest) == (f"{digest}#r2", adopted_at, 2)
+
+
+class _ConcurrentRenewer(LiveArtifactInventory):
+    """Runs another writer's `put` once, at the hook `interleave` names: right after this
+    writer's location read, or right before its own location move."""
+
+    other_put = None
+    interleave = "after_read"
+
+    def get_location(self, digest: str, *, tier: Tier) -> ArtifactLocation | None:
+        location = super().get_location(digest, tier=tier)
+        if self.interleave == "after_read":
+            self._run_other()
+        return location
+
+    def renew(self, **kwargs) -> None:
+        if self.interleave == "before_renew":
+            self._run_other()
+        super().renew(**kwargs)
+
+    def _run_other(self) -> None:
+        if self.other_put is not None:
+            put, self.other_put = self.other_put, None
+            self.other_result = put()
+
+
+@pytest.mark.parametrize(
+    "uploader_moves_first",
+    [pytest.param(True, id="uploader_moves_first"), pytest.param(False, id="adopter_moves_first")],
+)
+def test_concurrent_renewers_converge_on_the_uploaded_renewal_name(
+    dataset_store, uploader_moves_first: bool
+):
+    """One writer uploads `#r1`; the other finds it taken and adopts it. Whichever moves the
+    location first, both return `#r1` and the location stays there."""
+    client = FakeGCSClient()
+    minting, plain, _, _, renewing_at = _renewal_stores(dataset_store, client)
+    _, hooked, hooked_inventory, _, _ = _renewal_stores(dataset_store, client, _ConcurrentRenewer)
+    digest = minting.put(_RENEWING, tier=Tier.working).digest
+    # The hooked writer adopts after the plain one finishes, or uploads and then lets the plain
+    # one adopt before its own location move.
+    uploader, adopter = (plain, hooked) if uploader_moves_first else (hooked, plain)
+    hooked_inventory.interleave = "after_read" if uploader_moves_first else "before_renew"
+    hooked_inventory.other_put = lambda: plain.put(_RENEWING, tier=Tier.working)
+
+    hooked_result = hooked.put(_RENEWING, tier=Tier.working)
+    results = {hooked: hooked_result, plain: hooked_inventory.other_result}
+
+    assert (results[uploader].object_name, results[uploader].deduplicated) == (
+        f"{digest}#r1",
+        False,
+    )
+    assert (results[adopter].object_name, results[adopter].deduplicated) == (f"{digest}#r1", True)
+    bucket = client.buckets[_BUCKETS[Tier.working]]
+    first_stored_at = renewing_at if uploader_moves_first else bucket.time_created[f"{digest}#r1"]
+    assert _location(dataset_store, digest) == (f"{digest}#r1", first_stored_at, 1)

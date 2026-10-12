@@ -254,6 +254,7 @@ def test_is_storable_false_on_skills_index_unavailable_warning():
         "observations_probe_failed",
         "observations_timed_out",
         "observations_bulk_fetch_failed",
+        "members_absent_from_graph",
     ],
 )
 def test_is_storable_false_on_a_failed_or_timed_out_read_warning_on_a_part(code):

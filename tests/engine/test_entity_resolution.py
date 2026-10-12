@@ -6,6 +6,8 @@ import asyncio
 from typing import ClassVar
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 import dc_graph
 from entity_resolution import Resolution
 from search.engine.bind import _UniversalBindOutput
@@ -16,6 +18,7 @@ from search.engine.place import expand_place, expand_places
 from search.engine.region import RegionResult, resolve_variable
 from search.engine.retrieval.retrieve import Materialised, materialise
 from search.engine.shape import ShapeDraft
+from search.engine.source_scope import SourceReference, SourceScope
 from search.models import (
     BindingSet,
     BindingValue,
@@ -23,6 +26,7 @@ from search.models import (
     RawTextInput,
     ResolveRequest,
     ResolveResponse,
+    SourceMention,
 )
 from search.render.no_data import no_data_phrase
 from tests.engine._builders import bound_place_context, subject_place_roles
@@ -34,6 +38,7 @@ _FAKE_LLM = FakeLLM()
 
 # The graph names a provenance on every facet it serves; `select_facet` refuses one without.
 _SOURCE = "dc/base/PlaceFixture"
+_CRS_PROVENANCE = "provenance/OECDCreditorReportingSystem"
 
 
 class _FixedBindLLM:
@@ -508,8 +513,29 @@ class TestPlaceExpansionEndToEnd:
         assert result.status == "no_data"
         assert result.no_data_reason == "entity_not_resolved"
 
-    def test_named_group_miss_keeps_elected_shape_evidence_before_materialise(self):
-        """A named scope miss keeps the elected shape and refuses before materialisation."""
+    @pytest.mark.parametrize(
+        "source_scope",
+        [
+            None,
+            SourceScope(
+                allowed=frozenset({_CRS_PROVENANCE}),
+                named=True,
+                mentions=(SourceMention(text="CRS", ref=_CRS_PROVENANCE, polarity="include"),),
+                references=(SourceReference(ref=_CRS_PROVENANCE, label="CRS", kind="provenance"),),
+                expansions=(frozenset({_CRS_PROVENANCE}),),
+            ),
+            SourceScope(
+                allowed=frozenset({_SOURCE}),
+                named=False,
+                mentions=(SourceMention(text="CRS", ref=_CRS_PROVENANCE, polarity="exclude"),),
+                references=(SourceReference(ref=_CRS_PROVENANCE, label="CRS", kind="provenance"),),
+                expansions=(frozenset({_CRS_PROVENANCE}),),
+            ),
+        ],
+        ids=["no-source-scope", "included-source", "excluded-source"],
+    )
+    def test_named_entity_miss_refuses_before_shape_and_bind(self, source_scope):
+        """An unresolved place refuses before shape and bind and retains its source scope."""
         graph = FakeGraph(
             nodes={_GDP_SV: _GDP_NODE},
             obs={},
@@ -518,10 +544,14 @@ class TestPlaceExpansionEndToEnd:
             places={},
             children={"Earth": {"Country": ["country/T1"]}},
         )
+        llm = _FixedBindLLM()
 
-        with patch(
-            "search.engine.region.materialise_step.materialise",
-            side_effect=AssertionError("materialise must not run for a named entity miss"),
+        with (
+            patch.object(llm, "generate_structured", wraps=llm.generate_structured) as bind_call,
+            patch(
+                "search.engine.region.materialise_step.materialise",
+                side_effect=AssertionError("materialise must not run for a named entity miss"),
+            ),
         ):
             result: RegionResult = asyncio.run(
                 resolve_variable(
@@ -534,8 +564,9 @@ class TestPlaceExpansionEndToEnd:
                     graph=graph,
                     resolver=make_resolver(graph),
                     sdmx=FakeSdmxClient(observations={}, availability={}),
-                    llm=_FixedBindLLM(),
+                    llm=llm,
                     base_timing={},
+                    source_scope=source_scope,
                     coverage=empty_coverage_snapshot(),
                 )
             )
@@ -543,13 +574,13 @@ class TestPlaceExpansionEndToEnd:
         assert result.status == "no_data"
         assert result.no_data_reason == "entity_not_resolved"
         assert result.unresolved_entity_names == ("Least Developed Countries",)
-        assert [(ref.dcid, ref.label) for ref in result.elected_stat_vars or []] == [
-            (_GDP_SV, "Nominal gross domestic product")
-        ]
-        assert "shape" in result.timing_by_step
-        assert "bind" in result.timing_by_step
-        assert "materialise" not in result.timing_by_step
-        assert "answer" not in result.timing_by_step
+        assert result.source_scope == source_scope
+        assert result.settled_dataset is None
+        bind_call.assert_not_called()
+        assert result.elected_stat_vars is None
+        assert not any(warning.code == "query_qualifier_dropped" for warning in result.warnings)
+        assert "shape" not in result.timing_by_step
+        assert "bind" not in result.timing_by_step
 
     def test_empty_entity_list_still_reaches_default_scope_and_materialise(self):
         """No named entity reaches default scope and materialisation."""

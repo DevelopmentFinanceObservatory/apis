@@ -3547,157 +3547,6 @@
     "ask": null,
     "unplaced": []
   },
-  "_SourceSlotBindOutput@a52906e9900f:49886b136f9300dc69c12ad667731c34735d4083": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "crsCooperationModality",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsPurpose",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFinance",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFlow",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "source",
-        "property_dcid": "provenance",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "unplaced": [],
-    "source_phrase": null
-  },
-  "_SourceSlotBindOutput@a52906e9900f:7b989ddb5931e0e430cd82497507539f71fe453d": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "crsCooperationModality",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsPurpose",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFinance",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFlow",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "source",
-        "property_dcid": "provenance",
-        "kind": "value",
-        "value_dcids": [
-          "provenance/TestDacTable2a"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "unplaced": [],
-    "source_phrase": "according to DAC Table 2a"
-  },
-  "_SourceSlotBindOutput@a52906e9900f:6e5b7e393976f5e775faeacaddb16ade92cd43ff": {
-    "chosen_shape_index": 0,
-    "bindings": [
-      {
-        "axis": "how",
-        "property_dcid": "crsCooperationModality",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsPurpose",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFinance",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "how",
-        "property_dcid": "crsTypeOfFlow",
-        "kind": "unbound",
-        "value_dcids": [],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      },
-      {
-        "axis": "source",
-        "property_dcid": "provenance",
-        "kind": "value",
-        "value_dcids": [
-          "excluded:provenance/OECDCreditorReportingSystem"
-        ],
-        "evidence": "mentioned",
-        "requested_all_phrase": null
-      }
-    ],
-    "also_plausible": null,
-    "ask": null,
-    "unplaced": [],
-    "source_phrase": "excluding the CRS"
-  },
   "_UniversalBindOutput@ede71de59275:aef18fd37a7a13a85053488633bfed4fc5ef48f8": {
     "chosen_shape_index": 1,
     "bindings": [
@@ -14955,5 +14804,235 @@
         "end": "2015"
       }
     ]
+  },
+  "Extraction@ecf532abbb23:5ad881b5f904fd7d36c98a4050792fdb9a0e95fc": {
+    "kind": "resolution",
+    "variables": [
+      "ODA grant equivalents"
+    ],
+    "entities": [
+      {
+        "text": "France",
+        "span": "France",
+        "flow_role": "origin",
+        "role_span": "'s",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@ecf532abbb23:4fddb23d5f4fc8599c71bd1ccb05bdb41018dd4a": {
+    "kind": "resolution",
+    "variables": [
+      "official development assistance grant equivalents"
+    ],
+    "entities": [
+      {
+        "text": "France",
+        "span": "France",
+        "flow_role": "origin",
+        "role_span": "from",
+        "members": false
+      },
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@ecf532abbb23:5df9e46ada04548a45a9eedb12bd8cfb461d24aa": {
+    "kind": "resolution",
+    "variables": [
+      "health ODA"
+    ],
+    "entities": [
+      {
+        "text": "France",
+        "span": "France",
+        "flow_role": "origin",
+        "role_span": "from",
+        "members": false
+      },
+      {
+        "text": "Africa",
+        "span": "Africa",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@ecf532abbb23:ade4d91cb09d8c83b61beda9ec74bc61f77d202d": {
+    "kind": "resolution",
+    "variables": [
+      "aid"
+    ],
+    "entities": [
+      {
+        "text": "G7",
+        "span": "G7",
+        "flow_role": "origin",
+        "role_span": "from",
+        "members": false
+      },
+      {
+        "text": "Africa",
+        "span": "Africa",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@ecf532abbb23:cebf3a0c2676ce88f29b3f4e1e9e1129aa582da3": {
+    "kind": "resolution",
+    "variables": [
+      "official development assistance"
+    ],
+    "entities": [
+      {
+        "text": "G7",
+        "span": "G7",
+        "flow_role": "origin",
+        "role_span": "from",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "Extraction@ecf532abbb23:9598126fbab3b80179065aa6d3786f35ec09fe8a": {
+    "kind": "resolution",
+    "variables": [
+      "gross ODA disbursements"
+    ],
+    "entities": [
+      {
+        "text": "G7",
+        "span": "G7",
+        "flow_role": "origin",
+        "role_span": "from",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
+  },
+  "_UniversalBindOutput@ede71de59275:c63c7ddc645111b235a46bc174cd7ad878bb520c": {
+    "chosen_shape_index": 0,
+    "bindings": [
+      {
+        "axis": "how",
+        "property_dcid": "crsCooperationModality",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsPurpose",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsTypeOfFinance",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      },
+      {
+        "axis": "how",
+        "property_dcid": "crsTypeOfFlow",
+        "kind": "unbound",
+        "value_dcids": [],
+        "evidence": "mentioned",
+        "requested_all_phrase": null
+      }
+    ],
+    "also_plausible": null,
+    "ask": null,
+    "unplaced": []
+  },
+  "Extraction@ecf532abbb23:dc1c293ac7b84aca9353af19c4914420dec10e38": {
+    "kind": "resolution",
+    "variables": [
+      "population policies",
+      "reproductive health ODA gross disbursements"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "range",
+        "start": "2010",
+        "end": "2024"
+      }
+    ]
+  },
+  "Extraction@ecf532abbb23:8bf1387f8ac557bc6ac6d81dbdd61e86b90b308f": {
+    "kind": "resolution",
+    "variables": [
+      "HIV/AIDS ODA gross disbursements",
+      "reproductive health ODA gross disbursements"
+    ],
+    "entities": [
+      {
+        "text": "Kenya",
+        "span": "Kenya",
+        "flow_role": "destination",
+        "role_span": "to",
+        "members": false
+      }
+    ],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": [
+      {
+        "kind": "range",
+        "start": "2010",
+        "end": "2024"
+      }
+    ]
+  },
+  "Extraction@ecf532abbb23:6287421c7c3c28a96ab2cf44f28196e3571593a7": {
+    "kind": "resolution",
+    "variables": [
+      "health aid",
+      "education aid"
+    ],
+    "entities": [],
+    "operations": [],
+    "dropped_qualifiers": [],
+    "dates": []
   }
 }

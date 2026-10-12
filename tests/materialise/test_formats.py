@@ -31,7 +31,7 @@ from materialise.formats import (
     ParquetSizeBoundError,
     Rendering,
     _sanitize_csv_cell,
-    frame1_entity_columns,
+    frame_entity_columns,
     read_frame1_table,
     table_schema_for,
 )
@@ -761,7 +761,7 @@ def test_write_frame1_streams_a_multi_chunk_frame_in_bounded_writes(
     assert max(sink.writes) < 1024 < len(whole)
 
 
-# --- read_frame1_table / frame1_entity_columns -----------------------------
+# --- read_frame1_table / frame_entity_columns -----------------------------
 
 
 def test_read_frame1_table_round_trips_write_csv_bytes():
@@ -863,7 +863,7 @@ def test_read_frame1_table_refuses_a_ragged_row():
         read_frame1_table(document)
 
 
-def test_frame1_entity_columns_on_a_two_role_frame_matches_the_sorted_role_keys():
+def test_frame_entity_columns_on_a_two_role_frame_matches_the_sorted_role_keys():
     role_keys = ("recipient", "donor")
     frame = build_frame(
         role_keys=role_keys,
@@ -878,13 +878,13 @@ def test_frame1_entity_columns_on_a_two_role_frame_matches_the_sorted_role_keys(
         ],
     )
     table = read_frame1_table(write_frame1((frame,)).data)
-    assert frame1_entity_columns(table) == tuple(sorted(role_keys))
+    assert frame_entity_columns(table.columns) == tuple(sorted(role_keys))
 
 
-def test_frame1_entity_columns_refuses_a_table_missing_a_marker_column():
+def test_frame_entity_columns_refuses_a_table_missing_a_marker_column():
     table = _Table(columns=("recipient", "value"), rows=())
     with pytest.raises(ValueError, match="stat_var"):
-        frame1_entity_columns(table)
+        frame_entity_columns(table.columns)
 
 
 # --- streaming multi-chunk behaviour -----------------------------------------

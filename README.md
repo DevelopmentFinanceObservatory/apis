@@ -1,11 +1,12 @@
 Data APIs for the Development Finance Observatory (DFO). The service converts natural-language queries into grounded data specifications, materialises observation tables from Data Commons graphs, manages versioned dataset records, and serves presentation-ready frames and components.
 
-The application is built with FastAPI and runs as a containerized service on Cloud Run. It mounts four modular API surfaces on a shared HTTP platform:
+The application is built with FastAPI and runs as a containerized service on Cloud Run. It mounts five API surfaces on a shared HTTP platform:
 
 - **Search API**: Interprets natural-language requests with Gemini, grounds entities and variables against a Data Commons graph, resolves observation previews via the `materialise` bridge, and returns structured data specifications.
 - **Datasets API**: Mints dataset definitions, materialises observation tables to Google Cloud Storage artifacts (CSV, Parquet, Excel), manages version records, and handles pinning across storage tiers.
 - **Graph API**: Resolves free-text entity references to graph-confirmed identifiers (DCIDs) and extracts structured node metadata.
 - **Presentation API**: Assembles dataset frames into visual component specifications, persisted in PostgreSQL for downstream rendering.
+- **Skills API**: Serves the published skills catalogue and its resources.
 
 `packages/dfo-data-tools` provides standalone tools including an SDMX client (`dc_sdmx`), the frame materialisation pipeline (`materialise`), the template assembler (`assembler`), variable member resolution (`statvar_members`), and shared RFC 9457 HTTP infrastructure (`dfo_platform`).
 
@@ -53,6 +54,10 @@ Or run directly with `uvicorn`:
 GEMINI_API_KEY=<key> uv run --extra engine uvicorn --factory dfo_apis.app:create_app --reload --host 127.0.0.1 --port 8083
 ```
 
+### Using the APIs
+
+The API guide starts with a runnable [quickstart](docs/guide/quickstart.md). It shows how to resolve a question, inspect the resulting specification, mint a dataset, and download an artifact. [Concepts](docs/guide/concepts.md) explains specifications, manifests, and content versions.
+
 ### Verification
 
 Check health and execute a natural-language search query:
@@ -71,7 +76,7 @@ ______________________________________________________________________
 
 ## Endpoints
 
-Every API surface mounts onto the shared platform app. Error responses conform to RFC 9457 problem details. `GET /codes/{code}` serves codes present in the packaged `dfo_spec_kit` registry or the merged refusal catalogue. The registry supplies classification, definition, lifecycle, and mappings. The catalogue supplies title and detail. Fields from an absent source are `null`, and `mappings` is empty when the registry has no entry for the code. The upstream Data access proxy enforces rate limiting (`429`), request body size ceilings (`413`), and media type constraints (`415`) on every door of the service, ahead of any surface's own request handling, so a client handles those three statuses everywhere.
+Every API surface mounts onto the shared platform app. Application error responses use RFC 9457 problem details. `GET /codes/{code}` serves codes present in the packaged `dfo_spec_kit` registry or the merged refusal catalogue. The registry supplies classification, definition, lifecycle, and mappings. The catalogue supplies title and detail. Fields from an absent source are `null`, and `mappings` is empty when the registry has no entry for the code.
 
 ### Search API (`/api/search`)
 
@@ -90,29 +95,31 @@ Search queries resolve against the Data Commons graph. Observation previews and 
 
 Gated by `DFO_DATASETS_SURFACE=true` (or `1`). Requires PostgreSQL persistence (`dataset_store`) and GCS artifact storage.
 
-| Method | Endpoint                                   | Description                                                                                                  |
-| :----- | :----------------------------------------- | :----------------------------------------------------------------------------------------------------------- |
-| `POST` | `/api/datasets`                            | Mints a dataset definition and materialises observation tables to storage artifacts.                         |
-| `POST` | `/api/datasets/register`                   | Persists a canonical dataset definition without materialisation.                                             |
-| `GET`  | `/api/datasets/{id}`                       | Retrieves a registered dataset definition by its canonical subject ID (`spec_...`).                          |
-| `GET`  | `/api/datasets/{id}/{content_version}`     | Fetches metadata and signed artifact download URLs (CSV, Parquet, Excel) for a versioned snapshot.           |
-| `POST` | `/api/datasets/{id}/{content_version}/pin` | Promotes a working-tier snapshot to pinned durability. Requires first-party principal authentication.        |
-| `GET`  | `/api/datasets/operations/{operation_id}`  | Operations poll route. Returns 404 `operation_not_found` while asynchronous background execution is dormant. |
-| `GET`  | `/api/datasets/healthz`                    | Liveness probe returning status and materialiser build metadata.                                             |
-| `GET`  | `/api/datasets/schema`                     | JSON Schema for dataset envelopes, manifests, mint requests, and snapshots.                                  |
-| `GET`  | `/api/datasets/capabilities`               | Supported schema versions, row ceilings (`DATASETS_SYNC_CEILING_ROWS`), and format support.                  |
+| Method | Endpoint                                   | Description                                                                                                                                                                                                            |
+| :----- | :----------------------------------------- | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST` | `/api/datasets`                            | Mints a dataset and materialises observation tables. Requests over the synchronous budgets and within the asynchronous ceilings return a pollable operation. Requests beyond either ceiling return 422 `over_ceiling`. |
+| `POST` | `/api/datasets/register`                   | Persists a canonical dataset definition without materialisation.                                                                                                                                                       |
+| `GET`  | `/api/datasets/{id}`                       | Serves the latest dataset manifest for a canonical subject ID (`spec_...`). It rechecks the head and can materialise a new version.                                                                                    |
+| `GET`  | `/api/datasets/{id}/{content_version}`     | Fetches metadata and artifact download links (CSV, Parquet, XLSX) for a versioned snapshot.                                                                                                                            |
+| `POST` | `/api/datasets/{id}/{content_version}/pin` | Promotes a working-tier snapshot to pinned durability. Requires first-party principal authentication.                                                                                                                  |
+| `GET`  | `/api/datasets/operations/{operation_id}`  | Polls a pending or running operation, or returns its completed manifest. Failed operations return a problem response. Unknown IDs return 404 `operation_not_found`.                                                    |
+| `GET`  | `/api/datasets/healthz`                    | Liveness probe returning status and materialiser build metadata.                                                                                                                                                       |
+| `GET`  | `/api/datasets/schema`                     | JSON Schema for dataset envelopes, manifests, mint requests, and snapshots.                                                                                                                                            |
+| `GET`  | `/api/datasets/capabilities`               | Supported schema versions, admission budgets, asynchronous ceilings, and format support.                                                                                                                               |
 
 ### Graph API (`/api/graph`)
 
 Gated by `DFO_GRAPH_SURFACE=true` (or `1`). Communicates directly with the Data Commons platform instance.
 
-| Method | Endpoint                  | Description                                                                                         |
-| :----- | :------------------------ | :-------------------------------------------------------------------------------------------------- |
-| `POST` | `/api/graph/resolve`      | Maps free-text entity names to graph-confirmed DCIDs and expands composite entities.                |
-| `GET`  | `/api/graph/node/{dcid}`  | Retrieves graph-confirmed node metadata shaped by type (`stat_var`, `source`, `entity`, `generic`). |
-| `POST` | `/api/graph/nodes`        | Retrieves up to 50 nodes in one read, each in the GET shape or marked `not_held`.                   |
-| `GET`  | `/api/graph/healthz`      | Liveness probe returning status and capability version.                                             |
-| `GET`  | `/api/graph/capabilities` | Graph door status, recipe classes, and input constraints.                                           |
+| Method | Endpoint                          | Description                                                                                         |
+| :----- | :-------------------------------- | :-------------------------------------------------------------------------------------------------- |
+| `POST` | `/api/graph/resolve`              | Maps free-text entity names to graph-confirmed DCIDs and expands composite entities.                |
+| `GET`  | `/api/graph/node/{dcid}`          | Retrieves graph-confirmed node metadata shaped by type (`stat_var`, `source`, `entity`, or `node`). |
+| `GET`  | `/api/graph/documentation/{dcid}` | Retrieves source documentation for a Dataset or Provenance node.                                    |
+| `GET`  | `/api/graph/sources`              | Lists source DCIDs and names from the source catalogue.                                             |
+| `POST` | `/api/graph/nodes`                | Retrieves up to 50 nodes in one read, each in the GET shape or marked `not_held`.                   |
+| `GET`  | `/api/graph/healthz`              | Liveness probe returning status and capability version.                                             |
+| `GET`  | `/api/graph/capabilities`         | Graph door status, recipe classes, and input constraints.                                           |
 
 ### Presentation API (`/api/presentation`)
 
@@ -191,23 +198,26 @@ Configuration variables load from environment variables or `.env` at boot.
 
 ### Datasets API & Persistence
 
-| Variable                             | Default           | Purpose                                                                                            |
-| :----------------------------------- | :---------------- | :------------------------------------------------------------------------------------------------- |
-| `DATASETS_SYNC_CEILING_ROWS`         | `250000`          | Maximum row threshold for synchronous dataset materialisation.                                     |
-| `DATASETS_SDMX_TIMEOUT_SECONDS`      | `90`              | Independent httpx transport timeout for SDMX calls. The door deadline applies when lower.          |
-| `DATASETS_GRAPH_BASE_URL`            | _None_            | Graph endpoint for dataset materialisation readers.                                                |
-| `DATASETS_SDMX_BASE_URL`             | _None_            | SDMX endpoint for observation retrieval in datasets.                                               |
-| `DATASETS_GRAPH_TOKEN`               | `""`              | Optional `x-graph-token` header for dataset graph and SDMX calls.                                  |
-| `DATASETS_ARTIFACT_BUCKET_WORKING`   | _None_            | GCS bucket for working-tier materialised files.                                                    |
-| `DATASETS_ARTIFACT_BUCKET_PINNED`    | _None_            | GCS bucket for pinned-tier materialised files.                                                     |
-| `DATASETS_PRINCIPAL_HEADER`          | `x-dfo-principal` | Request header containing caller identity for pin and publish operations.                          |
-| `DATASETS_FIRST_PARTY_PRINCIPAL`     | `""`              | Authorized principal permitted to publish datasets.                                                |
-| `DATASETS_PIN_FIRST_PARTY_PRINCIPAL` | `""`              | Authorized principal permitted to pin datasets, independent of `DATASETS_FIRST_PARTY_PRINCIPAL`.   |
-| `LIVE_REFRESH_PRINCIPAL`             | `""`              | Authorized principal permitted to refresh a dataset frame and render a component on another frame. |
-| `DATASET_STORE_HOST`                 | `127.0.0.1`       | PostgreSQL host for `dataset_store`.                                                               |
-| `DATASET_STORE_PORT`                 | `5432`            | PostgreSQL port for `dataset_store`.                                                               |
-| `DATASET_STORE_DATABASE`             | `datasets`        | PostgreSQL database name for `dataset_store`.                                                      |
-| `DATASET_STORE_RUNTIME_DB_USER`      | _None_            | Runtime IAM/DB user for dataset persistence.                                                       |
+| Variable                             | Default           | Purpose                                                                                                                      |
+| :----------------------------------- | :---------------- | :--------------------------------------------------------------------------------------------------------------------------- |
+| `DATASETS_SYNC_BUDGET_ROWS`          | `100000`          | Row budget for inline materialisation. Over-budget requests can become operations within the asynchronous ceilings.          |
+| `DATASETS_SYNC_BUDGET_REQUESTS`      | `40`              | SDMX request budget for inline materialisation. Over-budget requests can become operations within the asynchronous ceilings. |
+| `DATASETS_ASYNC_MAX_ROWS`            | `2000000`         | Row ceiling for an asynchronous operation.                                                                                   |
+| `DATASETS_ASYNC_MAX_REQUESTS`        | `800`             | SDMX request ceiling for an asynchronous operation.                                                                          |
+| `DATASETS_SDMX_TIMEOUT_SECONDS`      | `90`              | Independent httpx transport timeout for SDMX calls. The door deadline applies when lower.                                    |
+| `DATASETS_GRAPH_BASE_URL`            | _None_            | Graph endpoint for dataset materialisation readers.                                                                          |
+| `DATASETS_SDMX_BASE_URL`             | _None_            | SDMX endpoint for observation retrieval in datasets.                                                                         |
+| `DATASETS_GRAPH_TOKEN`               | `""`              | Optional `x-graph-token` header for dataset graph and SDMX calls.                                                            |
+| `DATASETS_ARTIFACT_BUCKET_WORKING`   | _None_            | GCS bucket for working-tier materialised files.                                                                              |
+| `DATASETS_ARTIFACT_BUCKET_PINNED`    | _None_            | GCS bucket for pinned-tier materialised files.                                                                               |
+| `DATASETS_PRINCIPAL_HEADER`          | `x-dfo-principal` | Request header containing caller identity for pin and publish operations.                                                    |
+| `DATASETS_FIRST_PARTY_PRINCIPAL`     | `""`              | Authorized principal permitted to publish datasets.                                                                          |
+| `DATASETS_PIN_FIRST_PARTY_PRINCIPAL` | `""`              | Authorized principal permitted to pin datasets, independent of `DATASETS_FIRST_PARTY_PRINCIPAL`.                             |
+| `LIVE_REFRESH_PRINCIPAL`             | `""`              | Authorized principal permitted to refresh a dataset frame and render a component on another frame.                           |
+| `DATASET_STORE_HOST`                 | `127.0.0.1`       | PostgreSQL host for `dataset_store`.                                                                                         |
+| `DATASET_STORE_PORT`                 | `5432`            | PostgreSQL port for `dataset_store`.                                                                                         |
+| `DATASET_STORE_DATABASE`             | `datasets`        | PostgreSQL database name for `dataset_store`.                                                                                |
+| `DATASET_STORE_RUNTIME_DB_USER`      | _None_            | Runtime IAM/DB user for dataset persistence.                                                                                 |
 
 ### Graph & Presentation APIs
 

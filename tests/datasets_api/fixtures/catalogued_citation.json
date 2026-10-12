@@ -1,0 +1,118 @@
+{
+  "text": "Creditor Reporting System; WorldDevelopmentIndicators; World Bank Shared",
+  "sources": [
+    {
+      "ref": "provenance/OECDCreditorReportingSystem",
+      "label": "Creditor Reporting System",
+      "processing_level": null,
+      "license": "OECD Terms and Conditions",
+      "license_type": "OECDTermsAndConditions",
+      "license_url": "https://www.oecd.org/en/about/terms-conditions.html",
+      "url": "https://data-explorer.oecd.org/crs",
+      "source": {
+        "ref": "dc/s/OrganisationForEconomicCo-operationAndDevelopmentOecd",
+        "label": "OECD"
+      },
+      "data_commons": {
+        "id": "dfo",
+        "label": "Development Finance Observatory"
+      },
+      "documentation": {
+        "publisher": "OECD",
+        "description": "Activity-level aid flows reported by DAC members.",
+        "source_data_url": "https://webfs-dcd.oecd.org/files/dotStat/DSD_CRS/CRS.parquet",
+        "attribution": "OECD (2026), Creditor Reporting System",
+        "update_cadence": "Quarterly",
+        "last_update": "2026-10-02",
+        "years_covered": "1973-2024",
+        "granularity": null,
+        "currencies": [
+          "provenance/OECDCreditorReportingSystem"
+        ],
+        "transformation_log": [
+          {
+            "transformation": "Download the source data",
+            "description": "The complete CRS file is downloaded."
+          }
+        ],
+        "version_history": [
+          {
+            "date": "2026-08-20",
+            "title": "First release",
+            "changes": [
+              {
+                "kind": "added",
+                "note": "Dataset added to the graph."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "ref": "dc/base/WorldDevelopmentIndicators",
+      "label": "WorldDevelopmentIndicators",
+      "processing_level": null,
+      "license": "Creative Commons Attribution License",
+      "license_type": "CreativeCommonsAttributionLicense",
+      "license_url": "https://creativecommons.org/licenses/by/4.0/",
+      "url": "https://datatopics.worldbank.org/world-development-indicators/",
+      "source": {
+        "ref": "dc/s/WorldBank",
+        "label": "World Bank"
+      },
+      "data_commons": {
+        "id": "base",
+        "label": "Data Commons by Google"
+      },
+      "documentation": {
+        "publisher": "World Bank",
+        "description": null,
+        "source_data_url": null,
+        "attribution": "World Bank (2026), World Development Indicators",
+        "update_cadence": "Annual",
+        "last_update": "2026-07-01",
+        "years_covered": "1960-2025",
+        "granularity": null,
+        "currencies": [
+          "dc/base/WorldDevelopmentIndicators"
+        ],
+        "transformation_log": [],
+        "version_history": []
+      }
+    },
+    {
+      "ref": "dc/base/WorldBank_SharedA",
+      "label": "World Bank Shared",
+      "processing_level": null,
+      "license": "Creative Commons Attribution License",
+      "license_type": "CreativeCommonsAttributionLicense",
+      "license_url": null,
+      "url": "https://data.worldbank.org/shared/a",
+      "source": {
+        "ref": "dc/s/WorldBank",
+        "label": "World Bank"
+      },
+      "data_commons": {
+        "id": "base",
+        "label": "Data Commons by Google"
+      },
+      "documentation": {
+        "publisher": "World Bank",
+        "description": null,
+        "source_data_url": null,
+        "attribution": "World Bank (2026)",
+        "update_cadence": null,
+        "last_update": "2026-05-01",
+        "years_covered": null,
+        "granularity": null,
+        "currencies": [
+          "dc/base/WorldBank_SharedA",
+          "dc/base/WorldBank_SharedB"
+        ],
+        "transformation_log": [],
+        "version_history": []
+      }
+    }
+  ]
+}

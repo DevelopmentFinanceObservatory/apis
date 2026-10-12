@@ -41,6 +41,28 @@ class ResolvedQualifier(StrictModel):
     binding covers it, and `"no_vocabulary"` when the term names no code at
     all -- an LLM-reported phrase (`bind`'s own `unplaced` output) that no
     taxonomy in this deployment's index can express.
+
+    `start` and `end` locate the term in the part's variable phrase. `evidence` says what
+    read it, and `None` means a code's label or synonym matched the term as the query
+    spelled it, the reading every recognised span records:
+
+    - `"label"` and `"synonym"` name a match on a code's label or synonym; no record sets
+      them, since a recognised span records `None`.
+    - `"model"` marks a phrase the bind model read through a code it chose from the
+      phrase's candidate menu, a lexical hit of the menu or a descendant of one
+      (`phase_rank_bind._model_records`); `named` holds the chosen codes.
+    - `"uncovered"` marks words no reader covers beside a recognised code
+      (`phase_rank_bind._coverage_records`), recorded `"unbound"` with that code's rows as
+      `named`.
+    - `"unavailable"` marks a code term the elected shape cannot apply: one naming only
+      codes no shape can bind, or, on a part naming a dataset, one no row of that dataset
+      holds (`phase_rank_bind._unavailable_qualifiers`), recorded `"unbound"`.
+    - `"unsupported"` marks an exclusion or comparison phrase no binding expresses
+      (`phase_rank_bind._unsupported_records`), recorded `"no_vocabulary"`.
+
+    `operation` and `selected` describe how the term's codes combine with
+    another term's on one code system, and the codes it asked for before that
+    combination simplified.
     """
 
     text: str = Field(
@@ -69,6 +91,35 @@ class ResolvedQualifier(StrictModel):
             'binding covers it; "no_vocabulary" when the term names no code '
             "at all"
         )
+    )
+    start: int | None = Field(
+        default=None,
+        description="character offset where the term starts in the variable phrase",
+    )
+    end: int | None = Field(
+        default=None,
+        description="character offset where the term ends in the variable phrase",
+    )
+    evidence: (
+        Literal["label", "synonym", "model", "uncovered", "unavailable", "unsupported"] | None
+    ) = Field(
+        default=None,
+        description=(
+            'what read the term: a code label or synonym, the bind model, "uncovered" '
+            'for words no reader covers beside a recognised code, "unavailable" for a '
+            'code no table holds, "unsupported" for a distinction no binding expresses'
+        ),
+    )
+    operation: Literal["union", "refinement"] | None = Field(
+        default=None,
+        description=(
+            "how the term's codes combine with another term's on one code system: a "
+            "union of both, or a refinement to the narrower"
+        ),
+    )
+    selected: list[GraphRef] = Field(
+        default_factory=list,
+        description="the codes the term asked for before the combination simplified them",
     )
 
 

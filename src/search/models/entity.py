@@ -94,7 +94,9 @@ class EntityGroup(StrictModel):
     group, so the heading can say "the 27 EU member states" after any edit that
     keeps the role's members. `entity_type` is the type of the group's node: a
     Continent or a UNGeoRegion reads as the places in it ("the 59 countries and
-    territories in Africa"). A Spec serves its groups on
+    territories in Africa"). When the role binds the total its dataset publishes
+    for the group ("Africa (DAC)") in place of the members, `total` names that
+    party and the role's one dcid is it. A Spec serves its groups on
     `ResolvedSpec.entity_groups`, and a resubmit posts them beside the identity
     (`ResubmitIdentityEntry.entity_groups`, `ResubmitCandidate.entity_groups`)."""
 
@@ -112,5 +114,13 @@ class EntityGroup(StrictModel):
         description=(
             "the graph type of the group's own node, e.g. Continent, UNGeoRegion, "
             "ContinentalUnion; null when the graph holds no node for the group"
+        ),
+    )
+    total: IdentityString | None = Field(
+        default=None,
+        description=(
+            "the party the dataset publishes as the group's total, which the role binds "
+            "in place of the members (DACAfrica for Africa); null when the role binds the "
+            "members"
         ),
     )

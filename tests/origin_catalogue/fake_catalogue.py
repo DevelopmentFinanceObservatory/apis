@@ -11,8 +11,9 @@ the `bind_catalogue` fixture.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
 from origin_catalogue import (
@@ -33,13 +34,21 @@ from origin_catalogue import (
     UnTables,
     entry_ref,
 )
-from origin_catalogue.catalogue import EMPTY_UN_TABLES
+from origin_catalogue.catalogue import EMPTY_UN_TABLES, SourceDocumentation
 from origin_catalogue.origins import UN_ID_PREFIX
 from origin_catalogue.schema import UnAgencyCounts
 from origin_catalogue.service import CatalogueService
 from origin_catalogue.un_mirror import EMPTY_UN_MIRROR, UnArc, UnMirror, UnVariable
 
 FAKE_BUILT_AT = datetime(2026, 9, 29, tzinfo=UTC)
+
+
+def _fake_build_id(stem: str, rows: Mapping[str, ProvenanceRow]) -> str:
+    """`stem` for a catalogue listing no rows, else `stem` and a digest of `rows`."""
+    if not rows:
+        return stem
+    digest = hashlib.sha256(repr(sorted(rows.items())).encode()).hexdigest()[:12]
+    return f"{stem}-{digest}"
 
 
 def _origin_of(dcid: str, dfo: frozenset[str]) -> DataCommons:
@@ -56,16 +65,19 @@ class FakeCatalogue:
     read from the table (labels, `source`, `data_commons`) stay empty and
     callers fall back as they do for a provenance the catalogue does not
     list. Admission stays permissive whatever `provenances` holds. `card_facts`
-    answers `dataset_facts`, empty by default. Facet reads send no domain
+    answers `dataset_facts` and `documentation` answers `source_documentation`,
+    both empty by default. Facet reads send no domain
     filter, and no place is a scan place, so presence is always read live.
     `un` holds no UN table by default, so every UN node is read from the UN
     deployment; a UN dcid outside the tables it is given is admitted too.
     `successors` maps a superseded variable to the UN variable standing for
     it, empty by default, and names none with the UN origin off.
     `superseded` holds the superseded dcids with no successor. A superseded
-    dcid is the one candidate it refuses, as a snapshot withholds it."""
+    dcid is the one candidate it refuses, as a snapshot withholds it. `scope`, set
+    by `scoped`, admits only the provenances it holds, as a snapshot's does. Left
+    unset, `build_id` names the rows it lists (`_fake_build_id`)."""
 
-    build_id: str = "fake-catalogue"
+    build_id: str = ""
     built_at: datetime = FAKE_BUILT_AT
     dfo_variables: frozenset[str] = frozenset()
     un_system_enabled: bool = True
@@ -73,15 +85,29 @@ class FakeCatalogue:
     un_blocked_places: frozenset[str] = frozenset()
     provenances: Mapping[str, ProvenanceRow] = field(default_factory=dict, compare=False)
     card_facts: Mapping[str, CardFacts] = field(default_factory=dict, compare=False)
+    documentation: Mapping[str, SourceDocumentation] = field(default_factory=dict, compare=False)
     un: UnTables = field(default=EMPTY_UN_TABLES, compare=False)
     successors: Mapping[str, str] = field(default_factory=dict, compare=False)
     superseded: frozenset[str] = frozenset()
+    scope: frozenset[str] | None = None
+
+    def __post_init__(self) -> None:
+        # Each set of rows names its own build, as a published catalogue's rows change only
+        # with its build id, so a cache keyed on the build sees the rows it was built from.
+        if not self.build_id:
+            object.__setattr__(self, "build_id", _fake_build_id("fake-catalogue", self.provenances))
+
+    def scoped(self, allowed: frozenset[str]) -> FakeCatalogue:
+        return replace(self, scope=allowed if self.scope is None else self.scope & allowed)
 
     def is_stale(self, *, now: datetime | None = None) -> bool:
         return False
 
     def is_scan_place(self, place: str) -> bool:
         return False
+
+    def source_documentation(self, ref: str) -> SourceDocumentation | None:
+        return self.documentation.get(ref)
 
     def provenance(self, provenance_id: str) -> ProvenanceRow | None:
         return self.provenances.get(provenance_id)
@@ -96,7 +122,11 @@ class FakeCatalogue:
         return True
 
     def admit_series(self, provenance_ids: Iterable[str]) -> SeriesAdmission:
-        return SeriesAdmission(admitted=tuple(dict.fromkeys(provenance_ids)), withheld=())
+        present = dict.fromkeys(provenance_ids)
+        return SeriesAdmission(
+            admitted=tuple(pid for pid in present if self.scope is None or pid in self.scope),
+            withheld=(),
+        )
 
     def admit_candidate(self, dcid: str) -> DataCommons | None:
         if self.is_superseded(dcid):
@@ -170,7 +200,8 @@ def restrictive_catalogue(
     successors: Mapping[str, str | None] | None = None,
     un_system_enabled: bool = True,
     dataset_facts: Mapping[str, CardFacts] | None = None,
-    build_id: str = "restrictive-catalogue",
+    source_documentation: Mapping[str, SourceDocumentation] | None = None,
+    build_id: str | None = None,
     built_at: datetime = FAKE_BUILT_AT,
 ) -> CatalogueSnapshot:
     """A real snapshot admitting only what it is given. `base_variables`
@@ -180,7 +211,10 @@ def restrictive_catalogue(
     `withheld_variables` names it. A UN candidate is admitted when `un_mirror`
     holds it. `successors` maps a superseded variable, which must be
     withheld, to the UN variable standing for it, or to `None`. `dataset_facts` defaults to empty facts
-    for every DFO and base row's entry (`empty_dataset_facts`)."""
+    for every DFO and base row's entry (`empty_dataset_facts`),
+    `source_documentation` to documentation covering no provenance for each
+    (`empty_source_documentation`), and `build_id` to one naming its rows
+    (`_fake_build_id`)."""
     rows = {row.id: row for row in provenances}
     places = tuple(scan_places)
     index = {place: i for i, place in enumerate(places)}
@@ -202,11 +236,16 @@ def restrictive_catalogue(
         dataset_facts=(
             empty_dataset_facts(rows.values()) if dataset_facts is None else dataset_facts
         ),
+        source_documentation=(
+            empty_source_documentation(rows.values())
+            if source_documentation is None
+            else source_documentation
+        ),
         un_blocked_places=frozenset(un_blocked_places),
         superseded=dict(successors or {}),
     )
     manifest = CatalogueManifest(
-        build_id=build_id,
+        build_id=build_id or _fake_build_id("restrictive-catalogue", rows),
         built_at=built_at,
         build_seconds=0.0,
         identity_inputs={},
@@ -291,6 +330,12 @@ def empty_dataset_facts(rows: Iterable[ProvenanceRow]) -> dict[str, CardFacts]:
     return {entry_ref(row): CardFacts() for row in rows if row.data_commons != UN_SYSTEM}
 
 
+def empty_source_documentation(rows: Iterable[ProvenanceRow]) -> dict[str, SourceDocumentation]:
+    """`SourceDocumentation` covering no provenance for the entry of every DFO
+    and base row in `rows`, as `CatalogueTables` requires."""
+    return {entry_ref(row): SourceDocumentation() for row in rows if row.data_commons != UN_SYSTEM}
+
+
 def provenance_row(
     provenance_id: str,
     origin: DataCommons,
@@ -316,6 +361,7 @@ __all__ = [
     "FAKE_BUILT_AT",
     "FakeCatalogue",
     "empty_dataset_facts",
+    "empty_source_documentation",
     "fake_catalogue_service",
     "provenance_row",
     "restrictive_catalogue",

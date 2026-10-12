@@ -11,7 +11,6 @@ import io
 import time
 from collections import Counter
 from collections.abc import Sequence
-from types import SimpleNamespace
 
 import openpyxl
 import pyarrow.parquet as pq
@@ -21,12 +20,10 @@ from dfo_frame_grammar.grammar import UnitRequest
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.shared import get_index
 from code_index.types import StatVarRow
-from datasets_api import render as render_module
 from datasets_api.manifest_models import CitationSource
 from datasets_api.mint_models import GroupbyOptions, MintOptions
 from datasets_api.render import RenderedDefinition, render_and_store
 from dc_graph import GraphDeadlineExceededError, GraphReadError
-from materialise.content_version import MintPreimage
 from materialise.enrichment import EnrichmentLookup
 from materialise.reshape import Table
 
@@ -119,12 +116,6 @@ _ARCS = {
     "WDI_GDP": {"name": ("GDP",)},
 }
 _GRAPH = FakeMintGraphReader(arcs=_ARCS)
-_PREIMAGE = MintPreimage(
-    graph_revision="rev-1",
-    source_revisions=({"source": "OECD_CRS", "revision": "2026-09-01"},),
-    facets=({"axis": "provenance", "ref": "p1", "basis": "bound"},),
-    conversion=None,
-)
 _BY_PURPOSE = GroupbyOptions(by=["financingProvider", "financingRecipient", "crsPurpose"], op="sum")
 
 _SITE_POST = [*_FRAME_COLUMNS, "financingProvider_label"]
@@ -183,13 +174,11 @@ def _render(
         site=SITE,
         artifact_store=store,
         entity_columns=_ENTITY_COLUMNS,
-        enrichment=EnrichmentLookup(graph),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         pivot_max_output_cells=5_000_000,
         code_index=index,
         resolved_stat_var_refs=tuple(str(row[0]) for row in rows),
-        groupby_preimage=_PREIMAGE,
         deadline=deadline,
-        metadata_read_seconds=1.0,
     )
     return rendered, store.fetch(rendered.artifact.url)
 
@@ -413,9 +402,8 @@ def test_a_groupby_collapse_keeps_its_frame_and_content_version():
     )
 
     assert rendered.collapse is not None
-    # Recorded before the long layout existed: the collapse frame and its identity are the
-    # grammar's, untouched by the written columns.
-    assert rendered.collapse.content_version == "cv_dd0e82d2ca72ded72fc3034df1702c37"
+    # The collapse frame and its identity are the grammar's, untouched by the written columns.
+    assert rendered.collapse.content_version == "cv_03c9050c06fd518c9cfb8c7178a06033"
     assert rendered.collapse.frame.columns == (
         "stat_var",
         "financingProvider",
@@ -477,20 +465,15 @@ class _SlowGraph(FakeMintGraphReader):
 
 
 class _Clock:
-    """The monotonic clock `datasets_api.render` reads, moved only by the graph doubles."""
+    """A monotonic clock moved only by the graph doubles."""
 
     def __init__(self) -> None:
         self.now = 1_000.0
 
-    def monotonic(self) -> float:
-        return self.now
-
 
 @pytest.fixture
-def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
-    fake = _Clock()
-    monkeypatch.setattr(render_module, "time", SimpleNamespace(monotonic=fake.monotonic))
-    return fake
+def clock() -> _Clock:
+    return _Clock()
 
 
 @pytest.mark.parametrize(
@@ -517,7 +500,7 @@ def test_a_failed_name_read_leaves_name_cells_empty_warns_and_completes(error):
         ("financingRecipient_label", 4),
         ("provenance_label", 4),
     ]
-    # One read, bounded by the metadata deadline, and the artifact is not linked.
+    # One read, bounded by the metadata deadline, and the artifact is linked as incomplete.
     assert len(graph.deadlines) == 1
     assert graph.deadlines[0] is not None
     assert not rendered.labels_complete
@@ -579,10 +562,10 @@ def test_every_chunk_of_a_render_reads_names_against_one_deadline(clock):
         MintOptions(format="csv", bundle=False),
         chunks=(_ROWS, later),
         graph=graph,
-        deadline=clock.now,
+        deadline=clock.now + 1.0,
     )
 
-    # The render's start plus `metadata_read_seconds`, for both chunks' reads.
+    # The render's own deadline, for both chunks' reads.
     assert graph.deadlines == [1_001.0, 1_001.0]
     assert rendered.labels_complete
 
@@ -599,7 +582,7 @@ def test_a_render_stops_reading_names_after_the_first_failed_read(clock, bundle)
         MintOptions(format="csv", bundle=bundle),
         chunks=(_ROWS, later),
         graph=graph,
-        deadline=started,
+        deadline=started + 1.0,
     )
 
     assert graph.deadlines == [started + 1.0]

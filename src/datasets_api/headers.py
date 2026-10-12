@@ -1,7 +1,6 @@
-"""Signed artifact URLs appear on mint, definition, and snapshot responses.
-`no-store` prevents caches from serving expired URLs or links to revoked
-artifacts. Meta responses use `public, max-age=300`. Pin responses carry only
-`PinnedCoordinates` and bypass this helper.
+"""Mint, definition, snapshot and download responses carry `no-store`, so a cache never
+serves a listing or a signed redirect for an artifact revoked or expired since. Meta responses
+use `public, max-age=300`. Pin responses carry only `PinnedCoordinates` and bypass this helper.
 """
 
 from __future__ import annotations

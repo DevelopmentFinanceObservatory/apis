@@ -7,21 +7,23 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from dataset_store.clock import Clock
 from datasets_api.app import datasets_surface
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.mint_deps import MintDeps
-from datasets_api.operation_store import OperationStore
+from datasets_api.operation_store import NullOperationStore, OperationStore
 from datasets_api.operations.task_client import FakeTaskClient, TaskClient
 from datasets_api.recipe_store import LiveRecipeStore
 from datasets_api.version_store import LiveVersionLister
-from datasets_api.versions import NullVersionRecordWriter
+from datasets_api.versions import NullHeadWriter, NullVersionRecordWriter
 from dfo_platform.app import create_app
 from materialise.rate_tables import RateTableCache
-from materialise.revision import RevisionReader
 from origin_catalogue.service import CatalogueService
 from spec_registry import SpecRegistry
 from spec_registry.reader import SpecReader
 
+from ._deps_doubles import Unwired
+from ._snapshot_doubles import FakeSnapshotReader
 from ._version_record_store import FakeVersionRecordDatasetStore
 
 
@@ -40,17 +42,15 @@ def make_app(
     *,
     registry: SpecRegistry,
     settings: DatasetsBuildSettings | None = None,
-    pool_size: int | None = None,
-    mint_pool_size: int | None = None,
-    definition_pool_size: int | None = None,
+    work_max_concurrency: int | None = None,
+    read_max_concurrency: int | None = None,
+    materialise_max_concurrency: int | None = None,
     spec_reader: SpecReader | None = None,
     graph=None,
     sdmx=None,
-    revision_reader: RevisionReader | None = None,
     artifact_store=None,
     version_writer=None,
     head_writer=None,
-    materialise_max_concurrency: int | None = None,
     snapshot_reader=None,
     reference_writer=None,
     pin_allowed_principals: frozenset[str] | None = None,
@@ -63,89 +63,103 @@ def make_app(
     operation_store: OperationStore | None = None,
     task_client: TaskClient | None = None,
     catalogue: CatalogueService | None = None,
+    now: Clock | None = None,
 ) -> FastAPI:
-    """Compose an app from injected dependencies.
+    """Compose an app from injected dependencies, with offline stand-ins for the rest, so its
+    lifespan builds no live client and opens no pool.
 
-    With `artifact_store` and `snapshot_reader` but no `version_writer`, the factory adds a
-    `NullVersionRecordWriter` so the surface builds. Publish verification then raises
-    `PublishRecordMissing` (500). Successful publish tests must inject a writer that shares the
-    snapshot reader's store.
-
-    `task_client` defaults to `FakeTaskClient`, avoiding live task-client construction.
+    Omitted writers, the head store and the operation store are the null implementations, an
+    omitted snapshot reader reads nothing, and `task_client` defaults to `FakeTaskClient`.
     `recipe_store` and `version_lister` default to `offline_recipe_stores()`. A recipe test
-    injects both over the store its version writer shares.
-    `catalogue` replaces the process-wide catalogue service the request scope binds.
+    injects both over the store its version writer shares. Every other omitted client is
+    `Unwired`. Publish verification under the null writer raises `PublishRecordMissing` (500),
+    so a successful publish test injects a writer sharing the snapshot reader's store.
+    The concurrency keywords replace the matching `settings` fields. `catalogue` replaces the
+    process-wide catalogue service the request scope binds.
     """
-    kwargs: dict[str, object] = {"registry": registry, "pool_size": pool_size}
-    if settings is not None:
-        kwargs["settings"] = settings
-    if mint_pool_size is not None:
-        kwargs["mint_pool_size"] = mint_pool_size
-    if definition_pool_size is not None:
-        kwargs["definition_pool_size"] = definition_pool_size
-    if spec_reader is not None:
-        kwargs["spec_reader"] = spec_reader
-    if graph is not None:
-        kwargs["graph"] = graph
-    if sdmx is not None:
-        kwargs["sdmx"] = sdmx
-    if revision_reader is not None:
-        kwargs["revision_reader"] = revision_reader
-    if artifact_store is not None:
-        kwargs["artifact_store"] = artifact_store
-    if version_writer is not None:
-        kwargs["version_writer"] = version_writer
-    elif artifact_store is not None and snapshot_reader is not None:
-        kwargs["version_writer"] = NullVersionRecordWriter()
-    if head_writer is not None:
-        kwargs["head_writer"] = head_writer
-    if materialise_max_concurrency is not None:
-        kwargs["materialise_max_concurrency"] = materialise_max_concurrency
-    if snapshot_reader is not None:
-        kwargs["snapshot_reader"] = snapshot_reader
-    if reference_writer is not None:
-        kwargs["reference_writer"] = reference_writer
-    if pin_allowed_principals is not None:
-        kwargs["pin_allowed_principals"] = pin_allowed_principals
-    if publish_allowed_principals is not None:
-        kwargs["publish_allowed_principals"] = publish_allowed_principals
-    if recipe_store is None and version_lister is None:
-        kwargs.update(offline_recipe_stores())
-    else:
-        kwargs["recipe_store"] = recipe_store
-        kwargs["version_lister"] = version_lister
-    if code_index is not None:
-        kwargs["code_index"] = code_index
-    if rate_cache is not None:
-        kwargs["rate_cache"] = rate_cache
-    if coverage is not None:
-        kwargs["coverage"] = coverage
-    if operation_store is not None:
-        kwargs["operation_store"] = operation_store
-    if catalogue is not None:
-        kwargs["catalogue"] = catalogue
-    kwargs["task_client"] = task_client if task_client is not None else FakeTaskClient()
+    resolved = settings if settings is not None else DatasetsBuildSettings.from_env()
+    sizes = {
+        name: value
+        for name, value in (
+            ("work_max_concurrency", work_max_concurrency),
+            ("read_max_concurrency", read_max_concurrency),
+            ("materialise_max_concurrency", materialise_max_concurrency),
+        )
+        if value is not None
+    }
+    if sizes:
+        resolved = resolved.model_copy(update=sizes)
+    recipe_stores = (
+        offline_recipe_stores()
+        if recipe_store is None and version_lister is None
+        else {"recipe_store": recipe_store, "version_lister": version_lister}
+    )
+    kwargs: dict[str, object] = {
+        "settings": resolved,
+        "registry": registry,
+        "spec_reader": spec_reader if spec_reader is not None else Unwired("spec_reader"),
+        "graph": graph if graph is not None else Unwired("graph"),
+        "sdmx": sdmx if sdmx is not None else Unwired("sdmx"),
+        "artifact_store": artifact_store
+        if artifact_store is not None
+        else Unwired("artifact_store"),
+        "snapshot_reader": snapshot_reader if snapshot_reader is not None else FakeSnapshotReader(),
+        "version_writer": version_writer
+        if version_writer is not None
+        else NullVersionRecordWriter(),
+        "head_writer": head_writer if head_writer is not None else NullHeadWriter(),
+        "operation_store": operation_store if operation_store is not None else NullOperationStore(),
+        "reference_writer": (
+            reference_writer if reference_writer is not None else Unwired("reference_writer")
+        ),
+        "task_client": task_client if task_client is not None else FakeTaskClient(),
+        **recipe_stores,
+    }
+    optional = (
+        ("pin_allowed_principals", pin_allowed_principals),
+        ("publish_allowed_principals", publish_allowed_principals),
+        ("code_index", code_index),
+        ("rate_cache", rate_cache),
+        ("coverage", coverage),
+        ("catalogue", catalogue),
+        ("now", now),
+    )
+    kwargs.update((name, value) for name, value in optional if value is not None)
     return create_app([datasets_surface(**kwargs)])
 
 
-def make_client(
-    *,
-    registry: SpecRegistry,
-    pool_size: int | None = None,
-    mint_pool_size: int | None = None,
-    definition_pool_size: int | None = None,
-    **kwargs,
-) -> TestClient:
-    return TestClient(
-        make_app(
-            registry=registry,
-            pool_size=pool_size,
-            mint_pool_size=mint_pool_size,
-            definition_pool_size=definition_pool_size,
-            **kwargs,
-        ),
-        raise_server_exceptions=False,
-    )
+class RunningClient(TestClient):
+    """A `TestClient` whose app lifespan is already running. `with client:` adds nothing on
+    entry and stops the lifespan on exit; the root conftest stops any still running after the
+    test."""
+
+    def start(self) -> RunningClient:
+        TestClient.__enter__(self)
+        _running_clients.append(self)
+        return self
+
+    def __enter__(self) -> RunningClient:
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        if self in _running_clients:
+            _running_clients.remove(self)
+            TestClient.__exit__(self, *exc_info)
+
+
+_running_clients: list[RunningClient] = []
+
+
+def make_client(**kwargs) -> RunningClient:
+    """A client over `make_app(**kwargs)` with the surface's lifespan running, which builds the
+    doors' `Deps`."""
+    return RunningClient(make_app(**kwargs), raise_server_exceptions=False).start()
+
+
+def close_open_clients() -> None:
+    """Stop every lifespan `make_client` started and no test stopped, newest first."""
+    while _running_clients:
+        _running_clients[-1].__exit__(None, None, None)
 
 
 def mint_deps(
@@ -154,7 +168,6 @@ def mint_deps(
     spec_reader: SpecReader,
     graph,
     sdmx,
-    revision_reader: RevisionReader,
     artifact_store,
     materialiser_build: str = "test-build",
     capability_version: str = "dset_test",
@@ -180,20 +193,24 @@ def mint_deps(
     from series_coverage.shared import get_coverage_service
     from statvar_members import MemberEnumerator
 
+    index = code_index if code_index is not None else get_index()
     return MintDeps(
         registry=registry,
         spec_reader=spec_reader,
         sdmx=sdmx,
         graph=graph,
-        revision_reader=revision_reader,
         artifact_store=artifact_store,
         materialiser_build=materialiser_build,
         capability_version=capability_version,
         ceiling=ceiling,
         member_concurrency=member_concurrency,
         enumerator=enumerator if enumerator is not None else MemberEnumerator(),
-        enrichment=enrichment if enrichment is not None else EnrichmentLookup(graph),
-        code_index=code_index if code_index is not None else get_index(),
+        enrichment=(
+            enrichment
+            if enrichment is not None
+            else EnrichmentLookup(graph, type_kinds=index.party_types, parties=index.parties)
+        ),
+        code_index=index,
         rate_cache=rate_cache if rate_cache is not None else RateTableCache(),
         coverage=coverage if coverage is not None else get_coverage_service(),
         version_writer=version_writer if version_writer is not None else NullVersionRecordWriter(),

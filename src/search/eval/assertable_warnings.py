@@ -55,6 +55,11 @@ ASSERTABLE_WARNINGS: frozenset[tuple[str, str]] = frozenset(
         # The answer's deflator omission (convertibility.deflator_omissions) reads the
         # posted unit and base year and the deflator tables, so no model output decides it.
         ("deflator_missing_omitted", "dataset_resubmit"),
+        # region.source_choice.idle_exclusion_warnings emits query_qualifier_dropped for an excluded
+        # source that removes nothing, from the posted sources and the recalled shapes'
+        # publishers. A case lists it only for that emission, since bind can also drop a
+        # qualifier on the parsed door.
+        ("query_qualifier_dropped", "parsed"),
     }
 )
 

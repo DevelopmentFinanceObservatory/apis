@@ -12,11 +12,7 @@ from materialise import CollectionFacetProbe, EnrichmentLookup, MaterialisationR
 from materialise.ceiling import DEFAULT_SYNC_CEILING_ROWS
 from materialise.graph import GraphReader
 from materialise.rate_tables import RateTableCache
-from materialise.revision import RevisionSnapshot
 from spec_registry.reader import StoredDefinition
-from tests.materialise.conftest import FakeRevisionReader
-
-_SNAPSHOT = RevisionSnapshot(graph_revision="graph-rev", source_revisions=())
 
 
 def prewrite(
@@ -39,15 +35,13 @@ def prewrite(
         requests=requests,
         sdmx=sdmx,
         graph=graph,
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
         ceiling=DEFAULT_SYNC_CEILING_ROWS,
         materialiser_build="build-1",
         capability_version="cap-1",
-        enrichment=EnrichmentLookup(graph),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         code_index=get_index(),
         rate_cache=RateTableCache(),
         member_concurrency=2,
-        materialise_wait_seconds=1.0,
         settings=DatasetsBuildSettings(),
         precomputed_probe=precomputed_probe,
         documented=False,

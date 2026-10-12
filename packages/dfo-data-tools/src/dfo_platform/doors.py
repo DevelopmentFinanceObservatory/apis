@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from contextlib import AbstractAsyncContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from fastapi import APIRouter, FastAPI, Request
+from fastapi.routing import APIRoute
 
 from dfo_platform import ProblemSpec
 
@@ -18,6 +19,8 @@ class DoorContribution:
     Routers carry full paths. Classifiers return `None` for unrecognised exceptions. Lifespans enter
     together. Middleware checks run synchronously before FastAPI parses the request body. Each
     check decides for itself, for example by path, whether a request concerns it.
+    `registry_endpoints` maps each route path to the code registry endpoint it serves
+    (`dfo_platform.app.Surface.registry_endpoints`).
     """
 
     router: APIRouter
@@ -26,6 +29,7 @@ class DoorContribution:
     exception_exemplars: tuple[BaseException, ...] = ()
     lifespan: Callable[[FastAPI], AbstractAsyncContextManager[None]] | None = None
     middleware: tuple[Callable[[Request], ProblemSpec | None], ...] = ()
+    registry_endpoints: Mapping[str, str] = field(default_factory=dict)
 
 
 def combine_classifiers(
@@ -51,3 +55,8 @@ def flatten(doors: Iterable[DoorContribution]) -> APIRouter:
     for door in doors:
         router.routes.extend(door.router.routes)
     return router
+
+
+def route_registry_endpoints(router: APIRouter, endpoint: str) -> dict[str, str]:
+    """Map every route on `router` to the one code registry `endpoint` its door serves."""
+    return {route.path: endpoint for route in router.routes if isinstance(route, APIRoute)}

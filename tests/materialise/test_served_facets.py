@@ -71,12 +71,12 @@ def test_served_facets_are_the_joint_dispatch_group(case: str, window_name: str)
         facet_bindings={},
         window=window,
     )
-    selections = _select_member_facets(request, candidates, graph=FakeGraphReader())
+    election = _select_member_facets(request, candidates, graph=FakeGraphReader())
 
     served = served_facets(candidates, stat_vars=[f"dcid:{_VARIABLE}"], window=window)
 
     assert tuple(sorted(f.facet_id for f in served if f.facet_id)) == joint_dispatch_facet_ids(
-        candidates, selections
+        candidates, election, member=0
     )
 
 
@@ -100,9 +100,9 @@ def test_a_candidate_filter_narrows_the_pool_before_election() -> None:
     )
     candidates = admitted_candidates([_LONG, _OTHER_METHOD], request.candidate_filter)
 
-    selections = _select_member_facets(request, candidates, graph=FakeGraphReader())
+    election = _select_member_facets(request, candidates, graph=FakeGraphReader())
 
-    assert joint_dispatch_facet_ids(candidates, selections) == ("f-est",)
+    assert joint_dispatch_facet_ids(candidates, election, member=0) == ("f-est",)
 
 
 def test_a_candidate_filter_that_admits_nothing_is_a_facet_refusal() -> None:

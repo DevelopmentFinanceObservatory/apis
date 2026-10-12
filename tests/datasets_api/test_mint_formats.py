@@ -14,11 +14,10 @@ import openpyxl
 import pyarrow.parquet as pq
 
 import datasets_api.render as render_module
-from datasets_api.revision import SentinelRevisionReader
 from dc_sdmx import SdmxClient
 from materialise.formats import EXCEL_MAX_CELL_CHARS, write_parquet
 from materialise.graph import Facet
-from series_coverage.schema import FacetMetadata, RoleNames
+from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
@@ -98,8 +97,8 @@ def _coverage_service() -> FakeCoverageService:
     `n_obs`/`last_year` from the one 2015 row `_CSV_BODY` carries.
     """
     index = build_coverage_index(
-        [(_STAT_VAR, "facet1", "country/USA", "country/KEN", [2015])],
-        role_names={_STAT_VAR: RoleNames(donor="provider", recipient="recipient")},
+        [(_STAT_VAR, "facet1", ABSENT_ENTITY, "country/KEN", [2015])],
+        role_names={_STAT_VAR: RoleNames(donor=None, recipient="recipient")},
         facet_metadata={
             "facet1": FacetMetadata(
                 provenance_id="OECD_DAC2A", measurement_method="GrantEquivalent", unit="USD"
@@ -109,14 +108,13 @@ def _coverage_service() -> FakeCoverageService:
     return FakeCoverageService(index)
 
 
-def _client(*, artifact_store, body: str = _CSV_BODY):
+def _client(*, artifact_store, body: str = _CSV_BODY, graph: FakeMintGraphReader | None = None):
     store = FakeDatasetStore()
     return make_client(
         registry=LiveSpecRegistry(store=store),
         spec_reader=LiveSpecReader(store=store),
-        graph=_graph(),
+        graph=graph if graph is not None else _graph(),
         sdmx=SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport(body=body)),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=artifact_store,
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),
@@ -191,8 +189,9 @@ def test_a_bundled_xlsx_mint_wraps_the_written_workbook_in_a_data_package():
 
 
 def test_excel_limit_refuses_a_mint_whose_frame_breaches_the_cell_character_cap():
-    body = _CSV_HEADER + _csv_row(recipient="x" * (EXCEL_MAX_CELL_CHARS + 1))
-    client = _client(artifact_store=FakeArtifactStore(), body=body)
+    graph = _graph()
+    graph._arcs["country/KEN"] = {"name": ("x" * (EXCEL_MAX_CELL_CHARS + 1),)}
+    client = _client(artifact_store=FakeArtifactStore(), graph=graph)
 
     resp = client.post("/api/datasets", json=_body(format="xlsx"))
 

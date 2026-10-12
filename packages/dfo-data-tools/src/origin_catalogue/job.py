@@ -18,8 +18,8 @@ A run:
 5. builds the DFO and base rows of the provenance table: DFO rows from
    Spanner, base rows from `<-source` on every registered base source
    through our mixer (keeping `typeOf: Provenance`, minus DFO's and each
-   entry's exclusions), and each row's source-index entry's card facts
-   (`origin_catalogue.card_facts`);
+   entry's exclusions), each row's licence, and each row's source-index
+   entry's card facts and documentation facts (`origin_catalogue.card_facts`);
 6. copies the base variable, withheld variable and topic tables forward
    from the published build when (format version, enumeration code hash, registry hash,
    admitted base provenance set, DFO provenance set, ISO week) is unchanged, and builds them with
@@ -125,13 +125,18 @@ from origin_catalogue.artifact import (
 )
 from origin_catalogue.card_facts import (
     CHILD_PROPERTIES,
+    DOCUMENT_PROPERTIES,
+    DOCUMENTATION_CHILD_PROPERTIES,
     LICENCE_PROPERTIES,
     PROVENANCE_TYPE,
     Arcs,
     card_facts_of,
     first_dataset_parent,
     licence_labels_of,
+    licence_of,
     node_label,
+    publisher_node_of,
+    source_documentation_of,
     without_unresolved,
 )
 from origin_catalogue.catalogue import (
@@ -141,6 +146,7 @@ from origin_catalogue.catalogue import (
     CatalogueTables,
     DatasetRef,
     ProvenanceRow,
+    SourceDocumentation,
     SourceRef,
     entry_ref,
 )
@@ -217,12 +223,27 @@ GET by the places it names, whatever the variable."""
 _COUNTRY_PREFIX = "country/"
 
 _PROVENANCE_PROPERTIES: Final[tuple[str, ...]] = tuple(
-    dict.fromkeys(("typeOf", "name", "url", "source", "isPartOf", *CHILD_PROPERTIES))
+    dict.fromkeys(
+        (
+            "typeOf",
+            "name",
+            "url",
+            "source",
+            "isPartOf",
+            *CHILD_PROPERTIES,
+            *DOCUMENTATION_CHILD_PROPERTIES,
+        )
+    )
 )
-"""A provenance's identity arcs and the arcs its card facts read."""
+"""A provenance's identity arcs and the arcs its licence, card facts and
+documentation facts read from every child."""
 
-_PARENT_PROPERTIES: Final[tuple[str, ...]] = ("typeOf", "name", "url")
-"""A parent's type, which decides whether it is a Dataset, and its name and URL."""
+_PARENT_PROPERTIES: Final[tuple[str, ...]] = ("typeOf", "name", "url", "isPartOf")
+"""A parent's type, which decides whether it is a Dataset, its name and URL,
+and a Dataset's `isPartOf`, which names its publisher."""
+
+_DOCUMENTATION_PROPERTIES: Final[tuple[str, ...]] = ("name", *DOCUMENT_PROPERTIES)
+"""The publisher's `name` and a sole child's documents, read in one batch."""
 
 
 class CatalogueBuildError(Exception):
@@ -586,13 +607,14 @@ class CatalogueRefusedError(Exception):
 @dataclass(frozen=True, slots=True)
 class ProvenanceStage:
     """The DFO and base rows of the provenance table, each registered base
-    source's admitted provenances in registry order, the card facts of each
-    row's source-index entry (keyed by `entry_ref`), and the refusals found
-    building them."""
+    source's admitted provenances in registry order, the card facts and
+    documentation facts of each row's source-index entry (keyed by
+    `entry_ref`), and the refusals found building them."""
 
     rows: Mapping[str, ProvenanceRow]
     by_source: Mapping[str, tuple[str, ...]]
     dataset_facts: Mapping[str, CardFacts]
+    source_documentation: Mapping[str, SourceDocumentation]
     refusals: tuple[Refusal, ...]
 
     @property
@@ -617,8 +639,8 @@ type _ArcsByDcid = Mapping[str, dict[str, tuple[str, ...]] | None]
 def _read_parents(
     graph: CatalogueGraph, arcs: _ArcsByDcid
 ) -> dict[str, dict[str, tuple[str, ...]] | None]:
-    """The type, name and URL of every `isPartOf` parent the nodes in `arcs`
-    name, from one batched read."""
+    """The type, name, URL and `isPartOf` of every `isPartOf` parent the nodes
+    in `arcs` name, from one batched read."""
     parents = sorted({p for node in arcs.values() for p in (node or {}).get("isPartOf", ())})
     if not parents:
         return {}
@@ -667,16 +689,20 @@ def _licence_labels(
     )
 
 
-def _dataset_facts(
+def _entry_facts(
+    graph: CatalogueGraph,
     rows: Mapping[str, ProvenanceRow],
     arcs: _ArcsByDcid,
     parents: _ArcsByDcid,
     licence_labels: Mapping[str, str],
-) -> dict[str, CardFacts]:
-    """The card facts of each row's source-index entry. A Dataset entry's
-    children are the rows typed `Provenance` that name the Dataset anywhere in
-    `isPartOf`, the set the documentation reader reads for it. An orphan is
-    its own sole child. `licence_labels` comes from `_licence_labels`."""
+) -> tuple[dict[str, CardFacts], dict[str, SourceDocumentation]]:
+    """The card facts and documentation facts of each row's source-index
+    entry. A Dataset entry's children are the rows typed `Provenance` that
+    name the Dataset anywhere in `isPartOf`, the set the documentation reader
+    reads for it. An orphan is its own sole child, and its documentation
+    covers it only when it is typed `Provenance`. `licence_labels` comes from
+    `_licence_labels`. One batched read covers every publisher's `name` and
+    each sole child's documents."""
     children_of: dict[str, dict[str, Arcs]] = {}
     for provenance in rows:
         node = arcs.get(provenance) or {}
@@ -684,16 +710,73 @@ def _dataset_facts(
             continue
         for parent in node.get("isPartOf", ()):
             children_of.setdefault(parent, {})[provenance] = node
-    facts: dict[str, CardFacts] = {}
+    entries: dict[str, tuple[Arcs | None, dict[str, Arcs], str | None]] = {}
     for row in rows.values():
         ref = entry_ref(row)
-        if ref in facts:
+        if ref in entries:
             continue
+        node = arcs.get(row.id) or {}
         if row.dataset is None:
-            facts[ref] = card_facts_of(None, {row.id: arcs.get(row.id) or {}}, licence_labels)
+            entries[ref] = (None, {row.id: node}, publisher_node_of(None, node))
         else:
-            facts[ref] = card_facts_of(parents.get(ref), children_of.get(ref, {}), licence_labels)
-    return facts
+            dataset_arcs = parents.get(ref)
+            entries[ref] = (
+                dataset_arcs,
+                children_of.get(ref, {}),
+                publisher_node_of(dataset_arcs, node),
+            )
+    sole_children = [
+        next(iter(children)) for _, children, _ in entries.values() if len(children) == 1
+    ]
+    publishers = [publisher for _, _, publisher in entries.values() if publisher is not None]
+    targets = sorted({*publishers, *sole_children})
+    batch = (
+        without_unresolved(graph.node_arcs_many(targets, properties=_DOCUMENTATION_PROPERTIES))
+        if targets
+        else {}
+    )
+
+    facts: dict[str, CardFacts] = {}
+    documentation: dict[str, SourceDocumentation] = {}
+    for ref, (dataset_arcs, children, publisher) in entries.items():
+        facts[ref] = card_facts_of(dataset_arcs, children, licence_labels)
+        if len(children) == 1:
+            ((child, child_arcs),) = children.items()
+            documents = batch.get(child) or {}
+            children = {
+                child: {
+                    **child_arcs,
+                    **{prop: documents.get(prop, ()) for prop in DOCUMENT_PROPERTIES},
+                }
+            }
+        entry = source_documentation_of(
+            children,
+            node_label(batch.get(publisher), publisher) if publisher is not None else None,
+        )
+        if dataset_arcs is None and PROVENANCE_TYPE not in (arcs.get(ref) or {}).get("typeOf", ()):
+            entry = replace(entry, provenances=())
+        documentation[ref] = entry
+    return facts, documentation
+
+
+def _citation_facts(
+    graph: CatalogueGraph,
+    rows: Mapping[str, ProvenanceRow],
+    arcs: _ArcsByDcid,
+    parents: _ArcsByDcid,
+) -> tuple[dict[str, ProvenanceRow], dict[str, CardFacts], dict[str, SourceDocumentation]]:
+    """`rows` with each one's licence (`licence_of`), and each row's entry's card facts and
+    documentation facts (`_entry_facts`). `arcs` holds every row's `_PROVENANCE_PROPERTIES`
+    and `parents` their parents' (`_read_parents`)."""
+    licence_labels = _licence_labels(graph, rows, arcs)
+    licensed = {
+        provenance: replace(row, licence=licence_of(arcs.get(provenance), licence_labels))
+        for provenance, row in rows.items()
+    }
+    dataset_facts, source_documentation = _entry_facts(
+        graph, licensed, arcs, parents, licence_labels
+    )
+    return licensed, dataset_facts, source_documentation
 
 
 def build_provenance_table(
@@ -708,8 +791,10 @@ def build_provenance_table(
     base source, minus DFO's provenances and the entry's exclusions, labelled
     with the registry's source label. DFO rows: each Spanner provenance with
     its URL and source. A row's `dataset` is its first parent typed Dataset
-    (`isPartOf`), and its name the Dataset's name (`_title`).
-    `dataset_facts` holds each row's entry's card facts (`_dataset_facts`).
+    (`isPartOf`), its name the Dataset's name (`_title`), and its licence
+    what its own arcs state (`licence_of`). `dataset_facts` and
+    `source_documentation` hold each row's entry's card facts and
+    documentation facts (`_entry_facts`).
     """
     refusals: list[Refusal] = []
     subjects: dict[str, tuple[str, ...]] = {}
@@ -780,10 +865,12 @@ def build_provenance_table(
             refusals=refusals,
         )
     )
+    rows, dataset_facts, source_documentation = _citation_facts(graph, rows, arcs, parents)
     return ProvenanceStage(
         rows=rows,
         by_source=by_source,
-        dataset_facts=_dataset_facts(rows, arcs, parents, _licence_labels(graph, rows, arcs)),
+        dataset_facts=dataset_facts,
+        source_documentation=source_documentation,
         refusals=tuple(refusals),
     )
 
@@ -1599,6 +1686,7 @@ def _build(
             scan_places=base.scan_places,
             scan_levels=base.scan_levels,
             dataset_facts=stage.dataset_facts,
+            source_documentation=stage.source_documentation,
             un_blocked_places=un.blocked_places,
             superseded=successors.rows,
         )

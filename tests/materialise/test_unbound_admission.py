@@ -21,8 +21,8 @@ from materialise.facets import probe_collection_facets
 from materialise.graph import Facet
 from materialise.window import RequestedWindow
 
-from ._group_support import _BARE_B, _BARE_C, _BOUND_FACETS, _SHARED_FACET, _SNAPSHOT
-from .conftest import FakeGraphReader, FakeRevisionReader
+from ._group_support import _BARE_B, _BARE_C, _BOUND_FACETS, _SHARED_FACET
+from .conftest import FakeGraphReader
 
 _ABOUT = "observationAbout"
 _KEN = "country/KEN"
@@ -126,8 +126,7 @@ def test_a_member_binding_no_entity_serves_a_facet_only_at_the_default_places_ad
         _unbound(_BARE_B, window=window),
         sdmx=sdmx,
         graph=_graph(),
-        enrichment=EnrichmentLookup(_graph()),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(_graph(), type_kinds={}, parties={}),
         **_SERVICE,
     )
 
@@ -167,8 +166,7 @@ def test_group_members_each_serve_at_their_own_places_under_their_own_admission(
         requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         precomputed_probe=probe,
         **_SERVICE,
     )

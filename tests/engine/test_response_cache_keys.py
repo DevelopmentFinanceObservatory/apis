@@ -4,6 +4,8 @@ A collision serves one query's cached answer to a different query."""
 
 from __future__ import annotations
 
+from typing import Literal
+
 import pytest
 
 from search.engine.config import settings
@@ -17,7 +19,14 @@ from search.engine.response_cache_keys import (
     parsed_key,
     scope_document,
 )
-from search.models import Operation, ParsedEntity, ParsedInput, ParsedPart, ResolveOptions
+from search.models import (
+    Operation,
+    ParsedEntity,
+    ParsedInput,
+    ParsedPart,
+    ResolveOptions,
+    SourceMention,
+)
 
 
 def _scope(
@@ -26,6 +35,7 @@ def _scope(
     options: ResolveOptions | None = None,
     max_candidates: int = 6,
     seam_default: bool = True,
+    qualifier_coverage: Literal["log", "refuse"] = "log",
     build_commit: str = "commit-a",
     model: str = "model-a",
     seed: int | None = 1,
@@ -41,6 +51,7 @@ def _scope(
         options=options,
         max_candidates=max_candidates,
         seam_default=seam_default,
+        qualifier_coverage=qualifier_coverage,
         build_commit=build_commit,
         model=model,
         seed=seed,
@@ -96,6 +107,7 @@ def _layer2_key(
     dropped_qualifiers: list[str] | None = None,
     variable_qualifiers: list[tuple[CodedQualifier, ...]] | None = None,
     operations: list[tuple[Operation, ...]] | None = None,
+    sources: list[tuple[SourceMention, ...]] | None = None,
     role_contradictions: list[dict[str, object]] | None = None,
     query_text_qualifier_matches: list[dict[str, object]] | None = None,
     query_text_qualifier_ties: list[dict[str, object]] | None = None,
@@ -105,6 +117,7 @@ def _layer2_key(
     declared_default_trigger_words: list[dict[str, str]] | None = None,
     declared_default_slots_named: list[str] | None = None,
     scope: dict | None = None,
+    separate: list[bool] | None = None,
 ) -> str:
     """`layer2_key` with every raw-text signal defaulting to empty, for a
     test that means to vary exactly one argument."""
@@ -120,6 +133,7 @@ def _layer2_key(
             else [() for _ in resolved_variables]
         ),
         operations=operations if operations is not None else [() for _ in resolved_variables],
+        sources=sources if sources is not None else [() for _ in resolved_variables],
         role_contradictions=role_contradictions if role_contradictions is not None else [],
         query_text_qualifier_matches=(
             query_text_qualifier_matches if query_text_qualifier_matches is not None else []
@@ -143,6 +157,7 @@ def _layer2_key(
             declared_default_slots_named if declared_default_slots_named is not None else []
         ),
         scope=scope if scope is not None else _scope(),
+        separate=separate if separate is not None else (),
     )
 
 
@@ -542,6 +557,54 @@ def test_operations_change_layer2_key() -> None:
     assert with_rank == _layer2_key(variables=["education aid"], operations=[(rank,)])
 
 
+def test_a_separate_variable_changes_layer2_key() -> None:
+    """A variable compared with the others does not fold, so marking one keys apart.
+    Marking none keys as an extraction without the field."""
+    variables = ["health ODA", "education ODA"]
+    unmarked = _layer2_key(variables=variables)
+    second = _layer2_key(variables=variables, separate=[False, True])
+    assert len({unmarked, second, _layer2_key(variables=variables, separate=[True, False])}) == 3
+    assert unmarked == _layer2_key(variables=variables, separate=[False, False])
+
+
+def test_a_separate_part_changes_the_parsed_key() -> None:
+    """A part marked separate answers unfolded, so it keys apart from the same part
+    unmarked, and an unmarked part keys as a part that omits the field."""
+
+    def key(*, separate: bool) -> str:
+        parts = [
+            ParsedPart(variable_text="health ODA"),
+            ParsedPart(variable_text="education ODA", separate=separate),
+        ]
+        return parsed_key(parsed=ParsedInput(parts=parts), scope=_scope())
+
+    assert key(separate=True) != key(separate=False)
+    assert key(separate=False) == parsed_key(
+        parsed=ParsedInput.model_validate(
+            {"parts": [{"variable_text": "health ODA"}, {"variable_text": "education ODA"}]}
+        ),
+        scope=_scope(),
+    )
+
+
+def test_source_mentions_change_layer2_key() -> None:
+    """The source mentions each part compiles change its answer, so an extraction that
+    excludes a source, includes it, names none, or attaches it to another variable keys
+    apart."""
+    crs = SourceMention(text="CRS")
+    excluded = crs.model_copy(update={"polarity": "exclude"})
+    two = ["aid to Kenya", "GDP of Kenya"]
+    keys = {
+        _layer2_key(variables=["aid to Kenya"]),
+        _layer2_key(variables=["aid to Kenya"], sources=[(crs,)]),
+        _layer2_key(variables=["aid to Kenya"], sources=[(excluded,)]),
+        _layer2_key(variables=two, sources=[(crs,), ()]),
+        _layer2_key(variables=two, sources=[(), (crs,)]),
+        _layer2_key(variables=two, sources=[(crs,), (crs,)]),
+    }
+    assert len(keys) == 6
+
+
 def test_an_entitys_members_flag_changes_the_parsed_key() -> None:
     """Two parsed requests alike but for one entity's `members` ask for different places."""
 
@@ -593,6 +656,14 @@ def test_different_seam_default_changes_key() -> None:
     on = layer1_key(query="gdp kenya", scope=_scope(seam_default=True))
     off = layer1_key(query="gdp kenya", scope=_scope(seam_default=False))
     assert on != off
+
+
+def test_different_qualifier_coverage_changes_key() -> None:
+    """SEARCH_QUALIFIER_COVERAGE decides whether an uncovered word refuses, with no
+    per-request override, so it changes the answer without moving build_commit."""
+    log = layer1_key(query="gdp kenya", scope=_scope(qualifier_coverage="log"))
+    refuse = layer1_key(query="gdp kenya", scope=_scope(qualifier_coverage="refuse"))
+    assert log != refuse
 
 
 def test_different_today_changes_key() -> None:
@@ -667,6 +738,7 @@ def test_keys_are_stable_across_independently_built_equal_inputs() -> None:
         options=ResolveOptions(include_skills=True),
         max_candidates=5,
         seam_default=True,
+        qualifier_coverage="log",
         build_commit="commit-a",
         model="model-a",
         seed=1,
@@ -683,6 +755,7 @@ def test_keys_are_stable_across_independently_built_equal_inputs() -> None:
         model="model-a",
         build_commit="commit-a",
         seam_default=True,
+        qualifier_coverage="log",
         max_candidates=5,
         options=ResolveOptions(include_skills=True),
         schema_version=1,

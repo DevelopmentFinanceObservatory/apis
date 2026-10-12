@@ -39,14 +39,13 @@ from materialise.facets import (
 from materialise.graph import Facet
 from materialise.group_facets import _as_issue
 from materialise.place_scope import MAX_EVERY_PLACE, DefaultPlaceScope
-from materialise.revision import RevisionSnapshot, SourceRevision
 from materialise.window import AppliedWindow, Coverage, RequestedWindow
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._fake_coverage import build_coverage_index
 
 from ._scope_availability import ScopeAvailability
-from .conftest import FakeGraphReader, FakeRevisionReader, only_chunk
+from .conftest import FakeGraphReader, only_chunk
 
 _BASE_URL = "https://datacommons.one.org/core/api"
 _STAT_VAR = "dcid:MalariaGrantDisbursements"
@@ -59,10 +58,6 @@ _CSV_HEADER = (
     "observationPeriod,provenance,TIME_PERIOD,OBS_VALUE,scalingFactor,facetId\r\n"
 )
 
-_SNAPSHOT = RevisionSnapshot(
-    graph_revision="graph-rev-2024-01",
-    source_revisions=(SourceRevision(source="OECD_DAC_CRS", revision="rev-7"),),
-)
 
 _FACET = Facet(
     facet_id="facet1",
@@ -152,7 +147,6 @@ def test_happy_path_bound_facets_all_three_axes_non_empty_result():
     sdmx, requests = _sdmx_client(csv_body)
     graph = FakeGraphReader(facets={(_BARE_STAT_VAR, "country/TGO"): [_FACET]})
     coverage = _coverage_for([_FACET], entities=["country/TGO"])
-    reader = FakeRevisionReader([_SNAPSHOT, _SNAPSHOT])
     request = _request(
         role_bindings={"recipient": ["country/TGO"]}, window=RequestedWindow(kind="all")
     )
@@ -161,8 +155,7 @@ def test_happy_path_bound_facets_all_three_axes_non_empty_result():
         request,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=reader,
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -200,7 +193,6 @@ def test_progress_counter_ends_equal_to_the_frame_row_count():
     sdmx, _requests = _sdmx_client(csv_body)
     graph = FakeGraphReader(facets={(_BARE_STAT_VAR, "country/TGO"): [_FACET]})
     coverage = _coverage_for([_FACET], entities=["country/TGO"])
-    reader = FakeRevisionReader([_SNAPSHOT, _SNAPSHOT])
     request = _request(
         role_bindings={"recipient": ["country/TGO"]}, window=RequestedWindow(kind="all")
     )
@@ -210,8 +202,7 @@ def test_progress_counter_ends_equal_to_the_frame_row_count():
         request,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=reader,
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -238,8 +229,7 @@ def test_a_cancelled_progress_stops_the_spec_at_its_first_chunk_boundary():
             request,
             sdmx=sdmx,
             graph=graph,
-            enrichment=EnrichmentLookup(graph),
-            revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
             materialiser_build="build-123",
             capability_version="cap-v1",
             coverage=coverage,
@@ -262,7 +252,6 @@ def test_output_profile_seconds_measures_only_the_profile_call(monkeypatch: pyte
     sdmx, _requests = _sdmx_client(csv_body)
     graph = FakeGraphReader(facets={(_BARE_STAT_VAR, "country/TGO"): [_FACET]})
     coverage = _coverage_for([_FACET], entities=["country/TGO"])
-    reader = FakeRevisionReader([_SNAPSHOT, _SNAPSHOT])
     request = _request(
         role_bindings={"recipient": ["country/TGO"]}, window=RequestedWindow(kind="all")
     )
@@ -271,8 +260,7 @@ def test_output_profile_seconds_measures_only_the_profile_call(monkeypatch: pyte
         request,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=reader,
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -295,7 +283,6 @@ def test_role_set_divergence_between_declared_roles_and_the_sdmx_response_refuse
     sdmx, _requests = _sdmx_client(csv_body)
     graph = FakeGraphReader(facets={(_BARE_STAT_VAR, "country/TGO"): [_FACET]})
     coverage = _coverage_for([_FACET], entities=["country/TGO"])
-    reader = FakeRevisionReader([_SNAPSHOT, _SNAPSHOT])
     request = _request(
         role_bindings={"recipient": ["country/TGO"]}, window=RequestedWindow(kind="all")
     )
@@ -305,8 +292,7 @@ def test_role_set_divergence_between_declared_roles_and_the_sdmx_response_refuse
             request,
             sdmx=sdmx,
             graph=graph,
-            enrichment=EnrichmentLookup(graph),
-            revision_reader=reader,
+            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
             materialiser_build="build-123",
             capability_version="cap-v1",
             coverage=coverage,
@@ -321,8 +307,7 @@ def _spec(request: MaterialisationRequest, *, sdmx, graph, coverage=None):
         request,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -434,8 +419,7 @@ def test_subject_only_request_with_no_bound_entity_over_the_row_ceiling_refuses_
             _subject_request(),
             sdmx=sdmx,
             graph=graph,
-            enrichment=EnrichmentLookup(graph),
-            revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
             materialiser_build="build-123",
             capability_version="cap-v1",
             ceiling=1,
@@ -581,8 +565,7 @@ def test_role_bearing_request_with_no_bound_entity_fetches_every_covered_entity(
         request,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -611,8 +594,7 @@ def test_unbound_role_bearing_request_with_a_window_outside_coverage_materialise
         request,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -631,7 +613,6 @@ def test_series_statistics_populated_and_content_version_is_independent_of_them(
     sdmx, _requests = _sdmx_client(csv_body)
     graph = FakeGraphReader(facets={(_BARE_STAT_VAR, "country/TGO"): [_FACET]})
     coverage = _coverage_for([_FACET], entities=["country/TGO"])
-    reader = FakeRevisionReader([_SNAPSHOT, _SNAPSHOT])
     request = _request(
         role_bindings={"recipient": ["country/TGO"]}, window=RequestedWindow(kind="all")
     )
@@ -640,8 +621,7 @@ def test_series_statistics_populated_and_content_version_is_independent_of_them(
         request,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=reader,
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -656,16 +636,7 @@ def test_series_statistics_populated_and_content_version_is_independent_of_them(
     assert series["entities"] == [{"role": "recipient", "ref": "country/TGO"}]
 
     # Series statistics are outside the content-version preimage.
-    recomputed = mint_version(
-        only_chunk(result),
-        graph_revision=result.trace.graph_revision,
-        source_revisions=result.trace.source_revisions,
-        facets=[
-            {"axis": entry["axis"], "ref": entry["ref"], "basis": entry["basis"]}
-            for entry in result.trace.facets
-        ],
-    )
-    assert recomputed == result.content_version
+    assert mint_version(only_chunk(result)) == result.content_version
 
 
 def test_empty_result_zero_rows_survive_window_filter():
@@ -673,7 +644,6 @@ def test_empty_result_zero_rows_survive_window_filter():
     sdmx, _requests = _sdmx_client(csv_body)
     graph = FakeGraphReader(facets={(_BARE_STAT_VAR, "country/TGO"): [_FACET]})
     coverage = _coverage_for([_FACET], entities=["country/TGO"])
-    reader = FakeRevisionReader([_SNAPSHOT, _SNAPSHOT])
     request = _request(
         role_bindings={"recipient": ["country/TGO"]},
         window=RequestedWindow(kind="range", start_year=2030, end_year=2031),
@@ -683,8 +653,7 @@ def test_empty_result_zero_rows_survive_window_filter():
         request,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=reader,
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -708,7 +677,6 @@ def test_blank_obs_value_row_surviving_filters_is_empty_result_not_a_stale_windo
     sdmx, _requests = _sdmx_client(csv_body)
     graph = FakeGraphReader(facets={(_BARE_STAT_VAR, "country/TGO"): [_FACET]})
     coverage = _coverage_for([_FACET], entities=["country/TGO"])
-    reader = FakeRevisionReader([_SNAPSHOT, _SNAPSHOT])
     request = _request(
         role_bindings={"recipient": ["country/TGO"]}, window=RequestedWindow(kind="all")
     )
@@ -717,8 +685,7 @@ def test_blank_obs_value_row_surviving_filters_is_empty_result_not_a_stale_windo
         request,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=reader,
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -742,7 +709,6 @@ def test_over_ceiling_raises_with_real_coverage_named_in_detail():
     sdmx, _requests = _sdmx_client(csv_body)
     graph = FakeGraphReader(facets={(_BARE_STAT_VAR, "country/TGO"): [_FACET]})
     coverage = _coverage_for([_FACET], entities=["country/TGO"])
-    reader = FakeRevisionReader([_SNAPSHOT, _SNAPSHOT])
     request = _request(
         role_bindings={"recipient": ["country/TGO"]}, window=RequestedWindow(kind="latest")
     )
@@ -752,8 +718,7 @@ def test_over_ceiling_raises_with_real_coverage_named_in_detail():
             request,
             sdmx=sdmx,
             graph=graph,
-            enrichment=EnrichmentLookup(graph),
-            revision_reader=reader,
+            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
             ceiling=1,
             materialiser_build="build-123",
             capability_version="cap-v1",
@@ -778,7 +743,6 @@ def test_narrow_window_over_a_raw_response_past_the_ceiling_still_succeeds():
     sdmx, _requests = _sdmx_client(csv_body)
     graph = FakeGraphReader(facets={(_BARE_STAT_VAR, "country/TGO"): [_FACET]})
     coverage = _coverage_for([_FACET], entities=["country/TGO"])
-    reader = FakeRevisionReader([_SNAPSHOT, _SNAPSHOT])
     request = _request(
         role_bindings={"recipient": ["country/TGO"]},
         window=RequestedWindow(kind="range", start_year=2025, end_year=2025),
@@ -788,8 +752,7 @@ def test_narrow_window_over_a_raw_response_past_the_ceiling_still_succeeds():
         request,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=reader,
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         ceiling=ceiling,
         materialiser_build="build-123",
         capability_version="cap-v1",
@@ -812,7 +775,6 @@ def test_raw_fetch_guard_trip_refuses_over_ceiling_naming_the_raw_abort():
     sdmx, _requests = _sdmx_client(csv_body)
     graph = FakeGraphReader(facets={(_BARE_STAT_VAR, "country/TGO"): [_FACET]})
     coverage = _coverage_for([_FACET], entities=["country/TGO"])
-    reader = FakeRevisionReader([_SNAPSHOT, _SNAPSHOT])
     request = _request(
         role_bindings={"recipient": ["country/TGO"]},
         window=RequestedWindow(kind="range", start_year=2025, end_year=2025),
@@ -823,8 +785,7 @@ def test_raw_fetch_guard_trip_refuses_over_ceiling_naming_the_raw_abort():
             request,
             sdmx=sdmx,
             graph=graph,
-            enrichment=EnrichmentLookup(graph),
-            revision_reader=reader,
+            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
             ceiling=ceiling,
             materialiser_build="build-123",
             capability_version="cap-v1",
@@ -852,7 +813,6 @@ def test_counted_early_refusal_aborts_the_stream_before_reading_every_chunk():
     sdmx = SdmxClient(base_url=_BASE_URL, transport=stream)
     graph = FakeGraphReader(facets={(_BARE_STAT_VAR, "country/TGO"): [_FACET]})
     coverage = _coverage_for([_FACET], entities=["country/TGO"])
-    reader = FakeRevisionReader([_SNAPSHOT, _SNAPSHOT])
     request = _request(
         role_bindings={"recipient": ["country/TGO"]}, window=RequestedWindow(kind="all")
     )
@@ -862,8 +822,7 @@ def test_counted_early_refusal_aborts_the_stream_before_reading_every_chunk():
             request,
             sdmx=sdmx,
             graph=graph,
-            enrichment=EnrichmentLookup(graph),
-            revision_reader=reader,
+            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
             ceiling=ceiling,
             materialiser_build="build-123",
             capability_version="cap-v1",
@@ -885,7 +844,6 @@ def test_latest_window_over_a_huge_raw_response_does_not_early_refuse_and_succee
     sdmx, _requests = _sdmx_client(csv_body)
     graph = FakeGraphReader(facets={(_BARE_STAT_VAR, "country/TGO"): [_FACET]})
     coverage = _coverage_for([_FACET], entities=["country/TGO"])
-    reader = FakeRevisionReader([_SNAPSHOT, _SNAPSHOT])
     request = _request(
         role_bindings={"recipient": ["country/TGO"]}, window=RequestedWindow(kind="latest")
     )
@@ -894,8 +852,7 @@ def test_latest_window_over_a_huge_raw_response_does_not_early_refuse_and_succee
         request,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=reader,
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         ceiling=ceiling,
         materialiser_build="build-123",
         capability_version="cap-v1",
@@ -941,7 +898,6 @@ def test_coverage_below_scope_warning(
     sdmx, _requests = _sdmx_client(csv_body)
     graph = FakeGraphReader(facets={(_BARE_STAT_VAR, "country/TGO"): [_FACET]})
     coverage = _coverage_for([_FACET], entities=["country/TGO"])
-    reader = FakeRevisionReader([_SNAPSHOT, _SNAPSHOT])
     request = _request(
         role_bindings=role_bindings,
         window=window,
@@ -951,8 +907,7 @@ def test_coverage_below_scope_warning(
         request,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=reader,
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -971,7 +926,6 @@ def test_coverage_below_scope_names_only_the_unserved_entity():
     sdmx, _requests = _sdmx_client(csv_body)
     graph = FakeGraphReader(facets={(_BARE_STAT_VAR, "country/TGO"): [_FACET]})
     coverage = _coverage_for([_FACET], entities=["country/TGO"])
-    reader = FakeRevisionReader([_SNAPSHOT, _SNAPSHOT])
     request = _request(
         role_bindings={"recipient": ["country/TGO", "country/SEN"]},
         window=RequestedWindow(kind="all"),
@@ -981,8 +935,7 @@ def test_coverage_below_scope_names_only_the_unserved_entity():
         request,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=reader,
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -999,15 +952,13 @@ def test_coverage_below_scope_caps_named_entities_at_five():
     sdmx, _requests = _sdmx_client(csv_body)
     graph = FakeGraphReader(facets={(_BARE_STAT_VAR, "country/TGO"): [_FACET]})
     coverage = _coverage_for([_FACET], entities=["country/TGO"])
-    reader = FakeRevisionReader([_SNAPSHOT, _SNAPSHOT])
     request = _request(role_bindings={"recipient": bound}, window=RequestedWindow(kind="all"))
 
     result = materialise_spec(
         request,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=reader,
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -1022,20 +973,20 @@ def test_coverage_below_scope_caps_named_entities_at_five():
 
 
 def test_as_issue_carries_the_wrapped_errors_code_and_message():
-    exc = DefaultFacetUndefinedError("axis 'unit' has no default", pointer="/facets/unit")
+    exc = DefaultFacetUndefinedError("axis 'unit' has no default", facet_pointer="/facets/unit")
     issue = _as_issue("unit", exc)
     assert issue.code == exc.code == "default_facet_undefined"
     assert issue.detail == str(exc)
 
 
 def test_as_issue_leaves_detail_unset_for_an_error_with_no_message():
-    issue = _as_issue("unit", FacetNotAvailableError(pointer="/facets/unit"))
+    issue = _as_issue("unit", FacetNotAvailableError(facet_pointer="/facets/unit"))
     assert issue.code == "facet_not_available"
     assert issue.detail is None
 
 
 def test_as_issue_truncated_is_none_when_no_alternatives():
-    exc = DefaultFacetUndefinedError(pointer="/facets/provenance")
+    exc = DefaultFacetUndefinedError(facet_pointer="/facets/provenance")
     issue = _as_issue("provenance", exc)
     assert issue.alternatives is None
     assert issue.truncated is None
@@ -1043,7 +994,7 @@ def test_as_issue_truncated_is_none_when_no_alternatives():
 
 def test_as_issue_truncated_is_false_below_the_cap():
     alts = [Alternative(ref=f"r{i}", label=f"l{i}") for i in range(5)]
-    exc = FacetNotAvailableError(pointer="/facets/unit", alternatives=alts)
+    exc = FacetNotAvailableError(facet_pointer="/facets/unit", alternatives=alts)
     issue = _as_issue("unit", exc)
     assert issue.alternatives == alts
     assert issue.truncated is False
@@ -1051,7 +1002,7 @@ def test_as_issue_truncated_is_false_below_the_cap():
 
 def test_as_issue_truncated_is_true_above_the_cap():
     alts = [Alternative(ref=f"r{i}", label=f"l{i}") for i in range(_MAX_ALTERNATIVES_PER_ISSUE + 5)]
-    exc = FacetNotAvailableError(pointer="/facets/unit", alternatives=alts)
+    exc = FacetNotAvailableError(facet_pointer="/facets/unit", alternatives=alts)
     issue = _as_issue("unit", exc)
     assert issue.alternatives is not None
     assert len(issue.alternatives) == _MAX_ALTERNATIVES_PER_ISSUE

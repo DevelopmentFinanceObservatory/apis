@@ -27,6 +27,7 @@ from materialise.facets import (
     DEPLOYMENT_FACET_POLICY_VERSION,
     FACET_AXES,
     FacetBinding,
+    FacetElection,
     FacetSelection,
     MemberProbe,
     _alternatives,
@@ -37,9 +38,11 @@ from materialise.facets import (
     _preferred_native_unit_selection,
     _require_currency_native_unit,
     _selection,
+    cadences_by_member,
     dataset_candidates,
     facet_axis_value,
-    joint_dispatch_facet_ids,
+    facet_election,
+    joint_matches,
     merge_facets,
     rank_pool,
     select_bound_facet,
@@ -151,7 +154,7 @@ def _group_shared_candidates(
         for axis in FACET_AXES:
             alternatives, truncated = _alternatives(combined_dispatchable, axis, graph)
             exc = FacetNotAvailableError(
-                pointer=f"/facets/{axis}",
+                facet_pointer=f"/facets/{axis}",
                 alternatives=alternatives,
                 alternatives_truncated=truncated,
             )
@@ -289,7 +292,7 @@ def _resolve_group_axis_selections(
                 raise DefaultFacetUndefinedError(
                     "facet axis 'provenance' is unbound, no default policy is declared, and "
                     "the winning candidate carries no provenance",
-                    pointer="/facets/provenance",
+                    facet_pointer="/facets/provenance",
                 )
             reason = "absent_on_selected_facet"
         elif len(shared_candidates) == 1:
@@ -328,12 +331,11 @@ def _check_group_joint_coherence(
     Declared defaults resolve axes independently, so their combined refs may
     lack a joint candidate. Such members add an issue per facet axis tagged
     with `issue.member`. Empty candidate pools are exempt and contribute zero
-    rows. `select_group_facets` calls this check so the currency signal path
-    gets the same refusal. `_group_signal` maps it to `None` and rebuilds.
+    rows. `select_group_facets` calls this check.
     """
     issues: list[MaterialisationIssue] = []
     for request, member_candidates in zip(requests, candidates, strict=True):
-        if not member_candidates or joint_dispatch_facet_ids(member_candidates, selections):
+        if not member_candidates or joint_matches(member_candidates, selections):
             continue
         dispatchable = [c for c in member_candidates if c.facet_id is not None]
         for axis in FACET_AXES:
@@ -341,7 +343,7 @@ def _check_group_joint_coherence(
             issue = _as_issue(
                 axis,
                 FacetNotAvailableError(
-                    pointer=f"/facets/{axis}",
+                    facet_pointer=f"/facets/{axis}",
                     alternatives=alternatives,
                     alternatives_truncated=truncated,
                 ),
@@ -380,8 +382,8 @@ def select_group_facets(
     *,
     graph: GraphReader,
     breadth: Mapping[str, int] | None = None,
-) -> dict[str, FacetSelection]:
-    """Resolves the group's shared selections from its member candidates.
+) -> FacetElection:
+    """Resolves the group's shared selections and its one cadence from its member candidates.
 
     The function merges shared candidates, resolves each declared default the
     members agree on, keeps the shared candidates carrying those defaults and
@@ -390,11 +392,20 @@ def select_group_facets(
     origin catalogue's overlap set (`facets.dfo_precedence`, computed on the
     narrowed pool) and led by `breadth`, each facet's series count across the members
     (`group_breadth`), resolves each remaining axis from the top candidate, then
-    checks joint coherence before returning. Members share one identity and so
+    checks joint coherence before returning. The group's cadence is the one at which the
+    most members hold a candidate matching every selected ref, counting under a range window
+    only candidates with a point in it when any member has one. Ties go to the cadence of
+    the facet a counted member holds that the same ranking puts first among the members'
+    joint matches merged by id, then to the earliest member (`facets.dispatch_cadence`,
+    `_merged_joint_matches`). Every member dispatches only its
+    facets at that cadence, so one group serves one observation period, and a member holding
+    none serves nothing. Each member's copies of a facet id are judged apart
+    (`facets.cadences_by_member`), so an id stating no period that one member dates by year
+    and another by month dispatches only for the members whose copy is at the elected
+    cadence. Members share one identity and so
     one window; the first request's window stands for the group, as its bindings
     do. `candidates` follows `requests` order and may come from a precomputed
-    probe. The currency signal calls this function too, so it uses the
-    dispatch's same selection and refusal rules.
+    probe.
 
     A member of an index-resolved family contributes only the candidates its
     elected dataset publishes (`facets.dataset_candidates`), so the group's
@@ -403,6 +414,9 @@ def select_group_facets(
     unpopulated. `DatasetDisagreementError` reports a member the probe finds
     only under provenances the code index does not record for it.
     """
+    # Every member's copies of a facet id, as each member's dispatch reads them.
+    probed = candidates
+    cadence_of = cadences_by_member(probed)
     candidates = [
         dataset_candidates(request, member_candidates)
         for request, member_candidates in zip(requests, candidates, strict=True)
@@ -435,11 +449,33 @@ def select_group_facets(
         breadth=breadth,
     )
     _check_group_joint_coherence(requests, candidates, selections, graph=graph)
-    return selections
+    return facet_election(
+        selections,
+        matching=_merged_joint_matches(probed, selections),
+        member_matches=[joint_matches(member, selections) for member in probed],
+        cadence_of=cadence_of,
+        stat_vars=[request.stat_var for request in requests],
+        window=window,
+        breadth=breadth,
+    )
+
+
+def _merged_joint_matches(
+    candidates: Sequence[Sequence[Facet]], selections: Mapping[str, FacetSelection]
+) -> list[Facet]:
+    """Every member's `joint_matches`, merged by facet id (`merge_facets`) in first-seen
+    order: the facets the group's members dispatch from. The shared pool can hold none of
+    them when declared defaults resolve apart, while each member still holds its own."""
+    by_id: dict[str | None, list[Facet]] = {}
+    for member_candidates in candidates:
+        for facet in joint_matches(member_candidates, selections):
+            by_id.setdefault(facet.facet_id, []).append(facet)
+    return [merge_facets(facets) for facets in by_id.values()]
 
 
 def _as_issue(axis: str, exc: MaterialisationError) -> MaterialisationIssue:
-    """Copies the error pointer, alternatives, code, and message into one aggregated issue.
+    """Copies the error's facet pointer, alternatives, code, and message into one aggregated
+    issue.
 
     `truncated` appears only with alternatives, matching the response wire
     shape. It is true when `facets._alternatives` or this backstop applies
@@ -452,7 +488,7 @@ def _as_issue(axis: str, exc: MaterialisationError) -> MaterialisationIssue:
         truncated = True
     return MaterialisationIssue(
         axis=axis,
-        pointer=exc.pointer,
+        pointer=exc.facet_pointer,
         alternatives=alternatives,
         truncated=(truncated if alternatives is not None else None),
         code=exc.code,

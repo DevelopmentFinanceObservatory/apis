@@ -156,3 +156,71 @@ def test_read_definitions_sqlstate_surfaces_in_the_store_error_message() -> None
         reader.read_definitions(["spec_x"])
 
     assert "sqlstate=42702" in str(excinfo.value)
+
+
+def _registered(registry: LiveSpecRegistry, name: str):
+    recomputed = recompute_identity(minimal_identity(shape=shape_for(name)))
+    registry.register_definition(
+        identity_definition=recomputed.identity,
+        schema_version=1,
+        supplied_spec_id=recomputed.spec_id,
+    )
+    return recomputed
+
+
+def test_read_served_spec_ids_returns_the_bound_ids_newest_first():
+    store = FakeDatasetStore()
+    registry = _registry(store)
+    posted = _registered(registry, "posted")
+    served = [recompute_identity(minimal_identity(shape=shape_for(f"s{i}"))) for i in range(2)]
+    for identity in served:
+        registry.register_served_definition(
+            served=identity, schema_version=1, posted_spec_id=posted.spec_id
+        )
+    reader = LiveSpecReader(store=store)
+
+    assert reader.read_served_spec_ids(posted.spec_id) == (served[1].spec_id, served[0].spec_id)
+    assert reader.read_served_spec_ids(served[0].spec_id) == ()
+    assert reader.read_served_spec_ids("spec_unregistered") is None
+
+
+@pytest.mark.parametrize("quarantined", ["posted", "served"])
+def test_every_read_raises_for_a_quarantined_posted_or_bound_served_id(quarantined):
+    store = FakeDatasetStore()
+    registry = _registry(store)
+    posted = _registered(registry, "posted")
+    served = recompute_identity(minimal_identity(shape=shape_for("served")))
+    registry.register_served_definition(
+        served=served, schema_version=1, posted_spec_id=posted.spec_id
+    )
+    subject_id = posted.spec_id if quarantined == "posted" else served.spec_id
+    store.state.identity_quarantine.append(
+        {"id_kind": "spec", "subject_id": subject_id, "held_bytes": b"a", "incoming_bytes": b"b"}
+    )
+
+    reader = LiveSpecReader(store=store)
+    reads = [
+        reader.read_served_spec_ids,
+        reader.read_definition,
+        lambda spec_id: reader.read_definitions([spec_id]),
+    ]
+
+    for read in reads:
+        with pytest.raises(IdentityQuarantined) as excinfo:
+            read(posted.spec_id)
+        assert excinfo.value.subject_id == subject_id
+
+
+@pytest.mark.parametrize(
+    ("exc", "raised"),
+    [
+        (PoolTimeoutError("no connection freed up"), SpecRegistryUnavailable),
+        (RuntimeError("driver fault"), SpecRegistryStoreError),
+    ],
+    ids=["pool-timeout", "store-error"],
+)
+def test_read_served_spec_ids_maps_store_faults(exc: Exception, raised: type):
+    reader = LiveSpecReader(store=_RaisingFakeDatasetStore(exc))
+
+    with pytest.raises(raised):
+        reader.read_served_spec_ids("spec_x")

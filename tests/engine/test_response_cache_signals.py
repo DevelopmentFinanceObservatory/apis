@@ -156,7 +156,8 @@ def test_query_text_qualifier_reading_against_the_real_index() -> None:
         query="GDP PPP in Kenya", entity_roles={}, query_text="GDP PPP in Kenya"
     )
     assert signals.query_text_qualifier_matches == ()
-    match = {"source": "synonym", "matched_text": "PPP"}
+    # A match of the query text carries no offsets.
+    match = {"source": "synonym", "matched_text": "PPP", "start": None, "end": None}
     assert signals.query_text_qualifier_readings == (
         {
             "matched_text": "PPP",

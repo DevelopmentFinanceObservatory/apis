@@ -32,6 +32,7 @@ from search.models import (
     _UNRESOLVED_NO_DATA_REASONS,
     UNIT_REF,
     AmbiguousEntityGroup,
+    AmbiguousSourceGroup,
     CandidateSet,
     CandidatesPart,
     DefinitePart,
@@ -63,6 +64,7 @@ from search.render.heading import (
     sibling_how_properties,
 )
 from search.render.no_data import (
+    ScopeSources,
     alternate_preserves_bound_role,
     no_data_message,
     no_data_sentence_plan,
@@ -374,6 +376,7 @@ def build_definite_part(
     *,
     variable_text: str | None,
     warnings: list[Warning],
+    separate: bool = False,
     timing_ms: Timing | None = None,
     restatement: ParsedPart | None = None,
     operations: Sequence[Operation] = (),
@@ -399,6 +402,7 @@ def build_definite_part(
     return DefinitePart(
         status="definite",
         variable_text=variable_text,
+        separate=separate,
         warnings=warnings,
         timing_ms=timing_ms,
         spec=spec,
@@ -455,6 +459,7 @@ def build_no_data_part(
     *,
     variable_text: str | None,
     warnings: list[Warning],
+    separate: bool = False,
     timing_ms: Timing | None = None,
     nearest_real: list[NearestRealSpec] | None = None,
     flagged_match: Spec | None = None,
@@ -468,7 +473,11 @@ def build_no_data_part(
     ambiguous_entities: list[AmbiguousEntityGroup] | None = None,
     ambiguous_roles: Mapping[str, RoleAxis] | None = None,
     data_query: ParsedInput | None = None,
+    source_terms: list[str] | None = None,
+    ambiguous_sources: list[AmbiguousSourceGroup] | None = None,
     qualifier_terms: list[ResolvedQualifier] | None = None,
+    unbound_sources: list[ResolvedQualifier] | None = None,
+    scope: ScopeSources | None = None,
     unit_alternatives: list[UnitAlternative] | None = None,
     restatement: ParsedPart | None = None,
     operations: Sequence[Operation] = (),
@@ -493,7 +502,14 @@ def build_no_data_part(
     ``ambiguous_candidates`` feeds the wording. ``ambiguous_entities`` carries structured
     graph candidates, and ``ambiguous_roles`` names the flow axis of each ambiguous wording
     the sentence marks as a slot. ``data_query`` is the part's parsed form for
-    ``entity_ambiguous``. ``qualifier_terms`` is used for ``qualifier_not_bound``.
+    ``entity_ambiguous`` and ``source_ambiguous``. ``source_terms`` are the source wordings
+    a ``source_not_resolved`` or ``source_ambiguous`` outcome rests on, and
+    ``ambiguous_sources`` pairs each ambiguous one with its candidates. For
+    ``source_ambiguous`` ``ambiguous_candidates`` holds the candidates' labels.
+    ``qualifier_terms`` are the category terms of a ``qualifier_not_bound`` outcome, and
+    ``unbound_sources`` the sources it could not bind. ``NoData.unbound_qualifiers`` holds
+    both, terms first. ``scope`` names the sources an outcome the request reached was read
+    under (`no_data.scope_sentence`), and an unresolved outcome ignores it.
     ``unit_alternatives`` carries a ``unit_not_resolved`` refusal's capped currencies.
     ``None`` omits it. ``NoData.message`` is the bare no-data sentence with every term the part names.
 
@@ -531,8 +547,9 @@ def build_no_data_part(
     )
     if reason in _UNRESOLVED_NO_DATA_REASONS:
         # The request was never read into the graph, so no check ran to leave anything
-        # out. Only what Search itself does not do departs.
+        # out. Only what Search itself does not do departs, and no source limited it.
         facts = tuple(fact for fact in facts if fact.code in _SEARCH_DEPARTURE_CODES)
+        scope = None
     if shown_alternate is not None:
         facts = _with_closest_match(
             facts,
@@ -573,6 +590,8 @@ def build_no_data_part(
         ambiguous_candidates=ambiguous_candidates,
         ambiguous_roles=ambiguous_roles,
         qualifier_terms=qualifier_terms,
+        source_terms=source_terms,
+        scope=scope,
         departures=departures,
     )
     rendered = sentence_from_plan(plan)
@@ -596,6 +615,7 @@ def build_no_data_part(
     return NoDataPart(
         status="no_data",
         variable_text=variable_text,
+        separate=separate,
         warnings=part_warnings,
         timing_ms=timing_ms,
         no_data=NoData(  # type: ignore[arg-type]
@@ -608,6 +628,8 @@ def build_no_data_part(
                 ambiguous_candidates=ambiguous_candidates,
                 elected_stat_vars=elected_stat_vars,
                 qualifier_terms=qualifier_terms,
+                source_terms=source_terms,
+                scope=scope,
             ),
             nearest_real=nearest_real,
             flagged_match=flagged_match,
@@ -616,8 +638,10 @@ def build_no_data_part(
             elected_count=len(elected_stat_vars) if elected_stat_vars is not None else None,
             entity_terms=entity_terms or [],
             ambiguous_entities=ambiguous_entities or [],
+            source_terms=source_terms or [],
+            ambiguous_sources=ambiguous_sources or [],
             cause=cause,
-            unbound_qualifiers=qualifier_terms or [],
+            unbound_qualifiers=[*(qualifier_terms or ()), *(unbound_sources or ())],
             unit_alternatives=unit_alternatives,
             data_query=data_query,
         ),
@@ -637,6 +661,7 @@ def build_unsupported_part(
     *,
     variable_text: str | None,
     warnings: list[Warning],
+    separate: bool = False,
     timing_ms: Timing | None = None,
     restatement: ParsedPart | None = None,
     operations: Sequence[Operation] = (),
@@ -658,6 +683,7 @@ def build_unsupported_part(
     return UnsupportedPart(
         status="unsupported",
         variable_text=variable_text,
+        separate=separate,
         warnings=part_warnings,
         timing_ms=timing_ms,
         unsupported=Unsupported(
@@ -717,6 +743,7 @@ def build_candidates_part(
     *,
     variable_text: str | None,
     warnings: list[Warning],
+    separate: bool = False,
     timing_ms: Timing | None = None,
     max_candidates: int | None = None,
     include_observations: bool = False,
@@ -821,6 +848,7 @@ def build_candidates_part(
     return CandidatesPart(
         status="candidates",
         variable_text=variable_text,
+        separate=separate,
         warnings=part_warnings,
         timing_ms=timing_ms,
         candidates=CandidateSet(

@@ -1456,6 +1456,19 @@ def _batched_type_read(now: dict[str, Any], limit: dict[str, Any]) -> dict[str, 
     return {batch: count for batch, count in granted.items() if count > 0}
 
 
+def _pair_read_in_place_of_bulk(now: dict[str, Any], limit: dict[str, Any]) -> dict[str, int]:
+    """Grant a pair read only when a narrowed discovered scope drops a bulk read.
+
+    A source pin can leave one recipient below the bulk cap. Each removed bulk
+    request permits one per-pair request; retained bulk requests permit none.
+    """
+    count = min(
+        now["requests"].get(_PAIR_READ, 0),
+        max(0, limit["requests"].get(_BULK_READ, 0) - now["requests"].get(_BULK_READ, 0)),
+    )
+    return {_PAIR_READ: count} if count else {}
+
+
 def _preview_reads(cell: Cell, answer: Answer) -> list[dict[str, Any]]:
     """The reads a door's preview may add to the same door with the preview off, as the
     request lists and serial steps it may choose between.
@@ -1569,6 +1582,9 @@ def i9_latency(run: Doors) -> list[str]:
     A door may make a batched read in place of each per-node type or type-label read its
     bound holds (`_batched_type_read`).
 
+    A discovered bulk source pin may narrow the scope below the bulk cap, replacing each
+    removed bulk read with at most one pair read (`_pair_read_in_place_of_bulk`).
+
     A door held to c669cc874 may exceed it by one load of each rate table it reads
     (`_rate_table_reads`). Its bound-unit gate loads them to refuse a conversion the tables
     cannot serve before the answer is definite, a check c669cc874 left to the preview.
@@ -1594,6 +1610,7 @@ def i9_latency(run: Doors) -> list[str]:
             limit = _measurement(path, cell, door, index)
             if limit is not None and _same_answer(limit, now):
                 granted = _batched_type_read(now, limit)
+                granted |= _pair_read_in_place_of_bulk(now, limit)
                 if path == _BASE_PATH:
                     granted |= _rate_table_reads(now)
                 found += [
@@ -1865,6 +1882,30 @@ def test_every_cell_holds_every_invariant(
         for invariant, check in CHECKS.items():
             failures += [f"{cell} | {invariant} | {message}" for message in check(run)]
     assert not failures, "\n".join(failures)
+
+
+def test_a_bulk_read_substitution_does_not_excuse_extra_pair_reads_or_serial_depth() -> None:
+    limit = {"requests": {_BULK_READ: 1}, "depth": 1}
+    replaced = {"requests": {_PAIR_READ: 1}, "depth": 1}
+    extra_pair = {"requests": {_PAIR_READ: 2}, "depth": 1}
+    retained_bulk = {"requests": {_BULK_READ: 1, _PAIR_READ: 1}, "depth": 1}
+    deeper = {"requests": {_PAIR_READ: 1}, "depth": 2}
+
+    def excess(now: dict[str, Any]) -> list[str]:
+        return list(
+            _beyond(now, limit, "baseline", granted=_pair_read_in_place_of_bulk(now, limit))
+        )
+
+    assert excess(replaced) == []
+    assert excess(extra_pair) == [
+        "makes more requests than baseline: {'materialise_sdmx.GET': '2 against 1'}"
+    ]
+    assert excess(retained_bulk) == [
+        "makes more requests than baseline: {'materialise_sdmx.GET': '1 against 0'}"
+    ]
+    assert excess(deeper) == [
+        "runs 2 serial steps against 1 baseline, 0 for its relaxations' walks and 0 for its facet options"
+    ]
 
 
 def test_the_1049_exemption_needs_a_span_that_reaches_the_window_and_holds_no_point() -> None:

@@ -206,14 +206,6 @@ _SPAN = ("2019/2024",)
             id="day-grain-moves",
         ),
         pytest.param(
-            {"country/ETH": ("2023", "2024-01")},
-            {"window": {"start": _LATEST, "end": _LATEST}},
-            {},
-            "rolling_grain_unsupported",
-            "/window",
-            id="mixed-grains",
-        ),
-        pytest.param(
             {"country/ETH": ("2020",), "country/GHA": ("2021",), "country/KEN": ("2022",)},
             {"window": {"start": _LATEST, "end": _LATEST}},
             {},

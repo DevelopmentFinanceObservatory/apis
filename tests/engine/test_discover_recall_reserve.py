@@ -287,8 +287,17 @@ class TestDeriveShapesReserveSlots:
         search_settings(min_recall_confirm_slots=0)
         assert _members() == with_default_reserve
 
-    def test_reserve_is_noop_without_expansion(self, search_settings):
-        """Without expansion, the cap keeps the top-scoring candidates."""
+    @pytest.mark.parametrize(
+        "rivals",
+        [
+            pytest.param(0, id="no-rival"),
+            # Rivals recall added past its cut are confirmed past the cap, so the top `cap`
+            # of the other candidates stand beside them.
+            pytest.param(2, id="rivals-past-the-cap"),
+        ],
+    )
+    def test_reserve_is_noop_without_expansion(self, search_settings, rivals: int):
+        """Without expansion, the cap keeps the top-scoring candidates, and every rival."""
         from search.engine.config import settings
 
         cap = settings().max_confirm_candidates
@@ -302,9 +311,16 @@ class TestDeriveShapesReserveSlots:
             confirmed_svs.append(dcid)
             sv_scores[dcid] = 1.0 - i * 0.001
         graph = FakeGraph(nodes=nodes, obs={}, detect={}, resolve={})
+        rival_svs = frozenset(f"Real_{i}" for i in range(rivals))
 
         def _members() -> set[str]:
-            shapes = derive_shapes(confirmed_svs=confirmed_svs, graph=graph, sv_scores=sv_scores)
+            shapes = derive_shapes(
+                confirmed_svs=confirmed_svs,
+                graph=graph,
+                sv_scores=sv_scores,
+                rival_svs=rival_svs,
+            )
+            assert {sv for s in shapes if s.rival for sv in (s.sv_arc_facts or {})} == rival_svs
             return {sv for s in shapes for sv in (s.sv_arc_facts or {})}
 
         with_default_reserve = _members()
@@ -312,7 +328,7 @@ class TestDeriveShapesReserveSlots:
         without_reserve = _members()
 
         assert with_default_reserve == without_reserve
-        assert with_default_reserve == {f"Real_{i}" for i in range(cap)}
+        assert with_default_reserve == {f"Real_{i}" for i in range(cap + rivals)}
 
     def test_reserve_does_not_starve_expansion(self):
         """Expansion fills slots left after real candidates use the reserve."""

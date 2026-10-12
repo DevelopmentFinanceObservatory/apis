@@ -19,11 +19,10 @@ from materialise import (
     materialise_group,
 )
 from materialise.facets import FacetBinding
-from materialise.revision import RevisionSnapshot
 from materialise.window import RequestedWindow
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._fake_coverage import build_coverage_index
-from tests.materialise.conftest import FakeGraphReader, FakeRevisionReader
+from tests.materialise.conftest import FakeGraphReader
 
 from .test_serve_bounds import (
     _BASE_URL,
@@ -86,10 +85,7 @@ def _run(stat_vars: list[str]) -> tuple[int, int]:
         member_requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader(
-            [RevisionSnapshot(graph_revision="rev-1", source_revisions=())] * 2
-        ),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         ceiling=1_000_000,
         materialiser_build="test-build",
         capability_version="cap-v1",
@@ -144,9 +140,6 @@ def _run_group(stat_vars: list[str]) -> tuple[int, int]:
     member_requests = [
         _aggregate_ceiling_request(stat_var=sv, recipient=_RECIPIENT) for sv in stat_vars
     ]
-    reader = FakeRevisionReader(
-        [RevisionSnapshot(graph_revision="rev-1", source_revisions=())] * len(stat_vars)
-    )
 
     estimate = sync_estimate(
         member_requests, index=coverage, member_concurrency=_SETTINGS.mint_member_max_concurrency
@@ -156,11 +149,10 @@ def _run_group(stat_vars: list[str]) -> tuple[int, int]:
         member_requests,
         sdmx=sdmx,
         graph=graph,
-        revision_reader=reader,
         ceiling=1_000_000,
         materialiser_build="test-build",
         capability_version="cap-v1",
-        enrichment=EnrichmentLookup(graph),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         member_concurrency=_SETTINGS.mint_member_max_concurrency,
         coverage=coverage,
     )
@@ -249,10 +241,7 @@ def test_a_fully_unbound_role_bearing_group_fetches_every_donor_and_matches_its_
         member_requests,
         sdmx=SdmxClient(base_url=_BASE_URL, transport=httpx.MockTransport(handler)),
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader(
-            [RevisionSnapshot(graph_revision="rev-1", source_revisions=())] * 2
-        ),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="test-build",
         capability_version="cap-v1",
         member_concurrency=_SETTINGS.mint_member_max_concurrency,
@@ -337,10 +326,7 @@ def test_an_unbound_role_bearing_group_with_a_range_window_matches_its_estimate(
         member_requests,
         sdmx=SdmxClient(base_url=_BASE_URL, transport=httpx.MockTransport(handler)),
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader(
-            [RevisionSnapshot(graph_revision="rev-1", source_revisions=())] * 2
-        ),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="test-build",
         capability_version="cap-v1",
         member_concurrency=_SETTINGS.mint_member_max_concurrency,
@@ -436,10 +422,7 @@ def _run_windowed_role_bearing_group(
         member_requests,
         sdmx=SdmxClient(base_url=_BASE_URL, transport=httpx.MockTransport(handler)),
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader(
-            [RevisionSnapshot(graph_revision="rev-1", source_revisions=())] * 2
-        ),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="test-build",
         capability_version="cap-v1",
         member_concurrency=_SETTINGS.mint_member_max_concurrency,

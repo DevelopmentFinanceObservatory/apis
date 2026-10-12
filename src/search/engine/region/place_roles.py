@@ -14,11 +14,12 @@ set, on every role and in every reading.
 from __future__ import annotations
 
 import dataclasses
+import itertools
 import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Literal
 
 from code_index.members import family_declares_roles
 from code_index.shared import get_index
@@ -26,11 +27,12 @@ from materialise.roles import axis_for_role
 from search.engine.bind import SlotBindingDraft
 from search.engine.interpret import PinnedResolved
 from search.engine.region.decisions import PlaceSetNotAdmittedError, PlaceSetTooLargeError
-from search.engine.region.place_set import PlaceNode, PlaceSet
+from search.engine.region.place_set import PlaceSet
 from search.engine.retrieval.bound_values import (
     RoleKeys,
     phrases_within,
     shape_family,
+    shape_five_tuple,
     shape_part_datasets,
 )
 from search.engine.role_text import contradicts
@@ -278,11 +280,18 @@ def without_unasked_axes(
     recall a table of another one. "ODA from Japan" leaves CRS commitments, which publish
     recipients and read only "ODA", for DAC1's donor disbursements. A measure word reads
     only on the five-tuple or constraint value it names (`bound_values.held_codes`), so
-    "grant equivalent ODA from France" keeps CRS grant equivalents over DAC1
-    disbursements, "ODA commitments from Japan" keeps CRS commitments, and "aid attributed
-    to donors via multilaterals" keeps the imputed tables, whose measure reads "attributed
-    to donors". A query naming no measure word reads none on any table, so "aid from
-    France" leaves an imputed table of another five-tuple for DAC1 as it leaves CRS.
+    "ODA commitments from Japan" keeps commitments over DAC1's disbursements, and "aid
+    attributed to donors via multilaterals" keeps the imputed tables, whose measure reads
+    "attributed to donors".
+    "Grant equivalent ODA from France" elects DAC1's grant-equivalent total over the CRS
+    grant equivalents: recall adds a row of that DAC1 family beside the CRS hits
+    (`clients/graph.with_rival_families`, applied by `recall_hits`), it reads the measure
+    word as the CRS does, and it declares no recipient axis. A query naming no measure word
+    reads none on any table, so "aid from France" leaves an imputed table of another
+    five-tuple for DAC1 as it leaves CRS. A shape recall added for its five-tuple
+    (`ShapeDraft.rival`) displaces only shapes of that five-tuple: the query did not recall
+    it, so "adolescent birth rate", whose cut holds CRS commitments and flows, keeps the CRS
+    flows beside the DAC1 commitments total added for the commitments.
 
     Both shapes must be ones the index carries (`shape_family`). Any other holds its
     recalled members alone, a sample of its family, as in `without_open_axis_gaps`. Its
@@ -312,6 +321,7 @@ def without_unasked_axes(
             other is not shape
             and id(other) in unasked
             and unasked[id(other)] < unasked[id(shape)]
+            and (not other.rival or shape_five_tuple(other) == shape_five_tuple(shape))
             and phrases_within(phrases_read(shape), phrases_read(other))
             for other in shapes
         )
@@ -555,8 +565,27 @@ def _members_reading(place_set: PlaceSet) -> tuple[str, ...]:
 
 
 # The readings one Spec can give a set: one of node or members, or either, which the
-# Spec's own read decides (`set_choices`).
+# Spec's own read decides (`set_choices`). A set read whole binds its node or its total.
 type SetChoice = Literal["node", "members", "either"]
+
+
+def _wholes(
+    place_set: PlaceSet,
+    roles: Sequence[EntityRoleKey],
+    *,
+    admits: Callable[[EntityRoleKey, str], bool],
+) -> tuple[str, ...]:
+    """The places that can read `place_set` whole on `roles`, in the order a Spec tries them:
+    its node when every role admits the node's type, then its total (`PlaceSet.total`) when
+    every role is a flow axis. A total is admitted by no type: the Spec's read decides whether
+    its dataset publishes the total on the role."""
+    node = place_set.node
+    wholes: list[str] = []
+    if node is not None and all(admits(role, node.graph_type) for role in roles):
+        wholes.append(node.dcid)
+    if place_set.total is not None and roles and "observationAbout" not in roles:
+        wholes.append(place_set.total)
+    return tuple(wholes)
 
 
 def set_choices(
@@ -567,12 +596,13 @@ def set_choices(
 
     A reading is used only on roles that admit its type. A set the request asks the members
     of reads its members when every role it fills admits their type, and has no reading
-    otherwise. Any other set with a node and members can read its node when every role it
-    fills admits the node's type, and its members when every role admits theirs: `either`
-    when both hold, the one that holds alone, and no reading when neither does. A set with
-    no member reads its node, and a set with no node its members, when admitted. Members
-    that share no stated type are admitted on no role, as role admission judges them
-    (`phase_intake._admission_types`).
+    otherwise. Any other set with members can read them when every role it fills admits their
+    type, and can read itself whole (`_wholes`) at its node when every role admits the node's
+    type or at its total on flow roles: `either` when it can read both ways, its node when only
+    the node is admitted, its members when it cannot read whole, and no reading when neither
+    holds. A set with no member reads its node, and a set with no node its members, when
+    admitted. Members that share no stated type are admitted on no role, as role admission
+    judges them (`phase_intake._admission_types`).
     """
     choices: dict[str, SetChoice | None] = {}
     for place_set in assignment.distinct_sets:
@@ -587,7 +617,7 @@ def set_choices(
         members_ok = member_type is not None and all(admits(role, member_type) for role in roles)
         if key in assignment.members_asked:
             choices[key] = "members" if members_ok else None
-        elif node_ok and members_ok:
+        elif members_ok and _wholes(place_set, roles, admits=admits):
             choices[key] = "either"
         elif node_ok:
             choices[key] = "node"
@@ -600,7 +630,7 @@ def undecided_sets(
     assignment: PlaceAssignment, *, admits: Callable[[EntityRoleKey, str], bool]
 ) -> tuple[PlaceSet, ...]:
     """The sets of `assignment` whose reading a Spec's own read decides, those that can
-    read either their node or their members (`set_choices`)."""
+    read either whole or as their members (`set_choices`)."""
     choices = set_choices(assignment, admits=admits)
     return tuple(s for s in assignment.distinct_sets if choices[place_key(s)] == "either")
 
@@ -612,20 +642,22 @@ def settle_place_sets(
     has_data: Callable[[PlaceLists], bool],
     bound: int | None,
 ) -> PlaceLists:
-    """Settle each set of `assignment` to one reading for one Spec, its node or its
+    """Settle each set of `assignment` to one reading for one Spec, its node, its total or its
     members, and return the places the Spec binds on each role key.
 
-    A set with one reading (`set_choices`) takes it. A set that can read either binds its
-    node when the Spec holds data there: `has_data` is the Spec's own read over the places
-    it is given. When such sets fill different roles, one each, they are first read
-    together at their nodes, and bind their nodes when the Spec holds data there: data
-    held between two nodes, aid from one subregion to another, is that pairing. Otherwise
-    each is read at its node on each role it fills, every other set at its members. A set
-    on two roles is read with its node on both and takes one reading. Two sets on one role
-    settle apart, so the role can hold one set's node beside another's members. When more
-    than one set takes its node and the Spec holds no data at the places they give
-    together, every one of them binds its members. Every read here shares the Spec's one
-    batch (`UnsettledPlace.settle`).
+    A set with one reading (`set_choices`) takes it. A set that can read either binds itself
+    whole when the Spec holds data there, trying its node, then its total (`_wholes`):
+    `has_data` is the Spec's own read over the places it is given. So a group binds the total
+    its dataset publishes for it ("Africa (DAC)") only when that dataset publishes the total
+    on the role, and its members otherwise. When such sets fill different roles, one each,
+    they are first read together whole, each combination of their wholes in order, and bind
+    the first the Spec holds data at: data held between two nodes, aid from one subregion to
+    another, or between two totals, G7 aid to Africa, is that pairing. Otherwise each is read
+    whole on each role it fills, every other set at its members. A set on two roles is read
+    whole on both and takes one reading. Two sets on one role settle apart, so the role can
+    hold one set's node beside another's members. When more than one set reads whole and the
+    Spec holds no data at the places they give together, every one of them binds its members.
+    Every read here shares the Spec's one batch (`UnsettledPlace.settle`).
 
     A `has_data` that raises leaves no reading chosen. The failure is the Spec's read
     failing.
@@ -636,8 +668,8 @@ def settle_place_sets(
     assignment the prune could not build, or one the election narrowed or re-assigned.
     Raises `PlaceSetTooLargeError` when the places chosen exceed `bound`, counted as the
     distinct dcids on each role summed over the roles. The count is of the reading chosen,
-    so a set with more members than `bound` binds a node that holds data. `None` checks no
-    bound.
+    so a set with more members than `bound` binds a node or total that holds data. `None`
+    checks no bound.
     """
     choices = set_choices(assignment, admits=admits)
     if refused := tuple(s for s in assignment.distinct_sets if choices[place_key(s)] is None):
@@ -658,20 +690,29 @@ def settle_place_sets(
 
     members = places(readings)
     undecided = [s for s in assignment.distinct_sets if choices[place_key(s)] == "either"]
-    at_nodes = {place_key(s): (cast(PlaceNode, s.node).dcid,) for s in undecided}
+    wholes = {place_key(s): _wholes(s, assignment.roles_of(s), admits=admits) for s in undecided}
     filled = [role for s in undecided for role in assignment.roles_of(s)]
     if len(undecided) > 1 and len(filled) == len(set(filled)):
-        paired = places({**readings, **at_nodes})
-        if has_data(paired):
-            return _within_bound(paired, bound)
-    at_node: dict[str, tuple[str, ...]] = {}
+        keys = [place_key(s) for s in undecided]
+        for combination in itertools.product(*(wholes[key] for key in keys)):
+            paired = places(
+                {
+                    **readings,
+                    **{key: (whole,) for key, whole in zip(keys, combination, strict=True)},
+                }
+            )
+            if has_data(paired):
+                return _within_bound(paired, bound)
+    at_whole: dict[str, tuple[str, ...]] = {}
     for place_set in undecided:
-        node = at_nodes[place_key(place_set)]
-        alone = {**members, **dict.fromkeys(assignment.roles_of(place_set), node)}
-        if has_data(alone):
-            at_node[place_key(place_set)] = node
-    settled = places({**readings, **at_node})
-    if len(at_node) > 1 and not has_data(settled):
+        key = place_key(place_set)
+        for whole in wholes[key]:
+            alone = {**members, **dict.fromkeys(assignment.roles_of(place_set), (whole,))}
+            if has_data(alone):
+                at_whole[key] = (whole,)
+                break
+    settled = places({**readings, **at_whole})
+    if len(at_whole) > 1 and not has_data(settled):
         settled = members
     return _within_bound(settled, bound)
 
@@ -800,9 +841,10 @@ def request_named_groups(state: ResolveState, roles: PlaceRoles) -> tuple[NamedG
     """The groups the query named, each with the members its name binds: every resolver
     group, continent and subregion that holds a member.
 
-    `build_spec` names a role by one of these when the role binds exactly its members. A
-    group with its own graph node takes that node's type and the graph's label for it. One
-    without, or one the graph gives no label, keeps the query's name. Each states the
+    `build_spec` names a role by one of these when the role binds exactly its members or its
+    total (`PlaceSet.total`). A group with its own graph node takes that node's type and the
+    graph's label for it. One without, or one the graph gives no label, keeps the query's
+    name. Each states the
     members the query also named as places of their own, on the role `roles`, one Spec's
     binding, puts each of those places on (`PlaceRoles.named_alone`).
     """
@@ -815,6 +857,7 @@ def request_named_groups(state: ResolveState, roles: PlaceRoles) -> tuple[NamedG
             named_alone=frozenset(
                 (role, dcid) for role, dcid in roles.named_alone if dcid in place_set.members
             ),
+            total=place_set.total,
         )
         for place_set in part_sets(state).values()
         if place_set.members

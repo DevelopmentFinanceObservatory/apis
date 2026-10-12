@@ -970,6 +970,26 @@ def served_dates(plan: ReadPlan) -> dict[str, ServedDates]:
     return served
 
 
+def series_facets(plan: ReadPlan | None) -> list[Facet | RoleBulkCandidate]:
+    """One facet per series `plan` serves, carrying the provenance, method and unit its
+    preview dispatches: a served series' group, whose facets share all three, or in bulk the
+    elected facet."""
+    if plan is None:
+        return []
+    if isinstance(plan, BulkPlan):
+        best = plan.elected
+        return [best] if best is not None and plan.population > 0 else []
+    return [s.group[0] for s in plan.served]
+
+
+def served_provenances(plan: ReadPlan | None) -> tuple[str, ...]:
+    """The distinct provenances of the series `plan` serves (`series_facets`), in serving
+    order."""
+    return tuple(
+        dict.fromkeys(facet.provenance_id for facet in series_facets(plan) if facet.provenance_id)
+    )
+
+
 def data_years(plan: ReadPlan | None) -> tuple[int, int] | None:
     """The first and last years the series `plan` serves hold over every date: the span
     of each served series' facets (`facet_dates` under no window), or in bulk the elected

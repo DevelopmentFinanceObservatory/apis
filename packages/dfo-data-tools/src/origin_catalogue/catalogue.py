@@ -41,7 +41,7 @@ topic names, passes, since every facet read still admits facet by facet, and
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from typing import Final, Protocol
 from urllib.parse import urlsplit
@@ -74,10 +74,24 @@ class DatasetRef:
 
 
 @dataclass(frozen=True, slots=True)
+class Licence:
+    """A provenance's licence as its own arcs state it
+    (`origin_catalogue.card_facts.licence_of`). `type` is the dcid of its one
+    `licenseType`, `label` that node's `name`, else its dcid, and `url` its
+    one `license` terms page. Each is `None` where the provenance states none
+    or more than one."""
+
+    type: str | None = None
+    label: str | None = None
+    url: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class ProvenanceRow:
     """One admitted provenance. `segment` is the UN agency's id segment and
     is set on UN rows only. `dataset` is the provenance's parent Dataset,
-    `None` on UN rows and on rows with no `isPartOf` arc."""
+    `None` on UN rows and on rows with no `isPartOf` arc. `licence` is empty
+    on UN rows, which our graph does not hold."""
 
     id: str
     data_commons: DataCommons
@@ -86,6 +100,7 @@ class ProvenanceRow:
     url: str
     segment: str | None = None
     dataset: DatasetRef | None = None
+    licence: Licence = Licence()
 
 
 def entry_ref(row: ProvenanceRow) -> str:
@@ -107,6 +122,34 @@ class CardFacts:
     update_cadence: str | None = None
     years_covered: str | None = None
     source_url: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SourceDocumentation:
+    """The facts of a source-index entry's documentation beyond its
+    `CardFacts`, each `None` when the graph gives none
+    (`origin_catalogue.card_facts.source_documentation_of`).
+
+    `provenances` are the Provenances the documentation covers: the rows
+    typed `Provenance` that name the entry's Dataset in `isPartOf`, the
+    orphan itself when it is typed `Provenance`, else none. `publisher` is
+    the `name` of the Dataset's `isPartOf` Source, or of an orphan's `source`.
+    `source_data_url` (`sourceDataUrl`), `citation` (`licenseAttribution`)
+    and `license_url` (`license`) are the value every child agrees on.
+    `last_update` is the latest child `lastDataRefreshDate` and
+    `next_expected_update` the earliest `nextDataRefreshDate`. `documents`
+    maps each of the four document properties a sole child carries to its
+    distinct stored values, MCF-escaped Markdown; it is empty for an entry
+    with several children."""
+
+    provenances: tuple[str, ...] = ()
+    publisher: str | None = None
+    source_data_url: str | None = None
+    citation: str | None = None
+    license_url: str | None = None
+    last_update: str | None = None
+    next_expected_update: str | None = None
+    documents: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,7 +226,9 @@ class CatalogueTables:
     variable bitsets index. `scan_levels` records, per source ref, the
     levels the job scanned beyond every country, Earth and the regional
     aggregates. `dataset_facts` maps the `entry_ref` of every DFO and base
-    row to its entry's `CardFacts`; UN entries carry none. `superseded` maps
+    row to its entry's `CardFacts`; UN entries carry none.
+    `source_documentation` maps the same entry refs to each entry's
+    `SourceDocumentation`. `superseded` maps
     every withheld variable of a base provenance a UN agency supersedes to
     the UN variable that stands for it, or to `None` where none does
     (`origin_catalogue.successors`).
@@ -208,7 +253,8 @@ class CatalogueTables:
     variable naming it holds, a variable both in
     `base_variables` and `withheld_variables`, a UN row with no segment
     or a non-UN row with one, a UN topic or a topic with no leaves,
-    `dataset_facts` keys other than the DFO and base rows' entry refs, and
+    `dataset_facts` or `source_documentation` keys other than the DFO and
+    base rows' entry refs, and
     a superseded variable that is not withheld or that DFO holds, and a
     successor that is not a UN id.
     """
@@ -222,6 +268,7 @@ class CatalogueTables:
     scan_places: tuple[str, ...]
     scan_levels: Mapping[str, tuple[ScanLevel, ...]]
     dataset_facts: Mapping[str, CardFacts]
+    source_documentation: Mapping[str, SourceDocumentation]
     un_blocked_places: frozenset[str] = frozenset()
     """Places the UN front door refused to have named in an observation GET
     when the job probed it: UN reads leave them out and answer them empty."""
@@ -247,13 +294,17 @@ class CatalogueTables:
         entry_refs = {
             entry_ref(row) for row in self.provenances.values() if row.data_commons != UN_SYSTEM
         }
-        if entry_refs != self.dataset_facts.keys():
-            missing = sorted(entry_refs - self.dataset_facts.keys())
-            extra = sorted(self.dataset_facts.keys() - entry_refs)
-            raise CatalogueTableError(
-                f"dataset facts miss {len(missing)} entry ref(s), e.g. {missing[:3]!r}, and "
-                f"hold {len(extra)} unknown one(s), e.g. {extra[:3]!r}"
-            )
+        for table, keyed in (
+            ("dataset facts", self.dataset_facts),
+            ("source documentation", self.source_documentation),
+        ):
+            if entry_refs != keyed.keys():
+                missing = sorted(entry_refs - keyed.keys())
+                extra = sorted(keyed.keys() - entry_refs)
+                raise CatalogueTableError(
+                    f"{table} miss {len(missing)} entry ref(s), e.g. {missing[:3]!r}, and "
+                    f"hold {len(extra)} unknown one(s), e.g. {extra[:3]!r}"
+                )
         base_ids = {pid for pid, row in self.provenances.items() if row.data_commons == BASE}
         limit = 1 << len(self.scan_places)
         held_by: dict[str, int] = {}
@@ -432,8 +483,13 @@ class Catalogue(Protocol):
         """Whether the variable table's place bitsets cover `place`."""
         ...
 
+    def source_documentation(self, ref: str) -> SourceDocumentation | None:
+        """The documentation facts of the source-index entry `ref` (an
+        `entry_ref`), or `None` for a UN entry or one the build does not list."""
+        ...
+
     def provenance(self, provenance_id: str) -> ProvenanceRow | None:
-        """The row for an admitted provenance id: origin, source, name and URL."""
+        """The row for an admitted provenance id: origin, source, name, URL and licence."""
         ...
 
     def provenance_rows(self) -> tuple[ProvenanceRow, ...]:
@@ -445,10 +501,23 @@ class Catalogue(Protocol):
         `None` for a UN entry or one the build does not list."""
         ...
 
+    @property
+    def scope(self) -> frozenset[str] | None:
+        """The provenances a request allows (a source scope), or `None` for every one.
+        `admit_series` drops a provenance outside it before admission and DFO precedence.
+        Every other answer of the catalogue ignores it."""
+        ...
+
+    def scoped(self, allowed: frozenset[str]) -> Catalogue:
+        """This catalogue with its scope narrowed to `allowed`: the scope is `allowed`, or
+        its intersection with the scope already set. Every other answer is unchanged."""
+        ...
+
     def is_admitted(self, provenance_id: str) -> bool: ...
 
     def admit_series(self, provenance_ids: Iterable[str]) -> SeriesAdmission:
-        """Admission for the facets of one variable at one place, with DFO precedence."""
+        """Admission for the facets of one variable at one place, with DFO precedence. A
+        provenance outside `scope` is left out of both `admitted` and `withheld`."""
         ...
 
     def admit_candidate(self, dcid: str) -> DataCommons | None:
@@ -532,12 +601,14 @@ class Catalogue(Protocol):
 class CatalogueSnapshot:
     """One loaded catalogue version. `un` holds the build's UN tables.
     `un_system_enabled` gates UN admission; with it off, no UN provenance or
-    candidate is admitted and the UN tables answer nothing."""
+    candidate is admitted and the UN tables answer nothing.
+    `scope` narrows `admit_series` to a request's allowed provenances (`scoped`)."""
 
     manifest: CatalogueManifest
     tables: CatalogueTables
     un: UnTables = EMPTY_UN_TABLES
     un_system_enabled: bool = True
+    scope: frozenset[str] | None = None
 
     @property
     def build_id(self) -> str:
@@ -561,6 +632,9 @@ class CatalogueSnapshot:
     def is_scan_place(self, place: str) -> bool:
         return place in self.tables.scan_place_set
 
+    def source_documentation(self, ref: str) -> SourceDocumentation | None:
+        return self.tables.source_documentation.get(ref)
+
     def provenance(self, provenance_id: str) -> ProvenanceRow | None:
         return self.tables.provenances.get(provenance_id)
 
@@ -577,8 +651,14 @@ class CatalogueSnapshot:
             return False
         return row.data_commons != UN_SYSTEM or self.un_system_enabled
 
+    def scoped(self, allowed: frozenset[str]) -> CatalogueSnapshot:
+        scope = allowed if self.scope is None else self.scope & allowed
+        return replace(self, scope=scope)
+
     def admit_series(self, provenance_ids: Iterable[str]) -> SeriesAdmission:
         present = tuple(dict.fromkeys(provenance_ids))
+        if self.scope is not None:
+            present = tuple(pid for pid in present if pid in self.scope)
         admitted = [pid for pid in present if self.is_admitted(pid)]
         dfo = self.tables.dfo_provenances
         if any(pid in dfo for pid in admitted):

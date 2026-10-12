@@ -2,17 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 
 from code_index.shared import get_index, get_measure_index
-from search.engine.bind import (
-    SlotBindingDraft,
-    _SourceSlotBindOutput,
-    _UniversalBindOutput,
-    conflicting_sources,
-    drafted_source,
-)
+from search.engine.bind import SlotBindingDraft
 from search.engine.bind_repair import (
     apply_declared_defaults,
     apply_shape_slot_defaults,
@@ -48,21 +43,22 @@ from search.engine.region.near_neighbor import (
     _near_neighbor_check,
     _representative_score_is_weak,
 )
-from search.engine.region.phase_intake import _unresolved_entity_terminal
 from search.engine.region.phase_rank_bind import (
     _admit_qualifier_matches_against_elected_shape,
     _bound_code_records,
+    _coverage_records,
     _force_qualifier_bindings,
     _log_admitted_qualifiers,
+    _menu_choices,
     _open_operation_slots,
     _resolve_query_qualifiers,
     _shape_qualifiers,
-    _unbound_dataset,
-    _undeclared_qualifiers,
+    _unchosen_matches,
     _unheld_bound_codes,
     _unread_qualifier_phrases,
     _validate_requested_all_bindings,
     _validate_sole_option_bindings,
+    _withheld_qualifiers,
 )
 from search.engine.region.place_roles import bind_place_roles
 from search.engine.region.qualifier_readings import (
@@ -71,6 +67,7 @@ from search.engine.region.qualifier_readings import (
     shape_carries_measure_match,
 )
 from search.engine.region.result import RegionResult
+from search.engine.region.source_choice import source_record
 from search.engine.region.state import ResolveState, for_shape
 from search.engine.retrieval.bound_values import (
     PartNotServed,
@@ -78,7 +75,7 @@ from search.engine.retrieval.bound_values import (
     bind_shared_values,
     canonical_pin_bindings,
     elect_measure_family,
-    part_datasets,
+    named_scope,
     part_source,
     shape_datasets,
     shape_for_part,
@@ -89,41 +86,30 @@ from search.engine.shape import ShapeDraft
 from search.heading.departure_fact import DepartureFact
 from search.models import ResolvedQualifier, Warning
 
+logger = logging.getLogger(__name__)
+
 
 async def _phase_vet_election(state: ResolveState) -> RegionResult | None:
     """Select the bound shape, validate claims, and record ambiguity warnings.
 
-    The dropped phrase an applied source slot consumed counts as applied
-    (`_source_slot_phrases`), so it raises no dropped-qualifier warning.
-    A source slot the model binds (`bind.drafted_source`) names or excludes datasets first
-    (`ResolveState.named_dataset`, `ResolveState.excluded_datasets`), and the menu becomes
-    the one shape candidacy offers a part naming or excluding them (`_apply_source_slot`):
-    each capped shape is stamped again as such a part answers from it
-    (`bound_values.shape_for_part`), and a shape left with no dataset leaves the menu, so
-    the elected shape and every alternate answer as the parsed door's part would. The part
-    refuses ``qualifier_not_bound`` when two source drafts contradict each other
-    (`bind.conflicting_sources`), naming the tables they disagree on, when the tables the
-    slot excludes leave the elected shape none (`_slot_shape`), when the part's tables,
-    less the excluded ones, hold no row with a code the bindings bind
-    (`_unheld_bound_codes`), or when the part names a table, at the seam or through the
-    slot, and the variable names a code term the elected shape's own reading does not hold
-    in full (`_undeclared_qualifiers`). The elected shape then
-    names the dataset the part is served from wherever its unnamed identity would resolve
-    to another at the mint (`_name_served_dataset`), with or without a source slot, so
-    every later read of the part's family names it. Binding repair names it again under
-    the bindings it leaves, and refuses a part none of whose tables holds a row for them
-    (`_settle_served_dataset`). Every one of these decisions
-    reads the final bindings (`_settle_bindings`): the model's drafts, vetted, with the
-    query's forced codes, settled against the shape the model bound from. This is the
-    first point the elected shape and the slot are both known, and every reader of the
-    part's dataset comes after it, so an opt-in table that candidacy withheld from an
-    unnamed part is the part's dataset before its invariants, its source binding or its
-    family are read.
-    Every other drafted binding on the source is discarded. The dataset the elected shape
-    names (`ShapeDraft.named_dataset`) becomes the part's named dataset and binds the source
-    (`with_named_source`): the dataset the part or its source slot names, since shape
-    candidacy left only that dataset's shapes to elect from, or the one opt-in dataset that
-    alone may answer the shape. The near-neighbour gate supplements model alternates.
+    A part with a source scope refuses ``qualifier_not_bound`` when no row of its tables
+    holds a code the bindings bind (`_unheld_bound_codes`). A code term the elected shape's
+    own reading does not hold in full refuses once the bindings are final, with the
+    elected shape as its near match (`phase_rank_bind._unavailable_qualifiers`).
+    The elected shape then names the dataset the part is served from wherever its unnamed
+    identity would resolve to another at the mint (`_name_served_dataset`), so every later
+    read of the part's family names it. Binding repair names it again under the bindings
+    it leaves, and refuses a part none of whose tables holds a row for them
+    (`_settle_served_dataset`). Every one of these decisions reads the final bindings
+    (`_settle_bindings`): the model's drafts, vetted, with the query's forced codes,
+    settled against the shape the model bound from. This is the first point the elected
+    shape is known, and every reader of the part's dataset comes after it, so an opt-in
+    table that candidacy withheld from an unnamed part is the part's dataset before its
+    invariants, its source binding or its family are read.
+    Every drafted binding on the source is discarded. The dataset the elected shape
+    names (`ShapeDraft.named_dataset`) binds the source (`with_named_source`): the one
+    dataset the part's scope leaves it, or the one opt-in dataset that alone may answer
+    the shape. The near-neighbour gate supplements model alternates.
     Invalid ``requested_all`` claims are demoted, and on a shape whose option sets the index
     supplies a ``sole_option`` claim on a slot that offers two or more values leaves the
     slot unbound. Only validated phrases suppress defaults
@@ -133,54 +119,23 @@ async def _phase_vet_election(state: ResolveState) -> RegionResult | None:
     """
     bind_result = state.bind_result
     state.shape_draft = state.capped_shapes[bind_result.chosen_shape_index]
-    # The source slot's own draft is the one read of a drafted dataset. Every decision on
-    # the part's dataset, and every refusal, reads the final bindings settled here: the
-    # model's drafts, vetted, with the query's forced codes.
-    conflicting = conflicting_sources(bind_result.bindings)
-    if conflicting:
-        return state.no_data(
-            "qualifier_not_bound",
-            unbound_qualifiers=tuple(_unbound_dataset(dataset) for dataset in conflicting),
-        )
-    named, excluded = drafted_source(bind_result.bindings)
+    # Every decision on the part's dataset, and every refusal, reads the final bindings
+    # settled here: the model's drafts, vetted, with the query's forced codes.
     tie_departures, readings = _settle_bindings(state, state.shape_draft)
-    if named is not None or excluded:
-        refused = _apply_source_slot(state, named, excluded)
-        if refused is not None:
-            return refused
     # Binding repair can still change the codes, so a part no table serves under these
     # bindings is refused once the repair has run (`_settle_served_dataset`).
     with suppress(PartNotServed):
         _name_served_dataset(
             state, bind_result.bindings, lambda: _query_role_keys(state, state.shape_draft)
         )
-    if named is not None or excluded:
+    if state.scope is not None:
         # The part's tables hold every code it binds, the model's and the forced query
-        # matches alike, the excluded tables aside.
-        unheld = _unheld_bound_codes(
-            bind_result.bindings, state.shape_draft, excluded=state.excluded_datasets
-        )
+        # matches alike.
+        unheld = _unheld_bound_codes(bind_result.bindings, state.shape_draft)
         if unheld:
             return state.no_data("qualifier_not_bound", unbound_qualifiers=unheld)
-        state.applied_dropped_qualifier_phrases |= _source_slot_phrases(
-            bind_result, state.dropped_qualifier_phrases
-        )
-    if state.named_dataset is not None:
-        # A part naming a table, at the seam or through the slot, holds a term only where
-        # the elected shape's own reading covers it.
-        undeclared = _undeclared_qualifiers(
-            state.variable,
-            state.variable_spans_in_every_system,
-            [state.shape_draft],
-            state.variable_spans_by_vocabulary,
-        )
-        if undeclared:
-            return state.no_data("qualifier_not_bound", unbound_qualifiers=undeclared)
     capped_shapes = state.capped_shapes
     shape_draft: ShapeDraft = state.shape_draft
-    # Candidacy stamped every shape with the dataset it names, so the election decides the
-    # part's, and every reader from here on reads the elected shape's.
-    state.named_dataset = shape_draft.named_dataset
     # The prune's substitution of a sibling with data for empty shapes is stated only when
     # bind elects that sibling. An empty shape beside another election was never chosen.
     substituted = [
@@ -303,12 +258,13 @@ def _settle_bindings(
     the caller to state in order, and the reading the shape keeps of each two-reading span
     (`reading_for_shape`), which admission read.
 
-    The source drafts leave (the source slot is read before this), invalid
+    The source drafts leave, invalid
     ``requested_all`` claims are demoted, and on a shape whose option sets the index
     supplies a ``sole_option`` claim on a slot that offers two or more values leaves the
     slot unbound. An operation over a category slot opens that slot. Model tie choices are
     vetted against the model's own bindings, and the query's qualifier matches the elected
-    shape admits are forced into the bindings (`_force_qualifier_bindings`).
+    shape admits, with the codes the model chose from a phrase's candidate menu, are
+    forced into the bindings (`_force_qualifier_bindings`).
     """
     bind_result = state.bind_result
     bind_result.bindings = without_dataset_drafts(bind_result.bindings)
@@ -384,11 +340,22 @@ def _settle_bindings(
     # two-reading span admits its code reading only when the elected shape carries that
     # reading alone.
     readings = {r: reading_for_shape(r, shape_draft) for r in state.query_qualifier_readings}
-    admitted_qualifiers = _admit_qualifier_matches_against_elected_shape(own_matches, shape_draft)
+    # A code the model chose from a phrase's candidate menu that reads the phrase, a hit of
+    # the menu or below one that nests under the terms inside the phrase on the code's
+    # system (`_menu_choices`), binds in place of those terms. A phrase with no such
+    # choice keeps its terms, which force as they would with no menu.
+    terms = _admit_qualifier_matches_against_elected_shape(own_matches, shape_draft)
+    choices = _menu_choices(state, shape_draft, bind_result.bindings, terms=terms)
+    state.menu_choices = choices
+    admitted_qualifiers = _unchosen_matches(terms, choices)
     state.admitted_qualifiers = admitted_qualifiers
-    if admitted_qualifiers:
+    if admitted_qualifiers or choices:
         bind_result.bindings = _force_qualifier_bindings(
-            bind_result.bindings, admitted_qualifiers, shape_draft
+            bind_result.bindings,
+            admitted_qualifiers,
+            shape_draft,
+            variable=state.variable,
+            chosen=choices,
         )
         _log_admitted_qualifiers(admitted_qualifiers)
 
@@ -403,74 +370,6 @@ def _qualifier_dropped_warning(phrase: str) -> Warning:
         severity="degraded",
         message=f'The requested qualifier "{phrase}" was not applied.',
     )
-
-
-def _apply_source_slot(
-    state: ResolveState, named: str | None, excluded: frozenset[str]
-) -> RegionResult | None:
-    """Make the part one naming `named`, or excluding `excluded`, from vetting on, or
-    return the refusal of a slot that leaves the elected shape no dataset.
-
-    The part's seam records the slot (`ResolveState.named_dataset`,
-    `ResolveState.excluded_datasets`). Each capped shape becomes the one candidacy offers
-    such a part (`_slot_shape`); a shape left with no dataset leaves the menu, and the
-    elected index and the model's alternates follow the shapes that stay. An exclusion that
-    leaves the elected shape no dataset refuses ``qualifier_not_bound``, naming each
-    excluded table that publishes the shape under its declared label. The elected shape
-    is named afterwards (`_name_served_dataset`).
-    """
-    if named is not None:
-        state.named_dataset = named
-    state.excluded_datasets |= excluded
-    bind_result = state.bind_result
-    chosen = bind_result.chosen_shape_index
-    kept: dict[int, ShapeDraft] = {}
-    for position, shape in enumerate(state.capped_shapes):
-        stamped = _slot_shape(state, shape)
-        if stamped is not None:
-            kept[position] = stamped
-    if chosen not in kept:
-        shape = state.shape_draft
-        unbound = (
-            (named,)
-            if named is not None
-            else tuple(dataset for dataset in shape_datasets(shape) if dataset in excluded)
-        )
-        return state.no_data(
-            "qualifier_not_bound",
-            unbound_qualifiers=tuple(_unbound_dataset(dataset) for dataset in unbound),
-        )
-    renumbered = {position: number for number, position in enumerate(kept)}
-    state.capped_shapes = list(kept.values())
-    bind_result.chosen_shape_index = renumbered[chosen]
-    if bind_result.also_plausible is not None:
-        bind_result.also_plausible = [
-            renumbered[i] for i in bind_result.also_plausible if i in renumbered
-        ]
-    state.shape_draft = state.capped_shapes[bind_result.chosen_shape_index]
-    return None
-
-
-def _slot_shape(state: ResolveState, shape: ShapeDraft) -> ShapeDraft | None:
-    """`shape` as the part whose source slot named or excluded datasets answers from it,
-    or `None` when the part may answer it from no dataset.
-
-    A part naming a table keeps a shape that table publishes, stamped as naming it, as
-    shape candidacy keeps it for a part naming the table at the seam. A part excluding
-    tables keeps a shape the index does not carry, and a shape the index carries while a
-    dataset it does not exclude may answer it, stamped as candidacy stamps it for a part
-    excluding them at the seam: with the datasets that remain and the codes their rows
-    hold, so no later binding takes a code only an excluded table holds.
-    """
-    index = get_index()
-    publishers = shape_datasets(shape, index)
-    if state.named_dataset is not None:
-        if state.named_dataset not in publishers:
-            return None
-        return shape_for_part(shape, state.named_dataset, index)
-    if publishers and not part_datasets(shape, None, index, excluded=state.excluded_datasets):
-        return None
-    return shape_for_part(shape, None, index, excluded=state.excluded_datasets)
 
 
 def _name_served_dataset(
@@ -491,10 +390,10 @@ def _name_served_dataset(
     the one it names included, holds a row matching `bindings` together.
     """
     shape = state.shape_draft
-    source = part_source(shape, bindings, role_keys, excluded=state.excluded_datasets)
+    source = part_source(shape, bindings, role_keys, scope=state.scope)
     if source is None or source == shape.named_dataset:
         return
-    named = shape_for_part(shape, source)
+    named = shape_for_part(shape, named_scope(source))
     state.capped_shapes[state.bind_result.chosen_shape_index] = named
     state.shape_draft = named
 
@@ -508,54 +407,46 @@ def _settle_served_dataset(state: ResolveState, role_keys: RoleKeys) -> RegionRe
     the part is minted from. A shape it names takes the source binding and the canonical
     form of that dataset's invariants (`canonical_pin_bindings`). A part none of whose
     tables holds a row for the bindings together refuses ``qualifier_not_bound``, naming
-    what it cannot bind (`_unserved_qualifiers`), so no table it excludes and no table of
-    another family answers for it at any door. A part that names and excludes no table and
-    binds no code has nothing to name, and refuses ``variable_not_resolved``.
+    the sources it cannot bind (`_unserved_sources`). A part under a scope that names
+    sources names those alone, and any other part names the codes its bindings bind
+    (`_bound_code_records`), so no table it excludes and no table of another family
+    answers for it at any door. A part that names and excludes no table and binds no code has
+    nothing to name, and refuses ``variable_not_resolved``.
     """
     unnamed = state.shape_draft.named_dataset is None
     try:
         _name_served_dataset(state, state.bindings, lambda: role_keys)
     except PartNotServed:
-        unbound = _unserved_qualifiers(state)
+        sources = _unserved_sources(state)
+        if sources or (state.scope is not None and state.scope.named):
+            return state.no_data("qualifier_not_bound", unbound_sources=sources)
+        unbound = _bound_code_records(state.bindings)
         if not unbound:
-            return _unresolved_entity_terminal(state) or state.no_data(
-                "variable_not_resolved", llm_usage=state.var_usage
-            )
+            return state.no_data("variable_not_resolved", llm_usage=state.var_usage)
         return state.no_data("qualifier_not_bound", unbound_qualifiers=unbound)
     shape = state.shape_draft
     if unnamed and shape.named_dataset is not None:
-        state.named_dataset = shape.named_dataset
         state.bindings = canonical_pin_bindings(
             shape, with_named_source(state.bindings, shape), role_keys
         )
     return None
 
 
-def _unserved_qualifiers(state: ResolveState) -> tuple[ResolvedQualifier, ...]:
-    """What a part no table serves under its final bindings cannot bind, as unbound
-    records: the dataset the elected shape names; else each dataset the part excludes that
-    publishes the shape; else the codes the bindings bind (`_bound_code_records`)."""
+def _unserved_sources(state: ResolveState) -> tuple[ResolvedQualifier, ...]:
+    """The sources a part no table serves under its final bindings cannot bind, as unbound
+    records: the dataset the elected shape names; else, under a scope that excludes, each
+    dataset publishing the shape that the scope leaves out; else none. A part under a scope
+    that names its sources refuses naming those (`conjoin._unbound_terms`), and a part
+    under no scope names the codes its bindings bind (`_bound_code_records`)."""
     shape = state.shape_draft
     if shape.named_dataset is not None:
-        return (_unbound_dataset(shape.named_dataset),)
-    excluded = tuple(
-        dataset for dataset in shape_datasets(shape) if dataset in state.excluded_datasets
+        return (source_record(shape.named_dataset),)
+    scope = state.scope
+    if scope is None or scope.named:
+        return ()
+    return tuple(
+        source_record(dataset) for dataset in shape_datasets(shape) if dataset not in scope.allowed
     )
-    if excluded:
-        return tuple(_unbound_dataset(dataset) for dataset in excluded)
-    return _bound_code_records(state.bindings)
-
-
-def _source_slot_phrases(
-    bind_result: _UniversalBindOutput, dropped_qualifier_phrases: list[str]
-) -> frozenset[str]:
-    """The normalised dropped phrase the applied source slot consumed
-    (`_SourceSlotBindOutput.source_phrase`), when it is one of the part's dropped phrases
-    verbatim; otherwise none, and that phrase's dropped-qualifier warning stays."""
-    phrase = bind_result.source_phrase if isinstance(bind_result, _SourceSlotBindOutput) else None
-    if phrase is None or phrase not in dropped_qualifier_phrases:
-        return frozenset()
-    return frozenset({_normalize(phrase)})
 
 
 def _query_role_keys(state: ResolveState, shape: ShapeDraft) -> RoleKeys:
@@ -599,9 +490,7 @@ async def _phase_repair_bindings(state: ResolveState) -> RegionResult | None:
             )
         )
     if _degenerate_bindings:
-        return _unresolved_entity_terminal(state) or state.no_data(
-            "variable_not_resolved", llm_usage=state.var_usage
-        )
+        return state.no_data("variable_not_resolved", llm_usage=state.var_usage)
 
     # Drop redundant single-member aliases so an answer using the family's other spelling
     # an answer using the family's other spelling.
@@ -777,11 +666,40 @@ async def _phase_repair_bindings(state: ResolveState) -> RegionResult | None:
     if refused is not None:
         return refused
 
-    # Resolve query qualifiers against the final bindings. A word of a qualifier term the
-    # elected shape's own reading leaves unread is not applied, and the answer says so
-    # (`_unread_qualifier_phrases`); a part naming a dataset refused such a term at the seam.
+    # Resolve query qualifiers against the final bindings. In "refuse" coverage mode an
+    # uncovered word beside a recognised code is a record and the part refuses on it. In
+    # log mode the record is logged once here, outside `unrealisable.unbind_unrealisable`'s
+    # re-read, and a word of a qualifier term the elected shape's own reading leaves unread
+    # departs as not applied (`_unread_qualifier_phrases`). In refuse mode a record already
+    # covers that word. In log mode a term of a part naming no dataset that names only codes
+    # no shape can bind is withheld (`_withheld_qualifiers`), logged here alike, and
+    # departs as not applied.
     state.query_qualifiers = _resolve_query_qualifiers(state)
-    for phrase in _unread_qualifier_phrases(state):
+    withheld = _withheld_qualifiers(state)
+    if settings().qualifier_coverage == "log":
+        for record in (
+            *withheld,
+            *_coverage_records(state, (*state.query_qualifiers, *withheld)),
+        ):
+            logger.info(
+                "qualifier_coverage would_refuse phrase=%s codes=%s",
+                record.text,
+                ",".join(ref.dcid for ref in record.named),
+            )
+    index = get_index()
+    for record in withheld:
+        systems = {
+            row.code_system
+            for ref in record.named
+            if (row := index.code_by_dcid(ref.dcid)) is not None
+        }
+        state.depart(
+            _qualifier_dropped_warning(_normalize(record.text)),
+            measure_not_applied(
+                asked=record.text, property_dcid=systems.pop() if len(systems) == 1 else None
+            ),
+        )
+    for phrase in _unread_qualifier_phrases(state, withheld):
         state.depart(
             _qualifier_dropped_warning(phrase),
             measure_not_applied(asked=phrase, property_dcid=None),

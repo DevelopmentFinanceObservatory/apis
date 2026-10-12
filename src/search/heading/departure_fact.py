@@ -55,6 +55,9 @@ class DepartureFact:
       node (`EntityGroup.entity_type`) of the group the request named for the role, when
       it named one; `asked` is then the request's own words for the group, `None` on a
       door that holds none.
+    - `excluded` (`group_read_as_members`): the labels of the residuals the total of the
+      group counts beside its members ("Africa, unallocated by country (DAC)"), which the
+      members leave out, in the code index's order. Empty for a group no total holds.
     - `sources` (`entity_unavailable`): the names of sources that hold values for the
       entities but that Search does not read, because the origin registry withholds them.
     - `latest_years` (`entity_unavailable`): on a `latest` request, the first and last
@@ -93,6 +96,7 @@ class DepartureFact:
     group: str | None = None
     group_size: int | None = None
     group_type: str | None = None
+    excluded: tuple[str, ...] = ()
     sources: tuple[str, ...] = ()
     latest_years: tuple[int, int] | None = None
     readings: bool = False

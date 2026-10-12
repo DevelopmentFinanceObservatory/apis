@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
@@ -13,35 +14,41 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-import datasets_api.doors.definition as definition_module
+import datasets_api.current as current_module
 import datasets_api.doors.refresh as refresh_module
 import datasets_api.serve as serve_module
 from artifact_store import LiveArtifactInventory, Tier
 from code_index import CodeIndex, DatasetDeclaration
+from code_index.shared import get_index
 from dataset_store.snapshot import (
     WORKING_TIER_RETENTION,
     LiveSnapshotReader,
-    servable_location_of_media_type,
 )
+from datasets_api.admission import COVERAGE_RESTARTS
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.definition import DefinitionDeps
 from datasets_api.operation_store import LiveOperationStore
 from datasets_api.operations.task_client import FakeTaskClient
 from datasets_api.operations.worker import run_operation
 from datasets_api.recipe_store import LiveRecipeStore
-from datasets_api.revision import SentinelRevisionReader
-from datasets_api.version_store import LiveVersionLister, LiveVersionRecordWriter
+from datasets_api.render import CANONICAL_FRAME_RENDERING, servable_frame_location
+from datasets_api.version_store import (
+    LiveVersionLister,
+    LiveVersionRecordWriter,
+    rendering_key,
+)
 from dc_sdmx import SdmxClient
 from materialise import EnrichmentLookup
-from materialise.formats import FRAME1_MEDIA_TYPE
 from materialise.rate_tables import RateTableCache
-from series_coverage.shared import CoverageSnapshot
+from series_coverage.index import CoverageIndex
+from series_coverage.shared import CoverageService, CoverageSnapshot
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
 from statvar_members import MemberEnumerator
 
 from . import test_serve_groupby_collapse as collapse_fixture
 from ._app_factories import make_client
+from ._frame_doubles import link_frame1_only
 from ._operation_store import FakeOperationDatasetStore
 from ._version_record_store import FakeVersionRecordDatasetStore
 from .conftest import FakeDatasetStore
@@ -58,6 +65,7 @@ from .test_definition_door_currency import (
     _RenderableArtifactStore,
     _row,
 )
+from .test_materialise_semaphore import _CoverageBuilds, _PermitLog, _reload_before_permit
 from .test_pin_door import FakeArtifactReferenceWriter
 
 _BASE_URL = "https://datacommons.one.org/core/api"
@@ -95,26 +103,21 @@ class _Rig:
             _ROUTE, json={"spec_id": spec_id, "content_version": content_version}, headers=_LIVE
         )
 
-    def frame1_servable(self, *, spec_id: str, content_version: str) -> bool:
-        """Whether the version links a servable frame1 file, the one Presentation loads."""
+    def frame_servable(self, *, spec_id: str, content_version: str) -> bool:
+        """Whether the version links a servable canonical frame, the one Presentation loads."""
         locations = LiveSnapshotReader(store=self.version_store).read_artifact_locations(
             spec_id, content_version
         )
-        return (
-            servable_location_of_media_type(
-                locations, media_type=FRAME1_MEDIA_TYPE, now=datetime.now(UTC)
-            )
-            is not None
-        )
+        return servable_frame_location(locations, now=datetime.now(UTC)) is not None
 
-    def expire_frame1(self, *, spec_id: str, content_version: str) -> None:
-        """Age the version's frame1 working copy past `WORKING_TIER_RETENTION` and drop its
+    def expire_frame(self, *, spec_id: str, content_version: str) -> None:
+        """Age the version's canonical frame working copy past `WORKING_TIER_RETENTION` and drop its
         object, as the bucket's lifecycle rule does."""
         with self.version_store.transaction() as tx:
             rows = tx.fetch_all(
                 "SELECT artifact_digest FROM datasets.version_artifact "
-                "WHERE subject_id = %s AND content_version = %s AND media_type = %s",
-                (spec_id, content_version, FRAME1_MEDIA_TYPE),
+                "WHERE subject_id = %s AND content_version = %s AND rendering_key = %s",
+                (spec_id, content_version, rendering_key(CANONICAL_FRAME_RENDERING)),
             )
             assert rows
             for row in rows:
@@ -127,7 +130,7 @@ class _Rig:
                     ),
                 )
                 self.artifact_store._objects.pop((row["artifact_digest"], Tier.working.value), None)
-        assert not self.frame1_servable(spec_id=spec_id, content_version=content_version)
+        assert not self.frame_servable(spec_id=spec_id, content_version=content_version)
 
     def listed_versions(self, spec_id: str) -> dict[str, dict]:
         """The versions route's entries for the dataset, by content version."""
@@ -144,7 +147,7 @@ def _rig(
     code_index=None,
     live_refresh_principal: str = _LIVE_PRINCIPAL,
     materialise_max_concurrency: int | None = None,
-    definition_pool_size: int | None = None,
+    work_max_concurrency: int | None = None,
     **settings: object,
 ) -> _Rig:
     """A composed Datasets app over one SQLite version store, with a head store tests can age
@@ -172,7 +175,6 @@ def _rig(
         spec_reader=LiveSpecReader(store=spec_store),
         graph=graph,
         sdmx=SdmxClient(base_url=_BASE_URL, transport=httpx.MockTransport(handler)),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=artifact_store,
         version_writer=LiveVersionRecordWriter(store=version_store),
         snapshot_reader=LiveSnapshotReader(store=version_store),
@@ -185,7 +187,7 @@ def _rig(
         operation_store=operation_store,
         task_client=task_client,
         materialise_max_concurrency=materialise_max_concurrency,
-        definition_pool_size=definition_pool_size,
+        work_max_concurrency=work_max_concurrency,
         settings=DatasetsBuildSettings(
             live_refresh_principal=live_refresh_principal,
             first_party_principal=_PUBLISH_PRINCIPAL,
@@ -210,27 +212,33 @@ def _rig(
 class _PlainRig:
     rig: _Rig
     facets: dict
+    arcs: dict
     graph: object
     coverage: _Coverage
     spec_id: str
     content_version: str
 
     def move_data(self) -> None:
-        """Change the facet the probe reads and the rows a rebuild fetches."""
+        """Move the source's refresh date, the facet and the rows a rebuild fetches."""
+        self.arcs["OECD_DAC2A"] = {"lastDataRefreshDate": ("2026-02-01",)}
         self.facets[(_STAT_VAR, _RECIPIENT)] = [_FACET_CHANGED]
         self.rig.body["text"] = _CSV_HEADER + _row(
             stat_var_ref=_STAT_VAR_REF, obs_value="2000", period="2021"
         )
 
 
-def _plain_rig(**kwargs) -> _PlainRig:
-    """A rig holding one minted single-member dataset, its head primed by the mint."""
+def _plain_rig(*, served_coverage: CoverageService | None = None, **kwargs) -> _PlainRig:
+    """A rig holding one minted single-member dataset, its head primed by the mint. The app
+    reads `served_coverage` when given, in place of the rig's mutable double."""
     facets = {(_STAT_VAR, _RECIPIENT): [_FACET]}
-    graph = _mutable_graph(facets)
+    arcs: dict[str, dict[str, tuple[str, ...]]] = {
+        "OECD_DAC2A": {"lastDataRefreshDate": ("2026-01-01",)}
+    }
+    graph = _mutable_graph(facets, arcs)
     coverage = _Coverage(facets)
     rig = _rig(
         graph=graph,
-        coverage=coverage,
+        coverage=served_coverage if served_coverage is not None else coverage,
         body=_CSV_HEADER + _row(stat_var_ref=_STAT_VAR_REF, obs_value="1000"),
         **kwargs,
     )
@@ -238,6 +246,7 @@ def _plain_rig(**kwargs) -> _PlainRig:
     return _PlainRig(
         rig=rig,
         facets=facets,
+        arcs=arcs,
         graph=graph,
         coverage=coverage,
         spec_id=spec_id,
@@ -245,27 +254,27 @@ def _plain_rig(**kwargs) -> _PlainRig:
     )
 
 
-def _count_probe_slots(monkeypatch: pytest.MonkeyPatch) -> list[int]:
-    """Record each materialise slot the definition module takes, which a facet probe does."""
+def _count_materialise_slots(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Record each materialise slot `serve_current` takes, which a render or rebuild does."""
     taken: list[int] = []
-    real = definition_module.bounded_materialise_slot
+    real = current_module.bounded_materialise_slot
 
     def counting(*args, **kwargs):
         taken.append(1)
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(definition_module, "bounded_materialise_slot", counting)
+    monkeypatch.setattr(current_module, "bounded_materialise_slot", counting)
     return taken
 
 
-# --- Plain frames: one branch of the currency check per test ---
+# --- Plain frames: one branch of the freshness check per test ---
 
 
-def test_a_head_inside_the_recheck_interval_answers_current_without_a_probe(
+def test_a_head_inside_the_recheck_interval_answers_current_without_a_read(
     monkeypatch: pytest.MonkeyPatch,
 ):
     plain = _plain_rig()
-    probe_slots = _count_probe_slots(monkeypatch)
+    slots = _count_materialise_slots(monkeypatch)
     graph_calls = dict(plain.graph.calls)
     sdmx_requests = len(plain.rig.sdmx_requests)
 
@@ -277,31 +286,33 @@ def test_a_head_inside_the_recheck_interval_answers_current_without_a_probe(
         "frame": {"spec_id": plain.spec_id, "content_version": plain.content_version},
     }
     assert resp.headers["cache-control"] == "no-store"
-    assert probe_slots == []
+    assert slots == []
     assert plain.graph.calls == graph_calls
     assert len(plain.rig.sdmx_requests) == sdmx_requests
     assert plain.rig.head_store.confirm_head_calls == 0
 
 
-def test_an_unchanged_probe_past_the_interval_confirms_the_head_and_answers_current(
+def test_an_unchanged_fingerprint_past_the_interval_confirms_the_head_and_answers_current(
     monkeypatch: pytest.MonkeyPatch,
 ):
     plain = _plain_rig()
     plain.rig.head_store.age_head(plain.spec_id, age=_PAST_INTERVAL)
-    probe_slots = _count_probe_slots(monkeypatch)
+    slots = _count_materialise_slots(monkeypatch)
+    arc_reads = plain.graph.calls["node_arcs_many"]
     sdmx_requests = len(plain.rig.sdmx_requests)
 
     resp = plain.rig.refresh(spec_id=plain.spec_id, content_version=plain.content_version)
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "current"
-    # The probe ran under one materialise slot and confirmed the head. Nothing was fetched.
-    assert probe_slots == [1]
+    # One refresh-date read confirmed the head with no slot. Nothing was fetched.
+    assert slots == []
+    assert plain.graph.calls["node_arcs_many"] == arc_reads + 1
     assert plain.rig.head_store.confirm_head_calls == 1
     assert len(plain.rig.sdmx_requests) == sdmx_requests
 
 
-def test_a_moved_signal_rebuilds_and_answers_moved_then_and_on_later_calls():
+def test_a_moved_source_date_rebuilds_and_answers_moved_then_and_on_later_calls():
     plain = _plain_rig()
     plain.rig.head_store.age_head(plain.spec_id, age=_PAST_INTERVAL)
     plain.move_data()
@@ -317,11 +328,11 @@ def test_a_moved_signal_rebuilds_and_answers_moved_then_and_on_later_calls():
     assert moved_to != plain.content_version
     assert plain.rig.head_store.head_for(plain.spec_id).content_version == moved_to
     assert len(plain.rig.sdmx_requests) == sdmx_requests + 1
-    # The rebuilt version holds the frame1 file Presentation reads.
+    # The rebuilt version holds the canonical frame Presentation reads.
     locations = LiveSnapshotReader(store=plain.rig.version_store).read_artifact_locations(
         plain.spec_id, moved_to
     )
-    assert FRAME1_MEDIA_TYPE in {location.media_type for location in locations}
+    assert CANONICAL_FRAME_RENDERING in [location.rendering for location in locations]
 
     # The old frame is still moved on a call that rebuilds nothing.
     later = plain.rig.refresh(spec_id=plain.spec_id, content_version=plain.content_version)
@@ -337,7 +348,7 @@ def test_a_moved_signal_rebuilds_and_answers_moved_then_and_on_later_calls():
     assert all(tier != Tier.pinned.value for _digest, tier in plain.rig.artifact_store._objects)
 
 
-def test_a_head_past_the_maximum_age_rebuilds_despite_an_unchanged_probe():
+def test_a_head_past_the_maximum_age_rebuilds_despite_an_unchanged_fingerprint():
     plain = _plain_rig()
     plain.rig.head_store.age_head(plain.spec_id, age=_PAST_MAX_AGE)
     materialised_at = plain.rig.head_store.head_for(plain.spec_id).materialised_at
@@ -352,12 +363,14 @@ def test_a_head_past_the_maximum_age_rebuilds_despite_an_unchanged_probe():
     assert plain.rig.head_store.head_for(plain.spec_id).materialised_at > materialised_at
 
 
-def test_a_turned_clock_window_rebuilds_inside_the_recheck_interval():
+def test_a_head_whose_stored_window_differs_rebuilds_past_the_recheck_interval():
     plain = _plain_rig()
+    plain.rig.head_store.age_head(plain.spec_id, age=_PAST_INTERVAL)
     head = plain.rig.head_store.head_for(plain.spec_id)
-    # The head read an open window that ended in 2021, and a read now ends it this year.
+    # The head read an open window that ended in 2021, which a read now does not.
     plain.rig.head_store._heads[plain.spec_id] = replace(
-        head, signal=tuple(replace(member, clock_window=(2020, 2021)) for member in head.signal)
+        head,
+        dependencies={**head.dependencies, "window": {"start_year": 2020, "end_year": 2021}},
     )
     sdmx_requests = len(plain.rig.sdmx_requests)
 
@@ -368,18 +381,36 @@ def test_a_turned_clock_window_rebuilds_inside_the_recheck_interval():
     assert len(plain.rig.sdmx_requests) == sdmx_requests + 1
 
 
-def test_a_head_whose_frame1_expired_rebuilds_before_it_answers_current():
+def test_a_head_stored_as_a_frame1_document_alone_answers_current_with_no_rebuild():
     plain = _plain_rig()
-    plain.rig.expire_frame1(spec_id=plain.spec_id, content_version=plain.content_version)
+    link_frame1_only(
+        plain.rig.version_store,
+        plain.rig.artifact_store,
+        subject_id=plain.spec_id,
+        content_version=plain.content_version,
+    )
     sdmx_requests = len(plain.rig.sdmx_requests)
 
     resp = plain.rig.refresh(spec_id=plain.spec_id, content_version=plain.content_version)
 
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "current"
-    # Nothing stored renders the head's frame1, so the dataset was fetched again.
+    # The frame1 document is the servable stored frame, so nothing was fetched.
+    assert len(plain.rig.sdmx_requests) == sdmx_requests
+
+
+def test_a_head_whose_canonical_frame_expired_rebuilds_before_it_answers_current():
+    plain = _plain_rig()
+    plain.rig.expire_frame(spec_id=plain.spec_id, content_version=plain.content_version)
+    sdmx_requests = len(plain.rig.sdmx_requests)
+
+    resp = plain.rig.refresh(spec_id=plain.spec_id, content_version=plain.content_version)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "current"
+    # Nothing stored renders the head's frame, so the dataset was fetched again.
     assert len(plain.rig.sdmx_requests) == sdmx_requests + 1
-    assert plain.rig.frame1_servable(spec_id=plain.spec_id, content_version=plain.content_version)
+    assert plain.rig.frame_servable(spec_id=plain.spec_id, content_version=plain.content_version)
 
 
 # --- Resolution refusals ---
@@ -460,20 +491,22 @@ class _CollapseRig:
         ]
 
 
-def _family_rig(*, body: str, code_index: CodeIndex | None = None) -> _Rig:
+def _family_rig(
+    *, body: str, code_index: CodeIndex | None = None, coverage: CoverageService | None = None
+) -> _Rig:
     """A rig over the two-member family dataset, serving `body` as its observations."""
     return _rig(
         graph=collapse_fixture._graph(),
-        coverage=collapse_fixture._coverage_service(),
+        coverage=coverage if coverage is not None else collapse_fixture._coverage_service(),
         body=body,
         code_index=code_index if code_index is not None else collapse_fixture._code_index(),
     )
 
 
-def _collapse_rig() -> _CollapseRig:
+def _collapse_rig(*, coverage: CoverageService | None = None) -> _CollapseRig:
     """A rig holding a two-member dataset minted with a groupby that sums both members, so the
     collapse has its own content version and the head holds the raw one."""
-    rig = _family_rig(body=collapse_fixture._CSV_BODY)
+    rig = _family_rig(body=collapse_fixture._CSV_BODY, coverage=coverage)
     spec_id, sidecar = collapse_fixture._spec_id_and_sidecar()
     minted = collapse_fixture._mint(
         rig.client,
@@ -560,11 +593,11 @@ def test_a_head_moved_by_another_rendering_mints_the_collapse_from_its_stored_fr
     moved_to = answer["frame"]["content_version"]
     assert collapsed.version_rows()[moved_to] == new_head
     assert collapsed.recorded_groupby(moved_to) == [_GROUPBY]
-    # The collapse came from the head's stored frame1, with no fetch.
+    # The collapse came from the head's stored frame, with no fetch.
     assert len(collapsed.rig.sdmx_requests) == sdmx_requests
 
 
-def test_a_recorded_collapse_whose_frame1_expired_is_rendered_again_from_the_head():
+def test_a_recorded_collapse_whose_canonical_frame_expired_is_rendered_again_from_the_head():
     collapsed = _collapse_rig()
     collapsed.move_data()
     answer = collapsed.rig.refresh(
@@ -572,7 +605,7 @@ def test_a_recorded_collapse_whose_frame1_expired_is_rendered_again_from_the_hea
     ).json()
     assert answer["status"] == "moved"
     moved_to = answer["frame"]["content_version"]
-    collapsed.rig.expire_frame1(spec_id=collapsed.spec_id, content_version=moved_to)
+    collapsed.rig.expire_frame(spec_id=collapsed.spec_id, content_version=moved_to)
     sdmx_requests = len(collapsed.rig.sdmx_requests)
 
     resp = collapsed.rig.refresh(
@@ -581,8 +614,8 @@ def test_a_recorded_collapse_whose_frame1_expired_is_rendered_again_from_the_hea
 
     assert resp.status_code == 200, resp.text
     assert resp.json() == answer
-    # The collapse came again from the head's stored frame1, with no fetch.
-    assert collapsed.rig.frame1_servable(spec_id=collapsed.spec_id, content_version=moved_to)
+    # The collapse came again from the head's stored frame, with no fetch.
+    assert collapsed.rig.frame_servable(spec_id=collapsed.spec_id, content_version=moved_to)
     assert len(collapsed.rig.sdmx_requests) == sdmx_requests
 
 
@@ -606,8 +639,12 @@ def test_a_collapsed_frame_with_no_file_recording_its_groupby_refuses():
     with collapsed.rig.version_store.transaction() as tx:
         tx.execute(
             "DELETE FROM datasets.version_artifact WHERE subject_id = %s "
-            "AND content_version = %s AND media_type != %s",
-            (collapsed.spec_id, collapsed.collapsed_content_version, FRAME1_MEDIA_TYPE),
+            "AND content_version = %s AND rendering_key != %s",
+            (
+                collapsed.spec_id,
+                collapsed.collapsed_content_version,
+                rendering_key(CANONICAL_FRAME_RENDERING),
+            ),
         )
 
     resp = collapsed.rig.refresh(
@@ -652,13 +689,14 @@ def _absent_reads_zero_code_index() -> CodeIndex:
     )
 
 
-def _one_contributor_rig(*mints: dict) -> _CollapseRig:
+def _one_contributor_rig(*mints: dict, coverage: CoverageService | None = None) -> _CollapseRig:
     """A rig holding the family dataset while only one member has rows, minted once per entry
     of `mints`. A groupby sum leaves that frame unchanged, so every mint is linked under the
     head's raw version, which the rig names as both of its versions."""
     rig = _family_rig(
         body=collapse_fixture._CSV_HEADER + _MEMBER_A_ROW,
         code_index=_absent_reads_zero_code_index(),
+        coverage=coverage,
     )
     spec_id, sidecar = collapse_fixture._spec_id_and_sidecar()
     versions = {
@@ -742,6 +780,172 @@ def test_a_raw_version_linking_both_renderings_refuses_once_they_differ():
         assert refused.json()["retryable"] is False
 
 
+# --- A coverage reload between a request's snapshot and its permit ---
+
+
+def _plain_index() -> CoverageIndex:
+    return _CoverageFromFacets({(_STAT_VAR, _RECIPIENT): [_FACET]}).current()
+
+
+def _family_index() -> CoverageIndex:
+    return collapse_fixture._coverage_service().current()
+
+
+def _definition_get_rebuild(coverage: CoverageService) -> Callable[[], httpx.Response]:
+    """A definition GET whose head is past its maximum age, so `serve_current` rebuilds."""
+    plain = _plain_rig(served_coverage=coverage)
+    plain.rig.head_store.age_head(plain.spec_id, age=_PAST_MAX_AGE)
+    return lambda: plain.rig.client.get(f"/api/datasets/{plain.spec_id}?bundle=false")
+
+
+def _refresh_head_frame(coverage: CoverageService) -> Callable[[], httpx.Response]:
+    """A refresh of a collapsed frame whose head another rendering moved, so `_load_head_frame`
+    renders the collapse from the head's stored frame."""
+    collapsed = _collapse_rig(coverage=coverage)
+    collapsed.move_data()
+    rebuilt = collapsed.rig.client.get(f"/api/datasets/{collapsed.spec_id}?bundle=false")
+    assert rebuilt.status_code == 200, rebuilt.text
+    return lambda: collapsed.rig.refresh(
+        spec_id=collapsed.spec_id, content_version=collapsed.collapsed_content_version
+    )
+
+
+def _refresh_differing_renderings(coverage: CoverageService) -> Callable[[], httpx.Response]:
+    """A refresh of an ambiguous frame whose current version links a plain CSV alone, so
+    `_refuse_differing_renderings` renders the sum and then the plain frame file."""
+    shared = _one_contributor_rig(_PLAIN_MINT, _SUMMED_MINT, coverage=coverage)
+    _move_to(shared, _MEMBER_A_ROW.replace(",1000,", ",3000,"))
+    rebuilt = shared.rig.client.get(f"/api/datasets/{shared.spec_id}?bundle=false")
+    assert rebuilt.status_code == 200, rebuilt.text
+    return lambda: shared.rig.refresh(
+        spec_id=shared.spec_id, content_version=shared.base_content_version
+    )
+
+
+def _file_link_re_render(coverage: CoverageService) -> Callable[[], httpx.Response]:
+    """A click on a CSV link past retention whose object is gone while the stored frame is
+    still in retention, so the files door's `_re_render` renders through the head path."""
+    plain = _plain_rig(served_coverage=coverage)
+    rig = plain.rig
+    minted = rig.client.get(f"/api/datasets/{plain.spec_id}?format=csv&bundle=false")
+    assert minted.status_code == 200, minted.text
+    csv = next(a for a in minted.json()["artifacts"] if a["media_type"] == "text/csv")
+    with rig.version_store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.artifact_location SET stored_at = %s WHERE artifact_digest = %s",
+            (
+                datetime.now(UTC) - WORKING_TIER_RETENTION - timedelta(days=1),
+                csv["artifact_digest"],
+            ),
+        )
+    del rig.artifact_store._objects[(csv["artifact_digest"], Tier.working.value)]
+    return lambda: rig.client.get(csv["url"], follow_redirects=False)
+
+
+def _record_frame_work(
+    monkeypatch: pytest.MonkeyPatch, coverage: _CoverageBuilds
+) -> list[tuple[int, bool]]:
+    """Record, for each materialisation and each render from a stored frame, the coverage
+    build whose index it runs on and whether build 1's index is still resident."""
+    worked: list[tuple[int, bool]] = []
+    for module, name in ((serve_module, "prewrite_definition"), (current_module, "_render_frame")):
+        real = getattr(module, name)
+
+        def recording(*args, _real=real, **kwargs):
+            worked.append((coverage.serving(kwargs["coverage_index"]), coverage.resident(1)))
+            return _real(*args, **kwargs)
+
+        monkeypatch.setattr(module, name, recording)
+    return worked
+
+
+@pytest.mark.parametrize(
+    ("make_index", "arrange", "untouched_permits", "status", "worked"),
+    [
+        pytest.param(
+            _plain_index, _definition_get_rebuild, 0, 200, [(2, False)], id="definition-get-rebuild"
+        ),
+        pytest.param(
+            _family_index, _refresh_head_frame, 0, 200, [(2, False)], id="refresh-head-frame"
+        ),
+        pytest.param(
+            _family_index,
+            _refresh_differing_renderings,
+            0,
+            200,
+            [(2, False), (2, False)],
+            id="refresh-differing-renderings",
+        ),
+        pytest.param(
+            _family_index,
+            _refresh_differing_renderings,
+            1,
+            200,
+            [(1, True), (2, False)],
+            id="refresh-differing-renderings-second-render",
+        ),
+        pytest.param(
+            _plain_index, _file_link_re_render, 0, 302, [(2, False)], id="file-link-re-render"
+        ),
+    ],
+)
+def test_a_reload_between_a_snapshot_and_its_permit_restarts_the_work_on_the_served_build(
+    monkeypatch: pytest.MonkeyPatch,
+    make_index: Callable[[], CoverageIndex],
+    arrange: Callable[[CoverageService], Callable[[], httpx.Response]],
+    untouched_permits: int,
+    status: int,
+    worked: list[tuple[int, bool]],
+):
+    """A request took build 1's snapshot and a reload to build 2 completed before one of its
+    permits. The request gives that permit back with nothing built, starts again, and builds
+    on build 2's index once build 1's has left memory. `untouched_permits` is how many permits
+    the request takes on build 1 before the reload."""
+    log = _PermitLog()
+    coverage = _CoverageBuilds(monkeypatch, make_index=make_index)
+    schedule = _reload_before_permit(monkeypatch, log, coverage)
+    call = arrange(coverage.service)
+    frame_work = _record_frame_work(monkeypatch, coverage)
+    log.events.clear()
+    schedule(1, after=untouched_permits)
+
+    resp = call()
+
+    assert resp.status_code == status, resp.text
+    assert frame_work == worked
+    kinds = log.kinds()
+    assert kinds.count("reload") == 1
+    # The stale pass takes its permit after the reload and gives it straight back.
+    stale = kinds.index("reload") + 1
+    assert kinds[stale : stale + 2] == ["acquire", "release"]
+    assert kinds.count("acquire") == kinds.count("release")
+
+
+def test_a_definition_rebuild_whose_snapshot_is_replaced_on_every_start_refuses_backpressure(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A reload replaces the snapshot before the permit on a rebuild's first pass and on each
+    of the `COVERAGE_RESTARTS` restarts. The GET answers the retryable backpressure refusal,
+    having fetched nothing."""
+    log = _PermitLog()
+    coverage = _CoverageBuilds(monkeypatch, make_index=_plain_index)
+    schedule = _reload_before_permit(monkeypatch, log, coverage)
+    call = _definition_get_rebuild(coverage.service)
+    frame_work = _record_frame_work(monkeypatch, coverage)
+    log.events.clear()
+    schedule(1 + COVERAGE_RESTARTS)
+
+    resp = call()
+
+    assert resp.status_code == 503, resp.text
+    assert resp.headers["retry-after"] == "1"
+    assert resp.json()["code"] == "service_unavailable"
+    assert resp.json()["retryable"] is True
+    assert frame_work == []
+    kinds = log.kinds()
+    assert kinds.count("acquire") == kinds.count("release") == 1 + COVERAGE_RESTARTS
+
+
 # --- A rebuild over the inline budget ---
 
 
@@ -750,6 +954,7 @@ def _worker_deps(plain: _PlainRig) -> DefinitionDeps:
     rig = plain.rig
     settings = DatasetsBuildSettings()
     return DefinitionDeps(
+        registry=LiveSpecRegistry(store=rig.spec_store),
         spec_reader=LiveSpecReader(store=rig.spec_store),
         graph=plain.graph,
         sdmx=SdmxClient(
@@ -762,15 +967,14 @@ def _worker_deps(plain: _PlainRig) -> DefinitionDeps:
                 )
             ),
         ),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=rig.artifact_store,
         materialiser_build="test-build",
         capability_version="dset_test",
         ceiling=1_000_000,
         member_concurrency=4,
         enumerator=MemberEnumerator(),
-        enrichment=EnrichmentLookup(plain.graph),
-        code_index=definition_module.get_index(),
+        enrichment=EnrichmentLookup(plain.graph, type_kinds={}, parties={}),
+        code_index=get_index(),
         rate_cache=RateTableCache(),
         coverage=plain.coverage,
         version_writer=LiveVersionRecordWriter(store=rig.version_store),
@@ -784,7 +988,7 @@ def _queue_a_rebuild(plain: _PlainRig, monkeypatch: pytest.MonkeyPatch) -> dict:
     """Move the data and put every rebuild over the inline budget, then refresh once."""
     plain.rig.head_store.age_head(plain.spec_id, age=_PAST_INTERVAL)
     plain.move_data()
-    monkeypatch.setattr(definition_module, "within_sync_budget", lambda estimate, **_: False)
+    monkeypatch.setattr(current_module, "within_sync_budget", lambda estimate, **_: False)
     resp = plain.rig.refresh(spec_id=plain.spec_id, content_version=plain.content_version)
     assert resp.status_code == 200, resp.text
     return resp.json()
@@ -809,15 +1013,14 @@ def test_a_rebuild_over_the_inline_budget_answers_pending_then_moved(
     assert again.json() == queued
     assert plain.rig.task_client.enqueued == [(operation_id, 0)]
 
-    claimed = plain.rig.operation_store.claim_lease(
-        operation_id, submission_count=0, lease_seconds=60
+    claimed = plain.rig.operation_store.claim(
+        operation_id, submission_count=0, lease_seconds=60, final_delivery=False
     )
     assert claimed is not None
     run_operation(
         operation=claimed,
         deps=_worker_deps(plain),
         operation_store=plain.rig.operation_store,
-        lease_seconds=60,
     )
     completed = plain.rig.operation_store.get(operation_id)
     assert completed is not None and completed.state == "done"
@@ -840,15 +1043,14 @@ def test_a_done_rebuild_whose_files_left_storage_runs_again_before_it_is_answere
     operation_id = _queue_a_rebuild(plain, monkeypatch)["operation_id"]
 
     def run_queued_rebuild(*, submission_count: int) -> str:
-        claimed = rig.operation_store.claim_lease(
-            operation_id, submission_count=submission_count, lease_seconds=60
+        claimed = rig.operation_store.claim(
+            operation_id, submission_count=submission_count, lease_seconds=60, final_delivery=False
         )
         assert claimed is not None
         run_operation(
             operation=claimed,
             deps=_worker_deps(plain),
             operation_store=rig.operation_store,
-            lease_seconds=60,
         )
         completed = rig.operation_store.get(operation_id)
         assert completed is not None and completed.state == "done"
@@ -893,8 +1095,8 @@ def test_a_queued_rebuild_that_failed_for_good_is_an_internal_error(
 ):
     plain = _plain_rig()
     queued = _queue_a_rebuild(plain, monkeypatch)
-    claimed = plain.rig.operation_store.claim_lease(
-        queued["operation_id"], submission_count=0, lease_seconds=60
+    claimed = plain.rig.operation_store.claim(
+        queued["operation_id"], submission_count=0, lease_seconds=60, final_delivery=False
     )
     assert claimed is not None
     plain.rig.operation_store.fail(
@@ -929,9 +1131,9 @@ class _HeldRebuild:
     head_reads: int
 
     def run(self, *, hold_seconds: float = 0.0) -> None:
-        """Start the callers, hold the first rebuild until all four have read the stale head
-        and the rebuilding one has read it again on taking its turn, then `hold_seconds`
-        longer."""
+        """Start the callers, hold the first rebuild until all four have read the stale head,
+        then `hold_seconds` longer. The rebuilding caller took its turn without waiting, so it
+        rebuilds from the head it read."""
         rig, plain = self.plain.rig, self.plain
 
         def refresh() -> None:
@@ -943,23 +1145,21 @@ class _HeldRebuild:
             self.responses.append(rig.client.get(f"/api/datasets/{plain.spec_id}?bundle=false"))
 
         # The client context keeps every request on one portal loop.
-        with rig.client:
-            callers = [threading.Thread(target=refresh) for _ in range(3)]
-            callers.append(threading.Thread(target=read_definition))
-            for caller in callers:
-                caller.start()
-            assert self.entered.wait(timeout=5.0), "no caller reached materialisation"
-            waited_until = time.monotonic() + 5.0
-            while (
-                rig.head_store.read_head_calls < self.head_reads + 5
-                and time.monotonic() < waited_until
-            ):
-                time.sleep(0.01)
-            assert rig.head_store.read_head_calls == self.head_reads + 5
-            time.sleep(hold_seconds)
-            self.release.set()
-            for caller in callers:
-                caller.join(timeout=10.0)
+        callers = [threading.Thread(target=refresh) for _ in range(3)]
+        callers.append(threading.Thread(target=read_definition))
+        for caller in callers:
+            caller.start()
+        assert self.entered.wait(timeout=5.0), "no caller reached materialisation"
+        waited_until = time.monotonic() + 5.0
+        while (
+            rig.head_store.read_head_calls < self.head_reads + 4 and time.monotonic() < waited_until
+        ):
+            time.sleep(0.01)
+        assert rig.head_store.read_head_calls == self.head_reads + 4
+        time.sleep(hold_seconds)
+        self.release.set()
+        for caller in callers:
+            caller.join(timeout=10.0)
         assert len(self.responses) == 4
 
 
@@ -1039,13 +1239,14 @@ def test_a_failed_shared_rebuild_leaves_each_waiter_to_rebuild_and_answer_for_it
         assert frame["content_version"] == new_head
 
 
-def test_a_saturated_refresh_door_refuses_a_refresh_and_still_serves_a_definition_read(
+def test_a_saturated_work_executor_refuses_a_refresh_and_still_serves_a_head_hit(
     monkeypatch: pytest.MonkeyPatch,
 ):
     for var, value in _SETTINGS_ENV.items():
         monkeypatch.setenv(var, value)
-    # One thread for each door, so one held refresh fills the refresh door.
-    plain = _plain_rig(definition_pool_size=1, refresh_max_concurrency=1)
+    # One work thread, so one held refresh fills the work executor. The definition read is a
+    # head hit on the read executor.
+    plain = _plain_rig(work_max_concurrency=1)
     rig = plain.rig
     entered = threading.Event()
     release = threading.Event()
@@ -1062,14 +1263,13 @@ def test_a_saturated_refresh_door_refuses_a_refresh_and_still_serves_a_definitio
     def refresh() -> None:
         held.append(rig.refresh(spec_id=plain.spec_id, content_version=plain.content_version))
 
-    with rig.client:
-        holder = threading.Thread(target=refresh)
-        holder.start()
-        assert entered.wait(timeout=5.0), "the refresh never reached its worker"
-        refused = rig.refresh(spec_id=plain.spec_id, content_version=plain.content_version)
-        definition = rig.client.get(f"/api/datasets/{plain.spec_id}?bundle=false")
-        release.set()
-        holder.join(timeout=10.0)
+    holder = threading.Thread(target=refresh)
+    holder.start()
+    assert entered.wait(timeout=5.0), "the refresh never reached its worker"
+    refused = rig.refresh(spec_id=plain.spec_id, content_version=plain.content_version)
+    definition = rig.client.get(f"/api/datasets/{plain.spec_id}?bundle=false")
+    release.set()
+    holder.join(timeout=10.0)
 
     assert (refused.status_code, refused.json()["code"]) == (503, "service_unavailable")
     assert refused.json()["retryable"] is True

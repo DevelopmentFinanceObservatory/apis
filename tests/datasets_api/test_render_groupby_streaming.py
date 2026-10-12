@@ -122,7 +122,7 @@ _RESOLVED_STAT_VAR_REFS = ("dcid:SV_A", "dcid:SV_B", "dcid:SV_C")
 
 
 def _enrichment() -> EnrichmentLookup:
-    return EnrichmentLookup(FakeMintGraphReader())
+    return EnrichmentLookup(FakeMintGraphReader(), type_kinds={}, parties={})
 
 
 def _chunked(bounds: list[int]) -> list[Table]:

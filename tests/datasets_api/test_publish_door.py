@@ -6,17 +6,25 @@ cover refusal mapping through `make_client_for_door`.
 
 from __future__ import annotations
 
-import json
-from datetime import UTC, datetime
+import io
+from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 import jsonschema
+import pyarrow.parquet as pq
 import pytest
+from dfo_frame_grammar import frame_sha256
 from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from artifact_store import LiveArtifactInventory, LiveArtifactStore, Tier
-from dataset_store.snapshot import LiveSnapshotReader, SnapshotRevoked
-from datasets_api.config import DatasetsConfigError
+from dataset_store.snapshot import (
+    FrameLineage,
+    LiveSnapshotReader,
+    SnapshotRevoked,
+    select_servable_locations,
+)
+from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.publish import (
     PublishBytesDiverge,
     PublishFrameInvalid,
@@ -37,15 +45,25 @@ from datasets_api.publish_models import (
     MAX_UNIT_STAT_VAR_CHARS,
     PublishFrameRequest,
 )
-from datasets_api.render import render_and_store_frame1
+from datasets_api.render import CANONICAL_FRAME_RENDERING, render_and_store_canonical_frame
 from datasets_api.version_store import LiveVersionRecordWriter
-from datasets_api.versions import NullVersionRecordWriter
+from datasets_api.versions import ArtifactRecord, NullVersionRecordWriter, VersionRecord
 from materialise.errors import OverCeilingError
-from materialise.formats import FRAME1_MEDIA_TYPE
+from materialise.formats import (
+    CANONICAL_FRAME_MEDIA_TYPE,
+    FRAME1_MEDIA_TYPE,
+    canonical_frame_document,
+    read_canonical_frame,
+    read_canonical_frame_table,
+    write_frame1,
+)
 from materialise.frame_build import build_frame
 from tests.artifact_store.conftest import FakeGCSClient
 
+from ._deps_doubles import fake_deps_cell
+from ._frame_doubles import canonical_frame_digest
 from ._snapshot_doubles import make_client_for_door
+from ._version_facts import facts_from_body, golden_cases
 from ._version_record_store import FakeVersionRecordDatasetStore
 
 _SPEC_ID = "ops_abc123"
@@ -133,6 +151,7 @@ class _Deps:
         input_content_versions=("cv_abc123",),
         composed_stat_vars=(),
         ceiling: int | None = None,
+        artifact_store=None,
     ):
         kwargs: dict[str, object] = {"composed_stat_vars": composed_stat_vars}
         if ceiling is not None:
@@ -143,7 +162,7 @@ class _Deps:
             role_keys=role_keys,
             rows=rows if rows is not None else _rows(),
             input_content_versions=input_content_versions,
-            artifact_store=self.artifact_store,
+            artifact_store=artifact_store if artifact_store is not None else self.artifact_store,
             snapshot_reader=self.snapshot_reader,
             version_writer=self.version_writer,
             **kwargs,
@@ -155,7 +174,12 @@ def deps() -> _Deps:
     return _Deps()
 
 
-def test_fresh_publish_records_version_row_and_readable_frame1_bytes(deps: _Deps) -> None:
+def _canonical_frames(deps: _Deps):
+    locations = deps.snapshot_reader.read_artifact_locations(_SPEC_ID, _CONTENT_VERSION)
+    return [loc for loc in locations if loc.rendering == CANONICAL_FRAME_RENDERING]
+
+
+def test_fresh_publish_records_version_row_and_its_parquet_canonical_frame(deps: _Deps) -> None:
     result = deps.publish()
 
     assert result.created is True
@@ -165,21 +189,16 @@ def test_fresh_publish_records_version_row_and_readable_frame1_bytes(deps: _Deps
     stored = deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION)
     assert stored is not None
     assert stored.subject_kind == "spec"
-    assert stored.immutable_body["op_spec_hash"] == _SPEC_ID
-    assert stored.immutable_body["input_content_versions"] == ["cv_abc123"]
+    assert stored.facts == FrameLineage(input_content_versions=["cv_abc123"])
 
     locations = deps.snapshot_reader.read_artifact_locations(_SPEC_ID, _CONTENT_VERSION)
-    frame1 = [loc for loc in locations if loc.media_type == FRAME1_MEDIA_TYPE]
-    assert len(frame1) == 1
-    assert frame1[0].artifact_digest == result.artifact_digest
-    assert frame1[0].tier == "working"
+    assert [(loc.rendering, loc.media_type, loc.tier) for loc in locations] == [
+        (CANONICAL_FRAME_RENDERING, CANONICAL_FRAME_MEDIA_TYPE, "working")
+    ]
+    assert locations[0].artifact_digest == result.artifact_digest
 
     raw = deps.artifact_store.get(artifact_digest=result.artifact_digest, tier=Tier.working)
-    document = json.loads(raw)
-    assert document["frame_version"] == "frame1"
-    assert document["columns"]
-    # Column order is outside this test.
-    assert len(document["rows"]) == 1
+    assert read_canonical_frame(raw) == build_frame(role_keys=_ROLE_KEYS, rows=_rows())
 
 
 def test_repeat_publish_with_identical_bytes_is_idempotent(deps: _Deps) -> None:
@@ -189,10 +208,207 @@ def test_repeat_publish_with_identical_bytes_is_idempotent(deps: _Deps) -> None:
     assert first.created is True
     assert second.created is False
     assert second.artifact_digest == first.artifact_digest
+    assert len(_canonical_frames(deps)) == 1
 
-    locations = deps.snapshot_reader.read_artifact_locations(_SPEC_ID, _CONTENT_VERSION)
-    frame1 = [loc for loc in locations if loc.media_type == FRAME1_MEDIA_TYPE]
-    assert len(frame1) == 1
+
+def _frame1_document(value: float) -> bytes:
+    sink = _BytesSink()
+    write_frame1((build_frame(role_keys=_ROLE_KEYS, rows=_rows(value)),), sink=sink)
+    return sink.data
+
+
+def _snappy_parquet_frame(value: float) -> bytes:
+    """The frame's table in Parquet under another compression and row-group size than
+    `write_canonical_frame` uses, as another PyArrow version may encode it."""
+    buffer = io.BytesIO()
+    table = build_frame(role_keys=_ROLE_KEYS, rows=_rows(value)).table
+    pq.write_table(table, buffer, compression="snappy", row_group_size=1)
+    return buffer.getvalue()
+
+
+def _record_stored_pair(
+    deps: _Deps,
+    *,
+    data: bytes,
+    media_type: str,
+    rendering: dict[str, object],
+    frame_sha256: str | None = None,
+) -> None:
+    """Record the pair holding `data` as its only stored frame, with `frame_sha256` as the
+    frame hash on its record."""
+    stored = deps.artifact_store.put(data, tier=Tier.working)
+    deps.version_writer.record_version(
+        VersionRecord(
+            subject_id=_SPEC_ID,
+            subject_kind="spec",
+            content_version=_CONTENT_VERSION,
+            schema_version=1,
+            facts=FrameLineage(input_content_versions=["cv_abc123"]),
+            artifacts=(
+                ArtifactRecord(
+                    artifact_digest=stored.digest, rendering=rendering, media_type=media_type
+                ),
+            ),
+            frame_sha256=frame_sha256,
+        )
+    )
+
+
+class _BytesSink:
+    def __init__(self) -> None:
+        self.data = b""
+
+    def write(self, data: bytes, /) -> int:
+        self.data += bytes(data)
+        return len(data)
+
+
+@pytest.mark.parametrize(
+    ("encode", "media_type", "rendering", "records_hash"),
+    [
+        (_frame1_document, FRAME1_MEDIA_TYPE, {"format": "frame1"}, False),
+        (_snappy_parquet_frame, CANONICAL_FRAME_MEDIA_TYPE, dict(CANONICAL_FRAME_RENDERING), True),
+    ],
+    ids=["frame1-document", "canonical-frame-other-parquet-encoding"],
+)
+def test_repeat_publish_compares_the_stored_frame_not_its_encoding(
+    deps: _Deps, encode, media_type, rendering, records_hash
+) -> None:
+    """A repeat publish matches a stored frame holding the same rows whatever bytes encode it,
+    and refuses one holding other rows: by the frame hash on a record that holds one, else by
+    the frame1 document's digest. It answers a digest the pair lists as its canonical frame:
+    the stored one while that is servable, else this call's."""
+    _record_stored_pair(
+        deps,
+        data=encode(1.0),
+        media_type=media_type,
+        rendering=rendering,
+        frame_sha256=(
+            frame_sha256(build_frame(role_keys=_ROLE_KEYS, rows=_rows(1.0)))
+            if records_hash
+            else None
+        ),
+    )
+
+    repeat = deps.publish(rows=_rows(1.0))
+
+    assert repeat.created is False
+    assert [loc.artifact_digest for loc in _canonical_frames(deps)] == [repeat.artifact_digest]
+    with pytest.raises(PublishBytesDiverge):
+        deps.publish(rows=_rows(2.0))
+
+
+def _expire_stored_frame(deps: _Deps) -> None:
+    """Put every stored location of the pair's frame past working-tier retention and delete
+    its objects, as the sweep leaves an unpinned frame."""
+    with deps.store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.artifact_location SET stored_at = %s",
+            (datetime.now(UTC) - timedelta(days=366),),
+        )
+    for bucket in deps.artifact_store._client.buckets.values():
+        bucket.objects.clear()
+
+
+class _ReEncodingArtifactStore:
+    """Stores a canonical frame under another Parquet encoding than the door writes, as an
+    image on another PyArrow version does, and counts `get` calls."""
+
+    def __init__(self, store: LiveArtifactStore) -> None:
+        self._store = store
+        self.gets = 0
+
+    @contextmanager
+    def open_put(self, *, tier: Tier):
+        with self._store.open_put(tier=tier) as sink:
+            written = _ReEncodingSink(sink)
+            yield written
+            written.flush()
+
+    def get(self, *, artifact_digest: str, tier: Tier) -> bytes:
+        self.gets += 1
+        return self._store.get(artifact_digest=artifact_digest, tier=tier)
+
+
+class _ReEncodingSink:
+    def __init__(self, sink) -> None:
+        self._sink = sink
+        self._written = io.BytesIO()
+
+    def write(self, data: bytes, /) -> int:
+        return self._written.write(data)
+
+    def flush(self) -> None:
+        buffer = io.BytesIO()
+        table = pq.read_table(io.BytesIO(self._written.getvalue()))
+        pq.write_table(table, buffer, compression="snappy", row_group_size=1)
+        self._sink.write(buffer.getvalue())
+
+    def result(self):
+        return self._sink.result()
+
+
+def test_republishing_an_expired_frame_under_another_encoding_makes_it_servable(
+    deps: _Deps,
+) -> None:
+    """A repeat publish matches by the frame hash the version records, with no stored object
+    left to read, and links its own canonical frame in place of the expired one."""
+    first = deps.publish()
+    _expire_stored_frame(deps)
+    assert select_servable_locations(_canonical_frames(deps), now=datetime.now(UTC)) == []
+    re_encoding = _ReEncodingArtifactStore(deps.artifact_store)
+
+    second = deps.publish(artifact_store=re_encoding)
+
+    assert second.created is False
+    assert second.artifact_digest != first.artifact_digest
+    assert re_encoding.gets == 0
+    (servable,) = select_servable_locations(_canonical_frames(deps), now=datetime.now(UTC))
+    assert servable.artifact_digest == second.artifact_digest
+    raw = deps.artifact_store.get(artifact_digest=servable.artifact_digest, tier=Tier.working)
+    assert read_canonical_frame(raw) == build_frame(role_keys=_ROLE_KEYS, rows=_rows())
+
+
+def test_republishing_other_rows_over_an_expired_frame_conflicts_without_reading_it(
+    deps: _Deps,
+) -> None:
+    first = deps.publish()
+    _expire_stored_frame(deps)
+    re_encoding = _ReEncodingArtifactStore(deps.artifact_store)
+
+    with pytest.raises(PublishBytesDiverge):
+        deps.publish(rows=_rows(2.0), artifact_store=re_encoding)
+
+    assert re_encoding.gets == 0
+    assert {loc.artifact_digest for loc in _canonical_frames(deps)} == {first.artifact_digest}
+
+
+def test_http_republishing_other_rows_over_an_expired_frame_maps_to_publish_conflict_409() -> None:
+    deps = _Deps()
+    client = _build_client(deps)
+    first = client.post("/api/datasets/frames/publish", json=_publish_body(), headers=_AUTH_HEADERS)
+    assert first.status_code == 200, first.text
+    _expire_stored_frame(deps)
+
+    response = client.post(
+        "/api/datasets/frames/publish", json=_publish_body(rows=_rows(2.0)), headers=_AUTH_HEADERS
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == "publish_conflict"
+
+
+def test_a_pair_recording_neither_a_frame_hash_nor_a_frame1_document_refuses(deps: _Deps) -> None:
+    """A canonical frame alone is no identity: its digest depends on its Parquet encoding."""
+    _record_stored_pair(
+        deps,
+        data=_snappy_parquet_frame(1.0),
+        media_type=CANONICAL_FRAME_MEDIA_TYPE,
+        rendering=dict(CANONICAL_FRAME_RENDERING),
+    )
+
+    with pytest.raises(PublishBytesDiverge):
+        deps.publish(rows=_rows(1.0))
 
 
 _COMPOSED_STAT_VARS = [
@@ -222,39 +438,71 @@ _COMPOSED_STAT_VARS = [
         "another-list-onto-with",
     ],
 )
-def test_repeat_publish_keeps_the_body_first_written_whatever_entries_it_carries(
+def test_repeat_publish_keeps_the_facts_first_written_whatever_entries_it_carries(
     deps: _Deps, first, second
 ) -> None:
     """`composed_stat_vars` is no part of a pair's lineage, so a repeat publish succeeds with or
-    without it and the stored body is the first publish's."""
+    without it and the stored facts are the first publish's."""
     assert deps.publish(composed_stat_vars=first).created is True
-    stored = deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION).immutable_body
+    stored = deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION).facts
 
     assert deps.publish(composed_stat_vars=second).created is False
 
-    assert deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION).immutable_body == stored
-    assert stored == {
-        "op_spec_hash": _SPEC_ID,
-        "input_content_versions": ["cv_abc123"],
-        **({"composed_stat_vars": _COMPOSED_STAT_VARS} if first else {}),
-    }
+    assert deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION).facts == stored
+    assert stored == FrameLineage(
+        input_content_versions=["cv_abc123"],
+        composed_stat_vars=_COMPOSED_STAT_VARS if first else None,
+    )
 
 
-def test_repeat_publish_with_different_bytes_refuses_rather_than_overwrites(deps: _Deps) -> None:
+@pytest.mark.parametrize("input_content_versions", [("cv_abc123",), ("cv_bbbbbb",)])
+def test_repeat_publish_with_different_bytes_refuses_rather_than_overwrites(
+    deps: _Deps, input_content_versions: tuple[str, ...]
+) -> None:
+    """Different rows refuse as a byte conflict, and a call whose lineage differs too reports
+    the byte conflict, since lineage is compared only once the frames match."""
     first = deps.publish(rows=_rows(1.0))
 
     with pytest.raises(PublishBytesDiverge) as excinfo:
-        deps.publish(rows=_rows(2.0))
+        deps.publish(rows=_rows(2.0), input_content_versions=input_content_versions)
 
     assert excinfo.value.spec_id == _SPEC_ID
     assert excinfo.value.content_version == _CONTENT_VERSION
 
     stored = deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION)
     assert stored is not None
+    frames = _canonical_frames(deps)
+    assert len(frames) == 1
+    assert frames[0].artifact_digest == first.artifact_digest
+
+
+def _canonical_frame_only(deps: _Deps) -> str:
+    """Publishes `_rows()`, which leaves the pair linking its canonical frame and no frame1
+    document. Returns the canonical frame's digest."""
+    assert deps.publish().created is True
+    return canonical_frame_digest(deps.store, subject_id=_SPEC_ID, content_version=_CONTENT_VERSION)
+
+
+def test_repeat_publish_of_the_frame_a_canonical_frame_holds_answers_its_linked_digest(
+    deps: _Deps,
+) -> None:
+    canonical_digest = _canonical_frame_only(deps)
+
+    repeat = deps.publish()
+
+    assert repeat.created is False
+    assert repeat.artifact_digest == canonical_digest
     locations = deps.snapshot_reader.read_artifact_locations(_SPEC_ID, _CONTENT_VERSION)
-    frame1 = [loc for loc in locations if loc.media_type == FRAME1_MEDIA_TYPE]
-    assert len(frame1) == 1
-    assert frame1[0].artifact_digest == first.artifact_digest
+    assert {loc.artifact_digest for loc in locations} == {canonical_digest}
+
+
+def test_repeat_publish_of_another_frame_than_a_canonical_frame_holds_refuses(
+    deps: _Deps,
+) -> None:
+    _canonical_frame_only(deps)
+
+    with pytest.raises(PublishBytesDiverge):
+        deps.publish(rows=_rows(2.0))
 
 
 def test_repeat_publish_with_identical_bytes_but_different_lineage_refuses(deps: _Deps) -> None:
@@ -271,10 +519,34 @@ def test_repeat_publish_with_identical_bytes_but_different_lineage_refuses(deps:
     # lineage never got recorded.
     stored = deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION)
     assert stored is not None
-    assert stored.immutable_body["input_content_versions"] == ["cv_aaaaaa"]
-    locations = deps.snapshot_reader.read_artifact_locations(_SPEC_ID, _CONTENT_VERSION)
-    frame1 = [loc for loc in locations if loc.media_type == FRAME1_MEDIA_TYPE]
-    assert frame1[0].artifact_digest == first.artifact_digest
+    assert stored.facts == FrameLineage(input_content_versions=["cv_aaaaaa"])
+    assert _canonical_frames(deps)[0].artifact_digest == first.artifact_digest
+
+
+def test_repeat_publish_over_a_pair_recording_no_lineage_refuses(deps: _Deps) -> None:
+    """A pair holding this call's frame but no `input_content_versions` (a dataset version's
+    facts) refuses `PublishLineageDiverge`: lineage is compared, never assumed. The op-spec
+    identity is the row's `subject_id`, so the lookup has already matched it."""
+    frame = render_and_store_canonical_frame(
+        frame_chunks=(build_frame(role_keys=_ROLE_KEYS, rows=_rows()),),
+        subject_id=_SPEC_ID,
+        content_version=_CONTENT_VERSION,
+        artifact_store=deps.artifact_store,
+    )
+    deps.version_writer.record_version(
+        VersionRecord(
+            subject_id=_SPEC_ID,
+            subject_kind="spec",
+            content_version=_CONTENT_VERSION,
+            schema_version=1,
+            facts=facts_from_body(golden_cases()["definition"]["body"]),
+            artifacts=(frame,),
+            frame_sha256=frame_sha256(build_frame(role_keys=_ROLE_KEYS, rows=_rows())),
+        )
+    )
+
+    with pytest.raises(PublishLineageDiverge):
+        deps.publish()
 
 
 def test_repeat_publish_of_a_revoked_pair_raises_snapshot_revoked_not_replay(deps: _Deps) -> None:
@@ -329,6 +601,9 @@ class _CheckBlindSnapshotReader:
     def read_revocation(self, subject_id: str, content_version: str):
         return self._reader.read_revocation(subject_id, content_version)
 
+    def read_version_state(self, subject_id: str, content_version: str):
+        return self._reader.read_version_state(subject_id, content_version)
+
 
 def test_verify_phase_catches_a_concurrent_publish_with_different_lineage(deps: _Deps) -> None:
     """Post-write verification catches the losing publish when concurrent calls claim
@@ -354,7 +629,7 @@ def test_verify_phase_catches_a_concurrent_publish_with_different_lineage(deps: 
 
     stored = deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION)
     assert stored is not None
-    assert stored.immutable_body["input_content_versions"] == ["cv_aaaaaa"]
+    assert stored.facts == FrameLineage(input_content_versions=["cv_aaaaaa"])
     assert winner.created is True
 
 
@@ -377,6 +652,35 @@ def test_verify_phase_derives_created_from_the_insert_not_from_reaching_it(deps:
     )
 
     assert result.created is False
+
+
+def test_verify_phase_answers_the_digest_a_concurrent_publish_linked(deps: _Deps) -> None:
+    """A publish that loses the insert to another encoding of the same frame answers the
+    digest the pair links as its canonical frame, which is the winner's.
+    """
+    _record_stored_pair(
+        deps,
+        data=_snappy_parquet_frame(1.0),
+        media_type=CANONICAL_FRAME_MEDIA_TYPE,
+        rendering=dict(CANONICAL_FRAME_RENDERING),
+        frame_sha256=frame_sha256(build_frame(role_keys=_ROLE_KEYS, rows=_rows(1.0))),
+    )
+    [linked] = _canonical_frames(deps)
+
+    result = publish_frame(
+        spec_id=_SPEC_ID,
+        content_version=_CONTENT_VERSION,
+        role_keys=_ROLE_KEYS,
+        rows=_rows(1.0),
+        input_content_versions=("cv_abc123",),
+        artifact_store=deps.artifact_store,
+        snapshot_reader=_CheckBlindSnapshotReader(deps.snapshot_reader),
+        version_writer=deps.version_writer,
+    )
+
+    assert result.created is False
+    assert result.artifact_digest == linked.artifact_digest
+    assert [loc.artifact_digest for loc in _canonical_frames(deps)] == [result.artifact_digest]
 
 
 def test_verify_phase_catches_a_revocation_landing_between_check_and_verify(deps: _Deps) -> None:
@@ -428,14 +732,14 @@ def test_publish_composed_with_a_null_version_writer_raises_publish_record_missi
 
     # Re-rendering the orphaned frame recovers its content-addressed digest.
     frame = build_frame(role_keys=_ROLE_KEYS, rows=_rows())
-    artifact = render_and_store_frame1(
+    artifact = render_and_store_canonical_frame(
         frame_chunks=(frame,),
         subject_id=_SPEC_ID,
         content_version=_CONTENT_VERSION,
         artifact_store=deps.artifact_store,
     )
     raw = deps.artifact_store.get(artifact_digest=artifact.artifact_digest, tier=Tier.working)
-    assert json.loads(raw)["frame_version"] == "frame1"
+    assert read_canonical_frame(raw) == frame
 
 
 def test_malformed_frame_refuses_before_any_write(deps: _Deps) -> None:
@@ -476,15 +780,18 @@ def _build_client(
     allowed_principals: frozenset[str] | None = frozenset({_PRINCIPAL}),
     ceiling: int | None = None,
 ):
-    kwargs: dict[str, object] = {
-        "artifact_store": deps.artifact_store,
-        "snapshot_reader": deps.snapshot_reader,
-        "version_writer": deps.version_writer,
-        "allowed_principals": allowed_principals,
-    }
+    door_kwargs: dict[str, object] = {"allowed_principals": allowed_principals}
     if ceiling is not None:
-        kwargs["ceiling"] = ceiling
-    door = build_publish_door(**kwargs)
+        door_kwargs["ceiling"] = ceiling
+    door = build_publish_door(
+        deps=fake_deps_cell(
+            artifact_store=deps.artifact_store,
+            snapshot_reader=deps.snapshot_reader,
+            version_writer=deps.version_writer,
+        ),
+        settings=DatasetsBuildSettings.from_env(),
+        **door_kwargs,
+    )
     return make_client_for_door(door)
 
 
@@ -655,46 +962,6 @@ def test_http_publish_with_two_principal_header_values_refuses_regardless_of_ord
     assert allowed_second.json()["code"] == "publish_not_permitted"
 
 
-@pytest.mark.parametrize(
-    "missing",
-    [
-        ("artifact_store",),
-        ("snapshot_reader",),
-        ("version_writer",),
-        ("artifact_store", "snapshot_reader"),
-        ("artifact_store", "version_writer"),
-        ("snapshot_reader", "version_writer"),
-    ],
-)
-def test_build_publish_door_refuses_partial_injection(missing: tuple[str, ...]) -> None:
-    """Partial injection of the three publish stores refuses and names each missing store."""
-    deps = _Deps()
-    every_dep = {
-        "artifact_store": deps.artifact_store,
-        "snapshot_reader": deps.snapshot_reader,
-        "version_writer": deps.version_writer,
-    }
-    kwargs = {name: value for name, value in every_dep.items() if name not in missing}
-
-    with pytest.raises(DatasetsConfigError) as excinfo:
-        build_publish_door(**kwargs)
-
-    # Check the clause listing missing dependencies, not the general explanation.
-    detail = str(excinfo.value)
-    named_clause = detail.split("left uninjected", 1)[0]
-    for name in missing:
-        assert name in named_clause
-    for name in every_dep:
-        if name not in missing:
-            assert name not in named_clause
-
-
-def test_build_publish_door_with_every_dependency_none_still_builds() -> None:
-    """Leaving all three dependencies `None` defers their live construction to lifespan."""
-    door = build_publish_door()
-    assert door.router is not None
-
-
 def test_http_missing_version_row_after_write_maps_to_internal_error_500() -> None:
     """A publish door explicitly composed with a `version_writer` that does
     not share `snapshot_reader`'s own store reproduces
@@ -702,9 +969,12 @@ def test_http_missing_version_row_after_write_maps_to_internal_error_500() -> No
     """
     deps = _Deps()
     door = build_publish_door(
-        artifact_store=deps.artifact_store,
-        snapshot_reader=deps.snapshot_reader,
-        version_writer=NullVersionRecordWriter(),
+        deps=fake_deps_cell(
+            artifact_store=deps.artifact_store,
+            snapshot_reader=deps.snapshot_reader,
+            version_writer=NullVersionRecordWriter(),
+        ),
+        settings=DatasetsBuildSettings.from_env(),
         allowed_principals=frozenset({_PRINCIPAL}),
     )
     client = make_client_for_door(door)
@@ -1197,7 +1467,9 @@ def _base_year(year: int) -> dict[str, object]:
         "base_years_at_the_catalogue_bounds",
     ],
 )
-def test_http_composed_unit_publishes_and_frame1_holds_its_json(unit: dict[str, object]) -> None:
+def test_http_composed_unit_publishes_and_the_canonical_frame_holds_its_json(
+    unit: dict[str, object],
+) -> None:
     deps = _Deps()
     client = _build_client(deps)
     response = client.post(
@@ -1209,7 +1481,7 @@ def test_http_composed_unit_publishes_and_frame1_holds_its_json(unit: dict[str, 
     raw = deps.artifact_store.get(
         artifact_digest=response.json()["published"]["artifact_digest"], tier=Tier.working
     )
-    document = json.loads(raw)
+    document = canonical_frame_document(read_canonical_frame_table(raw))
     assert [row[document["columns"].index("unit")] for row in document["rows"]] == [unit]
 
 
@@ -1405,8 +1677,9 @@ def test_http_composed_stat_vars_are_stored_in_nfc_with_the_version(relation: st
         headers=_AUTH_HEADERS,
     )
     assert response.status_code == 200, response.text
-    stored = deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION).immutable_body
-    assert stored["composed_stat_vars"] == [{**entries[0], "first": ["dcid:Caf\u00e9"]}]
+    stored = deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION).facts
+    assert isinstance(stored, FrameLineage)
+    assert stored.composed_stat_vars == [{**entries[0], "first": ["dcid:Caf\u00e9"]}]
 
 
 def _entries(count: int, *, refs_per_side: int = 1) -> list[dict[str, object]]:
@@ -1505,5 +1778,6 @@ def test_http_composed_stat_vars_at_the_caps_publish() -> None:
         headers=_AUTH_HEADERS,
     )
     assert response.status_code == 200, response.text
-    stored = deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION).immutable_body
-    assert stored["composed_stat_vars"] == entries
+    stored = deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION).facts
+    assert isinstance(stored, FrameLineage)
+    assert stored.composed_stat_vars == entries

@@ -7,7 +7,6 @@ import pytest
 
 from dc_sdmx import SdmxClient
 from materialise import EnrichmentLookup, MaterialisationRequest, materialise_spec
-from materialise.content_version import mint_version
 from materialise.errors import MaterialisationError
 from materialise.facets import (
     DEPLOYMENT_FACET_POLICY,
@@ -15,13 +14,12 @@ from materialise.facets import (
     FacetBinding,
 )
 from materialise.graph import Facet, FacetDefaultPolicy
-from materialise.revision import RevisionSnapshot, SourceRevision
 from materialise.window import RequestedWindow
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import FacetMetadata, RoleNames
 from tests.engine._fake_coverage import build_coverage_index
 
-from .conftest import FakeGraphReader, FakeRevisionReader, only_chunk
+from .conftest import FakeGraphReader, only_chunk
 
 _STAT_VAR = "dcid:MalariaGrantDisbursements"
 # The graph and SDMX wires key on the bare dcid -- `probe_facets`/
@@ -38,10 +36,6 @@ _CSV_BODY = (
     "NotApplicable,OECD_DAC2A,2015,1000,,facet1\r\n"
 )
 
-_SNAPSHOT = RevisionSnapshot(
-    graph_revision="graph-rev-2024-01",
-    source_revisions=(SourceRevision(source="OECD_DAC_CRS", revision="rev-7"),),
-)
 
 _FACET = Facet(
     facet_id="facet1",
@@ -108,20 +102,6 @@ def _request(facet_bindings: dict[str, FacetBinding]) -> MaterialisationRequest:
     )
 
 
-def _reader() -> FakeRevisionReader:
-    return FakeRevisionReader([_SNAPSHOT, _SNAPSHOT])
-
-
-def _grammar_basis(basis: str) -> str:
-    """`dfo_frame_grammar`'s own `basis` vocabulary is the two-way
-    `{"bound", "declared_default"}` -- mirrors `FacetSelection.as_grammar_
-    facet`'s own collapse of the wire's `"deployment_fallback"` down to
-    `"declared_default"`, so a recompute built from `trace.facets` feeds the
-    grammar a basis it accepts.
-    """
-    return "declared_default" if basis == "deployment_fallback" else basis
-
-
 def test_all_three_axes_bound():
     graph = FakeGraphReader(facets={(_BARE_STAT_VAR, "country/TGO"): [_FACET]})
     facet_bindings = {
@@ -135,8 +115,7 @@ def test_all_three_axes_bound():
         _request(facet_bindings),
         sdmx=_sdmx_client(),
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=_reader(),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -174,8 +153,7 @@ def test_declared_default_availability_confirmed():
         _request(facet_bindings),
         sdmx=_sdmx_client(),
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=_reader(),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -230,8 +208,7 @@ def test_undeclared_default_raises_after_the_facet_probe_and_before_any_data_fet
             _request(facet_bindings),
             sdmx=sdmx,
             graph=graph,
-            enrichment=EnrichmentLookup(graph),
-            revision_reader=_reader(),
+            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
             materialiser_build="build-123",
             capability_version="cap-v1",
             coverage=coverage,
@@ -264,8 +241,7 @@ def test_mixed_failure_aggregates_into_one_error_prioritising_undefined():
             _request(facet_bindings),
             sdmx=_sdmx_client(),
             graph=graph,
-            enrichment=EnrichmentLookup(graph),
-            revision_reader=_reader(),
+            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
             materialiser_build="build-123",
             capability_version="cap-v1",
             coverage=coverage,
@@ -292,8 +268,7 @@ def test_all_three_axes_unbound_bind_via_deployment_default_policy():
         _request({}),
         sdmx=_sdmx_client(),
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=_reader(),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -314,21 +289,8 @@ def test_all_three_axes_unbound_bind_via_deployment_default_policy():
         assert entry["selection_reason"] == "sole_candidate"
         assert entry["dispatch_facet_id"] == "facet1"
 
-    # The preimage carries all three axes -- each one resolved to a
-    # concrete ref.
-    recomputed = mint_version(
-        only_chunk(result),
-        graph_revision=result.trace.graph_revision,
-        source_revisions=result.trace.source_revisions,
-        facets=[
-            {"axis": entry["axis"], "ref": entry["ref"], "basis": _grammar_basis(entry["basis"])}
-            for entry in result.trace.facets
-        ],
-    )
-    assert recomputed == result.content_version
 
-
-def test_unbound_axis_absent_on_the_selected_facet_binds_null_and_is_omitted_from_the_preimage():
+def test_unbound_axis_absent_on_the_selected_facet_binds_null():
     facet_without_measurement_method = Facet(
         facet_id="facet1",
         provenance_id="OECD_DAC2A",
@@ -367,8 +329,7 @@ def test_unbound_axis_absent_on_the_selected_facet_binds_null_and_is_omitted_fro
         _request({}),
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=_reader(),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -382,22 +343,6 @@ def test_unbound_axis_absent_on_the_selected_facet_binds_null_and_is_omitted_fro
     assert measurement_method_entry["ref"] is None
     assert measurement_method_entry["basis"] == "deployment_fallback"
     assert measurement_method_entry["selection_reason"] == "absent_on_selected_facet"
-
-    # The preimage omits the null-ref axis -- recomputing `mint_version`
-    # from the two non-null trace entries reproduces `content_version`
-    # exactly, proving the third was never part of the preimage rather than
-    # merely rendered as null within it.
-    recomputed = mint_version(
-        only_chunk(result),
-        graph_revision=result.trace.graph_revision,
-        source_revisions=result.trace.source_revisions,
-        facets=[
-            {"axis": entry["axis"], "ref": entry["ref"], "basis": _grammar_basis(entry["basis"])}
-            for entry in result.trace.facets
-            if entry["ref"] is not None
-        ],
-    )
-    assert recomputed == result.content_version
 
 
 def test_dispatch_facet_ids_include_a_sole_joint_match_not_just_the_witnesses():
@@ -474,8 +419,7 @@ def test_dispatch_facet_ids_include_a_sole_joint_match_not_just_the_witnesses():
         _request(facet_bindings),
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=_reader(),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -537,8 +481,7 @@ def test_dispatch_skips_the_fetch_when_no_candidate_jointly_matches(caplog):
             _request(facet_bindings),
             sdmx=sdmx,
             graph=graph,
-            enrichment=EnrichmentLookup(graph),
-            revision_reader=_reader(),
+            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
             materialiser_build="build-123",
             capability_version="cap-v1",
             coverage=coverage,
@@ -554,3 +497,33 @@ def test_dispatch_skips_the_fetch_when_no_candidate_jointly_matches(caplog):
         "jointly matched" in record.getMessage() and _STAT_VAR in record.getMessage()
         for record in caplog.records
     )
+
+
+def test_one_frame_minted_under_two_facet_bases_gets_one_token():
+    """The same rows bound explicitly on every axis and chosen by the deployment default
+    policy are one frame and so one `content_version`. The token hashes the canonical frame
+    alone, and each run's trace still records its own facet bases."""
+    graph = FakeGraphReader(facets={(_BARE_STAT_VAR, "country/TGO"): [_FACET]})
+    bound = {
+        "provenance": FacetBinding(state="bound", ref="OECD_DAC2A"),
+        "measurementMethod": FacetBinding(state="bound", ref="GrantEquivalent"),
+        "unit": FacetBinding(state="bound", ref="USD"),
+    }
+
+    results = [
+        materialise_spec(
+            _request(bindings),
+            sdmx=_sdmx_client(),
+            graph=graph,
+            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
+            materialiser_build="build-123",
+            capability_version="cap-v1",
+            coverage=_coverage_for([_FACET]),
+        )
+        for bindings in (bound, {})
+    ]
+
+    assert {entry["basis"] for entry in results[0].trace.facets} == {"bound"}
+    assert {entry["basis"] for entry in results[1].trace.facets} == {"deployment_fallback"}
+    assert only_chunk(results[0]).table.equals(only_chunk(results[1]).table)
+    assert results[0].content_version == results[1].content_version

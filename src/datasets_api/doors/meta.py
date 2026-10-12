@@ -12,80 +12,85 @@ worker classified, and the body carries its detail, pointer, alternatives, issue
 ceiling fields and cause entities, as `GET /api/datasets/{id}` renders them for
 the same failure.
 A done operation returns the mint manifest narrowed to the rendering its request
-posted, with signed URLs refreshed at read time. The rendering key is
+posted, each artifact under its stable download link. The rendering key is
 `artifact_rendering_key` of the row's stored `options` under this service's site
 settings, the key the synchronous definition door narrows by, so the poll lists
 that rendering's artifact plus statistics artifacts, as the synchronous mint does.
+Its `trace` carries `served_from: materialise` and the `confirmed_at` the row
+recorded at completion, the currency pair a synchronous mint that materialised
+reports. A row an image recording no `confirmed_at` completed carries neither.
 When the snapshot lists no artifact under that key (a bundle the worker could not
 link, a bundle of a superseded rendition, an expired working-tier artifact), the
 poll calls `OperationStore.fail_unservable_done` and answers retryable
 `operation_failed` with `cause.code` `internal_error`. A resubmit resets the row and
 re-runs it. Other snapshot errors keep their `datasets.snapshot` wire codes, so this
-route maps a revoked version, an unknown version and a signing failure to the
-platform's `internal_error` catch-all, as it does stored options that fail
+route maps a revoked version and an unknown version to the platform's `internal_error`
+catch-all, as it does stored options that fail
 `MintOptions` validation.
 
 The fronting proxy authenticates operations-poll callers, as for public mint
 and snapshot reads.
 
-Each poll calls `OperationStore.expire_if_dead` before reading. One conditional
-update fails work whose lease outlasts Cloud Tasks' retry window plus a margin,
-or whose first dispatch is overdue by the worst-case backlog wait. Heartbeats,
-completions, terminal rows, and unknown ids stay unchanged. `create_or_get` uses
-the same thresholds to sweep rows. `OperationStore` defines
-`lease_stale_after_seconds` and `never_claimed_stale_after_seconds`.
-Expiration records retryable `internal_error`, which the poll returns as
-`operation_failed`.
+A poll of an abandoned row calls `OperationStore.abandon`, fenced on the attempt it read, and
+answers the retryable `operation_failed` with `cause.code` `internal_error`; a resubmit resets
+the row under a new task. A lease that has ended (`claimed_at + lease_seconds` before now) means
+the attempt has stopped owning the row. The row is abandoned (`Operation.abandoned`) only when
+nothing will finish it:
 
-A pending poll also calls `dispatch_if_due`. Polls and submissions compete for
-a conditional claim. The winner enqueues and confirms the task. An enqueue
-failure is logged. The caller's normal poll loop retries the task.
+- `running` with its lease ended, claimed by the task's final delivery (`final_delivery` true),
+  so no delivery is left;
+- `running` with no `claimed_at` and an `updated_at` `LEASE_SECONDS` old, so the earlier image
+  that claimed it and renewed its lease through `updated_at` has stopped, and the row records
+  no delivery to wait for;
+- `running` with its lease ended, claimed by an earlier delivery (`final_delivery` false), or
+  `pending`, once `operation_deadline_seconds` have passed since its dispatch, or its submission
+  when no dispatch is recorded.
+
+A `running` row whose lease has ended while a later delivery is due polls as `running`, and the
+poll writes nothing: the task's next delivery claims the row.
+
+A poll of a `pending` row whose submission records no dispatch and is older than
+`ENQUEUE_RECOVERY_SECONDS` recovers the enqueue: `dispatch_if_due` creates the task again
+under the same name, `AlreadyExists` counting as success, and records `dispatched_at`. A
+failed create is logged, and the caller's next poll tries again.
 """
 
 from __future__ import annotations
 
-import asyncio
 import functools
 import logging
-from contextlib import asynccontextmanager
+from datetime import timedelta
 
-from fastapi import APIRouter, FastAPI, Request, Response
+from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
 
-from artifact_store import ArtifactStore, LiveArtifactInventory, LiveArtifactStore, Tier
 from code_index.shared import get_index
-from dataset_store import LiveDatasetStore, close_shared_pool, shared_pool
-from dataset_store.clock import Clock, utc_now
-from dataset_store.snapshot import LiveSnapshotReader, SnapshotReader, SnapshotRevoked
+from dataset_store.clock import Clock
+from dataset_store.snapshot import SnapshotNotFound, SnapshotReader, SnapshotRevoked
+from datasets_api.backpressure import Backpressure
 from datasets_api.capabilities import Capabilities, build_capabilities
 from datasets_api.codes_snapshot import (
-    SnapshotNotFound,
-    SnapshotSigningFailed,
     SpecNotFound,
 )
 from datasets_api.config import (
     DatasetsBuildSettings,
-    DatasetsConfigError,
-    DatasetsSettings,
 )
-from datasets_api.door_executor import build_door_executor
+from datasets_api.current import served_trace
+from datasets_api.deps import DepsCell
 from datasets_api.doors.snapshot import read_snapshot_manifest
 from datasets_api.headers import no_store_headers
 from datasets_api.manifest_models import Manifest
 from datasets_api.mint_models import MintOptions
 from datasets_api.operation_store import (
-    LiveOperationStore,
     Operation,
     OperationBacklogFull,
     OperationStore,
 )
-from datasets_api.operations.dispatch import dispatch_if_due
+from datasets_api.operations.dispatch import ENQUEUE_RECOVERY_SECONDS, dispatch_if_due
 from datasets_api.operations.task_client import (
-    LiveTaskClient,
     TaskClient,
-    TaskClientSettings,
-    build_live_task_client,
 )
+from datasets_api.refusals import classify_datasets_refusal
 from datasets_api.render import artifact_rendering_key, is_statistics_rendering, rendition_token
 from datasets_api.schema import (
     OperationEnvelope,
@@ -94,22 +99,23 @@ from datasets_api.schema import (
     build_schema_document,
     schema_document_response_schema,
 )
-from datasets_api.shutdown import ShutdownBudget
 from datasets_api.timings import door_call, run_with_timings
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from dfo_platform import HealthResponse, ProblemSpec, health_response
 from dfo_platform.build import build_commit
 from dfo_platform.doors import DoorContribution
-from dfo_platform.problem import PROBLEM_JSON, Cause
+from dfo_platform.problem import PROBLEM_JSON, Cause, Refusal
 from dfo_platform.static_response import freeze_public_json
-from series_coverage.shared import get_coverage_service
-from spec_registry.reader import LiveSpecReader, SpecReader
+from spec_registry import IdentityQuarantined
+from spec_registry.reader import SpecReader
 
 logger = logging.getLogger(__name__)
 
 
-class OperationNotFound(Exception):
+class OperationNotFound(Refusal):
     """An unknown operation id. Maps to non-retryable `operation_not_found` (404)."""
+
+    code = "operation_not_found"
 
     def __init__(self, *, operation_id: str) -> None:
         self.operation_id = operation_id
@@ -141,14 +147,17 @@ class OperationFailed(Exception):
         super().__init__(detail)
 
 
-class OperationBackpressure(Exception):
+class OperationBackpressure(Backpressure):
     """A full operations-read semaphore maps to retryable `service_unavailable` (503)."""
+
+    code = "service_unavailable"
+
+    detail = "the operations door is at its concurrent-read capacity right now; retry"
 
 
 def classify_meta_exception(exc: BaseException) -> ProblemSpec | None:
-    """Map this door's exceptions to problems. Return `None` for unclassified types."""
-    if isinstance(exc, OperationNotFound):
-        return ProblemSpec(status=404, code="operation_not_found", detail=str(exc), retryable=False)
+    """Map a failed operation, replaying its stored refusal, then any refusal. Return `None` for
+    every other type."""
     if isinstance(exc, OperationFailed):
         problem = ProblemSpec(
             status=500,
@@ -180,14 +189,7 @@ def classify_meta_exception(exc: BaseException) -> ProblemSpec | None:
             count=stored.count,
             cap=stored.cap,
         )
-    if isinstance(exc, OperationBackpressure):
-        return ProblemSpec(
-            status=503,
-            code="service_unavailable",
-            detail="the operations door is at its concurrent-read capacity right now; retry",
-            retryable=True,
-        )
-    return None
+    return classify_datasets_refusal(exc)
 
 
 SCHEMA_ROUTE_LIVE = True
@@ -200,11 +202,13 @@ def _load_done_manifest(
     operation: Operation,
     spec_reader: SpecReader,
     snapshot_reader: SnapshotReader,
-    artifact_store: ArtifactStore,
     now: Clock,
     settings: DatasetsBuildSettings,
 ) -> Manifest | None:
     """The done operation's manifest, narrowed to the rendering its request posted.
+
+    Its `trace` carries the currency pair a synchronous mint that materialised reports:
+    `served_from: materialise` and the `confirmed_at` the row recorded.
 
     The rendering key is `artifact_rendering_key` of the row's `options` under this service's
     `settings.site`, the key the synchronous definition door narrows by. The read lists that
@@ -224,7 +228,6 @@ def _load_done_manifest(
             content_version=operation.content_version,
             spec_reader=spec_reader,
             snapshot_reader=snapshot_reader,
-            artifact_store=artifact_store,
             now=now,
             settings=settings,
             rendering_key=key,
@@ -233,7 +236,7 @@ def _load_done_manifest(
         SpecNotFound,
         SnapshotNotFound,
         SnapshotRevoked,
-        SnapshotSigningFailed,
+        IdentityQuarantined,
     ) as exc:
         # Snapshot failures map to this route's `internal_error` catch-all.
         logger.error(
@@ -259,7 +262,12 @@ def _load_done_manifest(
             rendition_token(settings.site),
         )
         return None
-    return manifest
+    if operation.confirmed_at is None:
+        return manifest
+    trace = served_trace(
+        manifest.trace, served_from="materialise", confirmed_at=operation.confirmed_at
+    )
+    return manifest.model_copy(update={"trace": trace})
 
 
 def _failed(operation: Operation) -> OperationFailed:
@@ -292,21 +300,30 @@ def _resolve_operation(
     task_client: TaskClient | None,
     spec_reader: SpecReader | None,
     snapshot_reader: SnapshotReader | None,
-    artifact_store: ArtifactStore | None,
     now: Clock,
     settings: DatasetsBuildSettings,
 ) -> OperationResource:
     if operation_store is None:
         # Requests before lifespan setup follow the unknown-id path.
         raise OperationNotFound(operation_id=operation_id)
-    # Expire stale work before reading its latest state.
-    operation = operation_store.expire_if_dead(operation_id) or operation_store.get(operation_id)
+    operation = operation_store.get(operation_id)
     if operation is None:
         raise OperationNotFound(operation_id=operation_id)
+    polled_at = now()
+    if operation.abandoned(
+        polled_at, deadline=timedelta(seconds=settings.operation_deadline_seconds)
+    ):
+        operation = operation_store.abandon(
+            operation.id, attempt=operation.attempt_count
+        ) or operation_store.get(operation_id)
+        if operation is None:
+            raise OperationNotFound(operation_id=operation_id)
     if task_client is not None:
-        # Reconcile overdue or unconfirmed task dispatches before replying.
         operation = dispatch_if_due(
-            operation, operation_store=operation_store, task_client=task_client
+            operation,
+            operation_store=operation_store,
+            task_client=task_client,
+            older_than=polled_at - timedelta(seconds=ENQUEUE_RECOVERY_SECONDS),
         )
 
     if operation.state in ("pending", "running"):
@@ -314,17 +331,16 @@ def _resolve_operation(
     if operation.state == "failed":
         raise _failed(operation)
 
-    if spec_reader is None or snapshot_reader is None or artifact_store is None:
-        # Lifespan supplies the readers and artifact store used to re-sign manifests.
+    if spec_reader is None or snapshot_reader is None:
+        # Lifespan supplies the readers the done manifest is read through.
         raise RuntimeError(
             f"operation {operation.id!r} is done but this door holds no live "
-            "spec_reader/snapshot_reader/artifact_store to re-sign its manifest"
+            "spec_reader/snapshot_reader to read its manifest"
         )
     manifest = _load_done_manifest(
         operation=operation,
         spec_reader=spec_reader,
         snapshot_reader=snapshot_reader,
-        artifact_store=artifact_store,
         now=now,
         settings=settings,
     )
@@ -350,123 +366,11 @@ def _resolve_operation(
     raise OperationFailed(operation_id=operation.id, refusal_code="internal_error", retryable=True)
 
 
-def build_meta_door(
-    *,
-    settings: DatasetsBuildSettings | None = None,
-    operation_store: OperationStore | None = None,
-    task_client: TaskClient | None = None,
-    spec_reader: SpecReader | None = None,
-    snapshot_reader: SnapshotReader | None = None,
-    artifact_store: ArtifactStore | None = None,
-    now: Clock = utc_now,
-    pool_size: int | None = None,
-    budget: ShutdownBudget | None = None,
-) -> DoorContribution:
-    """Build the meta door and its operations-route executor.
-
-    `settings` defaults from the environment and sets concurrency and published
-    capability limits. Inject `spec_reader`, `snapshot_reader`, and
-    `artifact_store` together. If all three are unset, lifespan builds them with
-    one pool borrow. A partial set raises `DatasetsConfigError`.
-    `operation_store` is independent and shares that borrow when built live.
-    Lifespan builds an omitted `task_client` from `TaskClientSettings` and closes
-    it at shutdown.
-
-    `pool_size` defaults to `settings.operations_max_concurrency`. `budget` is
-    shared across mounted doors. An omitted budget creates a private one.
+def build_meta_door(*, deps: DepsCell, settings: DatasetsBuildSettings) -> DoorContribution:
+    """Build the meta door over the surface's dependency cell. `settings` sets the published
+    capability limits. Operation polls run on the read executor.
     """
-    missing = [
-        name
-        for name, value in (
-            ("spec_reader", spec_reader),
-            ("snapshot_reader", snapshot_reader),
-            ("artifact_store", artifact_store),
-        )
-        if value is None
-    ]
-    if missing and len(missing) != 3:
-        raise DatasetsConfigError(
-            "datasets meta door built with "
-            f"{', '.join(missing)} left uninjected while another dependency is injected. A "
-            "caller injecting any one of spec_reader/snapshot_reader/artifact_store must "
-            "inject every one of them. This door builds a live dependency for all three "
-            "only when every one of them is left None."
-        )
-
-    _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
-    _budget = budget if budget is not None else ShutdownBudget()
-    _operation_store: OperationStore | None = operation_store
-    _task_client: TaskClient | None = task_client
-    _spec_reader: SpecReader | None = spec_reader
-    _snapshot_reader: SnapshotReader | None = snapshot_reader
-    _artifact_store: ArtifactStore | None = artifact_store
-
-    effective_pool_size = (
-        pool_size if pool_size is not None else _settings.operations_max_concurrency
-    )
-    door_executor = build_door_executor(effective_pool_size, "operations")
-    executor = door_executor.executor
-
-    @asynccontextmanager
-    async def lifespan(_app: FastAPI):
-        nonlocal _operation_store, _task_client, _spec_reader, _snapshot_reader, _artifact_store
-        pool_opened_here = False
-        store: LiveDatasetStore | None = None
-
-        def _open_store() -> LiveDatasetStore:
-            nonlocal store, pool_opened_here
-            if store is None:
-                store = LiveDatasetStore(connections=shared_pool())
-                pool_opened_here = True
-            return store
-
-        def _close_what_this_lifespan_opened() -> None:
-            if pool_opened_here:
-                close_shared_pool()
-            if task_client is None and isinstance(_task_client, LiveTaskClient):
-                _task_client.close()
-
-        if operation_store is None:
-            _operation_store = LiveOperationStore(store=_open_store(), settings=_settings)
-        if spec_reader is None:
-            _spec_reader = LiveSpecReader(store=_open_store())
-            _snapshot_reader = LiveSnapshotReader(store=_open_store())
-        if task_client is None:
-            try:
-                task_settings = TaskClientSettings.from_env()
-                _task_client = build_live_task_client(
-                    queue=task_settings.tasks_queue,
-                    worker_url=task_settings.worker_url,
-                    worker_invoker_service_account=task_settings.worker_invoker_service_account,
-                )
-            except BaseException:
-                _close_what_this_lifespan_opened()
-                raise
-        if artifact_store is None:
-            try:
-                live_settings = DatasetsSettings.from_env()
-                _artifact_store = LiveArtifactStore(
-                    buckets={
-                        Tier.working: live_settings.artifact_bucket_working,
-                        Tier.pinned: live_settings.artifact_bucket_pinned,
-                    },
-                    inventory=LiveArtifactInventory(store=_open_store()),
-                )
-            except BaseException:
-                _close_what_this_lifespan_opened()
-                raise
-        try:
-            yield
-        finally:
-            executor.shutdown(wait=False, cancel_futures=True)
-            await asyncio.to_thread(door_executor.drain, _budget)
-            _close_what_this_lifespan_opened()
-
     router = APIRouter()
-
-    # Load the process-wide coverage artifact at startup. A missing URI or
-    # unreadable artifact fails surface construction.
-    get_coverage_service()
 
     @router.get("/api/datasets/healthz", response_model=HealthResponse)
     async def healthz() -> HealthResponse:
@@ -491,7 +395,7 @@ def build_meta_door(
         build=build_commit(),
         code_index_stamp=get_index().stamp,
         declarations=get_index().declarations,
-        settings=_settings,
+        settings=settings,
     )
     capabilities_document = freeze_public_json(
         capabilities_payload.model_dump(mode="json"), max_age=300
@@ -520,20 +424,20 @@ def build_meta_door(
         },
     )
     async def get_operation(operation_id: str) -> JSONResponse:
+        current = deps.get()
         with door_call("operations", logger=logger) as call:
-            resource = await door_executor.run(
+            resource = await current.read_executor.run(
                 functools.partial(
                     run_with_timings,
                     _resolve_operation,
                     call.timings,
                     operation_id=operation_id,
-                    operation_store=_operation_store,
-                    task_client=_task_client,
-                    spec_reader=_spec_reader,
-                    snapshot_reader=_snapshot_reader,
-                    artifact_store=_artifact_store,
-                    now=now,
-                    settings=_settings,
+                    operation_store=current.operation_store,
+                    task_client=current.task_client,
+                    spec_reader=current.spec_reader,
+                    snapshot_reader=current.snapshot_reader,
+                    now=current.now,
+                    settings=current.settings,
                 ),
                 refuse=OperationBackpressure,
             )
@@ -555,6 +459,8 @@ def build_meta_door(
         exception_exemplars=(
             OperationNotFound(operation_id="op_exemplar"),
             OperationFailed(operation_id="op_exemplar", refusal_code="excel_limit"),
+            OperationBackpressure(),
+            OperationBacklogFull(in_flight=1, limit=1),
         ),
-        lifespan=lifespan,
+        registry_endpoints={"/api/datasets/operations/{operation_id}": "datasets.operations"},
     )

@@ -515,7 +515,7 @@ class EntityResolver:
             # Empty membership or zero graph-confirmed members is a data condition.
             # Return `NotHeld` even when the group entity is confirmed.
             return NotHeld(dcid=winning_dcid, name=_candidate_name(winning_candidate))
-        return Group(members=members, entity=entity)
+        return Group(members=members, entity=entity, dcid=winning_dcid)
 
     def _assemble_fallback(
         self,

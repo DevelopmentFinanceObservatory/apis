@@ -123,7 +123,7 @@ Write operations follow a set sequence:
 
 `load(frame_ref)`:
 
-1. Validates revocation status and servability against `SnapshotReader` (`read_version`, `read_revocation`, `read_artifact_locations` with `select_servable_locations`).
+1. Validates the version, its revocation and its base version's, and servability in one `dataset_store.snapshot.read_servable_version` transaction, the check the snapshot door makes.
 2. Retrieves raw frame bytes from `ArtifactStore`, caching results in memory up to 64 MB.
 3. Computes the `StructuralView` with `assembler.frame_view.compute_structural_view`.
 4. Resolves display labels for `stat_var`, `entity`, and `provenance` IDs through `GraphReader.node_arcs_many`, capped at 300 references per call.

@@ -14,9 +14,9 @@ Routes:
   collapse was summed by, and `not_recorded` for a collapse with no linked file recording one.
   The groupby is read as the frame refresh reads it (`datasets_api.recorded_rendering`).
 
-Every route requires the publish door's principal. The route class runs
-`PublishPrincipals.admit` before FastAPI validates the path or reads a body, so an unauthorized
-caller gets `publish_not_permitted` (403) whatever it sends.
+Every route requires the `publish` grant (`datasets_api.principals`), checked before FastAPI
+validates the path or reads a body, so a caller lacking it gets `publish_not_permitted` (403)
+whatever it sends.
 
 `recipe_not_found` (404) answers a read of a pair holding no recipe and a replay key no recipe
 carries. `snapshot_not_found` (404) answers a recipe write for a pair with no version row.
@@ -31,77 +31,67 @@ content version (`datasets_api.app`).
 
 from __future__ import annotations
 
-import asyncio
 import functools
 import logging
-from collections.abc import Callable, Coroutine
-from contextlib import asynccontextmanager
-from typing import Annotated, Any, Literal
+from collections.abc import Callable
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, FastAPI, Path, Request, Response
+from fastapi import APIRouter, Path
 from fastapi.responses import JSONResponse
-from fastapi.routing import APIRoute
 from pydantic import BaseModel, ConfigDict, Field, field_serializer
 
-from dataset_store import LiveDatasetStore, close_shared_pool, shared_pool
-from datasets_api.config import DatasetsBuildSettings, DatasetsConfigError
-from datasets_api.door_executor import build_door_executor
-from datasets_api.doors.publish import (
-    PublishNotPermitted,
-    PublishPrincipals,
-    classify_publish_exception,
-    write_frame_recipe,
-)
+from datasets_api.backpressure import Backpressure
+from datasets_api.config import DatasetsBuildSettings
+from datasets_api.deps import DepsCell
+from datasets_api.doors.publish import classify_publish_exception, write_frame_recipe
 from datasets_api.headers import no_store_headers
 from datasets_api.mint_models import GroupbyOptions
+from datasets_api.principals import Grant, Principals, PublishNotPermitted, granted_route_class
 from datasets_api.publish_models import OcvContentVersion, OpsSpecId, Recipe, ReplayKey
 from datasets_api.recipe_store import (
-    LiveRecipeStore,
     RecipeDiverges,
     RecipeFrameNotStored,
     RecipeStore,
     ReplayKeyHeld,
 )
 from datasets_api.recorded_rendering import recorded_groupby
-from datasets_api.shutdown import ShutdownBudget
 from datasets_api.timings import door_call, run_with_timings
-from datasets_api.version_store import LiveVersionLister
 from datasets_api.versions import ListedVersion, VersionLister
 from dfo_platform import ProblemSpec
-from dfo_platform.doors import DoorContribution
+from dfo_platform.doors import DoorContribution, route_registry_endpoints
+from dfo_platform.problem import Refusal
 
 logger = logging.getLogger(__name__)
 
 
-class RecipeNotFound(Exception):
+class RecipeNotFound(Refusal):
     """The pair holds no recipe. Maps to `recipe_not_found` (404)."""
+
+    code = "recipe_not_found"
 
     def __init__(self, *, spec_id: str, content_version: str) -> None:
         super().__init__(f"spec_id {spec_id!r} content_version {content_version!r} holds no recipe")
 
 
-class ReplayNotFound(Exception):
+class ReplayNotFound(Refusal):
     """No recipe carries the replay key. Maps to `recipe_not_found` (404)."""
+
+    code = "recipe_not_found"
 
     def __init__(self, *, replay_key: str) -> None:
         super().__init__(f"no frame is stored under replay_key {replay_key!r}")
 
 
-class RecipeBackpressure(Exception):
+class RecipeBackpressure(Backpressure):
     """A full recipe semaphore maps to retryable `service_unavailable` (503)."""
+
+    code = "service_unavailable"
+
+    detail = "the recipe door is at its concurrent-call capacity right now; retry"
 
 
 def classify_recipe_exception(exc: BaseException) -> ProblemSpec | None:
-    if isinstance(exc, RecipeNotFound | ReplayNotFound):
-        return ProblemSpec(status=404, code="recipe_not_found", detail=str(exc), retryable=False)
-    if isinstance(exc, RecipeBackpressure):
-        return ProblemSpec(
-            status=503,
-            code="service_unavailable",
-            detail="the recipe door is at its concurrent-call capacity right now; retry",
-            retryable=True,
-        )
-    # Covers `PublishNotPermitted` and the recipe store's refusals.
+    # Covers the recipe store's refusals.
     return classify_publish_exception(exc)
 
 
@@ -202,93 +192,33 @@ def _dataset_version(version: ListedVersion) -> DatasetVersion:
     )
 
 
-def _admitting_route_class(principals: PublishPrincipals) -> type[APIRoute]:
-    """Return a route class that checks the caller before FastAPI validates the request."""
-
-    class _AdmittingRecipeRoute(APIRoute):
-        def get_route_handler(self) -> Callable[[Request], Coroutine[Any, Any, Response]]:
-            handler = super().get_route_handler()
-
-            async def admit_then_handle(request: Request) -> Response:
-                principals.admit(request)
-                return await handler(request)
-
-            return admit_then_handle
-
-    return _AdmittingRecipeRoute
-
-
 def build_recipe_door(
     *,
-    settings: DatasetsBuildSettings | None = None,
-    recipe_store: RecipeStore | None = None,
-    version_lister: VersionLister | None = None,
+    deps: DepsCell,
+    settings: DatasetsBuildSettings,
     principal_header: str | None = None,
     allowed_principals: frozenset[str] | None = None,
-    pool_size: int | None = None,
-    budget: ShutdownBudget | None = None,
 ) -> DoorContribution:
-    """Build the recipe door and its executor.
+    """Build the recipe door over the surface's dependency cell. Calls run on the read
+    executor against the surface's recipe store, the one the publish door writes to.
 
-    Inject `recipe_store` and `version_lister` together, or leave both unset for lifespan to
-    build them on one pool borrow. One injected without the other raises
-    `DatasetsConfigError`. Inject the recipe store the publish door writes to.
-
-    `settings` defaults from the environment. The principal settings default as the publish
-    door's do (`PublishPrincipals.resolve`), so one allowlist admits both doors' callers.
-    The two doors serve the same callers, so `pool_size` defaults to
-    `settings.publish_max_concurrency`. `budget` is shared across mounted doors. An omitted
-    budget creates a private one.
+    Every route admits the `publish` grant, held by `allowed_principals`, which defaults to
+    `settings.first_party_principal` as on the publish door.
     """
-    if (recipe_store is None) != (version_lister is None):
-        raise DatasetsConfigError(
-            "datasets recipe door built with one of recipe_store/version_lister injected and "
-            "the other left unset. Inject both, or leave both None for this door to build "
-            "live ones."
-        )
-
-    _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
-    _budget = budget if budget is not None else ShutdownBudget()
-    _recipe_store: RecipeStore | None = recipe_store
-    _version_lister: VersionLister | None = version_lister
-    principals = PublishPrincipals.resolve(
-        settings=_settings,
-        principal_header=principal_header,
-        allowed_principals=allowed_principals,
-    )
-
-    door_executor = build_door_executor(
-        pool_size if pool_size is not None else _settings.publish_max_concurrency, "recipe"
-    )
-
-    @asynccontextmanager
-    async def lifespan(_app: FastAPI):
-        nonlocal _recipe_store, _version_lister
-        pool_opened_here = False
-        if recipe_store is None:
-            store = LiveDatasetStore(connections=shared_pool())
-            pool_opened_here = True
-            _recipe_store = LiveRecipeStore(store=store)
-            _version_lister = LiveVersionLister(store=store)
-        try:
-            yield
-        finally:
-            # Cancel queued calls. Drain running calls before closing the pool.
-            door_executor.executor.shutdown(wait=False, cancel_futures=True)
-            await asyncio.to_thread(door_executor.drain, _budget)
-            if pool_opened_here:
-                close_shared_pool()
+    require_publish = Principals.resolve(
+        settings=settings, principal_header=principal_header, publish=allowed_principals
+    ).require(Grant.publish)
 
     async def run[T](fn: Callable[..., T], /, **kwargs: object) -> tuple[T, str]:
-        """Run a store call on the door's executor. Return its result and `Server-Timing`."""
+        """Run a store call on the read executor. Return its result and `Server-Timing`."""
         with door_call("recipe", logger=logger) as call:
-            result = await door_executor.run(
+            result = await deps.get().read_executor.run(
                 functools.partial(run_with_timings, fn, call.timings, **kwargs),
                 refuse=RecipeBackpressure,
             )
         return result, call.server_timing
 
-    router = APIRouter(route_class=_admitting_route_class(principals))
+    router = APIRouter(route_class=granted_route_class(require_publish))
 
     @router.put(
         "/api/datasets/frames/{spec_id}/{content_version}/recipe",
@@ -301,7 +231,7 @@ def build_recipe_door(
     ) -> JSONResponse:
         created, server_timing = await run(
             write_frame_recipe,
-            recipe_store=_recipe_store,
+            recipe_store=deps.get().recipe_store,
             spec_id=spec_id,
             content_version=content_version,
             recipe=body,
@@ -325,7 +255,7 @@ def build_recipe_door(
             _read_recipe,
             spec_id=spec_id,
             content_version=content_version,
-            recipe_store=_recipe_store,
+            recipe_store=deps.get().recipe_store,
         )
         return JSONResponse(recipe, headers=no_store_headers(server_timing=server_timing))
 
@@ -335,7 +265,7 @@ def build_recipe_door(
     )
     async def get_replay(replay_key: Annotated[ReplayKey, Path()]) -> JSONResponse:
         frame, server_timing = await run(
-            _read_replay, replay_key=replay_key, recipe_store=_recipe_store
+            _read_replay, replay_key=replay_key, recipe_store=deps.get().recipe_store
         )
         return JSONResponse(
             frame.model_dump(mode="json"), headers=no_store_headers(server_timing=server_timing)
@@ -347,7 +277,7 @@ def build_recipe_door(
     )
     async def get_versions(id: str) -> JSONResponse:
         versions, server_timing = await run(
-            _list_versions, spec_id=id, version_lister=_version_lister
+            _list_versions, spec_id=id, version_lister=deps.get().version_lister
         )
         return JSONResponse(
             versions.model_dump(mode="json"),
@@ -356,6 +286,7 @@ def build_recipe_door(
 
     return DoorContribution(
         router=router,
+        registry_endpoints=route_registry_endpoints(router, "datasets.recipe"),
         classify=classify_recipe_exception,
         exception_types=(
             RecipeNotFound,
@@ -381,9 +312,8 @@ def build_recipe_door(
                 holder_spec_id="ops_holder",
                 holder_content_version="ocv_holder",
             ),
-            PublishNotPermitted(principal=None),
+            PublishNotPermitted(),
         ),
-        lifespan=lifespan,
     )
 
 

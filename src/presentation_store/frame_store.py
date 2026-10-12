@@ -1,7 +1,7 @@
 """`LiveFrameStore` resolves frames from dataset snapshots and digest-verified artifacts.
 It resolves best-effort labels for frames.
 
-A published `ops_` frame's version body holds only its lineage, so `load()` adds the citation
+A published `ops_` frame's version stores only its lineage, so `load()` adds the citation
 its `provenance` column names, read from the graph, as `manifest["citation"]`. The graph read
 covers the first 300 distinct refs in row order; later refs are cited by their ref alone. A
 dataset version's stored citation is served with its empty documentation and licence fields
@@ -23,15 +23,28 @@ frame's own refs, with the raw ref where they hold no name. A recipe that states
 it. Stored coordinates that name no series are labelled by their raw content, so no stored
 recipe fails a load. A frame with no recipe, or a recipe with a null anchor, loads with no anchor.
 
-`load()` caches resolved frame bytes by `(spec_id, content_version)` up to 64 MiB. A pair keeps
+`load()` reads a version's stored frame (`datasets_api.render.servable_frame_location`): its
+canonical frame, Parquet, built into the parsed frame1 document the assembler reads
+(`materialise.formats.canonical_frame_document`), or for a version holding only a frame1
+document, that document. Distinct cells of the built document are shared objects, so a
+250,000-row frame costs far less resident memory than a parsed frame1 document. A canonical
+frame of more rows than `PUBLISH_MAX_ROWS` (250,000) refuses `missing_rendering`. A dataset
+version, whose facts record `coverage.rows`, refuses on that count before its object is
+fetched, which bounds the bytes and the document one load holds. A published `ops_` frame,
+whose lineage records no count, is fetched whole and refuses on its Parquet footer's count
+before its rows are decoded, which bounds the document; the publish door bounds its rows at
+the write.
+
+`load()` caches resolved frames by `(spec_id, content_version)` up to 64 MiB, a canonical frame
+counted at its estimated resident size (`_document_bytes`) and a frame1 document at its byte
+length. A pair keeps
 its first recipe, so the anchor is cached with the frame. A derived frame cached before it had a
 recipe is marked so, and each later load reads the recipe again until one exists. A load whose
 citation or documentation read failed is cached too, marked incomplete, and each later load
 re-runs only the citation read until one completes, so a failing read never refetches the frame
 bytes. `load()` re-checks revocation and working-tier servability on every call, cache hit or
 not, so a later takedown refuses the next load. `pin()` records a
-presentation reference and promotes working artifacts to pinned. Definition mints store
-frame1 renderings.
+presentation reference and promotes working artifacts to pinned.
 """
 
 from __future__ import annotations
@@ -47,6 +60,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass, replace
 from typing import cast
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 from dfo_frame_grammar import STAT_VAR_COLUMN, UNIT_COLUMN
 from dfo_frame_grammar.grammar import STAT_VAR_REF_PREFIX
 
@@ -67,20 +82,29 @@ from code_index.shared import get_index, get_measure_index
 from code_index.types import MeasureIndex
 from dataset_store.clock import Clock, utc_now
 from dataset_store.snapshot import (
+    ArtifactNotFound,
     ArtifactReferenceWriter,
+    FrameLineage,
+    ManifestFacts,
+    SnapshotNotFound,
     SnapshotReader,
     SnapshotRevoked,
     StoredArtifactLocation,
     StoredVersion,
-    select_servable_locations,
-    servable_location_of_media_type,
+    read_servable_version,
 )
-from datasets_api.codes_snapshot import ArtifactNotFound
-from datasets_api.manifest import build_citation, healed_citation
+from datasets_api.codes_snapshot import SpecNotFound
+from datasets_api.doors.publish import PUBLISH_MAX_ROWS
+from datasets_api.manifest import build_citation, healed_citation, version_document
 from datasets_api.manifest_models import CitationModel
-from datasets_api.publish_models import COMPOSED_STAT_VARS_KEY
 from datasets_api.recipe_store import RecipeReader
-from materialise.formats import FRAME1_MEDIA_TYPE
+from datasets_api.render import servable_frame_location
+from datasets_api.subject_ids import served_subject_ids
+from materialise.formats import (
+    FRAME1_MEDIA_TYPE,
+    canonical_frame_document,
+    read_canonical_frame_table,
+)
 from materialise.graph import UNRESOLVED_NODE, GraphReader, GraphReadError
 from materialise.provenance_doc import read_source_citations
 from materialise.unit_cells import composed_unit_sides
@@ -166,7 +190,7 @@ _FAMILY_REF_PREFIX = "spec_"
 # stat_var ref.
 _PROVENANCE_COLUMN = "provenance"
 
-# A published derived frame's spec id. Its version body carries no citation.
+# A published derived frame's spec id. Its version stores no citation.
 _DERIVED_SPEC_PREFIX = "ops_"
 
 
@@ -209,6 +233,68 @@ def _io_failure(*, action: str, digest: str, exc: Exception) -> FrameUnavailable
     return FrameUnavailable(
         reason="io", detail=f"{action} artifact_digest {digest!r} raised {type(exc).__name__}"
     )
+
+
+def _decode_frame(
+    data: bytes, *, location: StoredArtifactLocation, max_rows: int
+) -> tuple[Mapping[str, object], int]:
+    """The frame1 document `data` holds and the bytes the cache counts for it: a frame1
+    document parsed, at its byte length, or a canonical frame built into one, at
+    `_document_bytes`. A canonical frame whose Parquet footer counts more than `max_rows` rows
+    refuses `missing_rendering` before any row is decoded. Bytes that do not decode refuse
+    `io`."""
+    try:
+        if location.media_type == FRAME1_MEDIA_TYPE:
+            return cast("Mapping[str, object]", json.loads(data)), len(data)
+        rows = pq.read_metadata(pa.BufferReader(data)).num_rows
+        if rows > max_rows:
+            raise _over_row_bound(location, rows=rows, max_rows=max_rows)
+        doc = canonical_frame_document(read_canonical_frame_table(data))
+    except (ValueError, pa.ArrowException) as exc:
+        raise FrameUnavailable(
+            reason="io",
+            detail=(
+                f"artifact_digest {location.artifact_digest!r} did not decode as a frame: "
+                f"{type(exc).__name__}"
+            ),
+        ) from None
+    rows = cast("Sequence[Sequence[object]]", doc["rows"])
+    return doc, _document_bytes(rows=len(rows), columns=len(cast("Sequence[str]", doc["columns"])))
+
+
+def _over_row_bound(
+    location: StoredArtifactLocation, *, rows: int, max_rows: int
+) -> FrameUnavailable:
+    return FrameUnavailable(
+        reason="missing_rendering",
+        detail=(
+            f"artifact_digest {location.artifact_digest!r} holds {rows} rows, over the "
+            f"{max_rows} rows Presentation loads"
+        ),
+    )
+
+
+def _recorded_rows(stored: StoredVersion) -> int | None:
+    """The row count a dataset version's facts record as `coverage.rows`, or `None` for a
+    published frame's lineage, which records none."""
+    if not isinstance(stored.facts, ManifestFacts):
+        return None
+    rows = stored.facts.coverage.get("rows")
+    return rows if isinstance(rows, int) else None
+
+
+_ROW_LIST_BYTES = 56
+"""CPython's size of an empty list, the per-row container of a built document."""
+
+_VALUE_CELL_BYTES = 32
+"""The float or int a row's value cell holds, with its allocator overhead."""
+
+
+def _document_bytes(*, rows: int, columns: int) -> int:
+    """The estimated resident size of a built canonical frame document: per row, its list,
+    one pointer per column and its value cell. Strings and units are shared across rows, so
+    they add little at scale."""
+    return rows * (_ROW_LIST_BYTES + 8 * columns + _VALUE_CELL_BYTES)
 
 
 def _capped_refs(
@@ -295,14 +381,18 @@ class _CachedFrame:
 
 
 class LiveFrameStore:
-    """`graph` supplies entity/provenance labels. `spec_reader` supplies family labels.
-    `None` for either disables only those labels; every other dependency is required.
+    """`graph` supplies entity/provenance labels, and `None` disables them. `spec_reader`
+    supplies family labels and the served id a frame ref's revocation check covers; `None`
+    disables those labels and narrows the check to the ref's own id. Every other dependency is
+    required.
     `recipe_reader` supplies a derived frame's rolling anchor, and `None` loads every frame
     without one.
     `code_index` and `measure_index` default to the packaged indexes. `now` supplies the clock
     for expiry checks and reference timestamps. `read_budget_seconds` bounds the graph reads of
     one `load()` from its start, as the module docstring describes, for a caller that sets no
-    door deadline.
+    door deadline. `frame_max_rows` bounds the rows of a canonical frame `load()` decodes, since
+    the whole frame is built in memory. A larger frame refuses `missing_rendering`, before its
+    object is fetched when the version's facts record its row count.
     """
 
     def __init__(
@@ -319,6 +409,7 @@ class LiveFrameStore:
         now: Clock = utc_now,
         cache_max_bytes: int = _FRAME_CACHE_MAX_BYTES,
         read_budget_seconds: float = _READ_BUDGET_SECONDS,
+        frame_max_rows: int = PUBLISH_MAX_ROWS,
     ) -> None:
         self._snapshots = snapshots
         self._artifacts = artifacts
@@ -331,6 +422,7 @@ class LiveFrameStore:
         self._now = now
         self._cache_max_bytes = cache_max_bytes
         self._read_budget_seconds = read_budget_seconds
+        self._frame_max_rows = frame_max_rows
         self._cache_lock = threading.Lock()
         self._cache: dict[tuple[str, str], _CachedFrame] = {}
         self._cache_bytes = 0
@@ -349,22 +441,24 @@ class LiveFrameStore:
         if cached is not None and cached.citation_complete and cached.anchor_final:
             return cached.resolved
 
+        document = version_document(stored)
         if cached is None:
+            recorded_rows = _recorded_rows(stored)
+            if (
+                canonical.media_type != FRAME1_MEDIA_TYPE
+                and recorded_rows is not None
+                and recorded_rows > self._frame_max_rows
+            ):
+                raise _over_row_bound(canonical, rows=recorded_rows, max_rows=self._frame_max_rows)
             data = self._fetch_bytes(canonical)
-            try:
-                doc = cast("Mapping[str, object]", json.loads(data))
-            except ValueError as exc:
-                raise FrameUnavailable(
-                    reason="io",
-                    detail=(
-                        f"artifact_digest {canonical.artifact_digest!r} did not decode as JSON: "
-                        f"{type(exc).__name__}"
-                    ),
-                ) from None
+            doc, size_bytes = _decode_frame(data, location=canonical, max_rows=self._frame_max_rows)
             labels, labels_resolved = self._resolve_labels(
                 doc,
                 composed_stat_vars=read_composed_stat_vars(
-                    stored.immutable_body.get(COMPOSED_STAT_VARS_KEY), frame_ref=frame_ref
+                    stored.facts.composed_stat_vars
+                    if isinstance(stored.facts, FrameLineage)
+                    else None,
+                    frame_ref=frame_ref,
                 ),
                 deadline=deadline,
             )
@@ -372,11 +466,10 @@ class LiveFrameStore:
                 frame_ref=frame_ref,
                 frame=doc,
                 structural_view=compute_structural_view(frame=doc),
-                manifest=stored.immutable_body,
+                manifest=document,
                 labels=labels,
                 retrieved_on=canonical.created_at.astimezone(datetime.UTC).date(),
             )
-            size_bytes = len(data)
             citation_complete = anchor_final = False
         else:
             frame, size_bytes, labels_resolved = cached.resolved, cached.size_bytes, True
@@ -388,7 +481,7 @@ class LiveFrameStore:
             labels_resolved = labels_resolved and anchor_labelled
         if not citation_complete:
             manifest, citation_complete = self._cited_manifest(
-                frame, stored_manifest=stored.immutable_body, deadline=deadline
+                frame, stored_manifest=document, deadline=deadline
             )
             frame = replace(frame, manifest=manifest)
         if labels_resolved:
@@ -479,7 +572,9 @@ class LiveFrameStore:
         return {**stored_manifest, "citation": citation.model_dump(mode="json")}, complete
 
     def pin(self, *, frame_ref: FrameRef, component_id: str) -> bool:
-        _, canonical = self._resolve_canonical_location(frame_ref)
+        # The read and the write-time recheck honour revocations under the same ids.
+        revoked_under = self._revoked_under(frame_ref.spec_id)
+        _, canonical = self._resolve_canonical_location(frame_ref, revoked_under=revoked_under)
         if canonical.tier != Tier.pinned.value:
             try:
                 self._artifacts.copy(
@@ -510,6 +605,7 @@ class LiveFrameStore:
                     content_version=frame_ref.content_version,
                     reference_kind=PRESENTATION_PIN_REFERENCE_KIND,
                     now=self._now(),
+                    revoked_under=revoked_under,
                 )
                 return True
             write = claim(
@@ -519,6 +615,7 @@ class LiveFrameStore:
                 content_version=frame_ref.content_version,
                 reference_kind=PRESENTATION_PIN_REFERENCE_KIND,
                 now=self._now(),
+                revoked_under=revoked_under,
             )
         except SnapshotRevoked as exc:
             raise FrameUnavailable(reason="revoked", detail=str(exc)) from exc
@@ -544,17 +641,52 @@ class LiveFrameStore:
 
     # -- Resolution -----------------------------------------------------
 
+    def _revoked_under(self, spec_id: str) -> tuple[str, ...]:
+        """The ids whose revocation withdraws a frame ref naming `spec_id`, as for a Datasets
+        request: a ref naming a served id honours revocations under it, and a ref naming a
+        posted id honours revocations under the posted id and every served id the registry
+        binds to it (`datasets_api.subject_ids.served_subject_ids`). An id no definition
+        registers, such as an `ops_` op-spec, has no served id, nor does any id when the store
+        has no spec reader.
+
+        The check fails closed: a quarantined id, or a quarantined served id bound to it,
+        refuses `quarantined`, and a registry that cannot answer raises
+        `SpecRegistryUnavailable` or `SpecRegistryStoreError`, which the doors answer as
+        retryable 503."""
+        if self._spec_reader is None:
+            return ()
+        try:
+            return served_subject_ids(spec_id, spec_reader=self._spec_reader)
+        except SpecNotFound:
+            return ()
+        except IdentityQuarantined as exc:
+            raise FrameUnavailable(reason="quarantined", detail=str(exc)) from None
+
     def _resolve_canonical_location(
-        self, frame_ref: FrameRef
+        self, frame_ref: FrameRef, *, revoked_under: Sequence[str] | None = None
     ) -> tuple[StoredVersion, StoredArtifactLocation]:
-        """Resolve a frame ref to its stored version and servable frame1 location. A missing
+        """Resolve a frame ref to its stored version and servable stored frame location in one
+        `read_servable_version` transaction, the check the snapshot door makes. A missing
         `spec_` row is `unknown`. A missing `ops_` row is `ops_unsupported` until published.
-        Revocation of the requested or base version yields `revoked`. An unservable artifact
-        yields `expired`. A missing frame1 rendering yields `missing_rendering`. Select by media
-        type because versions can have several renderings.
+        Revocation of the requested or base version yields `revoked`, under the ref's id and,
+        for a ref naming a posted id, its served id too (`_revoked_under`, read here unless the
+        caller passes `revoked_under`). An unservable artifact yields `expired`. A version with
+        neither a canonical frame nor a frame1 document yields `missing_rendering`.
         """
-        stored = self._snapshots.read_version(frame_ref.spec_id, frame_ref.content_version)
-        if stored is None:
+        now = self._now()
+        try:
+            stored = read_servable_version(
+                self._snapshots,
+                subject_id=frame_ref.spec_id,
+                content_version=frame_ref.content_version,
+                now=now,
+                revoked_under=(
+                    self._revoked_under(frame_ref.spec_id)
+                    if revoked_under is None
+                    else revoked_under
+                ),
+            )
+        except SnapshotNotFound:
             if frame_ref.spec_id.startswith("ops_"):
                 raise FrameUnavailable(
                     reason="ops_unsupported",
@@ -563,48 +695,22 @@ class LiveFrameStore:
                         f"{frame_ref.content_version!r} names an Analysis Toolkit op-spec "
                         "frame that was minted but not published to the platform"
                     ),
-                )
+                ) from None
             raise FrameUnavailable(
                 reason="unknown",
                 detail=(
                     f"no stored version for spec_id {frame_ref.spec_id!r} content_version "
                     f"{frame_ref.content_version!r}"
                 ),
-            )
-
-        revocation = self._snapshots.read_revocation(frame_ref.spec_id, frame_ref.content_version)
-        if revocation is not None:
+            ) from None
+        except SnapshotRevoked as exc:
             raise _revoked(
                 spec_id=frame_ref.spec_id,
                 content_version=frame_ref.content_version,
-                reason=revocation.reason,
-            )
+                reason=exc.reason,
+            ) from None
 
-        # A full groupby collapse's own version record names its base
-        # materialisation's own `content_version` on
-        # `stored.base_content_version` (`datasets.version_record`'s own
-        # column, migration `0010_version_record_base_content_version.sql`).
-        # `version_revocation` is keyed per `(subject_id, content_version)`,
-        # so a takedown of the raw version alone would otherwise leave the
-        # collapsed one servable here -- matches `datasets_api.doors.snapshot
-        # ._refuse_if_revoked`. `None` for every non-collapsed version.
-        base_content_version = stored.base_content_version
-        if base_content_version is not None:
-            base_revocation = self._snapshots.read_revocation(
-                frame_ref.spec_id, base_content_version
-            )
-            if base_revocation is not None:
-                raise _revoked(
-                    spec_id=frame_ref.spec_id,
-                    content_version=frame_ref.content_version,
-                    reason=base_revocation.reason,
-                )
-
-        locations = self._snapshots.read_artifact_locations(
-            frame_ref.spec_id, frame_ref.content_version
-        )
-        now = self._now()
-        if not select_servable_locations(locations, now=now):
+        if not stored.servable:
             raise FrameUnavailable(
                 reason="expired",
                 detail=(
@@ -613,18 +719,16 @@ class LiveFrameStore:
                 ),
             )
 
-        canonical = servable_location_of_media_type(
-            locations, media_type=FRAME1_MEDIA_TYPE, now=now
-        )
+        canonical = servable_frame_location(stored.servable, now=now)
         if canonical is None:
             raise FrameUnavailable(
                 reason="missing_rendering",
                 detail=(
-                    f"no servable rendering for spec_id {frame_ref.spec_id!r} content_version "
-                    f"{frame_ref.content_version!r} carries media_type {FRAME1_MEDIA_TYPE!r}"
+                    f"no servable stored frame for spec_id {frame_ref.spec_id!r} "
+                    f"content_version {frame_ref.content_version!r}"
                 ),
             )
-        return stored, canonical
+        return stored.version, canonical
 
     def _fetch_bytes(self, canonical: StoredArtifactLocation) -> bytes:
         try:
@@ -651,7 +755,7 @@ class LiveFrameStore:
         self, doc: Mapping[str, object], *, frame_ref: FrameRef, deadline: float
     ) -> tuple[dict[str, object] | None, bool]:
         """The citation for a derived frame's distinct `provenance` refs, in row order, shaped
-        as a dataset version body's `citation`, each source with its documentation, and whether
+        as a dataset version manifest's `citation`, each source with its documentation, and whether
         `load` may cache it. The graph read covers the first `_CITATION_READ_CAP` refs and stops
         at the absolute monotonic `deadline`. With no graph, and for refs beyond the cap, each
         source is named by its ref alone. A failed or overdue citation read is logged and
@@ -698,7 +802,7 @@ class LiveFrameStore:
         deadline: float,
     ) -> tuple[dict[str, str], bool]:
         """Resolve the frame's ref labels (`_resolve_ref_labels`), then word each composed
-        StatVar the frame's version body describes from its sides' labels
+        StatVar the frame's version stores from its sides' labels
         (`composed_stat_var_labels`), under the ref its `stat_var` cells hold. A side the read
         left unlabelled reads as its bare dcid, and the returned flag is the read's own, so a
         failed read is not cached."""

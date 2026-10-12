@@ -1,4 +1,4 @@
-"""Tests task naming, deduplication, and redispatch with a Cloud Tasks stub."""
+"""Tests task naming, deduplication, and enqueue recovery with a Cloud Tasks stub."""
 
 from __future__ import annotations
 
@@ -7,8 +7,8 @@ from datetime import UTC, datetime, timedelta
 
 from google.api_core.exceptions import AlreadyExists
 
-from datasets_api.operation_store import REDISPATCH_GRACE_SECONDS, LiveOperationStore
-from datasets_api.operations.dispatch import dispatch_if_due
+from datasets_api.operation_store import LiveOperationStore
+from datasets_api.operations.dispatch import ENQUEUE_RECOVERY_SECONDS, dispatch_if_due
 from datasets_api.operations.task_client import ENQUEUE_TIMEOUT_SECONDS, LiveTaskClient
 from series_coverage.index import Estimate
 
@@ -53,8 +53,8 @@ def test_a_task_is_named_per_submission_and_carries_its_submission_count() -> No
     assert cloud_tasks.timeouts == [ENQUEUE_TIMEOUT_SECONDS]
 
 
-def test_a_redispatch_whose_first_create_landed_dedups_to_one_task() -> None:
-    """A redispatch after a landed timeout gets `AlreadyExists` and leaves one task."""
+def test_a_recovered_create_whose_first_create_landed_dedups_to_one_task() -> None:
+    """A second create after a landed timeout gets `AlreadyExists` and leaves one task."""
     cloud_tasks = _DedupingCloudTasks()
     client = _client(cloud_tasks)
     client.enqueue(operation_id="op_abc", submission_count=0)
@@ -88,7 +88,7 @@ class _LandsThenTimesOut(_DedupingCloudTasks):
             raise TimeoutError("create_task deadline exceeded")
 
 
-def test_a_redispatch_answered_already_exists_is_confirmed() -> None:
+def test_a_recovered_create_answered_already_exists_is_recorded() -> None:
     now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
     operation_store = LiveOperationStore(
         store=FakeOperationDatasetStore(), now=lambda: now_box["t"]
@@ -104,12 +104,15 @@ def test_a_redispatch_answered_already_exists_is_confirmed() -> None:
     client = _client(cloud_tasks)
 
     first = dispatch_if_due(operation, operation_store=operation_store, task_client=client)
-    assert first.dispatch_count == 1
-    assert operation_store.get(operation.id).dispatch_confirmed == 0
+    assert first.dispatched_at is None
 
-    now_box["t"] = now_box["t"] + timedelta(seconds=REDISPATCH_GRACE_SECONDS + 1)
-    again = dispatch_if_due(first, operation_store=operation_store, task_client=client)
+    now_box["t"] = now_box["t"] + timedelta(seconds=ENQUEUE_RECOVERY_SECONDS + 1)
+    again = dispatch_if_due(
+        first,
+        operation_store=operation_store,
+        task_client=client,
+        older_than=now_box["t"] - timedelta(seconds=ENQUEUE_RECOVERY_SECONDS),
+    )
 
-    assert again.dispatch_count == 2
-    assert operation_store.get(operation.id).dispatch_confirmed == 2
+    assert again.dispatched_at == now_box["t"]
     assert list(cloud_tasks.tasks) == [f"{_QUEUE}/tasks/{operation.id}-0"]

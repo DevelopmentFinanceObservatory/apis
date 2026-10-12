@@ -14,6 +14,7 @@ import pytest
 from code_index import default_index_path, load_index
 from code_index import members as members_module
 from code_index.members import (
+    DatasetScope,
     FamilyQuery,
     SourceNotInFamily,
     absent_member_reads_zero,
@@ -63,6 +64,8 @@ from .aid_identity import (
 _PLAIN = "provenance/Plain"
 _LINES = "provenance/Lines"
 _TABLES = "provenance/Tables"
+# A provenance no index row records, as only listed rows record IDS.
+_UNDECLARED = "provenance/Listed"
 _LINE = "tableLine"
 
 _FIVE_TUPLE = FiveTuple(
@@ -201,14 +204,16 @@ def test_the_family_is_the_rows_of_the_dataset_its_five_tuple_belongs_to():
         ({"state": "set", "refs": [_LINES]}, _LINES),
         ({"state": "set", "refs": [_LINES, _LINES]}, _LINES),
         ({"state": "set", "refs": [_LINES, _TABLES]}, None),
+        ({"state": "value", "ref": _UNDECLARED}, None),
         ({"state": "unbound"}, None),
         (None, None),
     ],
 )
-def test_the_provenance_facet_names_a_dataset_when_it_binds_one_distinct_ref(binding, named):
+def test_the_provenance_facet_names_a_dataset_when_it_binds_one_ref_the_index_holds(binding, named):
+    index = _index(*_PLAIN_ROWS, *_LINE_ROWS, datasets=_PLAIN_AND_LINES)
     facets = {} if binding is None else {"provenance": binding}
 
-    assert named_dataset(facets) == named
+    assert named_dataset(index, facets) == named
 
 
 def test_a_one_ref_set_and_a_value_ask_the_index_one_query():
@@ -239,6 +244,40 @@ def test_a_one_ref_set_and_a_value_ask_the_index_one_query():
 
     assert as_value.source == _LINES
     assert as_set == as_value
+
+
+def test_a_provenance_set_pin_elects_among_its_refs():
+    """An identity pinning two provenances names no dataset, and its election runs among
+    the pinned ones: `_TABLES` serves, though `_PLAIN` serves the unpinned identity."""
+    index = _shared()
+
+    def identity(facets: dict) -> dict:
+        return {
+            "shape": {
+                "kind": "statvar_schema",
+                "population_type": _FIVE_TUPLE.population_type,
+                "measured_property": _FIVE_TUPLE.measured_property,
+                "stat_type": _FIVE_TUPLE.stat_type,
+            },
+            "slots": [{"property": "sector", "binding": {"state": "unbound"}}],
+            "facets": facets,
+        }
+
+    pinned = identity_family_query(
+        index, identity({"provenance": {"state": "set", "refs": [_TABLES, _LINES]}})
+    )
+    unpinned = identity_family_query(index, identity({}))
+
+    assert pinned.source is None
+    # No row of this index records `_LINES`, so the scope holds `_TABLES` alone.
+    assert pinned.scope == DatasetScope(allowed=frozenset({_TABLES}), named=True)
+    # A set of refs no row records scopes no election.
+    undeclared = identity(
+        {"provenance": {"state": "set", "refs": [_UNDECLARED, _UNDECLARED + "2"]}}
+    )
+    assert identity_family_query(index, undeclared) == unpinned
+    assert elect_dataset(index, index.statvars, unpinned).provenance == _PLAIN
+    assert elect_dataset(index, index.statvars, pinned).provenance == _TABLES
 
 
 def test_a_named_source_that_publishes_the_five_tuple_elects_its_rows():
@@ -433,56 +472,69 @@ def test_a_row_with_two_provenances_joins_the_family_of_either(source: str):
     assert {row.dcid for row in index.statvars if source in row.provenances} == _dcids(family.rows)
 
 
+def _excluding(*refs: str) -> DatasetScope:
+    """The scope of a question that excludes `refs` and names nothing."""
+    return DatasetScope(allowed=frozenset({_PLAIN, _TABLES, _LINES} - set(refs)), named=False)
+
+
+def _naming(*refs: str) -> DatasetScope:
+    """The scope of a question that names `refs`."""
+    return DatasetScope(allowed=frozenset(refs), named=True)
+
+
 @pytest.mark.parametrize(
-    ("source", "excluded", "elected"),
+    ("source", "scope", "elected"),
     [
-        (None, frozenset(), _PLAIN),
-        (_TABLES, frozenset(), _TABLES),
-        (None, frozenset({_PLAIN}), None),
+        (None, None, _PLAIN),
+        (_TABLES, None, _TABLES),
+        (None, _naming(_TABLES), _TABLES),
+        (None, _excluding(_PLAIN), None),
     ],
-    ids=["unnamed", "named", "only-default-excluded"],
+    ids=["unnamed", "named", "named-scope", "only-default-excluded"],
 )
 def test_an_opt_in_dataset_beside_another_serves_only_a_query_that_names_it(
-    source: str | None, excluded: frozenset[str], elected: str | None
+    source: str | None, scope: DatasetScope | None, elected: str | None
 ):
-    """`_TABLES` ranks first but opts in."""
+    """`_TABLES` ranks first but opts in. Excluding `_PLAIN` does not open it."""
     index = _shared(plain_rank=1, tables_rank=0, tables_opt_in=True)
-    query = dataclasses.replace(_asks(set(), source), excluded=excluded)
+    query = dataclasses.replace(_asks(set(), source), scope=scope)
 
     assert elect_dataset(index, index.statvars, query).provenance == elected
 
 
 @pytest.mark.parametrize(
-    ("excluded", "elected"),
-    [(frozenset(), _TABLES), (frozenset({_TABLES}), None)],
-    ids=["unnamed", "excluded"],
+    ("scope", "elected"),
+    [(None, _TABLES), (_excluding(_PLAIN), _TABLES), (_excluding(_TABLES), None)],
+    ids=["unnamed", "another-excluded", "excluded"],
 )
 def test_a_five_tuple_only_opt_in_datasets_publish_elects_one_unnamed(
-    excluded: frozenset[str], elected: str | None
+    scope: DatasetScope | None, elected: str | None
 ):
+    """Excluding another table leaves the opt-in table serving, as imputed multilateral
+    aid excluding the CRS answers from the imputed table."""
     index = _index(
         _row("tables_only", {"sector": "C"}, _TABLES),
         datasets=(_dataset(_TABLES, opt_in=True),),
     )
-    query = dataclasses.replace(_asks(set()), excluded=excluded)
+    query = dataclasses.replace(_asks(set()), scope=scope)
 
     assert elect_dataset(index, index.statvars, query).provenance == elected
 
 
 @pytest.mark.parametrize(
-    ("excluded", "elected"),
+    ("scope", "elected"),
     [
-        (frozenset(), _PLAIN),
-        (frozenset({_PLAIN}), _TABLES),
-        (frozenset({_PLAIN, _TABLES}), None),
+        (None, _PLAIN),
+        (_excluding(_PLAIN), _TABLES),
+        (_excluding(_PLAIN, _TABLES), None),
     ],
     ids=["none", "first", "both"],
 )
 def test_an_excluded_dataset_leaves_the_election_to_the_next(
-    excluded: frozenset[str], elected: str | None
+    scope: DatasetScope | None, elected: str | None
 ):
     index = _shared()
-    query = dataclasses.replace(_asks(set()), excluded=excluded)
+    query = dataclasses.replace(_asks(set()), scope=scope)
 
     assert elect_dataset(index, index.statvars, query).provenance == elected
 
@@ -844,43 +896,57 @@ def test_two_publishers_elect_one_family_for_a_question_and_the_keys_it_reports(
 
 
 @pytest.mark.parametrize(
-    ("datasets", "source", "excluded", "eligible"),
+    ("datasets", "scope", "eligible"),
     [
-        ((_TABLES, _PLAIN), None, frozenset(), (_PLAIN,)),
-        ((_TABLES, _PLAIN), _TABLES, frozenset(), (_TABLES,)),
-        ((_TABLES, _PLAIN), None, frozenset({_PLAIN}), ()),
-        ((_TABLES,), None, frozenset(), (_TABLES,)),
-        ((_TABLES,), None, frozenset({_TABLES}), ()),
+        ((_TABLES, _PLAIN), None, (_PLAIN,)),
+        ((_TABLES, _PLAIN), _naming(_TABLES), (_TABLES,)),
+        ((_TABLES, _PLAIN), _naming(_TABLES, _PLAIN), (_PLAIN,)),
+        ((_TABLES, _PLAIN), _naming(_LINES), ()),
+        ((_TABLES, _PLAIN), _excluding(_PLAIN), ()),
+        ((_TABLES,), None, (_TABLES,)),
+        ((_TABLES,), _excluding(_PLAIN), (_TABLES,)),
+        ((_TABLES,), _excluding(_TABLES), ()),
     ],
-    ids=["unnamed", "named", "excluded", "opt-in-alone", "opt-in-alone-excluded"],
+    ids=[
+        "unnamed",
+        "named",
+        "named-beside-default",
+        "named-elsewhere",
+        "excluded",
+        "opt-in-alone",
+        "opt-in-alone-other-excluded",
+        "opt-in-alone-excluded",
+    ],
 )
 def test_the_eligibility_rules_filter_the_datasets_a_caller_holds(
-    datasets: tuple[str, ...],
-    source: str | None,
-    excluded: frozenset[str],
-    eligible: tuple[str, ...],
+    datasets: tuple[str, ...], scope: DatasetScope | None, eligible: tuple[str, ...]
 ):
     """`_TABLES` ranks first but opts in. A list holding it alone is not the family's
-    publishers, so the filter reads the list it is given."""
+    publishers, so the filter reads the list it is given. Under a scope the pool is the
+    list in scope: its datasets that are not opt-in, else the whole pool when the scope
+    names a source or the list holds only opt-in datasets."""
     index = _shared(plain_rank=1, tables_rank=0, tables_opt_in=True)
 
-    assert eligible_among(index, datasets, source=source, excluded=excluded) == eligible
+    assert eligible_among(index, datasets, scope=scope) == eligible
 
 
 @pytest.mark.parametrize(
-    ("source", "excluded"),
-    [(None, frozenset()), (_TABLES, frozenset()), (None, frozenset({_PLAIN}))],
-    ids=["unnamed", "named", "excluded"],
+    ("source", "scope", "eligible"),
+    [
+        (None, None, (_PLAIN,)),
+        (_TABLES, None, (_TABLES,)),
+        (None, _naming(_TABLES), (_TABLES,)),
+        (None, _excluding(_PLAIN), ()),
+    ],
+    ids=["unnamed", "named", "named-scope", "excluded"],
 )
 def test_the_eligible_datasets_of_a_query_are_its_publishers_filtered(
-    source: str | None, excluded: frozenset[str]
+    source: str | None, scope: DatasetScope | None, eligible: tuple[str, ...]
 ):
     index = _shared(plain_rank=1, tables_rank=0, tables_opt_in=True)
-    query = dataclasses.replace(_asks(set(), source), excluded=excluded)
+    query = dataclasses.replace(_asks(set(), source), scope=scope)
 
-    assert eligible_datasets(index, query) == eligible_among(
-        index, (_TABLES, _PLAIN), source=source, excluded=excluded
-    )
+    assert eligible_datasets(index, query) == eligible
 
 
 @pytest.mark.parametrize(
@@ -973,31 +1039,31 @@ def _pinning_index() -> CodeIndex:
 
 
 _PIN_CASES = {
-    "elected": (None, frozenset(), {_LINE: "L1"}),
-    "named-pinning": (_PLAIN, frozenset(), {_LINE: "L1"}),
-    "named-unpinned": (_TABLES, frozenset(), {}),
-    "excluded-pinning": (None, frozenset({_PLAIN}), {}),
+    "elected": (None, None, {_LINE: "L1"}),
+    "named-pinning": (_PLAIN, None, {_LINE: "L1"}),
+    "named-unpinned": (_TABLES, None, {}),
+    "excluded-pinning": (None, _excluding(_PLAIN), {}),
 }
 
 
-def _pin_query(source: str | None, excluded: frozenset[str]) -> FamilyQuery:
+def _pin_query(source: str | None, scope: DatasetScope | None) -> FamilyQuery:
     return FamilyQuery(
         _FIVE_TUPLE,
         {"sector": ("unbound",), _LINE: ("unbound",)},
         source,
-        excluded=excluded,
+        scope=scope,
     )
 
 
-@pytest.mark.parametrize(("source", "excluded", "pins"), _PIN_CASES.values(), ids=_PIN_CASES)
+@pytest.mark.parametrize(("source", "scope", "pins"), _PIN_CASES.values(), ids=_PIN_CASES)
 def test_the_pins_are_those_of_the_dataset_serving_the_family(
-    source: str | None, excluded: frozenset[str], pins: dict[str, str]
+    source: str | None, scope: DatasetScope | None, pins: dict[str, str]
 ):
     """A query that names no dataset is canonical whether or not it binds the pin, as is one
     that names a dataset declaring nothing. One that names the elected dataset and leaves
     its invariant unbound binds it; one that binds it already is canonical."""
     index = _pinning_index()
-    query = _pin_query(source, excluded)
+    query = _pin_query(source, scope)
     bound = dataclasses.replace(query, slots={**query.slots, _LINE: ("value", "L1")})
 
     assert index.dataset_pins[_PLAIN, _FIVE_TUPLE] == {_LINE: "L1"}
@@ -1013,8 +1079,8 @@ def test_one_index_memoises_the_pins_of_each_query_apart():
     returned pins leaves the memo as it was."""
     index = _pinning_index()
 
-    for source, excluded, pins in (*_PIN_CASES.values(), *_PIN_CASES.values()):
-        returned = elected_pins(index, _pin_query(source, excluded))
+    for source, scope, pins in (*_PIN_CASES.values(), *_PIN_CASES.values()):
+        returned = elected_pins(index, _pin_query(source, scope))
         assert returned == pins
         returned["sector"] = "changed"
 

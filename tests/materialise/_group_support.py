@@ -10,7 +10,6 @@ from dc_sdmx import SdmxClient
 from materialise import MaterialisationRequest
 from materialise.facets import FacetBinding
 from materialise.graph import Facet
-from materialise.revision import RevisionSnapshot, SourceRevision
 from materialise.window import RequestedWindow
 from series_coverage.index import CoverageIndex
 from series_coverage.schema import FacetMetadata, RoleNames
@@ -31,10 +30,6 @@ _BARE_A = "Stat_A"
 _BARE_B = "Stat_B"
 _BARE_C = "Stat_C"
 
-_SNAPSHOT = RevisionSnapshot(
-    graph_revision="graph-rev-2024-01",
-    source_revisions=(SourceRevision(source="OECD_DAC_CRS", revision="rev-7"),),
-)
 
 _CSV_HEADER = (
     "STRUCTURE,STRUCTURE_ID,ACTION,variableMeasured,recipient,unit,measurementMethod,"
@@ -138,11 +133,18 @@ def _coverage_for(
     year: int = 2015,
 ) -> CoverageIndex:
     """Build coverage for each stat-var/facet pair and bind `entity` as the
-    recipient. Default facet metadata matches `_BOUND_FACETS`.
+    recipient. Default facet metadata matches `_BOUND_FACETS`. Each facet states `P1Y`, as
+    every DFO import does, since a coverage facet stating no period is a cadence of its own
+    (`materialise.facets.cadences_by_member`).
     """
     role_names = {bare: RoleNames(donor="donor", recipient=_ROLE) for bare, _ in entries}
     facet_metadata = {
-        facet_id: FacetMetadata(provenance_id=provenance, measurement_method=method, unit=unit)
+        facet_id: FacetMetadata(
+            provenance_id=provenance,
+            measurement_method=method,
+            unit=unit,
+            observation_period="P1Y",
+        )
         for _, facet_id in entries
     }
     return build_coverage_index(

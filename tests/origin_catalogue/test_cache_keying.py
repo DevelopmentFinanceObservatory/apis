@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextvars
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -27,10 +28,15 @@ def test_requests_bound_to_different_builds_never_share_an_entry_across_a_swap(
     service, uri = _service(tmp_path)
     generation = GraphGeneration(source=source, catalogue=service)
     generation.refresh_now()
-    cache: SingleFlightCache[str, str] = SingleFlightCache(maxsize=8, generation=generation)
+    cache: SingleFlightCache[str, str] = SingleFlightCache(
+        maxsize=8,
+        flight_timeout_s=5.0,
+        executor=ThreadPoolExecutor(max_workers=1),
+        generation=generation,
+    )
     generation.register("answers", stats=dict, clear=cache.clear)
 
-    def answer_under_a_then_swap() -> str:
+    def answer_under_a_then_swap(_deadline: float) -> str:
         publish_sample(uri, build_id="build-b")
         assert service.snapshot_current().build_id == "build-b"
         return "admitted by build-a"
@@ -41,12 +47,12 @@ def test_requests_bound_to_different_builds_never_share_an_entry_across_a_swap(
 
     with bound_catalogue(service.snapshot()) as snapshot_b:
         assert snapshot_b.build_id == "build-b"
-        assert cache.get_or_fetch("gdp kenya", lambda: "admitted by build-b") == (
+        assert cache.get_or_fetch("gdp kenya", lambda _deadline: "admitted by build-b") == (
             "admitted by build-b"
         )
 
     with bound_catalogue(snapshot_a):
-        assert cache.get_or_fetch("gdp kenya", lambda: "refetched under build-a") == (
+        assert cache.get_or_fetch("gdp kenya", lambda _deadline: "refetched under build-a") == (
             "admitted by build-a"
         )
 
