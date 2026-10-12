@@ -1,4 +1,4 @@
-"""Pins `run_operation` lease renewal, retries, attempt fencing, and execution-time coverage checks.
+"""Pins `run_operation` progress writes, retries, attempt fencing, and execution-time coverage checks.
 Graph and materialisation calls are stubbed. Worker state runs through `FakeOperationDatasetStore`."""
 
 from __future__ import annotations
@@ -14,7 +14,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from dataset_store.snapshot import StoredArtifactLocation
+from dataset_store.snapshot import SnapshotRevoked, StoredArtifactLocation
+from datasets_api import serve as serve_module
 from datasets_api.adapter import MemberReadBounds
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.definition import DefinitionDeps, classify_definition_exception
@@ -27,20 +28,20 @@ from datasets_api.operations.worker import (
     run_operation,
 )
 from datasets_api.render import artifact_rendering
-from datasets_api.serve import raw_fetch_guard
+from datasets_api.serve import WorkDeadlinePassed
 from datasets_api.version_store import rendering_key
+from datasets_api.versions import HeadFence, HeadFenceLost, SubjectHead
 from series_coverage.index import Estimate
 from series_coverage.shared import CoverageService
 from tests.series_coverage.support import build_test_artifact, index_for, pointer_path
 
 from ._graph_doubles import FakeMintGraphReader
 from ._operation_store import FakeOperationDatasetStore
+from ._version_record_store import materialisation_record
 from .test_resolve_definition_members_guards import _resolve, _value_bound_broad_family
 
 _SUBJECT_ID = "spec_abc123"
-# `run_operation` requires `lease_seconds`. This matches the settings default used by callers
-# such as `build_worker_app` when they omit it.
-_DEFAULT_LEASE_SECONDS = DatasetsBuildSettings().operation_lease_seconds
+_CONFIRMED_AT = datetime(2026, 1, 1, 12, tzinfo=UTC)
 
 
 class _StubCoverageSnapshot:
@@ -55,6 +56,9 @@ class _StubCoverage:
 
     def snapshot_current(self):
         return _StubCoverageSnapshot()
+
+    def serves(self, snapshot: object) -> bool:
+        return True
 
 
 # The options `_claimed_operation` stores. They make a CSV bundle, since `MintOptions.bundle`
@@ -106,10 +110,10 @@ def _deps(snapshot_reader: _LocationsReader | None = None) -> DefinitionDeps:
     if snapshot_reader is None:
         snapshot_reader = _linked(_SUBJECT_ID, "cv_stub", _OPTIONS)
     return DefinitionDeps(
+        registry=None,  # type: ignore[arg-type]
         spec_reader=None,  # type: ignore[arg-type]
         graph=None,  # type: ignore[arg-type]
         sdmx=None,  # type: ignore[arg-type]
-        revision_reader=None,  # type: ignore[arg-type]
         artifact_store=None,  # type: ignore[arg-type]
         materialiser_build="test-build",
         capability_version="dset_test",
@@ -136,7 +140,7 @@ def _operation_store(now=None) -> LiveOperationStore:
 def _claimed_operation(
     operation_store: LiveOperationStore,
     *,
-    lease_seconds: float = 1_700,
+    lease_seconds: int = 1_500,
     subject_id: str = _SUBJECT_ID,
     member_dcids: list[str] | None = None,
 ):
@@ -150,110 +154,49 @@ def _claimed_operation(
         origin_catalogue_build_id="fake-catalogue",
         estimate=Estimate(rows=200_000, requests=5),
     )
-    claimed = operation_store.claim_lease(
-        operation.id, submission_count=0, lease_seconds=lease_seconds
+    claimed = operation_store.claim(
+        operation.id, submission_count=0, lease_seconds=lease_seconds, final_delivery=False
     )
     assert claimed is not None
     return claimed
 
 
-def test_heartbeat_renews_the_lease_while_materialisation_is_still_running(
+def test_each_finished_chunk_writes_the_running_total_with_no_thread(
     monkeypatch: pytest.MonkeyPatch,
 ):
+    """Progress is written from the materialiser's own `add` calls, on its own thread."""
     operation_store = _operation_store()
-    # The short initial lease makes renewal observable as a later `lease_until`.
-    operation = _claimed_operation(operation_store, lease_seconds=0.3)
-    original_lease_until = operation.lease_until
-    assert original_lease_until is not None
+    operation = _claimed_operation(operation_store)
+    seen: list[tuple[int, int]] = []
 
-    release_event = threading.Event()
-
-    def _slow_resolve(*, spec_id, deps):
-        release_event.wait(timeout=5)
-        raise RuntimeError("test stops the resolve before it returns")
-
-    monkeypatch.setattr(worker_module, "_resolve_spec_requests", _slow_resolve)
-
-    def _run_and_swallow_transient_failure() -> None:
-        # The release raises a transient failure after the heartbeat assertion.
-        with contextlib.suppress(OperationTransientFailure):
-            run_operation(
-                operation=operation,
-                deps=_deps(),
-                operation_store=operation_store,
-                # A short lease with a fast heartbeat tick (lease_seconds / 3,
-                # worker.py's own ratio) so the test observes a renewal
-                # without waiting anywhere near the default 60s lease.
-                lease_seconds=0.3,
-            )
-
-    thread = threading.Thread(target=_run_and_swallow_transient_failure)
-    thread.start()
-    try:
-        # Poll for the heartbeat's own first tick to land, well under the
-        # test's own 5s timeout on release_event.
-        deadline = time.monotonic() + 3
-        renewed = False
-        while time.monotonic() < deadline:
+    def _chunked_serve(
+        stored,
+        *,
+        resolve_requests,
+        options,
+        trigger,
+        deps,
+        trace_id,
+        admitted,
+        coverage_snapshot,
+        progress,
+    ):
+        for rows in (100, 23):
+            progress.add(rows)
             current = operation_store.get(operation.id)
             assert current is not None
-            if current.lease_until is not None and current.lease_until > original_lease_until:
-                renewed = True
-                break
-            time.sleep(0.02)
-        assert renewed, "heartbeat never renewed the lease while the materialisation ran"
-    finally:
-        release_event.set()
-        thread.join(timeout=5)
-        assert not thread.is_alive()
-
-
-def test_heartbeat_reports_nonzero_rows_written_mid_run(monkeypatch: pytest.MonkeyPatch):
-    """The heartbeat reports `RowProgress` while materialisation is blocked."""
-    operation_store = _operation_store()
-    operation = _claimed_operation(operation_store, lease_seconds=0.3)
-
-    release_event = threading.Event()
-
-    def _stub_resolve(*, spec_id, deps):
-        return object(), []
-
-    def _slow_serve_definition(
-        *, stored, requests, options, deps, ceiling, coverage_stamp, coverage_index, progress
-    ):
-        progress.add(123)
-        release_event.wait(timeout=5)
-        raise RuntimeError("test stops serve_definition before it returns")
+            seen.append((current.rows_written, threading.active_count()))
+        return _stub_manifest()
 
     monkeypatch.setattr(worker_module, "_resolve_spec_requests", _stub_resolve)
-    monkeypatch.setattr(worker_module, "serve_definition", _slow_serve_definition)
+    monkeypatch.setattr(worker_module, "serve_current", _chunked_serve)
+    threads_before = threading.active_count()
 
-    def _run_and_swallow_transient_failure() -> None:
-        with contextlib.suppress(OperationTransientFailure):
-            run_operation(
-                operation=operation,
-                deps=_deps(),
-                operation_store=operation_store,
-                lease_seconds=0.3,
-            )
+    run_operation(operation=operation, deps=_deps(), operation_store=operation_store)
 
-    thread = threading.Thread(target=_run_and_swallow_transient_failure)
-    thread.start()
-    try:
-        deadline = time.monotonic() + 3
-        observed = 0
-        while time.monotonic() < deadline:
-            current = operation_store.get(operation.id)
-            assert current is not None
-            if current.rows_written > 0:
-                observed = current.rows_written
-                break
-            time.sleep(0.02)
-        assert observed == 123, "heartbeat never reported the counter's own running total"
-    finally:
-        release_event.set()
-        thread.join(timeout=5)
-        assert not thread.is_alive()
+    assert seen == [(100, threads_before), (123, threads_before)]
+    stored = operation_store.get(operation.id)
+    assert stored is not None and stored.state == "done"
 
 
 def test_non_final_transient_failure_releases_the_lease_and_raises():
@@ -270,7 +213,6 @@ def test_non_final_transient_failure_releases_the_lease_and_raises():
                 operation=operation,
                 deps=_deps(),
                 operation_store=operation_store,
-                lease_seconds=30,
                 is_final_attempt=False,
             )
 
@@ -279,9 +221,36 @@ def test_non_final_transient_failure_releases_the_lease_and_raises():
 
     stored = operation_store.get(operation.id)
     assert stored is not None
-    assert stored.state == "pending"
-    # The row remains detectable as claimed by dead-worker checks and is immediately reclaimable.
-    assert stored.lease_until is not None
+    # The released row has no lease, so the next delivery claims it at once.
+    assert (stored.state, stored.claimed_at, stored.lease_seconds) == ("pending", None, None)
+
+
+def test_a_run_past_its_work_deadline_releases_before_it_renders_or_uploads(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Materialisation returned after the deadline, so nothing is written under a lease the
+    poll may already be about to end."""
+    operation_store = _operation_store()
+    operation = _claimed_operation(operation_store)
+    monkeypatch.setattr(
+        worker_module,
+        "_resolve_spec_requests",
+        lambda *, spec_id, deps: (SimpleNamespace(spec_id=spec_id, identity={}), []),
+    )
+    monkeypatch.setattr(serve_module, "prewrite_definition", lambda **_: SimpleNamespace())
+
+    with pytest.raises(OperationTransientFailure) as excinfo:
+        run_operation(
+            operation=operation,
+            deps=_deps(),
+            operation_store=operation_store,
+            deadline=time.monotonic() - 1,
+        )
+
+    assert isinstance(excinfo.value.__cause__, WorkDeadlinePassed)
+    stored = operation_store.get(operation.id)
+    assert stored is not None
+    assert (stored.state, stored.claimed_at) == ("pending", None)
 
 
 def test_final_attempt_transient_failure_marks_failed_with_internal_error():
@@ -297,7 +266,6 @@ def test_final_attempt_transient_failure_marks_failed_with_internal_error():
             operation=operation,
             deps=_deps(),
             operation_store=operation_store,
-            lease_seconds=30,
             is_final_attempt=True,
         )
 
@@ -326,16 +294,22 @@ def test_run_operation_takes_one_coverage_snapshot_and_forwards_its_stamp_and_in
     deps.coverage.snapshot_current = _counting_snapshot  # type: ignore[method-assign]
 
     captured: dict[str, object] = {}
-    stub_manifest = SimpleNamespace(
-        definition=SimpleNamespace(spec_id=_SUBJECT_ID),
-        content_version="cv_stub",
-    )
+    stub_manifest = _stub_manifest()
 
-    def _capture_serve_definition(
-        *, stored, requests, options, deps, ceiling, coverage_stamp, coverage_index, progress
+    def _capture_serve_current(
+        stored,
+        *,
+        resolve_requests,
+        options,
+        trigger,
+        deps,
+        trace_id,
+        admitted,
+        coverage_snapshot,
+        progress,
     ):
-        captured["coverage_stamp"] = coverage_stamp
-        captured["coverage_index"] = coverage_index
+        captured["coverage_stamp"] = coverage_snapshot.stamp
+        captured["coverage_index"] = coverage_snapshot.index
         return stub_manifest
 
     def _stub_resolve(*, spec_id, deps):
@@ -343,10 +317,8 @@ def test_run_operation_takes_one_coverage_snapshot_and_forwards_its_stamp_and_in
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(worker_module, "_resolve_spec_requests", _stub_resolve)
-        mp.setattr(worker_module, "serve_definition", _capture_serve_definition)
-        run_operation(
-            operation=operation, deps=deps, operation_store=operation_store, lease_seconds=30
-        )
+        mp.setattr(worker_module, "serve_current", _capture_serve_current)
+        run_operation(operation=operation, deps=deps, operation_store=operation_store)
 
     assert calls == 1
     snapshot = real_snapshot()
@@ -373,7 +345,6 @@ def test_deterministic_failure_fails_regardless_of_final_attempt():
             operation=operation,
             deps=_deps(),
             operation_store=operation_store,
-            lease_seconds=30,
             is_final_attempt=False,
         )
 
@@ -387,6 +358,39 @@ def test_deterministic_failure_fails_regardless_of_final_attempt():
     classified = classify_definition_exception(SpecNotFound(id=_SUBJECT_ID))
     assert classified is not None
     assert stored.refusal == classified
+
+
+@pytest.mark.parametrize("is_final_attempt", [False, True], ids=["early", "final"])
+def test_a_failure_whose_classification_raises_fails_the_row_with_internal_error(
+    monkeypatch: pytest.MonkeyPatch, is_final_attempt: bool
+):
+    """A registry gap makes the classifier raise `LookupError` inside the failure handler. The
+    row still reaches a terminal state, retryable so an identical resubmit resets it."""
+    operation_store = _operation_store()
+    operation = _claimed_operation(operation_store)
+
+    def _raise_revoked(*, spec_id, deps):
+        raise SnapshotRevoked(id=spec_id, content_version="cv_stub", reason=None)
+
+    def _unmapped(exc):
+        raise LookupError("the code registry gives 'snapshot_revoked' the statuses []")
+
+    monkeypatch.setattr(worker_module, "_resolve_spec_requests", _raise_revoked)
+    monkeypatch.setattr(worker_module, "classify_definition_exception", _unmapped)
+    run_operation(
+        operation=operation,
+        deps=_deps(),
+        operation_store=operation_store,
+        is_final_attempt=is_final_attempt,
+    )
+
+    stored = operation_store.get(operation.id)
+    assert stored is not None
+    assert (stored.state, stored.refusal_code, stored.retryable) == (
+        "failed",
+        "internal_error",
+        True,
+    )
 
 
 @pytest.mark.parametrize(
@@ -414,21 +418,20 @@ def test_a_definition_whose_members_changed_since_submission_fails_retryable_at_
     def _resolve(*, spec_id, deps):
         return object(), [SimpleNamespace(stat_var=f"dcid:{dcid}") for dcid in resolved]
 
-    def _serve(**kwargs):
-        served.append(kwargs["requests"])
+    def _serve(stored, **kwargs):
+        served.append(kwargs["resolve_requests"]())
         return _stub_manifest()
 
     monkeypatch.setattr(worker_module, "_resolve_spec_requests", _resolve)
     monkeypatch.setattr(
         worker_module, "sync_estimate", lambda requests, **_: Estimate(rows=1, requests=1)
     )
-    monkeypatch.setattr(worker_module, "serve_definition", _serve)
+    monkeypatch.setattr(worker_module, "serve_current", _serve)
 
     run_operation(
         operation=operation,
         deps=_deps(),
         operation_store=operation_store,
-        lease_seconds=30,
         is_final_attempt=False,
     )
 
@@ -457,7 +460,6 @@ def test_a_member_walk_past_its_deadline_fails_retryable_so_a_resubmission_walks
             operation=operation,
             deps=_deps(),
             operation_store=operation_store,
-            lease_seconds=30,
             is_final_attempt=True,
         )
 
@@ -475,7 +477,9 @@ def _claimed_operation_with_malformed_options(operation_store: LiveOperationStor
         origin_catalogue_build_id="fake-catalogue",
         estimate=Estimate(rows=200_000, requests=5),
     )
-    claimed = operation_store.claim_lease(operation.id, submission_count=0, lease_seconds=30)
+    claimed = operation_store.claim(
+        operation.id, submission_count=0, lease_seconds=30, final_delivery=False
+    )
     assert claimed is not None
     return claimed
 
@@ -490,14 +494,13 @@ def test_preamble_failure_releases_the_lease_on_a_non_final_attempt():
             operation=operation,
             deps=_deps(),
             operation_store=operation_store,
-            lease_seconds=30,
             is_final_attempt=False,
         )
 
     stored = operation_store.get(operation.id)
     assert stored is not None
     assert stored.state == "pending"
-    assert stored.lease_until is not None
+    assert stored.claimed_at is None
 
 
 def test_preamble_failure_marks_failed_on_the_final_attempt():
@@ -508,7 +511,6 @@ def test_preamble_failure_marks_failed_on_the_final_attempt():
         operation=operation,
         deps=_deps(),
         operation_store=operation_store,
-        lease_seconds=30,
         is_final_attempt=True,
     )
 
@@ -529,36 +531,41 @@ def test_complete_returning_none_logs_an_error_naming_the_operation(
     operation_store = _operation_store(now=lambda: now_box["t"])
     operation = _claimed_operation(operation_store, lease_seconds=30)
 
-    stub_manifest = SimpleNamespace(
-        definition=SimpleNamespace(spec_id=_SUBJECT_ID),
-        content_version="cv_stub_orphaned",
-    )
+    stub_manifest = _stub_manifest("cv_stub_orphaned")
 
     def _stub_resolve(*, spec_id, deps):
         return object(), []
 
     def _serve_and_expire_out_from_under(
-        *, stored, requests, options, deps, ceiling, coverage_stamp, coverage_index, progress
+        stored,
+        *,
+        resolve_requests,
+        options,
+        trigger,
+        deps,
+        trace_id,
+        admitted,
+        coverage_snapshot,
+        progress,
     ):
         # Stands in for Cloud Tasks retrying onto another instance once
         # Attempt 2 reclaims the row after this lease lapses, before
         # this call returns its own (successful) manifest.
         now_box["t"] = now_box["t"] + timedelta(seconds=31)
-        reclaimed = operation_store.claim_lease(
-            operation.id, submission_count=0, lease_seconds=1_700
+        reclaimed = operation_store.claim(
+            operation.id, submission_count=0, lease_seconds=1_500, final_delivery=False
         )
         assert reclaimed is not None and reclaimed.attempt_count == 2
         return stub_manifest
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(worker_module, "_resolve_spec_requests", _stub_resolve)
-        mp.setattr(worker_module, "serve_definition", _serve_and_expire_out_from_under)
+        mp.setattr(worker_module, "serve_current", _serve_and_expire_out_from_under)
         with caplog.at_level(logging.ERROR):
             run_operation(
                 operation=operation,
                 deps=_deps(_linked(_SUBJECT_ID, "cv_stub_orphaned", _OPTIONS)),
                 operation_store=operation_store,
-                lease_seconds=_DEFAULT_LEASE_SECONDS,
             )
 
     errors = [r for r in caplog.records if r.levelno == logging.ERROR]
@@ -584,48 +591,54 @@ def _stub_manifest(content_version: str = "cv_stub") -> SimpleNamespace:
     return SimpleNamespace(
         definition=SimpleNamespace(spec_id=_SUBJECT_ID),
         content_version=content_version,
+        trace={"served_from": "materialise", "confirmed_at": _CONFIRMED_AT.isoformat()},
     )
 
 
-def test_heartbeat_that_loses_the_fence_cancels_the_run_and_writes_nothing(
+def test_a_progress_write_that_loses_the_fence_cancels_the_run_and_writes_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """A lost heartbeat fence cancels progress and leaves the newer attempt's row unchanged."""
-    monkeypatch.setattr(worker_module, "_HEARTBEAT_MIN_INTERVAL_SECONDS", 0.02)
+    """A refused progress write cancels the run and leaves the newer attempt's row unchanged."""
     now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
     operation_store = _operation_store(now=lambda: now_box["t"])
-    operation = _claimed_operation(operation_store, lease_seconds=0.3)
+    operation = _claimed_operation(operation_store, lease_seconds=0)
     reclaimed_box: dict[str, object] = {}
     chunks = 0
 
     def _chunked_serve(
-        *, stored, requests, options, deps, ceiling, coverage_stamp, coverage_index, progress
+        stored,
+        *,
+        resolve_requests,
+        options,
+        trigger,
+        deps,
+        trace_id,
+        admitted,
+        coverage_snapshot,
+        progress,
     ):
         nonlocal chunks
         # Cloud Tasks retried onto another instance once this attempt's
         # After the lease lapses, a new attempt reclaims the row.
         now_box["t"] = now_box["t"] + timedelta(seconds=1)
-        reclaimed = operation_store.claim_lease(
-            operation.id, submission_count=0, lease_seconds=3_600
+        reclaimed = operation_store.claim(
+            operation.id, submission_count=0, lease_seconds=1_500, final_delivery=False
         )
         assert reclaimed is not None
         reclaimed_box["op"] = reclaimed
-        deadline = time.monotonic() + 5
-        while time.monotonic() < deadline:
+        for _ in range(3):
             progress.add(10)  # one finished chunk
             chunks += 1
-            time.sleep(0.01)
-        raise AssertionError("the heartbeat never cancelled the run")
+        raise AssertionError("the refused progress write never cancelled the run")
 
     monkeypatch.setattr(worker_module, "_resolve_spec_requests", _stub_resolve)
-    monkeypatch.setattr(worker_module, "serve_definition", _chunked_serve)
+    monkeypatch.setattr(worker_module, "serve_current", _chunked_serve)
 
     with pytest.raises(OperationSuperseded):
         run_operation(
             operation=operation,
             deps=_deps(),
             operation_store=operation_store,
-            lease_seconds=0.3,
             is_final_attempt=True,
         )
 
@@ -636,7 +649,8 @@ def test_heartbeat_that_loses_the_fence_cancels_the_run_and_writes_nothing(
     assert chunks > 0
     assert current.state == "running"
     assert current.attempt_count == 2
-    assert current.lease_until == reclaimed.lease_until
+    assert chunks == 1
+    assert current.claimed_at == reclaimed.claimed_at
     assert current.rows_written == reclaimed.rows_written
     assert current.refusal_code is None
 
@@ -644,7 +658,7 @@ def test_heartbeat_that_loses_the_fence_cancels_the_run_and_writes_nothing(
 def test_a_run_whose_attempt_was_reclaimed_before_it_started_writes_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """`record_execution` is the first write of the run and is fenced: an
+    """`record_estimate` is the first write of the run and is fenced: an
     attempt that no longer owns the row stops there, before any fetch."""
     now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
     operation_store = _operation_store(now=lambda: now_box["t"])
@@ -652,34 +666,132 @@ def test_a_run_whose_attempt_was_reclaimed_before_it_started_writes_nothing(
 
     def _resolve_then_lose_the_lease(*, spec_id, deps):
         now_box["t"] = now_box["t"] + timedelta(seconds=31)
-        assert operation_store.claim_lease(operation.id, submission_count=0, lease_seconds=60)
+        assert operation_store.claim(
+            operation.id, submission_count=0, lease_seconds=1_500, final_delivery=False
+        )
         return object(), []
 
-    def _must_not_serve(**_):
+    def _must_not_serve(*_, **__):
         raise AssertionError("a superseded attempt must not materialise")
 
     monkeypatch.setattr(worker_module, "_resolve_spec_requests", _resolve_then_lose_the_lease)
-    monkeypatch.setattr(worker_module, "serve_definition", _must_not_serve)
+    monkeypatch.setattr(worker_module, "serve_current", _must_not_serve)
 
     with pytest.raises(OperationSuperseded):
         run_operation(
             operation=operation,
             deps=_deps(),
             operation_store=operation_store,
-            lease_seconds=_DEFAULT_LEASE_SECONDS,
         )
 
     current = operation_store.get(operation.id)
     assert current is not None
     assert current.state == "running"
     assert current.attempt_count == 2
-    assert current.execution_coverage_stamp is None
+    assert current.estimate == operation.estimate
+
+
+@dataclasses.dataclass
+class _FencedHeadStore:
+    """In-memory head store whose fence reads the operation row, as `LiveHeadStore` reads it
+    under a share lock in the head's transaction. It records every fence it receives."""
+
+    operation_store: LiveOperationStore
+    heads: dict[str, SubjectHead] = dataclasses.field(default_factory=dict)
+    fences: list[HeadFence | None] = dataclasses.field(default_factory=list)
+
+    def read_head(self, subject_id: str) -> SubjectHead | None:
+        return self.heads.get(subject_id)
+
+    def confirm_head(self, *, subject_id: str, content_version: str) -> SubjectHead | None:
+        return None
+
+    def advance_head(
+        self, *, materialisation, expected_materialisation_id: int | None, fence=None
+    ) -> SubjectHead | None:
+        self.fences.append(fence)
+        if fence is not None:
+            current = self.operation_store.get(fence.operation_id)
+            if (
+                current is None
+                or current.state != "running"
+                or current.attempt_count != fence.attempt
+            ):
+                raise HeadFenceLost(fence)
+        now = datetime.now(UTC)
+        head = SubjectHead(
+            subject_id=materialisation.subject_id,
+            content_version=materialisation.content_version,
+            confirmed_at=now,
+            materialised_at=now,
+            materialisation_id=len(self.heads) + 1,
+            dependencies=materialisation.dependencies,
+        )
+        self.heads[materialisation.subject_id] = head
+        return head
+
+
+def test_a_run_whose_attempt_is_reclaimed_after_its_version_write_leaves_the_head(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The lease lapses and another attempt claims the row after this run's version and artifact
+    writes and before its head advance. The advance carries the run's claim, refuses, and the
+    run ends superseded with no head and the newer attempt's row unchanged."""
+    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
+    operation_store = _operation_store(now=lambda: now_box["t"])
+    operation = _claimed_operation(operation_store, lease_seconds=30)
+    head_store = _FencedHeadStore(operation_store)
+    reclaimed_box: dict[str, Operation] = {}
+
+    def _write_then_lose_the_claim(*, prewrite, options, deps, trace_id):
+        now_box["t"] = now_box["t"] + timedelta(seconds=31)
+        reclaimed = operation_store.claim(
+            operation.id, submission_count=0, lease_seconds=1_500, final_delivery=False
+        )
+        assert reclaimed is not None
+        reclaimed_box["op"] = reclaimed
+        return _stub_manifest()
+
+    monkeypatch.setattr(
+        worker_module,
+        "_resolve_spec_requests",
+        lambda *, spec_id, deps: (SimpleNamespace(spec_id=spec_id, identity={}), []),
+    )
+    monkeypatch.setattr(
+        serve_module,
+        "prewrite_definition",
+        lambda **_: SimpleNamespace(result=SimpleNamespace(content_version="cv_stub")),
+    )
+    monkeypatch.setattr(serve_module, "_write_definition_artifacts", _write_then_lose_the_claim)
+    monkeypatch.setattr(
+        serve_module,
+        "_materialisation_record",
+        lambda prewrite, **_: materialisation_record(
+            subject_id=_SUBJECT_ID, content_version="cv_stub", trigger="worker"
+        ),
+    )
+
+    with pytest.raises(OperationSuperseded) as excinfo:
+        run_operation(
+            operation=operation,
+            deps=dataclasses.replace(_deps(), head_store=head_store),
+            operation_store=operation_store,
+            is_final_attempt=True,
+        )
+
+    assert isinstance(excinfo.value.__cause__, HeadFenceLost)
+    assert head_store.fences == [
+        HeadFence(operation_id=operation.id, attempt=operation.attempt_count)
+    ]
+    assert head_store.heads == {}
+    current = operation_store.get(operation.id)
+    assert current == reclaimed_box["op"]
 
 
 def test_run_re_estimates_at_execution_and_sizes_the_fetch_guard_from_it(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """Execution uses its fresh coverage snapshot and estimate to size `raw_fetch_guard`."""
+    """Execution admits its run with its fresh coverage snapshot and estimate, which size `raw_fetch_guard`."""
     operation_store = _operation_store()
     operation = _claimed_operation(operation_store)
     deps = _deps()
@@ -692,29 +804,36 @@ def test_run_re_estimates_at_execution_and_sizes_the_fetch_guard_from_it(
         return fresh
 
     def _capture_serve(
-        *, stored, requests, options, deps, ceiling, coverage_stamp, coverage_index, progress
+        stored,
+        *,
+        resolve_requests,
+        options,
+        trigger,
+        deps,
+        trace_id,
+        admitted,
+        coverage_snapshot,
+        progress,
     ):
-        captured["ceiling"] = ceiling
+        captured["admitted"] = admitted
         captured["recorded"] = operation_store.get(operation.id)
         return _stub_manifest()
 
     monkeypatch.setattr(worker_module, "_resolve_spec_requests", _stub_resolve)
     monkeypatch.setattr(worker_module, "sync_estimate", _fresh_estimate)
-    monkeypatch.setattr(worker_module, "serve_definition", _capture_serve)
+    monkeypatch.setattr(worker_module, "serve_current", _capture_serve)
 
     run_operation(
         operation=operation,
         deps=deps,
         operation_store=operation_store,
-        lease_seconds=_DEFAULT_LEASE_SECONDS,
     )
 
     assert estimated_against == [_StubCoverageSnapshot.index]
-    assert captured["ceiling"] == raw_fetch_guard(fresh, floor=deps.ceiling)
-    assert captured["ceiling"] != raw_fetch_guard(operation.estimate, floor=deps.ceiling)
+    assert captured["admitted"] == fresh
+    assert captured["admitted"] != operation.estimate
     recorded = captured["recorded"]
     assert isinstance(recorded, Operation)
-    assert recorded.execution_coverage_stamp == _StubCoverageSnapshot.stamp
     assert recorded.estimate == fresh
     assert recorded.coverage_stamp == operation.coverage_stamp
 
@@ -745,21 +864,29 @@ def test_run_loads_a_moved_coverage_pointer_before_it_executes(
         return Estimate(rows=1, requests=1)
 
     def _capture_serve(
-        *, stored, requests, options, deps, ceiling, coverage_stamp, coverage_index, progress
+        stored,
+        *,
+        resolve_requests,
+        options,
+        trigger,
+        deps,
+        trace_id,
+        admitted,
+        coverage_snapshot,
+        progress,
     ):
-        captured["coverage_stamp"] = coverage_stamp
-        captured["coverage_index"] = coverage_index
+        captured["coverage_stamp"] = coverage_snapshot.stamp
+        captured["coverage_index"] = coverage_snapshot.index
         return _stub_manifest()
 
     monkeypatch.setattr(worker_module, "_resolve_spec_requests", _stub_resolve)
     monkeypatch.setattr(worker_module, "sync_estimate", _estimate)
-    monkeypatch.setattr(worker_module, "serve_definition", _capture_serve)
+    monkeypatch.setattr(worker_module, "serve_current", _capture_serve)
 
     run_operation(
         operation=operation,
         deps=_coverage_deps(coverage),
         operation_store=operation_store,
-        lease_seconds=_DEFAULT_LEASE_SECONDS,
     )
 
     served = coverage.snapshot()
@@ -770,7 +897,6 @@ def test_run_loads_a_moved_coverage_pointer_before_it_executes(
     stored = operation_store.get(operation.id)
     assert stored is not None
     assert stored.state == "done"
-    assert stored.execution_coverage_stamp == "stamp-2"
 
 
 def test_an_unreadable_coverage_pointer_releases_the_run_without_executing(
@@ -785,25 +911,24 @@ def test_an_unreadable_coverage_pointer_releases_the_run_without_executing(
     operation_store = _operation_store()
     operation = _claimed_operation(operation_store)
 
-    def _must_not_serve(**_):
+    def _must_not_serve(*_, **__):
         raise AssertionError("a run without a current coverage pointer must not materialise")
 
     monkeypatch.setattr(worker_module, "_resolve_spec_requests", _stub_resolve)
-    monkeypatch.setattr(worker_module, "serve_definition", _must_not_serve)
+    monkeypatch.setattr(worker_module, "serve_current", _must_not_serve)
 
     with pytest.raises(OperationTransientFailure):
         run_operation(
             operation=operation,
             deps=_coverage_deps(coverage),
             operation_store=operation_store,
-            lease_seconds=_DEFAULT_LEASE_SECONDS,
             is_final_attempt=False,
         )
 
     stored = operation_store.get(operation.id)
     assert stored is not None
     assert stored.state == "pending"
-    assert stored.execution_coverage_stamp is None
+    assert stored.estimate == operation.estimate
 
 
 def test_execution_estimate_over_the_async_ceiling_fails_over_ceiling_without_fetching(
@@ -813,21 +938,20 @@ def test_execution_estimate_over_the_async_ceiling_fails_over_ceiling_without_fe
     operation = _claimed_operation(operation_store)
     over = Estimate(rows=DatasetsBuildSettings().async_max_rows + 1, requests=1)
 
-    def _must_not_serve(**_):
+    def _must_not_serve(*_, **__):
         raise AssertionError("an over-ceiling run must not materialise")
 
     monkeypatch.setattr(worker_module, "_resolve_spec_requests", _stub_resolve)
     monkeypatch.setattr(
         worker_module, "sync_estimate", lambda requests, *, index, member_concurrency: over
     )
-    monkeypatch.setattr(worker_module, "serve_definition", _must_not_serve)
+    monkeypatch.setattr(worker_module, "serve_current", _must_not_serve)
 
     # `over_ceiling` is deterministic. It fails even on a non-final attempt.
     run_operation(
         operation=operation,
         deps=_deps(),
         operation_store=operation_store,
-        lease_seconds=_DEFAULT_LEASE_SECONDS,
         is_final_attempt=False,
     )
 
@@ -836,7 +960,6 @@ def test_execution_estimate_over_the_async_ceiling_fails_over_ceiling_without_fe
     assert stored.state == "failed"
     assert stored.refusal_code == "over_ceiling"
     assert stored.retryable is False
-    assert stored.execution_coverage_stamp == _StubCoverageSnapshot.stamp
     assert stored.estimate == over
 
 
@@ -885,26 +1008,35 @@ def test_run_completes_only_when_the_requests_rendering_is_servable(
     subject_id, linked, is_final_attempt, state, refusal_code, retryable
 ):
     """The check reads the subject and content version the manifest completes with. A bundle
-    left unlinked after a failed graph label or documentation read is transient."""
+    linked only as incomplete after a failed graph label or documentation read has another
+    rendering key, so it is transient."""
     operation_store = _operation_store()
     operation = _claimed_operation(operation_store, subject_id=subject_id)
     completed = _stub_manifest()
 
     def _serve(
-        *, stored, requests, options, deps, ceiling, coverage_stamp, coverage_index, progress
+        stored,
+        *,
+        resolve_requests,
+        options,
+        trigger,
+        deps,
+        trace_id,
+        admitted,
+        coverage_snapshot,
+        progress,
     ):
         return completed
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(worker_module, "_resolve_spec_requests", _stub_resolve)
-        mp.setattr(worker_module, "serve_definition", _serve)
+        mp.setattr(worker_module, "serve_current", _serve)
         released = state == "pending"
         with pytest.raises(OperationTransientFailure) if released else contextlib.nullcontext():
             run_operation(
                 operation=operation,
                 deps=_deps(linked),
                 operation_store=operation_store,
-                lease_seconds=30,
                 is_final_attempt=is_final_attempt,
             )
 
@@ -914,3 +1046,4 @@ def test_run_completes_only_when_the_requests_rendering_is_servable(
     assert row.refusal_code == refusal_code
     assert row.retryable == retryable
     assert row.content_version == (completed.content_version if state == "done" else None)
+    assert row.confirmed_at == (_CONFIRMED_AT if state == "done" else None)

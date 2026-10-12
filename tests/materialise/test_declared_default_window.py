@@ -78,7 +78,7 @@ def _member_and_group(
         ],
         [candidates, candidates],
         graph=graph,
-    )[axis]
+    ).selections[axis]
     return member, group
 
 
@@ -156,7 +156,7 @@ def test_axes_left_to_fallback_follow_the_declared_default_as_a_member_and_in_a_
         _request(stat_var=_STAT_VAR_A, facet_bindings={}, window=_YEAR_2027),
         candidates,
         graph=graph,
-    )
+    ).selections
     group = select_group_facets(
         [
             _request(stat_var=_STAT_VAR_A, facet_bindings={}, window=_YEAR_2027),
@@ -164,7 +164,7 @@ def test_axes_left_to_fallback_follow_the_declared_default_as_a_member_and_in_a_
         ],
         [candidates, candidates],
         graph=graph,
-    )
+    ).selections
 
     for selections in (member, group):
         assert selections["provenance"].basis == "declared_default"
@@ -241,7 +241,7 @@ def test_a_unit_request_follows_the_other_axes_declared_defaults():
 
     selections = _select_member_facets(
         request, [declared, projected], graph=_graph("provenance", "PROV_DECLARED")
-    )
+    ).selections
 
     assert selections["provenance"].ref == "PROV_DECLARED"
     assert selections["unit"].ref == "CurrencyGBP"

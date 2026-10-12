@@ -17,7 +17,6 @@ from fastapi.testclient import TestClient
 from datasets_api import kinds
 from datasets_api.adapter import build_identity_document
 from datasets_api.mint_models import Scope
-from datasets_api.revision import SentinelRevisionReader
 from datasets_api.shape import resolve_shape
 from dc_sdmx import SdmxClient
 from origin_catalogue.graph import OriginGraphClient, build_graph_client
@@ -83,7 +82,6 @@ def _client(graph: OriginGraphClient) -> TestClient:
         spec_reader=LiveSpecReader(store=store),
         graph=graph,
         sdmx=_sdmx_never_called(),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),

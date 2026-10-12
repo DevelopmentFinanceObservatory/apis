@@ -5,7 +5,7 @@ an explicit `CoverageSnapshot` because their coverage is a required argument.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 import pytest
 
@@ -34,8 +34,10 @@ def build_coverage_index(
 
     `facet_metadata` mirrors an artifact's `facets.json`; supply it when tests resolve
     provenance, unit, or measurement method from coverage. A facet it leaves out gets a
-    provenance alone: the one dataset the code index records its variables under
-    (`fixtures.provenance.index_provenance`), else `FIXTURE_PROVENANCE`. The loader refuses
+    provenance: the one dataset the code index records its variables under
+    (`fixtures.provenance.index_provenance`), else `FIXTURE_PROVENANCE`, and the `P1Y` period
+    every DFO import states, since a coverage facet stating none is a cadence of its own
+    (`materialise.facets.cadences_by_member`). The loader refuses
     an artifact without an entry for every facet, and the job reads each entry's provenance
     from the facet's time series.
     """
@@ -45,7 +47,8 @@ def build_coverage_index(
         datasets.setdefault(facet_id, set()).add(index_provenance(variable))
     metadata = {
         facet_id: FacetMetadata(
-            provenance_id=(next(iter(found)) if len(found) == 1 else None) or FIXTURE_PROVENANCE
+            provenance_id=(next(iter(found)) if len(found) == 1 else None) or FIXTURE_PROVENANCE,
+            observation_period="P1Y",
         )
         for facet_id, found in datasets.items()
     }
@@ -74,6 +77,13 @@ class FakeCoverageService:
 
     def snapshot(self) -> CoverageSnapshot:
         return CoverageSnapshot(index=self._index, manifest=self._manifest, stamp=self.stamp)
+
+    def serves(self, snapshot: CoverageSnapshot) -> bool:
+        return snapshot.index is self._index
+
+    def register_load_guard(self, guard: object) -> Callable[[], None]:
+        """A fixed index never reloads, so no guard is ever entered."""
+        return lambda: None
 
 
 def empty_coverage_snapshot(*, stamp: str = "test-coverage-stamp") -> CoverageSnapshot:

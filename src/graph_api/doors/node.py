@@ -1,10 +1,11 @@
 """Serve `GET /api/graph/node/{dcid}` and `POST /api/graph/nodes` from an allowlisted DCP read.
 
-Both routes make one executor job under one slot of the shared non-blocking
-semaphore: the allowlisted arc read, then one batched name read for every
-held node's label targets, skipped when none has a target. A full pool
-returns retryable 503. `GRAPH_NODE_TIMEOUT_SECONDS` bounds the client wait
-and the deadline both reads share. The GET route checks `DCID_MAX_LENGTH`
+Both routes make one job on the shared DCP-read executor: the allowlisted
+arc read, then one batched name read for every held node's label targets,
+skipped when none has a target. A busy executor queues the job.
+`GRAPH_NODE_TIMEOUT_SECONDS` bounds the client wait, queue time included,
+and the deadline both reads share; a job still queued when the door times
+out is cancelled before it reads. The GET route checks `DCID_MAX_LENGTH`
 before reading and returns 400 for longer ids; the batch request model
 applies the same ceiling and caps the list at `NODES_MAX_DCIDS`. A missing
 node returns 404 on the GET route and a `not_held` entry in a batch. The
@@ -23,18 +24,16 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from concurrent.futures import BrokenExecutor
 
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
 from dfo_platform import ProblemSpec
 from dfo_platform.doors import DoorContribution
-from dfo_platform.executor import submit_with_context
 from dfo_platform.refusal import TIMEOUT_DEFAULT
 from graph_api import routing
 from graph_api.config import GRAPH_NODE_TIMEOUT_SECONDS
-from graph_api.deps import GraphDeps, GraphDepsDep
+from graph_api.deps import GraphDeps, GraphDepsDep, run_dcp_read
 from graph_api.node_models import (
     ContainedInPlace,
     EntityNode,
@@ -131,10 +130,6 @@ class DcidTooLong(Exception):
         )
 
 
-class GraphNodePoolExhausted(Exception):
-    """The DCP-read pool is full. The door maps this to retryable 503."""
-
-
 def _label(arcs: dict[str, tuple[str, ...]], dcid: str) -> str | None:
     """Return the first name unequal to `dcid`. Some imports add a self-referential arc."""
     for value in arcs.get(_LABEL_PROPERTY, ()):
@@ -169,7 +164,7 @@ def _read_nodes_sync(
 ) -> tuple[NodeArcsByDcid, NodeArcsByDcid]:
     """Read the allowlisted arcs of `dcids`, then the names of every held node's label
     targets in one batched second read, skipped when no node has a target. Runs on the DCP
-    executor, so both reads share one pool slot and one deadline."""
+    executor, so both reads share one worker and one deadline."""
     confirmed = graph.node_arcs_many(dcids, properties=_ALLOWLIST, deadline=deadline)
     targets = dict.fromkeys(
         target for arcs in confirmed.values() if arcs is not None for target in _label_targets(arcs)
@@ -181,36 +176,14 @@ def _read_nodes_sync(
 
 
 async def _read_nodes(deps: GraphDeps, dcids: list[str]) -> tuple[NodeArcsByDcid, NodeArcsByDcid]:
-    """Submit `_read_nodes_sync` through the shared executor under one non-blocking gate slot.
+    """Run `_read_nodes_sync` as one job on the shared DCP-read executor.
 
-    Compute the deadline before admission and submission so queue time counts against it.
+    Compute the deadline before submission so queue time counts against it.
     """
-    executor = deps.dcp_executor
-    semaphore = deps.dcp_semaphore
-
     deadline = time.monotonic() + GRAPH_NODE_TIMEOUT_SECONDS
-    if not semaphore.acquire(blocking=False):
-        raise GraphNodePoolExhausted()
-    try:
-        future = submit_with_context(
-            executor, _read_nodes_sync, deps.graph, dcids, deadline=deadline
-        )
-    except BrokenExecutor:
-        semaphore.release()
-        logger.error(
-            "Graph node door's own DCP-read executor is permanently broken; "
-            "every future submitted to it will fail the same way",
-            exc_info=True,
-        )
-        raise
-    except RuntimeError:
-        semaphore.release()
-        raise GraphNodePoolExhausted() from None
-    except BaseException:
-        semaphore.release()
-        raise
-    future.add_done_callback(lambda _f: semaphore.release())
-    return await asyncio.wrap_future(future)
+    return await run_dcp_read(
+        deps.dcp_executor, _read_nodes_sync, deps.graph, dcids, deadline=deadline
+    )
 
 
 def _stat_var_shape(dcid: str, arcs: dict[str, tuple[str, ...]]) -> StatVarNode:
@@ -369,13 +342,6 @@ def classify_node_exception(exc: BaseException) -> ProblemSpec | None:
         return ProblemSpec(
             status=404, code="node_not_held", detail=str(exc), pointer="/dcid", retryable=False
         )
-    if isinstance(exc, GraphNodePoolExhausted):
-        return ProblemSpec(
-            status=503,
-            code="service_unavailable",
-            detail="the node door is at its DCP-read capacity right now; retry",
-            retryable=True,
-        )
     if isinstance(exc, GraphDeadlineExceededError):
         # This subclass maps to 504, so it must precede `GraphReadError`.
         return ProblemSpec(
@@ -430,14 +396,12 @@ def build_node_door() -> DoorContribution:
         exception_types=(
             DcidTooLong,
             NodeNotHeld,
-            GraphNodePoolExhausted,
             GraphDeadlineExceededError,
             GraphReadError,
         ),
         exception_exemplars=(
             DcidTooLong(routing.DCID_MAX_LENGTH + 1),
             NodeNotHeld("exemplar/dcid"),
-            GraphNodePoolExhausted(),
             GraphDeadlineExceededError("exemplar"),
             GraphReadError("exemplar", upstream_status=502),
         ),

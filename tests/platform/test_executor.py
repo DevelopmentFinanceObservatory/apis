@@ -136,6 +136,15 @@ class TestSaturationTrackingExecutor:
 
         asyncio.run(scenario())
 
+    def test_a_submit_refused_after_shutdown_leaves_the_in_flight_count_unchanged(self):
+        executor = SaturationTrackingExecutor(max_workers=1, thread_name_prefix="test-refused")
+        executor.shutdown(wait=True)
+
+        with pytest.raises(RuntimeError):
+            executor.submit(lambda: None)
+
+        assert executor._in_flight == 0
+
 
 class TestContextCarryingSubmission:
     def test_plain_submit_drops_the_callers_context(self):

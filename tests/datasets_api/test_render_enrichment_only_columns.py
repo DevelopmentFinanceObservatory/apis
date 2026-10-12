@@ -85,7 +85,7 @@ def _whole(columns: list[str]):
     return _reshape(
         Table(columns=_COLUMNS, rows=_ROWS),
         options=MintOptions(format="csv", bundle=False, columns=columns),
-        enrichment=EnrichmentLookup(_GRAPH),
+        enrichment=EnrichmentLookup(_GRAPH, type_kinds={}, parties={}),
         provenance_refs=(),
         **_COMMON,
     )
@@ -107,10 +107,9 @@ def _streamed(columns: list[str], *, chunk_size: int):
     return _stream_bare_pivot(
         chunks,
         options=_pivot_options(columns),
-        enrichment=EnrichmentLookup(_GRAPH),
+        enrichment=EnrichmentLookup(_GRAPH, type_kinds={}, parties={}),
         provenance_refs=(),
         subject_id="enrichment-only-columns-test",
-        groupby_preimage=None,
         **_COMMON,
     )
 
@@ -141,7 +140,7 @@ def test_an_enrichment_only_list_keeps_the_decoded_column_a_streamed_pivot_names
     whole = _reshape(
         Table(columns=_COLUMNS, rows=_ROWS[:2]),
         options=_pivot_options(["observationAbout_type"]),
-        enrichment=EnrichmentLookup(_GRAPH),
+        enrichment=EnrichmentLookup(_GRAPH, type_kinds={}, parties={}),
         provenance_refs=(),
         **_COMMON,
     )

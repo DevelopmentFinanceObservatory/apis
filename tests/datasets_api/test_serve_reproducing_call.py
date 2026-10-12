@@ -15,9 +15,8 @@ import pytest
 import datasets_api.serve as serve_module
 from datasets_api.mint_models import GroupbyOptions, MintOptions, PivotOptions
 from datasets_api.query_options import encode_query_options
-from datasets_api.revision import SentinelRevisionReader
 from materialise.graph import Facet
-from series_coverage.schema import FacetMetadata, RoleNames
+from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
@@ -77,8 +76,8 @@ def _coverage_service() -> FakeCoverageService:
     `n_obs`/`last_year` from the one 2020 row `_CSV_BODY` carries.
     """
     index = build_coverage_index(
-        [(_STAT_VAR, "facet1", "country/USA", _RECIPIENT, [2020])],
-        role_names={_STAT_VAR: RoleNames(donor="provider", recipient="recipient")},
+        [(_STAT_VAR, "facet1", ABSENT_ENTITY, _RECIPIENT, [2020])],
+        role_names={_STAT_VAR: RoleNames(donor=None, recipient="recipient")},
         facet_metadata={
             "facet1": FacetMetadata(
                 provenance_id="OECD_DAC2A", measurement_method="GrantEquivalent", unit="USD"
@@ -118,7 +117,6 @@ def _client(*, artifact_store: FakeArtifactStore):
         spec_reader=LiveSpecReader(store=store),
         graph=graph,
         sdmx=sdmx,
-        revision_reader=SentinelRevisionReader(),
         artifact_store=artifact_store,
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),

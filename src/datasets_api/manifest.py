@@ -1,17 +1,20 @@
-"""Assembles manifests and records their immutable version bodies.
+"""Assembles manifests, records the facts each version stores, and assembles a stored
+version's manifest from its facts at read time.
 
 `assemble_manifest` combines registry records, materialisation results, artifacts, citations,
-warnings, and output options. Matching `record_*_version` functions write version records.
-`encode_*` and `decode_*` define their stored bodies.
+warnings, and output options. Matching `record_*_version` functions write version records, whose
+facts `manifest_facts` builds (`dataset_store.snapshot.ManifestFacts`). Every read of a stored
+version assembles its wire manifest from those facts in `stored_manifest`, so a wire change is a
+read-side change.
 
-Version bodies store `OutputProfile`, not artifacts or deployment-specific `output_options`.
-Reads derive options from the stored profile and current capabilities. Older bodies without a
-profile return `output_options=None`. A converted definition's body also stores one conversion
-record per series under `series_conversions` (`materialise.series_conversion`), off the wire and
-outside the content-version preimage, and `decode_series_conversions` reads them. A definition body
-also stores whether the mint's default place scope was plural under `default_scope_plural`, read
-by `decode_default_scope_plural`, which decides the stored version's preview mode. Definition
-records may include a frame1 artifact that the response omits. Snapshot manifests list all
+A version stores its `OutputProfile` and leaves out artifacts and deployment-specific
+`output_options`. Reads derive options from the stored profile and current capabilities
+(`stored_output_profile`). A version without a profile returns `output_options=None`. A converted
+definition also stores one conversion record per series (`materialise.series_conversion`), off the
+wire and outside the content-version preimage, and `stored_series_conversions` reads them. A
+definition also stores whether the mint's default place scope was plural
+(`ManifestFacts.default_scope_plural`), which decides the stored version's preview mode. Definition
+records include a canonical frame artifact that the response omits. Snapshot manifests list all
 servable renderings.
 
 Each serve call reads the name, url, licence, source, Data Commons and documentation of every
@@ -20,8 +23,7 @@ manifest's citation is built from it. Every manifest carries the `prepared_at` i
 the instant of the version's first mint, which a re-mint reads back from the stored record. The
 graph has no processing-level convention, so `processing_level` is `None` and each non-empty citation adds `processing_level_undeclared`. Every new manifest's trace records the
 request's origin catalogue build as `origin_catalogue_build_id`, and a stale catalogue adds
-`origin_catalogue_stale` (`datasets_api.origin`). A materialisation with the
-`UNAVAILABLE_REVISION` sentinel adds `revision_unavailable`. `facet_default_selected` marks an
+`origin_catalogue_stale` (`datasets_api.origin`). `facet_default_selected` marks an
 unbound axis when `deployment_fallback` selects `most_observations_over_disagreement`, ranked by
 the bound places or role tuples a facet covers, the window years it covers, observation count,
 recency, and remaining tie-breaks (`docs/datasets-facet-policy.md`).
@@ -36,7 +38,10 @@ from dataclasses import replace
 from datetime import datetime
 from typing import cast
 
+from dfo_frame_grammar import FRAME_GRAMMAR_VERSION
+
 from code_index.query import CodeIndex
+from dataset_store.snapshot import FrameLineage, ManifestFacts, StoredVersion
 from datasets_api.capabilities import build_capabilities
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.manifest_models import (
@@ -58,13 +63,13 @@ from datasets_api.manifest_models import (
 )
 from datasets_api.origin import catalogue_build_id, stale_warnings
 from datasets_api.output_options import derive_output_options
-from datasets_api.revision import UNAVAILABLE_REVISION
 from datasets_api.timings import phase
 from datasets_api.versions import (
     NULL_VERSION_RECORD_WRITER,
     ArtifactRecord,
     VersionRecord,
     VersionRecordWriter,
+    unlinked_state,
 )
 from datasets_api.warnings import DATASETS_WARNING_CATALOGUE
 from dc_graph import GraphReadError
@@ -97,27 +102,12 @@ logger = logging.getLogger(__name__)
 _PROCESSING_LEVEL_UNDECLARED_TITLE, _PROCESSING_LEVEL_UNDECLARED_DETAIL = BUNDLE_CODE_CATALOGUE[
     "processing_level_undeclared"
 ]
-_REVISION_UNAVAILABLE_TITLE, _REVISION_UNAVAILABLE_DETAIL, _REVISION_UNAVAILABLE_SEVERITY = (
-    DATASETS_WARNING_CATALOGUE["revision_unavailable"]
-)
 _FACET_DEFAULT_SELECTED_TITLE, _FACET_DEFAULT_SELECTED_DETAIL, _FACET_DEFAULT_SELECTED_SEVERITY = (
     DATASETS_WARNING_CATALOGUE["facet_default_selected"]
 )
 
 # `select_facet` emits this reason when fallback ranks disagreeing candidates.
 _MOST_OBSERVATIONS_OVER_DISAGREEMENT = "most_observations_over_disagreement"
-
-
-def _revision_unavailable_warning_if_sentinel(graph_revision: str) -> tuple[WarningModel, ...]:
-    if graph_revision != UNAVAILABLE_REVISION:
-        return ()
-    return (
-        WarningModel(
-            code="revision_unavailable",
-            severity=_REVISION_UNAVAILABLE_SEVERITY,
-            message=_REVISION_UNAVAILABLE_DETAIL,
-        ),
-    )
 
 
 def _facet_default_selected_warnings(
@@ -339,12 +329,13 @@ def healed_citation(
 
     A source with a `HEALED_FIELDS` member that is `None` (a body stored before that field
     existed, a first mint whose documentation read failed, or a source the catalogue and graph
-    declare nothing for) is read live with its documentation (`read_source_citations`), within
-    `deadline`, turned into a `CitationSource` by `cited_source` as a first mint does, and only
+    declare nothing for) is cited again with its documentation (`read_source_citations`: from
+    the origin catalogue with no graph read for a source it lists, else from the graph within
+    `deadline`), turned into a `CitationSource` by `cited_source` as a first mint does, and only
     its `None` fields are filled from that. Every set field stands, so a source with every field
-    set reads nothing. The stored body is left as it is. The second value is `False` when the
-    read raised `GraphReadError` or a documentation read failed. A source the graph documents
-    nothing for counts as answered. `GraphCapExceededError` propagates.
+    set reads nothing. The stored body is left as it is. The second value is `False` when a
+    graph read raised `GraphReadError` or a documentation read failed. A source nothing
+    documents counts as answered. `GraphCapExceededError` propagates.
     """
     refs = list(dict.fromkeys(source.ref for source in citation.sources if _needs_healing(source)))
     if not refs:
@@ -408,7 +399,7 @@ def assemble_manifest(
     extra_warnings: Sequence[WarningModel] = (),
     coverage_stamp: str | None = None,
 ) -> Manifest:
-    """Builds a definition manifest. `record_definition_version` writes it later.
+    """Builds a definition manifest. `definition_version_record` encodes it for storage.
 
     Uses the caller's `CodeIndex` for rendering and the trace stamp. `coverage_stamp` is
     admission-time lineage, excluded from `content_version`. `None` leaves it unset.
@@ -421,7 +412,6 @@ def assemble_manifest(
         [warning_model(w) for w in materialisation.warnings]
         + list(extra_warnings)
         + list(citation_warnings)
-        + list(_revision_unavailable_warning_if_sentinel(materialisation.trace.graph_revision))
         + list(_facet_default_selected_warnings(materialisation.trace.facets))
         + list(stale_warnings())
     )
@@ -459,161 +449,210 @@ def assemble_manifest(
     )
 
 
-_SERIES_CONVERSIONS_KEY = "series_conversions"
-_DEFAULT_SCOPE_PLURAL_KEY = "default_scope_plural"
-
-
-def encode_version_body(
+def manifest_facts(
     manifest: Manifest,
     *,
     output_profile: OutputProfile | None = None,
     series_conversions: Mapping[SeriesKey, SeriesConversion] | None = None,
     default_scope: Sequence[str] | None = None,
-) -> dict[str, object]:
-    """Encodes a definition version body with `output_profile` in place of artifacts and options.
+) -> ManifestFacts:
+    """The facts a definition version stores for `manifest`: every manifest member but
+    `artifacts`, `output_options` and `content_version` (the record's own column), with
+    `output_profile` in place of options.
 
-    A missing profile omits the key. `series_conversions`, when non-empty, adds one entry per
-    converted series (`materialise.series_conversion.encode_series_conversions`), and an
-    unconverted version omits the key. `default_scope`, the places of the mint's default place scope
+    `series_conversions`, when non-empty, stores one entry per converted series
+    (`materialise.series_conversion.encode_series_conversions`), and an unconverted version
+    stores `None`. `default_scope`, the places of the mint's default place scope
     (`MaterialisationResult.default_scope`), stores whether it holds more than one place, so
-    the worldwide total alone and a bound place store `false`; `None` omits the key.
-    `base_content_version` stays on the version record, outside the body, so older `Manifest`
-    models accept it.
+    the worldwide total alone and a bound place store `False`; `None` stores `None`.
     """
-    body = manifest.model_dump(mode="json", exclude={"artifacts", "output_options"})
-    if output_profile is not None:
-        body["output_profile"] = output_profile.to_json()
-    if series_conversions:
-        body[_SERIES_CONVERSIONS_KEY] = encode_series_conversions(series_conversions)
-    if default_scope is not None:
-        body[_DEFAULT_SCOPE_PLURAL_KEY] = len(default_scope) > 1
-    return body
-
-
-def decode_default_scope_plural(body: Mapping[str, object]) -> bool | None:
-    """Whether the mint's default place scope held more than one place, or `None` for a body
-    that does not say: a collapse head, or a version minted before bodies stored it."""
-    plural = body.get(_DEFAULT_SCOPE_PLURAL_KEY)
-    return plural if isinstance(plural, bool) else None
-
-
-def decode_series_conversions(body: Mapping[str, object]) -> dict[SeriesKey, SeriesConversion]:
-    """The per-series conversion records a definition version body stores, keyed by bare
-    StatVar and role tuple. Empty for an unconverted version and for a converted version minted
-    before bodies stored them, which a reader tells apart by `trace.conversion`."""
-    entries = body.get(_SERIES_CONVERSIONS_KEY)
-    if entries is None:
-        return {}
-    return decode_series_conversion_entries(cast(list[Mapping[str, object]], entries))
-
-
-def decode_version_body(
-    body: Mapping[str, object],
-) -> tuple[dict[str, object], OutputProfile | None]:
-    """Decodes manifest fields and the optional `OutputProfile` from a version body.
-
-    Removes `series_conversions` and `default_scope_plural` (`decode_series_conversions` and
-    `decode_default_scope_plural` read them) and legacy `base_content_version` and inline
-    `statistics` keys before model validation. Legacy statistics are dropped because a read
-    cannot create the missing artifact. Re-mint the version to obtain `series_count`.
-    """
-    fields = dict(body)
-    profile_json = fields.pop("output_profile", None)
-    profile = (
-        OutputProfile.from_json(cast(Mapping[str, object], profile_json))
-        if profile_json is not None
-        else None
+    dumped = manifest.model_dump(
+        mode="json", include={"definition", "coverage", "citation", "trace", "warnings"}
     )
-    fields.pop(_SERIES_CONVERSIONS_KEY, None)
-    fields.pop(_DEFAULT_SCOPE_PLURAL_KEY, None)
-    fields.pop("base_content_version", None)
-    fields.pop("statistics", None)
-    return fields, profile
+    return ManifestFacts(
+        prepared_at=manifest.prepared_at,
+        definition=dumped["definition"],
+        coverage=dumped["coverage"],
+        citation=dumped["citation"],
+        trace=dumped["trace"],
+        warnings=dumped["warnings"],
+        series_count=manifest.series_count,
+        series_coverage_stamp=manifest.series_coverage_stamp,
+        output_profile=output_profile.to_json() if output_profile is not None else None,
+        series_conversions=(
+            encode_series_conversions(series_conversions) if series_conversions else None
+        ),
+        default_scope_plural=len(default_scope) > 1 if default_scope is not None else None,
+    )
+
+
+def stored_manifest_facts(stored: StoredVersion) -> ManifestFacts:
+    """The facts of a stored dataset version. A published frame's lineage assembles no
+    manifest and raises `TypeError`."""
+    if not isinstance(stored.facts, ManifestFacts):
+        raise TypeError(
+            f"subject_id {stored.subject_id!r} content_version {stored.content_version!r} is a "
+            "published frame, which stores no manifest facts"
+        )
+    return stored.facts
+
+
+def _stored_manifest_fields(stored: StoredVersion) -> dict[str, object]:
+    facts = stored_manifest_facts(stored)
+    return {
+        "definition": facts.definition,
+        "content_version": stored.content_version,
+        "prepared_at": facts.prepared_at,
+        "coverage": facts.coverage,
+        "citation": facts.citation,
+        "trace": facts.trace,
+        "warnings": facts.warnings,
+        "series_count": facts.series_count,
+        "series_coverage_stamp": facts.series_coverage_stamp,
+    }
+
+
+def stored_manifest(
+    stored: StoredVersion, *, output_options: OutputOptionsModel | None = None
+) -> Manifest:
+    """The manifest a stored dataset version's facts assemble, with no artifacts and
+    `output_options`. Every read of a stored version assembles its manifest here."""
+    return Manifest.model_validate(
+        {
+            **_stored_manifest_fields(stored),
+            "artifacts": [],
+            "output_options": (
+                output_options.model_dump(mode="json") if output_options is not None else None
+            ),
+        }
+    )
+
+
+def stored_output_profile(facts: ManifestFacts) -> OutputProfile | None:
+    """The version's `OutputProfile`, or `None` for a version minted before versions stored
+    it. A read derives `output_options` from it and current capabilities."""
+    if facts.output_profile is None:
+        return None
+    return OutputProfile.from_json(facts.output_profile)
+
+
+def stored_series_conversions(facts: ManifestFacts) -> dict[SeriesKey, SeriesConversion]:
+    """The per-series conversion records a definition version stores, keyed by bare StatVar
+    and role tuple. Empty for an unconverted version and for a converted version minted
+    before versions stored them, which a reader tells apart by `trace.conversion`."""
+    if facts.series_conversions is None:
+        return {}
+    return decode_series_conversion_entries(facts.series_conversions)
+
+
+def version_document(stored: StoredVersion) -> dict[str, object]:
+    """The JSON document a Presentation frame carries as its manifest: a dataset version's
+    manifest without `artifacts` and `output_options`, or a published frame's `op_spec_hash`
+    (its subject id) and `input_content_versions`."""
+    if isinstance(stored.facts, FrameLineage):
+        return {
+            "op_spec_hash": stored.subject_id,
+            "input_content_versions": list(stored.facts.input_content_versions),
+        }
+    return stored_manifest(stored).model_dump(mode="json", exclude={"artifacts", "output_options"})
+
+
+def version_body(record: VersionRecord) -> dict[str, object]:
+    """The `immutable_body` `record`'s facts encode, the JSON an image reading bodies reads.
+
+    A dataset version's body is its `version_document` with `output_profile`, a non-empty
+    `series_conversions` and a non-null `default_scope_plural` added. A published frame's body adds
+    a non-empty `composed_stat_vars`. An absent fact omits its key. Nothing in this image reads the
+    body.
+    """
+    body = version_document(unlinked_state(record).version)
+    facts = record.facts
+    if isinstance(facts, FrameLineage):
+        if facts.composed_stat_vars:
+            body["composed_stat_vars"] = [dict(entry) for entry in facts.composed_stat_vars]
+        return body
+    if facts.output_profile is not None:
+        body["output_profile"] = dict(facts.output_profile)
+    if facts.series_conversions:
+        body["series_conversions"] = [dict(entry) for entry in facts.series_conversions]
+    if facts.default_scope_plural is not None:
+        body["default_scope_plural"] = facts.default_scope_plural
+    return body
 
 
 def persisted_manifest(
     *,
-    body: Mapping[str, object],
+    stored: StoredVersion,
     served: Manifest,
     call_warnings: Sequence[WarningModel] = (),
 ) -> Manifest:
     """The manifest a write returns when its version record already existed.
 
-    Every field comes from `body`, the stored `immutable_body`, so a re-mint after a graph rename
-    keeps the stored citation. From `served` it takes only `artifacts`, `output_options`, and
-    `series_coverage_stamp`. A `call_warnings` entry is appended when no stored warning has its
-    `code` and `message`; on a match the stored entry stands, so a `stat_vars_summed` warning
-    keeps the structured fields and label it was recorded with. `call_warnings` holds this call's
-    reshape warnings and the origin warnings its reads found (`datasets_api.origin`). Stored
-    `origin_catalogue_stale` entries are dropped and replaced by the one for the catalogue bound
-    to this call, as in `assemble_manifest`, so the manifest carries exactly this mint's stale
-    warning.
+    Every field comes from the stored version's facts (`stored_manifest`), so a re-mint after
+    a graph rename keeps the stored citation. From `served` it takes only `artifacts`,
+    `output_options`, and `series_coverage_stamp`. A `call_warnings` entry is appended when no
+    stored warning has its `code` and `message`; on a match the stored entry stands, so a
+    `stat_vars_summed` warning keeps the structured fields and label it was recorded with.
+    `call_warnings` holds this call's reshape warnings and the origin warnings its reads found
+    (`datasets_api.origin`). Stored `origin_catalogue_stale` entries are dropped and replaced
+    by the one for the catalogue bound to this call, as in `assemble_manifest`, so the
+    manifest carries exactly this mint's stale warning.
     """
-    fields, _profile = decode_version_body(body)
-    fields["output_options"] = (
-        served.output_options.model_dump(mode="json") if served.output_options is not None else None
-    )
+    manifest = stored_manifest(stored)
     warnings = [
-        entry
-        for entry in cast(list[dict[str, object]], fields.get("warnings") or [])
-        if entry.get("code") != "origin_catalogue_stale"
+        warning for warning in manifest.warnings if warning.code != "origin_catalogue_stale"
     ]
-    keys = {(entry.get("code"), entry.get("message")) for entry in warnings}
+    keys = {(warning.code, warning.message) for warning in warnings}
     for warning in (*call_warnings, *stale_warnings()):
         if (warning.code, warning.message) not in keys:
             keys.add((warning.code, warning.message))
-            warnings.append(warning.model_dump(mode="json"))
-    return Manifest.model_validate(
-        {
-            **fields,
+            warnings.append(warning)
+    return manifest.model_copy(
+        update={
             "warnings": warnings,
-            "artifacts": [artifact.model_dump(mode="json") for artifact in served.artifacts],
+            "artifacts": list(served.artifacts),
+            "output_options": served.output_options,
             "series_coverage_stamp": served.series_coverage_stamp,
         }
     )
 
 
-def record_definition_version(
+def definition_version_record(
     *,
     manifest: Manifest,
     stored: StoredDefinition,
     materialisation: MaterialisationResult,
     artifacts: Sequence[ArtifactEntryModel],
     record_only_artifacts: Sequence[ArtifactRecord] = (),
-    version_writer: VersionRecordWriter = NULL_VERSION_RECORD_WRITER,
-    trace_id: str | None = None,
     base_content_version: str | None = None,
-) -> bool:
-    """Writes a definition version record and returns `False` if the record already existed.
-
-    Groupby collapses store `base_content_version` outside the immutable body.
-    """
-    with phase("record"):
-        return version_writer.record_version(
-            VersionRecord(
-                subject_id=stored.spec_id,
-                subject_kind="spec",
-                content_version=materialisation.content_version,
-                schema_version=stored.schema_version,
-                immutable_body=encode_version_body(
-                    manifest,
-                    output_profile=materialisation.output_profile,
-                    series_conversions=materialisation.series_conversions,
-                    default_scope=materialisation.default_scope,
-                ),
-                artifacts=tuple(
-                    ArtifactRecord(
-                        artifact_digest=artifact.artifact_digest,
-                        rendering=artifact.rendering,
-                        media_type=artifact.media_type,
-                    )
-                    for artifact in artifacts
-                )
-                + tuple(record_only_artifacts),
-                base_content_version=base_content_version,
-            ),
-            trace_id=trace_id,
+) -> VersionRecord:
+    """The version record of a definition materialisation, linking `artifacts` and
+    `record_only_artifacts`. A groupby collapse stores the raw version it was rendered from as
+    `base_content_version`."""
+    return VersionRecord(
+        subject_id=stored.spec_id,
+        subject_kind="spec",
+        content_version=materialisation.content_version,
+        schema_version=stored.schema_version,
+        facts=manifest_facts(
+            manifest,
+            output_profile=materialisation.output_profile,
+            series_conversions=materialisation.series_conversions,
+            default_scope=materialisation.default_scope,
+        ),
+        artifacts=tuple(
+            ArtifactRecord(
+                artifact_digest=artifact.artifact_digest,
+                rendering=artifact.rendering,
+                media_type=artifact.media_type,
+            )
+            for artifact in artifacts
         )
+        + tuple(record_only_artifacts),
+        base_content_version=base_content_version,
+        frame_grammar_version=materialisation.trace.frame_grammar_version,
+        frame_sha256=materialisation.frame_sha256,
+    )
 
 
 def collapsed_head_manifest(
@@ -653,6 +692,7 @@ def record_collapsed_head_version(
     schema_version: int,
     base_content_version: str,
     output_profile: OutputProfile,
+    frame_sha256: str,
     record_only_artifacts: Sequence[ArtifactRecord] = (),
     version_writer: VersionRecordWriter = NULL_VERSION_RECORD_WRITER,
     trace_id: str | None = None,
@@ -661,7 +701,7 @@ def record_collapsed_head_version(
     the record already existed.
 
     `manifest` is already patched. `base_content_version` names the raw materialisation, and
-    `output_profile` is the collapsed frame's. `ON CONFLICT DO NOTHING` makes repeated writes
+    `output_profile` and `frame_sha256` are the collapsed frame's. `ON CONFLICT DO NOTHING` makes repeated writes
     idempotent.
     """
     with phase("record"):
@@ -671,7 +711,7 @@ def record_collapsed_head_version(
                 subject_kind="spec",
                 content_version=manifest.content_version,
                 schema_version=schema_version,
-                immutable_body=encode_version_body(manifest, output_profile=output_profile),
+                facts=manifest_facts(manifest, output_profile=output_profile),
                 artifacts=tuple(
                     ArtifactRecord(
                         artifact_digest=artifact.artifact_digest,
@@ -682,6 +722,8 @@ def record_collapsed_head_version(
                 )
                 + tuple(record_only_artifacts),
                 base_content_version=base_content_version,
+                frame_grammar_version=FRAME_GRAMMAR_VERSION,
+                frame_sha256=frame_sha256,
             ),
             trace_id=trace_id,
         )

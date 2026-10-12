@@ -79,7 +79,7 @@ async def _source_names(
     return tuple(dict.fromkeys(labels[dcid] for dcid in withheld if dcid in labels))
 
 
-def _elected_series(result: RegionResult) -> tuple[list[str], list[str]] | None:
+def elected_series(result: RegionResult) -> tuple[list[str], list[str]] | None:
     """The elected StatVars and requested places of a subject-only answer that has no data
     because no elected member has admitted data at the places."""
     if (
@@ -109,7 +109,7 @@ async def with_withheld_warning(
     then."""
     if not isinstance(graph, WithheldReader):
         return result
-    series = _elected_series(result)
+    series = elected_series(result)
     if series is None or not current_scope().claim_withheld_read():
         return result
     variables, places = series

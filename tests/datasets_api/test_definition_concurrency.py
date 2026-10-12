@@ -15,10 +15,9 @@ import pytest
 from datasets_api import door_executor
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.operation_store import NullOperationStore
-from datasets_api.revision import SentinelRevisionReader
 from dc_sdmx import SdmxClient
 from materialise.graph import Facet
-from series_coverage.schema import FacetMetadata, RoleNames
+from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
@@ -115,8 +114,8 @@ def _coverage_service() -> FakeCoverageService:
     `n_obs`/`last_year` from the one 2015 row `_CSV_ROW` carries.
     """
     index = build_coverage_index(
-        [(_STAT_VAR, "facet1", "country/USA", _RECIPIENT, [2015])],
-        role_names={_STAT_VAR: RoleNames(donor="provider", recipient="recipient")},
+        [(_STAT_VAR, "facet1", ABSENT_ENTITY, _RECIPIENT, [2015])],
+        role_names={_STAT_VAR: RoleNames(donor=None, recipient="recipient")},
         facet_metadata={
             "facet1": FacetMetadata(
                 provenance_id="OECD_DAC2A", measurement_method="GrantEquivalent", unit="USD"
@@ -150,7 +149,7 @@ def _client(
     *,
     graph,
     store=None,
-    definition_pool_size: int = 1,
+    work_max_concurrency: int | None = 1,
     sdmx: SdmxClient | None = None,
     settings: DatasetsBuildSettings | None = None,
 ):
@@ -161,16 +160,26 @@ def _client(
         spec_reader=LiveSpecReader(store=store),
         graph=graph,
         sdmx=sdmx or SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport()),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=FakeArtifactStore(),
         # The composed lifespan starts snapshot and pin doors too.
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),
-        definition_pool_size=definition_pool_size,
+        work_max_concurrency=work_max_concurrency,
         # The composed lifespan also requires the meta door's operation store.
         operation_store=NullOperationStore(),
         coverage=_coverage_service(),
     )
+
+
+class _SlowAfterBlockGraphReader(BlockingFakeMintGraphReader):
+    """A blocking reader whose `node_arc_values` also takes `read_seconds` once released."""
+
+    read_seconds = 0.0
+
+    def node_arc_values(self, dcid, *, properties):
+        arcs = super().node_arc_values(dcid, properties=properties)
+        time.sleep(self.read_seconds)
+        return arcs
 
 
 def _mint_one_spec(client) -> str:
@@ -187,7 +196,7 @@ def test_over_admission_at_pool_size_one_refuses_definition_backpressure(
         monkeypatch.setenv(var, value)
     graph = BlockingFakeMintGraphReader(_default_graph())
     graph.release.set()  # let the mint below (and its own node_arcs calls) through unblocked
-    client = _client(graph=graph, definition_pool_size=1)
+    client = _client(graph=graph, work_max_concurrency=1)
 
     with client:
         spec_id = _mint_one_spec(client)
@@ -206,6 +215,7 @@ def test_over_admission_at_pool_size_one_refuses_definition_backpressure(
         second_response = client.get(f"/api/datasets/{spec_id}")
 
         assert second_response.status_code == 503, second_response.text
+        assert second_response.headers["retry-after"] == "1"
         second_problem = second_response.json()
         assert second_problem["code"] == "service_unavailable"
         assert second_problem["retryable"] is True
@@ -227,8 +237,8 @@ def test_timed_out_call_keeps_its_permit_held_until_it_actually_finishes(
     graph.release.set()
     client = _client(
         graph=graph,
-        definition_pool_size=1,
-        settings=DatasetsBuildSettings(definition_timeout_seconds=0.05, metadata_read_seconds=0.01),
+        work_max_concurrency=1,
+        settings=DatasetsBuildSettings(definition_timeout_seconds=0.05),
     )
 
     # The client context keeps both requests on one portal loop.
@@ -256,6 +266,7 @@ def test_timed_out_call_keeps_its_permit_held_until_it_actually_finishes(
         assert first_problem["retryable"] is True
 
         assert second_response.status_code == 503, second_response.text
+        assert second_response.headers["retry-after"] == "1"
         second_problem = second_response.json()
         assert second_problem["code"] == "service_unavailable"
         assert second_problem["retryable"] is True
@@ -271,11 +282,13 @@ def test_permit_frees_once_the_background_call_finishes(monkeypatch: pytest.Monk
     """
     for var, value in _SETTINGS_ENV.items():
         monkeypatch.setenv(var, value)
-    graph = BlockingFakeMintGraphReader(_default_graph())
+    graph = _SlowAfterBlockGraphReader(_default_graph())
     graph.release.set()
-    # The door reads this value per request. Restore the normal timeout for the unblocked poll.
-    settings = DatasetsBuildSettings(definition_timeout_seconds=0.05)
-    client = _client(graph=graph, definition_pool_size=1, settings=settings)
+    # The door reads this value per request from the settings object it was built with.
+    # `make_app` copies the settings when given a pool size, so the size is set here and the
+    # test changes the timeout on the object the door holds.
+    settings = DatasetsBuildSettings(definition_timeout_seconds=0.05, work_max_concurrency=1)
+    client = _client(graph=graph, work_max_concurrency=None, settings=settings)
 
     # The client context keeps both requests on one portal loop.
     with client:
@@ -291,9 +304,12 @@ def test_permit_frees_once_the_background_call_finishes(monkeypatch: pytest.Monk
 
         timed_out = client.get(f"/api/datasets/{spec_id}")
         assert timed_out.status_code == 503, timed_out.text
+        assert timed_out.headers["retry-after"] == "1"
 
-        # Restore the normal timeout before polling an unblocked request.
+        # Restore the normal timeout before polling an unblocked request, whose graph reads
+        # outlast the short timeout, so only a request under the restored one answers 200.
         settings.definition_timeout_seconds = 30.0
+        graph.read_seconds = 0.1
 
         graph.release.set()
         first_thread.join(timeout=5.0)
@@ -317,7 +333,7 @@ def test_sdmx_deadline_finishes_definition_worker_before_outer_timeout(suffix: s
     client = _client(
         graph=graph,
         store=store,
-        definition_pool_size=1,
+        work_max_concurrency=1,
         sdmx=SdmxClient(
             base_url=_BASE_URL,
             timeout=10,
@@ -342,7 +358,7 @@ def test_sdmx_deadline_finishes_definition_worker_before_outer_timeout(suffix: s
 def test_request_after_lifespan_shutdown_gets_backpressure_not_a_bare_500(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Once this door's own lifespan has exited, `executor.submit` raises a
+    """Once the surface's lifespan has exited, `executor.submit` raises a
     bare post-shutdown `RuntimeError` that no classifier arm recognizes on
     its own. Without `_run_retrieval`'s own translation, that reaches the
     platform's catch-all as a non-retryable 500. During a graceful drain
@@ -352,14 +368,15 @@ def test_request_after_lifespan_shutdown_gets_backpressure_not_a_bare_500(
     monkeypatch.setenv("DATASETS_SDMX_BASE_URL", "https://sdmx.example.org")
     monkeypatch.setenv("DATASETS_ARTIFACT_BUCKET_WORKING", "working-bucket")
     monkeypatch.setenv("DATASETS_ARTIFACT_BUCKET_PINNED", "pinned-bucket")
-    client = _client(graph=_default_graph(), definition_pool_size=1)
+    client = _client(graph=_default_graph(), work_max_concurrency=1)
 
     with client:
-        pass  # enters and exits this door's own lifespan, with nothing in flight
+        pass  # stops the surface's lifespan, with nothing in flight
 
     resp = client.get("/api/datasets/spec_never_minted")
 
     assert resp.status_code == 503, resp.text
+    assert resp.headers["retry-after"] == "1"
     problem = resp.json()
     assert problem["code"] == "service_unavailable"
     assert problem["retryable"] is True
@@ -371,10 +388,10 @@ def test_broken_thread_pool_surfaces_as_internal_error_not_backpressure(
     """A permanently broken pool maps to the platform's non-retryable 500 and logs the failure."""
     store = FakeDatasetStore()
     graph = _default_graph()
-    spec_id = _mint_one_spec(_client(graph=graph, store=store, definition_pool_size=1))
+    spec_id = _mint_one_spec(_client(graph=graph, store=store, work_max_concurrency=1))
 
     monkeypatch.setattr(door_executor, "ThreadPoolExecutor", BrokenSubmitExecutor)
-    client = _client(graph=graph, store=store, definition_pool_size=1)
+    client = _client(graph=graph, store=store, work_max_concurrency=1)
 
     with caplog.at_level(logging.ERROR):
         resp = client.get(f"/api/datasets/{spec_id}")

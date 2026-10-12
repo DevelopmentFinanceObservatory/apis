@@ -10,7 +10,7 @@ from dataclasses import replace
 
 import pytest
 
-from code_index.members import FamilyQuery, family_query_digest
+from code_index.members import DatasetScope, FamilyQuery, family_query_digest
 from code_index.shared import get_index
 from search.engine.bind import DraftBindingEvidence, DraftBindingKind, SlotBindingDraft
 from search.engine.retrieval import bound_values
@@ -242,7 +242,14 @@ def test_a_memo_key_has_a_fixed_size_and_one_entry_per_query():
             replace(_EDU_ODA, slots={**_EDU_ODA.slots, "nettingBasis": ("set", ("Gross",))}),
             id="slot-binding-kind",
         ),
-        pytest.param(replace(_EDU_ODA, excluded=frozenset({"OECD.CRS"})), id="excluded"),
+        pytest.param(
+            replace(_EDU_ODA, scope=DatasetScope(allowed=frozenset({"OECD.CRS"}), named=False)),
+            id="scope",
+        ),
+        pytest.param(
+            replace(_EDU_ODA, scope=DatasetScope(allowed=frozenset({"OECD.CRS"}), named=True)),
+            id="named-scope",
+        ),
     ],
 )
 def test_queries_that_differ_in_any_field_get_different_memo_keys(other):

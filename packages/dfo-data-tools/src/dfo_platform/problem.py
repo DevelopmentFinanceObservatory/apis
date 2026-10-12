@@ -6,17 +6,20 @@
 from __future__ import annotations
 
 import http
-from collections.abc import Mapping
+import logging
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, NamedTuple
 
 from pydantic import BaseModel, Field, TypeAdapter
 
-from dfo_platform.codes import CodeCatalogue
+from dfo_platform.codes import CodeCatalogue, registered_status
 from dfo_platform.trace import get_trace_id
 
 if TYPE_CHECKING:
     from fastapi.responses import JSONResponse
+
+_logger = logging.getLogger(__name__)
 
 PROBLEM_JSON = "application/problem+json"
 
@@ -253,6 +256,65 @@ class ProblemSpec(NamedTuple):
 
 
 _PROBLEM_SPEC_ADAPTER: TypeAdapter[ProblemSpec] = TypeAdapter(ProblemSpec)
+
+
+class Refusal(Exception):
+    """A refusal a surface renders as a problem from the attributes it carries.
+
+    A subclass sets `code` and, when a retry can succeed, `retryable`. Every other member is
+    absent by default, and an instance sets the ones it carries. `detail` falls back to the
+    exception's message. The status is the code registry's for `code` on the endpoint the
+    request's route serves (`registered_status`).
+    `strip_pointer` removes the top-level pointer and every issue's pointer, for a route whose
+    request has no body the pointers could name. A refusal with a `cause` extension renders
+    through its surface's own classifier, since the materialise conversion refusals name their
+    cause as a bare code.
+    """
+
+    code: str
+    retryable: bool = False
+    detail: str | None = None
+    pointer: str | None = None
+    alternatives: list[Alternative] | None = None
+    truncated: bool = False
+    issues: Sequence[ProblemIssue] | None = None
+    constraint_id: str | None = None
+    ceiling_kind: str | None = None
+    count: int | None = None
+    cap: int | None = None
+    headers: Mapping[str, str] | None = None
+    strip_pointer: bool = False
+
+
+def classify_refusal(exc: BaseException) -> ProblemSpec | None:
+    """Render a `Refusal` from its attributes, logging a server-side one a retry cannot clear.
+    `count` and `cap` belong to the ceiling extension and render only beside `ceiling_kind`.
+    Return `None` for any other exception."""
+    if not isinstance(exc, Refusal):
+        return None
+    status = registered_status(exc.code)
+    if status >= http.HTTPStatus.INTERNAL_SERVER_ERROR and not exc.retryable:
+        _logger.error("Refusal %s: %s", exc.code, exc, exc_info=exc)
+    pointer, issues = exc.pointer, list(exc.issues) if exc.issues else None
+    if exc.strip_pointer:
+        pointer = None
+        issues = [issue.model_copy(update={"pointer": None}) for issue in issues or ()] or None
+    ceiling = exc.ceiling_kind is not None
+    return ProblemSpec(
+        status=status,
+        code=exc.code,
+        retryable=exc.retryable,
+        detail=exc.detail or str(exc),
+        pointer=pointer,
+        alternatives=exc.alternatives,
+        truncated=exc.truncated,
+        issues=issues,
+        constraint_id=exc.constraint_id,
+        ceiling_kind=exc.ceiling_kind,
+        count=exc.count if ceiling else None,
+        cap=exc.cap if ceiling else None,
+        headers=exc.headers,
+    )
 
 
 @dataclass(frozen=True)

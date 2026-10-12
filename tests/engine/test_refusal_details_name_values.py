@@ -19,6 +19,7 @@ from search.engine.options import population
 from search.engine.retrieval import bound_values
 from search.models import OptionsFor, OptionsRequest
 from statvar_members import (
+    DEFAULT_MEMBER_CAP,
     FiveTuple,
     MemberRoleDisagreement,
     MultiValuedConstraint,
@@ -163,6 +164,8 @@ def _enumeration_raising(monkeypatch, error: Exception):
     """POST `/api/search/options` over a member walk that raises `error`."""
 
     class _Refusing:
+        member_cap = DEFAULT_MEMBER_CAP
+
         def enumerate(self, **kwargs):
             raise error
 

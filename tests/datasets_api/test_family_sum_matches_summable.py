@@ -100,7 +100,7 @@ def _mint_sum(
             table,
             options=MintOptions(groupby=GroupbyOptions(by=["time_period"], op="sum")),
             entity_columns=roles,
-            enrichment=EnrichmentLookup(graph),
+            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
             code_index=code_index,
             resolved_stat_var_refs=tuple(shape.stat_var for shape in shapes),
             provenance_refs=(dataset.provenance,),

@@ -1,5 +1,6 @@
-"""The facts a source card and its documentation page both show, and the graph
-rules that derive them.
+"""The facts a source card and its documentation page both show, the further
+facts the page and a citation's documentation show, and the graph rules that
+derive them.
 
 A card describes one entry of `GET /api/graph/sources`: a Dataset, or a
 provenance with no parent Dataset (an orphan), which stands for itself. The
@@ -20,6 +21,11 @@ A Dataset's children are the admitted provenances that name it anywhere in
 - `years_covered` spans the children's observation dates (`years_covered_of`).
 - `source_url` is the Dataset's `url`, else its sole child's (`source_url_of`).
 
+`source_documentation_of` derives the rest of the page's graph facts, which
+the catalogue job stores per entry as `SourceDocumentation`, and
+`licence_of` derives the licence a citation names for one provenance, which
+the job stores on its row.
+
 Every function here expects arcs with `UNRESOLVED_NODE` already removed
 (`without_unresolved`).
 """
@@ -29,7 +35,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 
 from dc_graph import UNRESOLVED_NODE
-from origin_catalogue.catalogue import CardFacts
+from origin_catalogue.catalogue import CardFacts, Licence, SourceDocumentation
 
 DATASET_TYPE = "Dataset"
 PROVENANCE_TYPE = "Provenance"
@@ -52,6 +58,25 @@ CHILD_PROPERTIES: tuple[str, ...] = (
 
 LICENCE_PROPERTIES: tuple[str, ...] = ("name",)
 """The arcs of a `licenseType` node its label reads."""
+
+DOCUMENTATION_CHILD_PROPERTIES: tuple[str, ...] = (
+    "lastDataRefreshDate",
+    "nextDataRefreshDate",
+    "licenseAttribution",
+    "license",
+    "sourceDataUrl",
+)
+"""The child arcs `source_documentation_of` reads beyond `CHILD_PROPERTIES`,
+from every child."""
+
+DOCUMENT_PROPERTIES: tuple[str, ...] = (
+    "dataTransformationDescription",
+    "dataTransformationChangelog",
+    "sourceMethodologyDescription",
+    "dataNotes",
+)
+"""The MCF-escaped Markdown documents `source_documentation_of` reads from a
+sole child."""
 
 
 def without_unresolved(
@@ -99,6 +124,10 @@ def first_dataset_parent[A: Arcs](
 
 def _first(values: tuple[str, ...]) -> str | None:
     return values[0] if values else None
+
+
+def _sole(values: tuple[str, ...]) -> str | None:
+    return values[0] if len(values) == 1 else None
 
 
 def _leading_year(value: str) -> int | None:
@@ -179,9 +208,61 @@ def card_facts_of(
     )
 
 
+def licence_of(arcs: Arcs | None, licence_labels: Mapping[str, str]) -> Licence:
+    """The licence a provenance with `arcs` states: its one `licenseType`,
+    labelled from `licence_labels` (`licence_labels_of`), and its one
+    `license` terms page."""
+    licence = _sole((arcs or {}).get("licenseType", ()))
+    return Licence(
+        type=licence,
+        label=licence_labels.get(licence, licence) if licence is not None else None,
+        url=_sole((arcs or {}).get("license", ())),
+    )
+
+
+def publisher_node_of(dataset_arcs: Arcs | None, node_arcs: Arcs) -> str | None:
+    """The Source whose `name` is a documentation's publisher: the Dataset's
+    first `isPartOf`, or for an orphan (`dataset_arcs` is `None`) its own
+    first `source`."""
+    if dataset_arcs is not None:
+        return _first(dataset_arcs.get("isPartOf", ()))
+    return _first(node_arcs.get("source", ()))
+
+
+def source_documentation_of(children: ChildArcs, publisher: str | None) -> SourceDocumentation:
+    """The documentation facts of the entry whose children have `children`,
+    which must carry `DOCUMENTATION_CHILD_PROPERTIES` and, for a sole child,
+    `DOCUMENT_PROPERTIES`. `provenances` is every child. `publisher` is the
+    publisher Source's label (`publisher_node_of`, `node_label`). ISO 8601
+    dates sort chronologically as strings."""
+    sole_child = next(iter(children.values())) if len(children) == 1 else None
+    last_dates = [v for arcs in children.values() for v in arcs.get("lastDataRefreshDate", ())]
+    next_dates = [v for arcs in children.values() for v in arcs.get("nextDataRefreshDate", ())]
+    return SourceDocumentation(
+        provenances=tuple(children),
+        publisher=publisher,
+        source_data_url=agreed_child_value(children, "sourceDataUrl"),
+        citation=agreed_child_value(children, "licenseAttribution"),
+        license_url=agreed_child_value(children, "license"),
+        last_update=max(last_dates) if last_dates else None,
+        next_expected_update=min(next_dates) if next_dates else None,
+        documents=(
+            {
+                prop: tuple(dict.fromkeys(values))
+                for prop in DOCUMENT_PROPERTIES
+                if (values := sole_child.get(prop, ()))
+            }
+            if sole_child is not None
+            else {}
+        ),
+    )
+
+
 __all__ = [
     "CHILD_PROPERTIES",
     "DATASET_TYPE",
+    "DOCUMENTATION_CHILD_PROPERTIES",
+    "DOCUMENT_PROPERTIES",
     "LICENCE_PROPERTIES",
     "PROVENANCE_TYPE",
     "Arcs",
@@ -190,7 +271,10 @@ __all__ = [
     "card_facts_of",
     "first_dataset_parent",
     "licence_labels_of",
+    "licence_of",
     "node_label",
+    "publisher_node_of",
+    "source_documentation_of",
     "source_url_of",
     "without_unresolved",
     "years_covered_of",

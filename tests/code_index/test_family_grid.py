@@ -110,5 +110,9 @@ def test_the_index_rows_decide_the_family_of_every_grid_identity(name: str):
             disagreements.append((identity, "the deciding query resolves another family"))
 
     assert not disagreements, f"{len(disagreements)} disagree; first: {disagreements[0]!r}"
-    # The agreement is vacuous for an outcome the grid never produces.
+    # The agreement is vacuous for an outcome the grid never produces. Both datasets of the
+    # one-family index publish its one family, and a provenance it holds no row of names no
+    # dataset (`named_dataset`), so no identity there refuses.
+    if name == "one-family":
+        assert outcomes.pop("refused") == 0
     assert all(outcomes.values()), outcomes

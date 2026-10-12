@@ -33,6 +33,7 @@ from search.models import (
     ParsedInput,
     ParsedPart,
     ResolveRequest,
+    SourceMention,
     TimeWindow,
     Unsupported,
 )
@@ -184,14 +185,14 @@ class TestLegRestatement:
             entities=["Brazil", "Angola"],
             date_request=date_request,
             unit_text="US dollars",
-            source_text="World Bank",
+            sources=[SourceMention(text="World Bank", ref="dc/s/WorldBank")],
         )
         assert restatement == ParsedPart(
             variable_text="GDP",
             entities=[ParsedEntity(text="Brazil"), ParsedEntity(text="Angola")],
             time_text="2015 to 2020",
             unit_text="US dollars",
-            source_text="World Bank",
+            sources=[SourceMention(text="World Bank", ref="dc/s/WorldBank")],
         )
 
     def test_an_entity_asked_for_its_members_states_the_flag(self):
@@ -201,7 +202,6 @@ class TestLegRestatement:
             entities=["Africa", "France"],
             date_request=None,
             unit_text=None,
-            source_text=None,
             entity_roles={
                 "Africa": [DoorRole(axis="destination", span="Africa")],
                 "France": [DoorRole(axis="origin", span="France")],
@@ -215,17 +215,13 @@ class TestLegRestatement:
         ]
 
     def test_no_entities_is_none_not_an_empty_list(self):
-        restatement = _leg_restatement(
-            "GDP", entities=[], date_request=None, unit_text=None, source_text=None
-        )
+        restatement = _leg_restatement("GDP", entities=[], date_request=None, unit_text=None)
         assert restatement is not None
         assert restatement.entities is None
 
     def test_a_leg_input_ParsedPart_cannot_express_yields_no_restatement(self):
         # Empty variable text fails ParsedPart validation.
-        restatement = _leg_restatement(
-            "", entities=[], date_request=None, unit_text=None, source_text=None
-        )
+        restatement = _leg_restatement("", entities=[], date_request=None, unit_text=None)
         assert restatement is None
 
     def test_directional_leg_with_no_axis_for_the_entity_yields_no_restatement(self):
@@ -235,7 +231,6 @@ class TestLegRestatement:
             entities=["France"],
             date_request=None,
             unit_text=None,
-            source_text=None,
             directional=True,
         )
         assert restatement is None
@@ -247,7 +242,6 @@ class TestLegRestatement:
             entities=["Brazil"],
             date_request=None,
             unit_text=None,
-            source_text=None,
             directional=False,
         )
         assert restatement == ParsedPart(
@@ -352,7 +346,6 @@ class TestSuccessDirectional:
             entities=["USA"],
             date_request=None,
             unit_text=None,
-            source_text=None,
             directional=directional,
         )
         assert restatement is None
@@ -375,7 +368,6 @@ class TestSuccessDirectional:
             entities=[],
             date_request=None,
             unit_text=None,
-            source_text=None,
             directional=directional,
         )
         assert restatement is not None
@@ -399,7 +391,6 @@ class TestSuccessDirectional:
             entities=["Brazil"],
             date_request=None,
             unit_text=None,
-            source_text=None,
             directional=directional,
         )
         assert restatement == ParsedPart(
@@ -429,7 +420,6 @@ class TestSuccessDirectional:
             entities=["France"],
             date_request=None,
             unit_text=None,
-            source_text=None,
             directional=directional,
         )
         assert restatement is None
@@ -469,7 +459,6 @@ class TestSuccessDirectional:
             entities=["Ghana"],
             date_request=None,
             unit_text=None,
-            source_text=None,
             directional=_success_directional(region, role_query="debt service of Ghana"),
         )
 

@@ -14,8 +14,10 @@ catalogue build and one coverage index build.
   as donor or recipient on a coverage row.
 - Aid: donors, recipients and years over the coverage rows on a facet of a
   declared dataset (`CodeIndex.datasets`). A variable that declares one
-  role adds no entity on the role it lacks. At a country, the donors to it,
-  the recipients of its own aid, and the years of either.
+  role adds no entity on the role it lacks. A party the code index declares
+  a total of other parties (`CodeIndex.parties`) is no donor or recipient of
+  its own. At a country, the donors to it, the recipients of its own aid,
+  and the years of either.
 - Variables (per country only): base variables with data there, plus
   coverage variables with a row naming it.
 """
@@ -81,17 +83,27 @@ class _CoverageByCountry:
 
 
 def catalogue_counts(
-    *, catalogue: CatalogueSnapshot, coverage: CoverageIndex, datasets: Collection[str]
+    *,
+    catalogue: CatalogueSnapshot,
+    coverage: CoverageIndex,
+    datasets: Collection[str],
+    totals: Collection[str],
 ) -> CatalogueCounts:
     """Counts over `catalogue`'s admitted provenances and base variable
     table and every row of `coverage`. `datasets` holds the provenances of
     the declared datasets (`CodeIndex.datasets`). Their coverage rows are
-    the aid rows."""
+    the aid rows. `totals` holds the parties that total other parties
+    (`CodeIndex.parties` of kind `total`), which the aid counts leave out."""
     provenances = catalogue.provenance_rows()
     source_of = {row.id: row.source.ref for row in provenances}
     base = _base_by_country(catalogue, source_of)
     held = _coverage_by_country(
-        coverage, catalogue=catalogue, base=base, source_of=source_of, datasets=datasets
+        coverage,
+        catalogue=catalogue,
+        base=base,
+        source_of=source_of,
+        datasets=datasets,
+        totals=frozenset(totals),
     )
     countries = sorted(set(base.variables) | set(held.variables))
     no_sources: frozenset[str] = frozenset()
@@ -134,6 +146,7 @@ def _coverage_by_country(
     base: _BaseByCountry,
     source_of: Mapping[str, str],
     datasets: Collection[str],
+    totals: frozenset[str],
 ) -> _CoverageByCountry:
     """Every country's coverage summary from six grouped passes over the
     index: each role by facet and by variable, the variables, and the donor
@@ -179,9 +192,10 @@ def _coverage_by_country(
         if facet in aid_facets
     }
     # A one-role variable's rows hold `ABSENT_ENTITY` on the role it lacks.
-    donors = {donor for donor, _ in pairs} - {ABSENT_ENTITY}
-    recipients = {recipient for _, recipient in pairs} - {ABSENT_ENTITY}
-    flows = [pair for pair in pairs if ABSENT_ENTITY not in pair]
+    uncounted = totals | {ABSENT_ENTITY}
+    donors = {donor for donor, _ in pairs} - uncounted
+    recipients = {recipient for _, recipient in pairs} - uncounted
+    flows = [pair for pair in pairs if uncounted.isdisjoint(pair)]
 
     variables, overlap = _variables_by_country(coverage, catalogue=catalogue, base=base)
     return _CoverageByCountry(

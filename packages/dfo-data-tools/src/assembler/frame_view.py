@@ -129,12 +129,14 @@ def hashable_cell(value: object) -> object:
 
 
 def _period_grain_and_span(*, periods: Sequence[str]) -> tuple[str, str | None]:
-    """Returns the earliest period's grain and the frame's span, refusing a span mixed with
-    any other period.
+    """Returns the frame's one grain and its span, refusing a span mixed with any other
+    period and points of different grains.
 
     A frame whose rows share one span is a single-period frame at its ends' grain. A span
     beside a point or a second span has no one period to bind, so it refuses
-    `binding_invalid`. Points of different grains keep the earliest period's grain."""
+    `binding_invalid`. So do points of different grains: a window binds periods at one grain,
+    and a frame holding `2019` beside `2019-01` (an annual and a quarterly facet of one
+    series) would bind its other grain's points to nothing."""
     parsed = [parse_time_period(period) for period in periods]
     spans = [period for period, one in zip(periods, parsed, strict=True) if one.start != one.end]
     if spans and len(periods) > 1:
@@ -147,6 +149,21 @@ def _period_grain_and_span(*, periods: Sequence[str]) -> tuple[str, str | None]:
             detail=(
                 f"this frame mixes the span {spans[0]!r} with {len(others)} other "
                 f"period(s), first {others[0]!r}; a frame binds one span or points only"
+            ),
+        )
+    grains: dict[str, str] = {}
+    for period, one in zip(periods, parsed, strict=True):
+        grains.setdefault(one.grain, period)
+    if len(grains) > 1:
+        raise BindingInvalid(
+            pointer="/frame_ref",
+            dimension="",
+            legal_values=(),
+            truncated=False,
+            detail=(
+                f"this frame mixes {' and '.join(grains)} periods, first "
+                f"{', '.join(repr(period) for period in grains.values())}; a frame binds "
+                "periods at one grain"
             ),
         )
     return parsed[0].grain, spans[0] if spans else None

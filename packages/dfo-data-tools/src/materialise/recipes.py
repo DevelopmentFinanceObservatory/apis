@@ -100,12 +100,13 @@ class RecipeNotDeclaredError(MaterialisationError):
     `recipes_conflict`. Role-axis errors subclass this error.
     """
 
+    code = "recipe_not_declared"
+    status = 422
+
     def __init__(
-        self, *args: object, cause: str, pointer: str | None = None, detail: str | None = None
+        self, *args: object, cause: str, facet_pointer: str | None = None, detail: str | None = None
     ) -> None:
-        super().__init__(
-            *args, code="recipe_not_declared", status=422, pointer=pointer, detail=detail
-        )
+        super().__init__(*args, facet_pointer=facet_pointer, detail=detail)
         self.cause = cause
 
 
@@ -116,17 +117,18 @@ class RateCoverageGapError(MaterialisationError):
     sets `entities_truncated`.
     """
 
+    code = "rate_coverage_gap"
+    status = 422
+
     def __init__(
         self,
         *args: object,
         cause: str,
         entities: Sequence[str] = (),
-        pointer: str | None = None,
+        facet_pointer: str | None = None,
         detail: str | None = None,
     ) -> None:
-        super().__init__(
-            *args, code="rate_coverage_gap", status=422, pointer=pointer, detail=detail
-        )
+        super().__init__(*args, facet_pointer=facet_pointer, detail=detail)
         self.cause = cause
         capped = tuple(entities)
         self.entities_truncated = len(capped) > _MAX_NAMED_ENTITIES
@@ -138,8 +140,11 @@ class NonCurrencyUnitError(MaterialisationError):
     `recipe_not_declared` and `rate_coverage_gap` carry a cause.
     """
 
-    def __init__(self, *args: object, unit: str, pointer: str | None = None) -> None:
-        super().__init__(*args, code="facet_binding_unsupported", status=422, pointer=pointer)
+    code = "facet_binding_unsupported"
+    status = 422
+
+    def __init__(self, *args: object, unit: str, facet_pointer: str | None = None) -> None:
+        super().__init__(*args, facet_pointer=facet_pointer)
         self.unit = unit
 
 
@@ -331,9 +336,9 @@ class RoleAxisNotDeclaredError(RecipeNotDeclaredError):
     """
 
     def __init__(
-        self, *args: object, pointer: str | None = None, detail: str | None = None
+        self, *args: object, facet_pointer: str | None = None, detail: str | None = None
     ) -> None:
-        super().__init__(*args, cause="role_undeclared", pointer=pointer, detail=detail)
+        super().__init__(*args, cause="role_undeclared", facet_pointer=facet_pointer, detail=detail)
 
 
 class RoleAxisConflictError(RecipeNotDeclaredError):
@@ -345,9 +350,9 @@ class RoleAxisConflictError(RecipeNotDeclaredError):
     """
 
     def __init__(
-        self, *args: object, pointer: str | None = None, detail: str | None = None
+        self, *args: object, facet_pointer: str | None = None, detail: str | None = None
     ) -> None:
-        super().__init__(*args, cause="role_undeclared", pointer=pointer, detail=detail)
+        super().__init__(*args, cause="role_undeclared", facet_pointer=facet_pointer, detail=detail)
 
 
 def graph_role_for_spec_role(*, spec_role: SpecRole, declared_roles: tuple[str, ...]) -> str:

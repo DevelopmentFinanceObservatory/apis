@@ -7,10 +7,12 @@ committed JSON export.
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
+from fractions import Fraction
 
+from code_index.tokens import Token, TokenLookup, word_tokens
 from code_index.types import (
     AbsentObservation,
     Bound,
@@ -21,6 +23,8 @@ from code_index.types import (
     DatasetDeclaration,
     IndexStamp,
     LevelOption,
+    PartyKind,
+    PartyRow,
     StatVarRow,
 )
 from statvar_members import FiveTuple
@@ -259,6 +263,31 @@ def _check_declared_defaults(
                 )
 
 
+CANDIDATE_HITS = 8
+"""The most lexical hits one phrase's candidate menu keeps (`CodeIndex.candidate_codes`)."""
+
+CANDIDATE_LIMIT = 24
+"""The most codes one phrase's candidate menu holds (`CodeIndex.candidate_codes`)."""
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateCodes:
+    """A phrase's candidate menu (`CodeIndex.candidate_codes`): its lexical `hits`, the
+    codes sharing a word of the phrase, in rank order, and every code of the menu in menu
+    order, the hits first. Both are empty when no code shares a word of the phrase."""
+
+    hits: tuple[str, ...]
+    codes: tuple[str, ...]
+
+
+def _fold(word: str) -> str:
+    """`word` casefolded, less one trailing "s" when it is longer than two letters.
+    Candidate retrieval applies this one plural allowance to query words and code text
+    alike."""
+    folded = word.casefold()
+    return folded[:-1] if len(folded) > 2 and folded.endswith("s") else folded
+
+
 def dedupe_first_seen(groups: Iterable[Iterable[str]]) -> tuple[str, ...]:
     """Flattens resolved groups, keeping each dcid's first occurrence.
 
@@ -273,11 +302,6 @@ def dedupe_first_seen(groups: Iterable[Iterable[str]]) -> tuple[str, ...]:
     return tuple(result)
 
 
-def _normalize_text(text: str) -> str:
-    """Strips surrounding whitespace and casefolds text for normalized lookups."""
-    return text.strip().casefold()
-
-
 class CodeIndex:
     """Read-only index. Lookup tables are built once in `__init__`."""
 
@@ -285,9 +309,11 @@ class CodeIndex:
         "__weakref__",
         "_children_by_parent",
         "_codes_by_dcid",
-        "_codes_by_normalized_text",
         "_codes_by_system_code",
         "_codes_by_text",
+        "_codes_by_tokens",
+        "_codes_by_word",
+        "_words_by_code",
         "codes",
         "dataset_pins",
         "datasets",
@@ -295,8 +321,13 @@ class CodeIndex:
         "declarations",
         "families_by_five_tuple",
         "family_by_dcid",
+        "listed_by_five_tuple",
+        "listed_statvars",
+        "parties",
+        "party_types",
         "stamp",
         "statvars",
+        "totals_by_group",
     )
 
     def __init__(
@@ -307,20 +338,46 @@ class CodeIndex:
         codes: Iterable[CodeRow],
         statvars: Iterable[StatVarRow],
         datasets: Iterable[DatasetDeclaration] = (),
+        party_types: Mapping[str, PartyKind | None] | None = None,
+        parties: Iterable[PartyRow] = (),
+        listed_statvars: Iterable[StatVarRow] = (),
     ) -> None:
         self.stamp = stamp
         self.codes = tuple(codes)
         self.statvars = tuple(statvars)
+        self.listed_statvars = tuple(listed_statvars)
+        """The StatVars of the datasets no code system enumerates, World Bank IDS among
+        them, listed from the coverage build with the provenances it gives them. They are
+        member rows alone: no family, dataset election, measure axis or shape reads them,
+        and `code_index.members.listed_group` elects members over them in place of the
+        graph walk."""
         self.declarations: dict[str, CodeSystemDeclaration] = {
             d.code_system: d for d in declarations
         }
         self.datasets: dict[str, DatasetDeclaration] = {d.provenance: d for d in datasets}
+        self.party_types: dict[str, PartyKind | None] = dict(party_types or {})
+        """The kind each graph type gives a party (`code_index.types.party_kind`), for every
+        type a party of a declared dataset carries. A type mapped to `None` gives no kind of
+        its own."""
+        self.parties: dict[str, PartyRow] = {}
+        """Every party a declared dataset publishes, by dcid, with its kind and the group a
+        total holds."""
+        self.totals_by_group: dict[str, PartyRow] = {}
+        """The total that holds each group (`PartyRow.totals`), by the group as search names
+        it."""
+        for party in parties:
+            if party.dcid in self.parties:
+                raise DuplicateDcid(f"party dcid {party.dcid!r} appears more than once")
+            self.parties[party.dcid] = party
+            if party.totals is not None:
+                if party.totals in self.totals_by_group:
+                    raise DuplicateDcid(f"two totals hold the group {party.totals!r}")
+                self.totals_by_group[party.totals] = party
 
         codes_by_dcid: dict[str, CodeRow] = {}
         codes_by_system_code: dict[tuple[str, str], CodeRow] = {}
         children_by_parent: dict[str, list[str]] = defaultdict(list)
         text_index: dict[str, list[CodeRow]] = defaultdict(list)
-        normalized_text_index: dict[str, list[CodeRow]] = defaultdict(list)
         for row in self.codes:
             if row.dcid in codes_by_dcid:
                 raise DuplicateDcid(f"code dcid {row.dcid!r} appears more than once")
@@ -335,23 +392,23 @@ class CodeIndex:
                 children_by_parent[row.parent].append(row.dcid)
             for text in (row.label, *row.synonyms):
                 text_index[text].append(row)
-            # A label and a synonym on the same row can normalize to the
-            # same key ("action relating to debt" / "Action Relating to
-            # Debt" on CRSPurposeCode600 both do) -- dedupe per row before
-            # indexing so that row appears once per normalized key it earns.
-            normalized_texts = {_normalize_text(text) for text in (row.label, *row.synonyms)}
-            for normalized in normalized_texts:
-                normalized_text_index[normalized].append(row)
 
         _check_consistent_parents(codes_by_dcid)
         _check_acyclic_parents(codes_by_dcid)
         _check_declared_defaults(self.declarations, codes_by_dcid)
 
         seen_statvar_dcids: set[str] = set()
-        for row in self.statvars:
+        listed_by_five_tuple: dict[FiveTuple, list[StatVarRow]] = defaultdict(list)
+        for row in self.statvars + self.listed_statvars:
             if row.dcid in seen_statvar_dcids:
                 raise DuplicateDcid(f"StatVar dcid {row.dcid!r} appears more than once")
             seen_statvar_dcids.add(row.dcid)
+        for row in self.listed_statvars:
+            listed_by_five_tuple[row_five_tuple(row)].append(row)
+        self.listed_by_five_tuple: dict[FiveTuple, tuple[StatVarRow, ...]] = {
+            five_tuple: tuple(rows) for five_tuple, rows in listed_by_five_tuple.items()
+        }
+        """Each five-tuple's `listed_statvars`, in index order."""
 
         self.datasets_by_five_tuple: dict[FiveTuple, tuple[str, ...]] = _datasets_by_five_tuple(
             self.statvars, self.datasets
@@ -384,7 +441,18 @@ class CodeIndex:
         self._codes_by_system_code = codes_by_system_code
         self._children_by_parent = {k: tuple(v) for k, v in children_by_parent.items()}
         self._codes_by_text = {k: tuple(v) for k, v in text_index.items()}
-        self._codes_by_normalized_text = {k: tuple(v) for k, v in normalized_text_index.items()}
+        self._codes_by_tokens = TokenLookup(
+            (text, row) for row in self.codes for text in (row.label, *row.synonyms)
+        )
+        codes_by_word: dict[str, dict[str, None]] = defaultdict(dict)
+        words_by_code: dict[str, set[str]] = defaultdict(set)
+        for row in self.codes:
+            for text in (row.label, *row.synonyms):
+                for word in word_tokens(text):
+                    codes_by_word[_fold(word.text)][row.dcid] = None
+                    words_by_code[row.dcid].add(_fold(word.text))
+        self._codes_by_word = {word: tuple(dcids) for word, dcids in codes_by_word.items()}
+        self._words_by_code = {dcid: frozenset(words) for dcid, words in words_by_code.items()}
 
     # --- Lookup ---
 
@@ -435,12 +503,74 @@ class CodeIndex:
         disambiguates. This method performs lookup only."""
         return self._codes_by_text.get(text, ())
 
-    def codes_by_normalized_text(self, text: str) -> tuple[CodeRow, ...]:
-        """Returns rows whose labels or synonyms match after whitespace stripping and casefolding.
+    def codes_by_tokens(self, tokens: Sequence[Token]) -> tuple[CodeRow, ...]:
+        """Every code row whose label or synonym matches the query span `tokens`
+        (`code_index.tokens`). The words are equal casefolded, and each separator the span
+        holds sits where the text holds it. A row appears once, whichever of its texts
+        match, and rows of several systems are all returned."""
+        return self._codes_by_tokens.get(tokens)
 
-        A row appears once when its own label and synonym normalize alike.
-        Distinct matching rows remain distinct."""
-        return self._codes_by_normalized_text.get(_normalize_text(text), ())
+    def candidate_codes(
+        self,
+        words: Iterable[str],
+        *,
+        code_systems: AbstractSet[str],
+        context: Iterable[str] = (),
+        seeds: Sequence[str] = (),
+    ) -> CandidateCodes:
+        """The candidate menu (`CandidateCodes`) of a phrase whose `words` no code reads. It
+        holds the codes of `code_systems` whose label or synonyms share one of `words`, its
+        hits, and the relatives of each.
+
+        A word of a code's texts matches a query word when the two are equal casefolded,
+        once one trailing "s" is dropped from each word longer than two letters. A hit is
+        a code sharing at least one of `words`. Hits rank by how many of `words` and
+        `context` (the words of the code terms beside the phrase) their texts share, then
+        by how rare the shared words are (the sum, over the shared words, of one over the
+        number of codes whose texts hold the word), then by dcid, and the first
+        `CANDIDATE_HITS` stay. The menu lists those hits, then `seeds` (the codes the terms
+        beside the phrase name), then the ancestors of each hit and seed, nearest first,
+        and its children, in index order, each code once and at most `CANDIDATE_LIMIT` of
+        them. Empty when no code of `code_systems` shares one of `words`. "maternal"
+        shares no CRS purpose's text, while "contraceptive" shares 13030's synonym
+        "contraceptive delivery".
+        """
+        asked = {_fold(word) for word in words}
+        shared: dict[str, set[str]] = defaultdict(set)
+        for word in asked | {_fold(word) for word in context}:
+            for dcid in self._codes_by_word.get(word, ()):
+                if self._codes_by_dcid[dcid].code_system in code_systems:
+                    shared[dcid].add(word)
+
+        def rank(dcid: str) -> tuple[int, Fraction, str]:
+            rarity = sum(
+                (Fraction(1, len(self._codes_by_word[word])) for word in shared[dcid]),
+                Fraction(0),
+            )
+            return -len(shared[dcid]), -rarity, dcid
+
+        hits = sorted((dcid for dcid, found in shared.items() if found & asked), key=rank)[
+            :CANDIDATE_HITS
+        ]
+        if not hits:
+            return CandidateCodes(hits=(), codes=())
+        roots = [*hits, *seeds]
+        menu = dict.fromkeys(roots)
+        for dcid in roots:
+            row = self._codes_by_dcid.get(dcid)
+            while row is not None and row.parent is not None:
+                menu.setdefault(row.parent)
+                row = self._codes_by_dcid.get(row.parent)
+            for child in self._children_by_parent.get(dcid, ()):
+                menu.setdefault(child)
+        return CandidateCodes(hits=tuple(hits), codes=tuple(menu)[:CANDIDATE_LIMIT])
+
+    def words_shared(self, dcid: str, words: Iterable[str]) -> frozenset[str]:
+        """The words of `words` the label or a synonym of the code `dcid` holds, compared
+        as `candidate_codes` compares them: casefolded, less one trailing "s" on a word
+        longer than two letters, and returned in that form. Empty for an unknown code."""
+        held = self._words_by_code.get(dcid, frozenset())
+        return frozenset(folded for word in words if (folded := _fold(word)) in held)
 
     # --- Dataset declarations ---
 

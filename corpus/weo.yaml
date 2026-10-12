@@ -18,11 +18,10 @@
 
 - id: dq-weo-003
   query: IMF GDP current prices Kenya
-  why: A named publisher elects its provenance, so 'IMF GDP' resolves to the WEO series.
+  why: Naming the IMF as the source elects the WEO, so the GDP answers from the WEO and pins its provenance.
   reuse: panel/weo-004
   tags: {theme: macro, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: raw_text, phrasing: technical, overlap: [wdi]}
-  known_failure: {issue: 1156, checks: [measure, provenance]}
-  expect: {definite: {measure: {family: weo.gdp}, entities: [{dcid: country/KEN, role: observationAbout}]}}
+  expect: {definite: {measure: {family: weo.gdp}, provenance: {bound: true}, entities: [{dcid: country/KEN, role: observationAbout}]}}
 
 - id: dq-weo-004
   query: GDP per capita PPP Japan
@@ -348,9 +347,9 @@
   query: 'parsed: GDP of Kenya, source IMF'
   door: parsed
   parsed: [{variable_text: GDP, entities: [{text: Kenya}], source_text: IMF}]
-  why: A named source is a facet binding that the parsed door cannot carry, so the answer is facet_binding_unsupported.
+  why: The parsed source_text folds into an included source; the IMF publishes the WEO, so the WEO answers with its provenance pinned.
   tags: {theme: macro, entity: country, direction: subject, unit: default, time: none, operation: none, breakdown: none, door: parsed, phrasing: technical}
-  expect: {unsupported: {code: facet_binding_unsupported}}
+  expect: {definite: {measure: {family: weo.gdp}, provenance: {bound: true}, entities: [{dcid: country/KEN, role: observationAbout}]}}
 
 - id: dq-weo-034
   query: GDP per capita PPP for African Union members

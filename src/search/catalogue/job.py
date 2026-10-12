@@ -328,8 +328,12 @@ async def _assemble(
         except PresenceRefusal as refusal:
             _drop(example, reason=refusal.reason, detail=refusal.detail)
 
+    index = get_index()
     counted = catalogue_counts(
-        catalogue=catalogue, coverage=covered.index, datasets=get_index().datasets
+        catalogue=catalogue,
+        coverage=covered.index,
+        datasets=index.datasets,
+        totals=[dcid for dcid, party in index.parties.items() if party.kind == "total"],
     )
     names = place_names(sorted(counted.places))
 

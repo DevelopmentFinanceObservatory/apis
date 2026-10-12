@@ -280,12 +280,9 @@ class ConnectionSettings(BaseConnectionSettings):
     """`BaseConnectionSettings` under the `DATASET_STORE_` prefix.
 
     `pool_size` defaults to 10. It is smaller than the threads that can
-    borrow: one `datasets_api` instance runs a definition-retrieval pool
-    (`DatasetsBuildSettings.definition_max_concurrency`, default 4), a mint
-    pool (`mint_max_concurrency`, 4), a frame refresh pool
-    (`refresh_max_concurrency`, 8), and the register door's executor
-    (`datasets_api.doors.register`'s `_FALLBACK_POOL_SIZE`, 2), 18 threads,
-    beside the snapshot, pin, publish, and operations pools and the
+    borrow: one `datasets_api` instance runs a read executor
+    (`DatasetsBuildSettings.read_max_concurrency`, default 8) and a work
+    executor (`work_max_concurrency`, 4), 12 threads, beside the
     presentation surface's reads. The default holds because a borrow lasts
     one read or one write transaction and a borrower that finds the pool
     empty waits: `ConnectionPool.borrow` waits up to 30 seconds for a

@@ -6,11 +6,15 @@ Skipped by default. Set DFO_DATASET_STORE_LIVE_DSN
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
+import tempfile
 import threading
 import time
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import cast
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -22,27 +26,44 @@ from artifact_store.inventory import LiveArtifactInventory
 from artifact_store.store import Tier
 from dataset_store import ConnectionPool, LiveDatasetStore, connect
 from dataset_store.migrate import MIGRATIONS_DIR, apply_pending
-from dataset_store.snapshot import LiveSnapshotReader
-from datasets_api.codes_snapshot import ArtifactNotFound
+from dataset_store.snapshot import (
+    VERSION_FACT_COLUMNS,
+    ArtifactNotFound,
+    FrameLineage,
+    LiveSnapshotReader,
+    SnapshotRevoked,
+    VersionFactsMissing,
+)
 from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.definition import DefinitionDeps
 from datasets_api.doors.pin import pin_artifact
 from datasets_api.operation_store import (
-    MAX_REDISPATCHES,
-    REDISPATCH_GRACE_SECONDS,
+    _LIVE,
+    _UNTRACKED_LEASE,
     LiveOperationStore,
     OperationBacklogFull,
-    lease_stale_after_seconds,
-    never_claimed_stale_after_seconds,
 )
 from datasets_api.operations import worker as worker_module
-from datasets_api.operations.dispatch import dispatch_if_due
-from datasets_api.operations.task_client import FakeTaskClient
+from datasets_api.operations.lease import LEASE_SECONDS
 from datasets_api.operations.worker import OperationSuperseded, run_operation
+from datasets_api.principals import Principal
 from datasets_api.reference_store import PIN_REFERENCE_KIND, LiveArtifactReferenceWriter
 from datasets_api.version_store import LiveHeadStore, LiveVersionRecordWriter
-from datasets_api.versions import ArtifactRecord, MemberSignal, SubjectHead, VersionRecord
+from datasets_api.versions import (
+    ArtifactRecord,
+    HeadFence,
+    HeadFenceLost,
+    SubjectHead,
+    VersionRecord,
+)
 from series_coverage.index import Estimate
+from spec_registry import (
+    IdentityQuarantined,
+    LiveSpecReader,
+    LiveSpecRegistry,
+    SpecRegistryStoreError,
+    recompute_identity,
+)
 from tests.datasets_api._legacy_conversion_trace import (
     LEGACY_CONVERSION,
     LEGACY_DEFLATED_CONVERSION,
@@ -50,18 +71,21 @@ from tests.datasets_api._legacy_conversion_trace import (
     MIGRATED_DEFLATED_CONVERSION,
 )
 from tests.datasets_api._snapshot_doubles import FakeSpecReader
+from tests.datasets_api._version_record_store import materialisation_record
+from tests.spec_registry.conftest import minimal_identity, shape_for
 
+_CONFIRMED_AT = datetime(2026, 1, 1, tzinfo=UTC)
 _DSN = os.environ.get("DFO_DATASET_STORE_LIVE_DSN")
 
 # The safe-default settings every `LiveOperationStore` below resolves for
 # itself when built with no explicit `settings=`.
 _DEFAULT_SETTINGS = DatasetsBuildSettings()
+_OPERATION_DEADLINE = timedelta(seconds=_DEFAULT_SETTINGS.operation_deadline_seconds)
 
 
-def _lease_stale_after_seconds() -> float:
-    return lease_stale_after_seconds(
-        max_retry_duration_seconds=_DEFAULT_SETTINGS.operation_max_retry_duration_seconds
-    )
+def _live_params(now: datetime) -> tuple[datetime, datetime, datetime, datetime]:
+    """The parameters of `_LIVE` at `now` under the default operation deadline."""
+    return (now, now - _UNTRACKED_LEASE, now - _OPERATION_DEADLINE, now - _OPERATION_DEADLINE)
 
 
 pytestmark = [
@@ -419,7 +443,7 @@ def test_version_artifact_link_is_replaced_only_once_its_digest_is_not_servable(
             subject_kind="spec",
             content_version="cv1",
             schema_version=1,
-            immutable_body={},
+            facts=FrameLineage(input_content_versions=[]),
             artifacts=(
                 ArtifactRecord(
                     artifact_digest=digests["old"],
@@ -473,7 +497,7 @@ def _seed_linked_artifact(
             subject_kind="spec",
             content_version="cv1",
             schema_version=1,
-            immutable_body={},
+            facts=FrameLineage(input_content_versions=[]),
             artifacts=(
                 ArtifactRecord(
                     artifact_digest=digests[0],
@@ -699,6 +723,75 @@ def test_version_revocation_round_trip(live_store):
     assert row == {"reason": "takedown"}
 
 
+@pytest.mark.parametrize(
+    ("revoked", "revoked_under_other"),
+    [
+        ("cv_base", False),
+        (None, False),
+        ("cv_collapsed", True),
+        ("cv_base", True),
+    ],
+    ids=["base-revoked", "live", "own-revoked-under-other-id", "base-revoked-under-other-id"],
+)
+def test_read_version_state_reads_the_base_revocation_and_links_in_one_transaction(
+    live_store, revoked, revoked_under_other
+):
+    """A collapsed version reads as revoked when its base version is, or when either is
+    revoked under another id the read names (`revoked_under`), beside its linked locations,
+    from one `read_version_state` call."""
+    subject_id = f"spec:test-live-version-state-{uuid4().hex}"
+    other_id = f"spec:test-live-version-state-other-{uuid4().hex}"
+    digest = f"sha256:test-live-version-state-{uuid4().hex}"
+    with live_store.transaction() as tx:
+        for recorded_under in (subject_id, other_id):
+            for content_version, base in (("cv_base", None), ("cv_collapsed", "cv_base")):
+                tx.execute(
+                    "INSERT INTO datasets.version_record "
+                    "(subject_id, subject_kind, content_version, schema_version, "
+                    "immutable_body, recorded_at, base_content_version) "
+                    "VALUES (%s, %s, %s, %s, %s, now(), %s)",
+                    (recorded_under, "spec", content_version, 1, _LINEAGE_BODY, base),
+                )
+        tx.execute(
+            "INSERT INTO datasets.artifact_inventory (artifact_digest, size_bytes) VALUES (%s, %s)",
+            (digest, 7),
+        )
+        tx.execute(
+            "INSERT INTO datasets.artifact_location "
+            "(artifact_digest, tier, bucket, object_name, stored_at) "
+            "VALUES (%s, %s, %s, %s, now())",
+            (digest, "working", "b", digest),
+        )
+        tx.execute(
+            "INSERT INTO datasets.version_artifact "
+            "(subject_id, content_version, artifact_digest, rendering_key, rendering, "
+            "media_type) VALUES (%s, %s, %s, %s, %s, %s)",
+            (subject_id, "cv_collapsed", digest, "rk", {"format": "csv"}, "text/csv"),
+        )
+        if revoked is not None:
+            tx.execute(
+                "INSERT INTO datasets.version_revocation "
+                "(subject_id, content_version, reason, revoked_at) VALUES (%s, %s, %s, now())",
+                (other_id if revoked_under_other else subject_id, revoked, "takedown"),
+            )
+    reader = LiveSnapshotReader(store=live_store)
+
+    state = reader.read_version_state(subject_id, "cv_collapsed", revoked_under=[other_id])
+
+    assert state is not None
+    assert state.version.base_content_version == "cv_base"
+    assert (state.revocation.reason if state.revocation else None) == (
+        "takedown" if revoked else None
+    )
+    assert [location.artifact_digest for location in state.locations] == [digest]
+    assert reader.read_version_state(subject_id, "cv_x") is None
+    unnamed = reader.read_version_state(subject_id, "cv_collapsed")
+    assert unnamed is not None
+    assert (unnamed.revocation is not None) is (revoked is not None and not revoked_under_other)
+    assert reader.artifact_inventoried(digest)
+    assert not reader.artifact_inventoried(f"sha256:never-stored-{uuid4().hex}")
+
+
 def test_version_revocation_fk_rejects_an_unknown_version(live_store):
     with pytest.raises(pg8000.exceptions.Error), live_store.transaction() as tx:
         tx.execute(
@@ -739,31 +832,27 @@ def _insert_version_record(live_store, *, subject_id: str, content_version: str)
 
 
 def test_live_head_store_a_write_whose_expected_version_has_moved_on_is_a_no_op(live_store):
-    """After `cv2` advances the head from `cv0`, a writer expecting `cv0` cannot write `cv1`."""
+    """After `cv2` advances the head from the `cv0` run, a writer expecting that run cannot
+    write `cv1`."""
     subject_id = "spec:test-live-head-forward"
     _insert_version_record(live_store, subject_id=subject_id, content_version="cv0")
     _insert_version_record(live_store, subject_id=subject_id, content_version="cv1")
     _insert_version_record(live_store, subject_id=subject_id, content_version="cv2")
 
     store = LiveHeadStore(store=live_store, now=lambda: datetime(2026, 1, 1, tzinfo=UTC))
-    store.advance_head(
-        subject_id=subject_id,
-        content_version="cv0",
-        signal=[MemberSignal("facet0", 0, None, None)],
-        expected_content_version=None,
+    observed = store.advance_head(
+        materialisation=materialisation_record(subject_id=subject_id, content_version="cv0"),
+        expected_materialisation_id=None,
     )
+    assert observed is not None
 
     won = store.advance_head(
-        subject_id=subject_id,
-        content_version="cv2",
-        signal=[MemberSignal("facet2", 20, "2020", "2021")],
-        expected_content_version="cv0",
+        materialisation=materialisation_record(subject_id=subject_id, content_version="cv2"),
+        expected_materialisation_id=observed.materialisation_id,
     )
     lost = store.advance_head(
-        subject_id=subject_id,
-        content_version="cv1",
-        signal=[MemberSignal("facet1", 10, "2010", "2011")],
-        expected_content_version="cv0",
+        materialisation=materialisation_record(subject_id=subject_id, content_version="cv1"),
+        expected_materialisation_id=observed.materialisation_id,
     )
 
     assert won is not None
@@ -771,7 +860,85 @@ def test_live_head_store_a_write_whose_expected_version_has_moved_on_is_a_no_op(
     head = store.read_head(subject_id)
     assert head is not None
     assert head.content_version == "cv2"
-    assert head.signal == (MemberSignal("facet2", 20, "2020", "2021"),)
+    assert (
+        head.dependencies
+        == materialisation_record(subject_id=subject_id, content_version="cv2").dependencies
+    )
+
+
+def test_live_head_store_advance_inserts_the_run_the_head_names(live_store):
+    subject_id = "spec:test-live-head-materialisation"
+    _insert_version_record(live_store, subject_id=subject_id, content_version="cv1")
+
+    head = LiveHeadStore(store=live_store).advance_head(
+        materialisation=materialisation_record(
+            subject_id=subject_id, content_version="cv1", trigger="worker"
+        ),
+        expected_materialisation_id=None,
+    )
+
+    assert head is not None
+    with live_store.transaction() as tx:
+        row = tx.fetch_one(
+            'SELECT subject_id, content_version, "trigger", dependencies, materialised_at '
+            "FROM datasets.materialisation WHERE id = %s",
+            (head.materialisation_id,),
+        )
+        signal = tx.fetch_one(
+            "SELECT signal FROM datasets.subject_head WHERE subject_id = %s", (subject_id,)
+        )
+    assert row == {
+        "subject_id": subject_id,
+        "content_version": "cv1",
+        "trigger": "worker",
+        "dependencies": head.dependencies,
+        "materialised_at": head.materialised_at,
+    }
+    # The store writes no signal, so the column keeps its default.
+    assert signal == {"signal": {"members": []}}
+
+
+def test_a_head_written_before_runs_were_recorded_reads_with_no_dependencies(live_store):
+    subject_id = "spec:test-live-head-no-signal"
+    _insert_version_record(live_store, subject_id=subject_id, content_version="cv1")
+    with live_store.transaction() as tx:
+        tx.execute(
+            "INSERT INTO datasets.subject_head "
+            "(subject_id, content_version, confirmed_at, materialised_at) "
+            "VALUES (%s, %s, now(), now())",
+            (subject_id, "cv1"),
+        )
+
+    head = LiveHeadStore(store=live_store).read_head(subject_id)
+
+    assert head is not None
+    assert head.materialisation_id is None
+    assert head.dependencies is None
+
+
+def test_a_head_whose_run_made_another_version_reads_with_no_dependencies(live_store):
+    """A writer that moves `content_version` alone leaves the head naming a run of another
+    version, so the head read drops that run's fingerprint."""
+    subject_id = "spec:test-live-head-foreign-run"
+    _insert_version_record(live_store, subject_id=subject_id, content_version="cv1")
+    _insert_version_record(live_store, subject_id=subject_id, content_version="cv2")
+    store = LiveHeadStore(store=live_store)
+    written = store.advance_head(
+        materialisation=materialisation_record(subject_id=subject_id, content_version="cv1"),
+        expected_materialisation_id=None,
+    )
+    assert written is not None and written.dependencies is not None
+    with live_store.transaction() as tx:
+        tx.execute(
+            "UPDATE datasets.subject_head SET content_version = %s WHERE subject_id = %s",
+            ("cv2", subject_id),
+        )
+
+    head = store.read_head(subject_id)
+
+    assert head is not None
+    assert (head.content_version, head.materialisation_id) == ("cv2", written.materialisation_id)
+    assert head.dependencies is None
 
 
 def test_live_head_store_read_head_returns_none_for_an_unknown_subject(live_store):
@@ -783,18 +950,19 @@ def test_live_head_store_two_racing_writers_agree_on_exactly_one_winner(live_sto
     """Two writers share `cv-seed`; exactly one advances the head.
 
     A barrier releases both threads together so their writes overlap. The stored head matches the
-    winner's version and signal.
+    winner's version and dependencies.
     """
     subject_id = "spec:test-live-head-race"
     _insert_version_record(live_store, subject_id=subject_id, content_version="cv-seed")
     _insert_version_record(live_store, subject_id=subject_id, content_version="cv-a")
     _insert_version_record(live_store, subject_id=subject_id, content_version="cv-b")
-    LiveHeadStore(store=live_store, now=lambda: datetime(2026, 1, 1, tzinfo=UTC)).advance_head(
-        subject_id=subject_id,
-        content_version="cv-seed",
-        signal=[MemberSignal("facet-seed", 0, None, None)],
-        expected_content_version=None,
+    seed = LiveHeadStore(
+        store=live_store, now=lambda: datetime(2026, 1, 1, tzinfo=UTC)
+    ).advance_head(
+        materialisation=materialisation_record(subject_id=subject_id, content_version="cv-seed"),
+        expected_materialisation_id=None,
     )
+    assert seed is not None
 
     barrier = threading.Barrier(2)
     errors: list[BaseException] = []
@@ -806,10 +974,10 @@ def test_live_head_store_two_racing_writers_agree_on_exactly_one_winner(live_sto
             results[content_version] = LiveHeadStore(
                 store=live_store, now=lambda: datetime(2026, 6, 1, tzinfo=UTC)
             ).advance_head(
-                subject_id=subject_id,
-                content_version=content_version,
-                signal=[MemberSignal(f"facet-{content_version}", 1, None, None)],
-                expected_content_version="cv-seed",
+                materialisation=materialisation_record(
+                    subject_id=subject_id, content_version=content_version
+                ),
+                expected_materialisation_id=seed.materialisation_id,
             )
         # surfaced on the main thread below
         except BaseException as exc:
@@ -832,13 +1000,10 @@ def test_live_head_store_two_racing_writers_agree_on_exactly_one_winner(live_sto
     head = LiveHeadStore(store=live_store).read_head(subject_id)
     assert head is not None
     assert head.content_version == winners[0]
-    # The None-dates round trip (`MemberSignal.earliest_date`/`latest_date`
-    # both `None`) through the real jsonb column here. This proves
-    # `decode_signal` accepts the shape a member with no observations yet
-    # writes. `test_head_store.py`'s
-    # `test_decode_signal_accepts_none_dates_and_none_dispatch_facet_id`
-    # separately pins the same shape against the fake SQLite store.
-    assert head.signal == (MemberSignal(f"facet-{winners[0]}", 1, None, None),)
+    assert (
+        head.dependencies
+        == materialisation_record(subject_id=subject_id, content_version=winners[0]).dependencies
+    )
 
 
 class _PausingTransaction:
@@ -891,7 +1056,8 @@ def test_operation_store_create_or_get_reset_survives_a_concurrent_resubmit_race
 
     with live_store.transaction() as tx:
         baseline_row = tx.fetch_one(
-            "SELECT count(*) AS n FROM datasets.operation WHERE state IN ('pending', 'running')"
+            f"SELECT count(*) AS n FROM datasets.operation WHERE {_LIVE}",
+            _live_params(now),
         )
     baseline = baseline_row["n"] if baseline_row is not None else 0
     backlog_max = baseline + 5
@@ -917,7 +1083,7 @@ def test_operation_store_create_or_get_reset_survives_a_concurrent_resubmit_race
         origin_catalogue_build_id="fake-catalogue",
         estimate=estimate,
     )
-    setup_store.claim_lease(target.id, submission_count=0, lease_seconds=60)
+    setup_store.claim(target.id, submission_count=0, lease_seconds=60, final_delivery=False)
     setup_store.fail(target.id, attempt=1, refusal_code="internal_error", retryable=True)
 
     paused_at_lock = threading.Event()
@@ -987,73 +1153,6 @@ def test_operation_store_create_or_get_reset_survives_a_concurrent_resubmit_race
         assert result.submission_count == 1
     finally:
         loser_pool.close_all()
-
-
-def test_operation_store_dead_running_rows_do_not_block_a_new_submit(live_store):
-    """After 20 leases expire, `create_or_get` sweeps their rows before counting the backlog."""
-    run_id = uuid4().hex
-    options = {"format": "parquet"}
-    stamp = f"cov-test-live-operation-dead-running-{run_id}"
-    estimate = Estimate(rows=1, requests=1)
-    now = datetime(2026, 1, 1, tzinfo=UTC)
-
-    with live_store.transaction() as tx:
-        baseline_row = tx.fetch_one(
-            "SELECT count(*) AS n FROM datasets.operation WHERE state IN ('pending', 'running')"
-        )
-    baseline = baseline_row["n"] if baseline_row is not None else 0
-    backlog_max = baseline + 20
-
-    setup_store = LiveOperationStore(store=live_store, now=lambda: now, backlog_max=backlog_max)
-    dead_ids = []
-    for i in range(20):
-        op = setup_store.create_or_get(
-            request_identity={"input": {"spec_id": f"spec-test-live-operation-dead-{run_id}-{i}"}},
-            options=options,
-            coverage_stamp=stamp,
-            origin_catalogue_build_id="fake-catalogue",
-            estimate=estimate,
-        )
-        claimed = setup_store.claim_lease(op.id, submission_count=0, lease_seconds=60)
-        assert claimed is not None
-        dead_ids.append(op.id)
-
-    # Right at the backlog max, with every one of the 20 leases still
-    # live, this refuses.
-    with pytest.raises(OperationBacklogFull):
-        setup_store.create_or_get(
-            request_identity={
-                "input": {"spec_id": f"spec-test-live-operation-dead-{run_id}-too-soon"}
-            },
-            options=options,
-            coverage_stamp=stamp,
-            origin_catalogue_build_id="fake-catalogue",
-            estimate=estimate,
-        )
-
-    # Advance the clock past this store's own lease_stale_after_seconds,
-    # measured from each lease's own expiry (60s after `now` above):
-    # Cloud Tasks has certainly exhausted every retry by then, with
-    # nothing since to renew any of the 20 leases.
-    stale_now = now + timedelta(seconds=60 + _lease_stale_after_seconds() + 1)
-    stale_store = LiveOperationStore(
-        store=live_store, now=lambda: stale_now, backlog_max=backlog_max
-    )
-    new_op = stale_store.create_or_get(
-        request_identity={"input": {"spec_id": f"spec-test-live-operation-dead-{run_id}-new"}},
-        options=options,
-        coverage_stamp=stamp,
-        origin_catalogue_build_id="fake-catalogue",
-        estimate=estimate,
-    )
-    assert new_op.state == "pending"
-
-    for dead_id in dead_ids:
-        swept = stale_store.get(dead_id)
-        assert swept is not None
-        assert swept.state == "failed"
-        assert swept.refusal_code == "internal_error"
-        assert swept.retryable is True
 
 
 def test_operation_insert_predating_submitted_at_still_succeeds(live_store):
@@ -1167,19 +1266,22 @@ class _Call:
         return self.result
 
 
-def _wait_until_an_operation_update_is_blocked(live_store) -> None:
-    """Wait until another session blocks on an operation-row update."""
+def _wait_until_an_operation_update_is_blocked(
+    live_store, *, statement: str = "UPDATE datasets.operation"
+) -> None:
+    """Wait until another session blocks on a lock in a statement starting with `statement`."""
     deadline = time.monotonic() + 5
     while time.monotonic() < deadline:
         with live_store.transaction() as tx:
             row = tx.fetch_one(
                 "SELECT count(*) AS n FROM pg_stat_activity "
-                "WHERE wait_event_type = 'Lock' AND query LIKE 'UPDATE datasets.operation%'"
+                "WHERE wait_event_type = 'Lock' AND starts_with(query, %s)",
+                (statement,),
             )
         if row is not None and row["n"] > 0:
             return
         time.sleep(0.02)
-    raise AssertionError("no UPDATE datasets.operation ever blocked on the held row")
+    raise AssertionError(f"no {statement} ever blocked on the held row")
 
 
 def _new_operation(store: LiveOperationStore, run_id: str, label: str):
@@ -1206,7 +1308,7 @@ def test_operation_store_stale_attempt_complete_is_refused_after_a_reclaim(live_
     t0 = datetime(2026, 1, 1, tzinfo=UTC)
     setup = LiveOperationStore(store=live_store, now=lambda: t0, backlog_max=_RACE_BACKLOG_MAX)
     op = _new_operation(setup, run_id, "reclaim")
-    first = setup.claim_lease(op.id, submission_count=0, lease_seconds=30)
+    first = setup.claim(op.id, submission_count=0, lease_seconds=30, final_delivery=False)
     assert first is not None
 
     t1 = t0 + timedelta(seconds=31)
@@ -1220,7 +1322,9 @@ def test_operation_store_stale_attempt_complete_is_refused_after_a_reclaim(live_
         )
 
         reclaim = _Call(
-            lambda: reclaimer.claim_lease(op.id, submission_count=0, lease_seconds=1_700)
+            lambda: reclaimer.claim(
+                op.id, submission_count=0, lease_seconds=1_500, final_delivery=False
+            )
         )
         assert holder.held.wait(timeout=5), "the reclaim never reached its commit"
         complete = _Call(
@@ -1229,6 +1333,7 @@ def test_operation_store_stale_attempt_complete_is_refused_after_a_reclaim(live_
                 attempt=first.attempt_count,
                 subject_id="spec-test-live-fence",
                 content_version="cv-never-written",
+                confirmed_at=_CONFIRMED_AT,
             )
         )
         _wait_until_an_operation_update_is_blocked(live_store)
@@ -1249,101 +1354,201 @@ def test_operation_store_stale_attempt_complete_is_refused_after_a_reclaim(live_
     assert current.content_version is None
 
 
-def test_operation_store_heartbeat_wins_over_a_concurrent_expiry(live_store):
-    """A poll's expiry and a heartbeat race on a row whose lease looks dead
-    to both. The heartbeat's renewal holds the row lock; the expiry blocks,
-    re-evaluates the dead-row predicate against the renewed lease, and
-    leaves the operation running. A second row, identical but never
-    renewed, is the control: the same expiry fails it.
-    """
+def test_operation_store_complete_keeps_the_runs_confirmed_instant(live_store):
+    """`complete` stores the instant the run confirmed the subject head, apart from the
+    completion's own `updated_at`, and `get` reads it back as that instant."""
     run_id = uuid4().hex
     t0 = datetime(2026, 1, 1, tzinfo=UTC)
-    setup = LiveOperationStore(store=live_store, now=lambda: t0, backlog_max=_RACE_BACKLOG_MAX)
-    op = _new_operation(setup, run_id, "heartbeat")
-    control = _new_operation(setup, run_id, "control")
-    claimed = setup.claim_lease(op.id, submission_count=0, lease_seconds=60)
-    assert claimed is not None
-    assert setup.claim_lease(control.id, submission_count=0, lease_seconds=60) is not None
+    operations = LiveOperationStore(store=live_store, now=lambda: t0, backlog_max=_RACE_BACKLOG_MAX)
+    op = _new_operation(operations, run_id, "confirmed")
+    claimed = operations.claim(op.id, submission_count=0, lease_seconds=30, final_delivery=False)
+    assert claimed is not None and claimed.confirmed_at is None
+    confirmed_at = t0 - timedelta(seconds=7, microseconds=250)
+    subject_id = f"spec-test-live-confirmed-{run_id}"
+    _insert_version_record(live_store, subject_id=subject_id, content_version="cv1")
 
-    stale_now = t0 + timedelta(seconds=60 + _lease_stale_after_seconds() + 1)
-    heartbeat_pool = _pool(size=1)
-    poll_pool = _pool(size=1)
-    try:
-        holder = _HoldBeforeCommitStore(LiveDatasetStore(connections=heartbeat_pool))
-        worker = LiveOperationStore(store=holder, now=lambda: stale_now)
-        poller = LiveOperationStore(
-            store=LiveDatasetStore(connections=poll_pool), now=lambda: stale_now
+    done = operations.complete(
+        op.id,
+        attempt=claimed.attempt_count,
+        subject_id=subject_id,
+        content_version="cv1",
+        confirmed_at=confirmed_at,
+    )
+
+    assert done is not None
+    assert (done.confirmed_at, done.updated_at) == (confirmed_at, t0)
+    stored = operations.get(op.id)
+    assert stored is not None and stored.confirmed_at == confirmed_at
+
+
+def _materialisation_count(live_store, subject_id: str) -> int:
+    with live_store.transaction() as tx:
+        row = tx.fetch_one(
+            "SELECT count(*) AS n FROM datasets.materialisation WHERE subject_id = %s",
+            (subject_id,),
         )
-
-        expired_control = poller.expire_if_dead(control.id)
-        assert expired_control is not None and expired_control.state == "failed"
-
-        heartbeat = _Call(
-            lambda: worker.progress(
-                op.id, attempt=claimed.attempt_count, rows_written=5, lease_seconds=60
-            )
-        )
-        assert holder.held.wait(timeout=5), "the heartbeat never reached its commit"
-        expiry = _Call(lambda: poller.expire_if_dead(op.id))
-        _wait_until_an_operation_update_is_blocked(live_store)
-        holder.release.set()
-
-        assert heartbeat.join() is not None
-        assert expiry.join() is None
-    finally:
-        heartbeat_pool.close_all()
-        poll_pool.close_all()
-
-    current = setup.get(op.id)
-    assert current is not None
-    assert current.state == "running"
-    assert current.rows_written == 5
-    assert current.lease_until == stale_now + timedelta(seconds=60)
+    assert row is not None
+    return cast(int, row["n"])
 
 
-def test_operation_store_sweep_skips_a_row_a_heartbeat_renews_mid_sweep(live_store):
-    """The create_or_get sweep is one set-based UPDATE. A heartbeat holding
-    one of its candidate rows makes it wait on that row and re-evaluate it
-    against the renewed lease, so the sweep leaves the live row alone."""
+def test_live_head_store_a_superseded_attempts_fenced_advance_writes_nothing(live_store):
+    """Attempt 1 advances the head while it owns the operation. Once attempt 2 reclaims the
+    row, attempt 1's fenced advance refuses and leaves the head and the materialisation table
+    unchanged, and attempt 2's advances the head."""
     run_id = uuid4().hex
+    subject_id = f"spec:test-live-head-fence-{run_id}"
+    for content_version in ("cv0", "cv-stale", "cv-new"):
+        _insert_version_record(live_store, subject_id=subject_id, content_version=content_version)
+    t0 = datetime(2026, 1, 1, tzinfo=UTC)
+    operations = LiveOperationStore(store=live_store, now=lambda: t0, backlog_max=_RACE_BACKLOG_MAX)
+    op = _new_operation(operations, run_id, "head")
+    first = operations.claim(op.id, submission_count=0, lease_seconds=30, final_delivery=False)
+    assert first is not None
+    first_fence = HeadFence(operation_id=op.id, attempt=first.attempt_count)
+    heads = LiveHeadStore(store=live_store)
+    seeded = heads.advance_head(
+        materialisation=materialisation_record(subject_id=subject_id, content_version="cv0"),
+        expected_materialisation_id=None,
+        fence=first_fence,
+    )
+    assert seeded is not None
+    reclaimed = LiveOperationStore(store=live_store, now=lambda: t0 + timedelta(seconds=31)).claim(
+        op.id, submission_count=0, lease_seconds=1_500, final_delivery=False
+    )
+    assert reclaimed is not None
+
+    with pytest.raises(HeadFenceLost):
+        heads.advance_head(
+            materialisation=materialisation_record(
+                subject_id=subject_id, content_version="cv-stale"
+            ),
+            expected_materialisation_id=seeded.materialisation_id,
+            fence=first_fence,
+        )
+
+    assert heads.read_head(subject_id) == seeded
+    assert _materialisation_count(live_store, subject_id) == 1
+    advanced = heads.advance_head(
+        materialisation=materialisation_record(subject_id=subject_id, content_version="cv-new"),
+        expected_materialisation_id=seeded.materialisation_id,
+        fence=HeadFence(operation_id=op.id, attempt=reclaimed.attempt_count),
+    )
+    assert advanced is not None
+    assert heads.read_head(subject_id) == advanced
+    assert advanced.content_version == "cv-new"
+    assert _materialisation_count(live_store, subject_id) == 2
+
+
+def test_live_head_store_a_fenced_advance_waits_on_an_uncommitted_reclaim_and_refuses(
+    live_store,
+):
+    """Attempt 2's reclaim holds the operation row, uncommitted, when attempt 1 advances the
+    head. The advance's share lock waits, re-checks the committed reclaim, and refuses."""
+    run_id = uuid4().hex
+    subject_id = f"spec:test-live-head-fence-wait-{run_id}"
+    _insert_version_record(live_store, subject_id=subject_id, content_version="cv-stale")
     t0 = datetime(2026, 1, 1, tzinfo=UTC)
     setup = LiveOperationStore(store=live_store, now=lambda: t0, backlog_max=_RACE_BACKLOG_MAX)
-    op = _new_operation(setup, run_id, "sweep")
-    claimed = setup.claim_lease(op.id, submission_count=0, lease_seconds=60)
-    assert claimed is not None
+    op = _new_operation(setup, run_id, "head-wait")
+    first = setup.claim(op.id, submission_count=0, lease_seconds=30, final_delivery=False)
+    assert first is not None
 
-    stale_now = t0 + timedelta(seconds=60 + _lease_stale_after_seconds() + 1)
-    heartbeat_pool = _pool(size=1)
-    submit_pool = _pool(size=1)
+    t1 = t0 + timedelta(seconds=31)
+    reclaim_pool = _pool(size=1)
+    head_pool = _pool(size=1)
     try:
-        holder = _HoldBeforeCommitStore(LiveDatasetStore(connections=heartbeat_pool))
-        worker = LiveOperationStore(store=holder, now=lambda: stale_now)
-        submitter = LiveOperationStore(
-            store=LiveDatasetStore(connections=submit_pool),
-            now=lambda: stale_now,
-            backlog_max=_RACE_BACKLOG_MAX,
-        )
+        holder = _HoldBeforeCommitStore(LiveDatasetStore(connections=reclaim_pool))
+        reclaimer = LiveOperationStore(store=holder, now=lambda: t1)
+        heads = LiveHeadStore(store=LiveDatasetStore(connections=head_pool))
 
-        heartbeat = _Call(
-            lambda: worker.progress(
-                op.id, attempt=claimed.attempt_count, rows_written=7, lease_seconds=60
+        reclaim = _Call(
+            lambda: reclaimer.claim(
+                op.id, submission_count=0, lease_seconds=1_500, final_delivery=False
             )
         )
-        assert holder.held.wait(timeout=5), "the heartbeat never reached its commit"
-        submit = _Call(lambda: _new_operation(submitter, run_id, "trigger"))
-        _wait_until_an_operation_update_is_blocked(live_store)
+        assert holder.held.wait(timeout=5), "the reclaim never reached its commit"
+        advance = _Call(
+            lambda: heads.advance_head(
+                materialisation=materialisation_record(
+                    subject_id=subject_id, content_version="cv-stale"
+                ),
+                expected_materialisation_id=None,
+                fence=HeadFence(operation_id=op.id, attempt=first.attempt_count),
+            )
+        )
+        _wait_until_an_operation_update_is_blocked(
+            live_store, statement="SELECT 1 AS held FROM datasets.operation"
+        )
         holder.release.set()
 
-        assert heartbeat.join() is not None
-        assert submit.join().state == "pending"
+        reclaimed = reclaim.join()
+        with pytest.raises(HeadFenceLost):
+            advance.join()
     finally:
-        heartbeat_pool.close_all()
-        submit_pool.close_all()
+        reclaim_pool.close_all()
+        head_pool.close_all()
 
-    current = setup.get(op.id)
-    assert current is not None
-    assert current.state == "running"
-    assert current.rows_written == 7
+    assert reclaimed is not None
+    assert reclaimed.attempt_count == first.attempt_count + 1
+    assert LiveHeadStore(store=live_store).read_head(subject_id) is None
+    assert _materialisation_count(live_store, subject_id) == 0
+
+
+def test_live_head_store_a_reclaim_waits_on_an_uncommitted_fenced_advance(live_store):
+    """Attempt 1's fenced advance holds its share lock, uncommitted, when attempt 2 reclaims
+    the row. The reclaim waits until the advance commits, so the head names attempt 1's run
+    only while attempt 1 owned the row."""
+    run_id = uuid4().hex
+    subject_id = f"spec:test-live-head-fence-claim-{run_id}"
+    _insert_version_record(live_store, subject_id=subject_id, content_version="cv1")
+    t0 = datetime(2026, 1, 1, tzinfo=UTC)
+    setup = LiveOperationStore(store=live_store, now=lambda: t0, backlog_max=_RACE_BACKLOG_MAX)
+    op = _new_operation(setup, run_id, "head-claim")
+    first = setup.claim(op.id, submission_count=0, lease_seconds=30, final_delivery=False)
+    assert first is not None
+
+    t1 = t0 + timedelta(seconds=31)
+    head_pool = _pool(size=1)
+    reclaim_pool = _pool(size=1)
+    try:
+        holder = _HoldBeforeCommitStore(
+            LiveDatasetStore(connections=head_pool),
+            hold_when=lambda sql: sql.startswith("INSERT INTO datasets.subject_head"),
+        )
+        heads = LiveHeadStore(store=holder)
+        reclaimer = LiveOperationStore(
+            store=LiveDatasetStore(connections=reclaim_pool), now=lambda: t1
+        )
+
+        advance = _Call(
+            lambda: heads.advance_head(
+                materialisation=materialisation_record(
+                    subject_id=subject_id, content_version="cv1"
+                ),
+                expected_materialisation_id=None,
+                fence=HeadFence(operation_id=op.id, attempt=first.attempt_count),
+            )
+        )
+        assert holder.held.wait(timeout=5), "the advance never reached its commit"
+        reclaim = _Call(
+            lambda: reclaimer.claim(
+                op.id, submission_count=0, lease_seconds=1_500, final_delivery=False
+            )
+        )
+        _wait_until_an_operation_update_is_blocked(live_store)
+        assert not reclaim.done()
+        holder.release.set()
+
+        advanced = advance.join()
+        reclaimed = reclaim.join()
+    finally:
+        head_pool.close_all()
+        reclaim_pool.close_all()
+
+    assert advanced is not None
+    assert LiveHeadStore(store=live_store).read_head(subject_id) == advanced
+    assert reclaimed is not None
+    assert reclaimed.attempt_count == first.attempt_count + 1
 
 
 def test_operation_store_claim_with_an_old_submission_count_is_refused(live_store):
@@ -1354,7 +1559,7 @@ def test_operation_store_claim_with_an_old_submission_count_is_refused(live_stor
     t0 = datetime(2026, 1, 1, tzinfo=UTC)
     setup = LiveOperationStore(store=live_store, now=lambda: t0, backlog_max=_RACE_BACKLOG_MAX)
     op = _new_operation(setup, run_id, "submission")
-    first = setup.claim_lease(op.id, submission_count=0, lease_seconds=60)
+    first = setup.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
     assert first is not None
     setup.fail(op.id, attempt=first.attempt_count, refusal_code="internal_error", retryable=True)
     reset = _new_operation(setup, run_id, "submission")
@@ -1371,8 +1576,13 @@ def test_operation_store_claim_with_an_old_submission_count_is_refused(live_stor
             store=LiveDatasetStore(connections=new_pool), now=lambda: t0
         )
 
-        assert old_delivery.claim_lease(op.id, submission_count=0, lease_seconds=60) is None
-        claimed = new_delivery.claim_lease(op.id, submission_count=1, lease_seconds=60)
+        assert (
+            old_delivery.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False)
+            is None
+        )
+        claimed = new_delivery.claim(
+            op.id, submission_count=1, lease_seconds=60, final_delivery=False
+        )
     finally:
         old_pool.close_all()
         new_pool.close_all()
@@ -1382,13 +1592,61 @@ def test_operation_store_claim_with_an_old_submission_count_is_refused(live_stor
     assert claimed.attempt_count == first.attempt_count + 1
 
 
-def test_operation_store_two_concurrent_dispatch_claims_have_one_winner(live_store):
-    """Two concurrent claims yield one dispatch winner."""
+def _counts_in_the_backlog(live_store, operation_id: str, at: datetime) -> bool:
+    with live_store.transaction() as tx:
+        row = tx.fetch_one(
+            f"SELECT count(*) AS n FROM datasets.operation WHERE id = %s AND {_LIVE}",
+            (operation_id, *_live_params(at)),
+        )
+    return row is not None and row["n"] == 1
+
+
+@pytest.mark.parametrize("final_delivery", [True, False], ids=["final", "delivery-due"])
+def test_operation_store_a_run_past_its_lease_leaves_the_backlog_once_no_delivery_is_due(
+    live_store, final_delivery: bool
+):
+    """The backlog counts a running row inside `claimed_at + lease_seconds`, the interval
+    arithmetic `make_interval` does in Postgres. Past the lease it counts the row only while a
+    later delivery is due, and `abandon` leaves that row until the operation deadline. Past the
+    deadline `claim` refuses it."""
+    run_id = uuid4().hex
+    t0 = datetime(2026, 1, 1, tzinfo=UTC)
+    now_box = {"t": t0}
+    store = LiveOperationStore(
+        store=live_store, now=lambda: now_box["t"], backlog_max=_RACE_BACKLOG_MAX
+    )
+    op = _new_operation(store, run_id, "backlog")
+    claimed = store.claim(
+        op.id, submission_count=0, lease_seconds=60, final_delivery=final_delivery
+    )
+    assert claimed is not None and claimed.final_delivery is final_delivery
+
+    assert _counts_in_the_backlog(live_store, op.id, t0 + timedelta(seconds=60))
+    past_lease = t0 + timedelta(seconds=61)
+    assert _counts_in_the_backlog(live_store, op.id, past_lease) is not final_delivery
+
+    now_box["t"] = past_lease
+    abandoned = store.abandon(op.id, attempt=1)
+    if final_delivery:
+        assert abandoned is not None and abandoned.state == "failed"
+        return
+    assert abandoned is None
+    at_deadline = t0 + _OPERATION_DEADLINE
+    assert _counts_in_the_backlog(live_store, op.id, at_deadline)
+    now_box["t"] = at_deadline + timedelta(seconds=1)
+    assert not _counts_in_the_backlog(live_store, op.id, now_box["t"])
+    assert store.claim(op.id, submission_count=0, lease_seconds=60, final_delivery=False) is None
+    abandoned = store.abandon(op.id, attempt=1)
+    assert abandoned is not None and abandoned.state == "failed"
+
+
+def test_operation_store_two_racing_deliveries_have_one_claim(live_store):
+    """A second delivery blocks on the first claim's row lock, re-evaluates against the
+    committed claim, and finds a live lease."""
     run_id = uuid4().hex
     t0 = datetime(2026, 1, 1, tzinfo=UTC)
     setup = LiveOperationStore(store=live_store, now=lambda: t0, backlog_max=_RACE_BACKLOG_MAX)
-    op = _new_operation(setup, run_id, "dispatch")
-    assert op.dispatch_count == 0
+    op = _new_operation(setup, run_id, "deliveries")
 
     first_pool = _pool(size=1)
     second_pool = _pool(size=1)
@@ -1397,9 +1655,17 @@ def test_operation_store_two_concurrent_dispatch_claims_have_one_winner(live_sto
         first = LiveOperationStore(store=holder, now=lambda: t0)
         second = LiveOperationStore(store=LiveDatasetStore(connections=second_pool), now=lambda: t0)
 
-        first_claim = _Call(lambda: first.claim_dispatch(op.id))
-        assert holder.held.wait(timeout=5), "the first dispatch claim never reached its commit"
-        second_claim = _Call(lambda: second.claim_dispatch(op.id))
+        first_claim = _Call(
+            lambda: first.claim(
+                op.id, submission_count=0, lease_seconds=1_500, final_delivery=False
+            )
+        )
+        assert holder.held.wait(timeout=5), "the first claim never reached its commit"
+        second_claim = _Call(
+            lambda: second.claim(
+                op.id, submission_count=0, lease_seconds=1_500, final_delivery=False
+            )
+        )
         _wait_until_an_operation_update_is_blocked(live_store)
         holder.release.set()
 
@@ -1409,172 +1675,64 @@ def test_operation_store_two_concurrent_dispatch_claims_have_one_winner(live_sto
         first_pool.close_all()
         second_pool.close_all()
 
-    assert won is not None
-    assert won.dispatch_count == 1
-    assert setup.get(op.id).dispatch_count == 1
+    assert won is not None and won.attempt_count == 1
+    assert setup.get(op.id).attempt_count == 1
 
 
-def test_operation_store_two_pollers_racing_a_redispatch_enqueue_once(live_store):
-    """Concurrent polls of one due redispatch enqueue and confirm one task."""
+def test_operation_store_a_poll_abandon_racing_a_reclaim_leaves_the_reclaim(live_store):
+    """A delivery reclaims an ended lease while a poll abandons the same attempt. The abandon
+    blocks on the reclaim's row lock, re-evaluates its attempt guard, and matches nothing."""
     run_id = uuid4().hex
     t0 = datetime(2026, 1, 1, tzinfo=UTC)
     setup = LiveOperationStore(store=live_store, now=lambda: t0, backlog_max=_RACE_BACKLOG_MAX)
-    op = _new_operation(setup, run_id, "pollers")
-    assert setup.claim_dispatch(op.id) is not None  # its enqueue was lost
+    op = _new_operation(setup, run_id, "abandon")
+    # A final delivery's ended lease is abandoned at once, so the poll's update matches the row
+    # it read and waits on the reclaim's lock.
+    first = setup.claim(op.id, submission_count=0, lease_seconds=30, final_delivery=True)
+    assert first is not None
 
-    t1 = t0 + timedelta(seconds=REDISPATCH_GRACE_SECONDS + 1)
-    task_client = FakeTaskClient()
-    first_pool = _pool(size=1)
-    second_pool = _pool(size=1)
+    t1 = t0 + timedelta(seconds=31)
+    reclaim_pool = _pool(size=1)
+    poll_pool = _pool(size=1)
     try:
-        holder = _HoldBeforeCommitStore(
-            LiveDatasetStore(connections=first_pool),
-            hold_when=lambda sql: "dispatch_count = dispatch_count + 1" in sql,
-        )
-        first = LiveOperationStore(store=holder, now=lambda: t1)
-        second = LiveOperationStore(store=LiveDatasetStore(connections=second_pool), now=lambda: t1)
-        pending = setup.get(op.id)
-        assert pending is not None
+        holder = _HoldBeforeCommitStore(LiveDatasetStore(connections=reclaim_pool))
+        reclaimer = LiveOperationStore(store=holder, now=lambda: t1)
+        poller = LiveOperationStore(store=LiveDatasetStore(connections=poll_pool), now=lambda: t1)
 
-        first_poll = _Call(
-            lambda: dispatch_if_due(pending, operation_store=first, task_client=task_client)
+        reclaim = _Call(
+            lambda: reclaimer.claim(
+                op.id, submission_count=0, lease_seconds=1_500, final_delivery=False
+            )
         )
-        assert holder.held.wait(timeout=5), "the first poll's claim never reached its commit"
-        second_poll = _Call(
-            lambda: dispatch_if_due(pending, operation_store=second, task_client=task_client)
-        )
+        assert holder.held.wait(timeout=5), "the reclaim never reached its commit"
+        abandon = _Call(lambda: poller.abandon(op.id, attempt=first.attempt_count))
         _wait_until_an_operation_update_is_blocked(live_store)
         holder.release.set()
 
-        first_poll.join()
-        second_poll.join()
+        reclaimed = reclaim.join()
+        assert abandon.join() is None
     finally:
-        first_pool.close_all()
-        second_pool.close_all()
+        reclaim_pool.close_all()
+        poll_pool.close_all()
 
-    assert task_client.enqueued == [(op.id, 0)]
+    assert reclaimed is not None
     current = setup.get(op.id)
     assert current is not None
-    assert current.dispatch_count == 2
-    assert current.dispatch_confirmed == 2
+    assert (current.state, current.attempt_count, current.claimed_at) == ("running", 2, t1)
 
 
-def test_operation_store_a_confirmed_dispatch_is_never_reclaimed(live_store):
+def test_operation_store_records_one_dispatch_per_submission(live_store):
     run_id = uuid4().hex
     t0 = datetime(2026, 1, 1, tzinfo=UTC)
-    setup = LiveOperationStore(store=live_store, now=lambda: t0, backlog_max=_RACE_BACKLOG_MAX)
-    op = _new_operation(setup, run_id, "confirmed")
-    claimed = setup.claim_dispatch(op.id)
-    assert claimed is not None
-    setup.confirm_dispatch(op.id, submission_count=0, dispatch_count=claimed.dispatch_count)
+    store = LiveOperationStore(store=live_store, now=lambda: t0, backlog_max=_RACE_BACKLOG_MAX)
+    op = _new_operation(store, run_id, "dispatch")
+    assert op.dispatched_at is None
 
-    later = t0 + timedelta(hours=2)
-    poller_pool = _pool(size=1)
-    try:
-        poller = LiveOperationStore(
-            store=LiveDatasetStore(connections=poller_pool), now=lambda: later
-        )
-        assert poller.claim_dispatch(op.id) is None
-        assert poller.expire_if_dead(op.id) is None
-    finally:
-        poller_pool.close_all()
+    marked = store.mark_dispatched(op.id, submission_count=0)
 
-    current = setup.get(op.id)
-    assert current is not None
-    assert current.state == "pending"
-    assert current.dispatch_count == 1
-
-
-# The test window covers one dispatch deadline plus the retry duration.
-_WINDOW_DISPATCH_CONCURRENCY = _RACE_BACKLOG_MAX
-_NEVER_CLAIMED_WINDOW = timedelta(
-    seconds=never_claimed_stale_after_seconds(
-        backlog_max=_RACE_BACKLOG_MAX,
-        dispatch_concurrency=_WINDOW_DISPATCH_CONCURRENCY,
-        max_retry_duration_seconds=_DEFAULT_SETTINGS.operation_max_retry_duration_seconds,
-    )
-)
-
-
-def _windowed_store(live_store, now_box) -> LiveOperationStore:
-    return LiveOperationStore(
-        store=live_store,
-        now=lambda: now_box["t"],
-        backlog_max=_RACE_BACKLOG_MAX,
-        dispatch_concurrency=_WINDOW_DISPATCH_CONCURRENCY,
-    )
-
-
-def test_operation_store_the_redispatch_cap_holds_and_then_fails_the_operation(live_store):
-    """Past the cap the last task may still be queued, so the row stays
-    pending until the never-claimed window has run from the last dispatch."""
-    run_id = uuid4().hex
-    now_box = {"t": datetime(2026, 1, 1, tzinfo=UTC)}
-    store = _windowed_store(live_store, now_box)
-    op = _new_operation(store, run_id, "cap")
-
-    won = []
-    for _ in range(MAX_REDISPATCHES + 3):
-        claimed = store.claim_dispatch(op.id)
-        if claimed is not None:
-            won.append(claimed.dispatch_count)
-        now_box["t"] = now_box["t"] + timedelta(seconds=REDISPATCH_GRACE_SECONDS + 1)
-
-    assert won == list(range(1, MAX_REDISPATCHES + 2))
-    exhausted = store.get(op.id)
-    assert exhausted is not None and exhausted.dispatched_at is not None
-    last_dispatched_at = exhausted.dispatched_at
-    now_box["t"] = last_dispatched_at + _NEVER_CLAIMED_WINDOW
-    assert store.expire_if_dead(op.id) is None
-    pending = store.get(op.id)
-    assert pending is not None
-    assert pending.state == "pending"
-
-    now_box["t"] = last_dispatched_at + _NEVER_CLAIMED_WINDOW + timedelta(seconds=1)
-    expired = store.expire_if_dead(op.id)
-    assert expired is not None
-    assert expired.state == "failed"
-    assert expired.refusal_code == "internal_error"
-    assert expired.retryable is True
-
-
-def test_operation_store_a_resubmit_of_an_old_operation_survives_inside_its_new_window(
-    live_store,
-):
-    """Resubmission resets `submitted_at`, so expiry uses the new dispatch window."""
-    run_id = uuid4().hex
-    t0 = datetime(2026, 1, 1, tzinfo=UTC)
-    now_box = {"t": t0}
-    store = _windowed_store(live_store, now_box)
-    first = _new_operation(store, run_id, "resubmit")
-    claimed = store.claim_lease(first.id, submission_count=0, lease_seconds=60)
-    assert claimed is not None
-    assert store.fail(
-        first.id, attempt=claimed.attempt_count, refusal_code="internal_error", retryable=True
-    )
-
-    now_box["t"] = t0 + _NEVER_CLAIMED_WINDOW + timedelta(hours=1)
-    reset = _new_operation(store, run_id, "resubmit")
-    assert reset.state == "pending"
-    assert reset.submission_count == 1
-    assert reset.created_at == first.created_at
-    assert reset.submitted_at == now_box["t"]
-    dispatched = store.claim_dispatch(reset.id)
-    assert dispatched is not None and dispatched.dispatched_at is not None
-    store.confirm_dispatch(reset.id, submission_count=1, dispatch_count=dispatched.dispatch_count)
-
-    now_box["t"] = now_box["t"] + timedelta(seconds=2)
-    assert store.expire_if_dead(reset.id) is None
-    _new_operation(store, run_id, "resubmit-sweeper")
-    current = store.get(reset.id)
-    assert current is not None
-    assert current.state == "pending"
-
-    now_box["t"] = dispatched.dispatched_at + _NEVER_CLAIMED_WINDOW + timedelta(seconds=1)
-    expired = store.expire_if_dead(reset.id)
-    assert expired is not None
-    assert expired.state == "failed"
-    assert expired.retryable is True
+    assert marked is not None and marked.dispatched_at == t0
+    assert store.mark_dispatched(op.id, submission_count=0) is None
+    assert store.mark_dispatched(op.id, submission_count=1) is None
 
 
 class _StubCoverageSnapshot:
@@ -1590,10 +1748,10 @@ class _StubCoverage:
 def _worker_deps() -> DefinitionDeps:
     """Build minimal worker dependencies for the patched resolve and estimate calls."""
     return DefinitionDeps(
+        registry=None,  # type: ignore[arg-type]
         spec_reader=None,  # type: ignore[arg-type]
         graph=None,  # type: ignore[arg-type]
         sdmx=None,  # type: ignore[arg-type]
-        revision_reader=None,  # type: ignore[arg-type]
         artifact_store=None,  # type: ignore[arg-type]
         materialiser_build="test-build",
         capability_version="dset_test",
@@ -1619,7 +1777,7 @@ def _subject_operation(store: LiveOperationStore, run_id: str):
     )
 
 
-def _must_not_serve(**_):
+def _must_not_serve(*_, **__):
     raise AssertionError("an over-ceiling or superseded run must not materialise")
 
 
@@ -1629,20 +1787,19 @@ def test_worker_fails_over_ceiling_when_the_execution_estimate_breaches_it(live_
     t0 = datetime(2026, 1, 1, tzinfo=UTC)
     store = LiveOperationStore(store=live_store, now=lambda: t0, backlog_max=_RACE_BACKLOG_MAX)
     op = _subject_operation(store, run_id)
-    claimed = store.claim_lease(op.id, submission_count=0, lease_seconds=600)
+    claimed = store.claim(op.id, submission_count=0, lease_seconds=600, final_delivery=False)
     assert claimed is not None
     over = Estimate(rows=DatasetsBuildSettings().async_max_rows + 1, requests=1)
     monkeypatch.setattr(worker_module, "_resolve_spec_requests", lambda **_: (object(), []))
     monkeypatch.setattr(
         worker_module, "sync_estimate", lambda requests, *, index, member_concurrency: over
     )
-    monkeypatch.setattr(worker_module, "serve_definition", _must_not_serve)
+    monkeypatch.setattr(worker_module, "serve_current", _must_not_serve)
 
     run_operation(
         operation=claimed,
         deps=_worker_deps(),
         operation_store=store,
-        lease_seconds=_DEFAULT_SETTINGS.operation_lease_seconds,
     )
 
     stored = store.get(op.id)
@@ -1655,7 +1812,6 @@ def test_worker_fails_over_ceiling_when_the_execution_estimate_breaches_it(live_
     assert (stored.refusal.status, stored.refusal.code) == (422, "over_ceiling")
     assert stored.refusal.ceiling_kind == "operation_rows"
     assert stored.coverage_stamp == "cov-test-live-admission"
-    assert stored.execution_coverage_stamp == _StubCoverageSnapshot.stamp
     assert stored.estimate == over
 
 
@@ -1665,14 +1821,14 @@ def test_worker_a_stale_attempt_cannot_fail_the_reclaimed_row_over_ceiling(live_
     t0 = datetime(2026, 1, 1, tzinfo=UTC)
     setup = LiveOperationStore(store=live_store, now=lambda: t0, backlog_max=_RACE_BACKLOG_MAX)
     op = _subject_operation(setup, run_id)
-    first = setup.claim_lease(op.id, submission_count=0, lease_seconds=30)
+    first = setup.claim(op.id, submission_count=0, lease_seconds=30, final_delivery=False)
     assert first is not None
     over = Estimate(rows=DatasetsBuildSettings().async_max_rows + 1, requests=1)
     monkeypatch.setattr(worker_module, "_resolve_spec_requests", lambda **_: (object(), []))
     monkeypatch.setattr(
         worker_module, "sync_estimate", lambda requests, *, index, member_concurrency: over
     )
-    monkeypatch.setattr(worker_module, "serve_definition", _must_not_serve)
+    monkeypatch.setattr(worker_module, "serve_current", _must_not_serve)
 
     t1 = t0 + timedelta(seconds=31)
     reclaim_pool = _pool(size=1)
@@ -1685,7 +1841,9 @@ def test_worker_a_stale_attempt_cannot_fail_the_reclaimed_row_over_ceiling(live_
         )
 
         reclaim = _Call(
-            lambda: reclaimer.claim_lease(op.id, submission_count=0, lease_seconds=1_700)
+            lambda: reclaimer.claim(
+                op.id, submission_count=0, lease_seconds=1_500, final_delivery=False
+            )
         )
         assert holder.held.wait(timeout=5), "the reclaim never reached its commit"
         stale_run = _Call(
@@ -1693,7 +1851,6 @@ def test_worker_a_stale_attempt_cannot_fail_the_reclaimed_row_over_ceiling(live_
                 operation=first,
                 deps=_worker_deps(),
                 operation_store=stale_store,
-                lease_seconds=_DEFAULT_SETTINGS.operation_lease_seconds,
             )
         )
         _wait_until_an_operation_update_is_blocked(live_store)
@@ -1712,7 +1869,7 @@ def test_worker_a_stale_attempt_cannot_fail_the_reclaimed_row_over_ceiling(live_
     assert current.state == "running"
     assert current.attempt_count == first.attempt_count + 1
     assert current.refusal_code is None
-    assert current.execution_coverage_stamp is None
+    assert current.estimate == op.estimate
 
 
 def test_artifact_reference_write_once_per_principal_and_the_pk_matches_decision_8(live_store):
@@ -1758,6 +1915,10 @@ def test_artifact_reference_write_once_per_principal_and_the_pk_matches_decision
     assert rows[0]["removed_at"] is None
 
 
+# The body of a seeded version nothing reads back. It holds a lineage, so the row stores facts.
+_LINEAGE_BODY = {"input_content_versions": ["cv_input"]}
+
+
 def _seed_reference_fk_targets(live_store, *, digest: str, subject_id: str) -> None:
     """Seed the rows a reference names, and the link the guarded writer requires."""
     with live_store.transaction() as tx:
@@ -1771,7 +1932,7 @@ def _seed_reference_fk_targets(live_store, *, digest: str, subject_id: str) -> N
             "(subject_id, subject_kind, content_version, schema_version, immutable_body, "
             "recorded_at) VALUES (%s, %s, %s, %s, %s, now()) "
             "ON CONFLICT (subject_id, content_version) DO NOTHING",
-            (subject_id, "spec", "cv1", 1, {}),
+            (subject_id, "spec", "cv1", 1, _LINEAGE_BODY),
         )
         tx.execute(
             "INSERT INTO datasets.version_artifact "
@@ -1780,6 +1941,78 @@ def _seed_reference_fk_targets(live_store, *, digest: str, subject_id: str) -> N
             "ON CONFLICT (subject_id, content_version, rendering_key) DO NOTHING",
             (subject_id, "cv1", digest, f"rk-{digest}", {"format": "csv"}, "text/csv"),
         )
+
+
+def test_a_replacement_artifact_takes_every_reference_of_the_digest_it_replaces(live_store):
+    """`record_replacement_artifact` links the new digest and copies each reference row the
+    version holds on the replaced digest, live or removed, in one Postgres statement. A rerun
+    changes nothing."""
+    suffix = uuid4().hex
+    subject_id = f"spec:test-live-replacement-{suffix}"
+    replaced = f"sha256:test-live-replaced-{suffix}"
+    replacement = f"sha256:test-live-replacement-{suffix}"
+    _seed_reference_fk_targets(live_store, digest=replaced, subject_id=subject_id)
+    earlier = datetime(2026, 1, 1, tzinfo=UTC)
+    later = earlier + timedelta(days=2)
+    seeded = [
+        (f"secret-sha256:{suffix[:16]}", PIN_REFERENCE_KIND, earlier, None),
+        (f"presentation:chart-{suffix}", "presentation", earlier, later),
+    ]
+    with live_store.transaction() as tx:
+        tx.execute(
+            "INSERT INTO datasets.artifact_inventory (artifact_digest, size_bytes) VALUES (%s, %s)",
+            (replacement, 7),
+        )
+        for principal, kind, created_at, removed_at in seeded:
+            tx.execute(
+                "INSERT INTO datasets.artifact_reference (principal, artifact_digest, "
+                "subject_id, content_version, reference_kind, created_at, removed_at) "
+                "VALUES (%s, %s, %s, 'cv1', %s, %s, %s)",
+                (principal, replaced, subject_id, kind, created_at, removed_at),
+            )
+
+    def _references(digest: str) -> list[tuple[object, ...]]:
+        with live_store.transaction() as tx:
+            rows = tx.fetch_all(
+                "SELECT principal, reference_kind, created_at, removed_at "
+                "FROM datasets.artifact_reference WHERE artifact_digest = %s "
+                "AND subject_id = %s AND content_version = 'cv1' ORDER BY principal",
+                (digest, subject_id),
+            )
+        return [
+            (row["principal"], row["reference_kind"], row["created_at"], row["removed_at"])
+            for row in rows
+        ]
+
+    writer = LiveVersionRecordWriter(store=live_store)
+    try:
+        for _ in range(2):
+            writer.record_replacement_artifact(
+                subject_id=subject_id,
+                content_version="cv1",
+                artifact=ArtifactRecord(
+                    artifact_digest=replacement,
+                    rendering={"format": "frame"},
+                    media_type="application/vnd.apache.parquet",
+                ),
+                replaces=replaced,
+            )
+            assert _references(replacement) == sorted(seeded)
+            assert _references(replaced) == sorted(seeded)
+        with live_store.transaction() as tx:
+            links = tx.fetch_all(
+                "SELECT artifact_digest FROM datasets.version_artifact "
+                "WHERE subject_id = %s ORDER BY artifact_digest",
+                (subject_id,),
+            )
+        assert sorted(row["artifact_digest"] for row in links) == sorted([replaced, replacement])
+    finally:
+        with live_store.transaction() as tx:
+            tx.execute(
+                "DELETE FROM datasets.artifact_reference WHERE subject_id = %s", (subject_id,)
+            )
+            tx.execute("DELETE FROM datasets.version_artifact WHERE subject_id = %s", (subject_id,))
+            tx.execute("DELETE FROM datasets.version_record WHERE subject_id = %s", (subject_id,))
 
 
 @pytest.mark.parametrize("writer_method", ["record_reference", "record_reference_unless_revoked"])
@@ -1952,6 +2185,62 @@ def test_artifact_reference_upsert_reactivates_a_soft_deleted_row(live_store):
     assert row["removed_at"] is None
 
 
+@pytest.mark.parametrize(
+    ("revoked_version", "revoked_under_other"),
+    [("cv1", False), ("cv_base", False), ("cv1", True), ("cv_base", True)],
+    ids=["own", "base", "own-under-other-id", "base-under-other-id"],
+)
+def test_record_reference_unless_revoked_refuses_a_revoked_version_or_base(
+    live_store, revoked_version, revoked_under_other
+):
+    """A revocation of the version or its base version, under the subject id or another id
+    the write names (`revoked_under`), refuses the write."""
+    case = f"{revoked_version}-{revoked_under_other}-{uuid4().hex}"
+    digest = f"sha256:test-live-reference-unless-revoked-{case}"
+    subject_id = f"spec:test-live-reference-unless-revoked-{case}"
+    other_id = f"spec:test-live-reference-unless-revoked-other-{case}"
+    _seed_reference_fk_targets(live_store, digest=digest, subject_id=subject_id)
+    with live_store.transaction() as tx:
+        for recorded_under, content_version in (
+            (subject_id, "cv_base"),
+            (other_id, "cv1"),
+            (other_id, "cv_base"),
+        ):
+            tx.execute(
+                "INSERT INTO datasets.version_record "
+                "(subject_id, subject_kind, content_version, schema_version, immutable_body, "
+                "recorded_at) VALUES (%s, %s, %s, %s, %s, now())",
+                (recorded_under, "spec", content_version, 1, _LINEAGE_BODY),
+            )
+        tx.execute(
+            "UPDATE datasets.version_record SET base_content_version = %s "
+            "WHERE subject_id = %s AND content_version = %s",
+            ("cv_base", subject_id, "cv1"),
+        )
+        tx.execute(
+            "INSERT INTO datasets.version_revocation "
+            "(subject_id, content_version, reason, revoked_at) VALUES (%s, %s, %s, now())",
+            (other_id if revoked_under_other else subject_id, revoked_version, "takedown"),
+        )
+
+    with pytest.raises(SnapshotRevoked, match="takedown"):
+        LiveArtifactReferenceWriter(store=live_store).record_reference_unless_revoked(
+            principal="first-party",
+            artifact_digest=digest,
+            subject_id=subject_id,
+            content_version="cv1",
+            reference_kind=PIN_REFERENCE_KIND,
+            now=datetime(2026, 1, 1, tzinfo=UTC),
+            revoked_under=[other_id],
+        )
+
+    with live_store.transaction() as tx:
+        references = tx.fetch_all(
+            "SELECT 1 FROM datasets.artifact_reference WHERE subject_id = %s", (subject_id,)
+        )
+    assert references == []
+
+
 def test_record_reference_unless_revoked_reactivates_a_soft_deleted_row(live_store):
     # Exercise this writer's upsert independently from `record_reference`.
     digest = "sha256:test-live-reference-unless-revoked-reactivate"
@@ -2055,6 +2344,130 @@ def test_0002_spec_registry_migration_creates_tables_and_constraints():
         assert {row["table_name"] for row in fk_rows} == {"datasets.spec_definition"}
     finally:
         pool.close_all()
+
+
+def _scratch_connect(database: str):
+    parts = urlsplit(_DSN)
+    return lambda: connect(
+        connector=None,
+        instance_connection_name=None,
+        host=parts.hostname,
+        port=parts.port or 5432,
+        database=database,
+        user=parts.username,
+        password=parts.password,
+    )
+
+
+@contextmanager
+def _scratch_database():
+    """A database of its own, dropped on exit, for a migration test that must start from a
+    schema older than the shared database's. Yields its connect callable."""
+    name = f"dataset_store_scratch_{uuid4().hex[:12]}"
+    admin = _scratch_connect(urlsplit(_DSN).path.lstrip("/"))()
+    admin.autocommit = True
+    try:
+        admin.run(f"CREATE DATABASE {name}")
+        for role in ("dataset-store-scratch-runtime", "dataset-store-scratch-worker"):
+            admin.run(
+                f'DO $$ BEGIN CREATE ROLE "{role}" NOLOGIN; '
+                "EXCEPTION WHEN duplicate_object THEN NULL; END $$"
+            )
+        try:
+            yield _scratch_connect(name)
+        finally:
+            admin.run(f"DROP DATABASE {name} WITH (FORCE)")
+    finally:
+        admin.close()
+
+
+def test_0024_leaves_an_in_flight_old_worker_run_to_its_heartbeat():
+    """A run the image before 0024 claimed keeps renewing `updated_at` after the migration. The
+    new store neither abandons nor reclaims it while that heartbeat is fresh, and does both
+    once `updated_at` is `LEASE_SECONDS` old."""
+    t0 = datetime(2026, 1, 1, tzinfo=UTC)
+    substitutions = {
+        "RUNTIME_DB_USER": "dataset-store-scratch-runtime",
+        "WORKER_DB_USER": "dataset-store-scratch-worker",
+    }
+    with _scratch_database() as scratch_connect:
+        with tempfile.TemporaryDirectory() as before_0024:
+            copied = 0
+            for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
+                if path.name < "0024":
+                    shutil.copy(path, before_0024)
+                    copied += 1
+            assert copied == 22
+            apply_pending(
+                connect=scratch_connect,
+                migrations_dir=Path(before_0024),
+                substitutions=substitutions,
+            )
+        pool = ConnectionPool(connect=scratch_connect, size=2)
+        try:
+            store = LiveDatasetStore(connections=pool)
+            with store.transaction() as tx:
+                tx.execute(
+                    "INSERT INTO datasets.operation (id, request_identity, options, "
+                    "coverage_stamp, state, estimate_rows, estimate_requests, attempt_count, "
+                    "lease_until, created_at, updated_at, submitted_at, dispatch_count, "
+                    "dispatch_confirmed, dispatched_at) VALUES "
+                    "(%s, %s, %s, 's', 'running', 1, 1, 1, %s, %s, %s, %s, 1, 1, %s)",
+                    ("op_in_flight", {}, {}, t0 + timedelta(seconds=60), t0, t0, t0, t0),
+                )
+            assert "0024_operation_attempt_fencing.sql" in apply_pending(
+                connect=scratch_connect, substitutions=substitutions
+            )
+            # One heartbeat of the old worker, which renews `lease_until` and `updated_at`.
+            heartbeat = t0 + timedelta(seconds=20)
+            with store.transaction() as tx:
+                tx.execute(
+                    "UPDATE datasets.operation SET lease_until = %s, updated_at = %s "
+                    "WHERE id = 'op_in_flight'",
+                    (heartbeat + timedelta(seconds=60), heartbeat),
+                )
+            now_box = {"t": heartbeat + timedelta(seconds=120)}
+            operations = LiveOperationStore(store=store, now=lambda: now_box["t"])
+
+            fresh = operations.get("op_in_flight")
+            assert fresh is not None and fresh.claimed_at is None
+            assert fresh.final_delivery is None
+            assert not fresh.abandoned(now_box["t"], deadline=_OPERATION_DEADLINE)
+            assert operations.abandon("op_in_flight", attempt=1) is None
+            assert (
+                operations.claim(
+                    "op_in_flight", submission_count=0, lease_seconds=60, final_delivery=False
+                )
+                is None
+            )
+
+            now_box["t"] = heartbeat + timedelta(seconds=LEASE_SECONDS + 1)
+            stale = operations.get("op_in_flight")
+            assert stale is not None
+            assert stale.abandoned(now_box["t"], deadline=_OPERATION_DEADLINE)
+            reclaimed = operations.claim(
+                "op_in_flight", submission_count=0, lease_seconds=60, final_delivery=False
+            )
+            assert reclaimed is not None and reclaimed.attempt_count == 2
+        finally:
+            pool.close_all()
+
+
+def _manifest_of(body: dict[str, object]):
+    """The manifest a migrated body's facts assemble once 0031 backfills them."""
+    from dataset_store.snapshot import StoredVersion
+    from datasets_api.manifest import stored_manifest
+    from tests.datasets_api._version_facts import facts_from_body
+
+    return stored_manifest(
+        StoredVersion(
+            subject_id="spec_migrated",
+            subject_kind="spec",
+            content_version=cast(str, body["content_version"]),
+            schema_version=1,
+            facts=facts_from_body(body),
+        )
+    )
 
 
 def _rerun_migration(live_store, version: str) -> list[str]:
@@ -2171,8 +2584,6 @@ def test_trace_conversion_migrations_rewrite_object_shapes_into_one_entry_lists(
     """Object-shaped `trace.conversion` bodies become one-entry lists with sorted `members`
     and decode as manifests; every other key in the body and trace is kept, a list, null or
     absent conversion and a body with no trace are left alone, and a rerun changes nothing."""
-    from datasets_api.manifest import decode_version_body
-    from datasets_api.manifest_models import Manifest
 
     suffix = uuid4().hex
     trace: dict[str, object] = {
@@ -2219,9 +2630,7 @@ def test_trace_conversion_migrations_rewrite_object_shapes_into_one_entry_lists(
             body = cast(dict[str, object], body)
             if "trace" not in body:
                 continue
-            fields, _profile = decode_version_body(body)
-            manifest = Manifest.model_validate({**fields, "artifacts": []})
-            assert manifest.trace == body["trace"]
+            assert _manifest_of(body).trace == body["trace"]
     finally:
         with live_store.transaction() as tx:
             tx.execute(
@@ -2264,8 +2673,6 @@ def test_0018_backfills_prepared_at_and_keeps_every_link(live_store):
     collection members their own record's `prepared_at` and cited refs, a first member with no
     record the collection trace's provenance facet; a definition body decodes with the current models,
     every artifact link stays, `ops_` subjects are untouched, and a rerun changes nothing."""
-    from datasets_api.manifest import decode_version_body
-    from datasets_api.manifest_models import Manifest
     from datasets_api.version_store import rendering_key
 
     suffix = uuid4().hex
@@ -2409,8 +2816,7 @@ def test_0018_backfills_prepared_at_and_keeps_every_link(live_store):
 
         assert _bodies() == bodies
         assert _links() == remaining == {(subject, digest) for subject, _cv, digest, _r in links}
-        fields, _profile = decode_version_body(bodies[definition])
-        manifest = Manifest.model_validate({**fields, "artifacts": []})
+        manifest = _manifest_of(bodies[definition])
         assert manifest.prepared_at == datetime(2026, 9, 2, 8, 30, 15, tzinfo=UTC)
         assert bodies[definition]["prepared_at"] == "2026-09-02T08:30:15Z"
         with live_store.transaction() as tx:
@@ -2462,8 +2868,6 @@ def test_0019_fills_rows_the_previous_revision_wrote_after_0018(live_store):
     """A body and a collection member written without the new keys once 0018 had run take the
     same values 0018 gives, a body that carries its keys keeps them, and a rerun changes
     nothing."""
-    from datasets_api.manifest import decode_version_body
-    from datasets_api.manifest_models import Manifest
 
     suffix = uuid4().hex
     definition = f"spec_window_def_{suffix}"
@@ -2527,8 +2931,7 @@ def test_0019_fills_rows_the_previous_revision_wrote_after_0018(live_store):
         ]
         assert _bodies() == bodies
 
-        fields, _profile = decode_version_body(bodies[definition])
-        manifest = Manifest.model_validate({**fields, "artifacts": []})
+        manifest = _manifest_of(bodies[definition])
         assert manifest.prepared_at == datetime(2026, 10, 1, 7, 45, 30, tzinfo=UTC)
         assert bodies[current] == current_body
 
@@ -2695,13 +3098,9 @@ def _null_collection_body(spec_id: str) -> dict[str, object]:
 
 
 def test_0022_drops_a_null_collection_so_the_body_decodes(live_store):
-    """A body that stores `"collection": null` fails `Manifest` validation on that key alone and
-    decodes once 0022 drops it, with every other key kept. A non-null `collection` and a body
-    without the key stay as stored, and a rerun changes nothing."""
-    from pydantic import ValidationError
-
-    from datasets_api.manifest import decode_version_body
-    from datasets_api.manifest_models import Manifest
+    """0022 drops a body's `"collection": null`, with every other key kept, so the body's
+    facts assemble a manifest. A non-null `collection` and a body without the key stay as
+    stored, and a rerun changes nothing."""
 
     suffix = uuid4().hex
     definition = f"spec_null_collection_{suffix}"
@@ -2721,10 +3120,6 @@ def test_0022_drops_a_null_collection_so_the_body_decodes(live_store):
         (derived, "spec", derived_body),
     ]
 
-    def _validate(body: dict[str, object]) -> Manifest:
-        fields, _profile = decode_version_body(body)
-        return Manifest.model_validate({**fields, "artifacts": []})
-
     def _bodies() -> dict[str, dict]:
         with live_store.transaction() as tx:
             found = tx.fetch_all(
@@ -2733,12 +3128,6 @@ def test_0022_drops_a_null_collection_so_the_body_decodes(live_store):
                 (subjects,),
             )
         return {cast(str, row["subject_id"]): cast(dict, row["immutable_body"]) for row in found}
-
-    with pytest.raises(ValidationError) as refused:
-        _validate(definition_body)
-    assert [(error["type"], error["loc"]) for error in refused.value.errors()] == [
-        ("extra_forbidden", ("collection",))
-    ]
 
     with live_store.transaction() as tx:
         for subject_id, kind, body in rows:
@@ -2764,7 +3153,7 @@ def test_0022_drops_a_null_collection_so_the_body_decodes(live_store):
             collection: collection_body,
             derived: derived_body,
         }
-        manifest = _validate(bodies[definition])
+        manifest = _manifest_of(bodies[definition])
         assert manifest.definition.spec_id == definition
         assert manifest.series_coverage_stamp == "sha256:coverage"
     finally:
@@ -2772,3 +3161,572 @@ def test_0022_drops_a_null_collection_so_the_body_decodes(live_store):
             tx.execute(
                 "DELETE FROM datasets.version_record WHERE subject_id = ANY(%s)", (subjects,)
             )
+
+
+_PRINCIPAL_LABEL_MIGRATION = MIGRATIONS_DIR / "0026_artifact_reference_principal_label.sql"
+
+
+def _principal_label(secret: str) -> str:
+    label = Principal(presented=secret, grants=frozenset()).label
+    assert label is not None
+    return label
+
+
+def test_raw_pin_principals_become_their_labels_and_fold_into_a_labelled_twin():
+    pool = _pool()
+    store = LiveDatasetStore(connections=pool)
+    suffix = uuid4().hex
+    subject_id = f"spec:test-live-principal-label-{suffix}"
+    digest = f"sha256:test-live-principal-label-{suffix}"
+    _seed_reference_fk_targets(store, digest=digest, subject_id=subject_id)
+    lone, twinned = f"lone-secret-{suffix}", f"twinned-secret-é-{suffix}"
+    earlier = datetime(2026, 1, 1, tzinfo=UTC)
+    later = earlier + timedelta(days=3)
+    rows = [
+        (lone, "pin", earlier, None),
+        (twinned, "pin", earlier, later),
+        (_principal_label(twinned), "pin", later, None),
+        (f"presentation:component-{suffix}", "presentation_draft", earlier, None),
+    ]
+    try:
+        with store.transaction() as tx:
+            for principal, kind, created_at, removed_at in rows:
+                tx.execute(
+                    "INSERT INTO datasets.artifact_reference (principal, artifact_digest, "
+                    "subject_id, content_version, reference_kind, created_at, removed_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    (principal, digest, subject_id, "cv1", kind, created_at, removed_at),
+                )
+        with pool.borrow() as conn:
+            cursor = conn.cursor()
+            cursor.execute(_PRINCIPAL_LABEL_MIGRATION.read_text())
+            cursor.close()
+            conn.commit()
+        with store.transaction() as tx:
+            stored = tx.fetch_all(
+                "SELECT principal, created_at, removed_at FROM datasets.artifact_reference "
+                "WHERE subject_id = %s ORDER BY principal",
+                (subject_id,),
+            )
+    finally:
+        pool.close_all()
+
+    assert {row["principal"]: (row["created_at"], row["removed_at"]) for row in stored} == {
+        _principal_label(lone): (earlier, None),
+        _principal_label(twinned): (earlier, None),
+        f"presentation:component-{suffix}": (earlier, None),
+    }
+
+
+@pytest.mark.parametrize("own_under_other", [True, False], ids=["own-other", "own-subject"])
+def test_a_version_revocation_wins_over_a_base_revocation_under_another_id(
+    live_store, own_under_other
+):
+    """A collapsed version revoked under one id while its base version is revoked under the
+    other reads and refuses with the version's own revocation, in `read_version_state` and in
+    the guarded reference write."""
+    case = uuid4().hex
+    digest = f"sha256:test-live-revocation-precedence-{case}"
+    subject_id = f"spec:test-live-revocation-precedence-{case}"
+    other_id = f"spec:test-live-revocation-precedence-other-{case}"
+    _seed_reference_fk_targets(live_store, digest=digest, subject_id=subject_id)
+    own, base = (other_id, subject_id) if own_under_other else (subject_id, other_id)
+    with live_store.transaction() as tx:
+        for recorded_under, content_version in (
+            (subject_id, "cv_base"),
+            (other_id, "cv1"),
+            (other_id, "cv_base"),
+        ):
+            tx.execute(
+                "INSERT INTO datasets.version_record "
+                "(subject_id, subject_kind, content_version, schema_version, immutable_body, "
+                "recorded_at) VALUES (%s, %s, %s, %s, %s, now())",
+                (recorded_under, "spec", content_version, 1, _LINEAGE_BODY),
+            )
+        tx.execute(
+            "UPDATE datasets.version_record "
+            "SET base_content_version = %s, input_content_versions = %s "
+            "WHERE subject_id = %s AND content_version = %s",
+            ("cv_base", json.dumps(["cv_input"]), subject_id, "cv1"),
+        )
+        for revoked_under, content_version, reason in (
+            (own, "cv1", "own takedown"),
+            (base, "cv_base", "base takedown"),
+        ):
+            tx.execute(
+                "INSERT INTO datasets.version_revocation "
+                "(subject_id, content_version, reason, revoked_at) VALUES (%s, %s, %s, now())",
+                (revoked_under, content_version, reason),
+            )
+
+    state = LiveSnapshotReader(store=live_store).read_version_state(
+        subject_id, "cv1", revoked_under=[other_id]
+    )
+    with pytest.raises(SnapshotRevoked) as refused:
+        LiveArtifactReferenceWriter(store=live_store).record_reference_unless_revoked(
+            principal="first-party",
+            artifact_digest=digest,
+            subject_id=subject_id,
+            content_version="cv1",
+            reference_kind=PIN_REFERENCE_KIND,
+            now=datetime(2026, 1, 1, tzinfo=UTC),
+            revoked_under=[other_id],
+        )
+
+    assert state is not None and state.revocation is not None
+    assert state.revocation.reason == "own takedown"
+    assert refused.value.reason == "own takedown"
+
+
+def test_0028_spec_alias_binds_a_posted_id_to_each_served_id_once():
+    """`register_served_definition` and `read_served_spec_ids` against the real table: one
+    row per pair, newest binding first, both ids held to the registry by foreign key, and a
+    quarantined served id refusing the read and a later resolution under the posted id."""
+    substitutions = {
+        "RUNTIME_DB_USER": "dataset-store-scratch-runtime",
+        "WORKER_DB_USER": "dataset-store-scratch-worker",
+    }
+    with _scratch_database() as scratch_connect:
+        apply_pending(
+            connect=scratch_connect, migrations_dir=MIGRATIONS_DIR, substitutions=substitutions
+        )
+        pool = ConnectionPool(connect=scratch_connect, size=1)
+        try:
+            store = LiveDatasetStore(connections=pool)
+            registry, reader = LiveSpecRegistry(store=store), LiveSpecReader(store=store)
+            posted, earlier, later = (
+                recompute_identity(minimal_identity(shape=shape_for(name)))
+                for name in ("alias_posted", "alias_earlier", "alias_later")
+            )
+            registry.register_definition(
+                identity_definition=posted.identity,
+                schema_version=1,
+                supplied_spec_id=posted.spec_id,
+            )
+            assert reader.read_served_spec_ids(posted.spec_id) == ()
+            assert reader.read_served_spec_ids(earlier.spec_id) is None
+
+            for served in (earlier, earlier, later):
+                stored = registry.register_served_definition(
+                    served=served, schema_version=1, posted_spec_id=posted.spec_id
+                )
+                assert stored == reader.read_definition(served.spec_id)
+
+            with store.transaction() as tx:
+                rows = tx.fetch_all(
+                    "SELECT served_spec_id FROM datasets.spec_alias WHERE posted_spec_id = %s",
+                    (posted.spec_id,),
+                )
+            assert sorted(row["served_spec_id"] for row in rows) == sorted(
+                [earlier.spec_id, later.spec_id]
+            )
+            assert reader.read_served_spec_ids(posted.spec_id) == (
+                later.spec_id,
+                earlier.spec_id,
+            )
+
+            with pytest.raises(SpecRegistryStoreError):
+                registry.register_served_definition(
+                    served=later, schema_version=1, posted_spec_id="spec_never_registered"
+                )
+
+            with store.transaction() as tx:
+                tx.execute(
+                    "INSERT INTO datasets.identity_quarantine "
+                    "(id_kind, subject_id, held_bytes, incoming_bytes) VALUES (%s, %s, %s, %s)",
+                    ("spec", earlier.spec_id, b"held", b"incoming"),
+                )
+            for read in (reader.read_served_spec_ids, reader.read_definition):
+                with pytest.raises(IdentityQuarantined) as excinfo:
+                    read(posted.spec_id)
+                assert excinfo.value.subject_id == earlier.spec_id
+            assert reader.read_definition(later.spec_id) is not None
+            with pytest.raises(IdentityQuarantined) as excinfo:
+                registry.register_served_definition(
+                    served=later, schema_version=1, posted_spec_id=posted.spec_id
+                )
+            assert excinfo.value.subject_id == earlier.spec_id
+        finally:
+            pool.close_all()
+
+
+_VERSION_FACTS_MIGRATION = "0031_version_record_facts_backfill.sql"
+_STORED_FACT_COLUMNS = (*VERSION_FACT_COLUMNS, "frame_grammar_version")
+
+
+def _insert_as_the_previous_image(
+    live_store, *, subject_id: str, content_version: str, body: object, base: str | None = None
+) -> None:
+    """Insert a version row naming only the columns the previous image's writer names."""
+    with live_store.transaction() as tx:
+        tx.execute(
+            "INSERT INTO datasets.version_record "
+            "(subject_id, subject_kind, content_version, schema_version, "
+            "immutable_body, trace_id, recorded_at, base_content_version) "
+            "VALUES (%s, 'spec', %s, 1, %s, NULL, now(), %s) "
+            "ON CONFLICT (subject_id, content_version) DO NOTHING "
+            "RETURNING subject_id",
+            (subject_id, content_version, body, base),
+        )
+
+
+def _clear_stored_facts(live_store, subjects: list[str]) -> None:
+    """Leave `subjects`' rows as rows inserted before migration 0030 are: a body, no fact and no
+    grammar version."""
+    assignments = ", ".join(f"{column} = NULL" for column in _STORED_FACT_COLUMNS)
+    with live_store.transaction() as tx:
+        tx.execute(
+            f"UPDATE datasets.version_record SET {assignments} WHERE subject_id = ANY(%s)",
+            (subjects,),
+        )
+
+
+def _stored_fact_columns(
+    live_store, subject_id: str, content_version: str = "cv1"
+) -> dict[str, object]:
+    with live_store.transaction() as tx:
+        row = tx.fetch_one(
+            f"SELECT {', '.join(_STORED_FACT_COLUMNS)} FROM datasets.version_record "
+            "WHERE subject_id = %s AND content_version = %s",
+            (subject_id, content_version),
+        )
+    assert row is not None
+    return dict(row)
+
+
+def _delete_versions(live_store, subjects: list[str]) -> None:
+    with live_store.transaction() as tx:
+        tx.execute("DELETE FROM datasets.version_record WHERE subject_id = ANY(%s)", (subjects,))
+
+
+def test_0031_backfills_frame_grammar_version_from_the_stored_trace(live_store):
+    """A body whose trace names its grammar version gains the column, a body with no trace (a
+    derived `ops_` frame) keeps NULL, and a rerun changes nothing. A version written through
+    `LiveVersionRecordWriter` stores its own grammar version."""
+    suffix = uuid4().hex
+    traced = f"spec_fgv_traced_{suffix}"
+    derived = f"ops_fgv_{suffix}"
+    written = f"spec_fgv_written_{suffix}"
+    seeded = {
+        traced: {
+            "prepared_at": "2026-09-02T08:30:15Z",
+            "trace": {"graph_revision": "rev", "frame_grammar_version": "1.0.0"},
+        },
+        derived: {"op_spec_hash": derived, "input_content_versions": ["cv_x"]},
+    }
+
+    def _columns() -> dict[str, tuple[object, object]]:
+        with live_store.transaction() as tx:
+            rows = tx.fetch_all(
+                "SELECT subject_id, content_version, frame_grammar_version "
+                "FROM datasets.version_record WHERE subject_id = ANY(%s)",
+                ([traced, derived, written],),
+            )
+        return {
+            cast(str, row["subject_id"]): (row["content_version"], row["frame_grammar_version"])
+            for row in rows
+        }
+
+    for subject_id, body in seeded.items():
+        _insert_as_the_previous_image(
+            live_store,
+            subject_id=subject_id,
+            content_version="cv_0123456789abcdef0123456789abcdef",
+            body=body,
+        )
+    _clear_stored_facts(live_store, list(seeded))
+    try:
+        assert _rerun_migration(live_store, _VERSION_FACTS_MIGRATION) == [_VERSION_FACTS_MIGRATION]
+        expected = {
+            traced: ("cv_0123456789abcdef0123456789abcdef", "1.0.0"),
+            derived: ("cv_0123456789abcdef0123456789abcdef", None),
+        }
+        assert _columns() == expected
+        assert _rerun_migration(live_store, _VERSION_FACTS_MIGRATION) == [_VERSION_FACTS_MIGRATION]
+        assert _columns() == expected
+
+        LiveVersionRecordWriter(store=live_store).record_version(
+            VersionRecord(
+                subject_id=written,
+                subject_kind="spec",
+                content_version="cv_fedcba9876543210fedcba9876543210",
+                schema_version=1,
+                facts=FrameLineage(input_content_versions=[]),
+                frame_grammar_version="1.1.0",
+                frame_sha256="f" * 64,
+            )
+        )
+        assert _columns()[written] == ("cv_fedcba9876543210fedcba9876543210", "1.1.0")
+        stored = LiveSnapshotReader(store=live_store).read_version(
+            written, "cv_fedcba9876543210fedcba9876543210"
+        )
+        assert stored is not None and stored.frame_sha256 == "f" * 64
+    finally:
+        _delete_versions(live_store, [traced, derived, written])
+
+
+def test_0031_backfills_each_fact_from_the_stored_body(live_store):
+    """Every golden body (`tests/datasets_api/version_facts_golden.json`) inserted before 0030
+    gains the facts it holds, which assemble the manifest the body rendered, and a rerun changes
+    nothing. A version written through `LiveVersionRecordWriter` stores the body its facts
+    encode in `immutable_body` and reads back its facts."""
+    from dataset_store.snapshot import ManifestFacts
+    from datasets_api.manifest import stored_manifest
+    from tests.datasets_api._version_facts import facts_from_body, golden_cases
+
+    suffix = uuid4().hex
+    cases = golden_cases()
+    subjects = {name: f"{case['subject_id']}_{suffix}" for name, case in cases.items()}
+    written = f"spec_written_{suffix}"
+    reader = LiveSnapshotReader(store=live_store)
+
+    def _read(name: str):
+        stored = reader.read_version(subjects[name], cast(str, cases[name]["content_version"]))
+        assert stored is not None
+        return stored
+
+    def _facts() -> dict[str, object]:
+        return {name: _read(name).facts for name in cases}
+
+    for name, case in cases.items():
+        _insert_as_the_previous_image(
+            live_store,
+            subject_id=subjects[name],
+            content_version=case["content_version"],
+            body=case["body"],
+            base=case["base_content_version"],
+        )
+    _clear_stored_facts(live_store, list(subjects.values()))
+    try:
+        with pytest.raises(VersionFactsMissing):
+            _read("definition")
+
+        assert _rerun_migration(live_store, _VERSION_FACTS_MIGRATION) == [_VERSION_FACTS_MIGRATION]
+        facts = _facts()
+        assert facts == {name: facts_from_body(case["body"]) for name, case in cases.items()}
+        assert _rerun_migration(live_store, _VERSION_FACTS_MIGRATION) == [_VERSION_FACTS_MIGRATION]
+        assert _facts() == facts
+
+        for name, case in cases.items():
+            if "manifest" not in case["expected"]:
+                continue
+            assert (
+                stored_manifest(_read(name)).model_dump(mode="json") == case["expected"]["manifest"]
+            )
+
+        definition = cases["definition"]
+        stored_facts = facts_from_body(definition["body"])
+        assert isinstance(stored_facts, ManifestFacts)
+        LiveVersionRecordWriter(store=live_store).record_version(
+            VersionRecord(
+                subject_id=written,
+                subject_kind="spec",
+                content_version=cast(str, definition["content_version"]),
+                schema_version=1,
+                facts=stored_facts,
+                frame_grammar_version="1.0.0",
+            )
+        )
+        with live_store.transaction() as tx:
+            row = tx.fetch_one(
+                "SELECT immutable_body FROM datasets.version_record WHERE subject_id = %s",
+                (written,),
+            )
+        assert row == {"immutable_body": definition["body"]}
+        read_back = reader.read_version(written, cast(str, definition["content_version"]))
+        assert read_back is not None
+        assert read_back.facts == stored_facts
+    finally:
+        _delete_versions(live_store, [*subjects.values(), written])
+
+
+def test_0031_fails_and_fills_nothing_while_a_body_holds_no_facts(live_store):
+    """A row whose body has neither `prepared_at` nor `input_content_versions` fails 0031 with
+    the raise of its closing check (SQLSTATE P0001): the migration is not recorded as applied
+    and the row it would have filled keeps no facts. Without that row it applies."""
+    from tests.datasets_api._version_facts import golden_cases
+
+    suffix = uuid4().hex
+    definition = golden_cases()["definition"]
+    fillable = f"spec_0031_fillable_{suffix}"
+    factless = f"spec_0031_factless_{suffix}"
+    empty = dict.fromkeys(_STORED_FACT_COLUMNS)
+
+    def _applied() -> bool:
+        with live_store.transaction() as tx:
+            row = tx.fetch_one(
+                "SELECT 1 AS applied FROM datasets.dataset_store_schema_migrations "
+                "WHERE version = %s",
+                (_VERSION_FACTS_MIGRATION,),
+            )
+        return row is not None
+
+    _insert_as_the_previous_image(
+        live_store,
+        subject_id=fillable,
+        content_version=definition["content_version"],
+        body=definition["body"],
+    )
+    _insert_as_the_previous_image(
+        live_store, subject_id=factless, content_version="cv1", body={"revision": "first"}
+    )
+    _clear_stored_facts(live_store, [fillable])
+    try:
+        assert _stored_fact_columns(live_store, factless) == empty
+        with pytest.raises(pg8000.exceptions.DatabaseError) as refused:
+            _rerun_migration(live_store, _VERSION_FACTS_MIGRATION)
+        assert cast(dict, refused.value.args[0])["C"] == "P0001"
+        assert not _applied()
+        assert _stored_fact_columns(live_store, fillable, definition["content_version"]) == empty
+    finally:
+        _delete_versions(live_store, [factless])
+        try:
+            assert _rerun_migration(live_store, _VERSION_FACTS_MIGRATION) in (
+                [_VERSION_FACTS_MIGRATION],
+                [],
+            )
+            assert (
+                _stored_fact_columns(live_store, fillable, definition["content_version"])[
+                    "prepared_at"
+                ]
+                is not None
+            )
+        finally:
+            _delete_versions(live_store, [fillable])
+
+
+def test_a_row_the_previous_image_inserts_stores_the_facts_of_its_body(live_store):
+    """With every migration applied, a row inserted with only `immutable_body`, as the previous
+    image inserts it, reads through `LiveSnapshotReader.read_version` with the facts its body
+    holds and stores its body trace's `frame_grammar_version`."""
+    from tests.datasets_api._version_facts import facts_from_body, golden_cases
+
+    suffix = uuid4().hex
+    cases = golden_cases()
+    subjects = {name: f"{case['subject_id']}_{suffix}" for name, case in cases.items()}
+    reader = LiveSnapshotReader(store=live_store)
+    try:
+        for name, case in cases.items():
+            _insert_as_the_previous_image(
+                live_store,
+                subject_id=subjects[name],
+                content_version=case["content_version"],
+                body=case["body"],
+                base=case["base_content_version"],
+            )
+        for name, case in cases.items():
+            stored = reader.read_version(subjects[name], case["content_version"])
+            assert stored is not None
+            assert stored.facts == facts_from_body(case["body"]), name
+            assert stored.frame_sha256 is None, name
+            stored_columns = _stored_fact_columns(
+                live_store, subjects[name], case["content_version"]
+            )
+            assert stored_columns["frame_grammar_version"] == (
+                case["body"].get("trace", {}).get("frame_grammar_version")
+            ), name
+    finally:
+        _delete_versions(live_store, list(subjects.values()))
+
+
+def test_a_row_inserted_with_facts_is_stored_as_written(live_store):
+    """The insert trigger leaves a row that arrives with facts alone: a dataset version and a
+    published frame whose bodies hold other values, and a grammar version the body's trace
+    contradicts, keep every column as inserted."""
+    suffix = uuid4().hex
+    prepared_at = datetime(2026, 3, 4, 5, 6, 7, tzinfo=UTC)
+    decoy = {
+        "prepared_at": "1999-01-01T00:00:00Z",
+        "definition": {"from": "body"},
+        "coverage": {"from": "body"},
+        "citation": {"from": "body"},
+        "trace": {"frame_grammar_version": "9.9.9"},
+        "warnings": [{"from": "body"}],
+        "series_count": 99,
+        "series_coverage_stamp": "body",
+        "output_profile": {"from": "body"},
+        "series_conversions": [{"from": "body"}],
+        "default_scope_plural": True,
+        "input_content_versions": ["cv_body"],
+        "composed_stat_vars": [{"from": "body"}],
+    }
+    written: dict[str, dict[str, object]] = {
+        f"spec_trigger_manifest_{suffix}": {
+            **dict.fromkeys(_STORED_FACT_COLUMNS),
+            "prepared_at": prepared_at,
+            "definition": {"from": "column"},
+            "frame_grammar_version": "1.1.0",
+        },
+        f"ops_trigger_lineage_{suffix}": {
+            **dict.fromkeys(_STORED_FACT_COLUMNS),
+            "input_content_versions": [],
+        },
+    }
+    try:
+        with live_store.transaction() as tx:
+            for subject_id, columns in written.items():
+                tx.execute(
+                    "INSERT INTO datasets.version_record "
+                    "(subject_id, subject_kind, content_version, schema_version, "
+                    f"immutable_body, recorded_at, {', '.join(columns)}) "
+                    f"VALUES (%s, 'spec', 'cv1', 1, %s, now(), {', '.join(['%s'] * len(columns))})",
+                    (
+                        subject_id,
+                        decoy,
+                        *(
+                            json.dumps(value) if isinstance(value, dict | list) else value
+                            for value in columns.values()
+                        ),
+                    ),
+                )
+        for subject_id, columns in written.items():
+            assert _stored_fact_columns(live_store, subject_id) == columns
+    finally:
+        _delete_versions(live_store, list(written))
+
+
+def test_settle_counts_factless_versions_and_labels_raw_pin_principals(live_store):
+    """`datasets-maintenance settle` turns a pin reference holding a raw secret (the previous
+    image's write after 0026) into the secret's label and returns 0, and a second run changes
+    nothing. A version row holding no facts adds one to its count and stays as it is."""
+    from datasets_api.maintenance import run_settle
+
+    suffix = uuid4().hex
+    factless = f"spec_settle_factless_{suffix}"
+    pinned = f"spec_settle_pin_{suffix}"
+    digest = f"sha256:test-live-settle-{suffix}"
+    secret = f"settle-secret-{suffix}"
+    created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    empty = dict.fromkeys(_STORED_FACT_COLUMNS)
+    _seed_reference_fk_targets(live_store, digest=digest, subject_id=pinned)
+    with live_store.transaction() as tx:
+        tx.execute(
+            "INSERT INTO datasets.artifact_reference (principal, artifact_digest, subject_id, "
+            "content_version, reference_kind, created_at) VALUES (%s, %s, %s, 'cv1', %s, %s)",
+            (secret, digest, pinned, PIN_REFERENCE_KIND, created_at),
+        )
+
+    def _principals() -> list[object]:
+        with live_store.transaction() as tx:
+            rows = tx.fetch_all(
+                "SELECT principal FROM datasets.artifact_reference WHERE subject_id = %s",
+                (pinned,),
+            )
+        return [row["principal"] for row in rows]
+
+    try:
+        assert _principals() == [secret]
+        for _ in range(2):
+            assert run_settle(store=live_store) == 0
+            assert _principals() == [_principal_label(secret)]
+
+        _insert_as_the_previous_image(
+            live_store, subject_id=factless, content_version="cv1", body={"revision": "first"}
+        )
+        assert run_settle(store=live_store) == 1
+        assert _stored_fact_columns(live_store, factless) == empty
+    finally:
+        with live_store.transaction() as tx:
+            tx.execute("DELETE FROM datasets.artifact_reference WHERE subject_id = %s", (pinned,))
+            tx.execute("DELETE FROM datasets.version_artifact WHERE subject_id = %s", (pinned,))
+        _delete_versions(live_store, [factless, pinned])

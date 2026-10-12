@@ -941,6 +941,7 @@ def derive_shapes(
     graph: EngineGraphClient,
     sv_scores: dict[str, float] | None = None,
     sv_types: dict[str, str | None] | None = None,
+    rival_svs: frozenset[str] = frozenset(),
     place_dcids: list[str] | None = None,
     full_facets_max_candidates: int | None = None,
 ) -> list[ShapeDraft]:
@@ -960,6 +961,11 @@ def derive_shapes(
     none of its arcs or observations read. Its slot is spent either way, so supersession brings no candidate past the
     cap that would have stopped short of it. A successor takes the best score, expansion
     rank and recall standing of the variables standing as it.
+
+    `rival_svs` are the rows recall added past its cut (`clients.graph.with_rival_families`).
+    They are confirmed past the cap, which counts the other candidates alone, so a rival
+    takes no candidate's slot, and a shape whose members are all rivals is marked
+    `ShapeDraft.rival`.
 
     `sv_scores` supplies measured recall scores; expansion-only groups retain
     no score and carry a separate ordering rank. `sv_types` identifies Topic
@@ -996,13 +1002,16 @@ def derive_shapes(
     )
 
     # Over the cap, an index family group's surplus members rank last, for the capped
-    # selection and its backfill alike.
-    if len(candidate_pool) > settings().max_confirm_candidates:
+    # selection and its backfill alike. Rivals sit outside the cap.
+    capped_pool = [sv for sv in candidate_pool if sv not in rival_svs]
+    if len(capped_pool) > settings().max_confirm_candidates:
         candidate_pool = _family_spread(candidate_pool)
+        capped_pool = [sv for sv in candidate_pool if sv not in rival_svs]
 
     selected = _select_capped_candidates(
-        candidate_pool, sv_scores=sv_scores, recall_svs=recall_svs, graph=graph
+        capped_pool, sv_scores=sv_scores, recall_svs=recall_svs, graph=graph
     )
+    selected.update(sv for sv in candidate_pool if sv in rival_svs)
     candidate_pool, selected = _stand_selection(
         candidate_pool,
         selected,
@@ -1065,6 +1074,8 @@ def derive_shapes(
             unusable_role_groups += 1
             continue
         assert shape is not None
+        if rival_svs.issuperset(group_svs):
+            shape = dataclasses.replace(shape, rival=True)
         shapes.append(shape)
 
     viable_groups = len(groups) - zero_member_groups

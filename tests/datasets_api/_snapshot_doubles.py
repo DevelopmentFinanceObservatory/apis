@@ -12,32 +12,54 @@ from datetime import UTC, datetime
 from fastapi.testclient import TestClient
 
 from artifact_store import Tier
-from dataset_store.snapshot import Revocation, StoredArtifactLocation, StoredVersion
+from dataset_store.snapshot import (
+    Revocation,
+    StoredArtifactLocation,
+    StoredVersion,
+    VersionFacts,
+    VersionState,
+)
 from datasets_api.codes import DATASETS_CODE_CATALOGUE
 from datasets_api.version import DATASETS_CAPABILITY_VERSION
 from dfo_platform.app import Surface, create_app
 from dfo_platform.doors import DoorContribution
+from spec_registry.reader import StoredDefinition
 
 from ._artifact_doubles import FakeArtifactStore
+from ._version_facts import facts_from_body
 
 _NOW = datetime(2026, 6, 1, tzinfo=UTC)
 
 
 class FakeSpecReader:
-    """Return a sentinel for known IDs; callers check presence by testing for `None`."""
+    """Return a pinned-arm definition for known IDs, whose identity is its own canonical form
+    (`code_index.members.canonical_identity`), so each id is its own served id and no served
+    id is bound to it."""
 
     def __init__(self, *, spec_ids: Sequence[str] = ()) -> None:
         self._spec_ids = set(spec_ids)
 
     def read_definition(self, spec_id: str, *, schema_version: int | None = None):
-        return object() if spec_id in self._spec_ids else None
+        if spec_id not in self._spec_ids:
+            return None
+        return StoredDefinition(
+            spec_id=spec_id,
+            schema_version=1,
+            identity={"shape": {"kind": "stat_var"}},
+            identity_bytes=b"",
+            identity_digest="",
+        )
 
     def read_definitions(self, spec_ids):
         return {}
 
+    def read_served_spec_ids(self, spec_id: str) -> tuple[str, ...] | None:
+        return () if spec_id in self._spec_ids else None
+
 
 class BlockingFakeSpecReader(FakeSpecReader):
-    """Block `read_definition` on `release` so backpressure tests can occupy an executor slot.
+    """Block `read_definition` and `read_served_spec_ids` on `release` so backpressure tests
+    can occupy an executor slot.
 
     Other reads use `FakeSpecReader` behavior.
     """
@@ -52,12 +74,19 @@ class BlockingFakeSpecReader(FakeSpecReader):
         self.release.wait(timeout=5.0)
         return super().read_definition(spec_id, schema_version=schema_version)
 
+    def read_served_spec_ids(self, spec_id: str) -> tuple[str, ...] | None:
+        self.entered.set()
+        self.release.wait(timeout=5.0)
+        return super().read_served_spec_ids(spec_id)
+
 
 @dataclass
 class FakeSnapshotReader:
     versions: dict[tuple[str, str], StoredVersion] = field(default_factory=dict)
     locations: dict[tuple[str, str], list[StoredArtifactLocation]] = field(default_factory=dict)
     revocations: dict[tuple[str, str], Revocation] = field(default_factory=dict)
+    # Digests the inventory holds beyond those `locations` link.
+    inventoried: set[str] = field(default_factory=set)
 
     def read_version(self, subject_id: str, content_version: str) -> StoredVersion | None:
         return self.versions.get((subject_id, content_version))
@@ -69,6 +98,39 @@ class FakeSnapshotReader:
 
     def read_revocation(self, subject_id: str, content_version: str) -> Revocation | None:
         return self.revocations.get((subject_id, content_version))
+
+    def artifact_inventoried(self, artifact_digest: str) -> bool:
+        return (
+            any(
+                location.artifact_digest == artifact_digest
+                for locations in self.locations.values()
+                for location in locations
+            )
+            or artifact_digest in self.inventoried
+        )
+
+    def read_version_state(
+        self, subject_id: str, content_version: str, *, revoked_under: Sequence[str] = ()
+    ) -> VersionState | None:
+        version = self.read_version(subject_id, content_version)
+        if version is None:
+            return None
+        subjects = dict.fromkeys((subject_id, *revoked_under))
+        revocation = next(
+            (
+                revoked
+                for cv in (content_version, version.base_content_version)
+                if cv is not None
+                for subject in subjects
+                if (revoked := self.read_revocation(subject, cv)) is not None
+            ),
+            None,
+        )
+        return VersionState(
+            version=version,
+            revocation=revocation,
+            locations=self.read_artifact_locations(subject_id, content_version),
+        )
 
 
 @dataclass
@@ -93,9 +155,27 @@ class StoreBackedSnapshotReader(FakeSnapshotReader):
         return linked + promoted
 
 
+def version_body(content_version: str = "cv1") -> dict[str, object]:
+    """A minimal stored dataset version body, projected onto facts by `facts_from_body`."""
+    return {
+        "schema_version": 1,
+        "definition": {
+            "schema_version": 1,
+            "spec_id": "spec_a",
+            "identity": {"identity_version": "spec1"},
+        },
+        "content_version": content_version,
+        "prepared_at": "2026-01-01T00:00:00Z",
+        "coverage": {"rows": 1, "dimensions": []},
+        "citation": {"text": "", "sources": []},
+        "trace": {},
+        "warnings": [],
+    }
+
+
 def _version(
     *,
-    immutable_body: Mapping[str, object] | None = None,
+    facts: VersionFacts | None = None,
     content_version: str = "cv1",
     base_content_version: str | None = None,
 ) -> StoredVersion:
@@ -104,22 +184,7 @@ def _version(
         subject_kind="spec",
         content_version=content_version,
         schema_version=1,
-        immutable_body=immutable_body
-        if immutable_body is not None
-        else {
-            "schema_version": 1,
-            "definition": {
-                "schema_version": 1,
-                "spec_id": "spec_a",
-                "identity": {"identity_version": "spec1"},
-            },
-            "content_version": content_version,
-            "prepared_at": "2026-01-01T00:00:00Z",
-            "coverage": {"rows": 1, "dimensions": []},
-            "citation": {"text": "", "sources": []},
-            "trace": {},
-            "warnings": [],
-        },
+        facts=facts if facts is not None else facts_from_body(version_body(content_version)),
         base_content_version=base_content_version,
     )
 

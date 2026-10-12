@@ -31,13 +31,12 @@ from materialise.facets import (
 from materialise.generation import _select_member_facets
 from materialise.graph import Facet
 from materialise.group_facets import select_group_facets
-from materialise.revision import RevisionSnapshot
 from materialise.window import RequestedWindow
 from origin_catalogue import BASE, DFO, Catalogue
 from tests.origin_catalogue.fake_catalogue import provenance_row, restrictive_catalogue
 
 from ._scope_availability import NO_SCOPE_READ
-from .conftest import FakeGraphReader, FakeRevisionReader, only_chunk
+from .conftest import FakeGraphReader, only_chunk
 
 _VARIABLE = "Count_Person"
 _OTHER = "Count_Household"
@@ -122,7 +121,7 @@ def _request(
 def test_dfo_data_at_any_place_selects_dfo_facet_over_more_base_observations():
     selections = _select_member_facets(
         _request(_VARIABLE), _candidates(_VARIABLE), graph=_graph(_VARIABLE)
-    )
+    ).selections
 
     provenance = selections["provenance"]
     assert provenance.ref == _DFO_PROVENANCE
@@ -157,7 +156,7 @@ def test_the_permissive_test_catalogue_leaves_ranking_unchanged():
     # selection, and so no content version, moves.
     assert _select_member_facets(
         _request(_VARIABLE), _candidates(_VARIABLE), graph=_graph(_VARIABLE)
-    )["provenance"].ref == (_BASE_PROVENANCE)
+    ).selections["provenance"].ref == (_BASE_PROVENANCE)
 
 
 def test_an_empty_precedence_is_the_count_ranking():
@@ -221,7 +220,7 @@ def test_a_group_with_an_overlap_member_shares_dfo_facet():
 
     selections = select_group_facets(
         [_request(_VARIABLE), _request(_OTHER)], candidates, graph=FakeGraphReader()
-    )
+    ).selections
 
     assert selections["provenance"].ref == _DFO_PROVENANCE
     assert selections["provenance"].selection_reason == "dfo_precedence"
@@ -253,7 +252,7 @@ def test_a_group_narrows_to_the_window_before_precedence(window, provenance, rea
         [_request(_VARIABLE, window), _request(_OTHER, window)],
         candidates,
         graph=FakeGraphReader(),
-    )
+    ).selections
 
     assert selections["provenance"].ref == provenance
     assert selections["provenance"].selection_reason == reason
@@ -427,9 +426,6 @@ def test_a_subject_row_without_a_place_fails_instead_of_being_dropped(place: str
         )
 
 
-_SNAPSHOT = RevisionSnapshot(graph_revision="graph-rev", source_revisions=())
-
-
 def _two_variable_graph() -> FakeGraphReader:
     """`_VARIABLE` as in `_graph`; `_OTHER` holds the base facet, admitted at both places."""
     return FakeGraphReader(
@@ -450,8 +446,7 @@ def test_a_group_fetch_serves_each_member_only_where_its_own_probe_admitted_the_
         [_request(_VARIABLE, provenance=_BOUND_BASE), _request(_OTHER, provenance=_BOUND_BASE)],
         sdmx=_admission_blind_sdmx(),
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         member_concurrency=1,
@@ -472,8 +467,7 @@ def test_a_single_member_mint_serves_no_row_where_admission_withheld_its_facet()
         [_request(_VARIABLE, provenance=_BOUND_BASE)],
         sdmx=_admission_blind_sdmx(),
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
     )
@@ -505,8 +499,7 @@ def test_a_withheld_row_does_not_set_a_group_member_latest_period():
         ],
         sdmx=_sdmx_serving(*_NEWEST_AT_P1),
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         member_concurrency=1,
@@ -542,8 +535,7 @@ def test_a_malformed_row_mid_stream_fails_a_group_fetch(missing: str):
             [_request(_VARIABLE, provenance=_BOUND_BASE), _request(_OTHER, provenance=_BOUND_BASE)],
             sdmx=_sdmx_serving(*good, _MALFORMED_AFTER_GOOD[missing]),
             graph=graph,
-            enrichment=EnrichmentLookup(graph),
-            revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
             materialiser_build="build-123",
             capability_version="cap-v1",
             member_concurrency=1,
@@ -561,8 +553,7 @@ def test_rows_for_a_member_whose_probe_admitted_nothing_serve_nothing():
         [_request(_VARIABLE, provenance=_BOUND_BASE), _request(_OTHER, provenance=_BOUND_BASE)],
         sdmx=_admission_blind_sdmx(),
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         member_concurrency=1,
@@ -586,8 +577,7 @@ def test_a_malformed_row_for_a_member_whose_probe_admitted_nothing_refuses(missi
             [_request(_VARIABLE, provenance=_BOUND_BASE), _request(_OTHER, provenance=_BOUND_BASE)],
             sdmx=_sdmx_serving(_base_row(_P2, "2023", variable=_OTHER), malformed),
             graph=graph,
-            enrichment=EnrichmentLookup(graph),
-            revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
             materialiser_build="build-123",
             capability_version="cap-v1",
             member_concurrency=1,

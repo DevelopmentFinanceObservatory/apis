@@ -1,7 +1,7 @@
 """Tests the raw-fetch guard for one member.
 
 The composed mint path uses real registry and materialisation code with fake graph and SDMX
-responses. Tests lower `_MATERIALISE_RAW_FETCH_GUARD_ROWS` to exercise early refusal.
+responses. Tests lower `MATERIALISE_RAW_FETCH_GUARD_ROWS` to exercise early refusal.
 """
 
 from __future__ import annotations
@@ -12,22 +12,21 @@ from contextlib import contextmanager
 import httpx
 import pytest
 
-import datasets_api.app as app_module
+import datasets_api.doors.definition as definition_module
+import datasets_api.doors.mint as mint_module
 from datasets_api.config import DatasetsBuildSettings
-from datasets_api.revision import SentinelRevisionReader
 from dc_sdmx import SdmxCapExceededError, SdmxClient
 from materialise import EnrichmentLookup, MaterialisationRequest, materialise_spec
 from materialise.errors import OverCeilingError
 from materialise.facets import FacetBinding
 from materialise.graph import Facet
-from materialise.revision import RevisionSnapshot
 from materialise.window import RequestedWindow
 from series_coverage.index import CoverageIndex
-from series_coverage.schema import FacetMetadata, RoleNames
+from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
-from tests.materialise.conftest import FakeGraphReader, FakeRevisionReader
+from tests.materialise.conftest import FakeGraphReader
 
 from ._app_factories import make_client
 from ._artifact_doubles import FakeArtifactStore
@@ -153,10 +152,8 @@ def _coverage_index(members: list[tuple[str, str]]) -> CoverageIndex:
     """
     bare = [(stat_var.removeprefix("dcid:"), recipient) for stat_var, recipient in members]
     return build_coverage_index(
-        [(stat_var, "facet1", "country/USA", recipient, [2020]) for stat_var, recipient in bare],
-        role_names={
-            stat_var: RoleNames(donor="provider", recipient="recipient") for stat_var, _ in bare
-        },
+        [(stat_var, "facet1", ABSENT_ENTITY, recipient, [2020]) for stat_var, recipient in bare],
+        role_names={stat_var: RoleNames(donor=None, recipient="recipient") for stat_var, _ in bare},
         facet_metadata={
             "facet1": FacetMetadata(
                 provenance_id="OECD_DAC2A", measurement_method="GrantEquivalent", unit="USD"
@@ -178,7 +175,8 @@ def _client(
     coverage: FakeCoverageService,
     member_concurrency: int | None = None,
 ):
-    monkeypatch.setattr(app_module, "_MATERIALISE_RAW_FETCH_GUARD_ROWS", ceiling)
+    for door_module in (definition_module, mint_module):
+        monkeypatch.setattr(door_module, "MATERIALISE_RAW_FETCH_GUARD_ROWS", ceiling)
     store = FakeDatasetStore()
     return make_client(
         registry=LiveSpecRegistry(store=store),
@@ -190,7 +188,6 @@ def _client(
         spec_reader=LiveSpecReader(store=store),
         graph=graph,
         sdmx=sdmx,
-        revision_reader=SentinelRevisionReader(),
         artifact_store=FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),
@@ -333,16 +330,13 @@ def test_byte_cap_exceeded_labels_the_detail_in_bytes_not_rows():
         window=RequestedWindow(kind="all"),
     )
     sdmx = _AlwaysCapExceededSdmxClient(cap_kind="bytes", cap=1_000_000, observed=1_048_576)
-    snapshot = RevisionSnapshot(graph_revision="rev-1", source_revisions=())
-    reader = FakeRevisionReader([snapshot, snapshot])
 
     with pytest.raises(OverCeilingError) as excinfo:
         materialise_spec(
             request,
             sdmx=sdmx,
             graph=graph,
-            enrichment=EnrichmentLookup(graph),
-            revision_reader=reader,
+            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
             ceiling=5,
             materialiser_build="test-build",
             capability_version="cap-v1",

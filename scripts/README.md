@@ -2,6 +2,19 @@
 
 Reference for every script in this directory: what it does, how to run it, and what runs it. Each script's module docstring has the full contract. This page is the index.
 
+## `bench_datasets.py`
+
+Benches a deployed Datasets API over two recorded definitions, q1 (a walked family read subject-only) and q3 (an index family read role-bearing): cold and warm mints, cold and warm definition GETs, a snapshot read, 20 concurrent warm GETs, and 3 then 6 concurrent cold mints. It writes p50 and p95 latency and the counts each response's `Server-Timing` header carries (`db_transactions`, `sign_blob_calls`, `permit_wait_ms`, `sdmx_requests`, `graph_requests`) to a JSON report.
+
+```bash
+uv run --extra datasets python scripts/bench_datasets.py --out bench-datasets.json
+uv run --extra datasets python scripts/bench_datasets.py --base-url <url> --samples 5 --seed 7
+```
+
+Needs no credentials for the dev service. Every run mints new versions on the target.
+
+Run by `.github/workflows/datasets-bench.yml` on `workflow_dispatch`, which uploads the report.
+
 ## `bundle_round_trip.R`
 
 Round-trips a generated Data Package v2 bundle through the R `frictionless` package, checking the dual v1/v2 profile the package publishes.
@@ -67,6 +80,8 @@ COVERAGE_ARTIFACT_URI=gs://<coverage bucket>/ uv run --env-file .env \
 Needs `SEARCH_GRAPH_BASE` (and `SEARCH_GRAPH_TOKEN` on a token-gated deployment), and `COVERAGE_ARTIFACT_URI`, the root the coverage job publishes to (see `deploy/coverage.md`), with Google credentials that can read a `gs://` bucket.
 
 The graph supplies the code rows and StatVar rows. The coverage build supplies each StatVar's `provenances`: `coverage.parquet` maps a variable to its facet ids and `facets.json` maps a facet id to its provenance. The stamp records the build id (`coverage_build`) and the number of StatVars the build holds no series for (`statvars_without_coverage`); such a row carries no provenance and belongs to no dataset.
+
+`LISTED_DATASETS` names the datasets whose StatVars declare no code system, World Bank IDS among them, so no code read reaches them. The coverage build lists their StatVars, which the export reads into a separate `listed_statvars` block with their provenances. No family, dataset election, measure axis or shape reads that block: Search and the Datasets mint elect the members of a family holding a listed row from the index's rows of its five-tuple, in place of a graph walk (`code_index.members.listed_group`). The export therefore reads each five-tuple a listed row has, unsplit, and refuses when the graph holds a StatVar there that is neither an exported nor a listed row; the largest, `FinancialFlow` amount, holds about 14,000 StatVars and reads in about 45 s. When a build assigns a listed dataset a StatVar the index does not list, `python -m series_coverage.verify_index` fails naming them, and a running service keeps the build it serves (`series_coverage.compatibility.index_coverage_differences`).
 
 `CODE_SYSTEMS` in the script supplies each code system's declaration, which the export writes into the index's `declarations` block and `code_index.loader` reads into `CodeSystemDeclaration`:
 

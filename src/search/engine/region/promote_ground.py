@@ -7,6 +7,7 @@ from typing import cast
 
 from code_index.shared import get_index, get_measure_index
 from materialise.errors import DefaultFacetUndefinedError, FacetNotAvailableError
+from materialise.facets import role_bearing_facet_candidates
 from materialise.recipes import (
     NonCurrencyUnitError,
     RateCoverageGapError,
@@ -15,6 +16,7 @@ from materialise.recipes import (
     RoleAxisNotDeclaredError,
     cause_from_recipe_error,
 )
+from search.engine.clients.graph import Facet
 from search.engine.departures import window_gap_fact
 from search.engine.envelope import now_ms
 from search.engine.errors import EngineInfraError, EngineInputError
@@ -92,7 +94,7 @@ from search.engine.retrieval.bound_values import (
     shape_query,
     slot_expansions,
 )
-from search.engine.retrieval.elected_dataset import elected_datasets
+from search.engine.retrieval.elected_dataset import elected_datasets, published
 from search.engine.retrieval.member_facts import ArcsMemberFacts
 from search.engine.retrieval.read_plan import plan_probes, serves_nothing
 from search.engine.retrieval.retrieve import Materialised
@@ -117,6 +119,7 @@ from search.models import (
     IdentityFacetValueRequest,
     IdentityUnitRequest,
     Spec,
+    TimeWindow,
 )
 
 
@@ -612,9 +615,14 @@ def _ground_build_gates(
 
     Return `no_observations` with a flagged Spec when no asserting member has data at the
     place. Return `no_matching_slice` with a flagged Spec when no place is bound and no member
-    asserts every bound property. Both omit observations. Otherwise raise any facet refusal
+    asserts every bound property. Both omit observations, after a bound source pin is checked
+    against globally admissible role candidates. Otherwise raise any facet refusal
     (`_raise_facet_refusal`), unless it ran before the conversion (`facet_checked`), or
     return `None` for finalisation."""
+    if state.source_dcids and is_role_bearing(state.shape_draft) and not facet_checked:
+        _raise_facet_refusal(state, mat_result)
+        facet_checked = True
+
     if mat_result.available_at_place is False:
         return _no_data_region(
             state.variable_text,
@@ -639,31 +647,63 @@ def _ground_build_gates(
     return None
 
 
+def _role_candidate_facets(
+    state: _PromoteState, mat_result: Materialised
+) -> tuple[dict[str, list[Facet]], dict[str, list[Facet]]]:
+    """Return the windowed and lifetime role candidates for each materialised member."""
+    datasets = elected_datasets(mat_result.member_facts)
+    years = mat_result.preview_years
+    bounds = (years.start_year, years.end_year) if isinstance(years, TimeWindow) else None
+    windowed: dict[str, list[Facet]] = {}
+    lifetime: dict[str, list[Facet]] = {}
+    for sv in mat_result.sv_dcids:
+        candidates = role_bearing_facet_candidates(
+            stat_var=sv,
+            role_bindings=state.probe_role_entities,
+            coverage=state.coverage.index,
+        )
+        if candidates is None:
+            continue
+        lifetime[sv] = published(datasets, sv, candidates)
+        windowed[sv] = (
+            lifetime[sv]
+            if bounds is None
+            else published(
+                datasets,
+                sv,
+                role_bearing_facet_candidates(
+                    stat_var=sv,
+                    role_bindings=state.probe_role_entities,
+                    coverage=state.coverage.index,
+                    first_year=bounds[0],
+                    last_year=bounds[1],
+                )
+                or [],
+            )
+        )
+    return windowed, lifetime
+
+
 def _raise_facet_refusal(state: _PromoteState, mat_result: Materialised) -> None:
-    """Raise the refusal of a bound facet the resubmit's members do not hold, when neither
-    no-data gate holds (`_no_data_gate_holds`). A discovered role scope judges its role index
-    and the bound role path its coverage facets, both within the request's window; the
-    subject path reads entity-keyed facets unwindowed."""
+    """Raise the refusal of a bound facet the resubmit's members do not hold.
+
+    A source pin calls this before the scoped no-data gate. Role-bearing method and unit
+    pins use globally admitted candidates in the requested window; provenance uses their
+    lifetime candidates. The subject path reads entity-keyed facets unwindowed.
+    """
     # Import locally to avoid a cycle during region package initialisation.
     from search.engine.facet_refusals import (
         candidate_facet_refusal,
         facet_refusal,
-        role_index_facets,
     )
 
-    if mat_result.discovered_scope is not None and mat_result.role_index_by_sv is not None:
+    if is_role_bearing(state.shape_draft):
+        candidate_facets_by_sv, lifetime_facets_by_sv = _role_candidate_facets(state, mat_result)
         _facet_refusal = candidate_facet_refusal(
             state.graph,
-            role_index_facets(mat_result.role_index_by_sv),
+            candidate_facets_by_sv,
             state.inp.identity.facets,
-            elected_units=state.elected_units,
-            deadline=state.deadline,
-        )
-    elif is_role_bearing(state.shape_draft) and mat_result.facets_by_sv is not None:
-        _facet_refusal = candidate_facet_refusal(
-            state.graph,
-            mat_result.facets_by_sv,
-            state.inp.identity.facets,
+            provenance_facets_by_sv=lifetime_facets_by_sv,
             elected_units=state.elected_units,
             deadline=state.deadline,
         )

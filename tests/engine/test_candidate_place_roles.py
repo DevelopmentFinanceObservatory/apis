@@ -1182,7 +1182,6 @@ def _state(*, names_and_roles: dict[str, list[DoorRole]], places: dict[str, str]
         include_observations=False,
         stream_observations=False,
         unit_text=None,
-        source_text=None,
         materialise_graph=None,
         materialise_sdmx=None,
         timing={},
@@ -2571,7 +2570,7 @@ def _gap_filled(monkeypatch, first: Any, second: Any) -> Any:
             emit=None,
             first_sentences=[],
             first_measure_class_refused=0,
-            first_names_dataset=False,
+            first_scope_stands=False,
             second_state=lambda emit, bound: cast(Any, state),
         )
     )

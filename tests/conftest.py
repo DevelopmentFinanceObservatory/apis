@@ -189,6 +189,16 @@ def _guard_live_client_construction():
 
 
 @pytest.fixture(autouse=True)
+def _close_datasets_clients() -> Iterator[None]:
+    """Exit the Datasets test clients `make_client` entered, which stops each surface's
+    lifespan. A run that never imported the factory module opened none."""
+    yield
+    factories = sys.modules.get("tests.datasets_api._app_factories")
+    if factories is not None:
+        factories.close_open_clients()
+
+
+@pytest.fixture(autouse=True)
 def _fresh_family_memo() -> Iterator[None]:
     """Start each test with no index family memoised (`bound_values._resolved_family`), so a
     test that replaces `index_family` reads its own families. A run that never imported the

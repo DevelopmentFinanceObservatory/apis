@@ -2,7 +2,10 @@
 
 The collector lives in `dfo_platform.timings`, so store layers below this
 surface can record phases. `door_call` measures the call's total and renders
-the `Server-Timing` header and log line.
+the `Server-Timing` header and log line. The header carries each phase as
+`name;dur=ms` and each count, such as `db_transactions` or `sdmx_requests`, as
+`name;desc=n`, so a client such as `scripts/bench_datasets.py` reads a
+request's counts from its response.
 """
 
 from __future__ import annotations
@@ -16,6 +19,8 @@ from dataclasses import dataclass
 from dfo_platform.timings import (
     PhaseTimings,
     collecting,
+    count,
+    label,
     phase,
     record_elapsed,
     run_with_timings,
@@ -60,14 +65,21 @@ def door_call(door: str, *, logger: logging.Logger) -> Iterator[DoorCall]:
             total_ms,
             call.timings.as_log_field(),
         )
-        call.server_timing = call.timings.server_timing(total_ms=total_ms)
+        call.server_timing = ", ".join(
+            [
+                call.timings.server_timing(total_ms=total_ms),
+                *(f"{name};desc={n}" for name, n in call.timings.count_snapshot().items()),
+            ]
+        )
 
 
 __all__ = [
     "DoorCall",
     "PhaseTimings",
     "collecting",
+    "count",
     "door_call",
+    "label",
     "phase",
     "record_elapsed",
     "run_with_timings",

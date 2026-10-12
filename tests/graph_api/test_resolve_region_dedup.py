@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -18,6 +17,7 @@ from dc_graph import GraphClient
 from entity_resolution import Entity, Resolved
 from graph_api.deps import GraphDeps
 from graph_api.doors.resolve import RegionMember, _assemble, _region_members
+from graph_api.doors.sources import new_provenance_doc_cache
 from graph_generation import UNKNOWN_GENERATION
 from tests.graph_api.conftest import make_resolver
 from tests.materialise._dup_arcs_fixtures import DUAL_PROVENANCES
@@ -56,12 +56,13 @@ def test_assemble_emits_one_region_member_when_containment_read_is_doubled(share
         base_url="https://graph.example.org/core/api", transport=httpx.MockTransport(handler)
     )
     # GraphDeps requires valid fields for the direct `_region_members` call.
+    executor = ThreadPoolExecutor(max_workers=1)
     deps = GraphDeps(
         graph=reader,
         resolver=make_resolver(shared_resolver, graph=reader),
-        dcp_executor=ThreadPoolExecutor(max_workers=1),
-        dcp_semaphore=threading.BoundedSemaphore(1),
+        dcp_executor=executor,
         generation=UNKNOWN_GENERATION,
+        provenance_docs=new_provenance_doc_cache(executor=executor, generation=UNKNOWN_GENERATION),
     )
     resolution = Resolved(
         entity=Entity(dcid="Africa", name="Africa", kind="continent", graph_type="Continent")

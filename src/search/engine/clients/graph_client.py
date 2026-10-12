@@ -32,7 +32,7 @@ import dc_graph
 from code_index.labels import normalize_label
 from code_index.shared import get_index
 from dc_sdmx import SdmxClient
-from dfo_platform.executor import submit_with_context
+from dfo_platform.request_deadline import submit_detached
 from graph_generation import UNKNOWN_GENERATION, GenerationProvider, GenerationStamp
 from graph_generation.stamp import ttu_from_stamp_key
 from origin_catalogue.context import current_catalogue
@@ -55,7 +55,7 @@ from search.engine.clients.graph import (
     SubjectsPage,
     _force_full_facets,
     admit_un_candidates,
-    cut_hits,
+    recall_hits,
     settled_un,
     stand_candidates,
 )
@@ -151,6 +151,7 @@ def _build_dc_graph_client(
     timer: Callable[[], float],
     arcs_cache_size: int,
     obs_properties_cache_size: int,
+    observation_properties_flight_timeout_s: float | None,
     obs_cache_size: int,
     node_arc_total_concurrency: int | None,
     node_arc_call_concurrency: int | None,
@@ -183,6 +184,8 @@ def _build_dc_graph_client(
     }
     if timeout is not None:
         kwargs["timeout"] = timeout
+    if observation_properties_flight_timeout_s is not None:
+        kwargs["observation_properties_flight_timeout_s"] = observation_properties_flight_timeout_s
     if node_arc_total_concurrency is not None:
         kwargs["node_arc_total_concurrency"] = node_arc_total_concurrency
     if node_arc_call_concurrency is not None:
@@ -195,7 +198,8 @@ class LiveGraphClient:
     """Synchronous Search graph client. Async callers use `asyncio.to_thread`. Appends `/core/api`
     to `base`, while `un_base_url` is already an API root. `max_attempts` defaults to 1, while
     `dc_graph.GraphClient` defaults to 3. The UN backend's caches key on the request's bound
-    catalogue build.
+    catalogue build. `observation_properties_flight_timeout_s` set to `None` keeps
+    `dc_graph.GraphClient`'s default.
     """
 
     def __init__(
@@ -212,6 +216,7 @@ class LiveGraphClient:
         detect_cache_size: int = 256,
         arcs_cache_size: int = ARCS_CACHE_SIZE,
         obs_properties_cache_size: int = OBS_PROPERTIES_CACHE_SIZE,
+        observation_properties_flight_timeout_s: float | None = None,
         node_arc_total_concurrency: int | None = None,
         node_arc_call_concurrency: int | None = None,
         detect_k: int = 80,
@@ -233,12 +238,13 @@ class LiveGraphClient:
             timer=self._timer,
             arcs_cache_size=arcs_cache_size,
             obs_properties_cache_size=obs_properties_cache_size,
+            observation_properties_flight_timeout_s=observation_properties_flight_timeout_s,
             obs_cache_size=obs_cache_size,
             node_arc_total_concurrency=node_arc_total_concurrency,
             node_arc_call_concurrency=node_arc_call_concurrency,
         )
         self._detect_cache: cachetools.TLRUCache[
-            tuple[str, str, bool, str, str, int], Detection
+            tuple[str, str, bool, frozenset[str] | None, str, str, int], Detection
         ] = cachetools.TLRUCache(
             maxsize=detect_cache_size, ttu=_ttu_from_stamp_key, timer=self._timer
         )
@@ -260,7 +266,9 @@ class LiveGraphClient:
         *,
         generation: GenerationProvider = UNKNOWN_GENERATION,
     ) -> LiveGraphClient:
-        """Build from Search settings, or from the supplied `SearchSettings` instance."""
+        """Build from Search settings, or from the supplied `SearchSettings` instance. A shared
+        observation-property read gets the longest hard cap of a request that makes one, a
+        `dataset_resubmit`'s: `resubmit_full_read_timeout_s` plus `finalise_grace_s`."""
         s = settings if settings is not None else search_settings()
         return cls(
             base=s.graph_base,
@@ -273,6 +281,9 @@ class LiveGraphClient:
             detect_cache_size=s.detect_cache_size,
             arcs_cache_size=s.arcs_cache_size,
             obs_properties_cache_size=s.obs_properties_cache_size,
+            observation_properties_flight_timeout_s=(
+                s.resubmit_full_read_timeout_s + s.finalise_grace_s
+            ),
             node_arc_total_concurrency=s.node_arc_total_concurrency,
             node_arc_call_concurrency=s.node_arc_call_concurrency,
             detect_k=s.detect_k,
@@ -443,8 +454,9 @@ class LiveGraphClient:
         catalogue (`admit_candidates`). Returns once ours finishes; `Detection.un` settles when
         the UN resolve does.
 
-        The cache keys on the generation stamp and the catalogue's build and UN setting, since
-        admission ran before the cut. A detection enters the cache when its UN resolve
+        The cache keys on the generation stamp and the catalogue's build, UN setting and
+        source scope, since admission ran before the cut and the scope adds rows past it
+        (`with_rival_families`). A detection enters the cache when its UN resolve
         succeeds, before `Detection.un` settles, so a failed or unfinished one is never served
         from it.
         """
@@ -454,6 +466,7 @@ class LiveGraphClient:
             stamp.key,
             catalogue.build_id,
             catalogue.un_system_enabled,
+            catalogue.scope,
             query,
             self._resolve_target,
             self._detect_k,
@@ -469,7 +482,7 @@ class LiveGraphClient:
         # cancels its source) leaves it for `settle` to finish.
         un: Future[tuple[DetectedSV, ...] | None] = Future()
         un.set_running_or_notify_cancel()
-        hits = cut_hits(self._resolve_ours(query), catalogue=catalogue, detect_k=self._detect_k)
+        hits = recall_hits(self._resolve_ours(query), catalogue=catalogue, detect_k=self._detect_k)
         detection = Detection(
             candidates=stand_candidates(hits, catalogue=catalogue), un=un, hits=hits
         )
@@ -498,8 +511,8 @@ class LiveGraphClient:
 
     def _start_un(self, query: str) -> Future[tuple[DetectedSV, ...] | None]:
         """The UN resolve of `query`, unadmitted, on the process-wide UN resolve pool in the
-        caller's context, without waiting for it, when the request's catalogue has the UN origin
-        on, and an empty resolve when it is off. A detection of a query whose resolve is still
+        caller's context less its request deadline (`submit_detached`), without waiting for it,
+        when the request's catalogue has the UN origin on, and an empty resolve when it is off. A detection of a query whose resolve is still
         queued or running shares it, since the resolve posts only `query` and no other request
         state changes its answer. Its deadline starts at submission, so time in the queue counts
         against it.
@@ -510,7 +523,7 @@ class LiveGraphClient:
             resolve = self._un_resolves.get(query)
             if resolve is not None:
                 return resolve
-            resolve = submit_with_context(
+            resolve = submit_detached(
                 _UN_RESOLVE_POOL,
                 self._resolve_un,
                 query,

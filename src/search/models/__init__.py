@@ -117,6 +117,8 @@ from .options_door import OptionsFor, OptionsRequest, OptionsResponse, OptionsSe
 from .outcomes import (
     AmbiguousEntityCandidate,
     AmbiguousEntityGroup,
+    AmbiguousSourceCandidate,
+    AmbiguousSourceGroup,
     CandidateSet,
     NoData,
     UnitAlternative,
@@ -126,9 +128,11 @@ from .request import (
     _PARSED_MAX_OPERATION_PHRASE_CHARS,  # noqa: F401
     _PARSED_MAX_PART_ENTITIES,  # noqa: F401
     _PARSED_MAX_PART_OPERATIONS,  # noqa: F401
+    _PARSED_MAX_PART_SOURCES,  # noqa: F401
     _PARSED_MAX_PARTS,  # noqa: F401
     _PARSED_MAX_RAW_QUERY_CHARS,  # noqa: F401
     _PARSED_MAX_ROLE_TEXT_CHARS,  # noqa: F401
+    _PARSED_MAX_SOURCE_MENTION_CHARS,  # noqa: F401
     _PARSED_MAX_SOURCE_TEXT_CHARS,  # noqa: F401
     _PARSED_MAX_TIME_TEXT_CHARS,  # noqa: F401
     _PARSED_MAX_UNIT_TEXT_CHARS,  # noqa: F401
@@ -151,6 +155,7 @@ from .request import (
     ResubmitIdentityPayload,
     ResubmitParsedEntry,
     ResubmitPlaceholderEntry,
+    SourceMention,
 )
 from .response import (
     RESOLVE_RESPONSE_ADAPTER,
@@ -234,6 +239,8 @@ from .vocab import (
     RoleAxis,
     SentenceAxis,
     SentenceSegment,
+    SourcePolarity,
+    SourceRefKind,
     StatusLiteral,
     ValueKind,
     _require_schema_version_int,  # noqa: F401
@@ -253,6 +260,8 @@ __all__ = [
     "WHERE_REF",
     "AmbiguousEntityCandidate",
     "AmbiguousEntityGroup",
+    "AmbiguousSourceCandidate",
+    "AmbiguousSourceGroup",
     "AnswerKind",
     "Axis",
     "BaseIdentity",
@@ -399,7 +408,10 @@ __all__ = [
     "SlotOptions",
     "SlotOptionsSource",
     "SlotValue",
+    "SourceMention",
+    "SourcePolarity",
     "SourceRef",
+    "SourceRefKind",
     "Spec",
     "SpecAlternativeMeasure",
     "SpecDefinition",

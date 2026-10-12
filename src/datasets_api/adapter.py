@@ -7,18 +7,15 @@ resolves pinned or described identities from the graph or code index.
 `rehydrate_definition` combines resolution and validation for stored definitions.
 `verify_sidecar_definition` checks a supplied identity against its id.
 `pinned_member_ref` extracts pinned refs for batch shape resolution.
-
-`prime_head_signal` reads the head, probes facets, then derives a signal.
-Its returned content version anchors the later head compare-and-set.
 """
 
 from __future__ import annotations
 
 import dataclasses
 import logging
-import threading
 import time
 from collections.abc import Collection, Mapping, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from typing import Literal, cast
 
@@ -31,9 +28,10 @@ from code_index.members import (
     identity_family_query,
     index_decides,
     index_family,
+    listed_group,
+    pinned_refs,
 )
 from code_index.query import CodeIndex
-from datasets_api.admission import bounded_materialise_slot
 from datasets_api.codes_materialise import (
     CurrencyRoleUndeclared,
     DefinitionNotReproducible,
@@ -44,7 +42,6 @@ from datasets_api.codes_materialise import (
     SpecNotExportable,
 )
 from datasets_api.config import DatasetsBuildSettings
-from datasets_api.currency import derive_signals
 from datasets_api.mint_models import (
     FacetRefBinding,
     FacetUnitRequestBinding,
@@ -56,11 +53,9 @@ from datasets_api.mint_models import (
 )
 from datasets_api.models import CanonicalDefinition
 from datasets_api.shape import StatVarShape, resolve_shape
-from datasets_api.timings import phase
-from datasets_api.versions import HeadReader, MemberSignal
-from dc_sdmx import EntityFilter, SdmxClient
+from dc_sdmx import EntityFilter
 from dfo_platform.named import cut
-from materialise import CollectionFacetProbe, MaterialisationRequest, probe_collection_facets
+from materialise import MaterialisationRequest
 from materialise.errors import (
     FacetNotAvailableError,
     OverCeilingError,
@@ -73,11 +68,10 @@ from materialise.recipes import (
     SpecRole,
     graph_role_for_spec_role,
 )
-from materialise.revision import RevisionReader
 from materialise.roles import axis_ambiguous_for, axis_for_role, declared_role_for
 from materialise.trace import MemberFamily
 from materialise.window import RequestedWindow, election_window
-from series_coverage.index import CoverageIndex
+from origin_catalogue import scoped_reads
 from spec_registry import SpecIdMismatch, recompute_identity
 from spec_registry.reader import StoredDefinition
 from statvar_members import (
@@ -365,7 +359,10 @@ def to_materialisation_request(
     checks reject unsupported roles before this call. `index_sourced` is
     derived from the same `CodeIndex`. Pinned shapes use the graph path.
 
-    A facet uses one form, `ref` or a unit-axis `request`. Malformed bindings
+    A facet uses one form, `ref` or a unit-axis `request`, and the provenance facet may
+    also bind a set (`refs`). A set of one distinct ref binds it as `ref` does. A set of
+    several leaves provenance unbound for selection: the read is scoped to its refs
+    (`pinned_provenance_scope`), and selection elects among them. Malformed bindings
     raise `IdentityError`. An undeclared role currency raises
     `CurrencyRoleUndeclared`. The caller adds the wire pointer.
     Validation covers facet-binding shape only.
@@ -383,6 +380,11 @@ def to_materialisation_request(
     facets = cast("Mapping[str, Mapping[str, object]]", identity.get("facets", {}))
     facet_bindings: dict[str, FacetBinding] = {}
     for axis, binding in facets.items():
+        if axis == _PROVENANCE_AXIS and "refs" in binding:
+            refs = tuple(dict.fromkeys(cast("Sequence[str]", binding["refs"])))
+            if len(refs) == 1:
+                facet_bindings[axis] = FacetBinding(state="bound", ref=refs[0])
+            continue
         has_ref = "ref" in binding
         has_request = "request" in binding
         if has_ref and has_request:
@@ -420,6 +422,21 @@ def to_materialisation_request(
         dataset=shape.dataset,
         family=admitted_family(identity, shape),
     )
+
+
+def provenance_pin(identity: Mapping[str, object]) -> frozenset[str] | None:
+    """The provenances `identity`'s `facets.provenance` binds, as a `ref` or a set of
+    `refs` (`code_index.members.pinned_refs`), or `None` when it binds none."""
+    facets = cast("Mapping[str, Mapping[str, object]]", identity.get("facets", {}))
+    return frozenset(pinned_refs(facets)) or None
+
+
+def pinned_provenance_scope(identity: Mapping[str, object]) -> AbstractContextManager[object]:
+    """Bind the request's catalogue narrowed to `identity`'s pinned provenances
+    (`provenance_pin`, `origin_catalogue.scoped_reads`) for every read of a mint of it, so
+    a pinned source is admitted before DFO precedence and a base pin serves at a place
+    where a DFO table also holds data. Binds nothing for an identity that pins no provenance."""
+    return scoped_reads(provenance_pin(identity))
 
 
 def admitted_family(identity: Mapping[str, object], shape: StatVarShape) -> MemberFamily | None:
@@ -563,7 +580,7 @@ def _resolve_index_members(
         raise FacetNotAvailableError(
             f"spec {cut(spec_id)!r} binds provenance {cut(exc.source)!r}, which does not publish "
             f"this five-tuple; it is published by {list(exc.candidates)!r}",
-            pointer=_PROVENANCE_POINTER,
+            facet_pointer=_PROVENANCE_POINTER,
         ) from exc
     if elected is None:
         return None
@@ -643,10 +660,17 @@ def resolve_definition_members(
     `CodeIndex.expansion`. Leaves, flat systems, codes of a system whose parent row is
     the total of its children, and unknown codes pass through unchanged. The graph walk builds all shapes in one read.
 
+    A family holding a row the index lists outside its code systems, as IDS families do,
+    resolves in memory to the members the graph walk would elect, with no graph read
+    (`code_index.members.listed_group`).
+
     If the identity's slot keys hold every constraint property of at least one
     index row of the five-tuple (`index_decides`), resolve the elected
-    dataset's minimal rows in memory; `facets.provenance` names the dataset when it
-    binds one distinct ref (`code_index.members.named_dataset`). An identity whose keys cover a row and whose values match none
+    dataset's minimal rows in memory. `facets.provenance` names the dataset when it
+    binds one distinct ref the index holds rows of
+    (`code_index.members.named_dataset`). A pin on a provenance only listed rows record,
+    as on IDS, scopes the reads alone (`pinned_provenance_scope`) and resolves the
+    unpinned members. An identity whose keys cover a row and whose values match none
     refuses `SpecNotExportable` on this path. This bounded index path shares
     empty-result and role-signature refusals with the graph walk. The graph walk
     enforces the enumerator's member cap and refuses incomplete candidate pages.
@@ -713,18 +737,22 @@ def resolve_definition_members(
         )
         return resolved
     try:
-        group = enumerator.enumerate(
-            graph=graph,
-            stamp_key=graph.generation_stamp().key,
-            five_tuple=five_tuple,
-            slots=slots,
-            readings=_absent_readings(code_index),
-            role_keys=query.role_keys,
-            open_role_keys=query.open_role_keys,
-            subject_ceiling=bounds.subject_ceiling,
-            deadline=bounds.deadline,
-            spec_id=spec_id,
-        )
+        group = listed_group(code_index, query, member_cap=enumerator.member_cap)
+        path = "listed"
+        if group is None:
+            path = "walk"
+            group = enumerator.enumerate(
+                graph=graph,
+                stamp_key=graph.generation_stamp().key,
+                five_tuple=five_tuple,
+                slots=slots,
+                readings=_absent_readings(code_index),
+                role_keys=query.role_keys,
+                open_role_keys=query.open_role_keys,
+                subject_ceiling=bounds.subject_ceiling,
+                deadline=bounds.deadline,
+                spec_id=spec_id,
+            )
     except MemberQueryUnanchored as exc:
         raise SpecNotExportable(
             spec_id=spec_id,
@@ -790,7 +818,8 @@ def resolve_definition_members(
         for member in group.members
     )
     logger.debug(
-        "datasets.member_resolution path=walk spec_id=%s member_count=%d index_content_hash=None",
+        "datasets.member_resolution path=%s spec_id=%s member_count=%d index_content_hash=None",
+        path,
         spec_id,
         len(shapes),
     )
@@ -871,66 +900,3 @@ def verify_sidecar_definition(
     if recomputed.spec_id != spec_id:
         raise SpecIdMismatch(supplied=spec_id, computed=recomputed.spec_id)
     return recomputed.identity
-
-
-@dataclass(frozen=True)
-class HeadPriming:
-    """Facet probe and signal plus the head version read before probing."""
-
-    probe: CollectionFacetProbe
-    signal: tuple[MemberSignal, ...] | None
-    expected_content_version: str | None
-
-
-def prime_head_signal(
-    requests: Sequence[MaterialisationRequest],
-    *,
-    subject_id: str,
-    graph: GraphReader,
-    sdmx: SdmxClient,
-    head_store: HeadReader,
-    materialise_wait_seconds: float,
-    revision_reader: RevisionReader | None = None,
-    materialise_semaphore: threading.BoundedSemaphore | None = None,
-    coverage: CoverageIndex | None = None,
-    deadline: float | None = None,
-) -> HeadPriming:
-    """Read the head, probe facet candidates, and derive a signal from that probe.
-
-    The returned content version predates the probe and anchors the later
-    head compare-and-set. The signal holds one entry for the spec. A request that binds no place
-    is probed at its default place scope (`materialise.place_scope`), read through `sdmx`.
-    `None` indicates a member facet failure or
-    failure to find one facet for the whole set. It leaves the head unchanged,
-    and materialisation runs and can raise its refusal.
-
-    Pass the same coverage snapshot used for admission. Role-bearing requests
-    require it. Missing coverage raises `MaterialisationUsageError`. An
-    optional `revision_reader` stamps the probe before its first graph call.
-
-    The head read and probe wait for `materialise_semaphore` up to the
-    configured wait or `deadline`. The probe also receives the deadline, and
-    the following rebuild takes a second slot under that same deadline.
-    """
-    with bounded_materialise_slot(
-        materialise_semaphore, wait_seconds=materialise_wait_seconds, deadline=deadline
-    ):
-        with phase("head_read"):
-            head = head_store.read_head(subject_id)
-        with phase("facet_probe"):
-            probe = probe_collection_facets(
-                requests,
-                graph=graph,
-                availability=sdmx,
-                settle=True,
-                revision_reader=revision_reader,
-                coverage=coverage,
-                deadline=deadline,
-            )
-    with phase("signal"):
-        signal = derive_signals(requests, probe, graph=graph)
-    return HeadPriming(
-        probe=probe,
-        signal=signal,
-        expected_content_version=head.content_version if head is not None else None,
-    )

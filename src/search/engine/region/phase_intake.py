@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Mapping
 from typing import cast
 
+from code_index.shared import get_index
 from entity_resolution import Ambiguous, Group, Resolved
 from search.engine.clients.graph import force_full_facets
 from search.engine.config import settings
@@ -68,9 +69,10 @@ async def _phase_resolve_places(state: ResolveState) -> None:
     A group is a set of its resolver-confirmed members, with the group's own node when the
     resolver returned one. An empty or oversized group gets no set, so its name stays
     unresolved and is refused later. A continent or subregion is a set of its node and the
-    members one batched expansion gives. Every other resolved name is a set of its node
-    alone. The node of a group or region carries the graph's label for it, read in one
-    batch beside the expansion. A set takes the members reading when the door asks for the
+    members one batched expansion gives. A group or region a flow dataset publishes a total for
+    carries that total (`PlaceSet.total`), found by the group's id or the region's node. Every
+    other resolved name is a set of its node alone. The node of a group or region carries the
+    graph's label for it, read in one batch beside the expansion. A set takes the members reading when the door asks for the
     name's members (`ResolveState.member_entities`) or the resolver read the name as its
     members (`names_members`). Recall's country dcids are snapshotted for the availability
     floor.
@@ -79,7 +81,7 @@ async def _phase_resolve_places(state: ResolveState) -> None:
     rcl = cast(Recall, state.rcl)
 
     # Truncating an oversized group's members would misstate the population the answer
-    # covers. `_unresolved_entity_terminal` answers by its `Group` resolution.
+    # covers. `_phase_check_entities` refuses an oversized `Group` with `entity_set_too_large`.
     groups = {
         name: resolution
         for name, resolution in rcl.resolutions.items()
@@ -122,6 +124,12 @@ async def _phase_resolve_places(state: ResolveState) -> None:
         asked = name in state.member_entities or resolution.names_members
         return "members" if asked else "default"
 
+    totals = get_index().totals_by_group
+
+    def total(group: str | None) -> str | None:
+        row = None if group is None else totals.get(group)
+        return None if row is None else row.dcid
+
     place_sets: dict[str, PlaceSet] = {}
     for name, group in groups.items():
         node = group.entity
@@ -135,6 +143,7 @@ async def _phase_resolve_places(state: ResolveState) -> None:
             member_type=group.members[0].graph_type or None,
             member_names={member.dcid: member.name for member in group.members},
             reading=reading(name),
+            total=total(group.dcid or (None if node is None else node.dcid)),
         )
     for name, entity in resolved.items():
         region = entity.kind in _REGION_KINDS
@@ -147,6 +156,7 @@ async def _phase_resolve_places(state: ResolveState) -> None:
             members=None if expansion is None else tuple(expansion.children),
             member_type=None if expansion is None else expansion.child_type,
             reading=reading(name),
+            total=total(entity.dcid) if expansion is not None else None,
         )
     state.place_sets = place_sets
 
@@ -168,18 +178,17 @@ def _is_oversized_group(resolution: object) -> bool:
     return isinstance(resolution, Group) and len(resolution.members) > settings().max_child_places
 
 
-def _unresolved_entity_terminal(state: ResolveState) -> RegionResult | None:
-    """Return an unresolved-entity result, preserving entity-before-variable precedence.
+async def _phase_check_entities(state: ResolveState) -> RegionResult | None:
+    """Refuse a part naming an entity that did not resolve, before shape derivation and
+    the bind call.
 
     Report ``entity_ambiguous`` only when every unresolved name is ambiguous, and
     ``entity_set_too_large`` only when every unresolved name is an oversized Group.
     Otherwise report ``entity_not_resolved``. Keep names and candidates in query order.
+    The place sets are final once `_phase_resolve_places` has run, so every later phase
+    sees only resolved entities.
     """
     rcl = cast(Recall, state.rcl)
-
-    # The normal check runs after election so a place miss can retain StatVar evidence.
-    # Earlier terminals call it first to preserve entity-before-variable precedence.
-    # Keep unresolved names in query order for the response.
     still_unresolved = set(state.entities) - state.place_sets.keys()
     if still_unresolved:
         still_unresolved_ordered = tuple(
@@ -226,11 +235,6 @@ def _unresolved_entity_terminal(state: ResolveState) -> RegionResult | None:
             ),
         )
     return None
-
-
-async def _phase_check_entities(state: ResolveState) -> RegionResult | None:
-    """Check unresolved entities after election. Earlier terminals check them first."""
-    return _unresolved_entity_terminal(state)
 
 
 async def _prune_shapes_by_admission(
@@ -370,11 +374,10 @@ async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
     """Confirm recall candidates and derive role-compatible shapes.
 
     Return ``role_signature_incompatible`` or ``variable_not_resolved`` when derivation
-    fails, and ``entity_role_not_admitted`` when all shapes fail role checks. Unresolved
-    entity errors take precedence. Surviving shapes proceed to ranking. A shape whose id
-    ``state.excluded_shapes`` names and whose members are all among the members recorded
-    there is dropped as soon as it is derived: it holds nothing the first pass did not
-    read and find empty.
+    fails, and ``entity_role_not_admitted`` when all shapes fail role checks. Surviving
+    shapes proceed to ranking. A shape whose id ``state.excluded_shapes`` names and whose
+    members are all among the members recorded there is dropped as soon as it is derived.
+    It holds only members the first pass read and found empty.
     """
     rcl = cast(Recall, state.rcl)
     # The first pass derives from our resolve's hits under their own dcids, so the confirm
@@ -405,6 +408,7 @@ async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
                 graph=state.graph,
                 sv_scores=sv_scores_map,
                 sv_types=sv_types_map,
+                rival_svs=frozenset(c.dcid for c in pool if c.rival),
                 # Use recall's country snapshot. Place sets and Group members stay off the floor.
                 place_dcids=state.recall_only_place_dcids,
                 full_facets_max_candidates=_FLOOR_PROBE_FULL_FACETS_MAX_CANDIDATES,
@@ -420,7 +424,7 @@ async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
             "shape",
             ms=state.timing["shape"],
         )
-        return _unresolved_entity_terminal(state) or state.no_data("role_signature_incompatible")
+        return state.no_data("role_signature_incompatible")
 
     # No confirmed StatVar means there is no shape to bind.
     if not shapes_found:
@@ -431,10 +435,9 @@ async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
             "shape",
             ms=state.timing["shape"],
         )
-        return _unresolved_entity_terminal(state) or state.no_data("variable_not_resolved")
+        return state.no_data("variable_not_resolved")
 
-    # Prune before ranking so every later count sees only compatible shapes. Unresolved
-    # entities retain precedence over role-admission failures.
+    # Prune before ranking so every later count sees only compatible shapes.
     shapes_found, never_admitted = await _prune_shapes_by_admission(state, shapes_found)
     state.shapes_found = shapes_found
     if not shapes_found:
@@ -445,7 +448,7 @@ async def _phase_derive_shapes(state: ResolveState) -> RegionResult | None:
             "shape",
             ms=state.timing["shape"],
         )
-        return _unresolved_entity_terminal(state) or state.no_data(
+        return state.no_data(
             "entity_role_not_admitted", role_not_admitted_entities=tuple(never_admitted)
         )
 

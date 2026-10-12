@@ -39,14 +39,13 @@ from ._group_support import (
     _BARE_C,
     _CSV_HEADER,
     _SHARED_FACET,
-    _SNAPSHOT,
     _STAT_VAR_A,
     _coverage_for,
     _csv_row,
     _request,
 )
 from ._scope_availability import ScopeAvailability
-from .conftest import FakeGraphReader, FakeRevisionReader
+from .conftest import FakeGraphReader
 
 _ABOUT = "observationAbout"
 _KEN = "country/KEN"
@@ -161,7 +160,7 @@ def test_members_are_probed_and_admitted_at_their_own_places():
     assert probed == (
         MemberProbe(
             # Kenya's and Earth's counts merge under the one facet id.
-            candidates=(dataclasses.replace(_SHARED_FACET, obs_count=2),),
+            candidates=(dataclasses.replace(_SHARED_FACET, obs_count=2, annual_evidence=True),),
             admission=PlaceAdmission(places_by_facet={facet_id: frozenset({_KEN, "Earth"})}),
             places=(_KEN, "Earth"),
         ),
@@ -241,8 +240,7 @@ def _group_of_country_and_world_members(*, probe=None):
         [_subject_only(_BARE_B), _subject_only(_BARE_C)],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         precomputed_probe=probe,
         **_SERVICE,
     )
@@ -280,8 +278,7 @@ def _mint(mint, requests):
         requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         **_SERVICE,
     )
 
@@ -343,8 +340,7 @@ def _wide_mint(graph: FakeGraphReader) -> tuple[str, dict[str, int]]:
         [_subject_only(bare) for bare in _WIDE],
         sdmx=_wide_sdmx(),
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         **_SERVICE,
     )
     return result.content_version, {

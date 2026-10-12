@@ -13,38 +13,36 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# The initializer tags owned workers. The app checks this sentinel by identity,
-# since a replacement pool can reuse the `dfo-io` thread name.
-_pool_identity = threading.local()
-_POOL_SENTINEL = object()
+# Each worker's initializer records the executor that started it. The app compares
+# that owner by identity, since a replacement pool can reuse the `dfo-io` thread name
+# and every SaturationTrackingExecutor stamps its workers the same way.
+_worker_owner = threading.local()
 
 
-def _mark_worker_as_ours() -> None:
-    _pool_identity.value = _POOL_SENTINEL
-
-
-def current_thread_is_pool_owned() -> bool:
-    """True on a thread started by SaturationTrackingExecutor itself,
-    regardless of the thread's own name.
-    """
-    return getattr(_pool_identity, "value", None) is _POOL_SENTINEL
+def current_thread_is_owned_by(executor: Executor) -> bool:
+    """True on a worker thread that `executor` itself started, regardless of the
+    thread's own name."""
+    return getattr(_worker_owner, "executor", None) is executor
 
 
 class SaturationTrackingExecutor(ThreadPoolExecutor):
-    """Shared default executor that logs at capacity.
+    """Thread pool that logs a WARNING when its workers are all busy, so further work queues.
 
-    Every `asyncio.to_thread()` call across mounted surfaces submits here. A
-    queued cancellation cancels the future and releases its slot. A running
-    thread cannot be interrupted and holds its slot until the function returns.
-
-    The gauge covers the shared pool. Ad hoc executors fall outside it. A slot can span
-    sequential HTTP calls. Each runs once, bounded by `SEARCH_GRAPH_TIMEOUT_S` or
-    `SEARCH_LLM_TIMEOUT_S`. Observation fetches add at most one
-    `SEARCH_GRAPH_TIMEOUT_S` permit wait per fetch.
+    The platform installs one as the loop's default executor (`dfo-io`), which every
+    `asyncio.to_thread()` call across mounted surfaces submits to. The Graph surface
+    runs its DCP reads on another (`graph-dcp`). A queued cancellation cancels the
+    future and releases its slot. A running thread cannot be interrupted and holds its
+    slot until the function returns. Each log line names the pool by `thread_name_prefix`.
     """
 
-    def __init__(self, *, max_workers: int, **kwargs: Any) -> None:
-        super().__init__(max_workers=max_workers, initializer=_mark_worker_as_ours, **kwargs)
+    def __init__(self, *, max_workers: int, thread_name_prefix: str, **kwargs: Any) -> None:
+        super().__init__(
+            max_workers=max_workers,
+            thread_name_prefix=thread_name_prefix,
+            initializer=self._mark_worker,
+            **kwargs,
+        )
+        self._name = thread_name_prefix
         self._pool_size = max_workers
         self._lock = threading.Lock()
         self._in_flight = 0
@@ -57,18 +55,27 @@ class SaturationTrackingExecutor(ThreadPoolExecutor):
             self._saturated = self._in_flight >= self._pool_size
         if newly_saturated:
             logger.warning(
-                "shared thread pool saturated (%d/%d workers busy); new to_thread work will queue",
+                "thread pool %s saturated (%d/%d workers busy); new work will queue",
+                self._name,
                 self._in_flight,
                 self._pool_size,
             )
 
-        future = super().submit(fn, *args, **kwargs)
+        try:
+            future = super().submit(fn, *args, **kwargs)
+        except BaseException:
+            # A refused submit never runs, so it must not hold a slot.
+            self._release_slot(None)
+            raise
         # The raw future's callback releases slots on completion and when queued cancellation
         # skips `fn`.
         future.add_done_callback(self._release_slot)
         return future
 
-    def _release_slot(self, _future: Future) -> None:
+    def _mark_worker(self) -> None:
+        _worker_owner.executor = self
+
+    def _release_slot(self, _future: Future | None) -> None:
         with self._lock:
             self._in_flight -= 1
             cleared = self._saturated and self._in_flight < self._pool_size
@@ -76,7 +83,8 @@ class SaturationTrackingExecutor(ThreadPoolExecutor):
                 self._saturated = False
         if cleared:
             logger.info(
-                "shared thread pool no longer saturated (%d/%d workers busy)",
+                "thread pool %s no longer saturated (%d/%d workers busy)",
+                self._name,
                 self._in_flight,
                 self._pool_size,
             )

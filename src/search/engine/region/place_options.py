@@ -153,7 +153,7 @@ async def build_place_options_events(
     Submitted jobs finish after caller cancellation and release permits on completion.
 
     `identity` is the posted Spec identity. `coverage` is the request snapshot,
-    and `start_ms` is the request timestamp used for diagnostics and the budget.
+    and `start_ms` is the request timestamp the budget runs from.
     `materialise_sdmx` supports unit checks. Callers require `sdmx`, which is
     unused here.
     """
@@ -161,6 +161,7 @@ async def build_place_options_events(
     if not anchor_dcids:
         return []
     anchor_ref = anchor_dcids[0]
+    deadline = start_ms / 1000.0 + settings().request_timeout_s
 
     def _request(scope: Literal["peers", "children"] | None) -> OptionsRequest:
         # `for` is an aliased reserved word, so build the model from wire keys.
@@ -181,7 +182,7 @@ async def build_place_options_events(
                 graph=graph,
                 materialise_graph=materialise_graph,
                 population_memo=population_memo,
-                deadline=start_ms / 1000.0 + settings().request_timeout_s,
+                deadline=deadline,
                 join_inflight=False,
             )
         except PopulationInFlight:
@@ -200,7 +201,7 @@ async def build_place_options_events(
                 _request(scope),
                 target,
                 graph=graph,
-                start_ms=start_ms,
+                deadline=deadline,
                 materialise_graph=materialise_graph,
                 materialise_sdmx=materialise_sdmx,
                 coverage=coverage,

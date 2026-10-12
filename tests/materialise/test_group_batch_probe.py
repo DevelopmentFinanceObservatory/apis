@@ -34,7 +34,6 @@ from materialise.facets import (
     probe_collection_facets,
 )
 from materialise.graph import Facet
-from materialise.revision import RevisionSnapshot, SourceRevision
 from materialise.window import RequestedWindow
 
 from ._group_support import (
@@ -53,16 +52,7 @@ from ._group_support import (
     _sdmx_client_for,
 )
 from ._scope_availability import NO_SCOPE_READ, ScopeAvailability
-from .conftest import FakeGraphReader, FakeRevisionReader
-
-_SNAPSHOT_A = RevisionSnapshot(
-    graph_revision="graph-rev-A",
-    source_revisions=(SourceRevision(source="OECD_DAC_CRS", revision="rev-1"),),
-)
-_SNAPSHOT_B = RevisionSnapshot(
-    graph_revision="graph-rev-B",
-    source_revisions=(SourceRevision(source="OECD_DAC_CRS", revision="rev-2"),),
-)
+from .conftest import FakeGraphReader
 
 _ABOUT = "observationAbout"
 _COUNTRY_X = "country/XXX"
@@ -189,13 +179,12 @@ def _about_sdmx(
     ), requests
 
 
-def _group(requests, *, sdmx, graph, revision_reader=None, **kwargs):
+def _group(requests, *, sdmx, graph, **kwargs):
     return materialise_group(
         requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=revision_reader or FakeRevisionReader([_SNAPSHOT_A, _SNAPSHOT_A]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         **kwargs,
@@ -476,7 +465,6 @@ def test_a_supplied_probe_carries_its_default_places_to_the_fetch():
             dataclasses.replace(_admitted_at(_COUNTRY_Y, _facet("f-shared")), places=(_COUNTRY_Y,)),
         )
         * 2,
-        revision=_SNAPSHOT_A,
     )
 
     result = _group(
@@ -486,7 +474,6 @@ def test_a_supplied_probe_carries_its_default_places_to_the_fetch():
         ],
         sdmx=sdmx,
         graph=graph,
-        revision_reader=FakeRevisionReader([_SNAPSHOT_A]),
         precomputed_probe=supplied,
         member_concurrency=1,
     )
@@ -561,17 +548,15 @@ def test_supplied_probe_reaches_the_fetch_wire_and_issues_no_probe_call():
             _admitted_at(_COUNTRY_X, _facet("f-shared"), _facet("f-a")),
             _admitted_at(_COUNTRY_X, _facet("f-shared"), _facet("f-b")),
         ),
-        revision=_SNAPSHOT_A,
     )
 
     result = _group(
         [_about_request(_BARE_A, _COUNTRY_X), _about_request(_BARE_B, _COUNTRY_X)],
         sdmx=sdmx,
         graph=graph,
-        revision_reader=FakeRevisionReader([_SNAPSHOT_A]),
         precomputed_probe=supplied,
-        # See `_drift_group_call`'s own comment: pins the two same-scope
-        # members into one shared chunk.
+        # `_plan_collection_chunks`' lane target is `ceil(2 / lanes)`, so one lane keeps both
+        # same-scope members in one shared chunk.
         member_concurrency=1,
     )
 
@@ -579,63 +564,6 @@ def test_supplied_probe_reaches_the_fetch_wire_and_issues_no_probe_call():
     assert graph.calls["observation_facets_batch_many"] == 0
     assert graph.calls["variable_facets_batch"] == 0
     assert _fetch_wire(sdmx_requests) == {frozenset({_BARE_A, _BARE_B}): ("f-a", "f-b", "f-shared")}
-    assert result.coverage.rows == 2
-
-
-# ---------------------------------------------------------------------------
-# (e) A drift retry re-probes through the batch
-# ---------------------------------------------------------------------------
-
-
-def _drift_group_call(*, reader: FakeRevisionReader, **kwargs):
-    graph = _RecordingGraph(
-        facets={(bare, _COUNTRY_X): [_facet("f-shared")] for bare in (_BARE_A, _BARE_B)}
-    )
-    sdmx, sdmx_requests = _about_sdmx({_BARE_A: _COUNTRY_X, _BARE_B: _COUNTRY_X})
-    result = _group(
-        [_about_request(_BARE_A, _COUNTRY_X), _about_request(_BARE_B, _COUNTRY_X)],
-        sdmx=sdmx,
-        graph=graph,
-        revision_reader=reader,
-        # `_plan_collection_chunks`'s own lane target is `ceil(2 / lanes)`;
-        # `member_concurrency=1` (`ceil(2 / 1) == 2`) keeps both same-scope
-        # members in the one shared chunk each of this helper's callers
-        # means to exercise, instead of the default `4`'s own split.
-        member_concurrency=1,
-        **kwargs,
-    )
-    return result, graph, sdmx_requests
-
-
-def test_multi_member_drift_after_a_supplied_probe_reprobes_through_one_batched_call():
-    supplied = CollectionFacetProbe(
-        members=(
-            _admitted_at(_COUNTRY_X, _facet("f-shared")),
-            _admitted_at(_COUNTRY_X, _facet("f-shared")),
-        ),
-        revision=_SNAPSHOT_A,
-    )
-
-    result, graph, sdmx_requests = _drift_group_call(
-        reader=FakeRevisionReader([_SNAPSHOT_B, _SNAPSHOT_B]), precomputed_probe=supplied
-    )
-
-    assert graph.batch_many_args == [((_BARE_A, _BARE_B), (_COUNTRY_X,))]
-    assert graph.calls["variable_facets_batch"] == 0
-    # First attempt fetched with the supplied probe, the retry with the
-    # batched one.
-    assert len(sdmx_requests) == 2
-    assert result.coverage.rows == 2
-
-
-def test_multi_member_drift_without_a_supplied_probe_batches_the_probe_on_both_attempts():
-    result, graph, sdmx_requests = _drift_group_call(
-        reader=FakeRevisionReader([_SNAPSHOT_A, _SNAPSHOT_B, _SNAPSHOT_B])
-    )
-
-    assert graph.batch_many_args == [((_BARE_A, _BARE_B), (_COUNTRY_X,))] * 2
-    assert graph.calls["variable_facets_batch"] == 0
-    assert len(sdmx_requests) == 2
     assert result.coverage.rows == 2
 
 

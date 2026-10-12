@@ -34,6 +34,7 @@ def counted(tmp_path):
         catalogue=origin_snapshot(tmp_path / "origin"),
         coverage=coverage_fixture(tmp_path / "coverage").index,
         datasets={metadata.provenance_id for metadata in FACET_METADATA.values()},
+        totals=(),
     )
 
 
@@ -103,7 +104,10 @@ def test_a_publisher_counts_only_where_its_own_provenance_holds_data(tmp_path):
         horizon=horizon,
     )
     places = catalogue_counts(
-        catalogue=replace(snapshot, tables=tables), coverage=coverage, datasets={AID_TABLE}
+        catalogue=replace(snapshot, tables=tables),
+        coverage=coverage,
+        datasets={AID_TABLE},
+        totals=(),
     ).places
     assert (places["country/KEN"].publishers, places["country/USA"].publishers) == (1, 1)
     assert (places["country/KEN"].variables, places["country/USA"].variables) == (1, 1)
@@ -145,6 +149,7 @@ def test_the_aid_block_counts_the_rows_of_every_declared_dataset(tmp_path):
         catalogue=origin_snapshot(tmp_path),
         coverage=coverage,
         datasets={AID_TABLE, totals_table, receipts_table},
+        totals=(),
     )
     assert counted.counts.aid == AidCounts(
         donors=2, recipients=2, years=YearRange(first=1961, last=2022)
@@ -184,7 +189,39 @@ def test_indicators_leave_out_a_withheld_coverage_variable(tmp_path):
         horizon=horizon,
     )
     counted = catalogue_counts(
-        catalogue=replace(snapshot, tables=tables), coverage=coverage, datasets={AID_TABLE}
+        catalogue=replace(snapshot, tables=tables),
+        coverage=coverage,
+        datasets={AID_TABLE},
+        totals=(),
     )
     # Three base and DFO variables, and V1.
     assert counted.counts.indicators == 4
+
+
+def test_the_aid_block_leaves_out_the_parties_that_total_others(tmp_path):
+    """The G7 as a donor and DAC's Africa total as a recipient count in no aid figure, global
+    or at a country, and the rows they hold keep their years."""
+    table, horizon = coverage_table(
+        [
+            (V1, FACET_ACTUALS, "country/FRA", "country/KEN", [2018]),
+            (V1, FACET_ACTUALS, "GroupOfSeven", "country/KEN", [2018]),
+            (V1, FACET_ACTUALS, "country/FRA", "DACAfrica", [2020]),
+        ]
+    )
+    coverage = CoverageIndex(
+        table,
+        {V1: RoleNames(donor="financingProvider", recipient="financingRecipient")},
+        {FACET_ACTUALS: FacetMetadata(provenance_id=AID_TABLE)},
+        horizon=horizon,
+    )
+    counted = catalogue_counts(
+        catalogue=origin_snapshot(tmp_path),
+        coverage=coverage,
+        datasets={AID_TABLE},
+        totals={"GroupOfSeven", "DACAfrica"},
+    )
+    assert counted.counts.aid == AidCounts(
+        donors=1, recipients=1, years=YearRange(first=2018, last=2020)
+    )
+    assert counted.places["country/KEN"].aid.donors == 1
+    assert counted.places["country/FRA"].aid.recipients == 1

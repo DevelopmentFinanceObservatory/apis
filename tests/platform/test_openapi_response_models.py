@@ -25,8 +25,10 @@ _GRAPH_ENV_VARS = (
     "GRAPH_NODE_TIMEOUT_SECONDS",
 )
 
-# Operations allowed to omit a 2xx response.
-_NO_2XX_EXEMPT: frozenset[tuple[str, str]] = frozenset()
+# Operations allowed to omit a 2xx response. The Datasets download link answers 302.
+_NO_2XX_EXEMPT: frozenset[tuple[str, str]] = frozenset(
+    {("/api/datasets/{id}/{content_version}/files/{digest}", "get")}
+)
 
 # Operations allowed to return an empty schema.
 _EMPTY_SCHEMA_EXEMPT: frozenset[tuple[str, str, str]] = frozenset()

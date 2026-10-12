@@ -43,7 +43,6 @@ from ._group_support import (
     _BARE_B,
     _CSV_HEADER,
     _ENTITY,
-    _SNAPSHOT,
     _STAT_VAR_A,
     _STAT_VAR_B,
     _STAT_VAR_C,
@@ -51,7 +50,7 @@ from ._group_support import (
     _request,
     _sdmx_client_for,
 )
-from .conftest import FakeGraphReader, FakeRevisionReader
+from .conftest import FakeGraphReader
 
 
 class _GroupFacet(NamedTuple):
@@ -74,8 +73,13 @@ def _coverage_for(*entries: _GroupFacet, entity: str = _ENTITY, year: int = 1973
     bare_stat_vars = {entry.stat_var for entry in entries}
     role_names = {bare: RoleNames(donor="donor", recipient="recipient") for bare in bare_stat_vars}
     facet_metadata = {
+        # Every DFO import states `P1Y`; a coverage facet stating no period is a cadence of
+        # its own (`materialise.facets.cadences_by_member`).
         entry.facet_id: FacetMetadata(
-            provenance_id=entry.provenance, measurement_method=entry.method, unit=entry.unit
+            provenance_id=entry.provenance,
+            measurement_method=entry.method,
+            unit=entry.unit,
+            observation_period="P1Y",
         )
         for entry in entries
     }
@@ -195,8 +199,7 @@ def test_group_selection_ranks_by_summed_obs_count_not_a_single_members_local_ma
         requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         deadline=deadline,
@@ -297,8 +300,7 @@ def test_group_honours_graph_declared_policy_agreed_across_members():
         requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -360,8 +362,7 @@ def test_empty_facet_id_intersection_refuses_with_alternatives_unioned_across_me
             group_requests,
             sdmx=sdmx,
             graph=graph,
-            enrichment=EnrichmentLookup(graph),
-            revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
             materialiser_build="build-123",
             capability_version="cap-v1",
             coverage=coverage,
@@ -430,8 +431,7 @@ def test_member_missing_bound_axis_refuses_with_its_own_alternatives_and_pointer
             [request_a, request_b],
             sdmx=sdmx,
             graph=graph,
-            enrichment=EnrichmentLookup(graph),
-            revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
             materialiser_build="build-123",
             capability_version="cap-v1",
             coverage=coverage,
@@ -513,8 +513,7 @@ def test_axis_absent_from_chosen_facet_is_none_in_trace_and_omitted_from_preimag
         requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -572,8 +571,7 @@ def test_provenance_absent_from_chosen_facet_raises_default_facet_undefined():
             group_requests,
             sdmx=sdmx,
             graph=graph,
-            enrichment=EnrichmentLookup(graph),
-            revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+            enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
             materialiser_build="build-123",
             capability_version="cap-v1",
             coverage=coverage,
@@ -629,8 +627,7 @@ def test_one_member_with_no_bound_entity_mints_every_covered_series_beside_a_bou
         [request_a, request_b],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -663,8 +660,7 @@ def test_two_members_with_no_bound_entity_share_one_exhaustive_fetch():
         [request_a, request_b],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -695,8 +691,7 @@ def test_members_with_no_bound_entity_and_no_coverage_are_the_empty_result():
         [request_a, request_b],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -743,8 +738,7 @@ def test_role_bearing_members_with_no_bound_entity_mint_across_every_entity():
         group_requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -786,7 +780,7 @@ def test_group_selection_narrows_the_shared_pool_to_the_requested_window():
         ],
         candidates,
         graph=FakeGraphReader(),
-    )
+    ).selections
     windowed = select_group_facets(
         [
             _request(stat_var=_STAT_VAR_A, facet_bindings={}, window=window_2027),
@@ -794,7 +788,7 @@ def test_group_selection_narrows_the_shared_pool_to_the_requested_window():
         ],
         candidates,
         graph=FakeGraphReader(),
-    )
+    ).selections
 
     assert unwindowed["measurementMethod"].ref is None
     assert unwindowed["provenance"].dispatch_facet_id == "facetRecorded"
@@ -847,7 +841,7 @@ def test_group_request_prefers_native_currency_candidate_over_a_higher_ranked_al
 
     selections = select_group_facets(
         requests, [[facet_usd, facet_eur], [facet_usd, facet_eur]], graph=FakeGraphReader()
-    )
+    ).selections
 
     assert selections["unit"].ref == "CurrencyUSD"
     assert selections["unit"].selection_reason == "native_currency_preferred"
@@ -866,7 +860,9 @@ def test_group_request_falls_to_ordinary_default_when_no_native_currency_candida
     )
     requests = _group_requests(facet_bindings=_GROUP_REQUEST_BINDINGS)
 
-    selections = select_group_facets(requests, [[facet_eur], [facet_eur]], graph=FakeGraphReader())
+    selections = select_group_facets(
+        requests, [[facet_eur], [facet_eur]], graph=FakeGraphReader()
+    ).selections
 
     assert selections["unit"].ref == "CurrencyEUR"
     assert selections["unit"].selection_reason == "sole_candidate"
@@ -910,7 +906,7 @@ def test_group_request_declared_policy_agreed_across_members_wins_over_ranking()
     )
     requests = _group_requests(facet_bindings=_GROUP_REQUEST_BINDINGS)
 
-    selections = select_group_facets(requests, [[facet_gbp], [facet_gbp]], graph=graph)
+    selections = select_group_facets(requests, [[facet_gbp], [facet_gbp]], graph=graph).selections
 
     assert selections["unit"].basis == "declared_default"
     assert selections["unit"].ref == "CurrencyGBP"
@@ -942,12 +938,13 @@ def test_group_request_narrows_provenance_and_measurement_method_to_the_currency
     requests_with_request_unit = _group_requests(facet_bindings=_GROUP_REQUEST_BINDINGS)
     requests_with_unbound_unit = _group_requests(facet_bindings={})
 
-    selections_request = select_group_facets(
+    election_request = select_group_facets(
         requests_with_request_unit, candidates, graph=FakeGraphReader()
     )
+    selections_request = election_request.selections
     selections_unbound = select_group_facets(
         requests_with_unbound_unit, candidates, graph=FakeGraphReader()
-    )
+    ).selections
 
     # An unbound unit ranks the full, disagreeing pool: facet_p2 (the
     # higher-summed-obs_count facet) wins.
@@ -964,8 +961,10 @@ def test_group_request_narrows_provenance_and_measurement_method_to_the_currency
     assert selections_request["measurementMethod"].ref == "M1"
     assert selections_request["provenance"].selection_reason == "sole_candidate"
     # Every member has the elected `facet_p1` in its candidate list.
-    for member_candidates in candidates:
-        assert joint_dispatch_facet_ids(member_candidates, selections_request) == ("f1",)
+    for member, member_candidates in enumerate(candidates):
+        assert joint_dispatch_facet_ids(member_candidates, election_request, member=member) == (
+            "f1",
+        )
 
 
 # --- Group axis resolution's own axis rule, and dispatch-facet agreement --
@@ -1025,7 +1024,7 @@ def test_group_unit_request_binding_dispatches_from_facetusd_not_top():
     requests = _group_requests(facet_bindings=_GROUP_REQUEST_BINDINGS)
     candidates = [[facet_usd, facet_eur], [facet_usd, facet_eur]]
 
-    selections = select_group_facets(requests, candidates, graph=FakeGraphReader())
+    selections = select_group_facets(requests, candidates, graph=FakeGraphReader()).selections
 
     assert selections["unit"].dispatch_facet_id == "facetUSD"
 
@@ -1065,7 +1064,7 @@ def test_group_shares_a_facet_even_when_each_members_own_currency_native_candida
     requests = _group_requests(facet_bindings=_GROUP_REQUEST_BINDINGS)
     candidates = [[member1_usd, shared_eur], [member2_usd, shared_eur]]
 
-    selections = select_group_facets(requests, candidates, graph=FakeGraphReader())
+    selections = select_group_facets(requests, candidates, graph=FakeGraphReader()).selections
     shared_candidates = _group_shared_candidates(requests, candidates, graph=FakeGraphReader())
     (shared_facet,) = shared_candidates
 
@@ -1184,7 +1183,8 @@ def test_index_sourced_group_agrees_on_provenance_and_unit_despite_differing_fac
     candidates = [[facet_a], [facet_b]]
     graph = FakeGraphReader()
 
-    selections = select_group_facets(requests, candidates, graph=graph)
+    election = select_group_facets(requests, candidates, graph=graph)
+    selections = election.selections
 
     assert set(selections) == {"provenance", "unit"}
     assert selections["provenance"].ref == "PROV_CRS"
@@ -1193,8 +1193,8 @@ def test_index_sourced_group_agrees_on_provenance_and_unit_despite_differing_fac
     # the group's own representative pick.
     assert selections["provenance"].dispatch_facet_id == "facetA"
     # Each member dispatches from its own candidate, despite differing methods.
-    assert joint_dispatch_facet_ids([facet_a], selections) == ("facetA",)
-    assert joint_dispatch_facet_ids([facet_b], selections) == ("facetB",)
+    assert joint_dispatch_facet_ids([facet_a], election, member=0) == ("facetA",)
+    assert joint_dispatch_facet_ids([facet_b], election, member=1) == ("facetB",)
 
 
 def test_index_sourced_group_with_differing_unit_still_refuses_facet_not_available():
@@ -1295,7 +1295,7 @@ def test_group_shared_candidates_ignores_a_member_with_an_empty_pool():
     ]
     candidates = [[shared], []]
 
-    selections = select_group_facets(requests, candidates, graph=FakeGraphReader())
+    selections = select_group_facets(requests, candidates, graph=FakeGraphReader()).selections
 
     assert selections["provenance"].ref == "PROV_SHARED"
     assert selections["provenance"].dispatch_facet_id == "facetShared"
@@ -1366,8 +1366,7 @@ def test_index_sourced_group_materialises_both_members_rows_despite_differing_me
         requests,
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -1423,8 +1422,7 @@ def test_group_materialise_with_one_empty_and_one_populated_member_serves_the_po
         [request_a, request_b],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -1509,8 +1507,7 @@ def test_group_materialise_member_with_empty_probe_reports_zero_rows_despite_a_m
         [request_a, request_b],
         sdmx=sdmx,
         graph=graph,
-        enrichment=EnrichmentLookup(graph),
-        revision_reader=FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
+        enrichment=EnrichmentLookup(graph, type_kinds={}, parties={}),
         materialiser_build="build-123",
         capability_version="cap-v1",
         coverage=coverage,
@@ -1566,7 +1563,7 @@ def test_group_empty_member_does_not_break_the_populated_members_declared_policy
     ]
     candidates = [[facet_policy, facet_big], [], [facet_policy, facet_big]]
 
-    selections = select_group_facets(requests, candidates, graph=graph)
+    selections = select_group_facets(requests, candidates, graph=graph).selections
 
     assert selections["provenance"].basis == "declared_default"
     assert selections["provenance"].ref == "PROV_POLICY"
@@ -1613,7 +1610,7 @@ def test_index_sourced_group_empty_member_does_not_break_the_populated_members_d
     ]
     candidates = [[facet_a], [], [facet_c]]
 
-    selections = select_group_facets(requests, candidates, graph=graph)
+    selections = select_group_facets(requests, candidates, graph=graph).selections
 
     assert selections["provenance"].basis == "declared_default"
     assert selections["provenance"].ref == "PROV_POLICY"
@@ -1625,8 +1622,9 @@ def test_group_generate_chunk_role_bearing_member_with_empty_dispatch_ids_report
 ):
     # The mock serves one body to the probe and the fetch, so call
     # `_generate_chunk` directly, under each window, with
-    # B's dispatch ids empty while its body contains the selected facet. A
-    # role-bearing member's rows pass the admission mask, so the chunk skips them.
+    # B's dispatch ids empty while its body contains the selected facet and a row
+    # naming no facet. A role-bearing member's rows pass the admission mask, so the
+    # chunk skips a member that dispatches nothing.
     request_a = _request(
         stat_var=_STAT_VAR_A,
         facet_bindings={
@@ -1654,7 +1652,7 @@ def test_group_generate_chunk_role_bearing_member_with_empty_dispatch_ids_report
     )
     selections = select_group_facets(
         [request_a, request_b], [[shared_facet], [shared_facet]], graph=FakeGraphReader()
-    )
+    ).selections
     bodies = {
         _BARE_A: _CSV_HEADER
         + _csv_row(
@@ -1675,6 +1673,17 @@ def test_group_generate_chunk_role_bearing_member_with_empty_dispatch_ids_report
             method="METH_SHARED",
             provenance="PROV_SHARED",
             facet_id="facetShared",
+        )
+        # A malformed row naming no facet: coverage admission keeps every row, so only
+        # skipping the member keeps it out.
+        + _csv_row(
+            stat_var=_STAT_VAR_B,
+            year="2016",
+            value="99",
+            unit="UNIT_SHARED",
+            method="METH_SHARED",
+            provenance="PROV_SHARED",
+            facet_id="",
         ),
     }
     sdmx, _requests = _sdmx_client_for(bodies)

@@ -1,4 +1,4 @@
-"""Checks `NoData.category` derivation and the resolution order for all 15 reason codes.
+"""Checks `NoData.category` derivation and the resolution order for every reason code.
 
 The table includes currency conversion's `rate_coverage_gap` and distinguishes unresolved entities
 from absent data, including codes whose names contain `_not_`.
@@ -10,6 +10,8 @@ from search.models import NO_DATA_RESOLUTION_ORDER, NoData, NoDataReason
 
 # code -> expected category, covering every NoDataReason value.
 _CATEGORY_BY_REASON: dict[NoDataReason, str] = {
+    "source_not_resolved": "unresolved",
+    "source_ambiguous": "unresolved",
     "entity_not_resolved": "unresolved",
     "entity_ambiguous": "unresolved",
     "entity_role_not_admitted": "unresolved",

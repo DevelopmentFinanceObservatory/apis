@@ -19,6 +19,11 @@ identity in canonical form (`code_index.members.canonical_identity`): each slot 
 of the dataset the identity names fixes binds the invariant's value, so definitions naming one
 dataset that differ only in whether they bind an invariant or leave it unbound serve and
 report one `spec_id`. An identity that names no dataset keeps the bindings it was posted with. An unchanged identity reuses its record.
+
+`resolve_served_definition` is the one place a definition becomes its served definition, and
+every door that reads or writes subject state calls it. The mint serves the served
+definition's current version through `current.serve_current`: a current head holding the
+requested rendering answers with no SDMX call.
 """
 
 from __future__ import annotations
@@ -35,12 +40,16 @@ from datasets_api.adapter import (
     build_identity_document,
     check_reproducible,
     member_read_bounds,
-    prime_head_signal,
     resolve_definition_members,
     to_materialisation_request,
     verify_sidecar_definition,
 )
-from datasets_api.admission import refuse_excel_over_estimate, sync_estimate, within_sync_budget
+from datasets_api.admission import (
+    refuse_excel_over_estimate,
+    sync_estimate,
+    under_current_coverage,
+    within_sync_budget,
+)
 from datasets_api.codes_materialise import (
     CurrencyRoleUndeclared,
     DefinitionNotReproducible,
@@ -49,17 +58,21 @@ from datasets_api.codes_materialise import (
     SpecNotFound,
 )
 from datasets_api.config import DatasetsBuildSettings
+from datasets_api.current import serve_current, serve_current_head
 from datasets_api.manifest_models import Manifest
 from datasets_api.mint_deps import MintDeps
 from datasets_api.mint_models import MintOptions, Scope
 from datasets_api.models import CanonicalDefinition
 from datasets_api.operations.submit import submit_over_budget
-from datasets_api.serve import raw_fetch_guard, serve_definition
+from datasets_api.render import linked_under
 from datasets_api.shape import StatVarShape
 from datasets_api.surgery import apply_scope_surgery, open_roles_left_open
 from datasets_api.timings import phase
+from materialise import MaterialisationRequest
 from materialise.graph import GraphReader
-from spec_registry import RecomputedIdentity, SpecIdMismatch, recompute_identity
+from series_coverage.shared import CoverageSnapshot
+from spec_registry import RecomputedIdentity, SpecIdMismatch, SpecRegistry, recompute_identity
+from spec_registry.reader import StoredDefinition
 from statvar_members import MemberEnumerator
 
 _POINTER = "/input/spec_id"
@@ -126,7 +139,7 @@ def _resolve_members(
             ),
         )
     except MemberNotResolvable as exc:
-        exc.pointer = _POINTER
+        exc.issue_pointer = _POINTER
         raise
     return resolved.shapes
 
@@ -179,7 +192,7 @@ def _check_own_roles(
             bounds=bounds,
         )
     except MemberNotResolvable as exc:
-        exc.pointer = _POINTER
+        exc.issue_pointer = _POINTER
         raise
     check_reproducible(identity, spec_id=spec_id, shape=own.shapes[0])
 
@@ -241,6 +254,43 @@ def _served_identity(
     return None if served is identity else recompute_identity(served)
 
 
+def resolve_served_definition(
+    stored: StoredDefinition,
+    *,
+    code_index: CodeIndex,
+    registry: SpecRegistry,
+    scope: Scope | None = None,
+    trace_id: str | None = None,
+) -> StoredDefinition:
+    """The served definition of the registered definition `stored`: surgered by `scope` when a
+    mint supplies one, then in canonical form (`_served_identity`).
+
+    One registry transaction reads the served definition, registers it when absent and, with
+    no `scope`, binds its id to `stored`'s (`SpecRegistry.register_served_definition`).
+    `stored`'s own id stays registered and resolves to the served one through this function,
+    so every door keys heads, versions, operations and references on the served `spec_id`.
+    Canonical form is a function of the code index, so the served id of one posted id can
+    change with an index export. Each call resolves the served id under the index it is
+    given, and the bindings keep every served id a posted id has resolved to, which is what a
+    version-addressed read under the posted id reads (`subject_ids.served_subject_ids`). A
+    scoped served id stays unbound: a mint with a scope hands out links naming the served id.
+    Raises `IdentityQuarantined` when the served id, `stored`'s id or a served id already
+    bound to it is quarantined, and `IdentityCollision` when the registry holds other
+    identity bytes under the served id. A `stored` that is its own served definition is
+    returned with no registry call: the read that produced it (`SpecReader.read_definition`)
+    refuses a quarantined id and a quarantined served id bound to it.
+    """
+    served = _served_identity(stored.identity, scope=scope, code_index=code_index)
+    if served is None or served.spec_id == stored.spec_id:
+        return stored
+    return registry.register_served_definition(
+        served=served,
+        schema_version=stored.schema_version,
+        posted_spec_id=stored.spec_id if scope is None else None,
+        trace_id=trace_id,
+    )
+
+
 def mint_spec_id(
     spec_id: str,
     *,
@@ -250,10 +300,17 @@ def mint_spec_id(
     deps: MintDeps,
     trace_id: str | None = None,
 ) -> Manifest:
+    """Mint the definition `spec_id` names, registering a supplied sidecar first, and serve its
+    current version (`current.serve_current`).
+
+    Members resolve before any write, under the facets and entities `scope` installs. The
+    served definition (`resolve_served_definition`) keys every state write, and `serve_mint`
+    serves it. With no `scope` the served id is the canonical form of `spec_id`, and the mint
+    names `spec_id`: a head honours revocations under both ids, and the links name `spec_id`.
+    With a `scope` the links name the served id.
+    """
     with phase("resolve"):
         stored = deps.spec_reader.read_definition(spec_id)
-        # Members resolve before any write, under the facets and entities `scope` installs,
-        # so the shapes are those of the surgered identity.
         if stored is None:
             if definition is None:
                 raise SpecNotFound(subject_id=spec_id, pointer="/input/spec_id")
@@ -297,20 +354,13 @@ def mint_spec_id(
                 for shape in shapes:
                     build_identity_document(shape, scope=scope, graph=deps.graph)
 
-        served = _served_identity(stored.identity, scope=scope, code_index=deps.code_index)
-        if served is not None and served.spec_id != stored.spec_id:
-            deps.registry.register_definition(
-                identity_definition=served.identity,
-                schema_version=stored.schema_version,
-                supplied_spec_id=served.spec_id,
-                trace_id=trace_id,
-            )
-            # No manifest returns before the registry write is read back.
-            stored = deps.spec_reader.read_definition(served.spec_id)
-            assert stored is not None, (
-                "served definition missing immediately after its own registration"
-            )
-
+        stored = resolve_served_definition(
+            stored,
+            code_index=deps.code_index,
+            registry=deps.registry,
+            scope=scope,
+            trace_id=trace_id,
+        )
         try:
             requests = tuple(
                 to_materialisation_request(stored.identity, shape=shape, code_index=deps.code_index)
@@ -319,56 +369,97 @@ def mint_spec_id(
         except CurrencyRoleUndeclared as exc:
             exc.pointer = _POINTER
             raise
-    # Keep the estimate and fetch on the same coverage index and stamp.
-    with phase("coverage"):
-        coverage_snapshot = deps.coverage.snapshot()
-    # Refuse oversized Excel requests before fetching. Submit over-budget work as an operation.
-    with phase("estimate"):
-        estimate = sync_estimate(
-            requests, index=coverage_snapshot.index, member_concurrency=deps.member_concurrency
-        )
-        refuse_excel_over_estimate(estimate, format=options.format)
-    submit_over_budget(
-        subject_id=stored.spec_id,
-        options=options,
-        estimate=estimate,
-        coverage_stamp=coverage_snapshot.stamp,
-        operation_store=deps.operation_store,
-        task_client=deps.task_client,
-        within_budget=within_sync_budget(
-            estimate,
-            sync_budget_rows=deps.settings.sync_budget_rows,
-            sync_budget_requests=deps.settings.sync_budget_requests,
-        ),
-        async_max_rows=deps.settings.async_max_rows,
-        async_max_requests=deps.settings.async_max_requests,
-        members=[request.stat_var for request in requests],
-    )
-    # One combined signal covers every member.
-    priming = prime_head_signal(
-        requests,
-        subject_id=stored.spec_id,
-        graph=deps.graph,
-        sdmx=deps.sdmx,
-        head_store=deps.head_store,
-        materialise_wait_seconds=deps.settings.materialise_wait_seconds,
-        revision_reader=deps.revision_reader,
-        materialise_semaphore=deps.materialise_semaphore,
-        coverage=coverage_snapshot.index,
-        deadline=deps.deadline,
-    )
-    manifest = serve_definition(
-        stored=stored,
+    if scope is not None:
+        # Scope surgery makes a served id no click on `spec_id` resolves to, so the links name
+        # the served id.
+        return serve_mint(stored, requests=requests, options=options, deps=deps, trace_id=trace_id)
+    # The served id is the canonical form of `spec_id`. The mint names `spec_id`, so it honours
+    # revocations under both ids and its links name `spec_id` (`render.linked_under`).
+    manifest = serve_mint(
+        stored,
         requests=requests,
         options=options,
-        deps=deps.to_serve_deps(),
+        deps=deps,
         trace_id=trace_id,
-        signal=priming.signal,
-        expected_content_version=priming.expected_content_version,
-        precomputed_probe=priming.probe,
-        # Lineage only. Excluded from content_version.
-        ceiling=raw_fetch_guard(estimate, floor=deps.ceiling),
-        coverage_stamp=coverage_snapshot.stamp,
-        coverage_index=coverage_snapshot.index,
+        revoked_under=(spec_id,),
     )
-    return manifest
+    return linked_under(manifest, spec_id)
+
+
+def serve_mint(
+    stored: StoredDefinition,
+    *,
+    requests: Sequence[MaterialisationRequest],
+    options: MintOptions,
+    deps: MintDeps,
+    trace_id: str | None,
+    revoked_under: Sequence[str] = (),
+) -> Manifest:
+    """Serve a mint of the served definition `stored` over its resolved `requests`. A head
+    answers under `current.load_stored`'s `revoked_under`.
+
+    A current head that links the requested rendering answers first
+    (`current.serve_current_head`). Otherwise admission runs once here. It refuses an Excel
+    request over the row cap, submits work over the sync budget as an operation, and serves
+    the current version (`current.serve_current`) under the admitted estimate, starting from
+    the head and verdict `serve_current_head` reached, so the head is read once.
+
+    One coverage snapshot serves the head check, the estimate, the budget decision and the
+    fetch. When a reload replaces it before the materialise permit is taken, all four run
+    again on the served snapshot (`admission.under_current_coverage`).
+    """
+    definition_deps = deps.to_definition_deps()
+
+    def _take() -> CoverageSnapshot:
+        with phase("coverage"):
+            return deps.coverage.snapshot()
+
+    def _serve(coverage_snapshot: CoverageSnapshot) -> Manifest:
+        # Keep the estimate and fetch on the same coverage index and stamp.
+        served = serve_current_head(
+            stored,
+            requests=requests,
+            options=options,
+            trigger="mint",
+            deps=definition_deps,
+            trace_id=trace_id,
+            coverage_snapshot=coverage_snapshot,
+            revoked_under=revoked_under,
+        )
+        if isinstance(served, Manifest):
+            return served
+        with phase("estimate"):
+            estimate = sync_estimate(
+                requests, index=coverage_snapshot.index, member_concurrency=deps.member_concurrency
+            )
+            refuse_excel_over_estimate(estimate, format=options.format)
+        submit_over_budget(
+            subject_id=stored.spec_id,
+            options=options,
+            estimate=estimate,
+            coverage_stamp=coverage_snapshot.stamp,
+            operation_store=deps.operation_store,
+            task_client=deps.task_client,
+            within_budget=within_sync_budget(
+                estimate,
+                sync_budget_rows=deps.settings.sync_budget_rows,
+                sync_budget_requests=deps.settings.sync_budget_requests,
+            ),
+            async_max_rows=deps.settings.async_max_rows,
+            async_max_requests=deps.settings.async_max_requests,
+            members=[request.stat_var for request in requests],
+        )
+        return serve_current(
+            stored,
+            resolve_requests=lambda: requests,
+            options=options,
+            trigger="mint",
+            deps=definition_deps,
+            trace_id=trace_id,
+            admitted=estimate,
+            coverage_snapshot=coverage_snapshot,
+            head_read=served,
+            revoked_under=revoked_under,
+        )
+
+    return under_current_coverage(_take, _serve)

@@ -10,9 +10,14 @@ dac1.disbursement_gross:
   fixed: {financialFlowType: Disbursement, nettingBasis: Gross}
 dac1.oda_grant_equivalent:
   origin: dfo
-  dataset: {gl: DAC1 provenance}
-  shape: {measured_property: grantEquivalent, measurement_qualifier: Nominal}
-  fixed: {gl: 'DAC1 flow 1160, ODA aid type'}
+  dataset: provenance/OECDDAC1
+  shape:
+    population_type: FinancialFlow
+    measured_property: grantEquivalent
+    stat_type: measuredValue
+    measurement_qualifier: Nominal
+    measurement_denominator: null
+  fixed: {dac1AidType: DAC1AidType1010, financialFlowType: Disbursement}
 dac1.oda_net:
   origin: dfo
   dataset: {gl: DAC1 provenance}

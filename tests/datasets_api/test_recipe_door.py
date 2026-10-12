@@ -15,10 +15,8 @@ from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from artifact_store import LiveArtifactInventory, LiveArtifactStore, Tier
-from dataset_store.snapshot import LiveSnapshotReader
-from datasets_api.config import DatasetsConfigError
+from dataset_store.snapshot import FrameLineage, LiveSnapshotReader
 from datasets_api.doors.publish import PublishRecipeStoreMissing, publish_frame
-from datasets_api.doors.recipe import build_recipe_door
 from datasets_api.publish_models import MAX_RECIPE_BYTES, Recipe
 from datasets_api.recipe_store import LiveRecipeStore, ReplayedFrame
 from datasets_api.version_store import LiveVersionLister, LiveVersionRecordWriter
@@ -156,7 +154,7 @@ class _Deps:
                 subject_kind="spec",
                 content_version=content_version,
                 schema_version=1,
-                immutable_body={},
+                facts=FrameLineage(input_content_versions=[]),
                 artifacts=artifacts,
                 base_content_version=base_content_version,
             )
@@ -168,7 +166,7 @@ def deps() -> _Deps:
     return _Deps()
 
 
-def test_publish_with_a_recipe_stores_it_outside_the_version_body(deps: _Deps) -> None:
+def test_publish_with_a_recipe_stores_it_outside_the_version_facts(deps: _Deps) -> None:
     response = deps.publish(deps.client(), recipe=_recipe(anchor=_anchor()))
 
     assert response.status_code == 200, response.text
@@ -179,10 +177,7 @@ def test_publish_with_a_recipe_stores_it_outside_the_version_body(deps: _Deps) -
     )
     stored = deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION)
     assert stored is not None
-    assert dict(stored.immutable_body) == {
-        "op_spec_hash": _SPEC_ID,
-        "input_content_versions": ["cv_abc123"],
-    }
+    assert stored.facts == FrameLineage(input_content_versions=["cv_abc123"])
 
 
 def test_republish_with_the_same_recipe_answers_as_a_republish(deps: _Deps) -> None:
@@ -249,13 +244,6 @@ def test_publish_with_a_recipe_and_no_recipe_store_refuses_before_any_write(deps
         )
 
     assert deps.snapshot_reader.read_version(_SPEC_ID, _CONTENT_VERSION) is None
-
-
-def test_build_recipe_door_refuses_one_store_without_the_other(deps: _Deps) -> None:
-    with pytest.raises(DatasetsConfigError):
-        build_recipe_door(recipe_store=deps.recipe_store)
-    with pytest.raises(DatasetsConfigError):
-        build_recipe_door(version_lister=deps.version_lister)
 
 
 def test_put_recipe_is_idempotent_and_readable(deps: _Deps) -> None:

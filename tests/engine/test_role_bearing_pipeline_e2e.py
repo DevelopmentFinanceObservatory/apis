@@ -20,6 +20,7 @@ from search.engine.region.codes import NO_MEMBER_HAS_DATA_AT_PLACE
 from search.engine.region.pipeline import resolve_variable
 from search.engine.region.state import EngineOptions
 from search.engine.retrieval.retrieve import Materialised
+from search.engine.source_scope import SourceScope
 from search.models import (
     ObservationPoint,
     ObservationSeries,
@@ -145,6 +146,7 @@ def _run(
     unit_text: str | None = None,
     date_request: DateRequest | None = None,
     coverage: CoverageSnapshot | None = None,
+    source_scope: SourceScope | None = None,
 ):
     graph = FakeGraph(
         nodes={
@@ -171,6 +173,7 @@ def _run(
             sdmx=sdmx,
             base_timing={},
             unit_text=unit_text,
+            source_scope=source_scope,
             coverage=coverage if coverage is not None else empty_coverage_snapshot(),
             options=EngineOptions(
                 include_observations=include_observations,
@@ -939,6 +942,39 @@ def test_origin_only_data_never_confirms_as_a_definite_destination_answer(monkey
 
 
 # Cite and narrow sources from discovered role indexes.
+
+
+def test_a_named_source_removes_a_broader_role_coverage_series(monkeypatch):
+    """Role-bearing coverage admits source B before ranking source A's larger series."""
+    _auto_coverage_index_1 = patch_coverage(
+        monkeypatch,
+        [
+            (_SV_DCID, "f-source-a", _NOR, _KEN, _years(8)),
+            (_SV_DCID, "f-source-b", _USA, _KEN, _years(1)),
+        ],
+        role_names={_SV_DCID: _CREDITOR_DEBTOR_ROLE_NAMES},
+        facet_metadata={
+            "f-source-a": FacetMetadata(provenance_id="source/A"),
+            "f-source-b": FacetMetadata(provenance_id="source/B"),
+        },
+    )
+
+    result = _run(
+        entities=["Kenya"],
+        sv_dcid=_SV_DCID,
+        sv_arcs=_declaring_arcs(observation_properties=["creditor", "debtor"]),
+        resolve={"Kenya": _KEN, "Norway": _NOR, "USA": _USA},
+        sv_score=0.9,
+        role_query="aid to Kenya",
+        sdmx=FakeSdmxClient(observations={}),
+        provenance_labels={"source/A": "Source A", "source/B": "Source B"},
+        coverage=FakeCoverageService(_auto_coverage_index_1).snapshot(),
+        source_scope=SourceScope(allowed=frozenset({"source/B"}), named=True),
+    )
+
+    assert result.status == "definite", result
+    assert [ref.dcid for ref in result.specs[0].resolved.trace.resolved_sources] == ["source/B"]
+    assert result.specs[0].resolved.coverage.observation_count == 1
 
 
 def test_discovered_scope_cites_the_one_source_its_variable_serves(monkeypatch):

@@ -531,6 +531,23 @@ _CASES: list[tuple[DepartureFact, str | None, str]] = [
         "aid",
         "You asked for Africa. This shows the countries and territories in it, each on its own.",
     ),
+    # The CRS publishes no Africa total, so its members leave out the regional amounts.
+    (
+        DepartureFact(
+            code="group_read_as_members",
+            binding_ref="where:",
+            asked="Africa",
+            group_type="Continent",
+            excluded=(
+                "Africa, unallocated by country (DAC)",
+                "North of Sahara, unallocated by country (DAC)",
+            ),
+        ),
+        "aid",
+        "You asked for Africa. This shows the countries and territories in it, each on its own, "
+        "and leaves out what the data allocates to no single country: Africa, unallocated by "
+        "country (DAC); North of Sahara, unallocated by country (DAC).",
+    ),
     (
         DepartureFact(
             code="group_read_as_members",

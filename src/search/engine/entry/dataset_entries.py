@@ -26,7 +26,6 @@ from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.config import settings
 from search.engine.deadline import _cancel_trailing_tasks
 from search.engine.entry.parsed import (
-    confirm_part_datasets,
     confirm_part_pins,
     interpret_parts,
     per_part_pre_resolved,
@@ -139,6 +138,7 @@ def _build_candidates_region(
             # The first candidate's roles say which operations the set can run, as the
             # elected shape's do on a first pass.
             answered_roles=survivors[0].answered_roles,
+            separate=entry.separate,
         )
     if len(survivors) == 1:
         (only,) = survivors
@@ -151,6 +151,7 @@ def _build_candidates_region(
             ),
             timing_by_step=timing_by_step,
             earliest_index=index,
+            separate=entry.separate,
         )
     # Zero survivors. CandidateSet.specs has min_length=2, so there is no
     # "unsupported candidates" wire shape to fall back to either -- this
@@ -174,6 +175,7 @@ def _build_candidates_region(
         ),
         timing_by_step=timing_by_step,
         earliest_index=index,
+        separate=entry.separate,
     )
 
 
@@ -292,10 +294,9 @@ async def resolve_parsed_entries(
     """
     parts = [entry.part for _, entry in entries]
 
-    # Confirm parsed datasets and pins per part, then resolve unpinned names once and
-    # overlay each part's pins. Identity and candidate entries resolve their own dcids.
+    # Confirm pins per part, then resolve unpinned names once and overlay each part's
+    # pins. Identity and candidate entries resolve their own dcids.
     pointer_prefixes = [f"/input/entries/{entry_index}/part" for entry_index, _ in entries]
-    confirm_part_datasets(parts, pointer_prefixes=pointer_prefixes)
     pins = await confirm_part_pins(
         parts, graph=graph, resolver=resolver, pointer_prefixes=pointer_prefixes
     )
@@ -337,11 +338,11 @@ async def resolve_parsed_entries(
         per_variable_entity_roles=interpretation.entity_roles,
         per_variable_member_entities=interpretation.member_entities,
         per_variable_unit_texts=interpretation.unit_texts,
-        per_variable_source_texts=interpretation.source_texts,
-        per_variable_provenances=interpretation.provenances,
+        per_variable_source_scopes=interpretation.source_scopes,
         per_variable_pre_resolved=per_variable_pre_resolved,
         per_variable_operations=interpretation.operations,
         per_variable_open_axes=interpretation.open_axes,
+        per_variable_separate=interpretation.separate,
         coverage=coverage,
     ):
         # Drain local-index progress events. The fan-out cleans up its regions

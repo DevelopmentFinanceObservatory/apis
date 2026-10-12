@@ -14,6 +14,8 @@ import httpx
 import pytest
 
 import dc_graph
+from code_index.query import CodeIndex
+from code_index.types import IndexStamp, StatVarRow
 from origin_catalogue import BASE, DFO, UN_SYSTEM, note_un_blocked_places
 from search.engine.clients.graph import DetectedSV, DetectLegs, admit_legs
 from search.engine.clients.graph_client import _UN_RESOLVE_WORKERS, LiveGraphClient
@@ -125,6 +127,96 @@ def test_a_failed_un_leg_leaves_no_un_candidates_and_marks_the_detection() -> No
 
     assert [c.dcid for c in detection.candidates] == [_BASE_MORTALITY]
     assert detection.un.result() is None
+
+
+# -- rival index families --
+
+_GE = "GrantEquivalent_FinancialFlow_Disbursement"
+_CRS_GE = tuple(f"{_GE}_CRSPurposeCode{code}_Nominal" for code in (110, 120, 130))
+_DAC1_GE_BILATERAL = f"{_GE}_DAC1AidType1015_DACTypeOfFinanceGrants_Nominal"
+_DAC1_GE_TOTAL = f"{_GE}_DAC1AidType1010_Nominal"
+_DAC2B_GE = f"{_GE}_DAC2bAidType972_Nominal"
+
+
+def _ge_row(dcid: str, provenance: str, roles: tuple[str, ...], **codes: str) -> StatVarRow:
+    return StatVarRow(
+        dcid=dcid,
+        population_type="FinancialFlow",
+        measured_property="grantEquivalent",
+        stat_type="measuredValue",
+        measurement_qualifier="Nominal",
+        measurement_denominator=None,
+        observation_properties=roles,
+        constraint_properties={"financialFlowType": "Disbursement", **codes},
+        provenances=(provenance,),
+    )
+
+
+def _grant_equivalent_index() -> CodeIndex:
+    """One grant-equivalent five-tuple published by three families: CRS by donor and
+    recipient, DAC1 by donor, its narrower row first in index order, and DAC2b."""
+    crs = "provenance/OECDCreditorReportingSystem"
+    pair = ("financingProvider", "financingRecipient")
+    return CodeIndex(
+        stamp=IndexStamp(
+            graph_endpoint="https://fixture.example.org",
+            exported_at="2026-10-09T00:00:00Z",
+            code_counts={},
+            statvar_shape_counts={},
+            content_hash="sha256:fixture",
+        ),
+        declarations=[],
+        codes=[],
+        statvars=[
+            *(_ge_row(dcid, crs, pair, crsPurpose=dcid) for dcid in _CRS_GE),
+            _ge_row(
+                _DAC1_GE_BILATERAL,
+                "provenance/OECDDAC1",
+                ("financingProvider",),
+                dac1AidType="DAC1AidType1015",
+                dacTypeOfFinance="DACTypeOfFinanceGrants",
+            ),
+            _ge_row(
+                _DAC1_GE_TOTAL,
+                "provenance/OECDDAC1",
+                ("financingProvider",),
+                dac1AidType="DAC1AidType1010",
+            ),
+            _ge_row(_DAC2B_GE, "provenance/OECDDAC2B", pair, dac2bAidType="DAC2bAidType972"),
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    ("ours", "admitted"),
+    [
+        pytest.param(
+            (_sv(_CRS_GE[0], 0.83), _sv(_CRS_GE[1], 0.80), _sv(_CRS_GE[2], 0.79)),
+            [(_CRS_GE[0], 0.83), (_DAC1_GE_TOTAL, 0.83), (_CRS_GE[1], 0.80)],
+            id="parts-gain-the-whole",
+        ),
+        pytest.param(
+            (_sv(_DAC1_GE_BILATERAL, 0.7),),
+            [(_DAC1_GE_BILATERAL, 0.7)],
+            id="the-whole-gains-no-parts",
+        ),
+    ],
+)
+def test_the_cut_gains_the_family_holding_the_totals_of_its_hits(
+    ours: tuple[DetectedSV, ...], admitted: list[tuple[str, float]]
+) -> None:
+    """CRS hits, by donor and recipient, fill the cut, and DAC1, by donor alone, joins
+    through its broadest row at the best CRS score. DAC2b publishes on the CRS roles and adds
+    nothing, and a DAC1 hit adds neither family on more roles."""
+    detection = admit_legs(
+        DetectLegs(ours=ours, un=()),
+        catalogue=restrictive_catalogue(),
+        detect_k=2,
+        index=_grant_equivalent_index(),
+    )
+
+    assert [(c.dcid, c.score) for c in detection.candidates] == admitted
+    assert detection.hits == detection.candidates
 
 
 # -- the live client --

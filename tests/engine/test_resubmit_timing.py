@@ -137,6 +137,7 @@ def test_standard_promote_resubmit_times_every_phase(monkeypatch):
     by_step = region.timing_by_step
     for key in (
         "validate",
+        "walk",
         "reread_arcs",
         "detect_edits",
         "resolve_survivors",
@@ -173,7 +174,7 @@ def test_standard_promote_early_no_data_exit_times_ran_phases(monkeypatch):
     assert region.status == "no_data"
     assert region.no_data_reason == "no_matching_slice"
     by_step = region.timing_by_step
-    for key in ("validate", "reread_arcs"):
+    for key in ("validate", "walk", "reread_arcs"):
         assert key in by_step, f"expected {key!r} in timing_by_step, got {by_step!r}"
         assert by_step[key] >= 1, f"{key!r} should read a nonzero tick, got {by_step[key]!r}"
 
@@ -203,6 +204,7 @@ def test_window_no_observations_answer_times_every_ran_phase(monkeypatch):
     by_step = region.timing_by_step
     for key in (
         "validate",
+        "walk",
         "reread_arcs",
         "detect_edits",
         "resolve_survivors",

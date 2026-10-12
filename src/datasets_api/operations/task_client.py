@@ -1,11 +1,10 @@
 """Enqueues dataset operations through Cloud Tasks.
 
 Tasks call the worker route with an OIDC token for `worker_url`. Their deterministic name and
-body include `operation_id` and `submission_count`. Redispatches reuse the name, so
-`AlreadyExists` confirms a task whose earlier create succeeded. Redispatch only happens while no
-delivery has claimed the row, so Cloud Tasks refusing a used name never blocks one. A retryable resubmit increments
-`submission_count` and gets a new name. The 10-second enqueue timeout is below the 30-second
-redispatch grace.
+body include `operation_id` and `submission_count`. Enqueue recovery creates a task again under
+the same name, so `AlreadyExists` means an earlier create succeeded and counts as success. A
+retryable resubmit increments `submission_count` and gets a new name. The 10-second enqueue
+timeout is a third of `datasets_api.operations.dispatch.ENQUEUE_RECOVERY_SECONDS`.
 """
 
 from __future__ import annotations
@@ -25,10 +24,10 @@ logger = logging.getLogger(__name__)
 _RUN_ROUTE_TEMPLATE = "{worker_url}/internal/datasets/operations/{operation_id}/run"
 
 # Cloud Tasks retries after its 1,800-second dispatch deadline, even if the worker may finish.
-# Worker heartbeats renew the shorter operation lease while materialisation runs.
+# The worker claim's lease, `datasets_api.operations.worker.LEASE_SECONDS`, sits under it.
 DISPATCH_DEADLINE_SECONDS = 1_800
 
-# Enqueue timeouts have an unknown outcome. A later dispatch may retry the same task name.
+# Enqueue timeouts have an unknown outcome. Enqueue recovery may create the same task name again.
 ENQUEUE_TIMEOUT_SECONDS = 10
 
 
@@ -127,7 +126,7 @@ class LiveTaskClient:
                 request={"parent": self._queue, "task": task}, timeout=ENQUEUE_TIMEOUT_SECONDS
             )
         except AlreadyExists:
-            # An existing or recently completed task confirms the earlier create.
+            # An existing or recently completed task means the earlier create succeeded.
             logger.info(
                 "Datasets operations: task %r already exists on queue %r; treating this "
                 "enqueue as a no-op",

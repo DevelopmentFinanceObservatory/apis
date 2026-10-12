@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 from unittest.mock import AsyncMock, patch
 
 from entity_resolution import Resolution
 from search.engine.core import resolve_async
 from search.engine.extract import ExtractedEntity, Extraction, ExtractionResult
+from search.engine.leg_phase import enter_phase
 from search.engine.region import RegionResult
 from tests.engine._harness import EMPTY_SDMX, make_request
 from tests.fixtures import FakeGraph, FakeLLM, make_resolver
@@ -207,3 +209,48 @@ def test_entity_pre_resolution_precedes_fan_out_with_deduplicated_entities():
 
     assert resolve_calls == [["Kenya", "Uganda"]]
     assert order == ["resolve", "leg:v0", "leg:v1"]
+
+
+def test_soft_deadline_logs_the_phase_of_each_unfinished_leg(search_settings, caplog):
+    """A leg still running at the soft deadline gets one WARNING naming its step."""
+    search_settings(request_timeout_s=0.3)
+
+    async def _stub(variable: str, **_kwargs: object) -> RegionResult:
+        if variable == "v1":
+            enter_phase("ours:materialise")
+            await asyncio.Event().wait()
+        return RegionResult(
+            variable_text=variable,
+            status="no_data",
+            specs=(),
+            no_data_reason="variable_not_resolved",
+            warnings=(),
+            timing_by_step={},
+        )
+
+    fake_extraction = AsyncMock(
+        return_value=(
+            ExtractionResult(
+                extraction=Extraction(
+                    kind="resolution", variables=["v0", "v1"], entities=[], dates=[]
+                ),
+                qualifiers={},
+            ),
+            None,
+        )
+    )
+
+    with (
+        patch("search.engine.entry.raw_text.extract", fake_extraction),
+        patch("search.engine.fanout.resolve_variable", new=_stub),
+        caplog.at_level(logging.WARNING, logger="search.engine.fanout"),
+    ):
+        response = _run(
+            make_request("test soft deadline"),
+            FakeGraph(nodes={}, obs={}, detect={}, resolve={}),
+            FakeLLM(responses={}),
+        )
+
+    assert response.diagnostics.timed_out is True
+    unfinished = [r.args for r in caplog.records if r.name == "search.engine.fanout"]
+    assert unfinished == [(1, 2, "ours:materialise")]

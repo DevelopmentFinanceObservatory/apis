@@ -24,6 +24,7 @@ from starlette.types import Message
 
 from artifact_store import LiveArtifactInventory, LiveArtifactStore, Tier
 from dataset_store.snapshot import LiveSnapshotReader
+from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors import publish
 from datasets_api.doors.publish import (
     _INFLATE_STEP_BYTES,
@@ -37,6 +38,7 @@ from datasets_api.doors.publish import (
 from datasets_api.version_store import LiveVersionRecordWriter
 from tests.artifact_store.conftest import FakeGCSClient
 
+from ._deps_doubles import fake_deps_cell
 from ._snapshot_doubles import make_client_for_door
 from ._version_record_store import FakeVersionRecordDatasetStore
 
@@ -55,12 +57,18 @@ def _client(*, pool_size: int | None = None) -> TestClient:
         inventory=LiveArtifactInventory(store=store),
         client=FakeGCSClient(),
     )
+    settings = DatasetsBuildSettings.from_env()
+    if pool_size is not None:
+        settings = settings.model_copy(update={"work_max_concurrency": pool_size})
     door = build_publish_door(
-        artifact_store=artifact_store,
-        snapshot_reader=LiveSnapshotReader(store=store),
-        version_writer=LiveVersionRecordWriter(store=store),
+        deps=fake_deps_cell(
+            settings=settings,
+            artifact_store=artifact_store,
+            snapshot_reader=LiveSnapshotReader(store=store),
+            version_writer=LiveVersionRecordWriter(store=store),
+        ),
+        settings=settings,
         allowed_principals=frozenset({_PRINCIPAL}),
-        pool_size=pool_size,
     )
     return make_client_for_door(door)
 

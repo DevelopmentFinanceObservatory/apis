@@ -25,6 +25,8 @@ from datasets_api.store_errors import DatasetsStoreUnavailable
 from dfo_platform.app import create_app
 from presentation_api.app import presentation_surface
 from presentation_store import GeneratedIdCollision, PresentationStoreUnavailable
+from spec_registry.errors import SpecRegistryStoreError, SpecRegistryUnavailable
+from tests.presentation_store.test_frame_store import _FakeSpecReader, _store
 
 
 def _release_excluding(release: CatalogueRelease, member: str) -> CatalogueRelease:
@@ -794,6 +796,58 @@ def test_an_unpublished_ops_frame_ref_is_frame_unavailable_and_retryable(
     body = resp.json()
     assert body["code"] == "frame_unavailable"
     assert body["retryable"] is True
+
+
+@pytest.mark.parametrize(
+    ("fault", "status", "code", "retryable"),
+    [
+        ("unavailable", 503, "service_unavailable", True),
+        ("store-error", 503, "service_unavailable", True),
+        ("quarantined", 404, "frame_unavailable", False),
+    ],
+)
+@pytest.mark.parametrize("stage", ["load", "pin"])
+def test_a_create_whose_frame_registry_read_fails_answers_a_declared_refusal(
+    stage: str,
+    fault: str,
+    status: int,
+    code: str,
+    retryable: bool,
+    frame_store: FakeFrameStore,
+    revision_store: FakeRevisionStore,
+    release_registry: FakeReleaseRegistry,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A real frame store reads the registry to scope a frame ref's revocation check when it
+    loads and when it pins. Each fault that read can raise at either stage answers a declared
+    refusal through the create route, never 500, and writes no component."""
+    spec_reader = _FakeSpecReader()
+    if fault == "quarantined":
+        spec_reader.quarantined = frozenset({malaria_ethiopia_frame_ref().spec_id})
+    else:
+        spec_reader.definition_error = (
+            SpecRegistryUnavailable("spec registry pool borrow timed out")
+            if fault == "unavailable"
+            else SpecRegistryStoreError("spec registry read failed")
+        )
+    live_store = _store(spec_reader=spec_reader)
+    if stage == "pin":
+        # The fake loads the frame, so the create reaches the real store's pin.
+        monkeypatch.setattr(frame_store, "pin", live_store.pin)
+    surface = presentation_surface(
+        frame_store=frame_store if stage == "pin" else live_store,
+        revision_store=revision_store,
+        release_registry=release_registry,
+    )
+    with TestClient(create_app([surface]), raise_server_exceptions=False) as stub_client:
+        resp = _create(stub_client)
+
+    assert (resp.status_code, resp.json()["code"], resp.json()["retryable"]) == (
+        status,
+        code,
+        retryable,
+    ), resp.text
+    assert revision_store._revisions == {}
 
 
 def test_a_published_ops_frame_ref_reaches_component_created(

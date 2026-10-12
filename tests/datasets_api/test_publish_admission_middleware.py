@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from artifact_store import LiveArtifactInventory, LiveArtifactStore, Tier
 from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api.codes import DATASETS_CODE_CATALOGUE
+from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.publish import (
     MAX_PUBLISH_BODY_BYTES,
     PublishBodyTooLarge,
@@ -26,6 +27,7 @@ from dfo_platform.problem import Envelope
 from tests.artifact_store.conftest import FakeGCSClient
 
 from ._artifact_doubles import FakeArtifactStore
+from ._deps_doubles import fake_deps_cell
 from ._snapshot_doubles import FakeSnapshotReader, make_client_for_door
 from ._version_record_store import FakeVersionRecordDatasetStore
 
@@ -42,9 +44,12 @@ _UNDER_LIMIT_CONTENT_LENGTH = MAX_PUBLISH_BODY_BYTES - 1
 
 def _client() -> TestClient:
     door = build_publish_door(
-        artifact_store=FakeArtifactStore(),
-        snapshot_reader=FakeSnapshotReader(),
-        version_writer=NullVersionRecordWriter(),
+        deps=fake_deps_cell(
+            artifact_store=FakeArtifactStore(),
+            snapshot_reader=FakeSnapshotReader(),
+            version_writer=NullVersionRecordWriter(),
+        ),
+        settings=DatasetsBuildSettings.from_env(),
         allowed_principals=frozenset({_PRINCIPAL}),
     )
     return make_client_for_door(door)
@@ -59,9 +64,12 @@ def _real_publish_client() -> TestClient:
         client=FakeGCSClient(),
     )
     door = build_publish_door(
-        artifact_store=artifact_store,
-        snapshot_reader=LiveSnapshotReader(store=store),
-        version_writer=LiveVersionRecordWriter(store=store),
+        deps=fake_deps_cell(
+            artifact_store=artifact_store,
+            snapshot_reader=LiveSnapshotReader(store=store),
+            version_writer=LiveVersionRecordWriter(store=store),
+        ),
+        settings=DatasetsBuildSettings.from_env(),
         allowed_principals=frozenset({_PRINCIPAL}),
     )
     return make_client_for_door(door)

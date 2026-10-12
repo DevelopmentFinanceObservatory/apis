@@ -11,7 +11,7 @@ from collections.abc import Iterable, Mapping, Sequence
 
 import pyarrow as pa
 import pyarrow.compute as pc
-from dfo_frame_grammar import Frame
+from dfo_frame_grammar import TIME_PERIOD_COLUMN, Frame, parse_time_period
 from dfo_frame_grammar.arrow import build_frame_from_arrow
 from dfo_frame_grammar.grammar import ComposedUnit, UnitRequest, unit_cell_to_json
 
@@ -156,6 +156,16 @@ def build_frame_from_member_tables(
     ]
     combined = pa.concat_tables(grammar_tables)
     return build_frame_from_arrow(combined, role_keys=role_keys)
+
+
+def period_grains(frame: Frame) -> dict[str, str]:
+    """Each grain of `frame`'s periods (`parse_time_period`) mapped to its earliest period.
+    One entry for a frame that binds, none for an empty one."""
+    grains: dict[str, str] = {}
+    periods = pc.unique(frame.table[TIME_PERIOD_COLUMN]).to_pylist()
+    for period in sorted(str(period) for period in periods if period is not None):
+        grains.setdefault(parse_time_period(period).grain, period)
+    return grains
 
 
 def declared_roles(result: SdmxDataResult) -> tuple[str, ...]:

@@ -184,34 +184,15 @@ class TestResolveAsyncLifecycle:
         assert sdmx_closes == [True]
 
 
-class TestLifespanLogger:
-    """Lifespan attaches a StreamHandler to the search logger; the guard is idempotent."""
+def test_lifespan_leaves_the_search_logger_to_propagate_to_root():
+    """`search.*` records reach the root JSON handler that `log-config.json` installs."""
+    app = create_app(graph=FakeGraph(), llm=FakeLLM(), sdmx=EMPTY_SDMX)
+    with TestClient(app):
+        pass
 
-    def test_logger_handler_attached_on_startup(self):
-        # Clear any handlers that earlier tests may have attached.
-        search_log = logging.getLogger("search")
-        search_log.handlers.clear()
-
-        app = create_app(graph=FakeGraph(), llm=FakeLLM(), sdmx=EMPTY_SDMX)
-        with TestClient(app):
-            # Inside the lifespan the handler must be attached.
-            assert any(isinstance(h, logging.StreamHandler) for h in search_log.handlers)
-
-    def test_logger_handler_idempotent(self):
-        # Running the lifespan twice must not double-add handlers.
-        search_log = logging.getLogger("search")
-        search_log.handlers.clear()
-
-        app = create_app(graph=FakeGraph(), llm=FakeLLM(), sdmx=EMPTY_SDMX)
-        # First lifespan run
-        with TestClient(app):
-            pass
-        count_after_first = len(search_log.handlers)
-
-        app2 = create_app(graph=FakeGraph(), llm=FakeLLM(), sdmx=EMPTY_SDMX)
-        # Second lifespan run — should not add another handler.
-        with TestClient(app2):
-            assert len(search_log.handlers) == count_after_first
+    search_log = logging.getLogger("search")
+    assert not search_log.handlers
+    assert search_log.propagate is True
 
 
 class TestLifespanWarm:

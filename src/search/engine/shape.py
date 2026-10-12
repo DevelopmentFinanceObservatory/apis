@@ -139,6 +139,10 @@ class ShapeDraft:
     # confirm backfill. The bind menu reserves space for recalled shapes, and
     # family collapse carries this flag from any recalled sibling.
     recalled: bool = field(default=False, compare=False)
+    # True when every confirmed member is a row recall added for its five-tuple past the
+    # cut (`clients.graph.with_rival_families`). Such a shape displaces only shapes of its
+    # own five-tuple (`place_roles.without_unasked_axes`).
+    rival: bool = field(default=False, compare=False)
     # The datasets the part may answer this shape's five-tuple from, in serving order,
     # stamped by shape candidacy (`bound_values.shape_for_part`): the dataset the part
     # names, else the five-tuple's eligible publishers. None before candidacy and on a
@@ -150,11 +154,6 @@ class ShapeDraft:
     # None otherwise. Only an identity naming a dataset implies its invariants
     # (`bound_values.shape_invariants`).
     named_dataset: str | None = None
-    # The declared datasets the bind menu's source slot offers, stamped by shape candidacy
-    # beside `datasets`: every declared publisher of the shape's family the part does not
-    # exclude, opt-in ones included, when the part names no dataset and two or more remain;
-    # empty otherwise. The model names or excludes one of them (`bind.drafted_source`).
-    source_options: tuple[str, ...] = ()
     # False for shapes rebuilt from a posted identity, which have no retrieval
     # score. Their place confidence uses data availability alone. Expansion-only
     # Expansion-only shapes count as retrieved, so a missing score caps confidence.

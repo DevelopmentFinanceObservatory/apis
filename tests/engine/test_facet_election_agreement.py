@@ -103,7 +103,9 @@ def _elections(
             role_bindings=request.role_bindings,
             coverage=index,
         )
-        selection = _select_member_facets(request, probe.candidates, graph=FakeGraphReader())
+        selection = _select_member_facets(
+            request, probe.candidates, graph=FakeGraphReader()
+        ).selections
         dispatch_facet_id = selection["provenance"].dispatch_facet_id
         assert dispatch_facet_id is not None
         per_pair[recipient] = dispatch_facet_id
@@ -308,9 +310,13 @@ type _RoleFacets = dict[str, list[tuple[str, range, str | None]]]
 def _role_metadata(
     role_facets: _RoleFacets, provenances: Mapping[str, str] = MappingProxyType({})
 ) -> dict[str, FacetMetadata]:
+    # Every DFO import states `P1Y`; a coverage facet stating no period is a cadence of its
+    # own (`materialise.facets.cadences_by_member`).
     return {
         facet_id: FacetMetadata(
-            provenance_id=provenances.get(facet_id, _BASE_PROVENANCE), measurement_method=method
+            provenance_id=provenances.get(facet_id, _BASE_PROVENANCE),
+            measurement_method=method,
+            observation_period="P1Y",
         )
         for facets in role_facets.values()
         for facet_id, _years, method in facets
@@ -547,7 +553,7 @@ def test_a_plan_and_a_mint_keep_a_member_by_one_dataset_test_before_they_rank():
         window=RequestedWindow(kind="all"),
         dataset=_dataset_member(_ELECTED).read_dataset(),
     )
-    mint = _select_member_facets(request, candidates, graph=FakeGraphReader())
+    mint = _select_member_facets(request, candidates, graph=FakeGraphReader()).selections
     assert mint["provenance"].ref == _ELECTED
 
     series = [

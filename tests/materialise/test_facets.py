@@ -9,11 +9,13 @@ import time
 from dataclasses import replace
 from functools import reduce
 from itertools import product
+from typing import Literal
 
 import pytest
 
 import materialise.facets as facets_module
 from dc_graph import earliest_date, latest_date
+from dc_graph.client import _build_facet, _parse_ordered_facets
 from dc_sdmx import SdmxCapExceededError
 from dfo_platform.problem import Alternative
 from materialise.errors import (
@@ -27,17 +29,22 @@ from materialise.facets import (
     _MAX_ALTERNATIVES_PER_ISSUE,
     DEPLOYMENT_FACET_POLICY,
     DEPLOYMENT_FACET_POLICY_VERSION,
+    Cadence,
     CoverageAdmission,
     FacetBinding,
+    FacetElection,
     FacetSelection,
     MemberProbe,
     PlaceAdmission,
     UnitRequest,
     _facet_from_coverage_candidate,
+    cadences_by_member,
     declared_default_policies,
     default_scope_of,
+    facet_election,
     fetch_role_bindings,
     joint_dispatch_facet_ids,
+    joint_matches,
     merge_facets,
     narrow_to_window,
     overlaps_window,
@@ -109,7 +116,8 @@ def test_probe_facets_unions_across_entities_merging_a_recurring_facet_id():
     )
 
     assert probe.candidates == (
-        replace(_FACET_KEN, obs_count=402 + 999),
+        # Both places date the facet by year, so the merge keeps its annual evidence.
+        replace(_FACET_KEN, obs_count=402 + 999, annual_evidence=True),
         _FACET_TGO,
     )
     # Each facet id keeps the places it was admitted at, which the merge drops.
@@ -1428,9 +1436,7 @@ def test_joint_dispatch_facet_ids_finds_the_sole_joint_match_not_the_witnesses()
         "unit": _selection("unit", "U"),
     }
 
-    dispatch_ids = joint_dispatch_facet_ids(
-        [candidate_a, candidate_b, candidate_c, candidate_d], selections
-    )
+    dispatch_ids = _dispatched([candidate_a, candidate_b, candidate_c, candidate_d], selections)
 
     assert dispatch_ids == ("fD",)
 
@@ -1451,7 +1457,7 @@ def test_joint_dispatch_facet_ids_empty_when_no_candidate_jointly_matches():
         "unit": _selection("unit", "U"),
     }
 
-    assert joint_dispatch_facet_ids([candidate_a], selections) == ()
+    assert _dispatched([candidate_a], selections) == ()
 
 
 def test_joint_dispatch_facet_ids_excludes_a_match_with_no_facet_id():
@@ -1470,7 +1476,7 @@ def test_joint_dispatch_facet_ids_excludes_a_match_with_no_facet_id():
         "unit": _selection("unit", "U"),
     }
 
-    assert joint_dispatch_facet_ids([candidate], selections) == ()
+    assert _dispatched([candidate], selections) == ()
 
 
 # --- `FacetBinding` state="request" construction (`__post_init__`) -------
@@ -1692,7 +1698,7 @@ def test_request_empty_narrowed_pool_raises_facet_not_available_at_unit_not_defa
 
     assert isinstance(excinfo.value, FacetNotAvailableError)
     assert excinfo.value.code == "facet_not_available"
-    assert excinfo.value.pointer == "/facets/unit"
+    assert excinfo.value.facet_pointer == "/facets/unit"
     assert excinfo.value.alternatives is not None
 
 
@@ -1714,7 +1720,7 @@ def test_request_resolved_to_a_null_native_unit_raises_non_currency_unit_error()
         )
 
     assert excinfo.value.code == "facet_binding_unsupported"
-    assert excinfo.value.pointer == "/facets/unit"
+    assert excinfo.value.facet_pointer == "/facets/unit"
 
 
 def test_request_resolved_to_a_non_currency_ref_raises_non_currency_unit_error():
@@ -1969,6 +1975,7 @@ def _merge_pair(existing: Facet, other: Facet) -> Facet:
             if dates
             else existing.dates_complete and other.dates_complete
         ),
+        annual_evidence=existing.reads_annual and other.reads_annual,
     )
 
 
@@ -2004,3 +2011,291 @@ def test_merging_many_facets_equals_merging_them_one_pair_at_a_time(length: int)
     pair-by-pair merge builds: the same counts, bounds, points, completeness and metadata."""
     for facets in product(_MERGE_KINDS, repeat=length):
         assert merge_facets(facets) == reduce(_merge_pair, facets), facets
+
+
+def _ilo_facet(facet_id: str, period: str | None, obs_count: int) -> Facet:
+    """An ILO unemployment facet for one place: the UN graph publishes the same rate as an
+    annual (`P1Y`) and a quarterly (`P3M`) facet, alike on every facet axis."""
+    return Facet(
+        facet_id=facet_id,
+        provenance_id="undata/p/ILO",
+        unit="Percent",
+        observation_period=period,
+        obs_count=obs_count,
+        earliest_date="2019",
+        latest_date="2022-10" if period == "P3M" else "2022",
+    )
+
+
+def _selected(
+    basis: Literal["bound", "deployment_fallback"] = "deployment_fallback",
+) -> dict[str, FacetSelection]:
+    """The selections every ILO facet carries, on `basis`."""
+    return {
+        axis: FacetSelection(
+            axis=axis,
+            ref=ref,
+            basis=basis,
+            default_policy=None,
+            default_policy_version=None,
+            selection_reason=None,
+            dispatch_facet_id="unused",
+        )
+        for axis, ref in (
+            ("provenance", "undata/p/ILO"),
+            ("measurementMethod", None),
+            ("unit", "Percent"),
+        )
+    }
+
+
+def _dispatched(
+    candidates: list[Facet],
+    selections: dict[str, FacetSelection],
+    *,
+    window: RequestedWindow | None = None,
+    breadth: dict[str, int] | None = None,
+) -> tuple[str, ...]:
+    """The facet ids a dispatch fetches: the joint matches at the cadence the election's
+    ranking decides (`facet_election`)."""
+    matching = joint_matches(candidates, selections)
+    election = facet_election(
+        selections,
+        matching=matching,
+        member_matches=[matching],
+        cadence_of=cadences_by_member([candidates]),
+        stat_vars=["dcid:UnemploymentRate"],
+        window=window,
+        breadth=breadth,
+    )
+    return joint_dispatch_facet_ids(candidates, election, member=0)
+
+
+def _dispatched_at(candidates: list[Facet], cadence: Cadence | None) -> tuple[str, ...]:
+    """The facet ids a dispatch at `cadence` fetches from `candidates`."""
+    return joint_dispatch_facet_ids(
+        candidates,
+        FacetElection(_selected(), cadence, cadences_by_member([candidates])),
+        member=0,
+    )
+
+
+def test_joint_dispatch_facet_ids_keeps_one_observation_period():
+    # #347: Kenya's ILO unemployment rate. Both facets carry the selected provenance,
+    # method and unit, so dispatch fetched both, and the frame held 2019 beside 2019-01.
+    quarterly = _ilo_facet("fQ", "P3M", 12)
+    annual = _ilo_facet("fA", "P1Y", 3)
+
+    assert _dispatched([quarterly, annual], _selected()) == ("fQ",)
+    assert _dispatched_at([quarterly, annual], Cadence(period="P1Y")) == ("fA",)
+
+
+def test_joint_dispatch_facet_ids_serves_an_unstated_annual_facet_beside_the_p1y_one():
+    # One series split across a P1Y facet and one stating no period with bare-year dates
+    # (Kenya's census `Count_Person`) is annual on both, so it serves whole.
+    annual = _ilo_facet("fA", "P1Y", 3)
+    unstated = replace(_ilo_facet("fN", None, 3), earliest_date="2020", latest_date="2022")
+
+    assert _dispatched([annual, unstated], _selected()) == ("fA", "fN")
+
+
+def test_joint_dispatch_facet_ids_reads_coverage_years_as_no_cadence_evidence():
+    # A coverage candidate stating no period carries coverage's bare years
+    # whatever its cadence, so it does not ride along with the elected annual facet.
+    annual = _ilo_facet("fA", "P1Y", 2)
+    from_coverage = replace(
+        _ilo_facet("fN", None, 6), earliest_date="2019", latest_date="2020", dates_coarsened=True
+    )
+
+    assert _dispatched_at([annual, from_coverage], Cadence(period="P1Y")) == ("fA",)
+
+
+@pytest.mark.parametrize("latest", [None, "2022-10"])
+def test_joint_dispatch_facet_ids_takes_no_incomplete_date_list_as_annual(latest):
+    # A short dated graph read keeps the dates it returned and marks them
+    # incomplete (`_build_facet`), so a lone "2019" from a quarterly facet with no stated
+    # period, or one whose known last date is "2022-10", is no evidence that it is annual.
+    raw = {
+        "facetId": "fN",
+        "obsCount": 12,
+        "latestDate": latest,
+        "observations": [{"date": "2019", "value": 1}],
+    }
+    unstated = _build_facet(
+        raw, {"fN": {"provenanceId": "undata/p/ILO", "unit": "Percent"}}, with_dates=True
+    )
+    annual = _ilo_facet("fA", "P1Y", 3)
+
+    assert unstated.dates_complete is False
+    assert _dispatched_at([annual, unstated], Cadence(period="P1Y")) == ("fA",)
+
+
+def test_joint_dispatch_facet_ids_serves_a_complete_unbounded_annual_date_list_beside_p1y():
+    # The read-plan case: no stated period and no bounds, but every date listed, all years.
+    annual = _ilo_facet("fA", "P1Y", 3)
+    unstated = replace(
+        _ilo_facet("fN", None, 3),
+        earliest_date=None,
+        latest_date=None,
+        dates=("2000", "2001", "2002"),
+        dates_complete=True,
+    )
+
+    assert _dispatched([annual, unstated], _selected()) == ("fA", "fN")
+
+
+@pytest.mark.parametrize(
+    ("other", "elected"),
+    [
+        # Stated quarterly beside an unstated facet dated by month: the larger leads.
+        pytest.param(_ilo_facet("fQ", "P3M", 12), "fQ", id="stated"),
+        # Two unstated facets dated by month, a monthly and a quarterly one, are two
+        # cadences, so only the larger dispatches.
+        pytest.param(
+            replace(_ilo_facet("fQ", None, 12), latest_date="2022-10"), "fQ", id="unstated"
+        ),
+    ],
+)
+def test_joint_dispatch_facet_ids_reads_an_unstated_facet_without_annual_dates_apart(
+    other, elected
+):
+    # A facet stating no period whose dates are not bare years is a cadence of its own,
+    # keyed by its facet id: it does not ride along with another facet, nor bring one along.
+    unstated = replace(_ilo_facet("fN", None, 4), earliest_date="2019-01", latest_date="2019-04")
+
+    assert _dispatched([other, unstated], _selected()) == (elected,)
+    assert _dispatched_at([other, unstated], Cadence(facet_id="fN")) == ("fN",)
+
+
+@pytest.mark.parametrize("order", [("fA", "fQ"), ("fQ", "fA")])
+@pytest.mark.parametrize("basis", ["bound", "deployment_fallback"])
+def test_joint_dispatch_facet_ids_lets_the_ranking_not_the_candidate_order_pick_the_period(
+    order, basis
+):
+    # A bound axis's witness is only the first candidate carrying the bound value, so the
+    # ranking among the joint matches picks the period, whatever the candidate order.
+    by_id = {"fQ": _ilo_facet("fQ", "P3M", 12), "fA": _ilo_facet("fA", "P1Y", 50)}
+
+    assert _dispatched([by_id[i] for i in order], _selected(basis)) == ("fA",)
+
+
+@pytest.mark.parametrize(
+    ("window", "breadth", "expected"),
+    [
+        # The window's years lead: an annual series ending in 2009 loses to the quarters.
+        pytest.param(
+            RequestedWindow(kind="range", start_year=2019, end_year=2026), None, "fQ", id="window"
+        ),
+        # Breadth leads: an annual facet covering three bound places (fewer points) beats a
+        # quarterly one covering one, as the election ranks them.
+        pytest.param(RequestedWindow(kind="all"), {"fA": 3, "fQ": 1}, "fA", id="breadth"),
+    ],
+)
+def test_joint_dispatch_facet_ids_ranks_as_the_election_when_every_axis_is_bound(
+    window, breadth, expected
+):
+    annual = replace(_ilo_facet("fA", "P1Y", 9), earliest_date="1960", latest_date="2009")
+    quarterly = _ilo_facet("fQ", "P3M", 12)
+
+    assert _dispatched([annual, quarterly], _selected("bound"), window=window, breadth=breadth) == (
+        expected,
+    )
+
+
+def test_joint_dispatch_facet_ids_serves_one_period_when_no_witness_matches():
+    # A group member whose candidates lack the group's witness.
+    monthly = _ilo_facet("fM", "P1M", 40)
+    quarterly = _ilo_facet("fQ", "P3M", 12)
+
+    assert _dispatched([quarterly, monthly], _selected()) == ("fM",)
+
+
+def test_joint_dispatch_facet_ids_dispatches_nothing_without_a_decided_cadence():
+    assert _dispatched_at([_ilo_facet("fA", "P1Y", 3)], None) == ()
+
+
+@pytest.mark.parametrize(
+    ("second", "annual"),
+    [
+        pytest.param(("2019", "2021"), True, id="both-blocks-annual"),
+        pytest.param(("2020-01", "2020-12"), False, id="one-block-monthly"),
+    ],
+)
+def test_a_read_merging_blocks_of_one_facet_keeps_annual_evidence_only_from_every_block(
+    second, annual
+):
+    # Two `orderedFacets` blocks of one facet id merge to the bare-year bounds `2018` to
+    # `2023` either way; the merged facet reads as annual only when each block's own dates do.
+    blocks = [
+        {"facetId": "fN", "obsCount": 6, "earliestDate": "2018", "latestDate": "2023"},
+        {"facetId": "fN", "obsCount": 3, "earliestDate": second[0], "latestDate": second[1]},
+    ]
+
+    (merged,) = _parse_ordered_facets(blocks, {"fN": {}}, with_dates=False)
+
+    assert (merged.earliest_date, merged.latest_date) == ("2018", "2023")
+    assert merged.reads_annual is annual
+
+
+@pytest.mark.parametrize(
+    ("dates", "annual"),
+    [
+        pytest.param(["2015", "2017", "2020"], True, id="every-date-a-year"),
+        pytest.param(["2015", "2016-06", "2020"], False, id="a-month-inside-year-bounds"),
+    ],
+)
+def test_a_complete_date_list_reads_as_annual_only_when_every_date_is_a_year(dates, annual):
+    # The bounds are the bare years `2015` and `2020` either way; a complete dated read is
+    # judged on every date it lists.
+    raw = {
+        "facetId": "fN",
+        "obsCount": len(dates),
+        "earliestDate": "2015",
+        "latestDate": "2020",
+        "observations": [{"date": date, "value": 1} for date in dates],
+    }
+
+    facet = _build_facet(raw, {"fN": {}}, with_dates=True)
+
+    assert facet.dates_complete is True
+    assert facet.reads_annual is annual
+
+
+@pytest.mark.parametrize("facets_per_member", [1, 10])
+def test_wide_group_election_bounds_cadence_lookups_by_actual_matches(facets_per_member):
+    # Distinct ids with matching axes occur in index-sourced groups. The election runs
+    # before fetch chunking, so it must not search every member map for every facet id.
+    lookups = 0
+
+    class CountingCadences(dict):
+        def get(self, key, default=None):
+            nonlocal lookups
+            lookups += 1
+            return super().get(key, default)
+
+    member_count = 110
+    members = [
+        [
+            _ilo_facet(f"member-{member}-facet-{facet}", "P1Y", 3)
+            for facet in range(facets_per_member)
+        ]
+        for member in range(member_count)
+    ]
+    matching = [facet for member in members for facet in member]
+    maps = tuple(CountingCadences(one) for one in cadences_by_member(members))
+    election = facet_election(
+        _selected(),
+        matching=matching,
+        member_matches=members,
+        cadence_of=maps,
+        stat_vars=["dcid:UnemploymentRate"],
+        window=None,
+        breadth=None,
+    )
+
+    assert election.cadence == Cadence(period="P1Y")
+    assert election.members == frozenset(range(member_count))
+    assert {selection.dispatch_facet_id for selection in election.selections.values()} == {
+        "member-0-facet-0"
+    }
+    assert lookups <= 2 * len(matching)

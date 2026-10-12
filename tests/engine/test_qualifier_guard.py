@@ -7,6 +7,8 @@ synthetic shapes that prevent measure-family election from changing bindings.
 from __future__ import annotations
 
 import asyncio
+import logging
+from collections.abc import Sequence
 from dataclasses import replace
 from typing import cast
 
@@ -14,21 +16,29 @@ import pytest
 from pydantic import ValidationError
 
 from code_index.shared import get_index, get_measure_index
+from code_index.tokens import tokenize
 from entity_resolution import Admission, EntityResolver
 from search.engine.bind import DraftBindingKind, SlotBindingDraft, _UniversalBindOutput
 from search.engine.clients.graph import EngineGraphClient
 from search.engine.clients.llm import SupportsLLM
 from search.engine.clients.sdmx import EngineSdmxClient
 from search.engine.conjoin import _build_part
+from search.engine.function_words import FUNCTION_WORDS
 from search.engine.interpret import Recall
+from search.engine.qualifier_match import QualifierSpan
+from search.engine.region import phase_election
 from search.engine.region.phase_election import _phase_repair_bindings
-from search.engine.region.phase_rank_bind import _resolve_query_qualifiers
+from search.engine.region.phase_rank_bind import (
+    _qualifier_disposition,
+    _resolve_query_qualifiers,
+    _unread_words_beside_codes,
+)
 from search.engine.region.state import ResolveState
 from search.engine.shape import ShapeDraft, SlotKeyDraft
 from search.models import NoData, NoDataPart, ResolvedQualifier, Spec
 from tests.conftest import minimal_spec
 from tests.engine._fake_coverage import empty_coverage_snapshot
-from tests.engine._index_slots import own_variable_spans, read_text
+from tests.engine._index_slots import crs_flow_slot_keys, own_variable_spans, read_text
 
 _POP_TYPE_DCID = "Widget"
 _MEAS_PROP_DCID = "count"
@@ -66,11 +76,12 @@ def _state(
     bindings: list[SlotBindingDraft],
     unplaced: list[str],
     query_text: str | None = None,
+    entities: Sequence[str] = ("Kenya",),
 ) -> ResolveState:
     """Build the hand-crafted state consumed by qualifier repair."""
     return ResolveState(
         variable=variable,
-        entities=["Kenya"],
+        entities=list(entities),
         date_request=None,
         detect_query=variable,
         role_query=variable,
@@ -90,7 +101,6 @@ def _state(
         include_observations=False,
         stream_observations=False,
         unit_text=None,
-        source_text=None,
         materialise_graph=None,
         materialise_sdmx=None,
         timing={},
@@ -159,12 +169,14 @@ def test_unplaced_measure_noun_is_dropped_by_the_overlap_rule():
     ids=["model-lists-the-word", "model-omits-the-word"],
 )
 def test_a_word_the_shapes_own_reading_leaves_unread_is_recorded_or_warned(
-    unplaced, records, dropped
+    search_settings, unplaced, records, dropped
 ):
     """In every code system together "multilateral ODA" is DAC1 aid type 2000. A shape with
-    the CRS flow slot reads "ODA" alone, so "ODA" records the bound flow type. The unread
-    "multilateral" records `no_vocabulary` when the bind model lists it as unplaced, and
-    otherwise departs once with the dropped-qualifier warning; never both."""
+    the CRS flow slot reads "ODA" alone, so "ODA" records the bound flow type. Under the log
+    coverage mode the unread "multilateral" records `no_vocabulary` when the bind model
+    lists it as unplaced, and otherwise departs once with the dropped-qualifier warning.
+    Exactly one of the two applies."""
+    search_settings(qualifier_coverage="log")
     shape = _shape(_FLOW_SLOT)
     state = _state(
         variable="multilateral ODA to Kenya",
@@ -180,6 +192,318 @@ def test_a_word_the_shapes_own_reading_leaves_unread_is_recorded_or_warned(
     assert [w.code for w in state.warnings if w.code == "query_qualifier_dropped"] == [
         "query_qualifier_dropped"
     ] * len(dropped)
+
+
+_CRS_SLOTS = crs_flow_slot_keys()
+_DAC2A_SLOT = SlotKeyDraft(axis="what", property_dcid="dac2aAidType", label="aid type")
+_DAC1_SLOT = SlotKeyDraft(axis="what", property_dcid="dac1AidType", label="aid type")
+_GRANT_EQUIVALENT_SHAPE = replace(_shape(_DAC1_SLOT), meas_prop_dcid="grantEquivalent")
+_GNI_SHARE_SHAPE = replace(
+    _shape(_DAC1_SLOT),
+    meas_denom_dcid="PrimaryIncome_EconomicUnit_GrossOfFixedCapitalConsumption_Nominal",
+)
+
+
+# The part's entity texts.
+_ENTITIES = ("Kenya", "France", "Hong Kong SAR, China", "Côte d'Ivoire")
+
+
+@pytest.mark.parametrize(
+    ("variable", "slots", "records"),
+    [
+        # The label or a synonym of the code beside a word reads it. "multilateral" beside
+        # "imputed" is covered by DAC2a aid type 106, "imputed multilateral ODA" (dq-mls-003,
+        # dq-mls-026, dataset-imputed-aid-kenya-es, dataset-top-donors-imputed-aid-kenya).
+        ("imputed multilateral aid", (_DAC2A_SLOT,), []),
+        ("imputed multilateral ODA", (_DAC2A_SLOT,), []),
+        # ... and an amount word is read (dataset-imputed-multilateral-flows-kenya,
+        # dataset-crs-and-imputed-education-aid-kenya, dq-ext-007), while "grants" past the
+        # read words refuses beside 106 (dataset-imputed-multilateral-grants-kenya).
+        ("imputed multilateral flows", (_DAC2A_SLOT,), []),
+        ("imputed figures for education ODA", (_DAC2A_SLOT, *_CRS_SLOTS), []),
+        ("health spending", _CRS_SLOTS, []),
+        ("imputed multilateral grants", (_DAC2A_SLOT,), [("grants", ["DAC2aAidType106"])]),
+        # A noun naming data itself is read (subj-health-data).
+        ("health data", _CRS_SLOTS, []),
+        # A word that the names of only some of the span's codes hold is unread. "in-kind" is
+        # in standard grant's synonym "in-kind grant" and absent from grant's.
+        (
+            "ODA grants in-kind",
+            _CRS_SLOTS,
+            [("in-kind", ["CRSTypeOfFinance100", "CRSTypeOfFinance110"])],
+        ),
+        # A flow verb is read (dq-dac-019, dq-dac-021, dq-dac-022), and reads no coded
+        # restriction beside it.
+        ("net ODA received", (_DAC2A_SLOT,), []),
+        # ... as are a motion verb (dq-crs-049) and a reporting verb
+        # (dataset-total-oda-reported-to-dac-germany).
+        ("ODA going to Kenya", (_DAC2A_SLOT,), []),
+        ("total ODA reported to the DAC", (_DAC1_SLOT,), []),
+        # A restriction beside the span refuses, and a run reaches past the verb to its
+        # neighbour.
+        ("private ODA going to Kenya", _CRS_SLOTS, [("private", ["CRSTypeOfFlow10"])]),
+        ("ODA reported private", _CRS_SLOTS, [("private", ["CRSTypeOfFlow10"])]),
+        (
+            "private grants disbursed",
+            _CRS_SLOTS,
+            [("private", ["CRSTypeOfFinance100", "CRSTypeOfFinance110"])],
+        ),
+        # A shape dividing by GNI reads the ratio words and the denominator's noun
+        # (dq-dac-002, dq-dac-017). An amount shape refuses them below.
+        ("ODA as a share of GNI", _GNI_SHARE_SHAPE, []),
+        ("ODA GNI ratio", _GNI_SHARE_SHAPE, []),
+        # Restrictions no reader covers (tip measurement).
+        (
+            "domestic general government health expenditure",
+            _CRS_SLOTS,
+            [("domestic general government", ["CRSPurposeCode120"])],
+        ),
+        (
+            "private grants",
+            _CRS_SLOTS,
+            [("private", ["CRSTypeOfFinance100", "CRSTypeOfFinance110"])],
+        ),
+        ("HIV prevalence", _CRS_SLOTS, [("prevalence", ["CRSPurposeCode13040"])]),
+        ("imputed multilateral ODA", (_DAC1_SLOT,), [("imputed", ["DAC1AidType2000"])]),
+        ("ODA GNI ratio", (_DAC1_SLOT,), [("GNI ratio", ["DAC1AidType1010"])]),
+        ("grant-equivalent ODA", (_DAC1_SLOT,), [("grant-equivalent", ["DAC1AidType1010"])]),
+        ("ODA grant equivalents", (_DAC1_SLOT,), [("grant equivalents", ["DAC1AidType1010"])]),
+        # A grant-equivalent shape states "grant" and "equivalent", in a hyphenated word
+        # too (dq-dac-004, dq-dac-033), and "grants" still narrows it.
+        ("grant-equivalent ODA", _GRANT_EQUIVALENT_SHAPE, []),
+        ("ODA grant equivalents", _GRANT_EQUIVALENT_SHAPE, []),
+        ("ODA grants", _GRANT_EQUIVALENT_SHAPE, [("grants", ["DAC1AidType1010"])]),
+        ("ODA as a share of GNI", (_DAC1_SLOT,), [("as a share of GNI", ["CRSTypeOfFinance2"])]),
+        ("reproductive health ODA", _CRS_SLOTS, []),
+        ("maternal health", _CRS_SLOTS, [("maternal", ["CRSPurposeCode120"])]),
+        ("global health ODA", _CRS_SLOTS, [("global", ["CRSPurposeCode120"])]),
+        ("multilateral ODA", _CRS_SLOTS, [("multilateral", ["CRSTypeOfFlow10"])]),
+        # A run reaches past the amount and data words beside it to its neighbour, so the
+        # restriction they cut off from the code span still refuses.
+        ("maternal data ODA", _CRS_SLOTS, [("maternal", ["CRSTypeOfFlow10"])]),
+        ("water spending ODA", _CRS_SLOTS, [("water", ["CRSTypeOfFlow10"])]),
+        ("education and girls", _CRS_SLOTS, [("girls", ["CRSPurposeCode110"])]),
+        ("health and education", _CRS_SLOTS, []),
+        ("health ODA plus education ODA", _CRS_SLOTS, []),
+        ("malaria control within health", _CRS_SLOTS, []),
+        ("gross disbursements to Kenya", _CRS_SLOTS, []),
+        ("Kenya's health ODA in 2022", _CRS_SLOTS, []),
+        # The possessive ending reads in any case.
+        ("KENYA'S HEALTH ODA", _CRS_SLOTS, []),
+        ("FRANCE'S education ODA", _CRS_SLOTS, []),
+        ("KENYA'S GLOBAL HEALTH ODA", _CRS_SLOTS, [("GLOBAL", ["CRSPurposeCode120"])]),
+        # An entity's text reads its words across the separators and either apostrophe it
+        # holds.
+        ("Hong Kong SAR, China ODA", _CRS_SLOTS, []),
+        ("Côte d'Ivoire ODA", _CRS_SLOTS, []),
+        ("Côte d\u2019Ivoire ODA", _CRS_SLOTS, []),
+        ("health ODA in the last 5 years", _CRS_SLOTS, []),
+        ("ODA loans net disbursements", (_DAC2A_SLOT,), []),
+    ],
+)
+def test_an_uncovered_word_beside_a_code_is_a_record(search_settings, variable, slots, records):
+    """Under the refuse coverage mode each run of words no reader covers beside a code span
+    of the elected shape's reading, or joined to one by a union connective, is an unbound
+    record naming that span's rows. Measure values, entity text, dates, function words and
+    a connective between two code spans are read."""
+    search_settings(qualifier_coverage="refuse")
+    shape = slots if isinstance(slots, ShapeDraft) else _shape(*slots)
+    state = _state(
+        variable=variable, shape_draft=shape, bindings=[], unplaced=[], entities=_ENTITIES
+    )
+    uncovered = [q for q in _resolve_query_qualifiers(state) if q.evidence == "uncovered"]
+    assert [(q.text, [ref.dcid for ref in q.named]) for q in uncovered] == records
+    assert all(q.disposition == "unbound" for q in uncovered)
+    assert [variable[q.start : q.end] for q in uncovered if q.start is not None] == [
+        text for text, _ in records
+    ]
+
+
+_FINANCE_100 = ("crsTypeOfFinance", ["CRSTypeOfFinance100"])
+_ODA = ("crsTypeOfFlow", ["CRSTypeOfFlow10"])
+
+
+@pytest.mark.parametrize(
+    ("variable", "bound", "records"),
+    [
+        # The answer binds flow type 30, "private development finance", which no span of
+        # "private grants" names, so it applies "private" (dq-crs-009).
+        ("private grants", [_FINANCE_100, ("crsTypeOfFlow", ["CRSTypeOfFlow30"])], []),
+        # ODA's label holds no "private", so the restriction refuses.
+        (
+            "private grants",
+            [_FINANCE_100, _ODA],
+            [("private", ["CRSTypeOfFinance100", "CRSTypeOfFinance110"])],
+        ),
+        # A synonym reads too: type of finance 420, "loan instrument", applies "loans".
+        (
+            "ODA loans for education",
+            [
+                _ODA,
+                ("crsTypeOfFinance", ["CRSTypeOfFinance420"]),
+                ("crsPurpose", ["CRSPurposeCode110"]),
+            ],
+            [],
+        ),
+        # A code a span names reads only its span: 130, which "reproductive health" names,
+        # leaves "policy" beside education unread, though its label holds "policy".
+        (
+            "reproductive health and education policy ODA",
+            [_ODA, ("crsPurpose", ["CRSPurposeCode130", "CRSPurposeCode110"])],
+            [("policy", ["CRSPurposeCode110", "CRSTypeOfFlow10"])],
+        ),
+    ],
+    ids=["unnamed-label", "label-lacks-word", "unnamed-synonym", "named-code"],
+)
+def test_a_word_the_name_of_an_unnamed_bound_code_holds_is_read(
+    search_settings, variable, bound, records
+):
+    """A word the label or a synonym of a code the final bindings apply holds is read when
+    no span of the query names that code, since the answer applies it."""
+    search_settings(qualifier_coverage="refuse")
+    state = _state(
+        variable=variable,
+        shape_draft=_shape(*_CRS_SLOTS),
+        bindings=[
+            _binding(prop, kind="value" if len(dcids) == 1 else "set", value_dcids=dcids)
+            for prop, dcids in bound
+        ],
+        unplaced=[],
+    )
+    uncovered = [q for q in _run(state) if q.evidence == "uncovered"]
+    assert [(q.text, [ref.dcid for ref in q.named]) for q in uncovered] == records
+
+
+@pytest.mark.parametrize("mode", ["refuse", "log"])
+def test_coverage_mode_decides_whether_an_uncovered_word_refuses(search_settings, caplog, mode):
+    """In refuse mode the uncovered "maternal" enters the part's records and leaves it a
+    miss. In log mode the records hold no such word, the would-refuse line names it once,
+    and the answer is unaffected."""
+    search_settings(qualifier_coverage=mode)
+    state = _state(
+        variable="maternal health ODA",
+        shape_draft=_shape(*_CRS_SLOTS),
+        bindings=[
+            _binding("crsPurpose", kind="value", value_dcids=["CRSPurposeCode120"]),
+            _binding("crsTypeOfFlow", kind="value", value_dcids=["CRSTypeOfFlow10"]),
+        ],
+        unplaced=[],
+    )
+    with caplog.at_level(logging.INFO, logger=phase_election.__name__):
+        qualifiers = _run(state)
+    lines = [r.getMessage() for r in caplog.records if "qualifier_coverage" in r.getMessage()]
+    uncovered = [(q.text, q.disposition) for q in qualifiers if q.evidence == "uncovered"]
+    if mode == "refuse":
+        assert uncovered == [("maternal", "unbound")]
+        assert _has_miss(qualifiers)
+        assert lines == []
+    else:
+        assert uncovered == []
+        assert not _has_miss(qualifiers)
+        assert lines == ["qualifier_coverage would_refuse phrase=maternal codes=CRSPurposeCode120"]
+
+
+@pytest.mark.parametrize("mode", ["refuse", "log"])
+@pytest.mark.parametrize(
+    ("variable", "phrase"),
+    [
+        ("health ODA for maternal care", "maternal care"),
+        ("health ODA with a maternal focus", "maternal focus"),
+        ("ODA for maternal care", "maternal care"),
+    ],
+)
+def test_coverage_reaches_restrictions_across_safe_function_gaps(
+    search_settings, caplog, mode, variable, phrase
+):
+    """A restriction after a transparent article or preposition still narrows the code
+    before it, in both coverage modes."""
+    search_settings(qualifier_coverage=mode)
+    state = _state(
+        variable=variable,
+        shape_draft=_shape(*_CRS_SLOTS),
+        bindings=[],
+        unplaced=[],
+    )
+    with caplog.at_level(logging.INFO, logger=phase_election.__name__):
+        qualifiers = _run(state)
+
+    uncovered = [(q.text, q.disposition) for q in qualifiers if q.evidence == "uncovered"]
+    lines = [r.getMessage() for r in caplog.records if "qualifier_coverage" in r.getMessage()]
+    if mode == "refuse":
+        assert uncovered == [(phrase, "unbound")]
+        assert lines == []
+    else:
+        assert uncovered == []
+        assert lines == [f"qualifier_coverage would_refuse phrase={phrase} codes=CRSTypeOfFlow10"]
+
+
+@pytest.mark.parametrize(
+    ("variable", "runs"),
+    [
+        ("ODA and maternal care", ["maternal care"]),
+        ("ODA excluding maternal care", ["excluding maternal care"]),
+        ("ODA versus maternal care", ["versus maternal care"]),
+        ("ODA; for maternal care", []),
+    ],
+    ids=["union", "exclusion", "comparison", "punctuation"],
+)
+def test_neighbour_traversal_keeps_connective_and_punctuation_boundaries(variable, runs):
+    """Only the narrow function-word gaps are transparent. Connectives remain in their
+    own unread run, and non-connective punctuation prevents a run from reaching a code span."""
+    row = get_index().code_by_dcid("CRSTypeOfFlow10")
+    assert row is not None
+    start = variable.index("ODA")
+    tokens = tokenize(variable)
+    code_span = QualifierSpan(matched_text="ODA", start=start, end=start + 3, rows=(row,))
+    unread = _unread_words_beside_codes(
+        variable,
+        tokens,
+        [code_span],
+        [(code_span.start, code_span.end)],
+        lambda word: word in FUNCTION_WORDS,
+    )
+    assert [variable[tokens[run.first].start : tokens[run.last].end] for run in unread] == runs
+
+
+def test_a_word_the_shapes_own_reading_leaves_unread_refuses_in_refuse_mode(search_settings):
+    """In refuse mode "multilateral" in "multilateral ODA to Kenya" is a record, and departs
+    nothing."""
+    search_settings(qualifier_coverage="refuse")
+    state = _state(
+        variable="multilateral ODA to Kenya",
+        shape_draft=_shape(_FLOW_SLOT),
+        bindings=[_binding("crsTypeOfFlow", kind="value", value_dcids=["CRSTypeOfFlow10"])],
+        unplaced=[],
+    )
+    qualifiers = _run(state)
+    assert [(q.text, q.disposition, q.evidence) for q in qualifiers] == [
+        ("ODA", "bound", None),
+        ("multilateral", "unbound", "uncovered"),
+    ]
+    assert [fact.code for fact in state.departure_facts.values()] == []
+
+
+@pytest.mark.parametrize(
+    ("union", "disposition"),
+    [
+        ((), "unbound"),
+        (("CRSPurposeCode13040", "CRSPurposeCode130"), "bound"),
+        (("CRSPurposeCode13040", "CRSPurposeCode120"), "unbound"),
+    ],
+    ids=["no-union", "union-with-the-ancestor", "union-without-the-ancestor"],
+)
+def test_an_ancestor_binds_a_code_only_through_a_union_that_selected_both(union, disposition):
+    """Sexually transmitted disease control (13040) lies under 130. A binding of 130 binds
+    a 13040 record only when the union that record joined selected 130 too."""
+    assert (
+        _qualifier_disposition(
+            [("crsPurpose", "CRSPurposeCode13040")],
+            {"crsPurpose": ["CRSPurposeCode130"]},
+            get_index(),
+            union=union,
+        )[0]
+        == disposition
+    )
 
 
 def test_a_term_the_shape_reads_none_of_departs_nothing():
@@ -614,9 +938,12 @@ def test_span_naming_an_undeclared_code_system_is_not_recorded():
 _PURPOSE_SLOT = SlotKeyDraft(axis="what", property_dcid="crsPurpose", label="purpose")
 
 
-def test_repeated_term_does_not_defeat_the_overlap_rule():
+def test_repeated_term_does_not_defeat_the_overlap_rule(search_settings):
     """The second "roads" span overlaps "high-speed roads"; the first does not.
-    A first-occurrence `str.find` would place both spans at the first "roads"."""
+    A first-occurrence `str.find` would place both spans at the first "roads". The log
+    coverage mode keeps the words beside the spans that no reader covers out of the
+    records."""
+    search_settings(qualifier_coverage="log")
     shape = _shape(_PURPOSE_SLOT)
     state = _state(
         variable="we compared roads spending with high-speed roads improvements in Kenya",
@@ -630,9 +957,11 @@ def test_repeated_term_does_not_defeat_the_overlap_rule():
     assert not _has_miss(qualifiers)
 
 
-def test_short_term_embedded_in_a_longer_word_does_not_defeat_the_overlap_rule():
+def test_short_term_embedded_in_a_longer_word_does_not_defeat_the_overlap_rule(search_settings):
     """The standalone "roads" span is distinct from the substring in "railroads",
-    which a plain `str.find` would match first."""
+    which a plain `str.find` would match first. The log coverage mode keeps the words
+    beside the spans that no reader covers out of the records."""
+    search_settings(qualifier_coverage="log")
     shape = _shape(_PURPOSE_SLOT)
     state = _state(
         variable="how much aid went towards railroads and roads improvements in Kenya",

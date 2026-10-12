@@ -1,0 +1,70 @@
+"""Offline `Deps` for tests that build one door, and the stand-in for a dependency a test leaves
+unwired."""
+
+from __future__ import annotations
+
+from dataclasses import fields
+
+from code_index.shared import get_index
+from dataset_store.clock import utc_now
+from datasets_api.admission import MaterialisePermits, RebuildFlights
+from datasets_api.config import DatasetsBuildSettings
+from datasets_api.deps import Deps, DepsCell, build_executors
+from datasets_api.operation_store import NullOperationStore
+from datasets_api.operations.task_client import FakeTaskClient
+from datasets_api.versions import NullHeadWriter, NullVersionRecordWriter
+from materialise import EnrichmentLookup
+from materialise.rate_tables import RateTableCache
+from series_coverage.shared import get_coverage_service
+
+
+class Unwired:
+    """A dependency the test did not wire. Any attribute read fails naming it."""
+
+    def __init__(self, name: str) -> None:
+        self._name = name
+
+    def __getattr__(self, attribute: str) -> object:
+        raise AssertionError(f"the test wired no {self._name}, and the code read .{attribute}")
+
+
+def fake_deps(**overrides: object) -> Deps:
+    """A `Deps` of offline doubles. Writers, the head store and the operation store are the null
+    implementations, the task client is a `FakeTaskClient`, and every other client or store is
+    `Unwired` unless `overrides` names it. `now` defaults to `utc_now`, and the executors and
+    semaphore follow `settings`."""
+    settings = overrides.pop("settings", None) or DatasetsBuildSettings.from_env()
+    assert isinstance(settings, DatasetsBuildSettings)
+    read_executor, work_executor = build_executors(settings)
+    code_index = overrides.get("code_index") or get_index()
+    graph = overrides.get("graph", Unwired("graph"))
+    defaults: dict[str, object] = {
+        "settings": settings,
+        "version_writer": NullVersionRecordWriter(),
+        "head_store": NullHeadWriter(),
+        "operation_store": NullOperationStore(),
+        "task_client": FakeTaskClient(),
+        "coverage": get_coverage_service(),
+        "rate_cache": RateTableCache(),
+        "code_index": code_index,
+        "enrichment": EnrichmentLookup(
+            graph, type_kinds=code_index.party_types, parties=code_index.parties
+        ),
+        "materialiser_build": "test-build",
+        "now": utc_now,
+        "materialise_semaphore": MaterialisePermits(settings.materialise_max_concurrency),
+        "rebuilds": RebuildFlights(),
+        "read_executor": read_executor,
+        "work_executor": work_executor,
+    }
+    values = {
+        field.name: overrides.pop(field.name, defaults.get(field.name, Unwired(field.name)))
+        for field in fields(Deps)
+    }
+    assert not overrides, f"Deps has no field(s) {sorted(overrides)}"
+    return Deps(**values)
+
+
+def fake_deps_cell(**overrides: object) -> DepsCell:
+    """A `DepsCell` already holding `fake_deps(**overrides)`."""
+    return DepsCell(fake_deps(**overrides))

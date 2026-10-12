@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 
 from graph_generation import FakeGeneration, GenerationStamp
 from materialise.graph import GraphReadError
+from search.engine import config
 from search.engine.options.options_response_cache import (
     ComputedOptions,
     OptionsResponseCache,
@@ -341,12 +342,12 @@ _EMPTY_OPTIONS = OptionsSet(items=[], truncated=False)
 
 def _blocking_compute(
     *, loop: asyncio.AbstractEventLoop, started: asyncio.Event, release: threading.Event
-) -> tuple[Callable[[], ComputedOptions], list[int]]:
-    """Returns a blocking compute double and a list that counts its calls."""
-    calls: list[int] = []
+) -> tuple[Callable[[float], ComputedOptions], list[float]]:
+    """Returns a blocking compute double and the deadline each of its calls received."""
+    calls: list[float] = []
 
-    def compute() -> ComputedOptions:
-        calls.append(1)
+    def compute(deadline: float) -> ComputedOptions:
+        calls.append(deadline)
         loop.call_soon_threadsafe(started.set)
         assert release.wait(timeout=5), "test deadlocked waiting for release"
         return ComputedOptions(options=_EMPTY_OPTIONS, warnings=())
@@ -366,6 +367,24 @@ def _count_to_thread(monkeypatch: pytest.MonkeyPatch, calls: list[object]) -> No
 
 
 class TestGetOrComputeSingleFlight:
+    def test_compute_reads_by_the_flight_deadline_not_the_callers(self):
+        """The caller that starts the compute gives it the flight's deadline,
+        `request_timeout_s` from when the flight starts, so the caller's own
+        shorter deadline never cuts a result other callers reuse."""
+
+        async def scenario():
+            cache = OptionsResponseCache(enabled=True, max_entries=10)
+            compute, calls = _immediate_compute()
+            before = time.monotonic()
+            await cache.get_or_compute("k", compute, deadline=before + 1.0)
+            return before, time.monotonic(), calls
+
+        before, after, calls = asyncio.run(scenario())
+
+        flight_s = config.settings().request_timeout_s
+        (deadline,) = calls
+        assert before + flight_s <= deadline <= after + flight_s
+
     def test_followers_never_use_a_worker_thread(self, monkeypatch):
         """Only the cache-owned task's own compute runs in a thread; every
         other concurrent caller for the same key is served by awaiting that
@@ -482,7 +501,7 @@ class TestFailedTaskExceptionIsAlwaysRetrieved:
         dropped from the cache's own in-flight bookkeeping.
         """
 
-        def compute() -> ComputedOptions:
+        def compute(_deadline: float) -> ComputedOptions:
             time.sleep(0.2)
             raise RuntimeError("synthetic failure, past the caller's own deadline")
 
@@ -513,12 +532,12 @@ class TestFailedTaskExceptionIsAlwaysRetrieved:
 # ---------------------------------------------------------------------------
 
 
-def _immediate_compute() -> tuple[Callable[[], ComputedOptions], list[int]]:
-    """A non-blocking `compute` double recording one call per invocation."""
-    calls: list[int] = []
+def _immediate_compute() -> tuple[Callable[[float], ComputedOptions], list[float]]:
+    """A non-blocking `compute` double recording the deadline each call received."""
+    calls: list[float] = []
 
-    def compute() -> ComputedOptions:
-        calls.append(1)
+    def compute(deadline: float) -> ComputedOptions:
+        calls.append(deadline)
         return ComputedOptions(options=_EMPTY_OPTIONS, warnings=())
 
     return compute, calls

@@ -37,13 +37,12 @@ from materialise.observation_rows import (
     stream_observation_batches,
     un_observation_batches,
 )
-from materialise.revision import RevisionSnapshot
 from materialise.window import RequestedWindow
 from origin_catalogue import recording_un_blocked_places
 from origin_catalogue.graph import OriginGraphClient, build_graph_client
 
 from ._scope_availability import NO_SCOPE_READ
-from .conftest import FakeGraphReader, FakeRevisionReader
+from .conftest import FakeGraphReader
 from .un_deployment import (
     OURS_API,
     UN_API,
@@ -414,17 +413,13 @@ def test_a_preview_refuses_loudly_when_the_un_is_down(
     assert any("value" not in r.url.params.get_list("select") for r in deployments.un_requests)
 
 
-_SNAPSHOT = RevisionSnapshot(graph_revision="graph-rev", source_revisions=())
-
-
 def _mint_kwargs(graph: OriginGraphClient) -> dict:
     return {
         "sdmx": _sdmx_never_called(),
         "graph": graph,
-        "revision_reader": FakeRevisionReader([_SNAPSHOT, _SNAPSHOT]),
         "materialiser_build": "build-1",
         "capability_version": "cap-1",
-        "enrichment": EnrichmentLookup(graph),
+        "enrichment": EnrichmentLookup(graph, type_kinds={}, parties={}),
     }
 
 

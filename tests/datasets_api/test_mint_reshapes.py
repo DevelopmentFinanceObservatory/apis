@@ -17,11 +17,10 @@ import pytest
 
 import datasets_api.render as render_module
 from datasets_api.config import DatasetsBuildSettings
-from datasets_api.revision import SentinelRevisionReader
 from dc_sdmx import SdmxClient
 from materialise.graph import Facet
 from materialise.reshape import PivotPlan, ReshapePlan, Table, apply_reshapes
-from series_coverage.schema import FacetMetadata, RoleNames
+from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
@@ -110,9 +109,10 @@ def _graph() -> FakeMintGraphReader:
 
 def _coverage_service(
     *,
-    donor_role: str = "provider",
-    donor: str = "country/USA",
+    donor_role: str | None = None,
+    donor: str | None = None,
     recipient: str = "country/KEN",
+    donors: Sequence[str] | None = None,
     facet_id: str = "facet1",
     provenance: str = "OECD_DAC2A",
     measurement_method: str = "GrantEquivalent",
@@ -120,8 +120,14 @@ def _coverage_service(
     years: Sequence[int] = (2015, 2016, 2017),
 ) -> FakeCoverageService:
     """Build a coverage facet for this StatVar, role, and year set."""
+    coverage_donor = "country/USA" if donor is None and donor_role is not None else donor
+    coverage_donor = ABSENT_ENTITY if coverage_donor is None else coverage_donor
+    coverage_donors = (coverage_donor,) if donors is None else donors
     index = build_coverage_index(
-        [(_STAT_VAR, facet_id, donor, recipient, list(years))],
+        [
+            (_STAT_VAR, facet_id, covered_donor, recipient, list(years))
+            for covered_donor in coverage_donors
+        ],
         role_names={_STAT_VAR: RoleNames(donor=donor_role, recipient="recipient")},
         facet_metadata={
             facet_id: FacetMetadata(
@@ -158,7 +164,6 @@ def _client(
                 )
             ),
         ),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=artifact_store if artifact_store is not None else FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),
@@ -330,11 +335,10 @@ def test_pivot_not_homogeneous_refuses_when_a_dropped_grain_column_varies_within
         spec_reader=LiveSpecReader(store=store),
         graph=graph,
         sdmx=sdmx,
-        revision_reader=SentinelRevisionReader(),
         artifact_store=FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),
-        coverage=_coverage_service(donor_role="donor"),
+        coverage=_coverage_service(donor_role="donor", donors=("country/USA", "country/TZA")),
     )
     body = {
         "schema_version": 1,
@@ -342,7 +346,7 @@ def test_pivot_not_homogeneous_refuses_when_a_dropped_grain_column_varies_within
             "kind": "statvar_set",
             "statvars": [_STAT_VAR_REF],
             "scope": {
-                "entities": {"recipient": ["country/KEN"], "donor": ["country/USA"]},
+                "entities": {"recipient": ["country/KEN"]},
                 "facets": _SCOPE["facets"],
             },
         },
@@ -699,7 +703,13 @@ def test_a_bare_enrichment_field_name_refuses_column_unknown_with_qualified_alte
         "provenance",
         "status",
     }
-    qualified_tokens = {"recipient_iso2", "recipient_iso3", "recipient_label", "recipient_type"}
+    qualified_tokens = {
+        "recipient_iso2",
+        "recipient_iso3",
+        "recipient_kind",
+        "recipient_label",
+        "recipient_type",
+    }
     assert {a["ref"] for a in problem["alternatives"]} == real_columns | qualified_tokens
 
 
@@ -852,7 +862,6 @@ def test_an_entity_without_a_graph_declared_code_yields_an_empty_cell_and_an_inf
         spec_reader=LiveSpecReader(store=store),
         graph=graph,
         sdmx=sdmx,
-        revision_reader=SentinelRevisionReader(),
         artifact_store=artifact_store,
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),
@@ -949,7 +958,6 @@ def test_two_requests_where_only_one_has_gaps_names_only_that_column():
         spec_reader=LiveSpecReader(store=store),
         graph=graph,
         sdmx=sdmx,
-        revision_reader=SentinelRevisionReader(),
         artifact_store=artifact_store,
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),
@@ -1032,7 +1040,6 @@ def test_two_entity_columns_each_enrich_with_their_own_field_in_one_request():
         spec_reader=LiveSpecReader(store=store),
         graph=graph,
         sdmx=sdmx,
-        revision_reader=SentinelRevisionReader(),
         artifact_store=artifact_store,
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),
@@ -1141,7 +1148,6 @@ def test_a_genuine_label_role_column_selects_rather_than_colliding_with_the_enri
         spec_reader=LiveSpecReader(store=store),
         graph=graph,
         sdmx=sdmx,
-        revision_reader=SentinelRevisionReader(),
         artifact_store=artifact_store,
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),
@@ -1311,7 +1317,6 @@ def _two_role_client(
                 )
             ),
         ),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),

@@ -1,6 +1,7 @@
-"""Every literal `code=` under the Datasets and materialise source trees must belong to
-this surface's served-code catalogue union. The AST sweep fails on unresolved expressions.
-Known passthroughs use file, function, and expression keys.
+"""Every literal `code=` and every refusal class's `code = "..."` under the Datasets and
+materialise source trees must belong to this surface's served-code catalogue union. The AST
+sweep fails on unresolved `code=` expressions. Known passthroughs use file, function, and
+expression keys.
 """
 
 from __future__ import annotations
@@ -36,18 +37,9 @@ _KNOWN_PASSTHROUGHS: frozenset[tuple[str, str | None, str]] = frozenset(
         ("src/datasets_api/version.py", "_render_body_exemplars", "code"),
         ("src/datasets_api/manifest.py", "warning_model", "cast(str, warning['code'])"),
         ("src/datasets_api/manifest.py", "reshape_warning_models", "code"),
-        ("src/datasets_api/doors/definition.py", "classify_definition_exception", "exc.code"),
         ("src/datasets_api/doors/meta.py", "classify_meta_exception", "exc.refusal_code"),
-        (
-            "src/datasets_api/doors/mint_errors.py",
-            "_classify_graph_deadline_exceeded",
-            "TIMEOUT_DEFAULT.code",
-        ),
-        (
-            "src/datasets_api/doors/mint_errors.py",
-            "_classify_member_read_deadline",
-            "TIMEOUT_DEFAULT.code",
-        ),
+        # `RefreshNotPermitted.code`, a class attribute the sweep collects.
+        ("src/datasets_api/live_refresh.py", "classify_live_refresh_exception", "exc.code"),
         (
             "src/datasets_api/doors/conversion_errors.py",
             "classify_conversion_exception",
@@ -118,7 +110,8 @@ class _CallVisitor(ast.NodeVisitor):
 
 
 def _sweep_dir(src_dir: pathlib.Path) -> tuple[set[str], list[str]]:
-    """Returns resolved `code=` literals and failures for unresolved, unlisted expressions."""
+    """Returns resolved `code=` and class-attribute code literals, and failures for unresolved,
+    unlisted `code=` expressions."""
     paths = sorted(src_dir.rglob("*.py"))
     trees = {path: ast.parse(path.read_text(), filename=str(path)) for path in paths}
 
@@ -129,6 +122,17 @@ def _sweep_dir(src_dir: pathlib.Path) -> tuple[set[str], list[str]]:
     resolved: set[str] = set()
     failures: list[str] = []
     for path, tree in trees.items():
+        # A refusal class names its code as a class attribute.
+        resolved.update(
+            statement.value.value
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ClassDef)
+            for statement in node.body
+            if isinstance(statement, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "code" for t in statement.targets)
+            and isinstance(statement.value, ast.Constant)
+            and isinstance(statement.value.value, str)
+        )
         rel_path = path.relative_to(_REPO_ROOT).as_posix()
         visitor = _CallVisitor()
         visitor.visit(tree)

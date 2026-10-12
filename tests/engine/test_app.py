@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+import threading
+import time
+from logging.handlers import BufferingHandler
 
 import pytest
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from dfo_platform.build import build_commit
+from dfo_platform.request_deadline import bounded_deadline
 from search.engine.config import settings
+from search.engine.extract import Extraction, ExtractionResult
+from search.engine.region import RegionResult
 from search.models import Resolution
 from tests.engine._base_identity import GDP_SHAPE, make_identity, subject_entity
 from tests.engine._builders import value_slot
@@ -1078,3 +1085,129 @@ def test_resolve_logs_one_line_with_caller_flags_transport_cache_and_timing(tran
         (part.get("timing_ms") or {}).get("by_step") for part in body["parts"]
     ]
     assert any(logged["parts_by_step"])
+
+
+def test_sse_pipeline_failure_logs_its_traceback_once(monkeypatch):
+    """An unhandled SSE pipeline failure ends in one `internal_error` event, and exactly one
+    log record carries its traceback, as on the JSON route."""
+    boom = RuntimeError("boom")
+
+    async def _failing_events(*args, **kwargs):
+        raise boom
+        yield  # pragma: no cover - makes this an async generator
+
+    monkeypatch.setattr("search.engine.app.resolve_events", _failing_events)
+    # Handlers on the emitting loggers, since the `search` logger may stop propagation.
+    handler = BufferingHandler(capacity=1000)
+    loggers = [logging.getLogger("search.engine.app"), logging.getLogger("dfo_platform.refusal")]
+    for each in loggers:
+        each.addHandler(handler)
+    try:
+        resp = make_client().post(
+            "/api/search/resolve",
+            json={"input": {"kind": "raw_text", "query": "fertility rate in Kenya"}},
+            headers={"Accept": "text/event-stream"},
+        )
+    finally:
+        for each in loggers:
+            each.removeHandler(handler)
+
+    frames = _parse_sse(resp.text)
+    assert [(event, data["code"]) for event, data in frames] == [("error", "internal_error")]
+    assert len([r for r in handler.buffer if r.exc_info and r.exc_info[1] is boom]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Request budget: the soft deadline's partial answer, then the hard cap
+# ---------------------------------------------------------------------------
+
+
+def _extract_two_variables(query: str, *, llm=None):
+    async def _inner() -> tuple[ExtractionResult, None]:
+        extraction = Extraction(
+            kind="resolution", variables=["fast", "slow"], entities=[], dates=[]
+        )
+        return ExtractionResult(extraction=extraction, qualifiers={}), None
+
+    return _inner()
+
+
+def test_json_route_answers_the_partial_200_when_a_leg_runs_past_the_soft_deadline(
+    monkeypatch, search_settings
+):
+    """A leg blocked in a worker thread at the soft deadline is cancelled, and the partial
+    answer lands inside the grace, before the hard cap's 504. The thread sees the request deadline,
+    so its reads are bounded by the hard cap."""
+    search_settings(request_timeout_s=0.3, finalise_grace_s=2.0)
+    monkeypatch.setattr("search.engine.entry.raw_text.extract", _extract_two_variables)
+    release = threading.Event()
+    deadlines_seen: list[float | None] = []
+
+    def _blocked_read() -> None:
+        deadlines_seen.append(bounded_deadline(None))
+        release.wait(timeout=10)
+
+    async def _leg(variable: str, **_kwargs: object) -> RegionResult:
+        if variable == "slow":
+            try:
+                await asyncio.to_thread(_blocked_read)
+            finally:
+                # The thread outlives the cancelled await. Releasing it lets TestClient's
+                # loop shut its executor down without waiting for the timeout.
+                release.set()
+        return RegionResult(
+            variable_text=variable,
+            status="no_data",
+            specs=(),
+            no_data_reason="variable_not_resolved",
+            warnings=(),
+            timing_by_step={},
+        )
+
+    monkeypatch.setattr("search.engine.fanout.resolve_variable", _leg)
+    client = make_client()
+    started = time.monotonic()
+    try:
+        resp = client.post(
+            "/api/search/resolve", json={"input": {"kind": "raw_text", "query": "two things"}}
+        )
+    finally:
+        release.set()
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["diagnostics"]["timed_out"] is True
+    assert time.monotonic() - started < 2.0
+    [seen] = deadlines_seen
+    assert seen is not None and started + 2.0 < seen < started + 2.6
+
+
+def test_sse_route_ends_at_the_hard_cap_with_the_timeout_error_event(monkeypatch, search_settings):
+    """A pipeline that never finishes ends at soft deadline plus grace with the 504 `timeout`
+    error event, and a worker thread inside the stream sees the hard cap as its deadline."""
+    search_settings(request_timeout_s=0.1, finalise_grace_s=0.2)
+    deadlines_seen: list[float | None] = []
+
+    async def _hanging_events(*_args: object, **_kwargs: object):
+        deadlines_seen.append(await asyncio.to_thread(bounded_deadline, None))
+        # Long past the cap. Bounded so a stream without the cap fails instead of hanging.
+        await asyncio.sleep(5)
+        return
+        yield  # pragma: no cover - makes this an async generator
+
+    monkeypatch.setattr("search.engine.app.resolve_events", _hanging_events)
+    client = make_client()
+    started = time.monotonic()
+    resp = client.post(
+        "/api/search/resolve",
+        json={"input": {"kind": "raw_text", "query": "fertility rate in Kenya"}},
+        headers={"Accept": "text/event-stream"},
+    )
+    elapsed = time.monotonic() - started
+
+    frames = _parse_sse(resp.text)
+    assert [(event, data["code"], data["status"]) for event, data in frames] == [
+        ("error", "timeout", 504)
+    ]
+    assert 0.3 <= elapsed < 2.0
+    [seen] = deadlines_seen
+    assert seen is not None and started + 0.3 <= seen < started + 0.5

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from code_index.query import CodeIndex
 from code_index.shared import get_index
 from series_coverage import record_serving_index as record_serving_index_cli
 from series_coverage import shared as coverage_shared
@@ -29,7 +30,7 @@ from series_coverage.shared import (
     CoverageService,
     get_coverage_service,
 )
-from tests.series_coverage.support import V1, build_test_artifact, index_for
+from tests.series_coverage.support import V1, V2, V3, V5, build_test_artifact, index_for
 
 _MOVED = "provenance/RepublishedUnderAnotherDataset"
 # Build ids as `new_build_id` writes them, in publication order.
@@ -96,6 +97,34 @@ def test_an_incompatible_refresh_keeps_the_served_build(
     # The rejected build is not loaded again while `current.json` names it.
     assert service.snapshot_current().stamp == "stamp-1"
     assert calls == [None, None]
+
+
+def test_a_refresh_adding_an_unlisted_member_to_a_listed_dataset_is_rejected(
+    base: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Search and the mint elect a listed dataset's members from the index's listed rows
+    alone, so a build assigning that dataset a StatVar no listed row holds is not served."""
+    listed = (V1, V2, V3)
+    uri = build_test_artifact(base, stamp="stamp-1", variables=listed)
+    rows = index_for(uri)
+    index = CodeIndex(
+        stamp=rows.stamp, declarations=(), codes=(), statvars=(), listed_statvars=rows.statvars
+    )
+    service = CoverageService(artifact_uri=uri, index=index, recheck_seconds=0)
+    build_test_artifact(base, stamp="stamp-2")
+
+    with caplog.at_level(logging.ERROR, logger=coverage_shared.__name__):
+        assert service.snapshot_current().stamp == "stamp-1"
+
+    assert service.rejected_build == "stamp-2-build"
+    (record,) = caplog.records
+    assert f"index lacks 1 listed StatVars (StatVars of a listed dataset) -- export them: {V5}" in (
+        record.getMessage()
+    )
+    build_test_artifact(base, stamp="stamp-3", variables=listed)
+
+    assert service.snapshot_current().stamp == "stamp-3"
+    assert service.rejected_build is None
 
 
 def test_an_incompatible_refresh_moves_to_a_newer_recorded_build(base: Path, index) -> None:

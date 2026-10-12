@@ -7,6 +7,7 @@ members differ on the synthetic summable `testAxis`.
 
 from __future__ import annotations
 
+import json
 from typing import cast
 
 import httpx
@@ -17,11 +18,11 @@ import datasets_api.serve as serve_module
 import materialise.generation as generation_module
 from code_index import CodeIndex, CodeRow, CodeSystemDeclaration, IndexStamp
 from code_index.types import StatVarRow
-from series_coverage.schema import FacetMetadata, RoleNames
+from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from spec_registry.identity import recompute_identity
 from tests.engine._fake_coverage import FakeCoverageService, build_coverage_index
 
-from ._frame1_doubles import _frame1_row, _version_artifact_rows
+from ._frame_doubles import _canonical_frame_row, _version_artifact_rows
 from ._graph_doubles import FakeMintGraphReader
 from ._version_record_store import FakeVersionRecordDatasetStore
 from .test_definition_door import _client
@@ -99,9 +100,9 @@ def _coverage_service(
     `unit` overrides the observed unit for converted-base fixtures.
     """
     index = build_coverage_index(
-        [(stat_var, _FACET_ID, "country/USA", _RECIPIENT, [2020]) for stat_var in stat_vars],
+        [(stat_var, _FACET_ID, ABSENT_ENTITY, _RECIPIENT, [2020]) for stat_var in stat_vars],
         role_names={
-            stat_var: RoleNames(donor="provider", recipient="recipient") for stat_var in stat_vars
+            stat_var: RoleNames(donor=None, recipient="recipient") for stat_var in stat_vars
         },
         facet_metadata={
             _FACET_ID: FacetMetadata(
@@ -270,14 +271,14 @@ def test_a_full_collapse_mints_its_own_content_version_and_records_both():
 def test_a_repeat_collapsed_mint_returns_the_recorded_summed_warning_once(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """The second mint finds the collapsed version on record and answers from its stored body,
+    """The second mint finds the collapsed version on record and answers from its stored facts,
     which keeps the warning's structured fields and gains no second copy of it."""
     persisted_versions: list[str] = []
     persisted_response = serve_module.persisted_response
 
-    def _recording_persisted_response(snapshot_reader, **kwargs):
-        persisted_versions.append(kwargs["content_version"])
-        return persisted_response(snapshot_reader, **kwargs)
+    def _recording_persisted_response(**kwargs):
+        persisted_versions.append(kwargs["persisted"].content_version)
+        return persisted_response(**kwargs)
 
     monkeypatch.setattr(serve_module, "persisted_response", _recording_persisted_response)
     version_store = FakeVersionRecordDatasetStore()
@@ -333,21 +334,21 @@ def test_a_repeat_collapsed_mint_keeps_the_stored_summed_warning_when_this_call_
     content_version = first["content_version"]
     with version_store.transaction() as tx:
         row = tx.fetch_one(
-            "SELECT immutable_body FROM datasets.version_record "
+            "SELECT warnings FROM datasets.version_record "
             "WHERE subject_id = %s AND content_version = %s",
             (spec_id, content_version),
         )
         assert row is not None
-        body = cast(dict, row["immutable_body"])
-        body["warnings"] = [
-            stored_warning(w) if w["code"] == "stat_vars_summed" else w for w in body["warnings"]
+        warnings = [
+            stored_warning(w) if w["code"] == "stat_vars_summed" else w
+            for w in cast(list, row["warnings"])
         ]
         tx.execute(
-            "UPDATE datasets.version_record SET immutable_body = %s "
+            "UPDATE datasets.version_record SET warnings = %s "
             "WHERE subject_id = %s AND content_version = %s",
-            (body, spec_id, content_version),
+            (json.dumps(warnings), spec_id, content_version),
         )
-    (stored,) = [w for w in body["warnings"] if w["code"] == "stat_vars_summed"]
+    (stored,) = [w for w in warnings if w["code"] == "stat_vars_summed"]
 
     second = _mint(client, spec_id=spec_id, sidecar=sidecar, options=options)
     snapshot = client.get(f"/api/datasets/{spec_id}/{content_version}")
@@ -358,22 +359,26 @@ def test_a_repeat_collapsed_mint_keeps_the_stored_summed_warning_when_this_call_
     assert second["warnings"] == snapshot.json()["warnings"]
 
 
-def test_a_multi_chunk_group_mint_streams_the_frame1_of_its_single_chunk_run(
+def test_a_multi_chunk_group_mint_streams_the_canonical_frame_of_its_single_chunk_run(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """One member per chunk gives the frame1 writer two chunks; its stored frame1 has the digest
-    the default single-chunk run stores."""
+    """One member per chunk gives the canonical frame writer two chunks; its stored frame has the
+    digest the default single-chunk run stores."""
     chunk_counts: list[int] = []
-    render_and_store_frame1 = serve_module.render_and_store_frame1
+    render_and_store_canonical_frame = serve_module.render_and_store_canonical_frame
 
-    def _counting_render_and_store_frame1(*, frame_chunks, **kwargs):
+    def _counting_render_and_store_canonical_frame(*, frame_chunks, **kwargs):
         chunks: list[Frame] = list(frame_chunks)
         chunk_counts.append(len(chunks))
-        return render_and_store_frame1(frame_chunks=chunks, **kwargs)
+        return render_and_store_canonical_frame(frame_chunks=chunks, **kwargs)
 
-    monkeypatch.setattr(serve_module, "render_and_store_frame1", _counting_render_and_store_frame1)
+    monkeypatch.setattr(
+        serve_module,
+        "render_and_store_canonical_frame",
+        _counting_render_and_store_canonical_frame,
+    )
     spec_id, sidecar = _spec_id_and_sidecar()
-    frame1_digests: list[str] = []
+    frame_digests: list[str] = []
     for target_rows in (100_000, 1):
         monkeypatch.setattr(generation_module, "_FRAME_CHUNK_TARGET_ROWS", target_rows)
         version_store = FakeVersionRecordDatasetStore()
@@ -388,22 +393,13 @@ def test_a_multi_chunk_group_mint_streams_the_frame1_of_its_single_chunk_run(
         rows = _version_artifact_rows(
             version_store, subject_id=spec_id, content_version=manifest["content_version"]
         )
-        frame1_digests.append(cast(str, _frame1_row(rows)["artifact_digest"]))
+        frame_digests.append(cast(str, _canonical_frame_row(rows)["artifact_digest"]))
 
     assert chunk_counts == [1, 2]
-    assert frame1_digests[0] == frame1_digests[1]
+    assert frame_digests[0] == frame_digests[1]
 
 
-@pytest.mark.parametrize(
-    ("ceiling", "base_has_frame1", "collapsed_has_frame1"),
-    [(1, False, True), (0, False, False)],
-)
-def test_a_collapse_writes_frame1_only_at_or_under_the_row_ceiling(
-    monkeypatch: pytest.MonkeyPatch, ceiling: int, base_has_frame1: bool, collapsed_has_frame1: bool
-):
-    """The base frame has two rows and its collapse one, so each sits on its own side of the
-    patched ceiling."""
-    monkeypatch.setattr(serve_module, "FRAME1_MAX_ROWS", ceiling)
+def test_a_collapse_writes_the_canonical_frame_of_the_base_and_the_collapsed_version():
     version_store = FakeVersionRecordDatasetStore()
     client = _client(
         graph=_graph(),
@@ -427,15 +423,12 @@ def test_a_collapse_writes_frame1_only_at_or_under_the_row_ceiling(
             (spec_id,),
         )
     (base_version,) = {row["content_version"] for row in versions} - {collapsed["content_version"]}
-
-    def _has_frame1(content_version: str) -> bool:
-        rows = _version_artifact_rows(
-            version_store, subject_id=spec_id, content_version=content_version
+    for content_version in (base_version, collapsed["content_version"]):
+        _canonical_frame_row(
+            _version_artifact_rows(
+                version_store, subject_id=spec_id, content_version=content_version
+            )
         )
-        return any(row["rendering"] == {"format": "frame1"} for row in rows)
-
-    assert _has_frame1(base_version) is base_has_frame1
-    assert _has_frame1(collapsed["content_version"]) is collapsed_has_frame1
 
 
 def test_a_full_collapse_reports_the_collapsed_coverage_not_the_raw_one():

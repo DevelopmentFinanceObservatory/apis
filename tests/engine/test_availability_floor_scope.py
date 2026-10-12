@@ -146,6 +146,7 @@ def _spy_bind_universal(monkeypatch) -> None:
         admitted_ties=(),
         withheld_measure_axes=frozenset(),
         dropped_qualifier_phrases=(),
+        candidate_menus=(),
         llm,
     ):
         return (

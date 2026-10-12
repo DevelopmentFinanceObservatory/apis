@@ -36,6 +36,7 @@ class FacetCandidate:
     measurement_method: str | None = None
     unit: str | None = None
     scaling_factor: str | None = None
+    observation_period: str | None = None
 
 
 def facet_candidates(
@@ -55,6 +56,7 @@ def facet_candidates(
             measurement_method=metadata.get(f.facet_id, _NO_METADATA).measurement_method,
             unit=metadata.get(f.facet_id, _NO_METADATA).unit,
             scaling_factor=metadata.get(f.facet_id, _NO_METADATA).scaling_factor,
+            observation_period=metadata.get(f.facet_id, _NO_METADATA).observation_period,
         )
         for f in coverage
     ]

@@ -167,3 +167,20 @@ def test_facet_candidates_then_rank_candidates_ranks_a_coverage_join() -> None:
     ranked = rank_candidates(facet_candidates(coverage, metadata=metadata))
 
     assert [c.facet_id for c in ranked] == ["high", "low"]
+
+
+def test_facet_candidates_carries_the_observation_period_dispatch_reads() -> None:
+    # #347: coverage dates are year-grain whatever the cadence, so a quarterly facet is told
+    # from an annual one by its period alone (`materialise.facets.dispatch_cadence`).
+    coverage = [
+        FacetCoverage(facet_id="fQ", n_obs=12, first_year=2019, last_year=2022),
+        FacetCoverage(facet_id="fA", n_obs=3, first_year=2019, last_year=2022),
+    ]
+    metadata = {
+        "fQ": FacetMetadata(provenance_id="undata/p/ILO", unit="Percent", observation_period="P3M"),
+        "fA": FacetMetadata(provenance_id="undata/p/ILO", unit="Percent", observation_period="P1Y"),
+    }
+
+    candidates = facet_candidates(coverage, metadata=metadata)
+
+    assert [c.observation_period for c in candidates] == ["P3M", "P1Y"]

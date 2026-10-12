@@ -13,12 +13,14 @@ from fastapi.responses import PlainTextResponse
 from fastapi.testclient import TestClient
 
 from datasets_api.app import datasets_surface
+from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.meta import build_meta_door
 from datasets_api.doors.register import build_register_door
 from dfo_platform.doors import DoorContribution, flatten
 from spec_registry import LiveSpecRegistry
 
 from ._app_factories import make_client
+from ._deps_doubles import fake_deps_cell
 from .conftest import FakeDatasetStore
 from .test_definition_door import _client, _graph, _mint_one_spec
 from .test_output_options_doors import _body as _options_body
@@ -29,7 +31,12 @@ def test_meta_static_paths_precede_every_other_doors_routes() -> None:
     surface = datasets_surface(registry=LiveSpecRegistry(store=FakeDatasetStore()))
     routes = surface.router.routes
 
-    meta_paths = {route.path for route in build_meta_door().router.routes}
+    meta_paths = {
+        route.path
+        for route in build_meta_door(
+            deps=fake_deps_cell(), settings=DatasetsBuildSettings.from_env()
+        ).router.routes
+    }
     meta_indices = [i for i, route in enumerate(routes) if route.path in meta_paths]
     other_indices = [i for i, route in enumerate(routes) if route.path not in meta_paths]
 
@@ -51,8 +58,10 @@ def _stand_in_id_door() -> DoorContribution:
 
 def _client_with_a_stand_in_id_door_after_register() -> TestClient:
     doors = (
-        build_meta_door(),
-        build_register_door(registry=LiveSpecRegistry(store=FakeDatasetStore())),
+        build_meta_door(deps=fake_deps_cell(), settings=DatasetsBuildSettings.from_env()),
+        build_register_door(
+            deps=fake_deps_cell(registry=LiveSpecRegistry(store=FakeDatasetStore()))
+        ),
         _stand_in_id_door(),
     )
     router = flatten(doors)

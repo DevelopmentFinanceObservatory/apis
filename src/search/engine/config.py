@@ -11,6 +11,7 @@ import json
 import math
 import os
 from pathlib import Path
+from typing import Literal
 from urllib.parse import urlparse
 
 from pydantic import Field, field_validator, model_validator
@@ -207,9 +208,16 @@ class SearchSettings(BaseSettings):
     # Requests over the cap wait for a free connection up to llm_timeout_s.
     llm_max_concurrency: int = 32
 
-    # Overall request deadline in seconds. asyncio.wait_for wraps resolve_async.
-    # Prevents sequential graph rounds from stacking unbounded.
+    # Resolve's soft deadline in seconds from request start. The fan-out stops waiting for
+    # unfinished variables then and answers with what it has (`diagnostics.timed_out`).
     request_timeout_s: float = 45
+
+    # Seconds past the soft deadline before resolve's hard cap ends the request with a 504
+    # (JSON) or a terminal error event (SSE). The hard cap also bounds every graph and SDMX
+    # read the request makes (`dfo_platform.request_deadline`). Cancelling unfinished
+    # variables and assembling the partial answer take milliseconds, so the grace covers
+    # that work only. dfo-ai's data-mcp gives up on a resolve at 50 s.
+    finalise_grace_s: float = 2
 
     # Deadline from request start for a resubmit whose member walk reads the whole filtered
     # set (`resubmit_subject_ceiling`). The full read of a deep-root family such as
@@ -226,6 +234,13 @@ class SearchSettings(BaseSettings):
     # Server default for place-as-constraint (PAC). When on, recipients bind directionally.
     # Every request uses this server-side default. The wire has no override.
     seam_default: bool = True
+
+    # -- Qualifier coverage -------------------------------------------------
+    # Sets what happens to a word no reader covers beside a recognised code
+    # (`phase_rank_bind._coverage_records`). "refuse" records it, so the part refuses
+    # qualifier_not_bound with the near match. "log" logs the record it would add and
+    # answers as if it were absent.
+    qualifier_coverage: Literal["log", "refuse"] = "refuse"
 
     # -- Security / prompt safety ------------------------------------------
     # FastAPI rejects longer queries with 422 before any LLM or graph call.
@@ -775,6 +790,11 @@ class SearchSettings(BaseSettings):
         if self.request_timeout_s <= 0:
             raise ValueError(
                 f"SEARCH_REQUEST_TIMEOUT_S must be > 0; got {self.request_timeout_s!r}"
+            )
+        if self.finalise_grace_s <= 0:
+            raise ValueError(
+                "SEARCH_FINALISE_GRACE_S must be > 0, so the soft deadline's partial answer "
+                f"lands before the hard cap; got {self.finalise_grace_s!r}"
             )
         if self.resubmit_full_read_timeout_s < self.request_timeout_s:
             raise ValueError(

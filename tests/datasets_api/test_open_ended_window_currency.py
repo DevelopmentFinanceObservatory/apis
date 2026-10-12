@@ -1,9 +1,9 @@
 """A definition whose window leaves its end unstated reads to the current year
 (`materialise.window.election_window`), so its stored head is current only while a read would
-end at the same year. Its currency signal carries the window it read, and a new calendar year
-re-reads the head on every path: a fresh mint, a GET from a confirmed head, a GET inside the
-recheck interval and the options route. The re-read keeps its content version when the data it
-reads is unchanged.
+end at the same year. Its dependency fingerprint carries the window it read, and past the
+recheck interval a new calendar year re-reads the head on every path: a mint, a GET and the
+options route. Inside the interval the head serves with no read, clock included. The re-read
+keeps its content version when the data it reads is unchanged.
 A window stating its end, and one with no years, hold no clock.
 """
 
@@ -104,9 +104,13 @@ class _Dataset:
         assert response.status_code == 200, response.text
         return response.json()
 
+    def age(self) -> None:
+        """Age the head past the recheck interval, so the next read compares its fingerprint."""
+        self.head_store.age_head(self.spec_id, age=_PAST_INTERVAL)
+
     def window_read(self) -> tuple[int | None, int | None] | None:
-        (signal,) = self.head_store.head_for(self.spec_id).signal
-        return signal.clock_window
+        window = self.head_store.head_for(self.spec_id).dependencies["window"]
+        return None if window is None else (window["start_year"], window["end_year"])
 
 
 def _served(body: dict) -> tuple[int, int]:
@@ -129,6 +133,7 @@ def test_a_fresh_mint_in_a_new_year_reads_to_that_year(
     assert dataset.window_read() == (2016, 2026)
 
     dataset.set_clock(2027)
+    dataset.age()
     reminted = dataset.mint()
 
     assert _served(reminted) == served_2027
@@ -136,7 +141,6 @@ def test_a_fresh_mint_in_a_new_year_reads_to_that_year(
     assert dataset.window_read() == (2016, 2027)
 
 
-@pytest.mark.parametrize("confirmed", ["past_the_recheck_interval", "inside_it"])
 @pytest.mark.parametrize(
     ("data", "served_2027", "same_content"),
     [(range(2016, 2022), (2016, 2021), True), (range(2016, 2031), (2016, 2027), False)],
@@ -147,20 +151,20 @@ def test_a_get_in_a_new_year_re_reads_an_open_ended_head(
     data: range,
     served_2027: tuple[int, int],
     same_content: bool,
-    confirmed: str,
 ) -> None:
-    """A head minted in 2026 is re-read by the first GET of 2027, whether the head was last
-    confirmed before the recheck interval (the probe path) or inside it (the fast path). With
-    data ending in 2021 the re-read serves the same content version; with data running to
-    2030 it serves 2027 too."""
+    """A head minted in 2026 serves a GET of 2027 inside the recheck interval, and the first
+    GET past it re-reads the head. With data ending in 2021 the re-read serves the same
+    content version; with data running to 2030 it serves 2027 too."""
     dataset = _Dataset(monkeypatch, years=data, window=_SINCE_2016, clock=2026)
     before = dataset.get()
     assert before["trace"]["served_from"] == "head"
-    if confirmed == "past_the_recheck_interval":
-        dataset.head_store.age_head(dataset.spec_id, age=_PAST_INTERVAL)
     sdmx_reads = dataset.sdmx_calls.n
 
     dataset.set_clock(2027)
+    inside = dataset.get()
+    assert inside["trace"]["served_from"] == "head"
+    assert inside["content_version"] == before["content_version"]
+    dataset.age()
     after = dataset.get()
 
     assert after["trace"]["served_from"] == "materialise"
@@ -176,12 +180,14 @@ def test_a_get_in_a_new_year_re_reads_an_open_ended_head(
 def test_the_options_route_re_reads_a_head_the_clock_moved_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """In 2027 the first options call re-reads a head minted in 2026 and, finding the same
-    content version, advances its window. The second options call and a GET serve the head."""
+    """In 2027 the first options call past the recheck interval re-reads a head minted in 2026
+    and, finding the same content version, advances its window. The second options call and a
+    GET serve the head."""
     dataset = _Dataset(monkeypatch, years=range(2016, 2022), window=_SINCE_2016, clock=2026)
     sdmx_reads = dataset.sdmx_calls.n
 
     dataset.set_clock(2027)
+    dataset.age()
     first = dataset.options()
     second = dataset.options()
 
@@ -195,31 +201,31 @@ def test_the_options_route_re_reads_a_head_the_clock_moved_once(
     assert dataset.sdmx_calls.n == sdmx_reads + 1
 
 
-def test_the_options_route_leaves_a_head_whose_re_read_holds_new_data(
+def test_the_options_route_records_a_re_read_that_holds_new_data(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """With data running to 2030, the 2027 re-read holds a year the stored version lacks. The
-    options route records no version, so the head keeps its 2026 window and each options call
-    re-reads it until a GET records the new version."""
+    options route records that version and advances the head to it, as a GET does, so the
+    second options call and a GET serve the new head."""
     dataset = _Dataset(monkeypatch, years=range(2016, 2031), window=_SINCE_2016, clock=2026)
     sdmx_reads = dataset.sdmx_calls.n
 
     dataset.set_clock(2027)
+    dataset.age()
     first = dataset.options()
     second = dataset.options()
 
     assert [first["trace"]["served_from"], second["trace"]["served_from"]] == [
         "materialise",
-        "materialise",
+        "head",
     ]
-    assert dataset.sdmx_calls.n == sdmx_reads + 2
-    assert dataset.window_read() == (2016, 2026)
-    assert (
-        dataset.head_store.head_for(dataset.spec_id).content_version
-        == dataset.minted["content_version"]
-    )
-    assert dataset.get()["content_version"] != dataset.minted["content_version"]
+    assert dataset.sdmx_calls.n == sdmx_reads + 1
     assert dataset.window_read() == (2016, 2027)
+    assert first["content_version"] != dataset.minted["content_version"]
+    assert dataset.head_store.head_for(dataset.spec_id).content_version == first["content_version"]
+    got = dataset.get()
+    assert got["trace"]["served_from"] == "head"
+    assert got["content_version"] == first["content_version"]
 
 
 @pytest.mark.parametrize("confirmed", ["past_the_recheck_interval", "inside_it"])
@@ -230,7 +236,7 @@ def test_a_window_holding_no_clock_serves_its_head_in_a_new_year(
     dataset = _Dataset(monkeypatch, years=range(2016, 2031), window=window, clock=2026)
     assert dataset.window_read() is None
     if confirmed == "past_the_recheck_interval":
-        dataset.head_store.age_head(dataset.spec_id, age=_PAST_INTERVAL)
+        dataset.age()
     sdmx_reads = dataset.sdmx_calls.n
 
     dataset.set_clock(2027)
@@ -256,9 +262,11 @@ def test_a_window_starting_after_the_clock_is_re_read_once_the_clock_reaches_it(
     assert _served(dataset.minted) == (2028, 2030)
 
     dataset.set_clock(2027)
+    dataset.age()
     assert dataset.get()["trace"]["served_from"] == "head"
 
     dataset.set_clock(2028)
+    dataset.age()
     after = dataset.get()
     assert after["trace"]["served_from"] == "materialise"
     assert _served(after) == (2028, 2028)

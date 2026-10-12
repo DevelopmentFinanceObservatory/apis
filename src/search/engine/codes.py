@@ -27,9 +27,7 @@ Missing titles use ``title_for_status`` and generic details. ``CODE_CATALOG``
 merges it with the platform catalogue, and its keys equal ``REFUSAL_CODES``.
 
 Warning codes remain Search-specific because they have no problem ``type``
-URI. ``facet_binding_unsupported`` appears in both registries because Search
-can emit it as either a refusal or a warning. Gate codes appear only in the
-refusal registry.
+URI. Gate codes appear only in the refusal registry.
 """
 
 from __future__ import annotations
@@ -269,6 +267,9 @@ WARNING_CODES: frozenset[str] = frozenset(
         # A role-bearing answer reads recalled members the mint's walk did not settle
         # (region/codes.py).
         "membership_unverified",
+        # A resubmit's elected members the graph does not hold, left out of the answer
+        # (region/codes.py).
+        "members_absent_from_graph",
         # Place-as-constraint (PAC) disabled info code (region/codes.py).
         "place_constraint_seam_off",
         "entity_role_disabled",
@@ -279,9 +280,6 @@ WARNING_CODES: frozenset[str] = frozenset(
         # Time-text warnings from parsed and dataset-entry handlers.
         "time_text_not_parsed",
         "time_window_defaulted",
-        # Also a refusal code. When unit_text shadows source_text, this warning marks an
-        # unhonoured axis. The unit_text binding determines the part's outcome.
-        "facet_binding_unsupported",
         # A dataset_resubmit part restated as a stub without graph or LLM calls.
         "part_restated",
         # A projected rate or deflator supplied the conversion facet.

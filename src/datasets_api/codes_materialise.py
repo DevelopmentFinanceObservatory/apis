@@ -20,6 +20,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 
 from dfo_platform.named import named_capped
+from dfo_platform.problem import Alternative, ProblemIssue, Refusal
 from materialise.codes import MATERIALISE_CODE_CATALOGUE
 from materialise.errors import MaterialisationError
 from materialise.formats import FORMATS_CODE_CATALOGUE
@@ -89,6 +90,9 @@ class ExcludedByRegistry(MaterialisationError):
     for the requested variables at the requested places sits under a provenance the origin
     registry does not admit. `provenances` names them in first-occurrence order."""
 
+    code = "excluded_by_registry"
+    status = 422
+
     def __init__(self, *, variables: tuple[str, ...], provenances: tuple[str, ...]) -> None:
         self.variables = variables
         self.provenances = provenances
@@ -96,7 +100,7 @@ class ExcludedByRegistry(MaterialisationError):
             f"{', '.join(variables)} has data at the requested places only under provenances "
             f"the origin registry does not admit: {', '.join(provenances)}"
         )
-        super().__init__(detail, code="excluded_by_registry", status=422, detail=detail)
+        super().__init__(detail, detail=detail)
 
 
 class UnSystemUnavailable(MaterialisationError):
@@ -106,6 +110,10 @@ class UnSystemUnavailable(MaterialisationError):
     data exists there. `places` names them all in first-occurrence order, and the detail names
     the first five (`named_capped`)."""
 
+    code = "upstream_error"
+    status = 502
+    retryable = True
+
     def __init__(self, *, variable: str, places: tuple[str, ...]) -> None:
         self.variable = variable
         self.places = places
@@ -113,18 +121,34 @@ class UnSystemUnavailable(MaterialisationError):
             f"the UN System Data Commons could not serve observations of {variable} at "
             f"{named_capped(places)}; retry"
         )
-        super().__init__(detail, code="upstream_error", status=502, detail=detail, retryable=True)
+        super().__init__(detail, detail=detail)
 
 
-class MemberNotResolvable(Exception):
+def _scope_role_issue(role: str, declared_roles: tuple[str, ...]) -> ProblemIssue:
+    """The issue for a `scope.entities` role, listing the declared roles as alternatives."""
+    return ProblemIssue(
+        pointer=f"/input/scope/entities/{role}",
+        member=role,
+        axis=role,
+        alternatives=[Alternative(ref=r, label=r) for r in declared_roles],
+        truncated=False,
+    )
+
+
+class MemberNotResolvable(Refusal):
     """Raised when StatVars resolve to zero or multiple registered shapes.
 
-    This maps to `member_not_resolvable`, 422, with one issue per member. `pointer` is set by
-    `kinds.spec_id`. `kinds.statvar_set` uses `/input/statvars`. `truncated` marks
-    a capped list of disagreeing members.
+    This maps to `member_not_resolvable` with one issue per member at `issue_pointer`, which
+    `kinds.spec_id` sets and which defaults to `kinds.statvar_set`'s `/input/statvars`.
+    `truncated` marks a capped list of disagreeing members.
     """
 
-    pointer: str | None = None
+    code = "member_not_resolvable"
+    issue_pointer = "/input/statvars"
+
+    @property
+    def issues(self) -> tuple[ProblemIssue, ...]:
+        return tuple(ProblemIssue(pointer=self.issue_pointer, member=m) for m in self.members)
 
     def __init__(self, *, members: tuple[str, ...], truncated: bool = False) -> None:
         self.members = members
@@ -135,12 +159,14 @@ class MemberNotResolvable(Exception):
         super().__init__(detail)
 
 
-class DefinitionNotReproducible(Exception):
+class DefinitionNotReproducible(Refusal):
     """A stored identity fails against the graph's current StatVar shape.
 
     `undeclared_roles` lists bound or open roles the shape lacks. It is empty without a
-    role-level cause.
+    role-level cause. One issue names each spec, and one more each spec and undeclared role.
     """
+
+    code = "definition_not_reproducible"
 
     def __init__(
         self,
@@ -153,10 +179,20 @@ class DefinitionNotReproducible(Exception):
         self.spec_ids = spec_ids
         self.detail = detail
         self.undeclared_roles = undeclared_roles
+        self.issues = (
+            *(ProblemIssue(member=spec_id) for spec_id in spec_ids),
+            *(
+                ProblemIssue(member=spec_id, axis=role)
+                for spec_id in spec_ids
+                for role in undeclared_roles
+            ),
+        )
 
 
-class SpecNotExportable(Exception):
+class SpecNotExportable(Refusal):
     """A described-arm identity has no pinned StatVar series to export."""
+
+    code = "spec_not_exportable"
 
     def __init__(self, *, spec_id: str, detail: str) -> None:
         super().__init__(detail)
@@ -164,14 +200,16 @@ class SpecNotExportable(Exception):
         self.detail = detail
 
 
-class InvalidRoleRef(Exception):
+class InvalidRoleRef(Refusal):
     """`scope.entities` names a role absent from the shape or a graph node whose type differs from
     `Property`. This maps to `invalid_role_ref`, 422, with one issue per role.
 
     `declared_roles` carries the shape's role list, or is empty when no shape is available. A
     custom `message` can describe an ambiguous-axis binding. `role` and `declared_roles` remain
-    available to the wire mapper.
+    available to the wire mapper. The issue lists the declared roles as alternatives.
     """
+
+    code = "invalid_role_ref"
 
     def __init__(
         self,
@@ -184,6 +222,7 @@ class InvalidRoleRef(Exception):
         self.stat_var = stat_var
         self.role = role
         self.declared_roles = declared_roles
+        self.issues = (_scope_role_issue(role, declared_roles),)
         super().__init__(
             message
             if message is not None
@@ -191,14 +230,17 @@ class InvalidRoleRef(Exception):
         )
 
 
-class RoleIncompatible(Exception):
+class RoleIncompatible(Refusal):
     """A runtime binding is refused when `slots` pins the role, even if the binding repeats that
     value. This also covers `observationAbout` on shapes with other roles and graph properties
     absent from the shape. It maps to `role_incompatible`, 422, with one issue per role.
 
     `declared_roles` carries the shape's roles. A custom `message` describes colliding spellings
-    or ambiguous axes. The wire fields remain set.
+    or ambiguous axes. The wire fields remain set. The issue lists the declared roles as
+    alternatives.
     """
+
+    code = "role_incompatible"
 
     def __init__(
         self,
@@ -213,6 +255,7 @@ class RoleIncompatible(Exception):
         self.role = role
         self.pinned_value = pinned_value
         self.declared_roles = declared_roles
+        self.issues = (_scope_role_issue(role, declared_roles),)
         if message is not None:
             pass
         elif pinned_value is not None:
@@ -225,7 +268,7 @@ class RoleIncompatible(Exception):
         super().__init__(message)
 
 
-class CurrencyRoleUndeclared(Exception):
+class CurrencyRoleUndeclared(Refusal):
     """The unit request's role-shaped `currency` names a role absent from the StatVar shape or one
     that shares its axis with another role. `graph_role_for_spec_role` raises `role_undeclared`,
     which this exception maps to `request_invalid`, 400.
@@ -233,10 +276,10 @@ class CurrencyRoleUndeclared(Exception):
     Request kinds attach `pointer`. Stored-spec retrieval leaves `pointer` unset. A custom message
     can name conflicting roles. This concerns a role inside the unit value. `InvalidRoleRef` and
     `RoleIncompatible` cover `scope.entities`. Roles outside `_CURRENCY_ROLES` fail identity
-    validation first.
+    validation first. The declared roles appear as top-level alternatives.
     """
 
-    pointer: str | None = None
+    code = "request_invalid"
 
     def __init__(
         self,
@@ -248,6 +291,7 @@ class CurrencyRoleUndeclared(Exception):
     ) -> None:
         self.role = role
         self.declared_roles = declared_roles
+        self.alternatives = [Alternative(ref=r, label=r) for r in declared_roles]
         super().__init__(
             message
             if message is not None
@@ -258,26 +302,31 @@ class CurrencyRoleUndeclared(Exception):
         )
 
 
-class RoleSignatureIncompatible(Exception):
+class RoleSignatureIncompatible(Refusal):
     """Described-arm members disagree on `declared_roles`.
 
-    This maps to `role_signature_incompatible`, 422, with one issue per member listing its roles.
+    This maps to `role_signature_incompatible` with one issue per member.
     """
+
+    code = "role_signature_incompatible"
 
     def __init__(self, *, spec_id: str, roles_by_stat_var: Mapping[str, tuple[str, ...]]) -> None:
         self.spec_id = spec_id
         self.roles_by_stat_var = dict(roles_by_stat_var)
+        self.issues = tuple(ProblemIssue(member=sv) for sv in sorted(self.roles_by_stat_var))
         super().__init__(
             f"spec {spec_id!r} enumerates members disagreeing on declared_roles: "
             f"{dict(sorted(self.roles_by_stat_var.items()))!r}"
         )
 
 
-class CapabilityUnavailable(Exception):
+class CapabilityUnavailable(Refusal):
     """The request uses a disabled format, reshape, or conversion capability. It maps to
-    `capability_unavailable`, 501. `pointer` identifies a disabled enrichment field. `groupby`
+    `capability_unavailable`. `pointer` identifies a disabled enrichment field. `groupby`
     leaves it unset because the option is a boolean.
     """
+
+    code = "capability_unavailable"
 
     def __init__(self, *, detail: str, pointer: str | None = None) -> None:
         self.detail = detail
@@ -285,11 +334,13 @@ class CapabilityUnavailable(Exception):
         super().__init__(detail)
 
 
-class SpecNotFound(Exception):
-    """The registry and request sidecar lack this definition. It maps to `spec_not_found`, 404.
+class SpecNotFound(Refusal):
+    """The registry and request sidecar lack this definition. It maps to `spec_not_found`.
 
     The raising kind sets `pointer` to `/input/spec_id`.
     """
+
+    code = "spec_not_found"
 
     def __init__(self, *, subject_id: str, pointer: str) -> None:
         self.subject_id = subject_id
@@ -297,10 +348,12 @@ class SpecNotFound(Exception):
         super().__init__(f"{subject_id!r} is not registered, and nothing was supplied to mint it")
 
 
-class MalformedSidecarIdentity(Exception):
-    """A sidecar fails identity-core validation. It maps to `request_invalid`, 400, with a
-    request pointer, which the raising kind sets.
+class MalformedSidecarIdentity(Refusal):
+    """A sidecar fails identity-core validation. It maps to `request_invalid` with a request
+    pointer, which the raising kind sets.
     """
+
+    code = "request_invalid"
 
     def __init__(self, *, detail: str, pointer: str) -> None:
         self.pointer = pointer
@@ -336,35 +389,3 @@ def signing_failure_is_permanent(*, error_class_name: str | None, status_code: i
     if status_code in (401, 403):
         return True
     return error_class_name in _PERMANENT_SIGNING_FAILURE_CLASS_NAMES
-
-
-class RenderedArtifactSigningFailed(Exception):
-    """A signed URL failed after the rendered bytes were stored.
-
-    The raise site copies safe error fields outside the caught exception so `__context__` stays
-    unset. `error_class_name` and `status_code` distinguish permanent causes from outages.
-    """
-
-    def __init__(
-        self,
-        *,
-        bucket: str,
-        object_name: str,
-        digest: str,
-        error_class_name: str | None,
-        status_code: int | None,
-    ) -> None:
-        self.bucket = bucket
-        self.object_name = object_name
-        self.digest = digest
-        self.error_class_name = error_class_name
-        self.status_code = status_code
-        detail = (
-            f"failed to sign a GET url for a rendered artifact object {object_name!r} "
-            f"in bucket {bucket!r} (digest {digest!r})"
-        )
-        if error_class_name is not None:
-            detail += f"; underlying failure class {error_class_name!r}"
-        if status_code is not None:
-            detail += f", status {status_code!r}"
-        super().__init__(detail)

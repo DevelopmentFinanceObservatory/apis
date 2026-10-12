@@ -14,7 +14,7 @@ from datetime import timedelta
 from pydantic import Field, ValidationError, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from artifact_store.signing import SIGNED_URL_REUSE_WINDOW, SIGNED_URL_TTL_CEILING
+from artifact_store.signing import SIGNED_URL_REUSE_WINDOW
 from dfo_platform.config import PublicSiteSettings, env_validation_error_message
 from materialise import DEFAULT_MEMBER_CONCURRENCY
 from origin_catalogue.graph import (
@@ -27,6 +27,10 @@ from origin_catalogue.graph import (
     GraphClientOptions,
 )
 from statvar_members import DEFAULT_SUBJECT_CEILING
+
+# `DATASETS_OPERATION_DEADLINE_SECONDS` where the environment sets none, derived at
+# `DatasetsBuildSettings.operation_deadline_seconds`.
+DEFAULT_OPERATION_DEADLINE_SECONDS = 36_000
 
 
 class DatasetsConfigError(Exception):
@@ -48,14 +52,22 @@ class DatasetsBuildSettings(BaseSettings):
     async_max_rows: int = Field(default=2_000_000, ge=1)
     async_max_requests: int = Field(default=800, ge=1)
 
-    # Mint executor threads, independently capped by a same-sized semaphore (503 when full).
-    mint_max_concurrency: int = Field(default=4, ge=1)
+    # Read executor threads: snapshot, observations, operations polls, members, pin, register,
+    # recipe, and head hits. A same-sized semaphore refuses retryable 503 when full.
+    read_max_concurrency: int = Field(default=8, ge=1)
 
-    # Concurrent SDMX members per request. Each door's client caps total GETs at 8, or 16
-    # across both doors.
+    # Work executor threads: mints, rebuilds, publishes, and frame refreshes. Kept apart from the
+    # read executor, so a queue of materialisations cannot delay a poll or a download. A
+    # same-sized semaphore refuses retryable 503 when full. At most `materialise_max_concurrency`
+    # of the threads that mint, rebuild or refresh hold a frame at once. A publish takes no
+    # materialise permit, so every thread that runs one holds its frame as well.
+    work_max_concurrency: int = Field(default=4, ge=1)
+
+    # Concurrent SDMX members per request. The surface's one SDMX client caps total GETs at 8.
     mint_member_max_concurrency: int = Field(default=DEFAULT_MEMBER_CONCURRENCY, ge=1)
 
-    # Client wait limit for the mint executor hop. Transport timeouts bound the worker thread.
+    # A mint's deadline. Every SDMX, graph and metadata read of the mint takes it, and the door
+    # answers timeout (504, retryable) when it passes.
     mint_timeout_seconds: float = Field(default=120, gt=0)
 
     # SDMX transport timeout. Each request also has a deadline, and the earlier one applies.
@@ -64,34 +76,19 @@ class DatasetsBuildSettings(BaseSettings):
     # Pivot cell limit. Format column caps bound width only, and CSV/Parquet have no width cap.
     pivot_max_output_cells: int = Field(default=5_000_000, ge=1)
 
-    # Definition executor threads are independent of mint. Its semaphore returns retryable 503
-    # when full.
-    definition_max_concurrency: int = Field(default=4, ge=1)
-
-    # Frame refresh executor threads, apart from the definition pool so a canvas of refreshes
-    # cannot fill it and refuse a public definition read. A same-sized semaphore returns
-    # retryable 503 when full. A refresh that rebuilds does a mint's work under the shared
-    # materialise semaphore, so at most `materialise_max_concurrency` (2) of these threads
-    # hold the memory of a rebuild whatever this is set to. Every other one reads stored
-    # records or waits for a slot or a shared rebuild, which costs a parked thread. The mint
-    # door admits `mint_max_concurrency` (4) callers that may each rebuild. Twice that admits a
-    # canvas of eight dataset cards refreshing together.
-    refresh_max_concurrency: int = Field(default=8, ge=1)
-
-    # Definition client wait limit. On a head hit it also covers on-demand rendering and storage.
+    # The deadline of a definition GET, `/options` call, or frame refresh, taken as a mint's is.
+    # On a head hit it also covers on-demand rendering and storage.
     definition_timeout_seconds: float = Field(default=120, gt=0)
 
-    # Shared mint/definition rebuild cap. Default 2 keeps memory-heavy runs (about 300 MB each)
-    # within the service's 1 GiB budget.
+    # Materialise permits per instance. The frames alive at once across mints, rebuilds, head-hit
+    # renders, file renewals and observation reads. A serve holds one from its first SDMX request
+    # to its last artifact write, and a coverage reload holds every one. A publish builds its
+    # frame outside them, bounded by `work_max_concurrency`. The service has 4 GiB. The default
+    # of 2 stays until a load test measures resident memory per materialisation.
     materialise_max_concurrency: int = Field(default=2, ge=1)
 
     # Slot wait limit. The semaphore uses the earlier of this limit and the request deadline (503).
     materialise_wait_seconds: float = Field(default=30, gt=0)
-
-    # Floor for each of a bundle render's two graph metadata reads: the live documentation read
-    # that fills a stored citation's empty fields, and the code label read. Each gets at least
-    # this long from when it starts, however much of the request deadline is left.
-    metadata_read_seconds: float = Field(default=15, gt=0)
 
     # Subjects a described arm's member walk reads when its first reverse page truncates
     # without a confirmed root. The walk takes the whole filtered set up to this many and
@@ -112,21 +109,9 @@ class DatasetsBuildSettings(BaseSettings):
     # Maximum head age before rebuilding. Catches count- and date-invariant value corrections.
     head_max_age_seconds: int = Field(default=86_400, ge=1)
 
-    # Snapshot executor threads. A same-sized semaphore returns 503 when full.
-    snapshot_max_concurrency: int = Field(default=4, ge=1)
-
-    # Pin executor threads. A same-sized semaphore returns 503 when full.
-    pin_max_concurrency: int = Field(default=4, ge=1)
-
     # New pinned copies allowed per trailing 24 hours, counted from `pin` references. A repin of
     # an already pinned artifact is exempt. 0 refuses every new pinned copy.
     pin_daily_max: int = Field(default=500, ge=0)
-
-    # Publish executor threads. A same-sized semaphore returns 503 when full.
-    publish_max_concurrency: int = Field(default=4, ge=1)
-
-    # Operations polling executor threads. Its semaphore returns 503 when full.
-    operations_max_concurrency: int = Field(default=4, ge=1)
 
     # Sent as `x-graph-token` to live graph/SDMX clients to bypass the graph WAF. Empty omits the
     # header.
@@ -147,25 +132,25 @@ class DatasetsBuildSettings(BaseSettings):
     # the same secret under. Empty denies all. It opens no publish, recipe, or pin route.
     live_refresh_principal: str = Field(default="", validation_alias="live_refresh_principal")
 
-    # Lease expires after this many seconds. Workers renew it every ~20s. Queue min_backoff must
-    # be at least this value (60s by default) to avoid retries colliding with a live lease.
-    # Expiry lets retries or poll-time dead-worker detection recover abandoned operations.
-    operation_lease_seconds: int = Field(default=60, ge=1)
+    # The queue's `max_attempts`, which dfo-infra sets from the queue's own `max_attempts` local
+    # (3). The worker marks the operation failed on its final transient attempt.
+    operation_max_attempts: int = Field(default=3, ge=1)
 
-    # Mirrors queue `max_attempts` (5 by default). The worker marks the operation failed on its
-    # final transient attempt.
-    operation_max_attempts: int = Field(default=5, ge=1)
-
-    # Maximum pending/running rows. `create_or_get` refuses a new operation at the limit.
+    # Maximum live pending/running rows. `create_or_get` refuses a new operation at the limit.
     operation_backlog_max: int = Field(default=20, ge=1)
 
-    # Mirrors queue `max_retry_duration` (3600s by default). Polling adds a fixed margin before
-    # classifying an unchanged operation as abandoned.
-    operation_max_retry_duration_seconds: int = Field(default=3_600, ge=1)
-
-    # Mirrors queue `max_concurrent_dispatches` (4 by default). Backlog size determines how many
-    # full dispatch-deadline rounds a task may wait before dispatch.
-    operation_dispatch_concurrency: int = Field(default=4, ge=1)
+    # The application's deadline for one submission of an operation, counted from its dispatch,
+    # or its submission when no dispatch is recorded. A `pending` row, or a `running` row whose
+    # lease has ended, that is still unfinished after it fails retryable at the next poll, a
+    # delivery that arrives later fails the row without running it, and the backlog stops
+    # counting the row. It says nothing about the queue's state. Cloud Tasks may still hold the
+    # task. The default lets every delivery wait behind a full backlog and then run to its
+    # dispatch deadline, with the backoff between deliveries and a margin. dfo-infra computes it
+    # from the queue's own locals as
+    #   attempts x (ceil(backlog_max / dispatch_concurrency) x dispatch_deadline
+    #     + dispatch_deadline) + (attempts - 1) x backoff + margin
+    # = 3 x (ceil(20 / 4) x 1,800 + 1,800) + 2 x 1,680 + 240 = 36,000 s.
+    operation_deadline_seconds: int = Field(default=DEFAULT_OPERATION_DEADLINE_SECONDS, ge=1)
 
     # The website bundles link to, read from `DFO_PUBLIC_SITE_URL` (required) and
     # `DFO_SITE_DATASET_LINKS`, which the presentation surface reads too.
@@ -180,12 +165,6 @@ class DatasetsBuildSettings(BaseSettings):
                 f"({self.head_max_age_seconds}), got {self.head_recheck_seconds}"
             )
         return self
-
-    def executor_wait_seconds(self, timeout_seconds: float) -> float:
-        """How long a door waits on its executor for a request whose deadline is
-        `timeout_seconds` away. It adds both metadata read floors, which a bundle render can run
-        past the deadline."""
-        return timeout_seconds + 2 * self.metadata_read_seconds
 
     @classmethod
     def from_env(cls) -> DatasetsBuildSettings:
@@ -250,17 +229,13 @@ class DatasetsSettings(BaseSettings):
             ) from exc
 
 
-# Advertised lifetime for mint, definition, and snapshot URLs. This fixed policy is not
-# environment-configurable.
-SIGNED_URL_ADVERTISED_TTL: timedelta = timedelta(minutes=15)
+# Lifetime of the signed URL a download link redirects to. The artifact store reuses a signed URL
+# for up to `SIGNED_URL_REUSE_WINDOW`, so a redirect carries at least the difference.
+DOWNLOAD_SIGNED_URL_TTL: timedelta = timedelta(minutes=5)
 
-# Add the cache reuse window so cached URLs retain the full advertised lifetime.
-SIGNED_URL_TTL: timedelta = SIGNED_URL_ADVERTISED_TTL + SIGNED_URL_REUSE_WINDOW
-
-# Fail at import if the signing TTL exceeds the artifact store's ceiling.
-if SIGNED_URL_TTL > SIGNED_URL_TTL_CEILING:
+# Fail at import if a reused signed URL could reach a client already expired.
+if DOWNLOAD_SIGNED_URL_TTL <= SIGNED_URL_REUSE_WINDOW:
     raise ValueError(
-        f"SIGNED_URL_TTL {SIGNED_URL_TTL!r} (SIGNED_URL_ADVERTISED_TTL + "
-        f"SIGNED_URL_REUSE_WINDOW) exceeds artifact_store.signing's "
-        f"{SIGNED_URL_TTL_CEILING!r} ceiling"
+        f"DOWNLOAD_SIGNED_URL_TTL {DOWNLOAD_SIGNED_URL_TTL!r} does not outlast artifact_store."
+        f"signing's {SIGNED_URL_REUSE_WINDOW!r} reuse window"
     )

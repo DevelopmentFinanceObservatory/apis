@@ -72,7 +72,6 @@ def _fresh_state(*, materialise_graph: GraphReader = _MATERIALISE_GRAPH) -> Reso
         include_observations=False,
         stream_observations=False,
         unit_text=None,
-        source_text=None,
         materialise_graph=materialise_graph,
         materialise_sdmx=_MATERIALISE_SDMX,
         timing={},

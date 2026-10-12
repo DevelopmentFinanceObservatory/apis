@@ -48,6 +48,8 @@ from dc_sdmx.results import (
     observation_schema,
     parse_availability_json,
 )
+from dfo_platform.request_deadline import bounded_deadline
+from dfo_platform.timings import carrying_timings, count
 
 _DATAFLOW_AGENCY = "DC"
 _DATAFLOW_ID = "DF_OBS"
@@ -124,6 +126,12 @@ _DEFAULT_TOTAL_CONCURRENCY = 8
 _SLOT_POLL_INTERVAL = 0.02
 
 
+def _count_request(_request: httpx.Request) -> None:
+    """Count each request this client sends, retries included, on the calling door's timings
+    as `sdmx_requests`."""
+    count("sdmx_requests")
+
+
 class _ReadStoppedError(SdmxTransportError):
     """Worker marker for a request stopped by a sibling failure or cap abort.
 
@@ -142,6 +150,8 @@ class _DeadlineGuard:
     whole chunked read and closes every armed response on expiry or sibling
     failure. With `deadline=None`, time checks are disabled. Concurrent reads
     retain the guard for sibling cancellation. Sequential reads pass no guard.
+    A read's deadline is the earlier of its caller's and the bound request
+    deadline (`dfo_platform.request_deadline`).
 
     `window_seconds` bounds the read from the moment its first GET holds a slot
     (`open_window`), so time spent waiting for a slot does not count against it.
@@ -364,7 +374,7 @@ class _ConcurrentChunkRead:
             if self.guard.stopped.is_set() or (wake_when is not None and wake_when()):
                 lease.release()
                 return None
-            future = self.pool.submit(self._run_worker, worker)
+            future = self.pool.submit(self._run_worker, carrying_timings(worker))
             with self._lock:
                 self._futures.add(future)
             # Close admission before the released permit can wake another coordinator.
@@ -519,6 +529,7 @@ class SdmxClient:
             headers=headers,
             timeout=timeout,
             transport=transport,
+            event_hooks={"request": [_count_request]},
         )
         self._timeout = timeout
         self._url_budget_bytes = url_budget_bytes
@@ -682,7 +693,7 @@ class SdmxClient:
         waiting for those workers. One shared guard enforces the whole-read
         deadline and sibling cancellation, including when no deadline is set.
         """
-        guard = _DeadlineGuard(deadline)
+        guard = _DeadlineGuard(bounded_deadline(deadline))
         max_workers = max(1, min(self._chunk_concurrency, len(chunks)))
         controller = _ConcurrentChunkRead(self, guard, max_workers=max_workers)
         seen: set[str] = set()
@@ -881,16 +892,13 @@ class SdmxClient:
         if not _operation_active:
             self._begin_request()
         caller_roles = None if roles is None else tuple(roles)
+        guard: _DeadlineGuard | None = None
         try:
             chunks = self._plan_variable_chunks(
                 variables=variables, entities=entities, facet_ids=facet_ids, time_period=time_period
             )
-        except BaseException:
-            if not _operation_active:
-                self._end_request()
-            raise
-        guard = _DeadlineGuard(deadline) if deadline is not None else None
-        try:
+            deadline = bounded_deadline(deadline)
+            guard = _DeadlineGuard(deadline) if deadline is not None else None
             if len(chunks) == 1:
                 with self._open_chunk_rows(
                     variables=chunks[0],
@@ -972,15 +980,13 @@ class SdmxClient:
         """
         self._begin_request()
         caller_roles = None if roles is None else tuple(roles)
+        guard: _DeadlineGuard | None = None
         try:
             chunks = self._plan_variable_chunks(
                 variables=variables, entities=entities, facet_ids=facet_ids, time_period=time_period
             )
-        except BaseException:
-            self._end_request()
-            raise
-        guard = _DeadlineGuard(deadline) if deadline is not None else None
-        try:
+            deadline = bounded_deadline(deadline)
+            guard = _DeadlineGuard(deadline) if deadline is not None else None
             if len(chunks) == 1:
                 with self._open_chunk_batches(
                     variables=chunks[0],
@@ -1512,6 +1518,7 @@ class SdmxClient:
             chunks = self._plan_availability_chunks(
                 variables=variables, filters=filters, time_period=time_period
             )
+            deadline = bounded_deadline(deadline)
             guard = (
                 _DeadlineGuard(deadline, window_seconds=read_seconds)
                 if deadline is not None or read_seconds is not None

@@ -70,87 +70,83 @@ def test_get_raises_not_found_when_digest_is_unavailable_in_requested_tier(
     assert excinfo.value.tier == requested_tier
 
 
+# The fake signs whatever location it is handed.
+_LOCATION = {"bucket": "fake-working-bucket", "object_name": "sha256:fake"}
 _CSV_HEADERS = {
     "response_type": "text/csv",
     "response_disposition": 'attachment; filename="test.csv"',
 }
 
 
-def test_signed_get_url_raises_not_found_for_a_digest_never_put():
-    store = FakeArtifactStore()
-
-    with pytest.raises(ArtifactNotFoundError) as excinfo:
-        store.signed_get_url(
-            "sha256:nothere", tier=Tier.working, ttl=timedelta(minutes=5), **_CSV_HEADERS
-        )
-
-    assert excinfo.value.digest == "sha256:nothere"
-    assert excinfo.value.tier == Tier.working
-
-
-def test_signed_get_url_below_the_ttl_floor_is_refused():
+def test_signed_location_url_below_the_ttl_floor_is_refused():
     store = FakeArtifactStore()
     result = store.put(b"floor check", tier=Tier.working)
 
     with pytest.raises(ValueError):
-        store.signed_get_url(
-            result.digest, tier=Tier.working, ttl=timedelta(milliseconds=999), **_CSV_HEADERS
+        store.signed_location_url(
+            result.digest,
+            tier=Tier.working,
+            ttl=timedelta(milliseconds=999),
+            **_LOCATION,
+            **_CSV_HEADERS,
         )
 
 
-def test_signed_get_url_at_exactly_the_ttl_floor_is_accepted():
+def test_signed_location_url_at_exactly_the_ttl_floor_is_accepted():
     store = FakeArtifactStore()
     result = store.put(b"floor boundary", tier=Tier.working)
 
-    url = store.signed_get_url(
-        result.digest, tier=Tier.working, ttl=SIGNED_URL_TTL_FLOOR, **_CSV_HEADERS
+    url = store.signed_location_url(
+        result.digest, tier=Tier.working, ttl=SIGNED_URL_TTL_FLOOR, **_LOCATION, **_CSV_HEADERS
     )
 
     assert f"X-Goog-Expires={int(SIGNED_URL_TTL_FLOOR.total_seconds())}" in url
 
 
-def test_signed_get_url_at_exactly_the_ttl_ceiling_is_accepted():
+def test_signed_location_url_at_exactly_the_ttl_ceiling_is_accepted():
     store = FakeArtifactStore()
     result = store.put(b"ceiling boundary", tier=Tier.working)
 
-    url = store.signed_get_url(
-        result.digest, tier=Tier.working, ttl=SIGNED_URL_TTL_CEILING, **_CSV_HEADERS
+    url = store.signed_location_url(
+        result.digest, tier=Tier.working, ttl=SIGNED_URL_TTL_CEILING, **_LOCATION, **_CSV_HEADERS
     )
 
     assert f"X-Goog-Expires={int(SIGNED_URL_TTL_CEILING.total_seconds())}" in url
 
 
-def test_signed_get_url_past_the_ttl_ceiling_is_refused():
+def test_signed_location_url_past_the_ttl_ceiling_is_refused():
     store = FakeArtifactStore()
     result = store.put(b"past ceiling", tier=Tier.working)
 
     with pytest.raises(ValueError):
-        store.signed_get_url(
+        store.signed_location_url(
             result.digest,
             tier=Tier.working,
             ttl=SIGNED_URL_TTL_CEILING + timedelta(seconds=1),
+            **_LOCATION,
             **_CSV_HEADERS,
         )
 
 
-def test_signed_get_url_carries_the_x_goog_signature_marker():
+def test_signed_location_url_carries_the_x_goog_signature_marker():
     store = FakeArtifactStore()
     result = store.put(b"marker check", tier=Tier.working)
 
-    url = store.signed_get_url(
-        result.digest, tier=Tier.working, ttl=timedelta(minutes=5), **_CSV_HEADERS
+    url = store.signed_location_url(
+        result.digest, tier=Tier.working, ttl=timedelta(minutes=5), **_LOCATION, **_CSV_HEADERS
     )
 
     assert "X-Goog-Signature=" in url
 
 
-def test_signed_get_url_records_the_response_type_and_disposition():
+def test_signed_location_url_records_the_response_type_and_disposition():
     store = FakeArtifactStore()
     result = store.put(b"header recording", tier=Tier.working)
 
-    store.signed_get_url(
+    store.signed_location_url(
         result.digest,
         tier=Tier.working,
+        **_LOCATION,
         ttl=timedelta(minutes=5),
         response_type="application/zip",
         response_disposition='attachment; filename="bundle.zip"',

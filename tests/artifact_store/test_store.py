@@ -180,20 +180,24 @@ def test_get_raises_not_found_for_a_digest_never_written():
     assert excinfo.value.tier == Tier.working
 
 
-def test_get_reads_the_tiers_configured_bucket_directly_not_the_inventory():
-    # `get` reads the configured bucket directly, even for objects absent from inventory.
+def test_get_reads_the_object_the_inventory_location_names():
+    # `get` reads the recorded object name, not an object named after the digest.
     client = FakeGCSClient()
     inventory = RecordingArtifactInventory()
     store = _store(client, inventory)
     bucket_name = _BUCKETS[Tier.working]
-    data = b"placed without put()"
+    data = b"stored under a renewal name"
     digest = "sha256:" + hashlib.sha256(data).hexdigest()
-    client.bucket(bucket_name).objects[digest] = data
+    client.bucket(bucket_name).objects[f"{digest}#r1"] = data
+    inventory.record(
+        digest=digest,
+        tier=Tier.working,
+        bucket=bucket_name,
+        object_name=f"{digest}#r1",
+        size_bytes=len(data),
+    )
 
-    result = store.get(artifact_digest=digest, tier=Tier.working)
-
-    assert result == data
-    assert inventory.calls == []
+    assert store.get(artifact_digest=digest, tier=Tier.working) == data
 
 
 def test_get_raises_integrity_error_when_the_stored_bytes_do_not_hash_to_the_digest():
@@ -201,8 +205,15 @@ def test_get_raises_integrity_error_when_the_stored_bytes_do_not_hash_to_the_dig
     inventory = RecordingArtifactInventory()
     store = _store(client, inventory)
     bucket_name = _BUCKETS[Tier.working]
-    # Store bytes whose hash differs from the object name.
+    # Store bytes whose hash differs from the digest the location records.
     client.bucket(bucket_name).objects["sha256:claimeddigest"] = b"actual bytes differ"
+    inventory.record(
+        digest="sha256:claimeddigest",
+        tier=Tier.working,
+        bucket=bucket_name,
+        object_name="sha256:claimeddigest",
+        size_bytes=19,
+    )
 
     with pytest.raises(ArtifactIntegrityError) as excinfo:
         store.get(artifact_digest="sha256:claimeddigest", tier=Tier.working)
@@ -225,89 +236,18 @@ def test_constructor_rejects_a_buckets_mapping_missing_a_tier():
         )
 
 
-def test_signed_get_url_raises_not_found_for_a_digest_never_written():
+def test_signed_location_url_refuses_a_cross_tier_stored_bucket():
+    # A location must name its tier's configured bucket.
     client = FakeGCSClient()
     inventory = RecordingArtifactInventory()
     store = _store(client, inventory)
-
-    with pytest.raises(ArtifactNotFoundError) as excinfo:
-        store.signed_get_url(
-            "sha256:neverwritten",
-            tier=Tier.working,
-            ttl=timedelta(minutes=5),
-            response_type="text/csv",
-            response_disposition='attachment; filename="test.csv"',
-        )
-
-    assert excinfo.value.digest == "sha256:neverwritten"
-    assert excinfo.value.tier == Tier.working
-
-
-def test_signed_get_url_proceeds_to_sign_once_the_digest_is_found(monkeypatch):
-    client = FakeGCSClient()
-    inventory = RecordingArtifactInventory()
-    store = _store(client, inventory)
-
-    result = store.put(b"already stored", tier=Tier.working)
-    monkeypatch.setattr(
-        "artifact_store.store.sign_get_url",
-        lambda **kwargs: "https://storage.googleapis.com/fake-signed-url",
-    )
-
-    url = store.signed_get_url(
-        result.digest,
-        tier=Tier.working,
-        ttl=timedelta(minutes=5),
-        response_type="text/csv",
-        response_disposition='attachment; filename="test.csv"',
-    )
-
-    assert url == "https://storage.googleapis.com/fake-signed-url"
-
-
-def test_signed_get_url_signs_the_stored_bucket_and_object_name_when_they_match_config(
-    monkeypatch,
-):
-    # Sign the matching bucket and object name recorded in inventory.
-    client = FakeGCSClient()
-    inventory = RecordingArtifactInventory()
-    store = _store(client, inventory)
-    result = store.put(b"matches config", tier=Tier.working)
-    seen_kwargs: dict[str, object] = {}
-    monkeypatch.setattr(
-        "artifact_store.store.sign_get_url",
-        lambda **kwargs: seen_kwargs.update(kwargs) or "https://storage.googleapis.com/signed",
-    )
-
-    store.signed_get_url(
-        result.digest,
-        tier=Tier.working,
-        ttl=timedelta(minutes=5),
-        response_type="text/csv",
-        response_disposition='attachment; filename="test.csv"',
-    )
-
-    assert seen_kwargs["bucket"] == _BUCKETS[Tier.working]
-    assert seen_kwargs["object_name"] == result.digest
-
-
-def test_signed_get_url_refuses_a_cross_tier_stored_bucket():
-    # A tier's inventory row must name its configured bucket.
-    client = FakeGCSClient()
-    inventory = RecordingArtifactInventory()
-    store = _store(client, inventory)
-    inventory.record(
-        digest="sha256:drifted",
-        tier=Tier.working,
-        bucket=_BUCKETS[Tier.pinned],
-        object_name="sha256:drifted",
-        size_bytes=3,
-    )
 
     with pytest.raises(ArtifactLocationDriftError) as excinfo:
-        store.signed_get_url(
+        store.signed_location_url(
             "sha256:drifted",
             tier=Tier.working,
+            bucket=_BUCKETS[Tier.pinned],
+            object_name="sha256:drifted",
             ttl=timedelta(minutes=5),
             response_type="text/csv",
             response_disposition='attachment; filename="test.csv"',
@@ -319,22 +259,17 @@ def test_signed_get_url_refuses_a_cross_tier_stored_bucket():
     assert excinfo.value.stored_object_name == "sha256:drifted"
 
 
-def test_signed_get_url_refuses_a_stored_bucket_not_among_the_configured_buckets():
+def test_signed_location_url_refuses_a_stored_bucket_not_among_the_configured_buckets():
     client = FakeGCSClient()
     inventory = RecordingArtifactInventory()
     store = _store(client, inventory)
-    inventory.record(
-        digest="sha256:poisoned",
-        tier=Tier.working,
-        bucket="some-bucket-no-longer-configured",
-        object_name="sha256:poisoned",
-        size_bytes=3,
-    )
 
     with pytest.raises(ArtifactLocationDriftError) as excinfo:
-        store.signed_get_url(
+        store.signed_location_url(
             "sha256:poisoned",
             tier=Tier.working,
+            bucket="some-bucket-no-longer-configured",
+            object_name="sha256:poisoned",
             ttl=timedelta(minutes=5),
             response_type="text/csv",
             response_disposition='attachment; filename="test.csv"',
@@ -344,33 +279,6 @@ def test_signed_get_url_refuses_a_stored_bucket_not_among_the_configured_buckets
     assert excinfo.value.tier == Tier.working
     assert excinfo.value.stored_bucket == "some-bucket-no-longer-configured"
     assert excinfo.value.stored_object_name == "sha256:poisoned"
-
-
-def test_signed_get_url_refuses_an_object_name_that_does_not_match_the_digest():
-    # A signed URL for digest X must target object X.
-    client = FakeGCSClient()
-    inventory = RecordingArtifactInventory()
-    store = _store(client, inventory)
-    inventory.record(
-        digest="sha256:realdigest",
-        tier=Tier.working,
-        bucket=_BUCKETS[Tier.working],
-        object_name="sha256:someotherobject",
-        size_bytes=3,
-    )
-
-    with pytest.raises(ArtifactLocationDriftError) as excinfo:
-        store.signed_get_url(
-            "sha256:realdigest",
-            tier=Tier.working,
-            ttl=timedelta(minutes=5),
-            response_type="text/csv",
-            response_disposition='attachment; filename="test.csv"',
-        )
-
-    assert excinfo.value.digest == "sha256:realdigest"
-    assert excinfo.value.stored_bucket == _BUCKETS[Tier.working]
-    assert excinfo.value.stored_object_name == "sha256:someotherobject"
 
 
 def test_put_raises_artifact_record_conflict_error_after_bucket_reconfiguration():
@@ -436,21 +344,6 @@ class _FakeClock:
         return self.now
 
 
-class _CountingInventory(RecordingArtifactInventory):
-    """`RecordingArtifactInventory` plus a `get_location` call counter, so a
-    test can assert a signed-URL cache hit skips the inventory read
-    entirely.
-    """
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.get_location_calls = 0
-
-    def get_location(self, digest: str, *, tier: Tier):
-        self.get_location_calls += 1
-        return super().get_location(digest, tier=tier)
-
-
 def _counting_sign(monkeypatch) -> list[dict[str, object]]:
     calls: list[dict[str, object]] = []
 
@@ -462,7 +355,7 @@ def _counting_sign(monkeypatch) -> list[dict[str, object]]:
     return calls
 
 
-def test_signed_get_url_within_the_reuse_window_signs_once_and_reuses_the_url(monkeypatch):
+def test_signed_location_url_within_the_reuse_window_signs_once_and_reuses_the_url(monkeypatch):
     client = FakeGCSClient()
     inventory = RecordingArtifactInventory()
     clock = _FakeClock()
@@ -470,17 +363,21 @@ def test_signed_get_url_within_the_reuse_window_signs_once_and_reuses_the_url(mo
     result = store.put(b"cached artifact", tier=Tier.working)
     sign_calls = _counting_sign(monkeypatch)
 
-    first = store.signed_get_url(
+    first = store.signed_location_url(
         result.digest,
         tier=Tier.working,
+        bucket=result.bucket,
+        object_name=result.object_name,
         ttl=timedelta(minutes=5),
         response_type="text/csv",
         response_disposition='attachment; filename="test.csv"',
     )
     clock.now += SIGNED_URL_REUSE_WINDOW.total_seconds() - 1
-    second = store.signed_get_url(
+    second = store.signed_location_url(
         result.digest,
         tier=Tier.working,
+        bucket=result.bucket,
+        object_name=result.object_name,
         ttl=timedelta(minutes=5),
         response_type="text/csv",
         response_disposition='attachment; filename="test.csv"',
@@ -490,7 +387,7 @@ def test_signed_get_url_within_the_reuse_window_signs_once_and_reuses_the_url(mo
     assert len(sign_calls) == 1
 
 
-def test_signed_get_url_past_the_reuse_window_signs_again(monkeypatch):
+def test_signed_location_url_past_the_reuse_window_signs_again(monkeypatch):
     client = FakeGCSClient()
     inventory = RecordingArtifactInventory()
     clock = _FakeClock()
@@ -498,17 +395,21 @@ def test_signed_get_url_past_the_reuse_window_signs_again(monkeypatch):
     result = store.put(b"expiring cache entry", tier=Tier.working)
     sign_calls = _counting_sign(monkeypatch)
 
-    first = store.signed_get_url(
+    first = store.signed_location_url(
         result.digest,
         tier=Tier.working,
+        bucket=result.bucket,
+        object_name=result.object_name,
         ttl=timedelta(minutes=5),
         response_type="text/csv",
         response_disposition='attachment; filename="test.csv"',
     )
     clock.now += SIGNED_URL_REUSE_WINDOW.total_seconds()
-    second = store.signed_get_url(
+    second = store.signed_location_url(
         result.digest,
         tier=Tier.working,
+        bucket=result.bucket,
+        object_name=result.object_name,
         ttl=timedelta(minutes=5),
         response_type="text/csv",
         response_disposition='attachment; filename="test.csv"',
@@ -518,7 +419,9 @@ def test_signed_get_url_past_the_reuse_window_signs_again(monkeypatch):
     assert len(sign_calls) == 2
 
 
-def test_signed_get_url_cache_key_distinguishes_tier_digest_ttl_and_response_headers(monkeypatch):
+def test_signed_location_url_cache_key_distinguishes_tier_digest_ttl_and_response_headers(
+    monkeypatch,
+):
     client = FakeGCSClient()
     inventory = RecordingArtifactInventory()
     clock = _FakeClock()
@@ -528,44 +431,56 @@ def test_signed_get_url_cache_key_distinguishes_tier_digest_ttl_and_response_hea
     other = store.put(b"a different artifact", tier=Tier.working)
     sign_calls = _counting_sign(monkeypatch)
 
-    store.signed_get_url(
+    store.signed_location_url(
         working.digest,
         tier=Tier.working,
+        bucket=working.bucket,
+        object_name=working.object_name,
         ttl=timedelta(minutes=5),
         response_type="text/csv",
         response_disposition='attachment; filename="test.csv"',
     )
-    store.signed_get_url(
+    store.signed_location_url(
         pinned.digest,
         tier=Tier.pinned,
+        bucket=pinned.bucket,
+        object_name=pinned.object_name,
         ttl=timedelta(minutes=5),
         response_type="text/csv",
         response_disposition='attachment; filename="test.csv"',
     )
-    store.signed_get_url(
+    store.signed_location_url(
         other.digest,
         tier=Tier.working,
+        bucket=other.bucket,
+        object_name=other.object_name,
         ttl=timedelta(minutes=5),
         response_type="text/csv",
         response_disposition='attachment; filename="test.csv"',
     )
-    store.signed_get_url(
+    store.signed_location_url(
         working.digest,
         tier=Tier.working,
+        bucket=working.bucket,
+        object_name=working.object_name,
         ttl=timedelta(minutes=10),
         response_type="text/csv",
         response_disposition='attachment; filename="test.csv"',
     )
-    store.signed_get_url(
+    store.signed_location_url(
         working.digest,
         tier=Tier.working,
+        bucket=working.bucket,
+        object_name=working.object_name,
         ttl=timedelta(minutes=5),
         response_type="application/zip",
         response_disposition='attachment; filename="test.csv"',
     )
-    store.signed_get_url(
+    store.signed_location_url(
         working.digest,
         tier=Tier.working,
+        bucket=working.bucket,
+        object_name=working.object_name,
         ttl=timedelta(minutes=5),
         response_type="text/csv",
         response_disposition='attachment; filename="different.csv"',
@@ -574,7 +489,7 @@ def test_signed_get_url_cache_key_distinguishes_tier_digest_ttl_and_response_hea
     assert len(sign_calls) == 6
 
 
-def test_signed_get_url_drops_stale_cache_entries_on_insert(monkeypatch):
+def test_signed_location_url_drops_stale_cache_entries_on_insert(monkeypatch):
     client = FakeGCSClient()
     inventory = RecordingArtifactInventory()
     clock = _FakeClock()
@@ -583,9 +498,11 @@ def test_signed_get_url_drops_stale_cache_entries_on_insert(monkeypatch):
     second_artifact = store.put(b"second artifact", tier=Tier.working)
     _counting_sign(monkeypatch)
 
-    store.signed_get_url(
+    store.signed_location_url(
         first_artifact.digest,
         tier=Tier.working,
+        bucket=first_artifact.bucket,
+        object_name=first_artifact.object_name,
         ttl=timedelta(minutes=5),
         response_type="text/csv",
         response_disposition='attachment; filename="test.csv"',
@@ -593,9 +510,11 @@ def test_signed_get_url_drops_stale_cache_entries_on_insert(monkeypatch):
     assert len(store._url_cache) == 1
 
     clock.now += SIGNED_URL_REUSE_WINDOW.total_seconds()
-    store.signed_get_url(
+    store.signed_location_url(
         second_artifact.digest,
         tier=Tier.working,
+        bucket=second_artifact.bucket,
+        object_name=second_artifact.object_name,
         ttl=timedelta(minutes=5),
         response_type="text/csv",
         response_disposition='attachment; filename="test.csv"',
@@ -607,35 +526,7 @@ def test_signed_get_url_drops_stale_cache_entries_on_insert(monkeypatch):
     assert cached_keys[0][1] == second_artifact.digest
 
 
-def test_signed_get_url_cache_hit_skips_the_inventory_lookup(monkeypatch):
-    client = FakeGCSClient()
-    inventory = _CountingInventory()
-    clock = _FakeClock()
-    store = LiveArtifactStore(buckets=_BUCKETS, inventory=inventory, client=client, clock=clock)
-    result = store.put(b"skip the inventory read on a hit", tier=Tier.working)
-    _counting_sign(monkeypatch)
-
-    store.signed_get_url(
-        result.digest,
-        tier=Tier.working,
-        ttl=timedelta(minutes=5),
-        response_type="text/csv",
-        response_disposition='attachment; filename="test.csv"',
-    )
-    calls_after_first = inventory.get_location_calls
-    store.signed_get_url(
-        result.digest,
-        tier=Tier.working,
-        ttl=timedelta(minutes=5),
-        response_type="text/csv",
-        response_disposition='attachment; filename="test.csv"',
-    )
-
-    assert calls_after_first == 1
-    assert inventory.get_location_calls == 1
-
-
-def test_signed_get_url_cache_timestamp_predates_signing_latency(monkeypatch):
+def test_signed_location_url_cache_timestamp_predates_signing_latency(monkeypatch):
     client = FakeGCSClient()
     inventory = RecordingArtifactInventory()
     clock = _FakeClock()
@@ -652,9 +543,11 @@ def test_signed_get_url_cache_timestamp_predates_signing_latency(monkeypatch):
 
     stale_artifact = store.put(b"stale after latency", tier=Tier.working)
     pre_sign_time = clock.now
-    store.signed_get_url(
+    store.signed_location_url(
         stale_artifact.digest,
         tier=Tier.working,
+        bucket=stale_artifact.bucket,
+        object_name=stale_artifact.object_name,
         ttl=timedelta(minutes=5),
         response_type="text/csv",
         response_disposition='attachment; filename="test.csv"',
@@ -663,9 +556,11 @@ def test_signed_get_url_cache_timestamp_predates_signing_latency(monkeypatch):
 
     # The window is measured from before signing; signing latency puts this entry past expiry.
     clock.now = pre_sign_time + SIGNED_URL_REUSE_WINDOW.total_seconds() + 1
-    store.signed_get_url(
+    store.signed_location_url(
         stale_artifact.digest,
         tier=Tier.working,
+        bucket=stale_artifact.bucket,
+        object_name=stale_artifact.object_name,
         ttl=timedelta(minutes=5),
         response_type="text/csv",
         response_disposition='attachment; filename="test.csv"',
@@ -674,9 +569,11 @@ def test_signed_get_url_cache_timestamp_predates_signing_latency(monkeypatch):
 
     fresh_artifact = store.put(b"still fresh within the true window", tier=Tier.working)
     pre_sign_time = clock.now
-    first = store.signed_get_url(
+    first = store.signed_location_url(
         fresh_artifact.digest,
         tier=Tier.working,
+        bucket=fresh_artifact.bucket,
+        object_name=fresh_artifact.object_name,
         ttl=timedelta(minutes=5),
         response_type="text/csv",
         response_disposition='attachment; filename="test.csv"',
@@ -684,9 +581,11 @@ def test_signed_get_url_cache_timestamp_predates_signing_latency(monkeypatch):
     assert len(calls) == 3
 
     clock.now = pre_sign_time + SIGNED_URL_REUSE_WINDOW.total_seconds() - 1
-    second = store.signed_get_url(
+    second = store.signed_location_url(
         fresh_artifact.digest,
         tier=Tier.working,
+        bucket=fresh_artifact.bucket,
+        object_name=fresh_artifact.object_name,
         ttl=timedelta(minutes=5),
         response_type="text/csv",
         response_disposition='attachment; filename="test.csv"',
@@ -760,3 +659,70 @@ def test_list_is_empty_for_a_tier_with_nothing_written():
     store = _store(client, inventory)
 
     assert store.list(tier=Tier.pinned) == frozenset()
+
+
+class _RefusingInventory(RecordingArtifactInventory):
+    def get_location(self, digest: str, *, tier: Tier):
+        raise AssertionError("signing a location in hand must not read the inventory")
+
+
+def test_signing_a_location_in_hand_reads_no_inventory_and_signs_its_object_name(monkeypatch):
+    client = FakeGCSClient()
+    store = _store(client, _RefusingInventory())
+    sign_calls = _counting_sign(monkeypatch)
+
+    store.signed_location_url(
+        "sha256:held",
+        tier=Tier.working,
+        bucket=_BUCKETS[Tier.working],
+        object_name="sha256:held#r1",
+        ttl=timedelta(minutes=5),
+        response_type="text/csv",
+        response_disposition='attachment; filename="test.csv"',
+    )
+
+    assert [(c["bucket"], c["object_name"], c["digest"]) for c in sign_calls] == [
+        (_BUCKETS[Tier.working], "sha256:held#r1", "sha256:held")
+    ]
+
+
+def test_a_cached_url_for_another_object_name_is_not_reused_for_a_location_in_hand(monkeypatch):
+    client = FakeGCSClient()
+    store = _store(client, _RefusingInventory())
+    sign_calls = _counting_sign(monkeypatch)
+
+    def _sign(object_name: str) -> str:
+        return store.signed_location_url(
+            "sha256:held",
+            tier=Tier.working,
+            bucket=_BUCKETS[Tier.working],
+            object_name=object_name,
+            ttl=timedelta(minutes=5),
+            response_type="text/csv",
+            response_disposition='attachment; filename="test.csv"',
+        )
+
+    first = _sign("sha256:held")
+    assert _sign("sha256:held") == first
+    assert _sign("sha256:held#r1") != first
+    assert [c["object_name"] for c in sign_calls] == ["sha256:held", "sha256:held#r1"]
+
+
+def test_a_pinned_dedupe_without_a_location_row_reads_no_object_metadata():
+    # Pinned bytes never expire, so a failing metadata read cannot turn a dedupe into an error.
+    client = FakeGCSClient()
+    store = _store(client, RecordingArtifactInventory())
+    data = b"pinned orphan"
+    digest = "sha256:" + hashlib.sha256(data).hexdigest()
+    bucket = client.bucket(_BUCKETS[Tier.pinned])
+    bucket.objects[digest] = data
+
+    def _no_metadata_read(name: str) -> None:
+        raise AssertionError(f"read the metadata of {name}")
+
+    bucket.get_blob = _no_metadata_read
+
+    stored = store.put(data, tier=Tier.pinned)
+
+    assert stored.deduplicated is True
+    assert stored.object_name == digest

@@ -9,25 +9,35 @@ prompts; `matched_text` is raw query text and stays out of prompts. The normalis
 form of `matched_text` is the phrase a match reads, which the five-tuple family
 election compares across tables (`bound_values.query_phrases_read`).
 
-Matching uses normalized exact text. Only an exact miss may try one trailing
-`s`; an exact ambiguous match stays ambiguous. Bare codes require an earlier
-word unique to the code system, derived from its camelCase name; a word that
-also names the measure, such as "aid", counts only beside another word of that
-name. Multi-word spans require adjacent tokens separated only by whitespace.
-The matcher does not stem or otherwise rewrite query text.
+Matching reads token sequences (`code_index.tokens`): a span is a run of query words,
+and a separator between two of them must be the one the label holds there. Only an
+exact miss may try one trailing `s`; an exact ambiguous match stays ambiguous. Bare
+codes require an earlier word unique to the code system, derived from its camelCase
+name; a word that also names the measure, such as "aid", counts only beside another
+word of that name. The matcher does not stem or otherwise rewrite query text.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Mapping
+import weakref
+from collections.abc import Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from itertools import pairwise
-from typing import Literal
+from typing import Literal, Protocol
 
 from code_index.query import CodeIndex
+from code_index.tokens import (
+    Token,
+    TokenLookup,
+    singular,
+    text_matches,
+    tokenize,
+    word_tokens,
+)
 from code_index.types import CodeRow, MeasureIndex, MeasureValueRow
+from search.engine.function_words import FUNCTION_WORDS
 
 MatchSource = Literal["code", "label", "synonym"]
 
@@ -48,6 +58,12 @@ class QualifierMatch:
     label or synonym. `code_dcid` and `label` are graph text safe for prompts.
     `matched_text` is raw query text and stays out of prompts. Normalised, it is
     the phrase the match reads (`phrase`).
+
+    `start` and `end` are the match's character offsets in the variable it was read
+    from (`read_by_vocabulary`), and `None` for a match read from other text: the
+    query text, a dropped phrase, a sidecar. They locate a match and take no part in
+    its equality, so one code read from the variable and from the query text is one
+    match.
     """
 
     code_system: str
@@ -55,6 +71,8 @@ class QualifierMatch:
     label: str
     source: MatchSource
     matched_text: str
+    start: int | None = field(default=None, compare=False)
+    end: int | None = field(default=None, compare=False)
 
     @property
     def phrase(self) -> str:
@@ -150,9 +168,8 @@ def recall_text(variable: str, qualifiers: tuple[CodedQualifier, ...] | None) ->
 class _RawSpan:
     """Internal: one claimed span plus the `MatchSource` of each of its rows,
     in `rows` order. `start`/`end` are character offsets in the query text
-    passed to `_recognise_raw`, taken straight from the token offsets the
-    word regex matched -- the same real position `QualifierSpan` carries
-    onward, not re-derived later by searching for `matched_text`."""
+    passed to `_recognise_raw`, from its first and last word token; `matched_text`
+    is the query text between them."""
 
     start: int
     end: int
@@ -161,37 +178,168 @@ class _RawSpan:
     sources: tuple[MatchSource, ...]
 
 
-_WORD_RE = re.compile(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)*")
 # Splits a `code_system` string into its camelCase words, each an uppercase letter with the
 # lowercase or digit characters after it, or a run of lowercase or digit characters.
 # "crsCooperationModality" yields ["crs", "Cooperation", "Modality"].
 _CAMEL_WORD_RE = re.compile(r"[A-Z][a-z0-9]*|[a-z0-9]+")
 
-# These terms are deliberate, bounded recognition for distinctions the
-# deployed taxonomy cannot express. They are not a residual-word heuristic:
-# every value is an exact lexical token checked by
-# `match_unsupported_qualifier_phrases` below.
+# Distinctions the deployed taxonomy cannot express, each an exact word token
+# `match_unsupported_qualifier_phrases` checks.
 _UNSUPPORTED_QUALIFIER_TERMS = frozenset({"non-concessional"})
+
+# Tokens that join two code spans of one variable, casefolded. A union connective reads
+# the two codes together ("health and education", "health & education", and "health
+# including malaria control", whose union is 120), an exclusion connective removes the
+# second from the first ("health excluding malaria control"), and a comparison connective
+# sets them side by side ("health versus education"). The qualifier coverage rule
+# (`phase_rank_bind._coverage_records`) counts a connective between two code spans as read.
+UNION_CONNECTIVES = frozenset({"and", "or", "/", ",", "&", "plus", "including"})
+EXCLUSION_CONNECTIVES = frozenset({"excluding", "except", "without"})
+COMPARISON_CONNECTIVES = frozenset({"compare", "compared", "versus", "vs"})
+CONNECTIVES = UNION_CONNECTIVES | EXCLUSION_CONNECTIVES | COMPARISON_CONNECTIVES
+
+# The comparison connectives that name what they compare at any distance after them.
+_COMPARING_VERBS = frozenset({"compare", "compared"})
+
+# How the words between two located matches on one code system join them (`joins`).
+JoinKind = Literal["union", "exclusion", "comparison", "other"]
+
+
+class Located(Protocol):
+    """A span of a text by its character offsets, such as a `QualifierMatch` in its
+    variable or an extracted variable in the raw query (`source_spans.VariableSpan`).
+    `None` offsets locate nothing."""
+
+    @property
+    def start(self) -> int | None: ...
+
+    @property
+    def end(self) -> int | None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class GoverningConnective:
+    """An exclusion or comparison connective of a variable and the first match after it.
+
+    `start` is the connective's offset and `end` the end of the governed match, so
+    `variable[start:end]` is the phrase no binding expresses: "excluding malaria control",
+    "versus education", "compare aid to health". `governed` is the match's offsets.
+    """
+
+    kind: Literal["exclusion", "comparison"]
+    start: int
+    end: int
+    governed: tuple[int, int]
+
+
+def governing_connectives(
+    variable: str, matches: Iterable[Located], *, transparent: frozenset[str] = frozenset()
+) -> tuple[GoverningConnective, ...]:
+    """Each exclusion or comparison connective of `variable` followed by a located match of
+    `matches`, with the first such match after it, in variable order.
+
+    Only function words (`FUNCTION_WORDS`) and `transparent` words, casefolded, may stand
+    between a connective and its match, so "Kenya versus Uganda health ODA" governs
+    nothing. A comparing verb (`_COMPARING_VERBS`) names its first object at any distance,
+    so "compare aid to health" governs health. A connective no match follows governs
+    nothing ("ODA compared to 2010").
+    """
+    spans = sorted({(m.start, m.end) for m in matches if m.start is not None and m.end is not None})
+    governing: list[GoverningConnective] = []
+    for token in tokenize(variable):
+        folded = token.text.casefold()
+        if folded in EXCLUSION_CONNECTIVES:
+            kind: Literal["exclusion", "comparison"] = "exclusion"
+        elif folded in COMPARISON_CONNECTIVES:
+            kind = "comparison"
+        else:
+            continue
+        span = next((span for span in spans if span[0] >= token.end), None)
+        if span is None:
+            continue
+        if folded in _COMPARING_VERBS or all(
+            word.text.casefold() in FUNCTION_WORDS | transparent
+            for word in word_tokens(variable[token.end : span[0]])
+        ):
+            governing.append(
+                GoverningConnective(kind=kind, start=token.start, end=span[1], governed=span)
+            )
+    return tuple(governing)
+
+
+def joins(
+    variable: str,
+    matches: Sequence[Located],
+    governing: Sequence[GoverningConnective],
+    *,
+    transparent: frozenset[str] = frozenset(),
+) -> tuple[JoinKind, ...]:
+    """How each adjacent pair of `matches` (located matches on one code system, in variable
+    order) is joined, one kind per pair.
+
+    The pair is a union when every token between the two, less the `transparent` words
+    (casefolded), is a union connective ("health and education", "HIV/AIDS"). A
+    connective of `governing` between the two, or one governing a union's first match
+    ("compare aid to health and education"), gives the pair its own kind, which carries
+    along the unions after it. Any other words between the two, or none, join them as
+    "other".
+    """
+    kinds: list[JoinKind] = []
+    for first, second in pairwise(matches):
+        assert first.end is not None and second.start is not None
+        between = next(
+            (
+                connective
+                for connective in governing
+                if connective.governed == (second.start, second.end)
+                and first.end <= connective.start
+            ),
+            None,
+        )
+        if between is not None:
+            kinds.append(between.kind)
+            continue
+        tokens = [
+            token
+            for token in tokenize(variable[first.end : second.start])
+            if token.text.casefold() not in transparent
+        ]
+        if not tokens or not all(t.text.casefold() in UNION_CONNECTIVES for t in tokens):
+            kinds.append("other")
+            continue
+        leading = next((c.kind for c in governing if c.governed == (first.start, first.end)), None)
+        if leading is None and kinds and kinds[-1] in ("exclusion", "comparison"):
+            leading = kinds[-1]
+        kinds.append(leading or "union")
+    return tuple(kinds)
 
 
 def _normalize(text: str) -> str:
-    """Mirrors `code_index.query._normalize_text`: strip and casefold, no
-    other normalization -- kept local so this module has no dependency on
-    that lookup's private helper."""
+    """`text` stripped and casefolded, with no other normalisation."""
     return text.strip().casefold()
 
 
-def _all_normalized_text_ranges(needle: str, normalized_haystack: str) -> list[tuple[int, int]]:
-    """Return every normalized substring occurrence as a character range.
+def _all_normalized_text_ranges(needle: str, haystack: str) -> list[tuple[int, int]]:
+    """Return every occurrence of `needle` in `haystack`, both casefolded, as a character
+    range of `haystack` itself.
 
     Report all occurrences so repeated LLM-supplied phrases retain the right
-    offsets. This shared helper avoids an import cycle between extraction and
-    region binding. It uses plain substring matching; callers decide whether
-    a range is a genuine word occurrence.
+    offsets. Casefolding can lengthen a text ("ß" folds to "ss"), so each range is
+    mapped back to the characters of `haystack` it covers, and agrees with the token
+    offsets of a span read from the same text. This shared helper avoids an import
+    cycle between extraction and region binding. It uses plain substring matching;
+    callers decide whether a range is a genuine word occurrence.
     """
     normalized_needle = _normalize(needle)
     if not normalized_needle:
         return []
+    folded: list[str] = []
+    origin: list[int] = []
+    for position, char in enumerate(haystack):
+        for folded_char in char.casefold():
+            folded.append(folded_char)
+            origin.append(position)
+    normalized_haystack = "".join(folded)
     ranges: list[tuple[int, int]] = []
     search_from = 0
     while True:
@@ -199,7 +347,7 @@ def _all_normalized_text_ranges(needle: str, normalized_haystack: str) -> list[t
         if start < 0:
             break
         end = start + len(normalized_needle)
-        ranges.append((start, end))
+        ranges.append((origin[start], origin[end - 1] + 1))
         search_from = start + 1
     return ranges
 
@@ -238,15 +386,13 @@ def slot_noun_named(phrase: str, plain_names: Iterable[str]) -> str | None:
 def match_unsupported_qualifier_phrases(text: str) -> tuple[str, ...]:
     """Return exact unsupported qualifier terms occurring in ``text``.
 
-    This is intentionally a closed lexical set, rather than a general
-    residual-text detector. `_WORD_RE` makes the matching token-exact, so
-    ``non-concessionality`` and ``non-concessional-like`` do not inherit the
-    unsupported term's safety outcome.
+    Each term is compared with whole word tokens, so ``non-concessionality`` and
+    ``non-concessional-like`` do not inherit the unsupported term's outcome.
     """
     return tuple(
-        token.group()
-        for token in _WORD_RE.finditer(text)
-        if _normalize(token.group()) in _UNSUPPORTED_QUALIFIER_TERMS
+        token.text
+        for token in word_tokens(text)
+        if _normalize(token.text) in _UNSUPPORTED_QUALIFIER_TERMS
     )
 
 
@@ -257,47 +403,61 @@ def _row_system(row: MatchableRow) -> str:
     return row.code_system if isinstance(row, CodeRow) else row.axis
 
 
-def _match_source(row: MatchableRow, candidate_norm: str) -> MatchSource:
-    """Whether `row`'s own label, normalized, is what the query text named
-    ("label") or a synonym of it ("synonym") -- the source stamp
-    `_recognise_raw` records on an unambiguous span's `QualifierMatch` and
-    on every row of a `QualifierTie`."""
-    return "label" if _normalize(row.label) == candidate_norm else "synonym"
+def _match_source(row: MatchableRow, candidate: str) -> MatchSource:
+    """Whether `row`'s own label matches the query text `candidate` ("label") or only a
+    synonym of it does ("synonym"). `_recognise_raw` records this source on an
+    unambiguous span's `QualifierMatch` and on every row of a `QualifierTie`."""
+    return "label" if text_matches(row.label, tokenize(candidate)) else "synonym"
 
 
-def _measure_rows_by_normalized_text(
-    measure_index: MeasureIndex | None,
-) -> dict[str, tuple[MeasureValueRow, ...]]:
-    """Every matchable `MeasureValueRow` in `measure_index`, keyed by its
-    label and synonyms normalized the same way `CodeIndex.
-    codes_by_normalized_text` keys a `CodeRow` -- the measure-value
-    counterpart to that lookup table. A row with `matchable=False` is
-    omitted, so its label and synonyms resolve to nothing here even when
-    they collide with another row's text. Built once per matching call
-    (`_lexicon`), since `MeasureIndex` carries no lookup table of its own
-    (unlike `CodeIndex`, which builds one once at construction).
-    `measure_index=None` -- a caller with no measure family to offer --
-    yields an empty mapping, not an error.
+def _measure_lookup(measure_index: MeasureIndex | None) -> TokenLookup[MeasureValueRow]:
+    """Every matchable `MeasureValueRow` in `measure_index`, found by its label and
+    synonyms as `CodeIndex.codes_by_tokens` finds a `CodeRow`. A row with
+    `matchable=False` is omitted, so its label and synonyms resolve to nothing here even
+    when they collide with another row's text. Built once per matching call (`_lexicon`),
+    since `MeasureIndex` carries no lookup of its own. A caller with no measure family to
+    offer passes `measure_index=None` and gets an empty lookup.
 
     An alias row (`same_reading_as` set) is filed under its canonical row,
     so text naming either spelling of one reading resolves to one row and
     stays an unambiguous span.
     """
     if measure_index is None:
-        return {}
+        return TokenLookup(())
     canonical_rows = {
         (row.axis, row.dcid): row for row in measure_index.values if row.same_reading_as is None
     }
-    by_text: dict[str, dict[tuple[str, str], MeasureValueRow]] = {}
-    for row in measure_index.values:
-        if not row.matchable:
-            continue
-        target = (
-            row if row.same_reading_as is None else canonical_rows[(row.axis, row.same_reading_as)]
+    return TokenLookup(
+        (
+            text,
+            row if row.same_reading_as is None else canonical_rows[(row.axis, row.same_reading_as)],
         )
-        for text in {_normalize(t) for t in (row.label, *row.synonyms)}:
-            by_text.setdefault(text, {})[(target.axis, target.dcid)] = target
-    return {key: tuple(rows.values()) for key, rows in by_text.items()}
+        for row in measure_index.values
+        if row.matchable
+        for text in (row.label, *row.synonyms)
+    )
+
+
+# Each index's longest code label or synonym in words, by index object id. A weakref
+# finalizer removes the entry before Python can reuse the id.
+_code_phrase_words_cache: dict[int, int] = {}
+
+
+def _code_phrase_words(index: CodeIndex) -> int:
+    """The longest label or synonym of a code row of `index`, in words, or 1 for an index
+    with no codes. Built once per index: every matching call reads it (`_lexicon`), and
+    tokenising every code text takes milliseconds a call."""
+    key = id(index)
+    cached = _code_phrase_words_cache.get(key)
+    if cached is not None:
+        return cached
+    cached = max(
+        (len(word_tokens(text)) for row in index.codes for text in (row.label, *row.synonyms)),
+        default=1,
+    )
+    _code_phrase_words_cache[key] = cached
+    weakref.finalize(index, _code_phrase_words_cache.pop, key, None)
+    return cached
 
 
 def _max_phrase_words(index: CodeIndex, measure_index: MeasureIndex | None) -> int:
@@ -308,25 +468,36 @@ def _max_phrase_words(index: CodeIndex, measure_index: MeasureIndex | None) -> i
     label is never a span the matcher looks for, so it must not widen the
     span width tried on account of a text no lookup will ever resolve to
     it."""
-    longest = 1
-    for row in index.codes:
-        for text in (row.label, *row.synonyms):
-            longest = max(longest, len(text.split()))
+    longest = _code_phrase_words(index)
     if measure_index is not None:
         for row in measure_index.values:
             if not row.matchable:
                 continue
             for text in (row.label, *row.synonyms):
-                longest = max(longest, len(text.split()))
+                longest = max(longest, len(word_tokens(text)))
     return longest
 
 
+def _rows_for(
+    span: Sequence[Token], lexicon: _Lexicon, vocabulary: AbstractSet[str] | None
+) -> tuple[MatchableRow, ...]:
+    """Every code row of a system in `vocabulary` (every system when `None`) and every
+    measure value whose text matches `span`. A vocabulary reads only the codes a shape can
+    bind (`bindable_codes`)."""
+    codes = lexicon.index.codes_by_tokens(span)
+    if vocabulary is not None:
+        codes = tuple(
+            row for row in codes if row.code_system in vocabulary and row.dcid in lexicon.bindable
+        )
+    return codes + lexicon.measure_lookup.get(span)
+
+
 def _candidate_rows(
-    span_norm: str, lexicon: _Lexicon, vocabulary: AbstractSet[str] | None
-) -> tuple[str, tuple[MatchableRow, ...]] | None:
-    """The registered normalized text `span_norm` resolves to, and every
-    row -- code row of a system in `vocabulary` (every system when `None`) or
-    measure value -- carrying it, or `None` if it resolves to nothing at all.
+    span: Sequence[Token], lexicon: _Lexicon, vocabulary: AbstractSet[str] | None
+) -> tuple[bool, tuple[MatchableRow, ...]] | None:
+    """Whether the query span `span` resolves only less its trailing "s", and every
+    row it resolves to (a code row of a system in `vocabulary`, every system when `None`,
+    or a measure value), or `None` if it resolves to nothing at all.
     A measure value is reachable the same way a code row is: neither source
     is preferred over the other, so a span both register returns both rows
     and the caller's ambiguity check refuses it exactly as it would two
@@ -337,21 +508,14 @@ def _candidate_rows(
     apply: strip one trailing "s" and look that up instead. The caller
     decides ambiguity -- a returned result may still carry more than one row.
     """
-
-    def rows_for(text: str) -> tuple[MatchableRow, ...]:
-        codes = lexicon.index.codes_by_normalized_text(text)
-        if vocabulary is not None:
-            codes = tuple(row for row in codes if row.code_system in vocabulary)
-        return codes + lexicon.measure_text_index.get(text, ())
-
-    exact_rows = rows_for(span_norm)
+    exact_rows = _rows_for(span, lexicon, vocabulary)
     if exact_rows:
-        return span_norm, exact_rows
-    if len(span_norm) > 1 and span_norm.endswith("s"):
-        singular = span_norm[:-1]
-        singular_rows = rows_for(singular)
+        return False, exact_rows
+    less_s = singular(span)
+    if less_s is not None:
+        singular_rows = _rows_for(less_s, lexicon, vocabulary)
         if singular_rows:
-            return singular, singular_rows
+            return True, singular_rows
     return None
 
 
@@ -447,149 +611,137 @@ def _lookup_code_in_systems(
     return None
 
 
-def _span_is_contiguous(
-    offsets: tuple[tuple[int, int], ...], start: int, width: int, query: str
-) -> bool:
-    """Whether the tokens at `start .. start + width` are genuinely
-    adjacent in `query`'s own text -- the gap between each consecutive pair
-    holds nothing but whitespace. `offsets` are the `(begin, end)` match
-    spans `_WORD_RE.finditer` reported for each token, the same tokens
-    `" ".join` later reassembles into a candidate span. Two tokens that
-    survive `_WORD_RE.findall` as neighbours only because the
-    sentence-ending period or comma between them was discarded are not
-    adjacent in the query and must not be treated as one span; arbitrary
-    whitespace between two words that genuinely are adjacent still counts
-    as adjacent, since `" ".join` already normalizes that.
-    """
-    for i in range(start, start + width - 1):
-        _, end = offsets[i]
-        next_start, _ = offsets[i + 1]
-        if query[end:next_start].strip():
-            return False
-    return True
-
-
-@dataclass(frozen=True, slots=True)
-class _RawTie:
-    """Internal: one `QualifierTie` plus the `start` position `match_qualifier_ties`
-    sorts by -- the tie counterpart to `_RawSpan.start`."""
-
-    start: int
-    tie: QualifierTie
-
-
 @dataclass(frozen=True, slots=True)
 class _Lexicon:
     """The lookup tables every scan of one call reads, built once per call so a query
     read in several vocabularies builds them once."""
 
     index: CodeIndex
-    measure_text_index: Mapping[str, tuple[MeasureValueRow, ...]]
+    measure_lookup: TokenLookup[MeasureValueRow]
     system_markers: Mapping[str, _SystemMarkers]
     max_width: int
+    bindable: frozenset[str]
 
 
 def _lexicon(index: CodeIndex, measure_index: MeasureIndex | None) -> _Lexicon:
     return _Lexicon(
         index=index,
-        measure_text_index=_measure_rows_by_normalized_text(measure_index),
+        measure_lookup=_measure_lookup(measure_index),
         system_markers=_all_system_markers(index),
         max_width=_max_phrase_words(index, measure_index),
+        bindable=bindable_codes(index),
     )
+
+
+# Each index's bindable codes, by index object id. A weakref finalizer removes the entry
+# before Python can reuse the id.
+_bindable_codes_cache: dict[int, frozenset[str]] = {}
+
+
+def bindable_codes(index: CodeIndex) -> frozenset[str]:
+    """The dcids of the codes a shape can bind: each code some StatVar row of `index` holds,
+    itself or through a descendant, and every code of a system no row carries, whose
+    StatVars the index does not list and so cannot rule out.
+
+    A code of a system the rows carry that no row holds binds on no shape. "population"
+    (`CRSTypeOfFinance4`) is a type of finance no CRS row carries. Built once per index.
+    """
+    key = id(index)
+    cached = _bindable_codes_cache.get(key)
+    if cached is not None:
+        return cached
+    bindable: set[str] = set()
+    carried: set[str] = set()
+    for row in (*index.statvars, *index.listed_statvars):
+        carried.update(row.constraint_properties)
+        for value in row.constraint_properties.values():
+            code = index.code_by_dcid(value)
+            while code is not None and code.dcid not in bindable:
+                bindable.add(code.dcid)
+                code = index.code_by_dcid(code.parent) if code.parent is not None else None
+    bindable.update(code.dcid for code in index.codes if code.code_system not in carried)
+    cached = frozenset(bindable)
+    _bindable_codes_cache[key] = cached
+    weakref.finalize(index, _bindable_codes_cache.pop, key, None)
+    return cached
 
 
 def _recognise_raw(
     query: str, lexicon: _Lexicon, vocabulary: AbstractSet[str] | None
-) -> tuple[tuple[_RawSpan, ...], tuple[_RawTie, ...]]:
-    """Return claimed spans and ambiguous all-code ties from one scan.
+) -> tuple[_RawSpan, ...]:
+    """Return the spans one scan claims, sorted by start offset.
 
     `vocabulary` holds the code systems the scan reads; `None` reads every system. A code
     row of another system neither matches nor claims a token, so a longer label only a
-    foreign system carries cannot hide a shorter one this vocabulary reads. Measure
-    values are read in every vocabulary.
+    foreign system carries cannot hide a shorter one this vocabulary reads. A code no shape
+    can bind (`bindable_codes`) is foreign in the same way: on a CRS shape "population"
+    names no type of finance and stays free for a purpose reading. The scan in every
+    system keeps such codes, so its reading states what the words name, and the measure
+    values every vocabulary shares stay those of that reading ("gross" in "gross national
+    income" is no netting basis). Measure values are read in every vocabulary.
 
-    First, try the widest adjacent label or synonym span at each position.
-    Any match claims the tokens, even when ambiguous; all-code ambiguities
-    also become ties. Measure-row conflicts are left to
-    `_measure_query_matches`. Then resolve unclaimed single tokens as bare
-    codes, restricted to systems named by earlier query words. Bare-code
-    ambiguity leaves the token unclaimed. Results are sorted by start offset.
+    First, try the widest run of words matching a label or synonym at each position
+    (`code_index.tokens`). Any match claims the words, even when ambiguous; a span of
+    several code rows is a tie (`_project`). Measure-row conflicts are left to
+    `_measure_query_matches`. Then resolve unclaimed single words as bare codes,
+    restricted to systems named by earlier query words. Bare-code ambiguity leaves the
+    word unclaimed.
     """
-    token_matches = tuple(_WORD_RE.finditer(query))
-    tokens = tuple(m.group() for m in token_matches)
-    if not tokens:
-        return (), ()
-    offsets = tuple((m.start(), m.end()) for m in token_matches)
+    tokens = tokenize(query)
+    word_at = tuple(position for position, token in enumerate(tokens) if token.kind == "word")
+    words = tuple(tokens[position] for position in word_at)
+    n = len(words)
+    if not n:
+        return ()
 
-    n = len(tokens)
     claimed = [False] * n
     found: list[_RawSpan] = []
-    ties: list[_RawTie] = []
 
-    max_width = min(lexicon.max_width, n)
-    for width in range(max_width, 0, -1):
+    for width in range(min(lexicon.max_width, n), 0, -1):
         for start in range(0, n - width + 1):
-            if any(claimed[start : start + width]):
+            last = start + width - 1
+            if any(claimed[start : last + 1]):
                 continue
-            if not _span_is_contiguous(offsets, start, width, query):
-                continue
-            span = tokens[start : start + width]
-            matched_text = " ".join(span)
-            span_norm = _normalize(matched_text)
-            candidate = _candidate_rows(span_norm, lexicon, vocabulary)
+            candidate = _candidate_rows(
+                tokens[word_at[start] : word_at[last] + 1], lexicon, vocabulary
+            )
             if candidate is None:
                 continue
             # Claim these positions regardless of the ambiguity verdict --
             # a rejected candidate still consumes the span, so a shorter
             # alternative starting here is never subsequently tried.
-            for i in range(start, start + width):
+            for i in range(start, last + 1):
                 claimed[i] = True
-            candidate_norm, rows = candidate
-            if len(rows) > 1 and all(isinstance(row, CodeRow) for row in rows):
-                ties.append(
-                    _RawTie(
-                        start=start,
-                        tie=QualifierTie(
-                            matched_text=matched_text,
-                            rows=tuple(
-                                QualifierMatch(
-                                    code_system=_row_system(row),
-                                    code_dcid=row.dcid,
-                                    label=row.label,
-                                    source=_match_source(row, candidate_norm),
-                                    matched_text=matched_text,
-                                )
-                                for row in rows
-                            ),
-                        ),
-                    )
-                )
+            plural_stripped, rows = candidate
+            matched_text = query[words[start].start : words[last].end]
+            source_text = matched_text[:-1] if plural_stripped else matched_text
             found.append(
                 _RawSpan(
-                    start=offsets[start][0],
-                    end=offsets[start + width - 1][1],
+                    start=words[start].start,
+                    end=words[last].end,
                     matched_text=matched_text,
                     rows=rows,
-                    sources=tuple(_match_source(row, candidate_norm) for row in rows),
+                    sources=tuple(_match_source(row, source_text) for row in rows),
                 )
             )
 
-    for i, token in enumerate(tokens):
+    texts = tuple(word.text for word in words)
+    for i, word in enumerate(words):
         if claimed[i]:
             continue
-        systems = _preceding_marker_systems(tokens, i, lexicon.system_markers)
+        systems = _preceding_marker_systems(texts, i, lexicon.system_markers)
         if vocabulary is not None:
             systems = systems.intersection(vocabulary)
         if not systems:
             continue
-        row = _lookup_code_in_systems(token, systems, lexicon.index)
-        if row is None:
+        row = _lookup_code_in_systems(word.text, systems, lexicon.index)
+        if row is None or (vocabulary is not None and row.dcid not in lexicon.bindable):
             continue
         found.append(
             _RawSpan(
-                start=offsets[i][0],
-                end=offsets[i][1],
-                matched_text=token,
+                start=word.start,
+                end=word.end,
+                matched_text=word.text,
                 rows=(row,),
                 sources=("code",),
             )
@@ -597,8 +749,7 @@ def _recognise_raw(
         claimed[i] = True
 
     found.sort(key=lambda item: item.start)
-    ties.sort(key=lambda item: item.start)
-    return tuple(found), tuple(ties)
+    return tuple(found)
 
 
 @dataclass(frozen=True, slots=True)
@@ -630,16 +781,18 @@ def _read(
     lexicon: _Lexicon,
     vocabulary: AbstractSet[str] | None,
     measure_spans: tuple[_RawSpan, ...] | None = None,
+    *,
+    located: bool = False,
 ) -> VocabularyReading:
     """`_recognise_raw`'s scan of `query` in `vocabulary`, projected to spans, one-row
-    matches and ties.
+    matches and ties (`_project`).
 
     `measure_spans`, the one-measure-value spans of the scan in every code system, replace
     the scan's own: a vocabulary drops a foreign code row, but the measure reading of the
     words that row's label covers stays that of every system together. One overlapping a
     span the vocabulary reads is left out.
     """
-    raw, ties = _recognise_raw(query, lexicon, vocabulary)
+    raw = _recognise_raw(query, lexicon, vocabulary)
     if measure_spans is not None:
         kept = [r for r in raw if not _is_measure_span(r)]
         kept += [
@@ -648,28 +801,43 @@ def _read(
             if not any(_ranges_overlap((m.start, m.end), (r.start, r.end)) for r in kept)
         ]
         raw = tuple(sorted(kept, key=lambda item: item.start))
-    return _project(raw, ties)
+    return _project(raw, located=located)
 
 
-def _project(raw: tuple[_RawSpan, ...], ties: tuple[_RawTie, ...]) -> VocabularyReading:
-    """A scan's spans, projected to spans, one-row matches and ties."""
+def _row_match(raw: _RawSpan, position: int, *, located: bool) -> QualifierMatch:
+    """The `QualifierMatch` of `raw`'s row at `position`, with `raw`'s offsets when
+    `located`."""
+    row = raw.rows[position]
+    return QualifierMatch(
+        code_system=_row_system(row),
+        code_dcid=row.dcid,
+        label=row.label,
+        source=raw.sources[position],
+        matched_text=raw.matched_text,
+        start=raw.start if located else None,
+        end=raw.end if located else None,
+    )
+
+
+def _project(raw: tuple[_RawSpan, ...], *, located: bool) -> VocabularyReading:
+    """A scan's spans, projected to spans, one-row matches and ties: the spans naming two
+    or more rows, every one a `CodeRow`. Matches carry their offsets when `located`."""
     return VocabularyReading(
         spans=tuple(
             QualifierSpan(matched_text=r.matched_text, start=r.start, end=r.end, rows=r.rows)
             for r in raw
         ),
-        matches=tuple(
-            QualifierMatch(
-                code_system=_row_system(r.rows[0]),
-                code_dcid=r.rows[0].dcid,
-                label=r.rows[0].label,
-                source=r.sources[0],
+        matches=tuple(_row_match(r, 0, located=located) for r in raw if len(r.rows) == 1),
+        ties=tuple(
+            QualifierTie(
                 matched_text=r.matched_text,
+                rows=tuple(
+                    _row_match(r, position, located=located) for position in range(len(r.rows))
+                ),
             )
             for r in raw
-            if len(r.rows) == 1
+            if len(r.rows) > 1 and all(isinstance(row, CodeRow) for row in r.rows)
         ),
-        ties=tuple(t.tie for t in ties),
     )
 
 
@@ -695,19 +863,19 @@ def read_by_vocabulary(
     Each vocabulary's reading sees only its own code systems (`VocabularyReading`), so a
     shape reads a text in its own systems' labels and never receives two readings of one
     token from two parses. Measure values take the reading in every code system, shared by
-    every vocabulary.
+    every vocabulary. Each match and tie row carries its offsets in its own text.
     """
     lexicon = _lexicon(index, measure_index)
     vocabularies = tuple(dict.fromkeys(vocabularies))
     readings: list[TextReading] = []
     for text in texts:
-        everywhere, ties = _recognise_raw(text, lexicon, None)
+        everywhere = _recognise_raw(text, lexicon, None)
         measure_spans = tuple(span for span in everywhere if _is_measure_span(span))
         readings.append(
             TextReading(
-                everywhere=_project(everywhere, ties),
+                everywhere=_project(everywhere, located=True),
                 by_vocabulary={
-                    vocabulary: _read(text, lexicon, vocabulary, measure_spans)
+                    vocabulary: _read(text, lexicon, vocabulary, measure_spans, located=True)
                     for vocabulary in vocabularies
                 },
             )
@@ -737,12 +905,11 @@ _PHRASE_FILLER_WORDS = frozenset({"and", "or", "code"})
 
 
 def _token_at(phrase: str, offset: int) -> int:
-    """The index, in `_WORD_RE.findall(phrase)`, of the token containing
-    character `offset`. The offsets a `QualifierSpan` carries are always
-    inside one of the phrase's own tokens, whose shape this module reads
-    from the same `_WORD_RE` the matcher tokenizes with."""
-    for position, token in enumerate(_WORD_RE.finditer(phrase)):
-        if token.start() <= offset < token.end():
+    """The index, in `word_tokens(phrase)`, of the word containing character `offset`.
+    The offsets a `QualifierSpan` carries always start and end inside one of the
+    phrase's own words."""
+    for position, token in enumerate(word_tokens(phrase)):
+        if token.start <= offset < token.end:
             return position
     return -1
 
@@ -759,8 +926,8 @@ def _marker_tokens_before(phrase: str, code_start: int, code_system: str) -> set
     words = {word.casefold() for word in _CAMEL_WORD_RE.findall(code_system)}
     return {
         position
-        for position, token in enumerate(_WORD_RE.findall(phrase)[:code_start])
-        if token.casefold() in words
+        for position, token in enumerate(word_tokens(phrase)[:code_start])
+        if token.text.casefold() in words
     }
 
 
@@ -785,7 +952,7 @@ def is_coded_only_phrase(
             resolved.append((span, row))
     if not resolved:
         return None
-    tokens = _WORD_RE.findall(phrase)
+    tokens = [token.text for token in word_tokens(phrase)]
     accounted: set[int] = set()
     for span, row in resolved:
         code_start = _token_at(phrase, span.start)
@@ -831,12 +998,13 @@ def qualifier_occurrences(
     """Every place in `query` where a row of any code system or measure names a word, with
     nothing claimed, as JSON-safe records in query order.
 
-    A label or synonym record holds the adjacent span's query text, the rows its exact text
-    names and the rows its text less one trailing "s" names. A bare-code record holds a
-    token and every row whose code it is in a system an earlier word marks. Records whose
-    token ranges overlap, directly or through others, form a group. Each record names its
-    group's ordinal, its token offset from the group's first token and its width in tokens,
-    and no position in `query`: a word outside every record moves no record.
+    A label or synonym record holds a run of words, as its tokens joined by single spaces
+    with the separators between them, the rows its exact text names and the rows its text
+    less one trailing "s" names. A bare-code record holds a word and every row whose code
+    it is in a system an earlier word marks. Records whose word ranges overlap, directly
+    or through others, form a group. Each record names its group's ordinal, its word
+    offset from the group's first word and its width in words, and no position in
+    `query`: a word outside every record moves no record.
 
     Each vocabulary's reading of `query` (`read_by_vocabulary`), and the reading in every
     system together, is a function of these records, whatever systems a shape declares.
@@ -845,46 +1013,47 @@ def qualifier_occurrences(
     for texts every vocabulary reads alike: "ODA to Kenya" and "show me ODA to Kenya".
     """
     lexicon = _lexicon(index, measure_index)
-    token_matches = tuple(_WORD_RE.finditer(query))
-    tokens = tuple(m.group() for m in token_matches)
-    offsets = tuple((m.start(), m.end()) for m in token_matches)
+    tokens = tokenize(query)
+    word_at = tuple(position for position, token in enumerate(tokens) if token.kind == "word")
+    words = tuple(tokens[position].text for position in word_at)
 
-    def rows(text: str) -> list[list[str]]:
-        found = index.codes_by_normalized_text(text) + lexicon.measure_text_index.get(text, ())
+    def rows(span: Sequence[Token] | None) -> list[list[str]]:
+        if span is None:
+            return []
+        found = index.codes_by_tokens(span) + lexicon.measure_lookup.get(span)
         return [_row_key(row) for row in found]
 
-    # (token start, token width, record) for every place a row names a word.
+    # (word start, width in words, record) for every place a row names a word.
     found: list[tuple[int, int, dict[str, object]]] = []
-    for start in range(len(tokens)):
-        for width in range(1, min(lexicon.max_width, len(tokens) - start) + 1):
-            if not _span_is_contiguous(offsets, start, width, query):
-                break
-            matched_text = " ".join(tokens[start : start + width])
-            span_norm = _normalize(matched_text)
-            exact = rows(span_norm)
-            singular = (
-                rows(span_norm[:-1]) if len(span_norm) > 1 and span_norm.endswith("s") else []
-            )
-            if exact or singular:
+    for start in range(len(words)):
+        for width in range(1, min(lexicon.max_width, len(words) - start) + 1):
+            span = tokens[word_at[start] : word_at[start + width - 1] + 1]
+            exact = rows(span)
+            singular_rows = rows(singular(span))
+            if exact or singular_rows:
                 found.append(
                     (
                         start,
                         width,
-                        {"text": matched_text, "rows": exact, "singular_rows": singular},
+                        {
+                            "text": " ".join(token.text for token in span),
+                            "rows": exact,
+                            "singular_rows": singular_rows,
+                        },
                     )
                 )
-    for i, token in enumerate(tokens):
-        systems = _preceding_marker_systems(tokens, i, lexicon.system_markers)
+    for i, word in enumerate(words):
+        systems = _preceding_marker_systems(words, i, lexicon.system_markers)
         if not systems:
             continue
-        folded = token.casefold()
+        folded = word.casefold()
         codes = [
             _row_key(row)
             for row in index.codes
             if row.code_system in systems and row.code.casefold() == folded
         ]
         if codes:
-            found.append((i, 1, {"text": token, "code_rows": codes}))
+            found.append((i, 1, {"text": word, "code_rows": codes}))
     found.sort(key=lambda item: (item[0], item[1]))
     records: list[dict[str, object]] = []
     group, group_start, group_end = -1, 0, 0
@@ -904,20 +1073,14 @@ def match_qualifier_readings(
     A span naming any other mix of rows stays refused. See `QualifierReadings` for how a
     caller chooses between the two readings.
     """
-    raw, _ties = _recognise_raw(query, _lexicon(index, measure_index), None)
+    raw = _recognise_raw(query, _lexicon(index, measure_index), None)
     readings: list[QualifierReadings] = []
     for r in raw:
         if len(r.rows) != 2:
             continue
         matches = {
-            isinstance(row, CodeRow): QualifierMatch(
-                code_system=_row_system(row),
-                code_dcid=row.dcid,
-                label=row.label,
-                source=source,
-                matched_text=r.matched_text,
-            )
-            for row, source in zip(r.rows, r.sources, strict=True)
+            isinstance(row, CodeRow): _row_match(r, position, located=False)
+            for position, row in enumerate(r.rows)
         }
         if len(matches) == 2:
             readings.append(

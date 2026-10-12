@@ -4,23 +4,30 @@ References are unique by principal, digest, subject, version, and kind. A repeat
 row's `created_at` unchanged. A repin reactivates a removed row with a fresh timestamp. Database
 failures and empty `RETURNING` results raise `DatasetsStoreUnavailable`.
 
-`record_reference_unless_revoked` checks revocation in the upsert statement, and under
-`lock_version_links` checks that the version still links the digest, so a pin completes only for
-a digest the version keeps. `remove_reference` soft-deletes a live row. `count_pinned_copies_since`
-counts pinned-tier locations by `stored_at` whose digest holds a reference of one kind, which the
-pin door's daily budget reads.
+`record_reference_unless_revoked` checks the revocation of the version and of its base version,
+under the subject id and every id in `revoked_under`, in the upsert statement, and under
+`lock_version_links` checks that the version still links the digest, so a pin completes only
+for a digest the version keeps. A pin naming a served id honours revocations under it, and a
+pin naming a posted id passes both ids. `remove_reference` soft-deletes a live row.
+`count_pinned_copies_since` counts pinned-tier locations by `stored_at` whose digest holds a
+reference of one kind, which the pin door's daily budget reads.
 `list_live_reference_principals` is a read-only diagnostic query.
 """
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import cast
+from typing import Protocol, cast
 
 from dataset_store import DatasetStore
-from dataset_store.snapshot import SnapshotRevoked
-from datasets_api.codes_snapshot import ArtifactNotFound
+from dataset_store.snapshot import (
+    ArtifactNotFound,
+    ArtifactReferenceWriter,
+    SnapshotRevoked,
+    revoking_subjects_sql,
+)
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.version_store import lock_version_links
 from dfo_platform.store_errors import extract_sqlstate, safe_diagnostics
@@ -31,6 +38,31 @@ PIN_REFERENCE_KIND = "pin"
 # Alerts use this marker when a pinned copy succeeds but its reference write fails. A retry writes
 # the reference without copying again. Keep the marker stable for alert policies.
 ARTIFACT_REFERENCE_WRITE_FAILED_MARKER = "artifact_reference_write_failed"
+
+
+def _revocations(
+    subject_id: str, content_version: str, revoked_under: Sequence[str]
+) -> tuple[str, tuple[str, ...]]:
+    """The `FROM ... WHERE` clause selecting the revocations of a version and of the base
+    version it collapses from, under `subject_id` and every id in `revoked_under`, and its
+    parameters."""
+    subjects = tuple(dict.fromkeys((subject_id, *revoked_under)))
+    sql = (
+        "FROM datasets.version_revocation "
+        f"WHERE {revoking_subjects_sql(len(subjects))} AND (content_version = %s "
+        "OR content_version = (SELECT base_content_version FROM datasets.version_record "
+        "WHERE subject_id = %s AND content_version = %s))"
+    )
+    return sql, (*subjects, content_version, subject_id, content_version)
+
+
+class PinReferenceWriter(ArtifactReferenceWriter, Protocol):
+    """A reference writer that can also count the pinned copies the budget limits."""
+
+    def count_pinned_copies_since(self, *, reference_kind: str, since: datetime) -> int:
+        """Count pinned-tier locations stored at or after `since` whose digest holds a
+        `reference_kind` reference."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -103,6 +135,7 @@ class LiveArtifactReferenceWriter:
         content_version: str,
         reference_kind: str,
         now: datetime,
+        revoked_under: Sequence[str] = (),
     ) -> datetime:
         return self.claim_reference_unless_revoked(
             principal=principal,
@@ -111,6 +144,7 @@ class LiveArtifactReferenceWriter:
             content_version=content_version,
             reference_kind=reference_kind,
             now=now,
+            revoked_under=revoked_under,
         ).created_at
 
     def claim_reference_unless_revoked(
@@ -122,8 +156,12 @@ class LiveArtifactReferenceWriter:
         content_version: str,
         reference_kind: str,
         now: datetime,
+        revoked_under: Sequence[str] = (),
     ) -> ReferenceWrite:
         failure: str | None = None
+        revocations_sql, revocations_params = _revocations(
+            subject_id, content_version, revoked_under
+        )
         sqlstate: str | None = None
         row = None
         changed = False
@@ -144,17 +182,15 @@ class LiveArtifactReferenceWriter:
                         content_version=content_version,
                         artifact_digest=artifact_digest,
                     )
-                # Revocation check and upsert share a statement snapshot. Removed rows reactivate.
-                # Live rows remain unchanged and return no row.
+                # Revocation check and upsert share a statement snapshot, and the check covers
+                # the version and its base version. Removed rows reactivate. Live rows remain
+                # unchanged and return no row.
                 row = tx.fetch_one(
                     "INSERT INTO datasets.artifact_reference "
                     "(principal, artifact_digest, subject_id, content_version, reference_kind, "
                     "created_at) "
                     "SELECT %s, %s, %s, %s, %s, %s "
-                    "WHERE NOT EXISTS ("
-                    "SELECT 1 FROM datasets.version_revocation "
-                    "WHERE subject_id = %s AND content_version = %s"
-                    ") "
+                    f"WHERE NOT EXISTS (SELECT 1 {revocations_sql}) "
                     "ON CONFLICT (principal, artifact_digest, subject_id, content_version, "
                     "reference_kind) DO UPDATE SET "
                     "created_at = excluded.created_at, removed_at = NULL "
@@ -167,15 +203,17 @@ class LiveArtifactReferenceWriter:
                         content_version,
                         reference_kind,
                         now,
-                        subject_id,
-                        content_version,
+                        *revocations_params,
                     ),
                 )
                 if row is None:
+                    # The version's own revocation wins over its base version's, and one under
+                    # `subject_id` over one under another id.
                     revoked = tx.fetch_one(
-                        "SELECT reason FROM datasets.version_revocation "
-                        "WHERE subject_id = %s AND content_version = %s",
-                        (subject_id, content_version),
+                        f"SELECT reason {revocations_sql} "
+                        "ORDER BY CASE WHEN content_version = %s THEN 0 ELSE 1 END, "
+                        "CASE WHEN subject_id = %s THEN 0 ELSE 1 END LIMIT 1",
+                        (*revocations_params, content_version, subject_id),
                     )
                     if revoked is not None:
                         raise SnapshotRevoked(

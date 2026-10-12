@@ -8,11 +8,23 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from concurrent.futures import CancelledError, ThreadPoolExecutor
+from typing import Any
 
 import pytest
 
-from dfo_platform.single_flight_cache import AlreadyInFlight, SingleFlightCache
+from dfo_platform.request_deadline import bounded_deadline, request_deadline
+from dfo_platform.single_flight_cache import AlreadyInFlight, SingleFlightCache, WaitTimeout
 from graph_generation import FakeGeneration, GenerationStamp
+
+_FLIGHTS = ThreadPoolExecutor(max_workers=8, thread_name_prefix="test-flights")
+_FLIGHT_TIMEOUT_S = 5.0
+
+
+def _cache(**kwargs: Any) -> SingleFlightCache[Any, Any]:
+    """A cache whose sync flights run on the test pool under a 5 s flight deadline."""
+    return SingleFlightCache(executor=_FLIGHTS, flight_timeout_s=_FLIGHT_TIMEOUT_S, **kwargs)
+
 
 # ---------------------------------------------------------------------------
 # Sync entry point: get_or_fetch (single key)
@@ -20,12 +32,12 @@ from graph_generation import FakeGeneration, GenerationStamp
 
 
 def test_sync_concurrent_misses_for_the_same_key_fetch_once():
-    cache: SingleFlightCache[str, str] = SingleFlightCache(maxsize=10)
+    cache: SingleFlightCache[str, str] = _cache(maxsize=10)
     started = threading.Event()
     release = threading.Event()
     calls: list[str] = []
 
-    def fetch() -> str:
+    def fetch(_deadline: float) -> str:
         calls.append("call")
         started.set()
         assert release.wait(timeout=5), "test deadlocked waiting for release"
@@ -56,12 +68,12 @@ def test_sync_concurrent_misses_for_the_same_key_fetch_once():
 
 
 def test_sync_failing_leader_wakes_followers_with_the_error_and_caches_nothing():
-    cache: SingleFlightCache[str, str] = SingleFlightCache(maxsize=10)
+    cache: SingleFlightCache[str, str] = _cache(maxsize=10)
     started = threading.Event()
     release = threading.Event()
     calls: list[str] = []
 
-    def failing_fetch() -> str:
+    def failing_fetch(_deadline: float) -> str:
         calls.append("call")
         started.set()
         assert release.wait(timeout=5), "test deadlocked waiting for release"
@@ -94,17 +106,17 @@ def test_sync_failing_leader_wakes_followers_with_the_error_and_caches_nothing()
 
     # A failed fetch leaves the cache empty.
     calls_before = len(calls)
-    result = cache.get_or_fetch("k", lambda: "recovered")
+    result = cache.get_or_fetch("k", lambda _deadline: "recovered")
     assert result == "recovered"
     assert len(calls) == calls_before, "the failed leader's own fetch must not have been reused"
 
 
 def test_sync_follower_deadline_expires_while_the_leader_keeps_running():
-    cache: SingleFlightCache[str, str] = SingleFlightCache(maxsize=10)
+    cache: SingleFlightCache[str, str] = _cache(maxsize=10)
     started = threading.Event()
     release = threading.Event()
 
-    def fetch() -> str:
+    def fetch(_deadline: float) -> str:
         started.set()
         assert release.wait(timeout=5), "test deadlocked waiting for release"
         return "value"
@@ -130,13 +142,11 @@ def test_sync_follower_deadline_expires_while_the_leader_keeps_running():
 
 def test_sync_follower_deadline_is_measured_on_the_real_clock_not_the_injected_ttl_clock():
     """Follower deadlines use `time.monotonic()`, independent of the injected TTL clock."""
-    cache: SingleFlightCache[str, str] = SingleFlightCache(
-        maxsize=10, clock=lambda: time.monotonic() + 10_000
-    )
+    cache: SingleFlightCache[str, str] = _cache(maxsize=10, clock=lambda: time.monotonic() + 10_000)
     started = threading.Event()
     release = threading.Event()
 
-    def fetch() -> str:
+    def fetch(_deadline: float) -> str:
         started.set()
         assert release.wait(timeout=5), "test deadlocked waiting for release"
         return "value"
@@ -173,10 +183,10 @@ def test_sync_follower_deadline_is_measured_on_the_real_clock_not_the_injected_t
 
 def test_a_cached_none_is_served_as_a_hit_not_re_fetched():
     """A cached `None` is a hit and must not trigger another fetch."""
-    cache: SingleFlightCache[str, None] = SingleFlightCache(maxsize=10)
+    cache: SingleFlightCache[str, None] = _cache(maxsize=10)
     calls: list[str] = []
 
-    def fetch() -> None:
+    def fetch(_deadline: float) -> None:
         calls.append("call")
         return None
 
@@ -190,11 +200,11 @@ def test_a_cached_none_is_served_as_a_hit_not_re_fetched():
 
 def test_sync_concurrent_followers_get_a_leaders_none_result():
     """A parked follower receives the leader's cached `None` result."""
-    cache: SingleFlightCache[str, None] = SingleFlightCache(maxsize=10)
+    cache: SingleFlightCache[str, None] = _cache(maxsize=10)
     started = threading.Event()
     release = threading.Event()
 
-    def fetch() -> None:
+    def fetch(_deadline: float) -> None:
         started.set()
         assert release.wait(timeout=5), "test deadlocked waiting for release"
         return None
@@ -224,11 +234,11 @@ def test_sync_concurrent_followers_get_a_leaders_none_result():
 
 def test_sync_owner_pops_its_slot_only_if_still_owned_after_a_clear():
     """An old owner must leave a new in-flight slot intact after `clear()` races its fetch."""
-    cache: SingleFlightCache[str, str] = SingleFlightCache(maxsize=10)
+    cache: SingleFlightCache[str, str] = _cache(maxsize=10)
     old_owner_started = threading.Event()
     old_owner_release = threading.Event()
 
-    def old_fetch() -> str:
+    def old_fetch(_deadline: float) -> str:
         old_owner_started.set()
         assert old_owner_release.wait(timeout=5), "test deadlocked waiting for release"
         raise RuntimeError("old owner's own failure")
@@ -251,7 +261,7 @@ def test_sync_owner_pops_its_slot_only_if_still_owned_after_a_clear():
     new_owner_release = threading.Event()
     new_owner_calls: list[str] = []
 
-    def new_fetch() -> str:
+    def new_fetch(_deadline: float) -> str:
         new_owner_calls.append("call")
         new_owner_started.set()
         assert new_owner_release.wait(timeout=5), "test deadlocked waiting for release"
@@ -294,11 +304,11 @@ def test_sync_owner_pops_its_slot_only_if_still_owned_after_a_clear():
 
 
 def test_sync_join_inflight_false_raises_at_once_without_touching_the_leader():
-    cache: SingleFlightCache[str, str] = SingleFlightCache(maxsize=10)
+    cache: SingleFlightCache[str, str] = _cache(maxsize=10)
     started = threading.Event()
     release = threading.Event()
 
-    def fetch() -> str:
+    def fetch(_deadline: float) -> str:
         started.set()
         assert release.wait(timeout=5), "test deadlocked waiting for release"
         return "value"
@@ -319,15 +329,15 @@ def test_sync_join_inflight_false_raises_at_once_without_touching_the_leader():
 # ---------------------------------------------------------------------------
 
 
-def _echo(keys: list[str]) -> dict[str, str]:
+def _echo(keys: list[str], _deadline: float = 0.0) -> dict[str, str]:
     return {k: f"value-{k}" for k in keys}
 
 
 def test_get_or_fetch_many_fetches_only_the_misses():
-    cache: SingleFlightCache[str, str] = SingleFlightCache(maxsize=10)
+    cache: SingleFlightCache[str, str] = _cache(maxsize=10)
     calls: list[list[str]] = []
 
-    def fetch(keys: list[str]) -> dict[str, str]:
+    def fetch(keys: list[str], _deadline: float) -> dict[str, str]:
         calls.append(list(keys))
         return _echo(keys)
 
@@ -341,9 +351,9 @@ def test_get_or_fetch_many_fetches_only_the_misses():
 
 
 def test_get_or_fetch_many_copy_result_isolates_stored_values():
-    cache: SingleFlightCache[str, list[int]] = SingleFlightCache(maxsize=10)
+    cache: SingleFlightCache[str, list[int]] = _cache(maxsize=10)
 
-    def fetch(keys: list[str]) -> dict[str, list[int]]:
+    def fetch(keys: list[str], _deadline: float) -> dict[str, list[int]]:
         return {k: [1, 2, 3] for k in keys}
 
     import copy
@@ -356,11 +366,11 @@ def test_get_or_fetch_many_copy_result_isolates_stored_values():
 
 def test_get_or_fetch_many_concurrent_leader_survives_a_clear_mid_fetch():
     """A leader publishes to its local slot and wakes followers after `clear()` empties the map."""
-    cache: SingleFlightCache[str, str] = SingleFlightCache(maxsize=10)
+    cache: SingleFlightCache[str, str] = _cache(maxsize=10)
     started = threading.Event()
     release = threading.Event()
 
-    def fetch(keys: list[str]) -> dict[str, str]:
+    def fetch(keys: list[str], _deadline: float) -> dict[str, str]:
         started.set()
         assert release.wait(timeout=5), "test deadlocked waiting for release"
         return _echo(keys)
@@ -403,7 +413,7 @@ def test_get_or_fetch_many_concurrent_leader_survives_a_clear_mid_fetch():
 
 
 def test_async_concurrent_misses_for_the_same_key_fetch_once():
-    cache: SingleFlightCache[str, str] = SingleFlightCache(maxsize=10)
+    cache: SingleFlightCache[str, str] = _cache(maxsize=10)
 
     async def scenario():
         loop = asyncio.get_running_loop()
@@ -411,7 +421,7 @@ def test_async_concurrent_misses_for_the_same_key_fetch_once():
         release = threading.Event()
         calls: list[str] = []
 
-        def fetch() -> str:
+        def fetch(_deadline: float) -> str:
             calls.append("call")
             loop.call_soon_threadsafe(started.set)
             assert release.wait(timeout=5), "test deadlocked waiting for release"
@@ -431,7 +441,7 @@ def test_async_concurrent_misses_for_the_same_key_fetch_once():
 
 
 def test_async_failing_leader_wakes_followers_with_the_error_and_caches_nothing():
-    cache: SingleFlightCache[str, str] = SingleFlightCache(maxsize=10)
+    cache: SingleFlightCache[str, str] = _cache(maxsize=10)
 
     async def scenario():
         loop = asyncio.get_running_loop()
@@ -439,7 +449,7 @@ def test_async_failing_leader_wakes_followers_with_the_error_and_caches_nothing(
         release = threading.Event()
         calls: list[str] = []
 
-        def failing_fetch() -> str:
+        def failing_fetch(_deadline: float) -> str:
             calls.append("call")
             loop.call_soon_threadsafe(started.set)
             assert release.wait(timeout=5), "test deadlocked waiting for release"
@@ -465,7 +475,9 @@ def test_async_failing_leader_wakes_followers_with_the_error_and_caches_nothing(
     calls_before = len(calls)
 
     async def recovered_call():
-        return await cache.aget_or_fetch("k", lambda: "recovered", deadline=time.monotonic() + 5)
+        return await cache.aget_or_fetch(
+            "k", lambda _deadline: "recovered", deadline=time.monotonic() + 5
+        )
 
     result = asyncio.run(recovered_call())
     assert result == "recovered"
@@ -473,14 +485,14 @@ def test_async_failing_leader_wakes_followers_with_the_error_and_caches_nothing(
 
 
 def test_async_follower_deadline_expires_while_the_leader_keeps_running():
-    cache: SingleFlightCache[str, str] = SingleFlightCache(maxsize=10)
+    cache: SingleFlightCache[str, str] = _cache(maxsize=10)
 
     async def scenario():
         loop = asyncio.get_running_loop()
         started = asyncio.Event()
         release = threading.Event()
 
-        def fetch() -> str:
+        def fetch(_deadline: float) -> str:
             loop.call_soon_threadsafe(started.set)
             assert release.wait(timeout=5), "test deadlocked waiting for release"
             return "value"
@@ -503,16 +515,14 @@ def test_async_follower_deadline_expires_while_the_leader_keeps_running():
 
 def test_async_follower_deadline_is_measured_on_the_real_clock_not_the_injected_ttl_clock():
     """Follower deadlines use `time.monotonic()`, independent of the injected TTL clock."""
-    cache: SingleFlightCache[str, str] = SingleFlightCache(
-        maxsize=10, clock=lambda: time.monotonic() + 10_000
-    )
+    cache: SingleFlightCache[str, str] = _cache(maxsize=10, clock=lambda: time.monotonic() + 10_000)
 
     async def scenario():
         loop = asyncio.get_running_loop()
         started = asyncio.Event()
         release = threading.Event()
 
-        def fetch() -> str:
+        def fetch(_deadline: float) -> str:
             loop.call_soon_threadsafe(started.set)
             assert release.wait(timeout=5), "test deadlocked waiting for release"
             return "value"
@@ -534,7 +544,7 @@ def test_async_follower_deadline_is_measured_on_the_real_clock_not_the_injected_
 
 
 def test_async_cancelling_a_follower_does_not_cancel_the_leader():
-    cache: SingleFlightCache[str, str] = SingleFlightCache(maxsize=10)
+    cache: SingleFlightCache[str, str] = _cache(maxsize=10)
 
     async def scenario():
         loop = asyncio.get_running_loop()
@@ -542,7 +552,7 @@ def test_async_cancelling_a_follower_does_not_cancel_the_leader():
         release = threading.Event()
         calls: list[str] = []
 
-        def fetch() -> str:
+        def fetch(_deadline: float) -> str:
             calls.append("call")
             loop.call_soon_threadsafe(started.set)
             assert release.wait(timeout=5), "test deadlocked waiting for release"
@@ -570,12 +580,12 @@ def test_async_cancelling_a_follower_does_not_cancel_the_leader():
 
 
 def test_async_is_cacheable_false_never_stores_but_still_answers_every_racer():
-    cache: SingleFlightCache[str, str] = SingleFlightCache(maxsize=10)
+    cache: SingleFlightCache[str, str] = _cache(maxsize=10)
 
     async def scenario():
         calls = []
 
-        def fetch() -> str:
+        def fetch(_deadline: float) -> str:
             calls.append("call")
             return "degraded"
 
@@ -601,10 +611,10 @@ def test_async_is_cacheable_false_never_stores_but_still_answers_every_racer():
 
 def test_a_stale_generation_is_a_miss_for_an_identical_key():
     generation = FakeGeneration(token="gen-a")
-    cache: SingleFlightCache[str, str] = SingleFlightCache(maxsize=10, generation=generation)
+    cache: SingleFlightCache[str, str] = _cache(maxsize=10, generation=generation)
     calls: list[str] = []
 
-    def fetch() -> str:
+    def fetch(_deadline: float) -> str:
         calls.append("call")
         return "value"
 
@@ -619,10 +629,10 @@ def test_a_stale_generation_is_a_miss_for_an_identical_key():
 
 def test_unknown_and_known_generations_never_share_an_entry():
     generation = FakeGeneration()  # starts unknown
-    cache: SingleFlightCache[str, str] = SingleFlightCache(maxsize=10, generation=generation)
+    cache: SingleFlightCache[str, str] = _cache(maxsize=10, generation=generation)
     calls: list[str] = []
 
-    def fetch() -> str:
+    def fetch(_deadline: float) -> str:
         calls.append("call")
         return "value"
 
@@ -633,11 +643,11 @@ def test_unknown_and_known_generations_never_share_an_entry():
 
 
 def test_the_bound_evicts_the_least_recently_used_entry():
-    cache: SingleFlightCache[str, str] = SingleFlightCache(maxsize=2)
+    cache: SingleFlightCache[str, str] = _cache(maxsize=2)
     calls: list[str] = []
 
     def fetch(name: str):
-        def _fetch() -> str:
+        def _fetch(_deadline: float) -> str:
             calls.append(name)
             return f"value-{name}"
 
@@ -658,13 +668,13 @@ def test_the_bound_evicts_the_least_recently_used_entry():
 def test_ttl_from_the_generation_stamp_expires_an_entry():
     generation = FakeGeneration(token="gen-a")
     clock = [0.0]
-    cache: SingleFlightCache[str, str] = SingleFlightCache(
+    cache: SingleFlightCache[str, str] = _cache(
         maxsize=10, generation=generation, clock=lambda: clock[0]
     )
     max_age_s = GenerationStamp(token="gen-a").max_age_s
     calls: list[str] = []
 
-    def fetch() -> str:
+    def fetch(_deadline: float) -> str:
         calls.append("call")
         return "value"
 
@@ -680,12 +690,12 @@ def test_ttl_from_the_generation_stamp_expires_an_entry():
 
 def test_custom_ttl_for_stamp_policy_overrides_the_stamps_own_max_age():
     clock = [0.0]
-    cache: SingleFlightCache[str, str] = SingleFlightCache(
+    cache: SingleFlightCache[str, str] = _cache(
         maxsize=10, clock=lambda: clock[0], ttl_for_stamp=lambda stamp: 5.0
     )
     calls: list[str] = []
 
-    def fetch() -> str:
+    def fetch(_deadline: float) -> str:
         calls.append("call")
         return "value"
 
@@ -700,11 +710,11 @@ def test_custom_ttl_for_stamp_policy_overrides_the_stamps_own_max_age():
 
 
 def test_stats_and_clear():
-    cache: SingleFlightCache[str, str] = SingleFlightCache(maxsize=1)
+    cache: SingleFlightCache[str, str] = _cache(maxsize=1)
 
-    cache.get_or_fetch("a", lambda: "value-a")  # miss
-    cache.get_or_fetch("a", lambda: "value-a")  # hit
-    cache.get_or_fetch("b", lambda: "value-b")  # miss, evicts "a"
+    cache.get_or_fetch("a", lambda _deadline: "value-a")  # miss
+    cache.get_or_fetch("a", lambda _deadline: "value-a")  # hit
+    cache.get_or_fetch("b", lambda _deadline: "value-b")  # miss, evicts "a"
 
     assert cache.stats() == {"hits": 1, "misses": 2, "evictions": 1, "entries": 1}
 
@@ -713,10 +723,10 @@ def test_stats_and_clear():
 
 
 def test_disabled_cache_bypasses_storage_on_every_entry_point():
-    cache: SingleFlightCache[str, str] = SingleFlightCache(maxsize=0)
+    cache: SingleFlightCache[str, str] = _cache(maxsize=0)
     calls: list[str] = []
 
-    def fetch() -> str:
+    def fetch(_deadline: float) -> str:
         calls.append("call")
         return "value"
 
@@ -729,3 +739,262 @@ def test_disabled_cache_bypasses_storage_on_every_entry_point():
 
     asyncio.run(async_call())
     assert len(calls) == 3
+
+
+# ---------------------------------------------------------------------------
+# Flights: detached from the caller that starts them
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("entry", ["single", "many"])
+@pytest.mark.parametrize("bound", ["ambient", "explicit"])
+def test_a_starter_near_its_deadline_waits_like_any_caller_and_never_cuts_the_flight(
+    entry: str, bound: str
+):
+    """The caller that starts a flight stops at its own deadline, ambient or explicit, while
+    the flight runs under its own deadline, publishes, and serves a later caller in full."""
+    cache: SingleFlightCache[str, str] = _cache(maxsize=10)
+    release = threading.Event()
+    seen: list[tuple[float, float | None]] = []
+
+    def fetch(flight_deadline: float) -> str:
+        seen.append((flight_deadline, bounded_deadline(None)))
+        assert release.wait(timeout=5), "test deadlocked waiting for release"
+        return "full"
+
+    def call(deadline: float | None) -> str:
+        if entry == "single":
+            return cache.get_or_fetch("k", fetch, deadline=deadline)
+        return cache.get_or_fetch_many(
+            ["k"], lambda keys, dl: {key: fetch(dl) for key in keys}, deadline=deadline
+        )["k"]
+
+    started_at = time.monotonic()
+    starter_deadline = started_at + 0.1
+    with pytest.raises(TimeoutError):
+        if bound == "ambient":
+            with request_deadline(starter_deadline):
+                call(None)
+        else:
+            call(starter_deadline)
+    assert time.monotonic() - started_at < 2, "the starter must stop at its own deadline"
+
+    release.set()
+    assert call(time.monotonic() + 5) == "full"
+    assert len(seen) == 1, "the later caller must reuse the starter's flight"
+    flight_deadline, ambient_in_fetch = seen[0]
+    assert flight_deadline >= started_at + _FLIGHT_TIMEOUT_S
+    assert ambient_in_fetch == flight_deadline, "the flight binds its own request deadline"
+
+
+def test_an_async_flight_runs_under_its_own_deadline_not_the_starters():
+    cache: SingleFlightCache[str, str] = _cache(maxsize=10)
+    seen: list[tuple[float, float | None]] = []
+
+    def fetch(flight_deadline: float) -> str:
+        seen.append((flight_deadline, bounded_deadline(None)))
+        time.sleep(0.2)
+        return "full"
+
+    async def scenario() -> str:
+        started_at = time.monotonic()
+        with request_deadline(started_at + 0.05), pytest.raises(asyncio.TimeoutError):
+            await cache.aget_or_fetch("k", fetch, deadline=started_at + 5)
+        return await cache.aget_or_fetch("k", fetch, deadline=time.monotonic() + 5)
+
+    started_at = time.monotonic()
+    assert asyncio.run(scenario()) == "full"
+    assert len(seen) == 1
+    flight_deadline, ambient_in_fetch = seen[0]
+    assert flight_deadline >= started_at + _FLIGHT_TIMEOUT_S
+    assert ambient_in_fetch == flight_deadline
+
+
+def _blocked_pool() -> tuple[ThreadPoolExecutor, threading.Event]:
+    """A one-thread pool whose thread waits on the returned event."""
+    pool = ThreadPoolExecutor(max_workers=1)
+    unblock = threading.Event()
+    pool.submit(unblock.wait, 5)
+    return pool, unblock
+
+
+def _call_in_thread(call: Any) -> tuple[threading.Thread, list[BaseException]]:
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            call()
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=run, daemon=True)  # a stranded call must not hold exit
+    thread.start()
+    return thread, errors
+
+
+def test_a_queued_flight_a_shutdown_cancels_releases_its_waiters():
+    pool, unblock = _blocked_pool()
+    cache: SingleFlightCache[str, str] = SingleFlightCache(
+        maxsize=10, executor=pool, flight_timeout_s=5.0
+    )
+    calls: list[str] = []
+    thread, errors = _call_in_thread(
+        lambda: cache.get_or_fetch("k", lambda _deadline: calls.append("call") or "value")
+    )
+    time.sleep(0.05)  # let the caller queue its flight behind the blocked thread
+
+    pool.shutdown(wait=False, cancel_futures=True)
+    thread.join(timeout=5)
+    unblock.set()
+
+    assert not thread.is_alive(), "a cancelled flight must not strand its waiter"
+    assert [type(exc) for exc in errors] == [CancelledError]
+    assert calls == []
+
+
+def test_a_flight_the_executor_refuses_fails_and_leaves_the_key_free():
+    pool = ThreadPoolExecutor(max_workers=1)
+    pool.shutdown()
+    cache: SingleFlightCache[str, str] = SingleFlightCache(
+        maxsize=10, executor=pool, flight_timeout_s=5.0
+    )
+    with pytest.raises(RuntimeError):
+        cache.get_or_fetch("k", lambda _deadline: "value")
+    # A fresh flight refused again, where a dead slot would time out the wait.
+    with pytest.raises(RuntimeError):
+        cache.get_or_fetch("k", lambda _deadline: "value", deadline=time.monotonic() + 1)
+
+
+@pytest.mark.parametrize("entry", ["sync", "async"])
+def test_a_flight_that_never_gets_a_worker_ends_at_its_deadline_and_never_fetches(entry: str):
+    pool, unblock = _blocked_pool()
+    cache: SingleFlightCache[str, str] = SingleFlightCache(
+        maxsize=10, executor=pool if entry == "sync" else None, flight_timeout_s=0.05
+    )
+    calls: list[str] = []
+    elapsed: list[float] = []
+
+    def fetch(_deadline: float) -> str:
+        calls.append("call")
+        return "value"
+
+    def sync_calls() -> str:
+        started = time.monotonic()
+        try:
+            cache.get_or_fetch("k", fetch)  # no deadline: only the flight's bounds the wait
+        finally:
+            elapsed.append(time.monotonic() - started)
+        return "unreachable"
+
+    async def async_calls() -> str:
+        # The blocked pool is the loop's default executor, which async flights queue on.
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(pool)
+        started = time.monotonic()
+        try:
+            await cache.aget_or_fetch("k", fetch, deadline=time.monotonic() + 5)
+        finally:
+            elapsed.append(time.monotonic() - started)
+            # A free pool for the next flight; joining the expired one would raise instead.
+            loop.set_default_executor(ThreadPoolExecutor(max_workers=1))
+        return "unreachable"
+
+    thread, errors = _call_in_thread(
+        sync_calls if entry == "sync" else (lambda: asyncio.run(async_calls()))
+    )
+    thread.join(timeout=1)
+    try:
+        assert not thread.is_alive(), "a flight with no worker must answer by its deadline"
+        assert [type(exc) for exc in errors] == [TimeoutError]
+        assert 0.04 <= elapsed[0] < 0.5
+        # The key is free: a new caller starts a new flight, where joining the old one would
+        # raise `AlreadyInFlight` (sync) or the old flight's `TimeoutError` (async).
+        if entry == "sync":
+            with pytest.raises(TimeoutError):
+                cache.get_or_fetch("k", fetch, join_inflight=False)
+        else:
+
+            async def fresh_call() -> str:
+                return await cache.aget_or_fetch(
+                    "k", lambda _deadline: "fresh", deadline=time.monotonic() + 5
+                )
+
+            assert asyncio.run(fresh_call()) == "fresh"
+    finally:
+        unblock.set()
+        pool.shutdown()
+    assert calls == []
+
+
+def test_a_caller_arriving_after_a_flights_deadline_starts_a_new_flight():
+    pool, unblock = _blocked_pool()
+    cache: SingleFlightCache[str, str] = SingleFlightCache(
+        maxsize=10, executor=pool, flight_timeout_s=0.05
+    )
+    try:
+        # The only waiter leaves early, so nothing expires the flight before the next caller.
+        with pytest.raises(WaitTimeout):
+            cache.get_or_fetch("k", lambda _deadline: "value", deadline=time.monotonic() + 0.01)
+        time.sleep(0.1)
+        with pytest.raises(TimeoutError) as raised:
+            cache.get_or_fetch("k", lambda _deadline: "value", join_inflight=False)
+        assert not isinstance(raised.value, AlreadyInFlight | WaitTimeout)
+    finally:
+        unblock.set()
+        pool.shutdown()
+
+
+@pytest.mark.parametrize("entry", ["sync", "async"])
+def test_a_fetch_that_ends_after_its_flight_deadline_publishes_nothing(entry: str):
+    cache: SingleFlightCache[str, str] = SingleFlightCache(
+        maxsize=10, executor=_FLIGHTS, flight_timeout_s=0.05
+    )
+    release = threading.Event()
+    calls: list[str] = []
+
+    def slow_fetch(_deadline: float) -> str:
+        calls.append("slow")
+        release.wait(5)
+        return "late"
+
+    def fast_fetch(_deadline: float) -> str:
+        calls.append("fast")
+        return "fresh"
+
+    def sync_scenario() -> str:
+        try:
+            with pytest.raises(TimeoutError):
+                cache.get_or_fetch("k", slow_fetch)
+        finally:
+            release.set()
+        time.sleep(0.05)  # let the late fetch return and settle
+        return cache.get_or_fetch("k", fast_fetch)
+
+    async def async_scenario() -> str:
+        # One loop throughout, so the expired flight's task could still publish if it ran on.
+        try:
+            with pytest.raises(TimeoutError):
+                await cache.aget_or_fetch("k", slow_fetch, deadline=time.monotonic() + 1)
+        finally:
+            release.set()
+        await asyncio.sleep(0.05)  # let the late fetch return
+        return await cache.aget_or_fetch("k", fast_fetch, deadline=time.monotonic() + 5)
+
+    fresh = sync_scenario() if entry == "sync" else asyncio.run(async_scenario())
+    assert fresh == "fresh"
+    assert calls == ["slow", "fast"]
+
+
+def test_a_settle_that_raises_resolves_the_waiters_and_leaves_the_key_free():
+    cache: SingleFlightCache[str, str] = _cache(maxsize=10)
+    returns: list[Any] = [None, {"k": "value"}]
+
+    def fetch(_keys: list[str], _deadline: float) -> Any:
+        return returns.pop(0)
+
+    thread, errors = _call_in_thread(lambda: cache.get_or_fetch_many(["k"], fetch))
+    thread.join(timeout=5)  # no request deadline, so a stranded slot would wait forever
+
+    assert not thread.is_alive()
+    assert [type(exc) for exc in errors] == [TypeError]
+    assert cache.get_or_fetch_many(["k"], fetch, deadline=time.monotonic() + 5) == {"k": "value"}

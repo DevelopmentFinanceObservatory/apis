@@ -53,7 +53,9 @@ class ManifestTrace:
     """
 
     applied_window: dict[str, object] | None
-    graph_revision: str
+    # The graph serving revision the run read (`GenerationStamp.token`), `None` when unknown.
+    graph_revision: str | None
+    # Each source the run read and its refresh token, sorted by source.
     source_revisions: tuple[dict[str, object], ...]
     resolved_stat_vars: tuple[dict[str, object], ...]
     facets: tuple[dict[str, object], ...]
@@ -62,7 +64,7 @@ class ManifestTrace:
     # Omitted when no conversion runs. Otherwise one entry per recipe and
     # table-version pair, sorted by recipe then table versions: `recipe`,
     # `rate_table_version`, and `deflator_table_version` when a deflator
-    # joined (the grammar's preimage keys), then `members` (each member's
+    # joined, then `members` (each member's
     # bare StatVar ref and native unit, sorted by StatVar), and the members'
     # fallback/projected counts with sorted, deduplicated examples capped at
     # 10. One entry per recipe and table-version pair.
@@ -72,12 +74,6 @@ class ManifestTrace:
     code_index_stamp: dict[str, object] | None = None
     # Index stamp fields, attached by `datasets_api.manifest.assemble_manifest`
     # when available. Omitted from `to_dict()` when `None`.
-    mint_facets: tuple[dict[str, object], ...] | None = None
-    # The exact `{axis, ref, basis}` facets used to mint `content_version`,
-    # distinct from the wider `facets` trace entries. Conversion requests
-    # retain their requested unit here so `mint_preimage_from_trace` can
-    # rebuild the preimage without a graph read. `None` means the preimage
-    # cannot be safely reconstructed.
     origin_catalogue_build_id: str | None = None
     # The origin catalogue build that admitted the manifest's data, attached
     # by `datasets_api.manifest.assemble_manifest`. Omitted from `to_dict()`
@@ -88,7 +84,8 @@ class ManifestTrace:
 
     def to_dict(self) -> dict[str, object]:
         """Returns the wire shape. Optional fields are omitted when `None`.
-        `normalisations` is always present, including as an empty list, and
+        `graph_revision` is always present, null when unknown, `normalisations` is always present,
+        including as an empty list, and
         `family_member_digest` and `family_member_count` are always present, null without a
         `family`.
         """
@@ -105,8 +102,6 @@ class ManifestTrace:
         result["family_member_digest"] = self.family.digest if self.family is not None else None
         result["family_member_count"] = self.family.count if self.family is not None else None
         result["facets"] = list(self.facets)
-        if self.mint_facets is not None:
-            result["mint_facets"] = list(self.mint_facets)
         result["normalisations"] = list(self.normalisations)
         if self.conversion is not None:
             result["conversion"] = list(self.conversion)

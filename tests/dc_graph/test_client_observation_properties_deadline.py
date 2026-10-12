@@ -1,18 +1,22 @@
 """Tests deadline-aware chunk scheduling in `node_observation_properties_batch`.
 
-Fake clocks, barriers, and events control expiry and prove withheld reads are not posted. Calls
-outside a deadline still process every chunk.
+The shared read stops at its flight deadline, `observation_properties_flight_timeout_s` from when
+it starts. A caller's `declared_role_refresh_deadline` bounds only that caller's wait. Fake
+clocks, barriers, and events control expiry and prove withheld reads are not posted.
 """
 
 from __future__ import annotations
 
+import contextlib
 import threading
 import time as _real_time
 
 import pytest
 
 import dc_graph.client as graph_module
+import dfo_platform.single_flight_cache as single_flight_module
 from dc_graph import GraphClient, GraphReadError, declared_role_refresh_deadline
+from dfo_platform.request_deadline import request_deadline
 
 _CHUNK_SIZE = graph_module._DEFAULT_NODE_ARC_BATCH_CHUNK_SIZE
 
@@ -50,8 +54,19 @@ class _PatchedTime:
         return getattr(_real_time, name)
 
 
-def _client(*, call_concurrency: int | None = None) -> GraphClient:
+def _use_clock(monkeypatch: pytest.MonkeyPatch, clock: _FakeClock) -> None:
+    """Drive the client's chunk scheduler and the single-flight cache's waits from one clock."""
+    patched = _PatchedTime(clock)
+    monkeypatch.setattr(graph_module, "time", patched)
+    monkeypatch.setattr(single_flight_module, "time", patched)
+
+
+def _client(
+    *, call_concurrency: int | None = None, flight_timeout_s: float | None = None
+) -> GraphClient:
     kwargs = {} if call_concurrency is None else {"node_arc_call_concurrency": call_concurrency}
+    if flight_timeout_s is not None:
+        kwargs["observation_properties_flight_timeout_s"] = flight_timeout_s
     client = GraphClient(base_url="http://fake/core/api", **kwargs)
     # Keep the process-wide total bound wide open so only the per-call
     # scheduler (and its deadline check) is under test.
@@ -62,12 +77,12 @@ def _client(*, call_concurrency: int | None = None) -> GraphClient:
 def test_chunk_scheduling_stops_issuing_new_posts_once_the_deadline_elapses(monkeypatch) -> None:
     """A barrier starts both first-wave POSTs across 6 chunks at concurrency 2.
 
-    After expiry, no third chunk is posted and the call raises `TimeoutError`.
+    After the flight deadline, no third chunk is posted and the call raises `TimeoutError`.
     """
     clock = _FakeClock(start=0.0)
-    monkeypatch.setattr(graph_module, "time", _PatchedTime(clock))
-    client = _client(call_concurrency=2)
+    _use_clock(monkeypatch, clock)
     deadline = 100.0
+    client = _client(call_concurrency=2, flight_timeout_s=deadline)
 
     dcids = [f"dcid/{i}" for i in range(6 * _CHUNK_SIZE)]
     barrier = threading.Barrier(2, timeout=5.0)
@@ -89,7 +104,7 @@ def test_chunk_scheduling_stops_issuing_new_posts_once_the_deadline_elapses(monk
 
     monkeypatch.setattr(GraphClient, "post", fake_post)
 
-    with declared_role_refresh_deadline(deadline), pytest.raises(TimeoutError):
+    with pytest.raises(TimeoutError):
         client.node_observation_properties_batch(dcids)
 
     assert len(posted_chunks) == 2, (
@@ -98,10 +113,27 @@ def test_chunk_scheduling_stops_issuing_new_posts_once_the_deadline_elapses(monk
     )
 
 
+def test_the_flights_own_timeout_reaches_a_caller_inside_a_live_request(monkeypatch) -> None:
+    """A flight that runs out of time raises its `TimeoutError` to a caller whose request
+    deadline is still live, rather than the request's deadline error."""
+    clock = _FakeClock(start=0.0)
+    _use_clock(monkeypatch, clock)
+    client = _client(call_concurrency=1, flight_timeout_s=100.0)
+
+    def fake_post(self, path, payload, *, deadline=None):
+        clock.now = 101.0
+        return _fake_post_body(list(payload["nodes"]))
+
+    monkeypatch.setattr(GraphClient, "post", fake_post)
+
+    with request_deadline(1_000.0), pytest.raises(TimeoutError):
+        client.node_observation_properties_batch([f"dcid/{i}" for i in range(2 * _CHUNK_SIZE)])
+
+
 def test_a_deadline_already_elapsed_issues_no_post_at_all(monkeypatch) -> None:
     """An expired deadline prevents every chunk POST."""
     clock = _FakeClock(start=200.0)
-    monkeypatch.setattr(graph_module, "time", _PatchedTime(clock))
+    _use_clock(monkeypatch, clock)
     client = _client()
 
     dcids = [f"dcid/{i}" for i in range(3 * _CHUNK_SIZE)]
@@ -113,36 +145,43 @@ def test_a_deadline_already_elapsed_issues_no_post_at_all(monkeypatch) -> None:
 
     monkeypatch.setattr(GraphClient, "post", fake_post)
 
-    with declared_role_refresh_deadline(100.0), pytest.raises(TimeoutError):
-        client.node_observation_properties_batch(dcids)
+    with pytest.raises(TimeoutError):
+        client._fetch_observation_property_chunks(dcids, deadline=100.0)
 
     assert posted_chunks == []
 
 
-def test_no_deadline_scope_reads_to_completion_unchanged(monkeypatch) -> None:
-    """Without a deadline scope, every chunk is read."""
+def test_the_starters_deadline_does_not_stop_the_shared_read(monkeypatch) -> None:
+    """The caller that starts the shared read stops waiting at its own deadline, and the read
+    still posts every chunk, bounded by its flight deadline alone."""
     clock = _FakeClock(start=0.0)
-    monkeypatch.setattr(graph_module, "time", _PatchedTime(clock))
-    client = _client(call_concurrency=2)
+    _use_clock(monkeypatch, clock)
+    client = _client(call_concurrency=2, flight_timeout_s=1_000.0)
 
     dcids = [f"dcid/{i}" for i in range(6 * _CHUNK_SIZE)]
     posted_chunks: list[list[str]] = []
+    lock = threading.Lock()
+    all_posted = threading.Event()
 
     def fake_post(self, path, payload, *, deadline=None):
         chunk = list(payload["nodes"])
-        with threading.Lock():
+        with lock:
             posted_chunks.append(chunk)
-            # Even a clock that reads arbitrarily far in the future never
-            # trips a limit with no scope open to carry a deadline at all.
-            clock.now = 10_000.0
+            # Past the starter's deadline, within the flight's.
+            clock.now = 150.0
+            if len(posted_chunks) == 6:
+                all_posted.set()
         return _fake_post_body(chunk)
 
     monkeypatch.setattr(GraphClient, "post", fake_post)
 
-    result = client.node_observation_properties_batch(dcids)
+    # The starter may stop waiting first. The read runs on.
+    with declared_role_refresh_deadline(100.0), contextlib.suppress(TimeoutError):
+        client.node_observation_properties_batch(dcids)
 
-    assert set(result.keys()) == set(dcids)
-    assert len(posted_chunks) == 6
+    assert all_posted.wait(timeout=5.0), (
+        f"the shared read stopped at the starter's deadline; posted {len(posted_chunks)} chunk(s)"
+    )
 
 
 class _AnnouncingSemaphore:
@@ -166,8 +205,13 @@ def test_chunk_that_clears_the_semaphore_after_the_deadline_is_never_posted(monk
     The fake POST records reads; the test expires the clock only after `about_to_block` fires.
     """
     clock = _FakeClock(start=0.0)
-    monkeypatch.setattr(graph_module, "time", _PatchedTime(clock))
-    client = GraphClient(base_url="http://fake/core/api", node_arc_call_concurrency=1)
+    _use_clock(monkeypatch, clock)
+    deadline = 50.0
+    client = GraphClient(
+        base_url="http://fake/core/api",
+        node_arc_call_concurrency=1,
+        observation_properties_flight_timeout_s=deadline,
+    )
 
     about_to_block = threading.Event()
     semaphore = _AnnouncingSemaphore(1, about_to_block)
@@ -177,7 +221,6 @@ def test_chunk_that_clears_the_semaphore_after_the_deadline_is_never_posted(monk
     about_to_block.clear()
     client._node_arc_semaphore = semaphore
 
-    deadline = 50.0
     posted_chunks: list[list[str]] = []
     lock = threading.Lock()
 
@@ -194,11 +237,10 @@ def test_chunk_that_clears_the_semaphore_after_the_deadline_is_never_posted(monk
     outcome: dict[str, object] = {}
 
     def _run() -> None:
-        with declared_role_refresh_deadline(deadline):
-            try:
-                outcome["result"] = client.node_observation_properties_batch(dcids)
-            except BaseException as exc:
-                outcome["error"] = exc
+        try:
+            outcome["result"] = client.node_observation_properties_batch(dcids)
+        except BaseException as exc:
+            outcome["error"] = exc
 
     thread = threading.Thread(target=_run)
     thread.start()
@@ -224,7 +266,7 @@ def test_chunk_that_clears_the_semaphore_after_the_deadline_is_never_posted(monk
 def test_multi_chunk_read_completes_unchanged_when_deadline_never_elapses(monkeypatch) -> None:
     """A live deadline leaves the six-chunk read complete when the fake clock stays within budget."""
     clock = _FakeClock(start=0.0)
-    monkeypatch.setattr(graph_module, "time", _PatchedTime(clock))
+    _use_clock(monkeypatch, clock)
     client = _client(call_concurrency=2)
 
     dcids = [f"dcid/{i}" for i in range(6 * _CHUNK_SIZE)]
@@ -269,7 +311,11 @@ def test_call_returns_without_waiting_for_a_still_running_chunk(monkeypatch) -> 
     thread can bound the wait with `join(timeout=...)`. The event is
     released only at the very end, so the worker drains and no thread is
     left blocked when the test exits."""
-    client = GraphClient(base_url="http://fake/core/api", node_arc_call_concurrency=2)
+    client = GraphClient(
+        base_url="http://fake/core/api",
+        node_arc_call_concurrency=2,
+        observation_properties_flight_timeout_s=0.1,
+    )
     client._node_arc_semaphore = threading.BoundedSemaphore(100)
 
     release_worker = threading.Event()
@@ -290,14 +336,12 @@ def test_call_returns_without_waiting_for_a_still_running_chunk(monkeypatch) -> 
     # exercised.
     dcids = [f"dcid/{i}" for i in range(2 * _CHUNK_SIZE)]
     outcome: dict[str, object] = {}
-    deadline = _real_time.monotonic() + 0.1
 
     def _run() -> None:
-        with declared_role_refresh_deadline(deadline):
-            try:
-                outcome["result"] = client.node_observation_properties_batch(dcids)
-            except BaseException as exc:
-                outcome["error"] = exc
+        try:
+            outcome["result"] = client.node_observation_properties_batch(dcids)
+        except BaseException as exc:
+            outcome["error"] = exc
 
     driver = threading.Thread(target=_run)
     driver.start()
@@ -325,7 +369,7 @@ def test_single_chunk_past_deadline_raises_without_posting(monkeypatch) -> None:
     """The single-chunk path (no executor, see _fetch_observation_property_chunks'
     own docstring) checks the deadline before its one inline read too."""
     clock = _FakeClock(start=500.0)
-    monkeypatch.setattr(graph_module, "time", _PatchedTime(clock))
+    _use_clock(monkeypatch, clock)
     client = _client()
 
     dcids = [f"dcid/{i}" for i in range(3)]
@@ -337,8 +381,8 @@ def test_single_chunk_past_deadline_raises_without_posting(monkeypatch) -> None:
 
     monkeypatch.setattr(GraphClient, "post", fake_post)
 
-    with declared_role_refresh_deadline(100.0), pytest.raises(TimeoutError):
-        client.node_observation_properties_batch(dcids)
+    with pytest.raises(TimeoutError):
+        client._fetch_observation_property_chunks(dcids, deadline=100.0)
 
     assert posted_chunks == []
 
@@ -348,7 +392,11 @@ def test_single_chunk_returns_at_the_deadline_not_after_full_contention(monkeypa
 
     This test uses real wall-clock time, not the fake clock.
     """
-    client = GraphClient(base_url="http://fake/core/api")
+    deadline_headroom = 0.3
+    client = GraphClient(
+        base_url="http://fake/core/api",
+        observation_properties_flight_timeout_s=deadline_headroom,
+    )
     semaphore = threading.BoundedSemaphore(1)
     semaphore.acquire()  # simulate another request's traffic already holding the one slot
     client._node_arc_semaphore = semaphore
@@ -370,11 +418,8 @@ def test_single_chunk_returns_at_the_deadline_not_after_full_contention(monkeypa
     monkeypatch.setattr(GraphClient, "post", fake_post)
 
     dcids = [f"dcid/{i}" for i in range(3)]  # well under chunk size: single-chunk path
-    deadline_headroom = 0.3
-    deadline = _real_time.monotonic() + deadline_headroom
-
     start = _real_time.monotonic()
-    with declared_role_refresh_deadline(deadline), pytest.raises(TimeoutError):
+    with pytest.raises(TimeoutError):
         client.node_observation_properties_batch(dcids)
     elapsed = _real_time.monotonic() - start
 
@@ -405,8 +450,11 @@ def test_single_chunk_that_clears_the_semaphore_after_the_deadline_raises_timeou
 ) -> None:
     """The inline single-chunk path translates an expired semaphore wait to `TimeoutError`."""
     clock = _FakeClock(start=0.0)
-    monkeypatch.setattr(graph_module, "time", _PatchedTime(clock))
-    client = GraphClient(base_url="http://fake/core/api")
+    _use_clock(monkeypatch, clock)
+    deadline = 50.0
+    client = GraphClient(
+        base_url="http://fake/core/api", observation_properties_flight_timeout_s=deadline
+    )
 
     about_to_block = threading.Event()
     semaphore = _AnnouncingSemaphoreForSingleChunk(1, about_to_block)
@@ -414,7 +462,6 @@ def test_single_chunk_that_clears_the_semaphore_after_the_deadline_raises_timeou
     about_to_block.clear()
     client._node_arc_semaphore = semaphore
 
-    deadline = 50.0
     posted_chunks: list[list[str]] = []
     lock = threading.Lock()
 
@@ -429,11 +476,10 @@ def test_single_chunk_that_clears_the_semaphore_after_the_deadline_raises_timeou
     outcome: dict[str, object] = {}
 
     def _run() -> None:
-        with declared_role_refresh_deadline(deadline):
-            try:
-                outcome["result"] = client.node_observation_properties_batch(dcids)
-            except BaseException as exc:
-                outcome["error"] = exc
+        try:
+            outcome["result"] = client.node_observation_properties_batch(dcids)
+        except BaseException as exc:
+            outcome["error"] = exc
 
     thread = threading.Thread(target=_run)
     thread.start()

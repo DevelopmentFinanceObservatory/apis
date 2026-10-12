@@ -4,34 +4,42 @@ over the SQLite-backed version store.
 
 from __future__ import annotations
 
-import asyncio
+import contextvars
 import logging
 import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import timedelta
 
 import pytest
 
-from artifact_store import LiveArtifactInventory, StoredArtifact, Tier
+from artifact_store import (
+    ArtifactSink,
+    ArtifactStore,
+    LiveArtifactInventory,
+    StoredArtifact,
+    Tier,
+)
+from artifact_store.inventory import InventoryBatch, InventoryEntry
 from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api import door_executor
-from datasets_api.config import DatasetsConfigError
-from datasets_api.doors import snapshot as snapshot_door
+from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.snapshot import build_snapshot_door
-from datasets_api.revision import SentinelRevisionReader
 from datasets_api.version_store import LiveVersionRecordWriter
 from datasets_api.versions import ArtifactRecord, VersionRecord
 from dc_sdmx import SdmxClient
-from materialise.formats import FRAME1_MEDIA_TYPE
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
 
 from ._app_factories import make_client
 from ._artifact_doubles import FakeArtifactStore
+from ._deps_doubles import fake_deps_cell
 from ._executor_doubles import BrokenSubmitExecutor
-from ._frame1_doubles import (
+from ._frame_doubles import (
     _BASE_URL,
     _body,
+    _canonical_frame_row,
     _coverage_service,
-    _frame1_row,
     _graph,
     _sdmx_transport,
     _statistics_row,
@@ -45,64 +53,13 @@ from ._snapshot_doubles import (
     _store_and_locate,
     _version,
     make_client_for_door,
+    version_body,
 )
+from ._version_facts import facts_from_body
 from .conftest import FakeDatasetStore
 from .test_pin_door import FakeArtifactReferenceWriter
 
-# --- Lifespan construction failure and the door's own backpressure gate ---
-
-
-def test_construction_failure_returns_the_pool_borrow_before_propagating(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """When settings construction fails after the pool opens, the door returns the connection."""
-    open_calls = 0
-    close_calls = 0
-
-    def _counting_shared_pool() -> object:
-        nonlocal open_calls
-        open_calls += 1
-        return object()
-
-    def _counting_close_shared_pool() -> None:
-        nonlocal close_calls
-        close_calls += 1
-
-    monkeypatch.setattr(snapshot_door, "shared_pool", _counting_shared_pool)
-    monkeypatch.setattr(snapshot_door, "close_shared_pool", _counting_close_shared_pool)
-    monkeypatch.setattr(snapshot_door, "LiveDatasetStore", lambda *, connections: object())
-
-    door = build_snapshot_door()  # spec_reader, snapshot_reader, artifact_store all uninjected
-
-    async def _enter() -> None:
-        async with door.lifespan(None):
-            pass  # pragma: no cover -- construction fails before this is reached
-
-    with pytest.raises(DatasetsConfigError):
-        asyncio.run(_enter())
-
-    assert open_calls == 1
-    assert close_calls == 1
-
-
-@pytest.mark.parametrize(
-    "uninjected_deps",
-    [frozenset({"snapshot_reader"})],
-    ids=lambda deps: "uninjected_" + "_".join(sorted(deps)),
-)
-def test_build_refuses_to_start_with_only_some_dependencies_injected(
-    uninjected_deps: frozenset[str],
-) -> None:
-    """Injecting `spec_reader` without `snapshot_reader` fails during door construction."""
-    with pytest.raises(DatasetsConfigError) as excinfo:
-        build_snapshot_door(
-            spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
-            snapshot_reader=None if "snapshot_reader" in uninjected_deps else FakeSnapshotReader(),
-            artifact_store=FakeArtifactStore(),
-        )
-
-    for dep in uninjected_deps:
-        assert dep in str(excinfo.value)
+# --- Backpressure on the read executor ---
 
 
 def test_backpressure_refuses_503_retryable_when_executor_is_already_at_capacity() -> None:
@@ -114,11 +71,15 @@ def test_backpressure_refuses_503_retryable_when_executor_is_already_at_capacity
     )
     blocking_spec_reader = BlockingFakeSpecReader(spec_ids=["spec_a"])
     door = build_snapshot_door(
-        spec_reader=blocking_spec_reader,
-        snapshot_reader=reader,
-        artifact_store=store,
-        now=lambda: _NOW,
-        pool_size=1,
+        deps=fake_deps_cell(
+            settings=DatasetsBuildSettings.from_env().model_copy(
+                update={"read_max_concurrency": 1}
+            ),
+            spec_reader=blocking_spec_reader,
+            snapshot_reader=reader,
+            artifact_store=store,
+            now=lambda: _NOW,
+        )
     )
     client = make_client_for_door(door)
 
@@ -137,6 +98,7 @@ def test_backpressure_refuses_503_retryable_when_executor_is_already_at_capacity
         resp = client.get("/api/datasets/spec_a/cv1")
 
         assert resp.status_code == 503
+        assert resp.headers["retry-after"] == "1"
         body = resp.json()
         assert body["code"] == "service_unavailable"
         assert body["retryable"] is True
@@ -157,11 +119,15 @@ def test_broken_thread_pool_surfaces_as_internal_error_not_backpressure(
         locations={("spec_a", "cv1"): [location]},
     )
     door = build_snapshot_door(
-        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
-        snapshot_reader=reader,
-        artifact_store=store,
-        now=lambda: _NOW,
-        pool_size=1,
+        deps=fake_deps_cell(
+            settings=DatasetsBuildSettings.from_env().model_copy(
+                update={"read_max_concurrency": 1}
+            ),
+            spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+            snapshot_reader=reader,
+            artifact_store=store,
+            now=lambda: _NOW,
+        )
     )
     client = make_client_for_door(door)
 
@@ -178,7 +144,33 @@ def test_broken_thread_pool_surfaces_as_internal_error_not_backpressure(
 # --- End-to-end: the real door, a real LiveSnapshotReader, real writer ---
 
 
-def test_snapshot_door_serves_a_manifest_written_by_the_real_writer(version_store):
+# A version minted before `content_version` hashed the frame alone: a `cv1`-family token, a trace
+# carrying the lineage that token hashed, and the `revision_unavailable` warning manifests carried.
+_PRE_FRAME_HASH_TOKEN = "cv_ea9dc1d4c4be9cf2ad62a810aa2f4db7"
+_PRE_FRAME_HASH_BODY = {
+    **version_body(_PRE_FRAME_HASH_TOKEN),
+    "trace": {
+        "graph_revision": "unavailable:dfo-dcp-revision-endpoint-absent",
+        "source_revisions": [],
+        "facets": [],
+        "mint_facets": [{"axis": "provenance", "ref": "OECD_DAC2A", "basis": "bound"}],
+        "normalisations": [],
+        "frame_grammar_version": "1.0.0",
+    },
+    "warnings": [{"code": "revision_unavailable", "severity": "info", "message": "m"}],
+}
+
+
+@pytest.mark.parametrize(
+    ("content_version", "body"),
+    [("cv1", version_body()), (_PRE_FRAME_HASH_TOKEN, _PRE_FRAME_HASH_BODY)],
+    ids=["current", "minted-before-frame-hash"],
+)
+def test_snapshot_door_serves_a_manifest_written_by_the_real_writer(
+    version_store, content_version, body
+):
+    """A version minted before tokens hashed the frame alone still resolves by its old token,
+    with its stored trace and warnings."""
     artifact_store = FakeArtifactStore()
     stored = artifact_store.put(b"hello", tier=Tier.working)
     # Seed inventory tables because `FakeArtifactStore.put()` leaves them to the test.
@@ -199,9 +191,9 @@ def test_snapshot_door_serves_a_manifest_written_by_the_real_writer(version_stor
         VersionRecord(
             subject_id="spec_a",
             subject_kind="spec",
-            content_version="cv1",
+            content_version=content_version,
             schema_version=1,
-            immutable_body=_version().immutable_body,
+            facts=facts_from_body(body),
             artifacts=(
                 ArtifactRecord(
                     artifact_digest=stored.digest,
@@ -213,32 +205,44 @@ def test_snapshot_door_serves_a_manifest_written_by_the_real_writer(version_stor
     )
 
     door = build_snapshot_door(
-        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
-        snapshot_reader=LiveSnapshotReader(store=version_store),
-        artifact_store=artifact_store,
-        now=lambda: _NOW,
+        deps=fake_deps_cell(
+            spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+            snapshot_reader=LiveSnapshotReader(store=version_store),
+            artifact_store=artifact_store,
+            now=lambda: _NOW,
+        )
     )
     client = make_client_for_door(door)
 
-    resp = client.get("/api/datasets/spec_a/cv1")
+    resp = client.get(f"/api/datasets/spec_a/{content_version}")
 
     assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["content_version"] == "cv1"
-    assert len(body["artifacts"]) == 1
-    assert body["artifacts"][0]["artifact_digest"] == stored.digest
+    served = resp.json()
+    assert served["content_version"] == content_version
+    assert served["trace"] == body["trace"]
+    assert served["warnings"] == body["warnings"]
+    assert len(served["artifacts"]) == 1
+    assert served["artifacts"][0]["artifact_digest"] == stored.digest
+
+
+# The batch a `deferred` view of `_InventoryRecordingArtifactStore` is writing for, if any.
+_deferred_batch: contextvars.ContextVar[InventoryBatch | None] = contextvars.ContextVar(
+    "deferred_batch", default=None
+)
 
 
 class _InventoryRecordingArtifactStore(FakeArtifactStore):
     """Records fake uploads and copies in the inventory tables that `LiveSnapshotReader` joins,
-    as the GCS store records each destination it writes."""
+    as the GCS store records each destination it writes. A `deferred` view adds those rows to
+    its batch, as `LiveArtifactStore.deferred` does, and shares this store's objects and
+    counters."""
 
     def __init__(self, *, inventory: LiveArtifactInventory) -> None:
         super().__init__()
         self._inventory = inventory
 
     def _record(self, stored: StoredArtifact) -> StoredArtifact:
-        self._inventory.record(
+        entry = InventoryEntry(
             digest=stored.digest,
             tier=stored.tier,
             bucket=stored.bucket,
@@ -246,6 +250,11 @@ class _InventoryRecordingArtifactStore(FakeArtifactStore):
             size_bytes=stored.size_bytes,
             uploaded=not stored.deduplicated,
         )
+        batch = _deferred_batch.get()
+        if batch is not None:
+            batch.add(entry)
+        else:
+            self._inventory.write(entry)
         return stored
 
     def put(self, data: bytes, *, tier: Tier) -> StoredArtifact:
@@ -254,12 +263,73 @@ class _InventoryRecordingArtifactStore(FakeArtifactStore):
     def copy(self, digest: str, *, from_tier: Tier, to_tier: Tier) -> StoredArtifact:
         return self._record(super().copy(digest, from_tier=from_tier, to_tier=to_tier))
 
+    def deferred(self, batch: InventoryBatch) -> ArtifactStore:
+        return _DeferredRecordingView(self, batch=batch)
 
-def test_a_mint_through_the_real_mint_door_serves_a_snapshot_excluding_frame1(
+
+class _DeferredRecordingView:
+    """`store`'s `ArtifactStore` methods, with `put` and `open_put` run under `batch` so
+    `_record` adds to it."""
+
+    def __init__(self, store: _InventoryRecordingArtifactStore, *, batch: InventoryBatch) -> None:
+        self._store = store
+        self._batch = batch
+
+    def put(self, data: bytes, *, tier: Tier) -> StoredArtifact:
+        token = _deferred_batch.set(self._batch)
+        try:
+            return self._store.put(data, tier=tier)
+        finally:
+            _deferred_batch.reset(token)
+
+    @contextmanager
+    def open_put(self, *, tier: Tier) -> Iterator[ArtifactSink]:
+        token = _deferred_batch.set(self._batch)
+        try:
+            with self._store.open_put(tier=tier) as sink:
+                yield sink
+        finally:
+            _deferred_batch.reset(token)
+
+    def get(self, *, artifact_digest: str, tier: Tier) -> bytes:
+        return self._store.get(artifact_digest=artifact_digest, tier=tier)
+
+    def signed_location_url(
+        self,
+        digest: str,
+        *,
+        tier: Tier,
+        bucket: str,
+        object_name: str,
+        ttl: timedelta,
+        response_type: str,
+        response_disposition: str,
+    ) -> str:
+        return self._store.signed_location_url(
+            digest,
+            tier=tier,
+            bucket=bucket,
+            object_name=object_name,
+            ttl=ttl,
+            response_type=response_type,
+            response_disposition=response_disposition,
+        )
+
+    def copy(self, digest: str, *, from_tier: Tier, to_tier: Tier) -> StoredArtifact:
+        return self._store.copy(digest, from_tier=from_tier, to_tier=to_tier)
+
+    def list(self, *, tier: Tier) -> frozenset[str]:
+        return self._store.list(tier=tier)
+
+    def deferred(self, batch: InventoryBatch) -> ArtifactStore:
+        return _DeferredRecordingView(self._store, batch=batch)
+
+
+def test_a_mint_through_the_real_mint_door_serves_a_snapshot_listing_the_canonical_frame(
     version_store,
 ):
-    """A mint and snapshot GET share real version storage. The mint records a frame1 row, which
-    the snapshot read must exclude from listable artifacts.
+    """A mint and snapshot GET share real version storage. The mint records a canonical frame
+    row, which the snapshot lists under `{"format": "frame"}` and its stable download link.
     """
     dataset_store = FakeDatasetStore()
     artifact_store = _InventoryRecordingArtifactStore(
@@ -270,7 +340,6 @@ def test_a_mint_through_the_real_mint_door_serves_a_snapshot_excluding_frame1(
         spec_reader=LiveSpecReader(store=dataset_store),
         graph=_graph(),
         sdmx=SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport()),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=artifact_store,
         version_writer=LiveVersionRecordWriter(store=version_store),
         snapshot_reader=LiveSnapshotReader(store=version_store),
@@ -288,7 +357,7 @@ def test_a_mint_through_the_real_mint_door_serves_a_snapshot_excluding_frame1(
         version_store, subject_id=spec_id, content_version=content_version
     )
     assert len(rows) == 3
-    _frame1_row(rows)  # the record-only frame1 row is present in the database
+    frame_row = _canonical_frame_row(rows)
     _statistics_row(rows)
 
     snapshot_resp = client.get(f"/api/datasets/{spec_id}/{content_version}")
@@ -296,11 +365,16 @@ def test_a_mint_through_the_real_mint_door_serves_a_snapshot_excluding_frame1(
     assert snapshot_resp.status_code == 200, snapshot_resp.text
     snapshot_body = snapshot_resp.json()
     # A plain snapshot GET (no narrowing) lists every currently servable
-    # listable rendering: the requested csv, plus the statistics artifact.
-    # Frame1 stays internal.
-    assert len(snapshot_body["artifacts"]) == 2
-    requested = next(
-        a for a in snapshot_body["artifacts"] if a["rendering"] != {"statistics": "series"}
+    # listable rendering: the requested csv, then the canonical frame and the
+    # statistics artifact.
+    assert [a["rendering"].get("format") for a in snapshot_body["artifacts"]] == [
+        "csv",
+        "frame",
+        None,
+    ]
+    frame = snapshot_body["artifacts"][1]
+    assert frame["artifact_digest"] == frame_row["artifact_digest"]
+    assert frame["media_type"] == "application/vnd.apache.parquet"
+    assert frame["url"] == (
+        f"/api/datasets/{spec_id}/{content_version}/files/{frame_row['artifact_digest']}"
     )
-    assert requested["rendering"]["format"] == "csv"
-    assert all(a["media_type"] != FRAME1_MEDIA_TYPE for a in snapshot_body["artifacts"])

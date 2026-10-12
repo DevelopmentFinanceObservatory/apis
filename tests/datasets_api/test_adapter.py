@@ -10,6 +10,7 @@ from dfo_spec_kit.identity import IdentityError, build_projection
 from code_index.shared import get_index
 from datasets_api.adapter import (
     build_identity_document,
+    provenance_pin,
     resolve_definition_members,
     to_materialisation_request,
 )
@@ -424,6 +425,37 @@ def test_to_materialisation_request_round_trips_entities_facets_and_window():
     assert request.window.kind == "range"
     assert request.window.start_year == 2015
     assert request.window.end_year == 2020
+
+
+@pytest.mark.parametrize(
+    ("refs", "bound"),
+    [
+        (["OECD_DAC2A", "OECD_DAC2A"], "OECD_DAC2A"),
+        (["OECD_DAC2A", "OECD_CRS"], None),
+    ],
+    ids=["one-distinct-ref", "several-refs"],
+)
+def test_to_materialisation_request_binds_a_provenance_set_of_one_and_leaves_a_wider_set_unbound(
+    refs: list[str], bound: str | None
+):
+    """A wider set is read under its refs' scope (`pinned_provenance_scope`) and elects
+    among them, so it binds no ref for selection."""
+    identity = {
+        "identity_version": "spec1",
+        "shape": {"kind": "stat_var", "id": "MalariaGrantDisbursements"},
+        "slots": [],
+        "entities": {},
+        "facets": {"provenance": {"state": "set", "refs": refs}},
+        "requested_window": {"kind": "all"},
+    }
+
+    request = to_materialisation_request(identity, shape=_SHAPE, code_index=get_index())
+
+    binding = request.facet_bindings.get("provenance")
+    assert (None if binding is None else (binding.state, binding.ref)) == (
+        None if bound is None else ("bound", bound)
+    )
+    assert provenance_pin(identity) == frozenset(refs)
 
 
 def test_to_materialisation_request_translates_an_axis_alias_entity_role_to_the_declared_role():

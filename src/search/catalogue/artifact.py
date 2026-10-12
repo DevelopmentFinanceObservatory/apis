@@ -67,8 +67,19 @@ class YearRange(_Model):
 class AidCounts(_Model):
     """Counts over the coverage index's rows of the declared datasets."""
 
-    donors: int = Field(description="distinct donors: countries, multilaterals and donor groups")
-    recipients: int = Field(description="distinct recipients, regions included")
+    donors: int = Field(
+        description=(
+            "distinct donors: countries and organisations, leaving out the parties that total "
+            "other donors (DAC countries, the G7)"
+        )
+    )
+    recipients: int = Field(
+        description=(
+            "distinct recipients: countries, organisations and the residuals no country holds "
+            "(Africa, unallocated by country), leaving out the parties that total other "
+            "recipients (Africa, Total)"
+        )
+    )
     years: YearRange | None = Field(description="the years with aid data; null when none")
 
 

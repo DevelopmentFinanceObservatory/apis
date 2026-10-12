@@ -37,7 +37,7 @@ def test_artifact_file_name_derives_the_extension_from_each_known_media_type(
         content_version=_CRS_CV,
         media_type=media_type,
         rendering={"format": "csv", "bundle": media_type == "application/zip"},
-        statistics=False,
+        kind=None,
     )
 
     assert got == file_name
@@ -52,7 +52,7 @@ def test_artifact_file_name_dates_a_version_by_its_utc_day() -> None:
         content_version=_CRS_CV,
         media_type="text/csv",
         rendering={"format": "csv", "bundle": False},
-        statistics=False,
+        kind=None,
     )
 
     assert got == "dfo_oecd-creditor-reporting-system_2026-10-04_5c9dfd.csv"
@@ -66,7 +66,7 @@ def test_artifact_file_name_refuses_an_unknown_media_type() -> None:
             content_version=_CRS_CV,
             media_type="application/pdf",
             rendering={},
-            statistics=False,
+            kind=None,
         )
 
 

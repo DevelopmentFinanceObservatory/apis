@@ -203,6 +203,104 @@ def test_a_node_is_read_alone_on_its_role() -> None:
     assert _settle(assignment, _subject_holds(_KEN)) == {"observationAbout": (_GHA, _KEN, _TZA)}
 
 
+# A group's published total.
+
+_FRANCE = PlaceSet(name="France", kind="place", node=PlaceNode(_FRA, "Country"))
+_AFRICA_TOTAL = dataclasses.replace(_AFRICA, total="DACAfrica")
+_G7_TOTAL = PlaceSet(
+    name="G7",
+    kind="group",
+    node=None,
+    members=(_DEU, _FRA),
+    member_type="Country",
+    total="GroupOfSeven",
+)
+
+
+def _continent_not_admitted(_key: str, graph_type: str) -> bool:
+    return graph_type != "Continent"
+
+
+@pytest.mark.parametrize(
+    ("rows", "admits", "expected"),
+    [
+        pytest.param(
+            [(_FRA, "DACAfrica"), (_FRA, _KEN)],
+            _continent_not_admitted,
+            ("DACAfrica",),
+            id="the-dataset-publishes-the-total",
+        ),
+        pytest.param(
+            [(_FRA, _KEN)],
+            _continent_not_admitted,
+            (_GHA, _KEN, _TZA),
+            id="the-dataset-publishes-no-total",
+        ),
+        pytest.param(
+            [(_FRA, "africa"), (_FRA, "DACAfrica")],
+            _admits_every_type,
+            ("africa",),
+            id="the-node-is-tried-before-the-total",
+        ),
+    ],
+)
+def test_a_group_binds_its_total_only_where_the_dataset_publishes_it(
+    rows, admits, expected
+) -> None:
+    """A group whose node no flow role admits reads its total when the Spec's own read holds
+    data there, and its members otherwise."""
+    assignment = PlaceAssignment(sets={"origin": (_FRANCE,), "destination": (_AFRICA_TOTAL,)})
+
+    settled = _settle(assignment, _flow_holds(*rows), admits=admits)
+
+    assert settled == {"origin": (_FRA,), "destination": expected}
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected"),
+    [
+        pytest.param(
+            [("GroupOfSeven", "DACAfrica"), (_FRA, _KEN)],
+            {"origin": ("GroupOfSeven",), "destination": ("DACAfrica",)},
+            id="both-totals-together",
+        ),
+        pytest.param(
+            [("GroupOfSeven", _KEN)],
+            {"origin": ("GroupOfSeven",), "destination": (_GHA, _KEN, _TZA)},
+            id="a-donor-total-to-recipient-members",
+        ),
+    ],
+)
+def test_two_groups_read_their_totals_together(rows, expected) -> None:
+    assignment = PlaceAssignment(sets={"origin": (_G7_TOTAL,), "destination": (_AFRICA_TOTAL,)})
+
+    assert _settle(assignment, _flow_holds(*rows), admits=_continent_not_admitted) == expected
+
+
+def test_a_group_asked_for_its_members_reads_no_total() -> None:
+    def unread(_places: PlaceLists) -> bool:
+        raise AssertionError("no read decides a set asked for its members")
+
+    assignment = PlaceAssignment(
+        sets={"origin": (_FRANCE,), "destination": (_AFRICA_TOTAL,)},
+        members_asked=frozenset({place_key(_AFRICA_TOTAL)}),
+    )
+
+    assert _settle(assignment, unread, admits=_continent_not_admitted) == {
+        "origin": (_FRA,),
+        "destination": (_GHA, _KEN, _TZA),
+    }
+
+
+def test_a_subject_reads_no_total() -> None:
+    """A total is a party of a flow, so a subject role never binds it."""
+    assignment = PlaceAssignment(sets={"observationAbout": (_AFRICA_TOTAL,)})
+
+    settled = _settle(assignment, _subject_holds("DACAfrica", _KEN), admits=_continent_not_admitted)
+
+    assert settled == {"observationAbout": (_GHA, _KEN, _TZA)}
+
+
 # Sets with one reading.
 
 

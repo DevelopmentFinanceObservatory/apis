@@ -20,7 +20,7 @@ import pyarrow as pa
 import pyarrow.compute as pc
 from dfo_frame_grammar import Frame
 
-from materialise.enrichment import ENRICHMENT_PROPERTIES, EnrichmentLookup
+from materialise.enrichment import ENRICHMENT_FIELDS, EnrichmentLookup
 from materialise.errors import MaterialisationUsageError
 from materialise.reshape import (
     SUPPORTED_ENRICHMENTS,
@@ -610,7 +610,7 @@ def _enrichment_coverage_for_column(
         return ()
 
     coverage: list[EnrichmentCoverage] = []
-    for field_name in ENRICHMENT_PROPERTIES:
+    for field_name in ENRICHMENT_FIELDS:
         if field_name not in SUPPORTED_ENRICHMENTS:
             continue
         covered_refs = [ref for ref in refs if field_name in resolved.get(ref, {})]

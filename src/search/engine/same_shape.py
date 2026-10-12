@@ -11,6 +11,7 @@ import dataclasses
 from collections.abc import Callable, Mapping, Sequence
 from typing import TYPE_CHECKING
 
+from code_index.shared import get_index
 from search.engine.config import settings
 from search.engine.region.codes import ELECTED_SHAPE_NO_DATA
 from search.engine.region.facet_probe import FacetProbe, merge_facet_probes
@@ -89,6 +90,19 @@ def five_tuple_key(
         sh.measurement_denominator.dcid if sh.measurement_denominator else None,
         sh.measurement_denominator_unresolved,
     )
+
+
+def fold_key(region: RegionResult) -> tuple[object, ...]:
+    """Return the key that decides which definite regions fold into one answer.
+
+    Regions fold when they share a five-tuple (`five_tuple_key`). A region compared with
+    the others (`RegionResult.separate`) keys on its own position, so it never folds and
+    no other region folds into it. `collapse_same_shape` and the combiner's grouping
+    (`conjoin._group_definite_regions`) both group by this key.
+    """
+    if region.separate:
+        return ("separate", region.earliest_index)
+    return five_tuple_key(region.spec)
 
 
 def _slot_key_t(slot) -> tuple[str, str | None]:
@@ -249,19 +263,41 @@ def _union_equivalent_readings(group: list[RegionResult]) -> list[Spec] | None:
 
 
 def _union_query_qualifiers(group: list[RegionResult]) -> list[ResolvedQualifier]:
-    """Union qualifiers by text in group order.
+    """Union qualifier records in group order, one per text, offsets, operation and
+    selected codes.
 
-    A term's disposition can vary with each member's shape; first-seen keeps
-    the base member's verdict when several members report it.
+    Records alike in those five are one record, and first-seen keeps the base member's
+    verdict. Records of one text that sit at different offsets, or that a union
+    or refinement joined to different codes (`ResolvedQualifier.selected`), all survive,
+    so the merged trace keeps every member's operation.
     """
-    seen: set[str] = set()
+    seen: set[tuple[object, ...]] = set()
     merged: list[ResolvedQualifier] = []
     for r in group:
         for q in r.spec.resolved.trace.query_qualifiers:
-            if q.text not in seen:
-                seen.add(q.text)
+            key = (q.text, q.start, q.end, q.operation, tuple(ref.dcid for ref in q.selected))
+            if key not in seen:
+                seen.add(key)
                 merged.append(q)
     return merged
+
+
+def _simplify_merged_union(refs: list[GraphRef]) -> list[GraphRef]:
+    """Drop each of `refs` that descends from another of them.
+
+    A fold reads its members as a union, as the bind of one part reads codes a union
+    connective joins (`phase_rank_bind._combine_matches`): HIV/AIDS (13040) folded with
+    reproductive health (130) binds 130, since 130 already holds 13040. Codes that do not
+    nest keep their own values, so health (120) and HIV/AIDS (13040) stay a set.
+    """
+    index = get_index()
+    nested = {
+        descendant
+        for ref in refs
+        for descendant in index.descendants(ref.dcid)
+        if descendant != ref.dcid
+    }
+    return [ref for ref in refs if ref.dcid not in nested]
 
 
 def _union_open_axis_facts(group: list[RegionResult]) -> tuple[OpenAxisFact, ...]:
@@ -444,6 +480,7 @@ def _merge_resolved_facets(
                 source=shared.source,
                 data_commons=shared.data_commons,
                 currency=shared.currency,
+                account=shared.account,
             )
         else:
             result[axis] = ResolvedFacet(basis=basis, selection="per_series")
@@ -540,7 +577,8 @@ def collapse_same_shape(
     set_ref_for: Callable[[list[str]], GraphRef | None] | None = None,
     facet_options_for: FacetOptionsReader | None = None,
 ) -> tuple[list[RegionResult], list[tuple[str | None, int]]]:
-    """Merge definite regions with the same five-tuple when their identities align.
+    """Merge definite regions with the same fold key (`fold_key`) when their identities
+    align.
 
     A multi-member group must share its window, scope, identity facets,
     ``unit_lexicon_version``, ``declaration_version``, and request-bound facet
@@ -551,7 +589,9 @@ def collapse_same_shape(
     - No binding differs and at least one unbound slot appears in only some
       members. Union the slot rosters without adding a ``BindingSet``.
     - Exactly one slot differs, every member binds it to a value, at least two
-      distinct refs remain, and entity buckets meet the dimensionality rule.
+      distinct refs remain, and entity buckets meet the dimensionality rule. The
+      refs drop each one nested under another (`_simplify_merged_union`), and one ref
+      left binds a value.
 
     A ``where`` difference may widen one identity-entity bucket. Roster-only
     and other slot merges require identical buckets; otherwise the merge would
@@ -571,8 +611,7 @@ def collapse_same_shape(
 
     groups: dict[tuple, list[RegionResult]] = {}
     for r in definite:
-        k = five_tuple_key(r.spec)
-        groups.setdefault(k, []).append(r)
+        groups.setdefault(fold_key(r), []).append(r)
 
     effective: list[RegionResult] = []
     residual_texts: list[tuple[str | None, int]] = []
@@ -687,7 +726,9 @@ def _build_merged_slots(
 
     A ``None`` key unions unbound slots after the base roster. Otherwise every
     member must bind the differing slot to a value with at least two distinct
-    refs. ``set_ref_for`` labels only what/how sets because ``isPartOf`` also
+    refs. Each ref nested under another drops (`_simplify_merged_union`). One ref left
+    binds a ``BindingValue``, more bind a ``BindingSet``.
+    ``set_ref_for`` labels only what/how sets because ``isPartOf`` also
     represents geographic containment.
     """
     if diff_key is None:
@@ -721,27 +762,25 @@ def _build_merged_slots(
             diff_refs.append(ref)
     if len(diff_refs) < 2:
         raise _RefuseMerge
+    diff_refs = _simplify_merged_union(diff_refs)
 
     # Slot values may be enum values, so retain the source value_kind.
     src_slot = next(s for s in group[0].spec.resolved.slots if _slot_key_t(s) == diff_key)
     assert isinstance(src_slot.binding, BindingValue)  # all_value guarantees this
     source_vk = src_slot.binding.value.value_kind
-    merged_set_ref: GraphRef | None = None
-    if diff_key[0] in ("what", "how") and set_ref_for is not None:
-        merged_set_ref = set_ref_for([r.dcid for r in diff_refs])
-
-    merged_slots = []
-    for sl in base_spec.resolved.slots:
-        if _slot_key_t(sl) == diff_key:
-            set_values = [SlotValue(ref=ref, value_kind=source_vk) for ref in diff_refs]
-            merged_slots.append(
-                sl.model_copy(
-                    update={"binding": BindingSet(values=set_values, set_ref=merged_set_ref)}
-                )
-            )
-        else:
-            merged_slots.append(sl)
-    return merged_slots
+    values = [SlotValue(ref=ref, value_kind=source_vk) for ref in diff_refs]
+    binding: BindingValue | BindingSet
+    if len(values) == 1:
+        binding = BindingValue(value=values[0])
+    else:
+        merged_set_ref: GraphRef | None = None
+        if diff_key[0] in ("what", "how") and set_ref_for is not None:
+            merged_set_ref = set_ref_for([r.dcid for r in diff_refs])
+        binding = BindingSet(values=values, set_ref=merged_set_ref)
+    return [
+        sl.model_copy(update={"binding": binding}) if _slot_key_t(sl) == diff_key else sl
+        for sl in base_spec.resolved.slots
+    ]
 
 
 def _merge_stat_vars(

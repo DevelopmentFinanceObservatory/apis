@@ -14,9 +14,17 @@ from datasets_api.config import (
     DatasetsConfigError,
     DatasetsSettings,
 )
+from datasets_api.operation_store import NullOperationStore
+from datasets_api.operations.task_client import FakeTaskClient
+from datasets_api.versions import NullHeadWriter, NullVersionRecordWriter
 from spec_registry import LiveSpecRegistry
+from spec_registry.reader import LiveSpecReader
 
+from ._app_factories import offline_recipe_stores
+from ._artifact_doubles import FakeArtifactStore
+from ._snapshot_doubles import FakeSnapshotReader
 from .conftest import FakeDatasetStore
+from .test_pin_door import FakeArtifactReferenceWriter
 
 
 def test_sync_budget_rows_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -126,15 +134,28 @@ def test_datasets_settings_from_env_is_actually_invoked_by_the_surfaces_own_life
 ) -> None:
     """Proves `DatasetsSettings.from_env()` is live wiring, not a call site
     that exists in prose only: a `from_env` that raises must fail the
-    surface's own lifespan entry, the same way a real required setting
-    added to `DatasetsSettings` would.
+    surface's lifespan entry once it builds a live client, the same way a
+    real required setting added to `DatasetsSettings` would. Every store is
+    injected, so the live graph client is the first thing built.
     """
 
     def _raise() -> DatasetsSettings:
         raise DatasetsConfigError("missing required env var DATASETS_SOMETHING_FUTURE")
 
     monkeypatch.setattr(DatasetsSettings, "from_env", staticmethod(_raise))
-    surface = datasets_surface(registry=LiveSpecRegistry(store=FakeDatasetStore()))
+    store = FakeDatasetStore()
+    surface = datasets_surface(
+        registry=LiveSpecRegistry(store=store),
+        spec_reader=LiveSpecReader(store=store),
+        snapshot_reader=FakeSnapshotReader(),
+        version_writer=NullVersionRecordWriter(),
+        head_writer=NullHeadWriter(),
+        operation_store=NullOperationStore(),
+        reference_writer=FakeArtifactReferenceWriter(),
+        artifact_store=FakeArtifactStore(),
+        task_client=FakeTaskClient(),
+        **offline_recipe_stores(),
+    )
 
     async def _enter_and_exit_lifespan() -> None:
         async with surface.lifespan(None):

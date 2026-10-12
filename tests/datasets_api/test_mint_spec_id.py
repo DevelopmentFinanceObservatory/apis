@@ -5,18 +5,16 @@ materialisation are real; graph, SDMX, and artifact storage are faked.
 
 from __future__ import annotations
 
-import dataclasses
-import threading
-
 import httpx
 import pytest
 
+import datasets_api.doors.mint as mint_module
 from code_index.query import CodeIndex
 from code_index.types import IndexStamp
 from datasets_api.adapter import build_identity_document
 from datasets_api.config import DatasetsBuildSettings
+from datasets_api.mint_deps import MintDeps
 from datasets_api.mint_models import Scope
-from datasets_api.revision import SentinelRevisionReader
 from datasets_api.shape import resolve_shape
 from datasets_api.surgery import apply_scope_surgery
 from dc_sdmx import SdmxClient
@@ -24,7 +22,7 @@ from dfo_platform.named import MAX_VALUE_CHARS, cut
 from graph_generation import FakeGeneration
 from materialise.graph import Facet, FacetDefaultPolicy
 from materialise.rate_tables import RateTableCache
-from series_coverage.schema import FacetMetadata, RoleNames
+from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
 from spec_registry.identity import recompute_identity
 from spec_registry.reader import LiveSpecReader
@@ -139,9 +137,9 @@ def _coverage_service(
 ) -> FakeCoverageService:
     """Builds one 2015 coverage row per StatVar for the requested recipient."""
     index = build_coverage_index(
-        [(stat_var, "facet1", "country/USA", recipient, [2015]) for stat_var in stat_vars],
+        [(stat_var, "facet1", ABSENT_ENTITY, recipient, [2015]) for stat_var in stat_vars],
         role_names={
-            stat_var: RoleNames(donor="provider", recipient="recipient") for stat_var in stat_vars
+            stat_var: RoleNames(donor=None, recipient="recipient") for stat_var in stat_vars
         },
         facet_metadata={
             "facet1": FacetMetadata(
@@ -178,7 +176,6 @@ def _client(
         spec_reader=LiveSpecReader(store=store),
         graph=graph if graph is not None else _graph(),
         sdmx=sdmx,
-        revision_reader=SentinelRevisionReader(),
         artifact_store=artifact_store,
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),
@@ -504,7 +501,6 @@ def test_an_unregistered_described_arm_spec_id_with_a_sidecar_mints_every_enumer
         sdmx=SdmxClient(
             base_url=_BASE_URL, transport=_described_two_member_sdmx_transport(sdmx_requests)
         ),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),
@@ -577,7 +573,6 @@ def test_a_graph_write_between_two_mints_reaches_the_next_graph_generation():
         sdmx=SdmxClient(
             base_url=_BASE_URL, transport=_described_two_member_sdmx_transport(sdmx_requests)
         ),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),
@@ -624,30 +619,30 @@ def test_a_graph_write_between_two_mints_reaches_the_next_graph_generation():
     assert mint_refs() == {_ODA_GRANTS_REF, _ODA_LOANS_REF}
 
 
-def test_the_mint_doors_own_deps_are_built_once_not_rebuilt_per_request(monkeypatch):
-    """Each request reuses the same `MintDeps`."""
+def test_every_mint_shares_the_surfaces_process_level_dependencies(monkeypatch):
+    """Each request's `MintDeps` wraps the one graph, SDMX client, artifact store, enrichment
+    cache, and materialise semaphore the surface built."""
     store = FakeDatasetStore()
     client = _client(artifact_store=FakeArtifactStore(), store=store)
     base = client.post("/api/datasets", json=_STATVAR_SET_BODY)
     assert base.status_code == 200, base.text
     spec_id = base.json()["definition"]["spec_id"]
+    views: list[MintDeps] = []
+    real_mint_deps = mint_module.mint_deps
 
-    seen_base_ids: list[int] = []
-    real_replace = dataclasses.replace
-    lock = threading.Lock()
+    def _spy(deps, **kwargs):
+        view = real_mint_deps(deps, **kwargs)
+        views.append(view)
+        return view
 
-    def _spy_replace(obj, **changes):
-        with lock:
-            seen_base_ids.append(id(obj))
-        return real_replace(obj, **changes)
-
-    monkeypatch.setattr("datasets_api.doors.mint.replace", _spy_replace)
+    monkeypatch.setattr(mint_module, "mint_deps", _spy)
 
     client.post("/api/datasets", json=_spec_id_body(spec_id))
     client.post("/api/datasets", json=_spec_id_body(spec_id))
 
-    assert len(seen_base_ids) == 2
-    assert seen_base_ids[0] == seen_base_ids[1]
+    first, second = views
+    for name in ("graph", "sdmx", "artifact_store", "enrichment", "materialise_semaphore"):
+        assert getattr(first, name) is getattr(second, name), name
 
 
 def test_a_malformed_stat_var_ref_refuses_member_not_resolvable_not_a_500():
@@ -818,7 +813,6 @@ def test_a_miss_with_a_multi_member_sidecar_checks_scope_against_every_enumerate
         sdmx=SdmxClient(
             base_url=_BASE_URL, transport=httpx.MockTransport(lambda request: httpx.Response(200))
         ),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=FakeArtifactStore(),
         snapshot_reader=FakeSnapshotReader(),
         reference_writer=FakeArtifactReferenceWriter(),

@@ -35,6 +35,7 @@ class TestNumericBounds:
             ("SEARCH_MAX_QUERY_CHARS", "0"),
             ("SEARCH_REQUEST_TIMEOUT_S", "0"),
             ("SEARCH_REQUEST_TIMEOUT_S", "-1"),
+            ("SEARCH_FINALISE_GRACE_S", "0"),
             ("SEARCH_RESUBMIT_FULL_READ_TIMEOUT_S", "30"),
             ("SEARCH_RESUBMIT_SUBJECT_CEILING", "0"),
             ("SEARCH_DETECT_K", "0"),

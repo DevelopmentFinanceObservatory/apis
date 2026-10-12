@@ -47,7 +47,13 @@ from search.engine.role_text import DoorRole
 from search.engine.shape import ShapeDraft
 from search.models import BaseIdentity, EntityGroup, ResubmitIdentityPayload
 from series_coverage.shared import CoverageSnapshot
-from statvar_members import Member, MemberEnumerator, MemberGroup, five_tuple_from_identity
+from statvar_members import (
+    DEFAULT_MEMBER_CAP,
+    Member,
+    MemberEnumerator,
+    MemberGroup,
+    five_tuple_from_identity,
+)
 from tests.datasets_api._graph_doubles import FakeMintGraphReader, _FakeSubjectPage
 from tests.datasets_api._member_bounds import mint_bounds
 from tests.engine._builders import bound_place_context, materialise_alternates, subject_place_roles
@@ -462,6 +468,8 @@ def test_a_resubmit_whose_walk_fails_answers_a_retryable_problem(walk, status, c
 
 class _FullReadEnumerator:
     """Records each walk's arguments and answers with a family its full read settled."""
+
+    member_cap = DEFAULT_MEMBER_CAP
 
     def __init__(self) -> None:
         self.calls: list[dict] = []

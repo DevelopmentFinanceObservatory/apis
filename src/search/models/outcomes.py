@@ -20,6 +20,7 @@ from .vocab import (
     NoDataGate,
     NoDataReason,
     Ordering,
+    SourceRefKind,
 )
 
 # ---------------------------------------------------------------------------
@@ -120,6 +121,34 @@ class AmbiguousEntityGroup(StrictModel):
     )
 
 
+class AmbiguousSourceCandidate(StrictModel):
+    """One reading of an ambiguous source wording -- one entry of an
+    AmbiguousSourceGroup's own `candidates`."""
+
+    ref: str = Field(
+        description="the source's reference, which a client posts back as a SourceMention's ref"
+    )
+    label: str = Field(description="the source's display name in the origin catalogue")
+    kind: SourceRefKind = Field(
+        description="what the reference names: a provenance, a catalogue Dataset, or a publishing Source"
+    )
+
+
+class AmbiguousSourceGroup(StrictModel):
+    """One source wording that names two or more unrelated admitted sources, paired with
+    the sources it could name -- one entry of NoData.ambiguous_sources."""
+
+    text: str = Field(
+        description="the ambiguous wording; equals some restatement.sources[i].text on the part"
+    )
+    candidates: list[AmbiguousSourceCandidate] = Field(
+        description=(
+            "the admitted sources this wording names, two or more: provenances first, "
+            "then datasets and sources"
+        )
+    )
+
+
 class UnitAlternative(StrictModel):
     """One currency a unit_not_resolved refusal offers in place of the unit
     phrase it could not resolve -- one entry of NoData.unit_alternatives."""
@@ -201,7 +230,7 @@ class NoData(StrictModel):
             "derived from reason, never independently settable: "
             '"entity_not_resolved", "entity_ambiguous", "entity_set_too_large", '
             '"entity_role_not_admitted", "variable_not_resolved", "role_not_resolved", '
-            'and "unit_not_resolved" are '
+            '"source_not_resolved", "source_ambiguous", and "unit_not_resolved" are '
             '"unresolved" (the request could not be read into the graph); every other '
             'code is "absent" (the read request names a place holding nothing)'
         ),
@@ -315,6 +344,26 @@ class NoData(StrictModel):
             "wordings and candidate names for people, but clients must not parse it."
         ),
     )
+    source_terms: list[str] = Field(
+        default_factory=list,
+        description=(
+            "the source wordings responsible for a source-resolution outcome, in query "
+            "order: every included wording that matched no admitted source for "
+            "source_not_resolved, "
+            "every ambiguous wording for source_ambiguous. Empty for every other no_data "
+            "reason. rendered_sentence may quote the same wording for people, but clients "
+            "must not parse it."
+        ),
+    )
+    ambiguous_sources: list[AmbiguousSourceGroup] = Field(
+        default_factory=list,
+        description=(
+            "every ambiguous source wording responsible for a source_ambiguous outcome, in "
+            "query order, each paired with the admitted sources it could name. Empty for "
+            "every other no_data reason. A client posts the chosen candidate's ref on "
+            "that mention of data_query and posts the part back."
+        ),
+    )
     unit_alternatives: list[UnitAlternative] | None = Field(
         default=None,
         description=(
@@ -333,9 +382,12 @@ class NoData(StrictModel):
             "outcome, in query order: every entry from "
             "flagged_match.resolved.trace.query_qualifiers whose disposition is not "
             '"bound" ("unbound": a named code row exists but no final binding covers '
-            'it; "no_vocabulary": the text names no code at all). Empty for every '
-            "other no_data reason. This structured list is the client-facing source "
-            "of which terms went unrecognised, alongside each one's own disposition; "
+            'it; "no_vocabulary": the text names no code at all), then, for a part '
+            "naming or leaving out sources, each source it could not bind, an "
+            "\"unbound\" entry under the source's label whose named holds the source's "
+            "references. Empty for every other no_data reason. This structured list "
+            "is the client-facing source of which terms went unrecognised, alongside "
+            "each one's own disposition; "
             "rendered_sentence may quote the same wording for people, but clients "
             "must not parse it."
         ),
@@ -344,12 +396,14 @@ class NoData(StrictModel):
         default=None,
         description=(
             "the parsed form of this part, one part long, set when reason is "
-            "entity_ambiguous: its variable text, entities with role_text, time, unit "
-            "and source text, and operations, with every entity "
-            "that resolved to one graph node pinned to its dcid and each ambiguous "
-            "wording left unpinned. A named group stays unpinned too, so it resolves "
-            "to the same members again. A client pins the candidate the user picks "
-            "from ambiguous_entities and posts the part back, through the parsed door "
+            "entity_ambiguous or source_ambiguous: its variable text, entities with "
+            "role_text, time, unit, sources, and operations. On entity_ambiguous every "
+            "entity that resolved to one graph node is pinned to its dcid and each "
+            "ambiguous wording left unpinned. A named group stays unpinned too, so it "
+            "resolves to the same members again. On source_ambiguous every source "
+            "mention that resolved carries its ref and each ambiguous wording carries "
+            "none. A client pins the candidate the user picks from ambiguous_entities or "
+            "ambiguous_sources and posts the part back, through the parsed door "
             "or as a dataset_resubmit parsed entry. It is set when the part has no "
             "restatement too: an entity whose direction the question leaves unnamed "
             "carries no role_text. Null for every other no_data reason, and when the "

@@ -44,6 +44,7 @@ from origin_catalogue.context import (
     note_un_unserved,
     record_un_read_failure,
     recording_un_blocked_places,
+    scoped_reads,
     unbind_catalogue,
 )
 from origin_catalogue.origins import BASE, DFO, ORIGINS, UN_SYSTEM, DataCommons, OriginId
@@ -130,5 +131,6 @@ __all__ = [
     "record_un_read_failure",
     "recording_un_blocked_places",
     "reset_catalogue_service",
+    "scoped_reads",
     "unbind_catalogue",
 ]

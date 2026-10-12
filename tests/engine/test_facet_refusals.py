@@ -486,6 +486,74 @@ def test_no_candidate_facets_at_all_returns_none():
     assert result is None
 
 
+def test_candidate_refusal_defaults_provenance_alternatives_to_its_candidate_view():
+    """The optional lifetime view must not empty legacy source alternatives."""
+    result = candidate_facet_refusal(
+        FakeGraph(),
+        {
+            _SV: [
+                Facet(
+                    earliest_date="2015",
+                    latest_date="2020",
+                    obs_count=3,
+                    provenance_id="src/A",
+                )
+            ]
+        },
+        {"provenance": IdentityBindingValue(ref="src/B")},
+        deadline=None,
+    )
+    assert result is not None
+    assert result.pointer == "/input/facets/provenance"
+    assert [alternative.ref for alternative in result.alternatives or []] == ["src/A"]
+
+
+@pytest.mark.parametrize(
+    ("axis", "value"),
+    [
+        ("measurementMethod", "GrossDisbursement"),
+        ("unit", "CurrencyUSD"),
+    ],
+)
+def test_candidate_refusal_uses_lifetime_source_and_windowed_other_axis(axis, value):
+    """A source pin remains valid outside the window, but its joint method/unit pin does not."""
+    lifetime = {
+        _SV: [
+            Facet(
+                earliest_date="2015",
+                latest_date="2020",
+                obs_count=3,
+                provenance_id="src/A",
+                measurement_method="GrossDisbursement",
+                unit="CurrencyUSD",
+            )
+        ]
+    }
+    bindings = {
+        "provenance": IdentityBindingValue(ref="src/A"),
+        axis: IdentityBindingValue(ref=value),
+    }
+    assert (
+        candidate_facet_refusal(
+            FakeGraph(),
+            {_SV: []},
+            {"provenance": bindings["provenance"]},
+            provenance_facets_by_sv=lifetime,
+            deadline=None,
+        )
+        is None
+    )
+    refusal = candidate_facet_refusal(
+        FakeGraph(),
+        {_SV: []},
+        bindings,
+        provenance_facets_by_sv=lifetime,
+        deadline=None,
+    )
+    assert refusal is not None
+    assert refusal.pointer == f"/input/facets/{axis}"
+
+
 def test_empty_sv_or_entities_returns_none():
     graph = _graph([{"earliestDate": "2015", "latestDate": "2020", "obsCount": 3}])
     binding = {"measurementMethod": IdentityBindingValue(ref="Commitment")}

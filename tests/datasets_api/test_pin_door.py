@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import threading
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
@@ -13,31 +13,32 @@ import pytest
 from artifact_store import Tier
 from dataset_store.snapshot import (
     WORKING_TIER_RETENTION,
+    ArtifactNotFound,
     ArtifactReferenceWriter,
     Revocation,
+    SnapshotNotFound,
     SnapshotRevoked,
-    servable_location_of_media_type,
 )
 from datasets_api import door_executor
 from datasets_api.codes_snapshot import (
     ArtifactExpired,
-    ArtifactNotFound,
-    SnapshotNotFound,
     SpecNotFound,
 )
-from datasets_api.config import DatasetsConfigError
-from datasets_api.doors import pin as pin_door
+from datasets_api.config import DatasetsBuildSettings
 from datasets_api.doors.pin import PinBudgetExhausted, build_pin_door, pin_artifact
 from datasets_api.reference_store import (
     ARTIFACT_REFERENCE_WRITE_FAILED_MARKER,
     PIN_REFERENCE_KIND,
 )
+from datasets_api.render import servable_frame_location
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from materialise.formats import FRAME1_MEDIA_TYPE
 from spec_registry import LiveSpecRegistry
+from spec_registry.errors import SpecRegistryStoreError
 
 from ._app_factories import make_client
 from ._artifact_doubles import FakeArtifactStore
+from ._deps_doubles import fake_deps_cell
 from ._executor_doubles import BrokenSubmitExecutor
 from ._snapshot_doubles import (
     FakeSnapshotReader,
@@ -94,13 +95,15 @@ class FakeArtifactReferenceWriter(ArtifactReferenceWriter):
         content_version: str,
         reference_kind: str,
         now: datetime,
+        revoked_under: Sequence[str] = (),
     ) -> datetime:
-        if (subject_id, content_version) in self.revoked:
-            raise SnapshotRevoked(
-                id=subject_id,
-                content_version=content_version,
-                reason=self.revoked[(subject_id, content_version)],
-            )
+        for subject in (subject_id, *revoked_under):
+            if (subject, content_version) in self.revoked:
+                raise SnapshotRevoked(
+                    id=subject_id,
+                    content_version=content_version,
+                    reason=self.revoked[(subject, content_version)],
+                )
         if (subject_id, content_version, artifact_digest) in self.unlinked:
             raise ArtifactNotFound(
                 id=subject_id, content_version=content_version, artifact_digest=artifact_digest
@@ -373,14 +376,22 @@ def test_pinning_an_already_pinned_artifact_does_not_re_copy():
     assert store.copy_calls == 0
 
 
-def _frame1_location(store: FakeArtifactStore, *, tier: Tier = Tier.working, stored_at=_NOW):
-    return _store_and_locate(
-        store,
+_FRAME_KINDS = {
+    "canonical": (b"PAR1-canonical-frame", {"format": "frame"}, "application/vnd.apache.parquet"),
+    "frame1": (
         b'{"frame_version":1,"columns":[],"rows":[]}',
-        tier=tier,
-        stored_at=stored_at,
-        rendering={"format": "frame1"},
-        media_type=FRAME1_MEDIA_TYPE,
+        {"format": "frame1"},
+        FRAME1_MEDIA_TYPE,
+    ),
+}
+
+
+def _frame_location(
+    store: FakeArtifactStore, *, kind: str = "canonical", tier: Tier = Tier.working, stored_at=_NOW
+):
+    data, rendering, media_type = _FRAME_KINDS[kind]
+    return _store_and_locate(
+        store, data, tier=tier, stored_at=stored_at, rendering=rendering, media_type=media_type
     )
 
 
@@ -414,10 +425,13 @@ def _pin_parquet(
     )
 
 
-def test_pinning_a_parquet_artifact_keeps_the_frame1_servable_past_working_tier_expiry():
+@pytest.mark.parametrize("kind", sorted(_FRAME_KINDS))
+def test_pinning_a_parquet_artifact_keeps_the_stored_frame_servable_past_working_tier_expiry(
+    kind: str,
+):
     store = FakeArtifactStore()
     parquet = _parquet_location(store)
-    frame = _frame1_location(store)
+    frame = _frame_location(store, kind=kind)
     reader = StoreBackedSnapshotReader(
         versions={("spec_a", "cv1"): _version()},
         locations={("spec_a", "cv1"): [parquet, frame]},
@@ -429,20 +443,18 @@ def test_pinning_a_parquet_artifact_keeps_the_frame1_servable_past_working_tier_
 
     assert pinned_at == _NOW
     later = _NOW + WORKING_TIER_RETENTION + timedelta(days=1)
-    located = servable_location_of_media_type(
-        reader.read_artifact_locations("spec_a", "cv1"), media_type=FRAME1_MEDIA_TYPE, now=later
-    )
+    located = servable_frame_location(reader.read_artifact_locations("spec_a", "cv1"), now=later)
     assert located is not None
     assert (located.artifact_digest, located.tier) == (frame.artifact_digest, Tier.pinned.value)
     frame_key = (_PRINCIPAL, frame.artifact_digest, "spec_a", "cv1", PIN_REFERENCE_KIND)
     assert writer.records[frame_key] == _NOW
 
 
-def test_re_pinning_an_already_pinned_artifact_pins_a_working_tier_frame1():
+def test_re_pinning_an_already_pinned_artifact_pins_a_working_tier_canonical_frame():
     """A share pinned before frame retention, or a retry after a partial failure, heals."""
     store = FakeArtifactStore()
     parquet = _parquet_location(store, tier=Tier.pinned)
-    frame = _frame1_location(store)
+    frame = _frame_location(store)
     reader = FakeSnapshotReader(
         versions={("spec_a", "cv1"): _version()},
         locations={("spec_a", "cv1"): [parquet, frame]},
@@ -456,14 +468,14 @@ def test_re_pinning_an_already_pinned_artifact_pins_a_working_tier_frame1():
     assert writer.records[frame_key] == _NOW
 
 
-@pytest.mark.parametrize("frame1", ["absent", "aged_out"])
-def test_a_version_without_a_servable_frame1_pins_the_named_artifact_alone(frame1: str):
+@pytest.mark.parametrize("frame", ["absent", "aged_out"])
+def test_a_version_without_a_servable_frame_pins_the_named_artifact_alone(frame: str):
     store = FakeArtifactStore()
     parquet = _parquet_location(store)
     locations = [parquet]
-    if frame1 == "aged_out":
+    if frame == "aged_out":
         long_ago = _NOW - WORKING_TIER_RETENTION - timedelta(days=1)
-        locations.append(_frame1_location(store, stored_at=long_ago))
+        locations.append(_frame_location(store, stored_at=long_ago))
     reader = FakeSnapshotReader(
         versions={("spec_a", "cv1"): _version()}, locations={("spec_a", "cv1"): locations}
     )
@@ -792,67 +804,32 @@ def test_pin_door_wire_maps_a_reference_writer_store_failure_to_retryable_503():
     assert body["retryable"] is True
 
 
-def test_construction_failure_returns_the_pool_borrow_before_propagating(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A config error returns the pool borrow opened for `spec_reader`."""
-    open_calls = 0
-    close_calls = 0
+class _StoreFaultSpecReader(FakeSpecReader):
+    """Raises `SpecRegistryStoreError` on the read that names a request's served ids."""
 
-    def _counting_shared_pool() -> object:
-        nonlocal open_calls
-        open_calls += 1
-        return object()
-
-    def _counting_close_shared_pool() -> None:
-        nonlocal close_calls
-        close_calls += 1
-
-    monkeypatch.setattr(pin_door, "shared_pool", _counting_shared_pool)
-    monkeypatch.setattr(pin_door, "close_shared_pool", _counting_close_shared_pool)
-    monkeypatch.setattr(pin_door, "LiveDatasetStore", lambda *, connections: object())
-
-    door = build_pin_door()  # every store dependency left uninjected
-
-    async def _enter() -> None:
-        async with door.lifespan(None):
-            pass  # pragma: no cover -- construction fails before this is reached
-
-    with pytest.raises(DatasetsConfigError):
-        asyncio.run(_enter())
-
-    assert open_calls == 1
-    assert close_calls == 1
+    def read_served_spec_ids(self, spec_id: str):
+        raise SpecRegistryStoreError("spec registry read failed")
 
 
-@pytest.mark.parametrize(
-    "uninjected_deps",
-    [
-        frozenset({"snapshot_reader"}),
-        frozenset({"reference_writer"}),
-        frozenset({"snapshot_reader", "reference_writer"}),
-    ],
-    ids=lambda deps: "uninjected_" + "_".join(sorted(deps)),
-)
-def test_build_refuses_to_start_with_only_some_dependencies_injected(
-    uninjected_deps: frozenset[str],
-) -> None:
-    """Partial injection fails in `build_pin_door`. All-`None` dependencies defer to lifespan."""
-    with pytest.raises(DatasetsConfigError) as excinfo:
-        build_pin_door(
-            spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
-            snapshot_reader=(
-                None if "snapshot_reader" in uninjected_deps else FakeSnapshotReader()
-            ),
-            artifact_store=FakeArtifactStore(),
-            reference_writer=(
-                None if "reference_writer" in uninjected_deps else FakeArtifactReferenceWriter()
-            ),
-            allowed_principals=frozenset({_PRINCIPAL}),
-        )
+def test_pin_door_wire_maps_a_spec_registry_store_failure_to_retryable_503():
+    """A registry store fault on the read that names the served ids answers retryable 503
+    through the composed `datasets_surface` classifier."""
+    client = make_client(
+        registry=LiveSpecRegistry(store=FakeDatasetStore()),
+        spec_reader=_StoreFaultSpecReader(),
+        pin_allowed_principals=frozenset({_PRINCIPAL}),
+    )
 
-    for dep in uninjected_deps:
-        assert dep in str(excinfo.value)
+    resp = client.post(
+        "/api/datasets/spec_a/cv1/pin",
+        json={"schema_version": 1, "artifact_digest": "sha256:aaa"},
+        headers={"x-dfo-principal": _PRINCIPAL},
+    )
+
+    assert resp.status_code == 503, resp.text
+    body = resp.json()
+    assert body["code"] == "service_unavailable"
+    assert body["retryable"] is True
 
 
 def test_backpressure_refuses_503_retryable_when_executor_is_already_at_capacity() -> None:
@@ -864,13 +841,18 @@ def test_backpressure_refuses_503_retryable_when_executor_is_already_at_capacity
     )
     blocking_writer = BlockingFakeArtifactReferenceWriter()
     door = build_pin_door(
-        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
-        snapshot_reader=reader,
-        artifact_store=store,
-        reference_writer=blocking_writer,
-        now=lambda: _NOW,
+        deps=fake_deps_cell(
+            settings=DatasetsBuildSettings.from_env().model_copy(
+                update={"read_max_concurrency": 1}
+            ),
+            spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+            snapshot_reader=reader,
+            artifact_store=store,
+            reference_writer=blocking_writer,
+            now=lambda: _NOW,
+        ),
+        settings=DatasetsBuildSettings.from_env().model_copy(update={"read_max_concurrency": 1}),
         allowed_principals=frozenset({_PRINCIPAL}),
-        pool_size=1,
     )
     client = make_client_for_door(door)
 
@@ -914,13 +896,18 @@ def test_broken_thread_pool_surfaces_as_internal_error_not_backpressure(
         locations={("spec_a", "cv1"): [location]},
     )
     door = build_pin_door(
-        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
-        snapshot_reader=reader,
-        artifact_store=store,
-        reference_writer=FakeArtifactReferenceWriter(),
-        now=lambda: _NOW,
+        deps=fake_deps_cell(
+            settings=DatasetsBuildSettings.from_env().model_copy(
+                update={"read_max_concurrency": 1}
+            ),
+            spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+            snapshot_reader=reader,
+            artifact_store=store,
+            reference_writer=FakeArtifactReferenceWriter(),
+            now=lambda: _NOW,
+        ),
+        settings=DatasetsBuildSettings.from_env().model_copy(update={"read_max_concurrency": 1}),
         allowed_principals=frozenset({_PRINCIPAL}),
-        pool_size=1,
     )
     client = make_client_for_door(door)
 
@@ -948,13 +935,16 @@ def _build_client(*, allowed_principals=frozenset({_PRINCIPAL}), reference_write
         locations={("spec_a", "cv1"): [location]},
     )
     door = build_pin_door(
-        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
-        snapshot_reader=reader,
-        artifact_store=store,
-        reference_writer=(
-            reference_writer if reference_writer is not None else FakeArtifactReferenceWriter()
+        deps=fake_deps_cell(
+            spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+            snapshot_reader=reader,
+            artifact_store=store,
+            reference_writer=reference_writer
+            if reference_writer is not None
+            else FakeArtifactReferenceWriter(),
+            now=lambda: _NOW,
         ),
-        now=lambda: _NOW,
+        settings=DatasetsBuildSettings.from_env(),
         allowed_principals=allowed_principals,
     )
     return make_client_for_door(door), location
@@ -1030,6 +1020,28 @@ def test_pin_with_the_first_party_principal_succeeds():
     assert body["pinned"]["artifact_digest"] == location.artifact_digest
 
 
+def test_a_pin_reference_names_its_principal_by_a_stable_label_that_hides_the_secret():
+    other = "second-pin-principal"
+    writer = FakeArtifactReferenceWriter()
+    client, location = _build_client(
+        allowed_principals=frozenset({_PRINCIPAL, other}), reference_writer=writer
+    )
+
+    for secret in (_PRINCIPAL, other, _PRINCIPAL):
+        resp = client.post(
+            "/api/datasets/spec_a/cv1/pin",
+            json={"schema_version": 1, "artifact_digest": location.artifact_digest},
+            headers={"x-dfo-principal": secret},
+        )
+        assert resp.status_code == 200, resp.text
+
+    principals = {key[0] for key in writer.records}
+    assert len(principals) == 2
+    assert not any(
+        secret in principal for principal in principals for secret in (_PRINCIPAL, other)
+    )
+
+
 def test_pin_reactivates_a_soft_deleted_reference_through_the_door():
     """Repinning clears `removed_at` and resets `created_at`."""
     store = FakeArtifactStore()
@@ -1041,11 +1053,14 @@ def test_pin_reactivates_a_soft_deleted_reference_through_the_door():
     reference_writer = FakeArtifactReferenceWriter()
     current_time = [_NOW]
     door = build_pin_door(
-        spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
-        snapshot_reader=reader,
-        artifact_store=store,
-        reference_writer=reference_writer,
-        now=lambda: current_time[0],
+        deps=fake_deps_cell(
+            spec_reader=FakeSpecReader(spec_ids=["spec_a"]),
+            snapshot_reader=reader,
+            artifact_store=store,
+            reference_writer=reference_writer,
+            now=lambda: current_time[0],
+        ),
+        settings=DatasetsBuildSettings.from_env(),
         allowed_principals=frozenset({_PRINCIPAL}),
     )
     client = make_client_for_door(door)
@@ -1057,7 +1072,8 @@ def test_pin_reactivates_a_soft_deleted_reference_through_the_door():
     assert first.status_code == 200, first.text
     assert first.json()["pinned"]["pinned_at"] == _NOW.isoformat()
 
-    key = (_PRINCIPAL, location.artifact_digest, "spec_a", "cv1", PIN_REFERENCE_KIND)
+    (key,) = reference_writer.records
+    assert key[1:] == (location.artifact_digest, "spec_a", "cv1", PIN_REFERENCE_KIND)
     later = datetime(2026, 7, 1, tzinfo=UTC)
     reference_writer.soft_delete(key, removed_at=later)
     assert reference_writer.removed_at[key] is not None

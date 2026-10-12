@@ -1,66 +1,84 @@
 """`LiveOperationStore` persists async jobs in `datasets.operation`.
 
-`compute_operation_id` hashes canonical JSON of `request_identity`, `coverage_stamp`,
-`origin_catalogue_build_id`, and the rendering key. Identical inputs share an id. Different
-renderings get separate operations, and so does a new catalogue build, whose admission may change
-what the same request returns. Raw options stay on the row, while sorted-key JSON makes mapping
-order and type irrelevant to the id.
+`compute_operation_id` hashes canonical JSON of `request_identity` (the subject and its sorted
+member dcids), `origin_catalogue_build_id`, and the rendering key. Identical inputs share an id.
+Different renderings get separate operations, and so does a new catalogue build, whose admission
+may change what the same request returns. A coverage build leaves the id unchanged, so it never
+orphans a done operation. Raw options stay on the row, while sorted-key JSON makes mapping order
+and type irrelevant to the id.
 
-Every `create_or_get` call first sweeps dead `pending` and `running` rows in a separate,
-committed transaction. Claimed or released rows expire after their lease has been stale for
-`lease_stale_after_seconds`. Unclaimed rows expire after their last dispatch, or submission
-time if undispatched, passes `never_claimed_stale_after_seconds`. The latter window also gives
-queued tasks time to arrive after `MAX_REDISPATCHES`. Expiry marks rows retryable `internal_error`.
-The sweep commits even if a later backlog check rolls back. PostgreSQL rechecks the predicate
-against each row's latest committed version, preserving concurrent renewals and completions.
-`expire_if_dead` applies the same rule to one operation.
+`create_or_get` inserts a new row `pending` with a NULL `dispatched_at` and commits. The caller
+then creates the Cloud Tasks task and calls `mark_dispatched`, which sets `dispatched_at` once
+for the submission. A `pending` row whose `dispatched_at` stays NULL had its create lost; the
+operations poll creates the task again under the same name
+(`datasets_api.operations.dispatch.dispatch_if_due`).
+
+`attempt_count` is a monotonic fencing token. `claim` moves a `pending` row, or a `running` row
+whose lease has ended, to `running`, increments the token and sets `claimed_at`. The lease is
+static: a claim owns the row until `claimed_at + lease_seconds` and is never renewed. The claim
+also stores `final_delivery`, whether the delivery that made it is the task's last. A
+claim inside a live lease, for another submission, of a terminal row, or of a row past the
+operation deadline returns `None`.
+`progress`, `record_estimate`, `complete`, `fail`, and `release` require `state = 'running'` and
+the claim's token, and return `None` once the token is stale or the row leaves `running`.
+`release` returns a running row to `pending` and clears its lease and `final_delivery`, so the
+next Cloud Tasks retry claims it at once.
+
+A lease that has ended means its attempt has stopped owning the row. Whether another delivery
+will run it is what `final_delivery` records. A row is abandoned when nothing will finish it:
+
+- a `running` row whose lease has ended and whose `final_delivery` is true or NULL, since no
+  later delivery is due or none is known;
+- a `running` row whose lease has ended and whose `final_delivery` is false, once the operation
+  deadline (`DATASETS_OPERATION_DEADLINE_SECONDS`) has passed since its dispatch, or its
+  submission when no dispatch is recorded. Until then a later delivery is due and claims it;
+- a `pending` row once the operation deadline has passed since its dispatch or else its
+  submission.
+
+A `running` row with no `claimed_at` was claimed by an image that renewed its lease by updating
+`updated_at` and stored no `final_delivery`; its lease has ended once `updated_at` is
+`LEASE_SECONDS` old. `abandon` fails an abandoned row as retryable `internal_error` in one
+update fenced on the attempt its caller read. The operations poll calls it, and so does the
+worker route for a delivery that arrives past the deadline, so the deadline ends a submission
+whether or not anyone polls it. `fail_abandoned_operations` applies the same update to every
+abandoned row, for the `datasets-maintenance age-operations` job.
+
+`create_or_get` returns an existing row unchanged unless it is resettable: a retryable failure,
+a `running` row whose lease has ended, whichever delivery claimed it, or a `pending` row past
+the operation deadline. A reset of a row a later delivery is still due for moves it to a new
+submission, and that delivery answers `superseded`. That preserves the original options and
+estimate. A
+reset returns the row to `pending`, clears the lease, `final_delivery`, `refusal_code`,
+`refusal`, `retryable` and `dispatched_at`, sets `rows_written` to 0, and updates `submitted_at` while incrementing
+`submission_count`, so its task gets a new name. Identity, options, admission coverage, and
+catalogue build keep their admitted values. The attempt token carries on, so a superseded
+attempt's late writes stay fenced. Deterministic failures and completed rows stay unchanged.
+
+A new row or a reset takes `pg_advisory_xact_lock`, re-reads the id under the lock, and counts
+live rows other than its own: every `pending` or `running` row that is not abandoned, which
+includes a row whose lease has ended while a later delivery is due. PostgreSQL READ COMMITTED
+gives the re-read a fresh snapshot, so concurrent inserts or resets are visible. At or above
+`DATASETS_OPERATION_BACKLOG_MAX`, the store raises `OperationBacklogFull`. Otherwise it inserts
+or resets and reads the result back. `ON CONFLICT (id) DO NOTHING` protects the insert race.
 
 `fail_unservable_done` fails a `done` row as retryable `internal_error` in one update guarded by
 `state = 'done'` and the `attempt_count` the poll read. The operations poll calls it when the
-snapshot lists no artifact for the row's rendering, so the next resubmit resets the row and re-runs it.
-A re-run claims a higher attempt, so a poll that stalls across one leaves the newer completion
-done, even when it repeats the content version.
+snapshot lists no artifact for the row's rendering, so the next resubmit resets the row and
+re-runs it. A re-run claims a higher attempt, so a poll that stalls across one leaves the newer
+completion done, even when it repeats the content version.
 
-
-
-`create_or_get` returns an existing row unchanged unless it is a retryable failure. This
-preserves its original options and estimate. A retryable failure resets in place to `pending`.
-It clears `lease_until`, `refusal_code`, `refusal`, `retryable`, dispatch fields, and
-`execution_coverage_stamp`, sets `rows_written` to 0, and updates `submitted_at` while
-incrementing `submission_count`. Identity, options, admission coverage, and catalogue build keep
-their admitted values. The last estimate stays until execution re-estimates it. Deterministic failures and
-completed rows stay unchanged.
-
-A new row or retryable reset takes `pg_advisory_xact_lock`, re-reads the id under the lock, and
-counts `pending`/`running` rows after the sweep. PostgreSQL READ COMMITTED gives the re-read a
-fresh snapshot, so concurrent inserts or resets are visible. At or above
-`DATASETS_OPERATION_BACKLOG_MAX`, the store raises `OperationBacklogFull`. Otherwise it inserts
-or resets and reads the result back. `ON CONFLICT (id) DO NOTHING` protects the insert race.
-The backlog lock protects the count.
-
-
-
-Dispatch uses one conditional update per submission. `claim_dispatch` allows the first task or an
-unconfirmed task older than `REDISPATCH_GRACE_SECONDS`, up to `MAX_REDISPATCHES`. One caller wins
-and creates the task. Confirmed tasks and released rows wait for Cloud Tasks. Dead-row expiry
-closes confirmed tasks that miss the claim window.
-
-`attempt_count` is a monotonic fencing token. `claim_lease` accepts pending or running rows for
-the task's `submission_count` with no live lease. It returns `None` for an unknown, terminal, or
-ineligible row. Worker writes require `state = 'running'` and the claim's attempt token. They
-return `None` when the token is stale or the row leaves `running`.
-
-`progress` renews the lease in the same update as `rows_written` when `lease_seconds` is set.
-`release` returns a running row to pending, sets its lease to now, and preserves its attempt and
-progress. The immediate lease expiry lets the next Cloud Tasks retry claim it. The non-null
-lease keeps dead-row expiry on the claimed-row window and excludes redispatch.
+`delete_terminal_operations` deletes `done` and `failed` rows whose `updated_at` is older than a
+retention window, in bounded batches, reading only the store and the clock. It never touches a
+`pending` or `running` row. The `datasets-maintenance age-operations` job calls it with the
+advertised `operation_retention_days`, after `fail_abandoned_operations`.
 
 `fail` stores the caller's retryability classification. Deterministic failures are not reset on
-resubmit and carry their classified refusal in `refusal`. Transient failures and dead-row expiry
+resubmit and carry their classified refusal in `refusal`. Transient failures and abandoned runs
 are retryable and record `refusal_code` alone. A stored refusal this image cannot parse reads as
 `None` with a logged warning, so the row still names its `refusal_code`. Every statement selects
-`refusal`, so the store needs migration `0016_operation_refusal.sql` applied before it runs. The
-clock is injectable and defaults to UTC now.
+the columns of `0024_operation_attempt_fencing.sql`, so the store needs that migration applied
+before it runs. The clock is injectable and defaults to UTC now; every timestamp the store
+compares comes from it.
 """
 
 from __future__ import annotations
@@ -68,7 +86,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -77,8 +94,9 @@ from typing import Literal, Protocol, cast
 from pydantic import ValidationError
 
 from dataset_store import DatasetStore
+from datasets_api.backpressure import Backpressure
 from datasets_api.config import DatasetsBuildSettings
-from datasets_api.operations.task_client import DISPATCH_DEADLINE_SECONDS
+from datasets_api.operations.lease import LEASE_SECONDS
 from datasets_api.store_errors import DatasetsStoreUnavailable
 from datasets_api.version_store import rendering_key
 from dfo_platform import ProblemSpec
@@ -94,31 +112,58 @@ Clock = Callable[[], datetime]
 _COLUMNS = (
     "id, request_identity, options, coverage_stamp, state, estimate_rows, "
     "estimate_requests, rows_written, subject_id, content_version, refusal_code, "
-    "attempt_count, lease_until, created_at, updated_at, submission_count, retryable, "
-    "dispatch_count, dispatched_at, dispatch_confirmed, execution_coverage_stamp, submitted_at, "
-    "origin_catalogue_build_id, refusal"
+    "attempt_count, claimed_at, lease_seconds, created_at, updated_at, "
+    "submission_count, retryable, dispatched_at, submitted_at, origin_catalogue_build_id, "
+    "refusal, final_delivery, confirmed_at"
 )
 
-# Shared by the sweep and `expire_if_dead`. Parameters are lease and unclaimed-age cutoffs.
-# The latter age starts at the last dispatch, or submission time when undispatched.
-_DEAD_PREDICATE = (
-    "state IN ('pending', 'running') AND ("
-    "(lease_until IS NOT NULL AND lease_until < %s) "
-    "OR (lease_until IS NULL AND state = 'pending' "
-    "AND COALESCE(dispatched_at, submitted_at) < %s))"
+# The end of a running row's static lease.
+_LEASE_END = "claimed_at + make_interval(secs => lease_seconds)"
+
+# A running row whose lease ended, at the parameters now and now minus `LEASE_SECONDS`. A row
+# with no `claimed_at` carries its lease in `updated_at`, which the image that claimed it renewed.
+_LEASE_ENDED = (
+    f"(state = 'running' AND ({_LEASE_END} < %s OR (claimed_at IS NULL AND updated_at < %s)))"
 )
 
-# Parameters are the redispatch cutoff and cap. The cap allows the first dispatch plus retries.
-_DISPATCHABLE_PREDICATE = (
-    "state = 'pending' AND lease_until IS NULL AND (dispatch_count = 0 OR ("
-    "dispatch_confirmed < dispatch_count AND dispatched_at < %s AND dispatch_count <= %s))"
+# The time the operation deadline runs from: the current submission's dispatch, or its
+# submission when no dispatch is recorded.
+_QUEUED_SINCE = "COALESCE(dispatched_at, submitted_at)"
+
+# A pending row queued before the parameter, now minus the operation deadline.
+_PENDING_PAST_DEADLINE = f"(state = 'pending' AND {_QUEUED_SINCE} < %s)"
+
+# Rows nothing will finish, at the parameters `_abandoned_params` builds: now,
+# the untracked-lease cutoff, and the deadline cutoff twice. A running row whose lease ended is
+# abandoned at once unless its claim recorded that a later delivery is due
+# (`final_delivery = FALSE`); that row and a pending row are abandoned past the deadline.
+_ABANDONED = (
+    f"(({_LEASE_ENDED} AND (final_delivery IS DISTINCT FROM FALSE OR {_QUEUED_SINCE} < %s)) "
+    f"OR {_PENDING_PAST_DEADLINE})"
 )
 
-# Wait longer than one enqueue timeout before retrying an unconfirmed dispatch.
-REDISPATCH_GRACE_SECONDS = 30
+# Rows `claim` accepts at the parameters now, the untracked-lease cutoff and the deadline cutoff:
+# unclaimed, or claimed under an ended lease, and queued inside the operation deadline. Every
+# such row past the deadline is abandoned.
+_CLAIMABLE = f"((state = 'pending' OR {_LEASE_ENDED}) AND {_QUEUED_SINCE} >= %s)"
 
-# Unknown enqueue outcomes allow three redispatches after the first task.
-MAX_REDISPATCHES = 3
+# Rows `create_or_get` resets, at the parameters now, the untracked-lease cutoff and the deadline
+# cutoff: a retryable failure, a running row whose lease ended, or a pending row past the
+# deadline.
+_RESETTABLE = f"((state = 'failed' AND retryable) OR {_LEASE_ENDED} OR {_PENDING_PAST_DEADLINE})"
+
+# Rows the backlog counts, at `_ABANDONED`'s parameters: everything in flight except an
+# abandoned row. `IS NOT TRUE` counts a row whose lease columns are NULL.
+_LIVE = f"(state IN ('pending', 'running') AND {_ABANDONED} IS NOT TRUE)"
+
+# The update that fails a row as an abandoned run, at the parameter now.
+_FAIL_ABANDONED = (
+    "UPDATE datasets.operation SET state = 'failed', refusal_code = 'internal_error', "
+    "retryable = TRUE, updated_at = %s"
+)
+
+# How long a running row with no `claimed_at` stays claimed after its last `updated_at`.
+_UNTRACKED_LEASE = timedelta(seconds=LEASE_SECONDS)
 
 # Serialises the backlog count and insert across transactions.
 _BACKLOG_LOCK_KEY = 0x4446_4F5F_4F50_424C  # "DFO_OPBL" packed into an int
@@ -128,51 +173,17 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def never_claimed_stale_after_seconds(
-    *,
-    backlog_max: int,
-    dispatch_concurrency: int,
-    dispatch_deadline_seconds: float = DISPATCH_DEADLINE_SECONDS,
-    max_retry_duration_seconds: float,
-) -> float:
-    """Returns the expiry age for a pending row with no claimed lease.
-
-    Measure from `dispatched_at`, or `submitted_at` if undispatched. A full queue delays a task
-    by `ceil(backlog_max / dispatch_concurrency) * dispatch_deadline_seconds`. Add
-    `max_retry_duration_seconds` for the retry window after its first dispatch.
-    """
-    return (
-        math.ceil(backlog_max / dispatch_concurrency) * dispatch_deadline_seconds
-        + max_retry_duration_seconds
-    )
-
-
-# Fixed allowance for clock skew when checking expired leases.
-LEASE_STALE_MARGIN_SECONDS = 300
-
-
-def lease_stale_after_seconds(*, max_retry_duration_seconds: float) -> float:
-    """Returns the expired-lease window for claimed rows.
-
-    `max_retry_duration_seconds` covers Cloud Tasks retries. The 300-second margin absorbs
-    clock skew.
-    """
-    return max_retry_duration_seconds + LEASE_STALE_MARGIN_SECONDS
-
-
 def compute_operation_id(
     *,
     request_identity: Mapping[str, object],
-    coverage_stamp: str,
     origin_catalogue_build_id: str,
     options: Mapping[str, object],
 ) -> str:
-    """Returns `op_` plus the SHA-256 hex digest of the canonical identity, coverage stamp,
-    origin catalogue build id, and rendering key."""
+    """Returns `op_` plus the SHA-256 hex digest of the canonical identity, origin catalogue
+    build id, and rendering key."""
     canonical = json.dumps(
         {
             "request_identity": dict(request_identity),
-            "coverage_stamp": coverage_stamp,
             "origin_catalogue_build_id": origin_catalogue_build_id,
             "rendering": rendering_key(options),
         },
@@ -183,19 +194,23 @@ def compute_operation_id(
 
 
 class OperationBacklogFull(Exception):
-    """Raised when the pending/running count is at `DATASETS_OPERATION_BACKLOG_MAX` before a
-    new row is added. A known id returns its row, including after a concurrent insert or reset.
+    """Raised when the live-row count is at `DATASETS_OPERATION_BACKLOG_MAX` before a new row is
+    added. A known id returns its row, including after a concurrent insert or reset.
 
     A transaction-scoped advisory lock serialises the exact count and insert across API
-    instances, so the limit cannot be overshot. The API maps this exception to retryable 503
-    `service_unavailable` with `Retry-After`.
+    instances, so concurrent submissions cannot overshoot the limit. `claim` refuses a row
+    past the operation deadline, so a late delivery cannot return to the count a `pending` row,
+    or one a non-final delivery claimed, that the count has dropped. A delivery that reclaims a
+    lease-ended row whose claim was the final delivery or recorded none does return that row to
+    the count. The API maps this exception to retryable 503 `service_unavailable` with
+    `Retry-After`.
     """
 
     def __init__(self, *, in_flight: int, limit: int) -> None:
         self.in_flight = in_flight
         self.limit = limit
         super().__init__(
-            f"datasets.operation already holds {in_flight} pending/running row(s), at or "
+            f"datasets.operation already holds {in_flight} live pending/running row(s), at or "
             f"above the configured backlog max {limit}"
         )
 
@@ -207,7 +222,7 @@ def classify_operation_store_exception(exc: BaseException) -> ProblemSpec | None
             code="service_unavailable",
             detail="the async operations backlog is full; retry shortly",
             retryable=True,
-            headers={"Retry-After": "1"},
+            headers=Backpressure.headers,
         )
     return None
 
@@ -216,18 +231,21 @@ def classify_operation_store_exception(exc: BaseException) -> ProblemSpec | None
 class Operation:
     """One durable async operation.
 
-    `subject_id` and `content_version` are set together on completion. The poll uses them to
-    rebuild a done row's manifest. Failed rows carry `refusal_code` and `retryable` to mark
+    `subject_id`, `content_version` and `confirmed_at` are set together on completion. The poll
+    uses them to rebuild a done row's manifest, `confirmed_at` being the instant the run
+    confirmed the subject head, and `None` on a row an image recording no such instant
+    completed. Failed rows carry `refusal_code` and `retryable` to mark
     transient failures. `refusal` is the classified refusal a deterministic failure ended on,
-    and `None` on every other row, including a failure recorded before the column existed and
-    one whose stored refusal this image cannot parse. `submission_count` starts at 0 and
-    increments on retryable resets.
-    Monotonic `attempt_count` fences worker writes. Dispatch fields belong to the current
-    submission. `coverage_stamp` records admission. `execution_coverage_stamp` and `estimate`
-    describe execution after `record_execution`. `origin_catalogue_build_id` is the catalogue
-    build the submitting request was bound to, `None` on a row submitted before the column
-    existed. The build a completed operation's data was admitted under is its manifest's
-    `trace.origin_catalogue_build_id`.
+    and `None` on every other row, including one whose stored refusal this image cannot parse.
+    `submission_count` starts at 0 and increments on each reset. Monotonic `attempt_count`
+    fences worker writes. `claimed_at` and `lease_seconds` are the current claim's
+    static lease, set on every `running` row. `final_delivery` is whether that claim was made
+    by the task's last delivery, and `None` on a row that is not claimed or that an image
+    recording no delivery claimed. `dispatched_at` is when the current submission's
+    task create returned, `None` until then. `coverage_stamp` records admission, and `estimate`
+    is the latest estimate, replaced by the worker's re-estimate. `origin_catalogue_build_id`
+    is the catalogue build the submitting request was bound to, `None` on a row submitted
+    before the column existed.
     """
 
     id: str
@@ -241,18 +259,42 @@ class Operation:
     content_version: str | None
     refusal_code: str | None
     attempt_count: int
-    lease_until: datetime | None
+    claimed_at: datetime | None
+    lease_seconds: int | None
     created_at: datetime
     updated_at: datetime
     submission_count: int
     retryable: bool | None
-    dispatch_count: int
     dispatched_at: datetime | None
-    dispatch_confirmed: int
-    execution_coverage_stamp: str | None
     submitted_at: datetime
     origin_catalogue_build_id: str | None
     refusal: ProblemSpec | None = None
+    final_delivery: bool | None = None
+    confirmed_at: datetime | None = None
+
+    def lease_ended(self, now: datetime) -> bool:
+        """Whether this is a `running` row whose claim has stopped owning it at `now`, the rule
+        `_LEASE_ENDED` applies in SQL."""
+        if self.state != "running":
+            return False
+        if self.claimed_at is None:
+            return self.updated_at < now - _UNTRACKED_LEASE
+        return (
+            self.lease_seconds is not None
+            and self.claimed_at + timedelta(seconds=self.lease_seconds) < now
+        )
+
+    def abandoned(self, now: datetime, *, deadline: timedelta) -> bool:
+        """Whether nothing will finish this row at `now`, the rule `_ABANDONED` applies in
+        SQL. A `running` row whose lease ended is abandoned unless its claim recorded that a
+        later delivery is due (`final_delivery` false). That row, and a `pending` row, are
+        abandoned once queued, since their dispatch or else their submission, more than
+        `deadline` ago."""
+        queued_since = self.dispatched_at if self.dispatched_at is not None else self.submitted_at
+        past_deadline = queued_since < now - deadline
+        if self.state == "pending":
+            return past_deadline
+        return self.lease_ended(now) and (self.final_delivery is not False or past_deadline)
 
 
 class OperationStore(Protocol):
@@ -265,37 +307,49 @@ class OperationStore(Protocol):
         origin_catalogue_build_id: str,
         estimate: Estimate,
     ) -> Operation:
-        """Creates or reuses the operation keyed by identity, coverage stamp, catalogue build,
-        and rendering.
+        """Creates or reuses the operation keyed by identity, catalogue build, and rendering.
 
-        Existing rows remain unchanged. Raises `OperationBacklogFull` when a new row would exceed
-        the configured backlog limit.
+        A new row commits `pending` with no dispatch. Existing rows remain unchanged unless
+        resettable. Raises `OperationBacklogFull` when a new row would exceed the configured
+        backlog limit.
         """
         ...
 
-    def claim_dispatch(self, id: str) -> Operation | None:
-        """Claims a due dispatch and returns `None` when none is due. Only the winner enqueues."""
+    def mark_dispatched(self, id: str, *, submission_count: int) -> Operation | None:
+        """Records that this submission's task create returned. Returns `None` when the row
+        already records a dispatch or has moved to another submission."""
         ...
 
-    def confirm_dispatch(self, id: str, *, submission_count: int, dispatch_count: int) -> None:
-        """Confirms a dispatch for its submission. Stale submission counts are ignored."""
-        ...
-
-    def claim_lease(
-        self, id: str, *, submission_count: int, lease_seconds: float
+    def claim(
+        self, id: str, *, submission_count: int, lease_seconds: int, final_delivery: bool
     ) -> Operation | None:
-        """Claims an expired or unclaimed lease for this submission and increments the fencing
-        token. Returns `None` for an unknown or terminal row, a stale submission, or a live lease.
+        """Claims a pending row, or a running row whose lease ended, for this submission and
+        increments the fencing token. `final_delivery` records whether the claiming delivery is
+        the task's last. Returns `None` for an unknown or terminal row, another submission, a
+        live lease, or a row past the operation deadline.
         """
         ...
 
-    def progress(
-        self, id: str, *, attempt: int, rows_written: int, lease_seconds: float | None = None
-    ) -> Operation | None: ...
+    def progress(self, id: str, *, attempt: int, rows_written: int) -> Operation | None: ...
+
+    def record_estimate(self, id: str, *, attempt: int, estimate: Estimate) -> Operation | None:
+        """Replaces the admission estimate with the worker's re-estimate. Returns `None` when
+        this attempt token does not match a running row."""
+        ...
 
     def complete(
-        self, id: str, *, attempt: int, subject_id: str, content_version: str
-    ) -> Operation | None: ...
+        self,
+        id: str,
+        *,
+        attempt: int,
+        subject_id: str,
+        content_version: str,
+        confirmed_at: datetime,
+    ) -> Operation | None:
+        """Marks a running row `done` with the version its run served and the instant that run
+        confirmed the subject head. Returns `None` when this attempt token does not match a
+        running row."""
+        ...
 
     def fail(
         self,
@@ -313,17 +367,10 @@ class OperationStore(Protocol):
 
     def release(self, id: str, *, attempt: int) -> Operation | None: ...
 
-    def record_execution(
-        self, id: str, *, attempt: int, coverage_stamp: str, estimate: Estimate
-    ) -> Operation | None:
-        """Records the execution coverage stamp and estimate, replacing the admission estimate.
-        Returns `None` when this attempt token does not match a running row.
-        """
-        ...
-
-    def expire_if_dead(self, id: str) -> Operation | None:
-        """Fails a dead row as retryable `internal_error`. Returns `None` for a live, terminal,
-        or unknown id."""
+    def abandon(self, id: str, *, attempt: int) -> Operation | None:
+        """Fails an abandoned row (`Operation.abandoned`) at that attempt as retryable
+        `internal_error`. Returns `None` for any other row, including a running row whose lease
+        ended while a later delivery is due, or an unknown id."""
         ...
 
     def fail_unservable_done(self, id: str, *, attempt: int) -> Operation | None:
@@ -358,24 +405,28 @@ class NullOperationStore:
             "NullOperationStore cannot create an operation it could never find again"
         )
 
-    def claim_dispatch(self, id: str) -> Operation | None:
+    def mark_dispatched(self, id: str, *, submission_count: int) -> Operation | None:
         return None
 
-    def confirm_dispatch(self, id: str, *, submission_count: int, dispatch_count: int) -> None:
-        return None
-
-    def claim_lease(
-        self, id: str, *, submission_count: int, lease_seconds: float
+    def claim(
+        self, id: str, *, submission_count: int, lease_seconds: int, final_delivery: bool
     ) -> Operation | None:
         return None
 
-    def progress(
-        self, id: str, *, attempt: int, rows_written: int, lease_seconds: float | None = None
-    ) -> Operation | None:
+    def progress(self, id: str, *, attempt: int, rows_written: int) -> Operation | None:
+        return None
+
+    def record_estimate(self, id: str, *, attempt: int, estimate: Estimate) -> Operation | None:
         return None
 
     def complete(
-        self, id: str, *, attempt: int, subject_id: str, content_version: str
+        self,
+        id: str,
+        *,
+        attempt: int,
+        subject_id: str,
+        content_version: str,
+        confirmed_at: datetime,
     ) -> Operation | None:
         return None
 
@@ -393,12 +444,7 @@ class NullOperationStore:
     def release(self, id: str, *, attempt: int) -> Operation | None:
         return None
 
-    def record_execution(
-        self, id: str, *, attempt: int, coverage_stamp: str, estimate: Estimate
-    ) -> Operation | None:
-        return None
-
-    def expire_if_dead(self, id: str) -> Operation | None:
+    def abandon(self, id: str, *, attempt: int) -> Operation | None:
         return None
 
     def fail_unservable_done(self, id: str, *, attempt: int) -> Operation | None:
@@ -423,18 +469,18 @@ def _operation_from_row(row: Mapping[str, object]) -> Operation:
         content_version=cast("str | None", row["content_version"]),
         refusal_code=cast("str | None", row["refusal_code"]),
         attempt_count=cast(int, row["attempt_count"]),
-        lease_until=cast("datetime | None", row["lease_until"]),
+        claimed_at=cast("datetime | None", row["claimed_at"]),
+        lease_seconds=cast("int | None", row["lease_seconds"]),
         created_at=cast(datetime, row["created_at"]),
         updated_at=cast(datetime, row["updated_at"]),
         submission_count=cast(int, row["submission_count"]),
         retryable=cast("bool | None", row["retryable"]),
-        dispatch_count=cast(int, row["dispatch_count"]),
         dispatched_at=cast("datetime | None", row["dispatched_at"]),
-        dispatch_confirmed=cast(int, row["dispatch_confirmed"]),
-        execution_coverage_stamp=cast("str | None", row["execution_coverage_stamp"]),
         submitted_at=cast(datetime, row["submitted_at"]),
         origin_catalogue_build_id=cast("str | None", row["origin_catalogue_build_id"]),
         refusal=_stored_refusal(row),
+        final_delivery=cast("bool | None", row["final_delivery"]),
+        confirmed_at=cast("datetime | None", row["confirmed_at"]),
     )
 
 
@@ -458,6 +504,41 @@ def _stored_refusal(row: Mapping[str, object]) -> ProblemSpec | None:
         return None
 
 
+def _abandoned_params(
+    now: datetime, *, deadline: timedelta
+) -> tuple[datetime, datetime, datetime, datetime]:
+    """The parameters of `_ABANDONED` and `_LIVE` at `now`."""
+    deadline_cutoff = now - deadline
+    return (now, now - _UNTRACKED_LEASE, deadline_cutoff, deadline_cutoff)
+
+
+def _guarded[T](failure_prefix: str, run: Callable[[], T]) -> T:
+    """Runs one store call, raising `DatasetsStoreUnavailable` with a safe summary of any
+    error but `OperationBacklogFull`."""
+    failure: str | None = None
+    sqlstate: str | None = None
+    try:
+        return run()
+    except OperationBacklogFull:
+        # Policy refusals bypass store-error wrapping.
+        raise
+    except Exception as exc:
+        # Store a safe summary. Raise outside this handler to keep `__context__` unset.
+        failure = f"{failure_prefix} failed: {safe_diagnostics(exc)}"
+        sqlstate = extract_sqlstate(exc)
+    raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
+
+
+def _resettable(row: Mapping[str, object], now: datetime, *, deadline: timedelta) -> bool:
+    """`_RESETTABLE` on a row already read."""
+    operation = _operation_from_row(row)
+    return (
+        (operation.state == "failed" and bool(operation.retryable))
+        or operation.lease_ended(now)
+        or operation.abandoned(now, deadline=deadline)
+    )
+
+
 class LiveOperationStore:
     def __init__(
         self,
@@ -465,70 +546,26 @@ class LiveOperationStore:
         store: DatasetStore,
         now: Clock = utc_now,
         backlog_max: int | None = None,
-        dispatch_concurrency: int | None = None,
+        deadline_seconds: int | None = None,
         settings: DatasetsBuildSettings | None = None,
     ) -> None:
-        """Uses the caller's resolved settings when supplied. Otherwise reads defaults from the
-        environment. Shared settings keep operation limits consistent with the doors.
-        """
-        _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
+        """Uses `backlog_max` and `deadline_seconds`, else the caller's resolved settings,
+        else the environment's."""
+        if backlog_max is None or deadline_seconds is None:
+            _settings = settings if settings is not None else DatasetsBuildSettings.from_env()
+            if backlog_max is None:
+                backlog_max = _settings.operation_backlog_max
+            if deadline_seconds is None:
+                deadline_seconds = _settings.operation_deadline_seconds
         self._store = store
         self._now = now
-        self._backlog_max = (
-            backlog_max if backlog_max is not None else _settings.operation_backlog_max
-        )
-        self._never_claimed_stale_after = timedelta(
-            seconds=never_claimed_stale_after_seconds(
-                backlog_max=backlog_max
-                if backlog_max is not None
-                else _settings.operation_backlog_max,
-                dispatch_concurrency=dispatch_concurrency
-                if dispatch_concurrency is not None
-                else _settings.operation_dispatch_concurrency,
-                max_retry_duration_seconds=_settings.operation_max_retry_duration_seconds,
-            )
-        )
-        self._lease_stale_after = timedelta(
-            seconds=lease_stale_after_seconds(
-                max_retry_duration_seconds=_settings.operation_max_retry_duration_seconds
-            )
-        )
+        self._backlog_max = backlog_max
+        self._deadline = timedelta(seconds=deadline_seconds)
 
-    def _dead_cutoffs(self, now: datetime) -> tuple[datetime, datetime]:
-        """`_DEAD_PREDICATE`'s parameters at `now`."""
-        return (now - self._lease_stale_after, now - self._never_claimed_stale_after)
-
-    def _sweep_dead_operations(self, *, now: datetime) -> None:
-        """Commits one dead-row sweep before each `create_or_get` lookup and backlog count."""
-        cutoffs = self._dead_cutoffs(now)
-
-        def _run() -> None:
-            with self._store.transaction() as tx:
-                tx.execute(
-                    "UPDATE datasets.operation SET state = 'failed', "
-                    "refusal_code = 'internal_error', retryable = TRUE, "
-                    f"lease_until = NULL, updated_at = %s WHERE {_DEAD_PREDICATE}",
-                    (now, *cutoffs),
-                )
-
-        self._wrap("sweeping dead", "*", _run)
-
-    def _wrap(self, action: str, id: str, run: Callable[[], Mapping[str, object] | None]):
-        failure: str | None = None
-        sqlstate: str | None = None
-        row: Mapping[str, object] | None = None
-        try:
-            row = run()
-        except OperationBacklogFull:
-            # Policy refusals bypass store-error wrapping.
-            raise
-        except Exception as exc:
-            # Store a safe summary. Raise outside this handler to keep `__context__` unset.
-            failure = f"{action} operation {id!r} failed: {safe_diagnostics(exc)}"
-            sqlstate = extract_sqlstate(exc)
-        if failure is not None:
-            raise DatasetsStoreUnavailable(failure, sqlstate=sqlstate)
-        return row
+    def _wrap(
+        self, action: str, id: str, run: Callable[[], Mapping[str, object] | None]
+    ) -> Mapping[str, object] | None:
+        return _guarded(f"{action} operation {id!r}", run)
 
     def _update_one(
         self, action: str, id: str, sql: str, params: tuple[object, ...]
@@ -553,39 +590,31 @@ class LiveOperationStore:
     ) -> Operation:
         id = compute_operation_id(
             request_identity=request_identity,
-            coverage_stamp=coverage_stamp,
             origin_catalogue_build_id=origin_catalogue_build_id,
             options=options,
         )
         now = self._now()
         backlog_max = self._backlog_max
-        self._sweep_dead_operations(now=now)
 
         def _run() -> Mapping[str, object] | None:
             with self._store.transaction() as tx:
                 existing = tx.fetch_one(
                     f"SELECT {_COLUMNS} FROM datasets.operation WHERE id = %s", (id,)
                 )
-                resettable = (
-                    existing is not None and existing["state"] == "failed" and existing["retryable"]
-                )
-                if existing is not None and not resettable:
+                if existing is not None and not _resettable(existing, now, deadline=self._deadline):
                     return existing
-                # Lock before counting or inserting a new row or resetting a retryable failure.
+                # Lock before counting or inserting a new row or resetting one.
                 tx.execute("SELECT pg_advisory_xact_lock(%s)", (_BACKLOG_LOCK_KEY,))
                 # Re-read under the lock. This statement's fresh snapshot controls the mutation.
                 existing = tx.fetch_one(
                     f"SELECT {_COLUMNS} FROM datasets.operation WHERE id = %s", (id,)
                 )
-                resettable = (
-                    existing is not None and existing["state"] == "failed" and existing["retryable"]
-                )
-                if existing is not None and not resettable:
+                if existing is not None and not _resettable(existing, now, deadline=self._deadline):
                     return existing
-                # The separate sweep transaction has already committed before this count.
+                # The row being reset keeps its own place, so only the others count.
                 backlog_row = tx.fetch_one(
-                    "SELECT count(*) AS n FROM datasets.operation WHERE state IN "
-                    "('pending', 'running')"
+                    f"SELECT count(*) AS n FROM datasets.operation WHERE id <> %s AND {_LIVE}",
+                    (id, *_abandoned_params(now, deadline=self._deadline)),
                 )
                 in_flight = cast(int, backlog_row["n"]) if backlog_row is not None else 0
                 if in_flight >= backlog_max:
@@ -612,15 +641,15 @@ class LiveOperationStore:
                         ),
                     )
                 else:
-                    # Reset only the retryable failure seen under the backlog lock.
+                    # Reset only the resettable row seen under the backlog lock.
                     tx.execute(
                         "UPDATE datasets.operation SET state = 'pending', "
-                        "lease_until = NULL, refusal_code = NULL, refusal = NULL, "
-                        "retryable = NULL, rows_written = 0, submission_count = submission_count + 1, "
-                        "dispatch_count = 0, dispatched_at = NULL, dispatch_confirmed = 0, "
-                        "execution_coverage_stamp = NULL, submitted_at = %s, updated_at = %s "
-                        "WHERE id = %s AND state = 'failed' AND retryable",
-                        (now, now, id),
+                        "claimed_at = NULL, lease_seconds = NULL, final_delivery = NULL, "
+                        "refusal_code = NULL, refusal = NULL, retryable = NULL, rows_written = 0, "
+                        "submission_count = submission_count + 1, dispatched_at = NULL, "
+                        "submitted_at = %s, updated_at = %s "
+                        f"WHERE id = %s AND {_RESETTABLE}",
+                        (now, now, id, now, now - _UNTRACKED_LEASE, now - self._deadline),
                     )
                 return tx.fetch_one(
                     f"SELECT {_COLUMNS} FROM datasets.operation WHERE id = %s", (id,)
@@ -633,78 +662,77 @@ class LiveOperationStore:
             )
         return _operation_from_row(row)
 
-    def claim_dispatch(self, id: str) -> Operation | None:
+    def mark_dispatched(self, id: str, *, submission_count: int) -> Operation | None:
         now = self._now()
         return self._update_one(
-            "claiming a dispatch for",
+            "recording the dispatch of",
             id,
-            "UPDATE datasets.operation SET dispatch_count = dispatch_count + 1, "
-            "dispatched_at = %s, updated_at = %s "
-            f"WHERE id = %s AND {_DISPATCHABLE_PREDICATE}",
+            "UPDATE datasets.operation SET dispatched_at = %s, updated_at = %s "
+            "WHERE id = %s AND submission_count = %s AND dispatched_at IS NULL",
+            (now, now, id, submission_count),
+        )
+
+    def claim(
+        self, id: str, *, submission_count: int, lease_seconds: int, final_delivery: bool
+    ) -> Operation | None:
+        now = self._now()
+        return self._update_one(
+            "claiming",
+            id,
+            "UPDATE datasets.operation SET state = 'running', "
+            "attempt_count = attempt_count + 1, claimed_at = %s, lease_seconds = %s, "
+            "final_delivery = %s, updated_at = %s "
+            f"WHERE id = %s AND submission_count = %s AND {_CLAIMABLE}",
             (
                 now,
+                lease_seconds,
+                final_delivery,
                 now,
                 id,
-                now - timedelta(seconds=REDISPATCH_GRACE_SECONDS),
-                MAX_REDISPATCHES,
+                submission_count,
+                now,
+                now - _UNTRACKED_LEASE,
+                now - self._deadline,
             ),
         )
 
-    def confirm_dispatch(self, id: str, *, submission_count: int, dispatch_count: int) -> None:
+    def progress(self, id: str, *, attempt: int, rows_written: int) -> Operation | None:
         now = self._now()
-        self._update_one(
-            "confirming a dispatch for",
-            id,
-            "UPDATE datasets.operation SET dispatch_confirmed = %s, updated_at = %s "
-            "WHERE id = %s AND submission_count = %s AND dispatch_confirmed < %s",
-            (dispatch_count, now, id, submission_count, dispatch_count),
-        )
-
-    def claim_lease(
-        self, id: str, *, submission_count: int, lease_seconds: float
-    ) -> Operation | None:
-        now = self._now()
-        return self._update_one(
-            "claiming a lease for",
-            id,
-            "UPDATE datasets.operation SET state = 'running', lease_until = %s, "
-            "attempt_count = attempt_count + 1, updated_at = %s "
-            "WHERE id = %s AND state IN ('pending', 'running') AND submission_count = %s "
-            "AND (lease_until IS NULL OR lease_until <= %s)",
-            (now + timedelta(seconds=lease_seconds), now, id, submission_count, now),
-        )
-
-    def progress(
-        self, id: str, *, attempt: int, rows_written: int, lease_seconds: float | None = None
-    ) -> Operation | None:
-        now = self._now()
-        if lease_seconds is None:
-            return self._update_one(
-                "reporting progress for",
-                id,
-                "UPDATE datasets.operation SET rows_written = %s, updated_at = %s "
-                "WHERE id = %s AND state = 'running' AND attempt_count = %s",
-                (rows_written, now, id, attempt),
-            )
         return self._update_one(
             "reporting progress for",
             id,
-            "UPDATE datasets.operation SET rows_written = %s, lease_until = %s, "
+            "UPDATE datasets.operation SET rows_written = %s, updated_at = %s "
+            "WHERE id = %s AND state = 'running' AND attempt_count = %s",
+            (rows_written, now, id, attempt),
+        )
+
+    def record_estimate(self, id: str, *, attempt: int, estimate: Estimate) -> Operation | None:
+        now = self._now()
+        return self._update_one(
+            "recording the estimate for",
+            id,
+            "UPDATE datasets.operation SET estimate_rows = %s, estimate_requests = %s, "
             "updated_at = %s WHERE id = %s AND state = 'running' AND attempt_count = %s",
-            (rows_written, now + timedelta(seconds=lease_seconds), now, id, attempt),
+            (estimate.rows, estimate.requests, now, id, attempt),
         )
 
     def complete(
-        self, id: str, *, attempt: int, subject_id: str, content_version: str
+        self,
+        id: str,
+        *,
+        attempt: int,
+        subject_id: str,
+        content_version: str,
+        confirmed_at: datetime,
     ) -> Operation | None:
         now = self._now()
         return self._update_one(
             "completing",
             id,
             "UPDATE datasets.operation SET state = 'done', subject_id = %s, "
-            "content_version = %s, lease_until = NULL, updated_at = %s "
+            "content_version = %s, confirmed_at = %s, updated_at = %s "
             "WHERE id = %s AND state = 'running' AND attempt_count = %s",
-            (subject_id, content_version, now, id, attempt),
+            (subject_id, content_version, confirmed_at, now, id, attempt),
         )
 
     def fail(
@@ -721,7 +749,7 @@ class LiveOperationStore:
             "failing",
             id,
             "UPDATE datasets.operation SET state = 'failed', refusal_code = %s, "
-            "refusal = %s, retryable = %s, lease_until = NULL, updated_at = %s "
+            "refusal = %s, retryable = %s, updated_at = %s "
             "WHERE id = %s AND state = 'running' AND attempt_count = %s",
             (
                 refusal_code,
@@ -738,33 +766,19 @@ class LiveOperationStore:
         return self._update_one(
             "releasing",
             id,
-            "UPDATE datasets.operation SET state = 'pending', lease_until = %s, "
-            "updated_at = %s WHERE id = %s AND state = 'running' AND attempt_count = %s",
-            (now, now, id, attempt),
-        )
-
-    def record_execution(
-        self, id: str, *, attempt: int, coverage_stamp: str, estimate: Estimate
-    ) -> Operation | None:
-        now = self._now()
-        return self._update_one(
-            "recording execution for",
-            id,
-            "UPDATE datasets.operation SET execution_coverage_stamp = %s, estimate_rows = %s, "
-            "estimate_requests = %s, updated_at = %s "
+            "UPDATE datasets.operation SET state = 'pending', claimed_at = NULL, "
+            "lease_seconds = NULL, final_delivery = NULL, updated_at = %s "
             "WHERE id = %s AND state = 'running' AND attempt_count = %s",
-            (coverage_stamp, estimate.rows, estimate.requests, now, id, attempt),
+            (now, id, attempt),
         )
 
-    def expire_if_dead(self, id: str) -> Operation | None:
+    def abandon(self, id: str, *, attempt: int) -> Operation | None:
         now = self._now()
         return self._update_one(
-            "expiring",
+            "abandoning",
             id,
-            "UPDATE datasets.operation SET state = 'failed', refusal_code = 'internal_error', "
-            "retryable = TRUE, lease_until = NULL, updated_at = %s "
-            f"WHERE id = %s AND {_DEAD_PREDICATE}",
-            (now, id, *self._dead_cutoffs(now)),
+            f"{_FAIL_ABANDONED} WHERE id = %s AND attempt_count = %s AND {_ABANDONED}",
+            (now, id, attempt, *_abandoned_params(now, deadline=self._deadline)),
         )
 
     def fail_unservable_done(self, id: str, *, attempt: int) -> Operation | None:
@@ -787,3 +801,57 @@ class LiveOperationStore:
 
         row = self._wrap("reading", id, _run)
         return _operation_from_row(row) if row is not None else None
+
+
+def fail_abandoned_operations(
+    *, store: DatasetStore, deadline: timedelta, now: Clock = utc_now
+) -> int:
+    """Fails every abandoned row (`Operation.abandoned`) as retryable `internal_error`, the
+    update `LiveOperationStore.abandon` makes for one row.
+
+    An abandoned row nobody polls and no delivery reaches otherwise stays `pending` or
+    `running`. `deadline` is the operation deadline the API and the worker read. Returns the
+    number of rows failed.
+    """
+    at = now()
+    sql = f"{_FAIL_ABANDONED} WHERE {_ABANDONED} RETURNING id"
+
+    def _run() -> int:
+        with store.transaction() as tx:
+            return len(tx.fetch_all(sql, (at, *_abandoned_params(at, deadline=deadline))))
+
+    return _guarded("failing abandoned operations", _run)
+
+
+def delete_terminal_operations(
+    *,
+    store: DatasetStore,
+    older_than: timedelta,
+    now: Clock = utc_now,
+    batch_size: int = 1_000,
+) -> int:
+    """Deletes `done` and `failed` rows last updated more than `older_than` ago.
+
+    It reads only `store` and the clock, so a job that runs it needs no settings. Each batch of
+    at most `batch_size` rows commits in its own transaction, and the run stops at the first
+    short batch. The outer predicate repeats the state and age test, so a row a concurrent
+    resubmit resets to `pending` between the select and the delete stays. Returns the number of
+    rows deleted.
+    """
+    cutoff = now() - older_than
+    stale = "state IN ('done', 'failed') AND updated_at < %s"
+    sql = (
+        f"DELETE FROM datasets.operation WHERE {stale} AND id IN "
+        f"(SELECT id FROM datasets.operation WHERE {stale} LIMIT %s) RETURNING id"
+    )
+    deleted = 0
+
+    def _delete_batch() -> int:
+        with store.transaction() as tx:
+            return len(tx.fetch_all(sql, (cutoff, cutoff, batch_size)))
+
+    while True:
+        batch = _guarded("deleting terminal operations", _delete_batch)
+        deleted += batch
+        if batch < batch_size:
+            return deleted

@@ -1,4 +1,4 @@
-"""Mints a frame through the datasets API and loads it through `LiveFrameStore`."""
+"""Stores canonical frames through the datasets API and loads them through `LiveFrameStore`."""
 
 from __future__ import annotations
 
@@ -8,25 +8,29 @@ from datetime import UTC, datetime
 from typing import cast
 
 import httpx
-import pytest
+import pyarrow as pa
+from dfo_frame_grammar import Frame, canonical_frame_bytes, canonical_frame_schema, unit_cell_array
 from fastapi.testclient import TestClient
 
 from artifact_store import ArtifactNotFoundError, Tier
-from assembler.ports import FrameRef, FrameUnavailable
+from assembler.ports import FrameRef
 from dataset_store.snapshot import LiveSnapshotReader
 from datasets_api.reference_store import ReferenceWrite
-from datasets_api.revision import SentinelRevisionReader
+from datasets_api.render import render_and_store_canonical_frame
 from datasets_api.version_store import LiveVersionRecordWriter
+from datasets_api.versions import VersionRecord
 from dc_sdmx import SdmxClient
+from materialise.formats import CANONICAL_FRAME_MEDIA_TYPE, read_canonical_frame
 from materialise.graph import Facet
-from presentation_store.frame_store import FRAME1_MEDIA_TYPE, LiveFrameStore
-from series_coverage.schema import FacetMetadata, RoleNames
+from presentation_store.frame_store import LiveFrameStore
+from series_coverage.schema import ABSENT_ENTITY, FacetMetadata, RoleNames
 from spec_registry import LiveSpecRegistry
 from spec_registry.reader import LiveSpecReader
 from tests.datasets_api._app_factories import make_client
 from tests.datasets_api._artifact_doubles import FakeArtifactStore as _MintFakeArtifactStore
 from tests.datasets_api._graph_doubles import FakeMintGraphReader
-from tests.datasets_api._snapshot_doubles import FakeSnapshotReader
+from tests.datasets_api._snapshot_doubles import FakeSnapshotReader, version_body
+from tests.datasets_api._version_facts import facts_from_body
 from tests.datasets_api._version_record_store import FakeVersionRecordDatasetStore
 from tests.datasets_api.conftest import FakeDatasetStore
 from tests.datasets_api.test_pin_door import FakeArtifactReferenceWriter
@@ -153,13 +157,13 @@ def _graph() -> FakeMintGraphReader:
 
 def _coverage() -> FakeCoverageService:
     """Build coverage for `_STAT_VAR` and `country/KEN` under `facet1`."""
-    role_names = {_STAT_VAR: RoleNames(donor="donor", recipient="recipient")}
+    role_names = {_STAT_VAR: RoleNames(donor=None, recipient="recipient")}
     facet_metadata = {
         "facet1": FacetMetadata(
             provenance_id="OECD_DAC2A", measurement_method="GrantEquivalent", unit="USD"
         )
     }
-    rows = [(_STAT_VAR, "facet1", "country/DONOR", "country/KEN", [2020])]
+    rows = [(_STAT_VAR, "facet1", ABSENT_ENTITY, "country/KEN", [2020])]
     index = build_coverage_index(rows, role_names=role_names, facet_metadata=facet_metadata)
     return FakeCoverageService(index)
 
@@ -183,7 +187,6 @@ def _mint_client(
         spec_reader=LiveSpecReader(store=spec_store),
         graph=_graph(),
         sdmx=SdmxClient(base_url=_BASE_URL, transport=_sdmx_transport()),
-        revision_reader=SentinelRevisionReader(),
         artifact_store=artifact_store,
         version_writer=LiveVersionRecordWriter(store=version_store, now=lambda: _NOW),
         snapshot_reader=FakeSnapshotReader(),
@@ -223,7 +226,7 @@ def _frame_store(
     )
 
 
-def test_a_real_mint_frame1_rendering_loads_through_the_real_frame_store():
+def test_a_real_mint_canonical_frame_loads_through_the_real_frame_store():
     version_store = FakeVersionRecordDatasetStore()
     try:
         artifact_store = _ArtifactStore()
@@ -235,7 +238,7 @@ def test_a_real_mint_frame1_rendering_loads_through_the_real_frame_store():
         spec_id = manifest["definition"]["spec_id"]
         content_version = manifest["content_version"]
 
-        # C79: frame1 is internal, so read its row from `version_artifact`.
+        # C79: the canonical frame is internal, so read its row from `version_artifact`.
         assert len(manifest["artifacts"]) == 2
         csv_artifact = next(a for a in manifest["artifacts"] if a["media_type"] == "text/csv")
         with version_store.transaction() as tx:
@@ -244,25 +247,24 @@ def test_a_real_mint_frame1_rendering_loads_through_the_real_frame_store():
                 "WHERE subject_id = %s AND content_version = %s",
                 (spec_id, content_version),
             )
-        frame1_row = next(row for row in artifact_rows if row["rendering"] == {"format": "frame1"})
-        assert frame1_row["media_type"] == FRAME1_MEDIA_TYPE
-        # Content versions and artifact digests hash different inputs.
-        assert content_version.startswith("cv_")
-        assert frame1_row["artifact_digest"].startswith("sha256:")
-        assert frame1_row["artifact_digest"] != csv_artifact["artifact_digest"]
+        frame_row = next(row for row in artifact_rows if row["rendering"] == {"format": "frame"})
+        assert frame_row["media_type"] == CANONICAL_FRAME_MEDIA_TYPE
+        assert frame_row["artifact_digest"] != csv_artifact["artifact_digest"]
 
-        frame1_digest = frame1_row["artifact_digest"]
-        _seed_working_location(version_store, artifact_store=artifact_store, digest=frame1_digest)
+        frame_digest = frame_row["artifact_digest"]
+        _seed_working_location(version_store, artifact_store=artifact_store, digest=frame_digest)
         frame_store = _frame_store(version_store, artifact_store=artifact_store)
 
         resolved = frame_store.load(
             frame_ref=FrameRef(spec_id=spec_id, content_version=content_version)
         )
 
-        # Read the frame bytes written by the mint path.
-        raw = artifact_store.get(artifact_digest=frame1_digest, tier=Tier.working)
-        assert hashlib.sha256(raw).hexdigest() == frame1_digest.removeprefix("sha256:")
-        parsed = cast("dict[str, object]", json.loads(raw))
+        # The frame Presentation reads is the frame1 document of the frame the mint stored.
+        raw = artifact_store.get(artifact_digest=frame_digest, tier=Tier.working)
+        assert hashlib.sha256(raw).hexdigest() == frame_digest.removeprefix("sha256:")
+        parsed = cast(
+            "dict[str, object]", json.loads(canonical_frame_bytes(read_canonical_frame(raw)))
+        )
         assert resolved.frame == parsed
         assert parsed["frame_version"] == "frame1"
         assert parsed["columns"] == [
@@ -285,40 +287,83 @@ def test_a_real_mint_frame1_rendering_loads_through_the_real_frame_store():
         version_store.close()
 
 
-def test_a_mint_over_the_frame1_row_ceiling_loads_as_missing_rendering(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    """With the ceiling at 0, the one-row mint is over it: the version and its CSV are recorded
-    with no frame1, and the frame store refuses the version as `missing_rendering`."""
-    monkeypatch.setattr("datasets_api.serve.FRAME1_MAX_ROWS", 0)
+_LARGE_ROWS = 250_000
+
+
+def _large_frame() -> Frame:
+    """A one-role frame of `_LARGE_ROWS` rows built as Arrow columns, in canonical row order."""
+    columns = (
+        "stat_var",
+        "recipient",
+        "time_period",
+        "value",
+        "unit",
+        "measurementMethod",
+        "provenance",
+        "status",
+    )
+    table = pa.Table.from_arrays(
+        [
+            pa.array([_STAT_VAR_REF] * _LARGE_ROWS),
+            pa.array([f"country/R{index:06d}" for index in range(_LARGE_ROWS)]),
+            pa.array(["2020"] * _LARGE_ROWS),
+            pa.array([float(index) for index in range(_LARGE_ROWS)]),
+            unit_cell_array("USD", _LARGE_ROWS),
+            pa.array(["GrantEquivalent"] * _LARGE_ROWS),
+            pa.array(["OECD_DAC2A"] * _LARGE_ROWS),
+            pa.nulls(_LARGE_ROWS),
+        ],
+        schema=canonical_frame_schema(columns),
+    )
+    return Frame.from_table(columns=columns, table=table)
+
+
+def test_a_250000_row_canonical_frame_is_written_and_opens_in_presentation():
+    """A version of 250,000 rows stores its canonical frame, which Presentation opens whole.
+    Builds and reads 250,000 rows, about two seconds."""
     version_store = FakeVersionRecordDatasetStore()
     try:
         artifact_store = _ArtifactStore()
-        client = _mint_client(version_store=version_store, artifact_store=artifact_store)
-
-        resp = client.post("/api/datasets", json=_BODY)
-        assert resp.status_code == 200, resp.text
-        manifest = resp.json()
-        spec_id = manifest["definition"]["spec_id"]
-        content_version = manifest["content_version"]
-        with version_store.transaction() as tx:
-            artifact_rows = tx.fetch_all(
-                "SELECT artifact_digest, media_type FROM datasets.version_artifact "
-                "WHERE subject_id = %s AND content_version = %s",
-                (spec_id, content_version),
+        frame = _large_frame()
+        chunks = [
+            Frame(columns=frame.columns, table=frame.table.slice(start, 60_000))
+            for start in range(0, _LARGE_ROWS, 60_000)
+        ]
+        record = render_and_store_canonical_frame(
+            frame_chunks=chunks,
+            subject_id="spec_" + "a" * 32,
+            content_version="cv_" + "b" * 32,
+            artifact_store=artifact_store,
+        )
+        LiveVersionRecordWriter(store=version_store, now=lambda: _NOW).record_version(
+            VersionRecord(
+                subject_id="spec_" + "a" * 32,
+                subject_kind="spec",
+                content_version="cv_" + "b" * 32,
+                schema_version=1,
+                facts=facts_from_body(version_body("cv_" + "b" * 32)),
+                artifacts=(record,),
             )
-        assert artifact_rows
-        assert all(row["media_type"] != FRAME1_MEDIA_TYPE for row in artifact_rows)
-        for row in artifact_rows:
-            _seed_working_location(
-                version_store, artifact_store=artifact_store, digest=row["artifact_digest"]
-            )
+        )
+        _seed_working_location(
+            version_store, artifact_store=artifact_store, digest=record.artifact_digest
+        )
 
-        with pytest.raises(FrameUnavailable) as excinfo:
-            _frame_store(version_store, artifact_store=artifact_store).load(
-                frame_ref=FrameRef(spec_id=spec_id, content_version=content_version)
-            )
+        resolved = _frame_store(version_store, artifact_store=artifact_store).load(
+            frame_ref=FrameRef(spec_id="spec_" + "a" * 32, content_version="cv_" + "b" * 32)
+        )
 
-        assert excinfo.value.reason == "missing_rendering"
+        rows = cast("list[list[object]]", resolved.frame["rows"])
+        assert len(rows) == _LARGE_ROWS
+        assert rows[-1] == [
+            _STAT_VAR_REF,
+            f"country/R{_LARGE_ROWS - 1:06d}",
+            "2020",
+            _LARGE_ROWS - 1,
+            "USD",
+            "GrantEquivalent",
+            "OECD_DAC2A",
+            None,
+        ]
     finally:
         version_store.close()

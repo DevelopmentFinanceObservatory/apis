@@ -237,8 +237,8 @@ _Dcid = Annotated[
 
 
 class NodesRequest(BaseModel):
-    """`dcids`: 1 to `NODES_MAX_DCIDS` node dcids read as one batch under one DCP pool
-    slot. Each dcid matches the GET route's `{dcid}` path syntax and its 512-character
+    """`dcids`: 1 to `NODES_MAX_DCIDS` node dcids read as one batch, in one DCP-read
+    executor job. Each dcid matches the GET route's `{dcid}` path syntax and its 512-character
     ceiling."""
 
     model_config = ConfigDict(extra="forbid", title="GraphNodesRequest")

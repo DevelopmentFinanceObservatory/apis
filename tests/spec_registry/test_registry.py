@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
-from collections.abc import Generator
+from collections.abc import Generator, Mapping, Sequence
 from contextlib import contextmanager
 
 import pytest
@@ -19,12 +19,19 @@ from spec_registry.errors import (
     SpecRegistryUnavailable,
 )
 from spec_registry.identity import recompute_identity
+from spec_registry.reader import LiveSpecReader
 from spec_registry.registry import (
     IDENTITY_COLLISION_QUARANTINED_MARKER,
     LiveSpecRegistry,
 )
 
-from .conftest import FakeDatasetStore, FakeRegistryState, minimal_identity, shape_for
+from .conftest import (
+    FakeDatasetStore,
+    FakeRegistryState,
+    FakeTransaction,
+    minimal_identity,
+    shape_for,
+)
 
 
 class _RaisingTransaction:
@@ -431,3 +438,171 @@ def test_quarantine_insert_failure_raises_non_retryable_with_safe_class_name() -
 
     assert "RuntimeError" in str(excinfo.value)
     assert "driver-secret" not in str(excinfo.value)
+
+
+def _posted_and_served(registry: LiveSpecRegistry):
+    """A registered posted identity and an unregistered served one."""
+    posted = recompute_identity(minimal_identity(shape=shape_for("posted")))
+    registry.register_definition(
+        identity_definition=posted.identity, schema_version=1, supplied_spec_id=posted.spec_id
+    )
+    return posted, recompute_identity(minimal_identity(shape=shape_for("served")))
+
+
+def _quarantine(store: FakeDatasetStore, spec_id: str) -> None:
+    store.state.identity_quarantine.append(
+        {"id_kind": "spec", "subject_id": spec_id, "held_bytes": b"a", "incoming_bytes": b"b"}
+    )
+
+
+def test_register_served_definition_registers_and_binds_once() -> None:
+    store = FakeDatasetStore()
+    registry = LiveSpecRegistry(store=store)
+    posted, served = _posted_and_served(registry)
+
+    first = registry.register_served_definition(
+        served=served, schema_version=1, posted_spec_id=posted.spec_id
+    )
+    second = registry.register_served_definition(
+        served=served, schema_version=1, posted_spec_id=posted.spec_id
+    )
+
+    assert first == second
+    assert (first.spec_id, first.identity_bytes) == (served.spec_id, served.identity_bytes)
+    assert first.identity == served.identity
+    assert (served.spec_id, 1) in store.state.spec_definition
+    assert store.state.spec_alias == [(posted.spec_id, served.spec_id)]
+
+
+def test_register_served_definition_with_no_posted_id_binds_nothing() -> None:
+    store = FakeDatasetStore()
+    registry = LiveSpecRegistry(store=store)
+    _posted, served = _posted_and_served(registry)
+
+    stored = registry.register_served_definition(
+        served=served, schema_version=1, posted_spec_id=None
+    )
+
+    assert stored.spec_id == served.spec_id
+    assert store.state.spec_alias == []
+
+
+@pytest.mark.parametrize("quarantined", ["posted", "served", "bound"])
+def test_register_served_definition_refuses_a_quarantined_id(quarantined: str) -> None:
+    """`bound` is a served id an earlier call bound to the posted id, which
+    `read_served_spec_ids` refuses the posted id for."""
+    store = FakeDatasetStore()
+    registry = LiveSpecRegistry(store=store)
+    posted, served = _posted_and_served(registry)
+    earlier = recompute_identity(minimal_identity(shape=shape_for("served_earlier")))
+    registry.register_served_definition(
+        served=earlier, schema_version=1, posted_spec_id=posted.spec_id
+    )
+    subject_id = {"posted": posted, "served": served, "bound": earlier}[quarantined].spec_id
+    _quarantine(store, subject_id)
+
+    with pytest.raises(IdentityQuarantined) as excinfo:
+        registry.register_served_definition(
+            served=served, schema_version=1, posted_spec_id=posted.spec_id
+        )
+
+    assert excinfo.value.subject_id == subject_id
+    assert store.state.spec_alias == [(posted.spec_id, earlier.spec_id)]
+    assert served.spec_id not in store.state.spec_registry
+    # The served id is unbound, so a read under the posted id refuses in the other two states.
+    if quarantined != "served":
+        with pytest.raises(IdentityQuarantined):
+            LiveSpecReader(store=store).read_served_spec_ids(posted.spec_id)
+
+
+def test_register_served_definition_byte_mismatch_quarantines_and_binds_nothing() -> None:
+    """The served id holds a registry row and a definition row, as a registration leaves it,
+    and its registry bytes are another identity's."""
+    store = FakeDatasetStore()
+    registry = LiveSpecRegistry(store=store)
+    posted, served = _posted_and_served(registry)
+    registry.register_served_definition(served=served, schema_version=1, posted_spec_id=None)
+    assert (served.spec_id, 1) in store.state.spec_definition
+    store.state.spec_registry[served.spec_id]["identity_bytes"] = b"different bytes entirely"
+
+    with pytest.raises(IdentityCollision):
+        registry.register_served_definition(
+            served=served, schema_version=1, posted_spec_id=posted.spec_id
+        )
+
+    assert [
+        (row["subject_id"], row["held_bytes"], row["incoming_bytes"])
+        for row in store.state.identity_quarantine
+    ] == [(served.spec_id, b"different bytes entirely", served.identity_bytes)]
+    assert store.state.spec_alias == []
+
+
+class _QuarantiningTransaction:
+    """Delegates to `inner`, and quarantines `subject_id` once the transaction has read the
+    quarantine rows of its ids, as a collision committed by another connection does."""
+
+    def __init__(self, inner: FakeTransaction, *, store: FakeDatasetStore, subject_id: str) -> None:
+        self._inner = inner
+        self._store = store
+        self._subject_id = subject_id
+
+    def execute(self, sql: str, params: Sequence[object] = ()) -> None:
+        self._inner.execute(sql, params)
+
+    def fetch_one(self, sql: str, params: Sequence[object] = ()) -> Mapping[str, object] | None:
+        return self._inner.fetch_one(sql, params)
+
+    def fetch_all(self, sql: str, params: Sequence[object] = ()) -> list[Mapping[str, object]]:
+        rows = self._inner.fetch_all(sql, params)
+        if "SELECT subject_id FROM datasets.identity_quarantine" in sql:
+            _quarantine(self._store, self._subject_id)
+        return rows
+
+
+class _QuarantiningDatasetStore(FakeDatasetStore):
+    def __init__(self, *, subject_id: str) -> None:
+        super().__init__()
+        self._subject_id = subject_id
+
+    @contextmanager
+    def transaction(self) -> Generator[_QuarantiningTransaction, None, None]:
+        with super().transaction() as tx:
+            yield _QuarantiningTransaction(tx, store=self, subject_id=self._subject_id)
+
+
+def test_register_served_definition_binds_nothing_for_an_id_quarantined_mid_transaction() -> None:
+    """The served id holds its registry row with no definition row, and its quarantine row
+    lands after the transaction's quarantine read, so the registration step finds it."""
+    served = recompute_identity(minimal_identity(shape=shape_for("served")))
+    store = _QuarantiningDatasetStore(subject_id=served.spec_id)
+    registry = LiveSpecRegistry(store=FakeDatasetStore(store.state))
+    posted, _served = _posted_and_served(registry)
+    registry.register_served_definition(served=served, schema_version=1, posted_spec_id=None)
+    del store.state.spec_definition[(served.spec_id, 1)]
+
+    with pytest.raises(IdentityQuarantined) as excinfo:
+        LiveSpecRegistry(store=store).register_served_definition(
+            served=served, schema_version=1, posted_spec_id=posted.spec_id
+        )
+
+    assert excinfo.value.subject_id == served.spec_id
+    assert store.state.spec_alias == []
+    assert store.state.spec_definition.keys() == {(posted.spec_id, 1)}
+
+
+@pytest.mark.parametrize(
+    ("exc", "raised"),
+    [
+        (PoolTimeoutError("no connection freed up"), SpecRegistryUnavailable),
+        (RuntimeError("driver fault"), SpecRegistryStoreError),
+    ],
+    ids=["pool-timeout", "store-error"],
+)
+def test_register_served_definition_maps_store_faults(exc: Exception, raised: type) -> None:
+    registry = LiveSpecRegistry(store=_RaisingFakeDatasetStore(exc))
+    served = recompute_identity(minimal_identity(shape=shape_for("served")))
+
+    with pytest.raises(raised):
+        registry.register_served_definition(
+            served=served, schema_version=1, posted_spec_id="spec_posted"
+        )
